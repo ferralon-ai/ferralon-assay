@@ -785,12 +785,13 @@ func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, 
 // module fromModule, finds something other than the workspace member at memberDir. Node walks
 // from the importing file's real path, so the walk runs from its logical directory and again
 // from the real directory of each source file the module can be. Each walk climbs past the
-// build root to the filesystem root, as Node's does. In each walk the first directory holding a
-// candidate decides: a file Node's CommonJS LOAD_AS_FILE would try, or a real directory, is
-// different code; a symlink is the member only when its target's real path is the member
-// directory's. A path that cannot be stat'ed or
-// followed, for any reason but a missing path, counts as shadowing. A walk that finds nothing
-// leaves the member.
+// build root to the filesystem root, as Node's does, and runs twice: once skipping
+// node_modules/node_modules as CommonJS require does, once checking it as ESM import does.
+// In each run the first directory holding a candidate decides: a file Node's CommonJS
+// LOAD_AS_FILE would try, or a real directory, is different code; a symlink is the member only
+// when its target's real path is the member directory's. A path that cannot be stat'ed or
+// followed, for any reason but a missing path, counts as shadowing. The member stands only
+// when no run finds anything else.
 func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
 		return true
@@ -822,10 +823,11 @@ func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
 		}
 		return true, real != memberReal
 	}
-	// walk runs Node's walk from dir to the filesystem root, skipping node_modules/node_modules.
-	walk := func(dir string) bool {
+	// walk runs Node's walk from dir to the filesystem root. CommonJS require skips
+	// node_modules/node_modules (skipNested); ESM import does not.
+	walk := func(dir string, skipNested bool) bool {
 		for {
-			if filepath.Base(dir) != "node_modules" {
+			if !skipNested || filepath.Base(dir) != "node_modules" {
 				if decided, shadowed := decides(dir); decided {
 					return shadowed
 				}
@@ -837,7 +839,12 @@ func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
 			dir = parent
 		}
 	}
-	if walk(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule)))) {
+	// either is shadowed when the walk of either loader finds a copy: the importer's kind is
+	// not tracked here.
+	either := func(dir string) bool {
+		return walk(dir, true) || walk(dir, false)
+	}
+	if either(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule)))) {
 		return true
 	}
 	exts := []string{vueExtension}
@@ -859,7 +866,7 @@ func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
 			}
 			return true
 		}
-		if walk(filepath.Dir(real)) {
+		if either(filepath.Dir(real)) {
 			return true
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -67,15 +68,23 @@ func dangle(t *testing.T, dir, rel string) {
 	link(t, dir, rel, "gone")
 }
 
-// deepLink makes rel under dir a symlink to a directory whose real path is longer than
-// PATH_MAX, reached through a chain of short links: the kernel follows it, but resolving its
-// real path fails with ENAMETOOLONG. It returns a short path to that directory.
-func deepLink(t *testing.T, dir, rel string) string {
+// pathMax is the longest path the platform's stat accepts.
+var pathMax = map[bool]int{true: 1024, false: 4096}[runtime.GOOS == "darwin"]
+
+// deepLink makes rel under dir a symlink to a directory whose real path is realLen bytes long,
+// reached through a chain of short links, so the kernel follows paths through it that are far
+// shorter than their real paths. It returns a short path to that directory.
+func deepLink(t *testing.T, dir, rel string, realLen int) string {
 	t.Helper()
 	mkdir(t, dir, ".deep")
 	at, via := filepath.Join(dir, ".deep"), ".deep"
-	for i := range 25 {
-		name := fmt.Sprintf("%03d%s", i, strings.Repeat("d", 197))
+	real, err := filepath.EvalSymlinks(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; len(real) < realLen; i++ {
+		name := fmt.Sprintf("%03d", i)
+		name += strings.Repeat("d", min(200, realLen-len(real)-1)-len(name))
 		if err := os.Mkdir(filepath.Join(at, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -83,10 +92,34 @@ func deepLink(t *testing.T, dir, rel string) string {
 		if err := os.Symlink(name, filepath.Join(at, s)); err != nil {
 			t.Skipf("symlink: %v", err)
 		}
-		at, via = filepath.Join(at, s), via+"/"+s
+		at, via, real = filepath.Join(at, s), via+"/"+s, real+"/"+name
 	}
 	link(t, dir, rel, via)
 	return at
+}
+
+// noCopyAbove fails the test when an ancestor of dir, logical or real, holds a candidate for
+// package name in its node_modules, or a node_modules that cannot be searched: a walk that
+// climbs past the build root would find it, and a row expecting no copy would not test that.
+func noCopyAbove(t *testing.T, dir, name string) {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, start := range []string{dir, real} {
+		for d := filepath.Dir(start); ; d = filepath.Dir(d) {
+			for _, c := range []string{name, name + ".js", name + ".json", name + ".node"} {
+				p := filepath.Join(d, "node_modules", c)
+				if _, err := os.Lstat(p); err == nil || !absent(err) {
+					t.Fatalf("%s (%v) is above the test's build root: remove it or set TMPDIR elsewhere", p, err)
+				}
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
 }
 
 // mkdir creates the directory rel under dir.
@@ -185,6 +218,9 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			prog := mustLoad(t, dir)
 			if prog == nil {
 				return
+			}
+			if !want {
+				noCopyAbove(t, dir, "foo")
 			}
 			if got := prog.resolver().loadsOutOfTree(from, "foo", true); got != want {
 				t.Errorf("loadsOutOfTree = %v, want %v", got, want)
@@ -416,10 +452,18 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			}, memberShadowed("a", false)},
 		}},
 		{"memberShadowed member real path", []row{
-			// the build root is reached through short links; its real path is past PATH_MAX
+			// The build root is reached through short links, and its real path is long enough that
+			// the member's is past PATH_MAX while the importer's still resolves.
 			{"ENAMETOOLONG", nil, func(t *testing.T, dir string) {
-				root := filepath.Join(deepLink(t, dir, "r"), "repo")
-				for name, body := range memberTree {
+				member := "packages/" + strings.Repeat("p", 200)
+				root := filepath.Join(deepLink(t, dir, "r", pathMax-105), "repo")
+				for name, body := range map[string]string{
+					"package.json":           memberTree["package.json"],
+					member + "/package.json": `{"name":"foo"}`,
+					member + "/index.js":     js,
+					"a.js":                   memberTree["a.js"],
+					"node_modules/.keep":     "",
+				} {
 					p := filepath.Join(root, filepath.FromSlash(name))
 					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 						t.Fatal(err)
@@ -428,8 +472,11 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if _, err := filepath.EvalSymlinks(filepath.Join(root, "packages", "foo")); !errors.Is(err, syscall.ENAMETOOLONG) {
-					t.Fatalf("realpath packages/foo: %v, want %v", err, syscall.ENAMETOOLONG)
+				if _, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(member))); !errors.Is(err, syscall.ENAMETOOLONG) {
+					t.Fatalf("realpath of the member: %v, want %v", err, syscall.ENAMETOOLONG)
+				}
+				if _, err := filepath.EvalSymlinks(filepath.Join(root, "a.js")); err != nil {
+					t.Fatalf("realpath a.js: %v", err)
 				}
 			}, func(t *testing.T, dir string) {
 				memberShadowed("a", true)(t, filepath.Join(dir, "r", "repo"))

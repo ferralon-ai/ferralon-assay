@@ -5,8 +5,10 @@ package jsanalysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -63,6 +65,28 @@ func loop(t *testing.T, dir, rel string) {
 func dangle(t *testing.T, dir, rel string) {
 	t.Helper()
 	link(t, dir, rel, "gone")
+}
+
+// deepLink makes rel under dir a symlink to a directory whose real path is longer than
+// PATH_MAX, reached through a chain of short links: the kernel follows it, but resolving its
+// real path fails with ENAMETOOLONG. It returns a short path to that directory.
+func deepLink(t *testing.T, dir, rel string) string {
+	t.Helper()
+	mkdir(t, dir, ".deep")
+	at, via := filepath.Join(dir, ".deep"), ".deep"
+	for i := range 25 {
+		name := fmt.Sprintf("%03d%s", i, strings.Repeat("d", 197))
+		if err := os.Mkdir(filepath.Join(at, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s := fmt.Sprintf("s%d", i)
+		if err := os.Symlink(name, filepath.Join(at, s)); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		at, via = filepath.Join(at, s), via+"/"+s
+	}
+	link(t, dir, rel, via)
+	return at
 }
 
 // mkdir creates the directory rel under dir.
@@ -390,6 +414,27 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			{"missing", memberTree, func(t *testing.T, dir string) {
 				dangle(t, dir, "node_modules/foo")
 			}, memberShadowed("a", false)},
+		}},
+		{"memberShadowed member real path", []row{
+			{"ENAMETOOLONG", map[string]string{
+				"package.json":       memberTree["package.json"],
+				"a.js":               memberTree["a.js"],
+				"node_modules/.keep": "",
+			}, func(t *testing.T, dir string) {
+				deep := deepLink(t, dir, "packages")
+				for name, body := range map[string]string{"foo/package.json": `{"name":"foo"}`, "foo/index.js": js} {
+					p := filepath.Join(deep, filepath.FromSlash(name))
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := filepath.EvalSymlinks(filepath.Join(dir, "packages", "foo")); !errors.Is(err, syscall.ENAMETOOLONG) {
+					t.Fatalf("realpath packages/foo: %v, want %v", err, syscall.ENAMETOOLONG)
+				}
+			}, memberShadowed("a", true)},
 		}},
 		{"memberShadowed importer real path", []row{
 			{"EACCES", memberTree, func(t *testing.T, dir string) {

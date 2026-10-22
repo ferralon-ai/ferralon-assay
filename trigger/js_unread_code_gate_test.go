@@ -1151,32 +1151,67 @@ func TestUndeterminedReason_JSWorkspaceMemberShadow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// req is an importer of spec; named renames the member foo to name, with its importers.
+	req := func(spec string) string {
+		return "const j = require('" + spec + "');\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+	}
+	named := func(name string) map[string]string {
+		files := tree()
+		files["packages/foo/package.json"] = `{"name":"` + name + `","version":"1.0.0"}`
+		files["src/app.js"] = "module.exports = require('" + name + "');\n"
+		return files
+	}
+	long := strings.Repeat("f", 252) // its .json and .node candidates exceed NAME_MAX; .js does not
+	stem := strings.Repeat("s", 252) // its .js file fits NAME_MAX; .mjs, .cjs, .jsx, .tsx, .vue do not
 	cases := []struct {
 		name  string
 		src   string
 		files map[string]string
 		links map[string]string // symlink path to its target
+		above map[string]string // files beside the build root, which becomes the directory repo
 		held  bool
 	}{
-		{"an installed copy at the root", src, tree("node_modules/foo"), nil, true},
-		{"an installed copy nearer the importer than the member's link", viaSrc, tree("src/node_modules/foo"), member, true},
-		{"a link to another directory", src, tree("vendor/foo"), map[string]string{"node_modules/foo": "../vendor/foo"}, true},
-		{"a file Node tries before the member's link", src, withFile(tree(), "node_modules/foo.js", installed["index.js"]), member, true},
-		{"a link that loops", src, tree(), map[string]string{"node_modules/foo": "foo"}, true},
+		{"an installed copy at the root", src, tree("node_modules/foo"), nil, nil, true},
+		{"an installed copy nearer the importer than the member's link", viaSrc, tree("src/node_modules/foo"), member, nil, true},
+		{"a link to another directory", src, tree("vendor/foo"), map[string]string{"node_modules/foo": "../vendor/foo"}, nil, true},
+		{"a file Node tries before the member's link", src, withFile(tree(), "node_modules/foo.js", installed["index.js"]), member, nil, true},
+		{"a link that loops", src, tree(), map[string]string{"node_modules/foo": "foo"}, nil, true},
 		{"a symlinked importer whose real directory holds an installed copy", entrySrc,
-			withReal(tree("dist/node_modules/foo")), entryTo("../dist/real.js", nil), true},
+			withReal(tree("dist/node_modules/foo")), entryTo("../dist/real.js", nil), nil, true},
 		{"a symlinked importer whose real file is outside the build root beside an installed copy", entrySrc,
-			tree(), entryTo(filepath.Join(outside, "real.js"), nil), true},
+			tree(), entryTo(filepath.Join(outside, "real.js"), nil), nil, true},
+		{"a .json file Node tries before the member's link", src, withFile(tree(), "node_modules/foo.json", "{}"), member, nil, true},
+		{"a .node file Node tries before the member's link", src, withFile(tree(), "node_modules/foo.node", ""), member, nil, true},
+		{"an installed copy at the root reached from a nested importer", viaSrc, tree("node_modules/foo"), nil, nil, true},
+		{"an installed copy above the build root", src, tree(), nil, map[string]string{
+			"node_modules/foo/package.json": installed["package.json"],
+			"node_modules/foo/index.js":     installed["index.js"],
+		}, true},
+		// Node walks the symlink's own directory under --preserve-symlinks, which the tree does not record.
+		{"a symlinked importer whose own directory's ancestor holds an installed copy", req("./src/a/entry"),
+			withReal(tree("src/node_modules/foo")), map[string]string{"node_modules/foo": "../packages/foo", "src/a/entry.js": "../../dist/real.js"}, nil, true},
+		{"a member name with a candidate that cannot be stat'ed", req(long), named(long), map[string]string{"node_modules/" + long: "../packages/foo"}, nil, true},
+		{"an importer with a source file name that cannot be stat'ed", req("./src/" + stem),
+			withFile(tree(), "src/"+stem+".js", "module.exports = require('foo');\n"), member, nil, true},
+		{"a member name the walk cannot place", req("foo..bar"), named("foo..bar"), map[string]string{"node_modules/foo..bar": "../packages/foo"}, nil, true},
 		{"a symlinked importer whose real directory holds only the member's link", entrySrc,
-			withReal(tree()), entryTo("../dist/real.js", map[string]string{"dist/node_modules/foo": "../../packages/foo"}), false},
-		{"the member's link at the root", src, tree(), member, false},
-		{"the member's link reached from a nested importer", viaSrc, tree(), member, false},
-		{"no installed copy", src, tree(), nil, false},
-		{"a dangling link", src, tree(), map[string]string{"node_modules/foo": "../gone"}, false},
+			withReal(tree()), entryTo("../dist/real.js", map[string]string{"dist/node_modules/foo": "../../packages/foo"}), nil, false},
+		{"the member's link past a node_modules directory above the importer's real file", entrySrc,
+			withFile(tree("node_modules/node_modules/foo"), "node_modules/x/real.js", "module.exports = require('foo');\n"),
+			entryTo("../node_modules/x/real.js", nil), nil, false},
+		{"the member's link at the root", src, tree(), member, nil, false},
+		{"the member's link reached from a nested importer", viaSrc, tree(), member, nil, false},
+		{"no installed copy", src, tree(), nil, nil, false},
+		{"a dangling link", src, tree(), map[string]string{"node_modules/foo": "../gone"}, nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store, edges := gateStoreFromJSLinked(t, tc.src, tc.files, tc.links)
+			dir := t.TempDir()
+			if tc.above != nil {
+				writeTree(t, dir, tc.above)
+				dir = filepath.Join(dir, "repo")
+			}
+			store, edges := gateStoreFromJSAt(t, dir, tc.src, tc.files, tc.links)
 			if edges == 0 {
 				t.Fatalf("program must have call edges")
 			}
@@ -1206,7 +1241,26 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 // pointing to its target as written.
 func gateStoreFromJSLinked(t *testing.T, src string, files, links map[string]string) (*artifact.MemStore, int) {
 	t.Helper()
-	dir := t.TempDir()
+	return gateStoreFromJSAt(t, t.TempDir(), src, files, links)
+}
+
+// writeTree writes each file at its slash-separated path under dir.
+func writeTree(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// gateStoreFromJSAt is gateStoreFromJSLinked with the tree written at dir.
+func gateStoreFromJSAt(t *testing.T, dir, src string, files, links map[string]string) (*artifact.MemStore, int) {
+	t.Helper()
 	tree := map[string]string{
 		"package.json":        `{"name":"fixture","version":"1.0.0","dependencies":{"json5":"2.2.1"}}`,
 		"index.js":            src,

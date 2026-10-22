@@ -783,12 +783,12 @@ func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, 
 
 // memberShadowed reports whether Node's node_modules walk for package name, from the importing
 // module fromModule, finds something other than the workspace member at memberDir. Node walks
-// from the importing file's real path, so the walk runs from its logical directory up to the
-// build root and again from the real directory of each source file the module can be. A real
-// directory inside the build root stops at the build root; one outside it walks every ancestor.
-// In each walk the first directory holding a candidate decides: a file Node's CommonJS
-// LOAD_AS_FILE would try, or a real directory, is different code; a symlink is the member only
-// when its target's real path is the member directory's. A path that cannot be stat'ed or
+// from the importing file's real path, so the walk runs from its logical directory and again
+// from the real directory of each source file the module can be. Each walk climbs past the
+// build root to the filesystem root, as Node's does. In each walk the first directory holding a
+// candidate decides: a file Node's CommonJS LOAD_AS_FILE would try, or a real directory, is
+// different code; a symlink is the member only when its target's real path is the member
+// directory's. A path that cannot be stat'ed or
 // followed, for any reason but a missing path, counts as shadowing. A walk that finds nothing
 // leaves the member.
 func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
@@ -822,25 +822,22 @@ func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
 		}
 		return true, real != memberReal
 	}
-	// walk runs Node's walk from dir up to stop, or to the filesystem root when stop is "".
-	walk := func(dir, stop string) bool {
+	// walk runs Node's walk from dir to the filesystem root, skipping node_modules/node_modules.
+	walk := func(dir string) bool {
 		for {
 			if filepath.Base(dir) != "node_modules" {
 				if decided, shadowed := decides(dir); decided {
 					return shadowed
 				}
 			}
-			if dir == stop || dir == filepath.Dir(dir) {
+			parent := filepath.Dir(dir)
+			if parent == dir {
 				return false
 			}
-			dir = filepath.Dir(dir)
+			dir = parent
 		}
 	}
-	if walk(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule))), root) {
-		return true
-	}
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
+	if walk(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule)))) {
 		return true
 	}
 	exts := []string{vueExtension}
@@ -862,11 +859,7 @@ func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
 			}
 			return true
 		}
-		realDir, stop := filepath.Dir(real), ""
-		if rel, err := filepath.Rel(realRoot, realDir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			stop = realRoot
-		}
-		if walk(realDir, stop) {
+		if walk(filepath.Dir(real)) {
 			return true
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -886,6 +887,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"a function's constructor name used as a string", "const f = function () {};\nconst label = 'type: ' + f.constructor.name;\nconst j = require('./plugins');", nil},
 		{"eval and Function members tested", "const opts = {};\nconst j = require('./plugins');\nif (opts.eval) load('x');\nconst on = !opts.Function && opts.eval !== true;", nil},
 		{"webpack's runtime require of an in-tree module", "const j = __non_webpack_require__('./plugins');", nil},
+		{"escaped specifier of an in-tree module", "const j = require('./\\x70lugins');", nil},
 		{"arguments inside a function, as a member and as a key", "function first() { return arguments[0]; }\nconst info = { arguments: first.arguments };\nconst j = require('./plugins');", nil},
 		{"local values exported under the names module, require and process", "const own = {};\nexport { own as module, own as require, own as process };\nconst j = require('./plugins');", nil},
 		{"constructor as a class method and an object-literal key", "class Box { constructor(v) { this.v = v; } }\nfunction inherit(sub, sup) { sub.prototype = Object.create(sup && sup.prototype, { constructor: { value: sub, writable: true } }); }\nconst desc = { constructor: Box, f({ a }) { return a; } };\nconst j = require('./plugins');", nil},
@@ -914,6 +916,108 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
 			}
 		})
+	}
+}
+
+// escapedKeyShapes are the forms that hand a member named by a string key on as a value: a
+// destructuring pattern, Reflect.get, a property descriptor and a bracket call. KEY stands
+// for the key literal.
+var escapedKeyShapes = []struct{ name, src string }{
+	{"destructured", "const { KEY: F } = function () {};\nF(process.argv[3])();\n"},
+	{"read through Reflect.get", "const g = function () {};\nReflect.get(g, KEY)(process.argv[3])();\n"},
+	{"read through Object.getOwnPropertyDescriptor", "const g = function () {};\nObject.getOwnPropertyDescriptor(Object.getPrototypeOf(g), KEY).value(process.argv[3])();\n"},
+	{"called by a bracket key", "const g = function () {};\ng[KEY](process.argv[3])();\n"},
+}
+
+// TestUndeterminedReason_JSEscapedConstructorKeyNeverRefutes: a constructor key reads as its
+// value however it is spelled, so each escape spelling in each shape that reaches Function
+// through it holds the verdict, as the plain key does.
+func TestUndeterminedReason_JSEscapedConstructorKeyNeverRefutes(t *testing.T) {
+	spellings := []struct{ name, key string }{
+		{"hex escape", `'\x63onstructor'`},
+		{"unicode escape", `'\u0063onstructor'`},
+		{"code point escape", `'\u{0063}onstructor'`},
+		{"surrogate-free code point escape", `'\u{63}onstructor'`},
+		{"line continuation", "'constr\\\nuctor'"},
+		{"CRLF line continuation", "'constr\\\r\nuctor'"},
+		{"legacy octal escape", `'\143onstructor'`},
+		{"mixed escapes", "'\\x63o\\u006E\\u{73}t\\\nr\\165ctor'"},
+		{"double-quoted hex escape", `"\x63onstructor"`},
+		{"escaped template", "`\\x63onstructor`"},
+	}
+	for _, sp := range spellings {
+		for _, sh := range escapedKeyShapes {
+			t.Run(sp.name+" "+sh.name, func(t *testing.T) {
+				src := strings.ReplaceAll(sh.src, "KEY", sp.key) + "const j = { parse: String };\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+				store, edges := gateStoreFromJS(t, src, nil)
+				if edges == 0 {
+					t.Fatalf("program must have call edges")
+				}
+				if reason, ok := undeterminedReason(store, "a1", json5Package); !ok || reason != report.ReasonAnalysisDidNotRun {
+					t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+				}
+			})
+		}
+	}
+}
+
+// TestUndeterminedReason_JSEscapedLoaderSpellingNeverRefutes: the other forms that name a
+// loader or evaluator by an escaped key, and names spelled with an identifier escape, which
+// the scan cannot read, hold the verdict.
+func TestUndeterminedReason_JSEscapedLoaderSpellingNeverRefutes(t *testing.T) {
+	cases := []struct{ name, src string }{
+		{"constructor as an escaped computed destructuring key", "const { ['\\x63onstructor']: F } = function () {};\nF(process.argv[3])();\n"},
+		{"constructor as an escaped optional bracket key", "const g = function () {};\ng?.['\\x63onstructor'](process.argv[3])();\n"},
+		{"constructor as an escaped argument of a destructured Reflect.get", "const g = function () {};\nconst { get } = Reflect;\nget(g, '\\x63onstructor')(process.argv[3])();\n"},
+		{"Function as an escaped key of the global", "globalThis['\\x46unction'](process.argv[3])();\n"},
+		{"eval as an escaped key of the global", "globalThis['\\u0065val'](process.argv[3]);\n"},
+		{"dlopen as an escaped key of process", "const m = { exports: {} };\nprocess['\\x64lopen'](m, './x.node');\n"},
+		{"constructor of an escaped constructor key after a comma, read for its name", "const g = function () {};\nconst label = g[0, '\\x63onstructor'].constructor.name;\n"},
+		{"malformed escaped key of the module object", "const j = module['\\x6']('json5');\n"},
+		{"constructor member spelled with an identifier escape", "const g = function () {};\ng.\\u0063onstructor(process.argv[3])();\n"},
+		{"constructor destructured under an identifier escape", "const { \\u{63}onstructor: F } = function () {};\nF(process.argv[3])();\n"},
+		{"Function spelled with an identifier escape", "\\u0046unction(process.argv[3])();\n"},
+		{"eval spelled with an identifier escape", "\\u0065val(process.argv[3]);\n"},
+		{"require spelled with an identifier escape", "\\u0072equire(process.argv[3]);\n"},
+		{"module spelled with an identifier escape", "\\u006dodule.require(process.argv[3]);\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := tc.src + "const j = { parse: String };\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+			store, edges := gateStoreFromJS(t, src, nil)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			if reason, ok := undeterminedReason(store, "a1", json5Package); !ok || reason != report.ReasonAnalysisDidNotRun {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+		})
+	}
+}
+
+// TestUndeterminedReason_JSEscapedLookalikeKeyCanRefute is the control: an escaped key whose
+// value is not constructor reads as that value, in each shape, so it does not hold the
+// verdict.
+func TestUndeterminedReason_JSEscapedLookalikeKeyCanRefute(t *testing.T) {
+	spellings := []struct{ name, key string }{
+		{"truncated", `'\x63onstructo'`},
+		{"capital C", `'\x43onstructor'`},
+		{"trailing NUL", `'constructor\x00'`},
+		{"harmless member", `'\x6eame'`},
+	}
+	for _, sp := range spellings {
+		for _, sh := range escapedKeyShapes {
+			t.Run(sp.name+" "+sh.name, func(t *testing.T) {
+				src := strings.ReplaceAll(sh.src, "KEY", sp.key) + "const j = require('./plugins');\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+				store, edges := gateStoreFromJS(t, src, nil)
+				if edges == 0 {
+					t.Fatalf("program must have call edges")
+				}
+				if reason, ok := undeterminedReason(store, "a1", json5Package); ok {
+					t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+				}
+			})
+		}
 	}
 }
 
@@ -1051,4 +1155,315 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 		t.Fatal(err)
 	}
 	return store, len(cg.Edges)
+}
+
+// TestUndeterminedReason_JSLexerHidesNoCode runs programs whose only unread load sits where the
+// lexer once blanked code: inside a template substitution, or after a quote, backtick or comment
+// opener the lexer misread as starting a literal. Each held program must declare; each control,
+// whose require text really is inside a literal, must stay refutable. Sources write a backtick
+// as '^'.
+func TestUndeterminedReason_JSLexerHidesNoCode(t *testing.T) {
+	const tail = "function load(s) { return m.parse(s); }\nload(process.argv[2]);\n"
+	cases := []struct {
+		name string
+		src  string
+		held bool
+	}{
+		{"require inside a template substitution", `
+function load(s) { return ^${require(process.argv[3]).parse(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"eval inside a template substitution", `
+function load(s) { return ^v=${eval(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"dynamic import inside a template substitution", `
+function load(s) { return ^${import(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"require inside a nested template", `
+function load(s) { return ^a${^b${require(process.argv[3]).parse(s)}^}^; }
+load(process.argv[2]);
+`, true},
+		{"require after a block and a brace in a string inside a substitution", `
+function load(s) { return ^${[s].map(x => { return '}' + x; }).join() + require(process.argv[3]).parse(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"regex holding a quote after return", `
+function check(s) { return /'/.test(s); }
+const m = require(process.argv[3]); // it's dynamic
+` + tail, true},
+		{"regex holding a quote after a control condition", `
+function check(s) { if (s) /'/.test(s); return s; }
+const m = require(process.argv[3]); // it's dynamic
+` + tail, true},
+		{"division after a postfix increment", `
+let i = 0;
+const n = i++ / 2; const m = require(process.argv[3]); // c
+` + tail, true},
+		{"JSX text with apostrophes", `
+function A() {
+  return <p>Don't panic</p>;
+}
+const m = require(process.argv[3]);
+function B() {
+  return <p>That's all</p>;
+}
+` + tail, true},
+		{"JSX closing tag followed by code on the same line", `
+const A = () => <p>hi</p>; const m = require(process.argv[3]); // c
+` + tail, true},
+		{"a backtick in JSX text that never closes", `
+const A = () => <p>Press ^ to search</p>;
+const m = require(process.argv[3]);
+` + tail, true},
+		{"a comment opener in JSX text that never closes", `
+const A = () => <p>Match files with /* globs</p>;
+const m = require(process.argv[3]);
+` + tail, true},
+		{"a stray backtick in JSX text paired with a later template", `
+const A = () => <p>Run ^npm i</p>;
+const m = require(process.argv[3]);
+function B() { return ^ok^; }
+` + tail, true},
+		{"a stray comment opener in JSX text paired with a later comment", `
+function A() {
+  return <p>src/*</p>;
+}
+const m = require(process.argv[3]);
+function B() {
+  /* parse it */
+  return null;
+}
+` + tail, true},
+		{"require tagging a template flush against it", `
+const m = require^json5^;
+` + tail, true},
+		{"Function tagging a template flush against it", `
+const m = Function^return require(process.argv[3])^();
+` + tail, true},
+		{"JSX apostrophe followed by a require on its line", `
+function A(name) { return <p>Don't forget {require(process.argv[3]).parse(name)}</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"JSX apostrophe followed by an eval on its own line", `
+function A(x) {
+  return (
+    <div>
+      <p>It's {eval(x)}</p>
+    </div>
+  );
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a stray backtick in JSX text inverting a template that holds an apostrophe", `
+const A = () => <p>Press ^ to search</p>;
+function B(x) { return ^it's ${require(x)}^; }
+function parse(s) { return s.trim(); }
+function load(s) { return parse(s); }
+load(process.argv[2]);
+`, true},
+		{"URL text in JSX followed by an import on its line", `
+const A = () => <p>See http://example.com {import(process.argv[3])}</p>;
+function parse(s) { return s.trim(); }
+function load(s) { return parse(s); }
+load(process.argv[2]);
+`, true},
+		{"division after a variable named of", `
+let of = 4; const x = of / 2; const m = require(process.argv[3]); const y = 1 / 3;
+` + tail, true},
+		{"regex holding a quote after export default", `
+export default /'/; const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a spread", `
+function check(s) { return [.../'/.exec(s)]; } const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a spaced less-than", `
+function check(x, s) { return x < /'/.exec(s); } const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a block", `
+function check(s) { if (s) { s = s.trim(); } /'/.test(s); const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after yield", `
+function* g(s) { yield /\//; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after await", `
+async function g(s) { await /\//; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex class holding two slashes after yield", `
+function* g(s) { yield /[//]/; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after of in a for await head", `
+async function g(s) { for await (const x of /\//g.exec(s)) { require(process.argv[3]); } }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after a block", `
+function check(s) { if (s) { s = s.trim(); } /\//.test(s) && require(process.argv[3]); return s; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a quantifier after of in a for await head", `
+async function g(s) { for await (const x of /\d+/g.exec(s)) { require(process.argv[3]); } // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a star after of in a for await head", `
+async function g(s) { for await (const x of /a*/g.exec(s)) { require(process.argv[3]); } // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an equals sign after of in a for await head, then a division", `
+async function g(s) { for await (const x of /=/g.exec(s)) { require(process.argv[3]); } return 1 / 2; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a quantifier after yield", `
+function* g(s) { yield /\d+/; require(process.argv[3]) // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a variable named of divided in a for head", `
+let of = 4;
+for (let i = 0; i < of / 2; i++) require(process.argv[3])(i / 2);
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a spaced JSX closing tag", `
+const A = () => <div>x< /div>; const m = require(process.argv[3]); const B = () => <b>y</b>;
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around a require", `
+function A() { return <p>Don't {require(process.argv[3]).parse("x")} won't</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around an eval", `
+function A(x) { return <p>It's {eval(x)}, isn't it</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around a dynamic import", `
+function A(x) { return <p>We're {import(x)} ready, aren't we</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		// Template, comment and regex text naming a loader is read as code, since a misread
+		// opener can make real code look like text; these over-declare by design.
+		{"loader-call text in a template's literal part", `
+function load(s) { return ^require(process.argv[3]) ${s}^; }
+load(process.argv[2]);
+`, true},
+		{"loader-call text in a multi-line template holding quotes", `
+function load(s) { return ^it's line one
+require(process.argv[3]) "here"
+and ${s.trim()} done^; }
+load(process.argv[2]);
+`, true},
+		{"loader names in a regex body", `
+function load(s) { return /require|import|eval/.test(s) ? s.trim() : s; }
+load(process.argv[2]);
+`, true},
+		{"paired backticks in JSX text", `
+const A = () => <p>Run ^npm i^ first</p>;
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"JSDoc types and prose naming loaders", `
+/**
+ * Loads it. Function that this returns is safe to require.
+ * @param {Function|import('x').T} s the text
+ */
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"string continued across a line", `
+function load(s) { return 'a \
+require(process.argv[3]) b' + s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"constructor of a function tagged flush against a template", `
+const g = function () {};
+function run(s) { return g.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"Function reached as [].constructor.constructor, tagged flush", `
+function run(s) { return [].constructor.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"Function tagged flush against a template", `
+function run(s) { return Function^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"optional constructor of a function tagged flush", `
+const g = function () {};
+function run(s) { return g?.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"new this.constructor tagged flush in a class method called on a function", `
+class A { m(s) { return new this.constructor^a${s}^; } }
+A.prototype.m.call(function () {}, process.argv[3]);
+` + tail, true},
+		{"typeof of require.bind tagged flush, then called", `
+function run(s) { return typeof require.bind^x^(s); }
+run(process.argv[3]);
+` + tail, true},
+		{"typeof of require.bind tagged flush, then called, after a JSX apostrophe", `
+function A(s) { return <p>Don't {typeof require.bind^x^(s)}</p>; }
+A(process.argv[3]);
+` + tail, true},
+		{"negated require.bind tagged flush, then called", `
+function run(s) { return !require.bind^x^(s); }
+run(process.argv[3]);
+` + tail, true},
+		{"a static import between a stray backtick in JSX text and a later template", `
+const A = () => <p>Run ^npm i</p>;
+import m from 'json5';
+function B() { return ^ok^; }
+` + tail, true},
+		{"two JSX apostrophes around process.dlopen", `
+function A(m, p) { return <p>Don't {process.dlopen(m, p)} won't</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"strings holding braces", `
+const t = '{ "a": 1 }';
+const f = "{0} items";
+function load(s) { return s.trim() + t + f; }
+load(process.argv[2]);
+`, false},
+		{"regex holding a quote and a backtick after return", `
+function load(s) { return /[^'"]/.test(s) ? s.trim() : s; }
+load(process.argv[2]);
+`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, edges := gateStoreFromJS(t, strings.ReplaceAll(tc.src, "^", "`"), nil)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			reason, ok := undeterminedReason(store, "a1", json5Package)
+			if tc.held && (!ok || reason != report.ReasonAnalysisDidNotRun) {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+			if !tc.held && ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
+	}
 }

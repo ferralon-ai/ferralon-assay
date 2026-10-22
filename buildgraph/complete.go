@@ -127,13 +127,17 @@ var gradleActionOrigins = []string{
 // gradleResolution is one resolution the root build made, as the init script's listener
 // recorded it.
 type gradleResolution struct {
-	Path      string `json:"path"`
-	Script    bool   `json:"script"` // a project's build script classpath
-	Failure   string `json:"failure"`
-	Artifacts []struct {
-		File    string `json:"file"`
-		Project bool   `json:"project"`
-	} `json:"artifacts"`
+	Path      string           `json:"path"`
+	Script    bool             `json:"script"` // a project's build script classpath
+	Failure   string           `json:"failure"`
+	Artifacts []gradleResolved `json:"artifacts"`
+}
+
+// gradleResolved is one file a resolution resolved.
+type gradleResolved struct {
+	File    string `json:"file"`
+	Project bool   `json:"project"` // a project's
+	Module  bool   `json:"module"`  // a repository module's
 }
 
 // gradleIncomplete lists what keeps g from being Complete: a Gradle build file no project reads;
@@ -141,29 +145,36 @@ type gradleResolution struct {
 // depends on (beside a run alias) or that a task finalizes, an action added from outside the
 // listed packages, or an input file from outside the build that the graph does not hold; and a
 // resolution (a detached configuration, say) that resolved a file the graph does not hold. A
-// build script's own classpath is build logic, a POM file carries no code, a project's build
-// directory holds what the build made from its own sources (a sibling's classes, say) outside any
-// user home, and Gradle's transforms cache holds what it derived from an artifact some resolution
-// resolved (the Kotlin compiler's classpath snapshots).
+// build script's own classpath is build logic, a POM file carries no code, a file that is not a
+// repository module's and sits in a project's build directory, outside any user home or file
+// repository, is what the build made from its own sources (a sibling's classes, say), and
+// Gradle's transforms cache holds what it derived from an artifact some resolution resolved (the
+// Kotlin compiler's classpath snapshots). A repository module's file is never the build's own,
+// wherever the repository placed it.
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)
-	var buildDirs, userHomes, homes []string
+	var buildDirs, foreign, homes []string
 	for _, p := range projects {
 		// A build directory at or above the root would hold the checkout and the caches with it.
 		if rel, ok := realRel(dir, p.BuildDir); p.BuildDir != "" && ok && rel != "." {
 			buildDirs = append(buildDirs, p.BuildDir)
 		}
 		if p.UserHome != "" {
-			userHomes = append(userHomes, p.UserHome)
+			foreign = append(foreign, p.UserHome)
 			homes = append(homes, filepath.Join(p.UserHome, "caches"))
 		}
+		foreign = append(foreign, p.ForeignRoots...)
+		for _, r := range p.OpaqueRepos {
+			reasons = append(reasons, "project "+p.Path+": Ivy repository "+r+" has no URL to place the files it resolves by")
+		}
 	}
-	// A user home inside a build directory holds what Gradle fetched, not what the build made.
+	// A user home or file repository inside a build directory holds what Gradle fetched, not what
+	// the build made.
 	under := func(dirs []string, f string) bool {
 		return slices.ContainsFunc(dirs, func(d string) bool { _, ok := relPath(d, f); return ok })
 	}
-	built := func(f string) bool { return under(buildDirs, f) && !under(userHomes, f) }
+	built := func(f string) bool { return under(buildDirs, f) && !under(foreign, f) }
 	transformed := func(f string) bool {
 		return slices.ContainsFunc(homes, func(c string) bool {
 			rel, ok := relPath(c, f)
@@ -247,7 +258,7 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 			continue
 		}
 		for _, a := range r.Artifacts {
-			if !a.Project && !strings.HasSuffix(a.File, ".pom") && !files[a.File] && !built(a.File) {
+			if !a.Project && !strings.HasSuffix(a.File, ".pom") && !files[a.File] && (a.Module || !built(a.File)) {
 				reasons = append(reasons, "resolution of "+r.Path+" resolved "+a.File+", which no collected configuration lists")
 			}
 		}

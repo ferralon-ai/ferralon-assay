@@ -1,6 +1,7 @@
 package jsanalysis
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -303,11 +304,13 @@ func endsOperand(clean []rune, p int) bool {
 // put any object's Symbol in scope; an escaped identifier may spell Symbol unseen; and an
 // HTML-like comment, which a script reads to the end of its line, may show the scan a
 // token the runtime skips. The scan reads clean, which stripJS lexes by approximation, so
-// the module also counts only when clean shows every Symbol of the source, and every with
-// a parenthesis or comment follows, and hides nothing between a Symbol (or the head of
-// its dotted name) and its neighbouring tokens: whatever stripJS
-// misreads, it then cannot hide a binding of Symbol, nor what binds it. U+FEFF, which is
-// space to the runtime but not to the scan, is refused outright.
+// the module also counts only when no escape in the source spells Symbol, clean shows
+// every Symbol of the source and every with a parenthesis or comment follows, and clean
+// hides nothing between a Symbol (or the head of its dotted name) and its neighbouring
+// tokens. U+FEFF, which is space to the runtime but not to the scan, is refused outright.
+// These checks hold where stripJS reads the module as the runtime does, the bound every
+// check in this lane shares: a module that stripJS misreads can hide a binding of Symbol
+// from them, as it can hide an eval.
 func symbolPlain(clean, src []rune) bool {
 	if text := string(clean); strings.ContainsRune(text, '\\') || strings.Contains(text, "<!--") || strings.Contains(text, "-->") {
 		return false
@@ -370,22 +373,79 @@ func chainHead(clean []rune, i int) int {
 }
 
 // wordsShown reports whether clean shows every Symbol and with word of src, a with as
-// much as a comment that could hide its parenthesis.
+// much as a comment that could hide its parenthesis (`//`, `/*`, `<!--` or `-->`), and
+// whether src spells Symbol with no escape, since stripJS may blank an escape it holds.
 func wordsShown(clean, src []rune) bool {
 	for i := 0; i < len(src); {
-		if !isIdentPart(src[i]) {
+		if !isIdentPart(src[i]) && src[i] != '\\' {
 			i++
 			continue
 		}
-		w, next := readWord(src, i)
-		if (w == "Symbol" || w == "with") && string(clean[i:next]) != w {
-			if q := skipSpace(src, next); w == "Symbol" || q < len(src) && (src[q] == '(' || src[q] == '/') {
+		w, escaped, next := readEscapedWord(src, i)
+		switch {
+		case w == "Symbol" && (escaped || string(clean[i:next]) != w):
+			return false
+		case w == "with" && string(clean[i:next]) != w:
+			if q := skipSpace(src, next); q < len(src) && strings.ContainsRune("(/<-", src[q]) {
 				return false
 			}
 		}
 		i = next
 	}
 	return true
+}
+
+// readEscapedWord reads the identifier at i as the runtime names it, decoding its \uXXXX
+// and \u{...} escapes, and reports whether it held one.
+func readEscapedWord(r []rune, i int) (string, bool, int) {
+	var b strings.Builder
+	start, escaped := i, false
+	for i < len(r) {
+		if isIdentPart(r[i]) {
+			b.WriteRune(r[i])
+			i++
+			continue
+		}
+		c, next, ok := identEscape(r, i)
+		if !ok {
+			break
+		}
+		b.WriteRune(c)
+		escaped, i = true, next
+	}
+	if i == start {
+		return "", false, i + 1
+	}
+	return b.String(), escaped, i
+}
+
+// identEscape decodes the \uXXXX or \u{...} escape at i.
+func identEscape(r []rune, i int) (rune, int, bool) {
+	if i+1 >= len(r) || r[i] != '\\' || r[i+1] != 'u' {
+		return 0, i, false
+	}
+	j, end := i+2, i+6
+	if j < len(r) && r[j] == '{' {
+		j++
+		end = j
+		for end < len(r) && r[end] != '}' {
+			end++
+		}
+		if end == len(r) {
+			return 0, i, false
+		}
+	}
+	if end > len(r) {
+		return 0, i, false
+	}
+	v, err := strconv.ParseUint(string(r[j:end]), 16, 32)
+	if err != nil {
+		return 0, i, false
+	}
+	if r[i+2] == '{' {
+		end++
+	}
+	return rune(v), end, true
 }
 
 // blanked reports whether clean blanks to space any source that is not space in [from, to).

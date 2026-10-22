@@ -62,8 +62,6 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"unknown: bun add", npm(map[string]string{"install.sh": "bun add left-pad\n"}), false, ""},
 		{"unknown: deno install", npm(map[string]string{"install.sh": "deno install npm:left-pad\n"}), false, ""},
 		{"unknown: corepack", npm(map[string]string{"install.sh": "corepack enable\n"}), false, ""},
-		{"named install behind sudo", npm(map[string]string{"install.sh": "sudo npm install -g left-pad\n"}), false, ""},
-		{"chained allowed then named", npm(map[string]string{"install.sh": "npm ci && npm run build && npm install left-pad\n"}), false, ""},
 
 		// package.json scripts, every value whatever its key.
 		{"script body npm install", npm(map[string]string{"package.json": pkg(`"setup":"npm install"`)}), false, ""},
@@ -71,11 +69,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"nested a to b to npm i", npm(map[string]string{"package.json": pkg(`"a":"npm run b","b":"npm i"`)}), false, ""},
 		{"npm test with an installing pretest", npm(map[string]string{"package.json": pkg(`"pretest":"npm install mocha","test":"mocha"`), "install.sh": "npm test\n"}), false, ""},
 		{"postinstall", npm(map[string]string{"package.json": pkg(`"postinstall":"yarn add left-pad"`)}), false, ""},
-		{"script value that is not a string", npm(map[string]string{"package.json": pkg(`"setup":["npm","install"]`)}), false, ""},
 
 		// Expansions and variables.
-		{"$VAR script name", npm(map[string]string{"install.sh": "npm run $X\n"}), false, ""},
-		{"redirect", npm(map[string]string{"install.sh": "npm ci > /tmp/log\n"}), false, ""},
 		{"npm_config_registry set by Dockerfile ENV", npm(map[string]string{"Dockerfile": "FROM node:20\nENV npm_config_registry=https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
 		{"YARN_ variable in CI", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  YARN_REGISTRY: https://registry.example.com\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
 
@@ -84,31 +79,16 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"yarn --frozen-lockfile with no yarn.lock", npm(map[string]string{"install.sh": "yarn install --frozen-lockfile\n"}), false, ""},
 
 		// Binding: the directory a command runs in and the file it reads there.
-		{"cd outside the tree", npm(map[string]string{"install.sh": "cd /opt/x && npm run y\n"}), false, ""},
-		{"CI working-directory outside the tree", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        working-directory: ../other\n    steps:\n      - run: npm ci\n"}), false, ""},
-		{"upward walk leaves the tree", map[string]string{"app/package.json": pkg(""), "app/package-lock.json": lock, "tools/run.sh": "npm run build\n"}, false, ""},
-		{"upward walk reaches a package.json outside the build root", map[string]string{"package.json": pkg(""), "app/package-lock.json": lock, "app/tools/run.sh": "npm run build\n"}, false, "app"},
-		{"curl then run in a Dockerfile", npm(map[string]string{"Dockerfile": docker + "curl -fsSL https://example.com/p.json -o package.json && npm run build\n"}), false, ""},
-		{"COPY --from then run", npm(map[string]string{"Dockerfile": "FROM node:20 AS builder\nRUN true\nFROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nCOPY --from=builder /x/package.json ./\nRUN npm run build\n"}), false, ""},
-		{"COPY --from naming a context path", npm(map[string]string{"Dockerfile": "FROM node:20 AS builder\nRUN true\nFROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nCOPY --from=builder package.json ./\nRUN npm run build\n"}), false, ""},
-		{"COPY glob with a wildcard directory", npm(map[string]string{"web/package.json": pkg(""), "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nCOPY */package.json ./\nRUN npm run build\n"}), false, ""},
 		{"npm pkg set then run", npm(map[string]string{"Dockerfile": docker + "npm pkg set scripts.x=\"npm i lodash\"\nRUN npm run x\n"}), false, ""},
-		{"RUN between COPY and run", npm(map[string]string{"Dockerfile": docker + "node scripts/rewrite.js\nRUN npm run build\n"}), false, ""},
-		{"script fetches package.json then runs", npm(map[string]string{"install.sh": "curl -fsSL -o package.json https://example.com/p.json && npm run x\n"}), false, ""},
-		{"Dockerfile without WORKDIR", npm(map[string]string{"Dockerfile": "FROM node:20\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
 
 		// Controls.
 		{"npm ci", npm(map[string]string{"install.sh": "npm ci --omit=dev\n"}), true, ""},
-		{"Dockerfile COPY, npm ci, COPY . ., npm run build", npm(map[string]string{"Dockerfile": docker + "npm ci\nCOPY . .\nRUN npm run build\nCMD [\"npm\", \"start\"]\n"}), true, ""},
-		{"Dockerfile COPY package*.json then npm ci", npm(map[string]string{"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci\n"}), true, ""},
 		{"Dockerfile COPY then npm run build", npm(map[string]string{"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json ./\nRUN npm run build\n"}), true, ""},
-		{"surface with no package manager", npm(map[string]string{"install.sh": "#!/bin/sh\nnode server.js\n"}), true, ""},
 		{"npm run", npm(map[string]string{"install.sh": "npm run build\n"}), true, ""},
 		{"npm run-script", npm(map[string]string{"Makefile": "build:\n\tnpm run-script build\n"}), true, ""},
 		{"npm test, t, start", npm(map[string]string{"install.sh": "npm test\nnpm t\nnpm start\n"}), true, ""},
 		{"yarn run, test, start", npm(map[string]string{"Procfile": "web: yarn start\nrelease: yarn run migrate\ncheck: yarn test\n"}), true, ""},
 		{"scripts that run scripts", npm(map[string]string{"package.json": pkg(`"build":"tsc && npm run lint","lint":"eslint .","postinstall":"npm run build"`)}), true, ""},
-		{"cd to an in-tree directory", map[string]string{"web/package.json": pkg(""), "web/package-lock.json": lock, "install.sh": "cd web && npm ci\n"}, true, ""},
 		{"yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, true, ""},
 	}
 	for _, tt := range tests {

@@ -135,6 +135,8 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		ev, cr, dyn bool
 	}{
 		{"require between a stray backtick and a template", "a = <p>Run `npm i</p>;\nconst m = require(x);\nb = `ok`;\n", false, true, false},
+		{"prefix require between a stray backtick and a template", "a = <p>Run `npm i</p>;\nconst m = require('./plugins/' + x);\nb = `ok`;\n", false, true, false},
+		{"prefix import() between a stray backtick and a template", "a = <p>Run `npm i</p>;\nconst m = import('./plugins/' + x);\nb = `ok`;\n", false, false, true},
 		{"eval between a stray opener and a comment", "a = <p>src/*</p>;\neval(x);\n/* c */\n", true, false, false},
 		{"import in a comment", "/* import(x) */\n", false, false, true},
 		{"loader alias declared in a comment", "/* const r = require; */\nr(x);\n", false, true, false},

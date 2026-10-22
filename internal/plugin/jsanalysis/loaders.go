@@ -94,7 +94,7 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int, ls *loaderS
 	}
 	switch {
 	case call:
-		mb.loaderCall(clean, src, p, true)
+		mb.loaderCall(clean, src, i, p, false)
 	case p < n && clean[p] == '.':
 		if w, _ := peekWord(clean, skipSpace(clean, p+1)); w != "resolve" {
 			mb.computedReq = true
@@ -154,7 +154,7 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 	}
 	_, end := parseParamArity(clean, p)
 	if q := skipSpace(clean, end); q < len(clean) && clean[q] == '(' {
-		mb.loaderCall(clean, src, q, true)
+		mb.loaderCall(clean, src, i, q, false)
 		return
 	}
 	if _, ok := declBoundName(clean, i); !ok {
@@ -169,21 +169,40 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 // loads is never statically known.
 
 // memberUse records an identifier at i that is a loader entry point: `_load` loads a module
-// as require does and `dlopen` loads a native addon, wherever the name occurs (a member, a
-// destructured key, a local renaming one), since no form of either is known to load only
-// code this lane reads; eval is judged by evaluatorTested.
+// as require does, `dlopen` loads a native addon, `getBuiltinModule` returns any core module
+// (vm and module included) and `_linkedBinding` returns a native binding, wherever the name
+// occurs (a member, a destructured key, a local renaming one) and whatever the receiver,
+// since no form of any is known to load only code this lane reads; eval is judged by
+// evaluatorTested.
 func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
-	switch word {
-	case "_load":
-		mb.computedReq = true
+	if hazardMember(mb, word) {
 		return
-	case "dlopen":
-		mb.nativeLoad = true
+	}
+	if word == "_load" {
+		mb.computedReq = true
 		return
 	}
 	if !evaluatorTested(clean, i, i+len(word)) {
 		mb.evaluated = true
 	}
+}
+
+// hazardMember records a member name that hands back a loader or native internals whatever
+// its receiver: dlopen, getBuiltinModule, _linkedBinding and binding declare an unread native
+// module, mainModule a computed require target. It reports whether name is one. binding and
+// mainModule are common enough as local names that only a member, a destructured key or a
+// literal key counts; the global object reaches a receiver through flows this lane does not
+// track, so the receiver is never judged.
+func hazardMember(mb *moduleBindings, name string) bool {
+	switch name {
+	case "dlopen", "getBuiltinModule", "_linkedBinding", "binding":
+		mb.nativeLoad = true
+	case "mainModule":
+		mb.computedReq = true
+	default:
+		return false
+	}
+	return true
 }
 
 // evaluatorTested reports whether the eval or Function at [i, next) is a member whose value
@@ -891,7 +910,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		switch specifierAt(src, a) {
 		case "require", "createRequire", "_load", "mainModule":
 			mb.computedReq = true
-		case "dlopen", "process":
+		case "dlopen", "process", "getBuiltinModule", "_linkedBinding", "binding":
 			mb.nativeLoad = true
 		case "eval", "Function", "constructor":
 			mb.evaluated = true
@@ -900,6 +919,11 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	}
 	if specifierAt(src, a) == "constructor" && (destructuredLiteralKey(clean, a) || literalArgument(clean, a)) {
 		mb.evaluated = true
+		return
+	}
+	// A quoted or literal computed pattern key naming a hazard member takes it under a local
+	// name whatever the pattern's source (`const { 'getBuiltinModule': gb } = o.g.process`).
+	if destructuredLiteralKey(clean, a) && !interpolated(src, a) && hazardMember(mb, specifierAt(src, a)) {
 		return
 	}
 	if b := skipSpaceBack(clean, a-1); b < 0 || clean[b] != '[' {
@@ -911,7 +935,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	switch specifierAt(src, a) {
 	case "require", "createRequire", "_load":
 		mb.computedReq = true
-	case "dlopen", "process":
+	case "dlopen", "process", "getBuiltinModule", "_linkedBinding", "binding":
 		mb.nativeLoad = true
 	case "mainModule":
 		mb.computedReq = true
@@ -1530,36 +1554,12 @@ func functionGroup(clean []rune, close int) bool {
 	return false
 }
 
-// loaderCall records the argument of a require() (viaRequire) or import() call whose '(' is
-// at open: a string literal that is the whole argument is a specifier the module loads;
-// anything else, including a literal concatenated with a value or a template with an
-// interpolation, is a target computed at run time.
-func (mb *moduleBindings) loaderCall(clean, src []rune, open int, viaRequire bool) {
-	n := len(clean)
-	a := skipSpace(clean, open+1)
-	if a >= n || clean[a] == ')' {
-		return
-	}
-	if clean[a] == '_' && wholeLiteralArg(clean, src, a) {
-		mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, a), viaRequire: viaRequire})
-		return
-	}
-	if viaRequire {
-		mb.computedReq = true
-	} else {
-		mb.dynImport = true
-	}
-}
-
-// wholeLiteralArg reports whether the string literal at a (clean marks it '_') is the entire
-// call argument: the next token closes the call or starts another argument, and a template
-// literal carries no interpolation.
-func wholeLiteralArg(clean, src []rune, a int) bool {
-	e := skipSpace(clean, a+1)
-	if e >= len(clean) || (clean[e] != ')' && clean[e] != ',') {
-		return false
-	}
-	return !interpolated(src, a)
+// loaderCall records the argument of a loader call whose '(' is at open; at is the index
+// of the loader name, kept to find the frame the load runs in. A whole string literal is a
+// specifier the module loads, a literal prefix followed by a runtime value is a static-prefix
+// load, and anything else is a target computed at run time (recordLoad).
+func (mb *moduleBindings) loaderCall(clean, src []rune, at, open int, dyn bool) {
+	recordLoad(clean, src, at, skipSpace(clean, open+1), dyn, mb)
 }
 
 // interpolated reports whether the literal whose opening quote is at src[a] is a template
@@ -1650,8 +1650,8 @@ type loaderScope struct {
 func newLoaderScope(clean []rune, globals *globalScope) *loaderScope {
 	ls := &loaderScope{globals: globals}
 	ls.req, ls.cr = loaderNames(clean)
-	ls.module = objectAliases(clean, "module", moduleMember, moduleKey)
-	ls.process = objectAliases(clean, "process", processMember, processKey)
+	ls.module = objectAliases(clean, "module", moduleMember, moduleKey, globals)
+	ls.process = objectAliases(clean, "process", processMember, processKey, globals)
 	return ls
 }
 
@@ -1726,13 +1726,16 @@ func moduleKey(name string) bool {
 	return false
 }
 
-// processMember accepts every member of process but dlopen, which loads a native addon, and
-// mainModule, the main module object.
+// processMember accepts every member of process but those that hand back a loader or native
+// internals: dlopen, which loads a native addon; binding and _linkedBinding, which return
+// native bindings (contextify's ContextifyScript and compileFunction evaluate code);
+// mainModule, the main module object; and getBuiltinModule, which returns any core module,
+// vm and module included.
 func processMember(_ []rune, name string, _ int) (bool, bool) {
 	switch name {
-	case "dlopen":
+	case "dlopen", "binding", "_linkedBinding":
 		return false, true
-	case "mainModule":
+	case "mainModule", "getBuiltinModule":
 		return false, false
 	}
 	return true, false
@@ -1758,13 +1761,45 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 	start := i
 	if b >= 0 && clean[b] == '.' && !(b >= 1 && clean[b-1] == '.') {
 		s, ok := globalMember(clean, b, globals)
+		if p < n && clean[p] == '(' || optionalCall(clean, p) {
+			// Neither process nor the module object is a function, so a call is never of them.
+			return
+		}
 		if !ok {
-			return // a property of that name on another object
+			// The global object reaches a receiver through flows this lane does not track
+			// (`o.g.process` with `o = { g: globalThis }`), so any `.process` read counts as
+			// process whatever the receiver. Writing the property reads nothing. A `.module`
+			// off another object is a property of that name.
+			if !obj.names["process"] || string(clean[i:next]) != "process" || plainAssignTarget(clean, p) {
+				return
+			}
+			if s = receiverStart(clean, memberDot(clean, b)); s < 0 {
+				s = i
+			}
 		}
 		start = s
 		if objectTested(clean, s, next, skipSpaceBack(clean, s-1)) || negatedGroupTail(clean, s, p) {
 			return
 		}
+	} else if v, ok := globalPatternKey(clean, b, p, globals); ok {
+		// `{ process: pr } = globalThis` reads the object itself: a renaming local is an alias
+		// (objectAliases) and a nested pattern is judged like a whole destructure.
+		if obj.tails[v] || clean[v] == '{' && patternKeysAccepted(clean, v, matchingClose(clean, v), obj) {
+			return
+		}
+		if obj.names["process"] {
+			mb.nativeLoad = true
+			return
+		}
+		mb.computedReq = true
+		return
+	} else if objectKey(clean, b, p) && patternKeyUnclassified(clean, i, globals) {
+		if obj.names["process"] {
+			mb.nativeLoad = true
+			return
+		}
+		mb.computedReq = true
+		return
 	} else if obj.tails[i] || bindingSite(clean, i, next, b, p) || objectTested(clean, i, next, b) || negatedGroupTail(clean, i, p) {
 		return
 	}
@@ -1809,19 +1844,94 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 	mb.computedReq = true
 }
 
-// globalMember reports whether the '.' at b reads a property of the global object
-// (`global.process`), which is the object itself rather than a property of that name, and
-// where that receiver starts.
+// plainAssignTarget reports whether the token at p is a plain `=`, so the expression before
+// it is the target of an assignment rather than read.
+func plainAssignTarget(clean []rune, p int) bool {
+	return p < len(clean) && clean[p] == '=' && !(p+1 < len(clean) && (clean[p+1] == '=' || clean[p+1] == '>'))
+}
+
+// processComputedKey reports whether a receiver derived from process (a name tracked as
+// process, or any `.process` member) is read by a key this lane does not know: a computed
+// member whose key is not one whole literal (`pr['getBuiltin' + 'Module']`), or the key of
+// Reflect.get, Reflect.getOwnPropertyDescriptor or Object.getOwnPropertyDescriptor when it
+// is not one whole literal. It judges the key alone, independent of objectUse.
+func processComputedKey(clean, src []rune, names map[string]bool) bool {
+	n := len(clean)
+	derived := func(k int) bool { // the receiver ends at k
+		if k < 0 || !isIdentPart(clean[k]) {
+			return false
+		}
+		w, s := wordBefore(clean, k)
+		if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' && !(d >= 1 && clean[d-1] == '.') {
+			return w == "process"
+		}
+		return names[w]
+	}
+	for p := 0; p < n; p++ {
+		switch clean[p] {
+		case '[':
+			if !computedKey(clean, src, p) {
+				continue
+			}
+			if op, ok := indexOperator(clean, p); ok && derived(skipSpaceBack(clean, op-1)) {
+				return true
+			}
+		case '(':
+			method, s := wordBefore(clean, skipSpaceBack(clean, p-1))
+			d := skipSpaceBack(clean, s-1)
+			if d < 0 || clean[d] != '.' {
+				continue
+			}
+			recv, _ := wordBefore(clean, skipSpaceBack(clean, memberDot(clean, d)-1))
+			if !(recv == "Reflect" && (method == "get" || method == "getOwnPropertyDescriptor") ||
+				recv == "Object" && method == "getOwnPropertyDescriptor") {
+				continue
+			}
+			c := topLevelComma(clean, p)
+			if c < 0 || !derived(skipSpaceBack(clean, c-1)) {
+				continue
+			}
+			a := skipSpace(clean, c+1)
+			e := skipSpace(clean, a+1)
+			whole := a < n && clean[a] == '_' && src[a] != '_' && e < n && (clean[e] == ',' || clean[e] == ')') && !interpolated(src, a)
+			if !whole {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// topLevelComma returns the position of the first comma directly inside the parenthesis
+// opening at o, or -1 when it closes first.
+func topLevelComma(clean []rune, o int) int {
+	depth := 0
+	for k := o + 1; k < len(clean); k++ {
+		switch clean[k] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return -1
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				return k
+			}
+		}
+	}
+	return -1
+}
+
+// globalMember reports whether the '.' at b may read a property of the global object, which
+// is the object itself rather than a property of that name, and where that receiver starts:
+// a name that resolves to the global, a chain of global names off one
+// (`global.globalThis.process`), or a receiver ending in a group, call or index
+// (`(globalThis).process`, `(0, globalThis).process`), whose value this lane does not know.
+// A property of a plain name (`queue.process`) is not one.
 func globalMember(clean []rune, b int, globals *globalScope) (int, bool) {
-	k := skipSpaceBack(clean, memberDot(clean, b)-1)
-	if k < 0 || !isIdentPart(clean[k]) {
-		return 0, false
-	}
-	w, s := wordBefore(clean, k)
-	if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
-		return 0, false
-	}
-	return s, isGlobalBase(w) || globals.isGlobal(w, s)
+	return globals.globalChain(clean, memberDot(clean, b), true)
 }
 
 // negatedGroupTail reports whether the operand starting at start and ending before p is the
@@ -1943,7 +2053,16 @@ func destructuredWhole(clean []rune, b, next int, obj *loaderObject) bool {
 	if open < 0 {
 		return false
 	}
-	depth = 0
+	return patternKeysAccepted(clean, open, c, obj)
+}
+
+// patternKeysAccepted reports whether every top-level key of the pattern between the braces
+// at open and c is one obj accepts.
+func patternKeysAccepted(clean []rune, open, c int, obj *loaderObject) bool {
+	if c < 0 {
+		return false
+	}
+	depth := 0
 	expectKey := true
 	for k := open + 1; k < c; k++ {
 		switch r := clean[k]; {
@@ -1986,7 +2105,7 @@ func valueTail(clean []rune, next int) bool {
 // tracked as the whole value or the last operand of an &&, || or ?? chain
 // (`var freeModule = typeof module == 'object' && module`). Uses of such a local are judged
 // as uses of the object; an alias of an alias is followed too.
-func objectAliases(clean []rune, base string, member func([]rune, string, int) (bool, bool), key func(string) bool) loaderObject {
+func objectAliases(clean []rune, base string, member func([]rune, string, int) (bool, bool), key func(string) bool, globals *globalScope) loaderObject {
 	obj := loaderObject{names: map[string]bool{base: true}, tails: map[int]bool{}, member: member, key: key}
 	n := len(clean)
 	for changed := true; changed; {
@@ -1997,6 +2116,17 @@ func objectAliases(clean []rune, base string, member func([]rune, string, int) (
 				continue
 			}
 			word, next := readWord(clean, i)
+			if word == base {
+				if v, ok := globalPatternKey(clean, skipSpaceBack(clean, i-1), skipSpace(clean, next), globals); ok && !obj.tails[v] {
+					if name, e := readWord(clean, v); isIdentStart(clean[v]) && clean[v] != '_' && patternValueEnds(clean, e) {
+						obj.tails[v] = true
+						if !obj.names[name] {
+							obj.names[name] = true
+							changed = true
+						}
+					}
+				}
+			}
 			if obj.names[word] && !obj.tails[i] && !memberName(clean, i) {
 				if name, ok := aliasOf(clean, i, next); ok {
 					obj.tails[i] = true
@@ -2010,6 +2140,214 @@ func objectAliases(clean []rune, base string, member func([]rune, string, int) (
 		}
 	}
 	return obj
+}
+
+// globalPatternKey reports whether the name between the token ending at b and the one
+// starting at p is a top-level key of a destructuring pattern whose source is the global
+// object (`const { process: pr } = globalThis`), and returns where the key's value starts.
+func globalPatternKey(clean []rune, b, p int, globals *globalScope) (int, bool) {
+	if !objectKey(clean, b, p) {
+		return 0, false
+	}
+	depth, open := 0, -1
+	for k := b; k >= 0 && open < 0; k-- {
+		switch clean[k] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[':
+			if depth == 0 {
+				return 0, false
+			}
+			depth--
+		case '{':
+			if depth == 0 {
+				open = k
+			}
+			depth--
+		}
+	}
+	c := matchingClose(clean, open)
+	if c < 0 {
+		return 0, false
+	}
+	q := skipSpace(clean, c+1)
+	if q >= len(clean) || clean[q] != '=' || q+1 < len(clean) && (clean[q+1] == '=' || clean[q+1] == '>') {
+		return 0, false
+	}
+	s := skipSpace(clean, q+1)
+	if s >= len(clean) || !isIdentStart(clean[s]) || clean[s] == '_' {
+		return 0, false
+	}
+	w, e := readWord(clean, s)
+	if !valueTail(clean, e) || !globals.isGlobal(w, s) {
+		return 0, false
+	}
+	return skipSpace(clean, p+1), true
+}
+
+// patternKeyUnclassified reports whether the object key at i sits in a destructuring pattern
+// whose source this lane cannot show is not the global object. Only a top-level key of a
+// pattern declared or assigned from a bare name that does not resolve to the global is
+// classified (`const { process: pr } = opts`); a pattern off the global by name is judged by
+// globalPatternKey first. Any other source is not: a group, comma, ??, ||, ternary, call or
+// member chain, an enclosing pattern (`{ globalThis: { process: pr } } = globalThis`), a
+// parameter, whose value is what a caller passes, and a for-of or for-in head.
+func patternKeyUnclassified(clean []rune, i int, globals *globalScope) bool {
+	o := enclosingOpen(clean, i)
+	if o < 0 || clean[o] != '{' {
+		return false
+	}
+	src, end, pattern := patternSource(clean, o)
+	return pattern && !(src >= 0 && plainSource(clean, src, end, globals))
+}
+
+// patternKeys declares a quoted or computed key that may read process or the module object
+// in a destructuring pattern whose source patternKeyUnclassified cannot classify: a quoted
+// key spelled process or module, a computed key whose whole literal is one of them, and a
+// computed key of any other expression, whose value may be either.
+func (mb *moduleBindings) patternKeys(clean, src []rune, globals *globalScope) {
+	n := len(clean)
+	for k := 0; k < n; k++ {
+		if clean[k] != '_' && clean[k] != '[' || clean[k] == '_' && (k >= len(src) || src[k] == '_') {
+			continue
+		}
+		b := skipSpaceBack(clean, k-1)
+		if b < 0 || clean[b] != '{' && clean[b] != ',' {
+			continue
+		}
+		key, e := "", k
+		if clean[k] == '[' {
+			e = closeBracket(clean, k)
+			if a := skipSpace(clean, k+1); a < n && clean[a] == '_' && a < len(src) && src[a] != '_' && wholeKey(clean, src, a) {
+				key = specifierAt(src, a)
+				if key != "process" && key != "module" {
+					continue
+				}
+			}
+		} else {
+			key = specifierAt(src, k)
+			if key != "process" && key != "module" {
+				continue
+			}
+		}
+		q := skipSpace(clean, e+1)
+		if q >= n || clean[q] != ':' || q+1 < n && clean[q+1] == ':' || !patternKeyUnclassified(clean, k, globals) {
+			continue
+		}
+		if key == "module" {
+			mb.computedReq = true
+		} else {
+			mb.nativeLoad = true
+		}
+	}
+}
+
+// patternSource reports whether the object brace at o opens a destructuring pattern, and
+// returns the start and end of the source it is declared or assigned from when o is the
+// pattern's outermost level and that source is the pattern's whole value; otherwise src is
+// -1. A brace that is an object literal, a TypeScript type literal or a block is no pattern.
+func patternSource(clean []rune, o int) (src, end int, pattern bool) {
+	n := len(clean)
+	top := true
+	for {
+		c := closeOf(clean, o)
+		if c >= n {
+			return -1, -1, false
+		}
+		q := skipSpace(clean, c+1)
+		if top && q < n && clean[q] == ':' && !(q+1 < n && clean[q+1] == ':') {
+			q = skipSpace(clean, typeEnd(clean, q+1)) // `const { ... }: T = src`
+		}
+		if w, _ := peekWord(clean, q); w == "of" || w == "in" {
+			return -1, -1, true // a for-of or for-in head
+		}
+		assign := q < n && clean[q] == '=' && !(q+1 < n && (clean[q+1] == '=' || clean[q+1] == '>'))
+		from := func() (int, int, bool) {
+			if top && assign {
+				return skipSpace(clean, q+1), initEnd(clean, q+1), true
+			}
+			return -1, -1, true
+		}
+		bb := skipSpaceBack(clean, o-1)
+		if w, _ := wordBefore(clean, bb); w == "const" || w == "let" || w == "var" {
+			return from()
+		}
+		o2 := enclosingOpen(clean, o)
+		switch {
+		case bb < 0 || o2 < 0:
+			if clean[o] == '[' && assign {
+				return from()
+			}
+			return -1, -1, false
+		case clean[bb] == ':' && clean[o2] == '{':
+			// the value of a key in an enclosing pattern, or of a property in an object literal
+		case (clean[bb] == ',' || clean[bb] == '[') && clean[o2] == '[':
+			// an element of an enclosing array pattern, or of an array literal
+		case (clean[bb] == ',' || clean[bb] == '(') && clean[o2] == '(':
+			if parameterList(clean, o2) {
+				return -1, -1, true
+			}
+			if clean[bb] == '(' && assign {
+				return from() // `({ ... } = src)`
+			}
+			return -1, -1, false
+		default:
+			if clean[o] == '[' && assign && strings.ContainsRune(";{}", clean[bb]) {
+				return from() // `[a, { ... }] = src` as a statement
+			}
+			return -1, -1, false
+		}
+		o, top = o2, false
+	}
+}
+
+// plainSource reports whether clean[src:end] is a bare name that does not resolve to the
+// global object and is the whole source.
+func plainSource(clean []rune, src, end int, globals *globalScope) bool {
+	if src >= len(clean) || !isIdentStart(clean[src]) || clean[src] == '_' {
+		return false
+	}
+	w, e := readWord(clean, src)
+	if w == "this" || w == "super" || isGlobalBase(w) || globals.isGlobal(w, src) {
+		return false
+	}
+	return skipSpace(clean, e) >= end || valueTail(clean, e)
+}
+
+// matchingClose returns the index of the brace closing the one at open, or -1.
+func matchingClose(clean []rune, open int) int {
+	if open < 0 || open >= len(clean) || clean[open] != '{' {
+		return -1
+	}
+	depth := 0
+	for k := open; k < len(clean); k++ {
+		switch clean[k] {
+		case '{', '(', '[':
+			depth++
+		case '}', ')', ']':
+			depth--
+			if depth == 0 {
+				return k
+			}
+		}
+	}
+	return -1
+}
+
+// patternValueEnds reports whether a pattern element's value ending at e is a plain binding:
+// the next token ends the element, closes the pattern or starts a default value.
+func patternValueEnds(clean []rune, e int) bool {
+	q := skipSpace(clean, e)
+	if q >= len(clean) {
+		return false
+	}
+	switch clean[q] {
+	case ',', '}':
+		return true
+	case '=':
+		return !(q+1 < len(clean) && (clean[q+1] == '=' || clean[q+1] == '>'))
+	}
+	return false
 }
 
 // aliasOf returns NAME when the identifier at [i, next) is the value of the initialiser of

@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"slices"
+	"sort"
 	"unicode"
 )
 
@@ -74,6 +75,7 @@ type parseResult struct {
 	calls     []callSite
 	ingresses []ingressMarker
 	bindings  moduleBindings // import/require/export-from bindings + instances (resolve.go input)
+	escapes   fileEscapes    // which declared functions are escape roots (escape.go)
 	skipped   bool
 }
 
@@ -424,11 +426,23 @@ func parseFile(module, src string) parseResult {
 	res := parseResult{module: module}
 
 	res.decls = parseDecls(r)
-	res.calls, res.ingresses = parseCallsAndIngresses(r)
 	// Binding extraction scans the cleaned runes for structure and reads specifier
 	// literals from the position-identical raw source (stripJS is length-preserving).
 	res.bindings = extractModuleBindings(r, raw)
 	res.bindings.addLoads(hiddenLoads(r, raw, hidden))
+	sort.SliceStable(res.bindings.prefixLoads, func(a, b int) bool {
+		return res.bindings.prefixLoads[a].pos < res.bindings.prefixLoads[b].pos
+	})
+	probes := make([]int, len(res.bindings.prefixLoads))
+	for k, pl := range res.bindings.prefixLoads {
+		probes[k] = pl.pos
+	}
+	var frames []frameRef
+	res.calls, res.ingresses, frames = parseCallsAndIngressesProbing(r, probes)
+	for k := range res.bindings.prefixLoads {
+		res.bindings.prefixLoads[k].caller = frames[k]
+	}
+	res.escapes = scanEscapes(r, raw, res.decls)
 	return res
 }
 

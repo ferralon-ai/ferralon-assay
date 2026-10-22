@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -141,6 +142,22 @@ func wantErr(t *testing.T, dir, rel string, want error, lstat ...bool) {
 	if _, err := stat(filepath.Join(dir, filepath.FromSlash(rel))); !errors.Is(err, want) {
 		t.Fatalf("stat %s: %v, want %v", rel, err, want)
 	}
+}
+
+// physicallyDeep returns a short path under dir to a directory whose real path is longer
+// than PATH_MAX: each level is a short symlink to a long sibling directory, so the kernel
+// resolves the short path one link at a time, but resolving its real path as a string fails
+// with ENAMETOOLONG.
+func physicallyDeep(t *testing.T, dir string) string {
+	t.Helper()
+	comp := strings.Repeat("d", 250)
+	logical := ""
+	for i := 0; i < 20; i++ {
+		mkdir(t, dir, path.Join(logical, comp))
+		link(t, dir, path.Join(logical, "l"), comp)
+		logical = path.Join(logical, "l")
+	}
+	return filepath.Join(dir, filepath.FromSlash(logical))
 }
 
 // wantListErr fails the row unless listing the directory rel under dir fails with want.
@@ -301,6 +318,58 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		}
 	}
 
+	// importKeepsLimit checks whether a dynamic import of x keeps dynamic_import_specifier,
+	// which follows from the package.json installedManifest finds for x.
+	importKeepsLimit := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != want {
+				t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonDynamicImportSpecifier, got, want, res.Partiality.Reasons)
+			}
+		}
+	}
+	const loadX = "async function load(s) { const m = await import('x'); return m.parse(s); }\nload(process.argv);\n"
+	const plainX = `{"name":"x","exports":{"import":"./i.js","default":"./i.js"}}`
+	importX := func(extra map[string]string) map[string]string {
+		m := map[string]string{"package.json": `{"name":"app"}`, "app.js": loadX}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	// shadowKeepsLimit checks uninspectable_package on a require of cfg, a bare specifier a
+	// tsconfig paths alias claims, which follows from what nodeModulesHas finds for cfg.
+	shadowKeepsLimit := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonUninspectablePackage); got != want {
+				t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonUninspectablePackage, got, want, res.Partiality.Reasons)
+			}
+		}
+	}
+	shadowedCfg := func(extra map[string]string) map[string]string {
+		m := map[string]string{
+			"package.json":  `{"name":"app"}`,
+			"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":    "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"app.js":        "const m = require('cfg');\nfunction load(s) { return m.parse(s); }\nload(process.argv);\n",
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	// longReal, the logical build dir of the ENAMETOOLONG row, is set by its fault.
+	var longReal string
+
 	type row struct {
 		name  string
 		files map[string]string
@@ -311,6 +380,55 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		site string
 		rows []row
 	}{
+		{"installedManifest", []row{
+			{"EACCES", importX(map[string]string{"node_modules/x/package.json": plainX}), func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules", "x"))
+				wantErr(t, dir, "node_modules/x/package.json", os.ErrPermission, true)
+			}, importKeepsLimit(true)},
+			{"EACCES on a nested copy that shadows a readable one", map[string]string{
+				"package.json":                    `{"name":"app"}`,
+				"src/app.js":                      loadX,
+				"src/node_modules/x/package.json": plainX,
+				"node_modules/x/package.json":     plainX,
+			}, func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "src", "node_modules", "x"))
+				wantErr(t, dir, "src/node_modules/x/package.json", os.ErrPermission, true)
+			}, importKeepsLimit(true)},
+			{"ELOOP", importX(nil), func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules/x")
+				wantErr(t, dir, "node_modules/x/package.json", syscall.ELOOP, true)
+			}, importKeepsLimit(true)},
+			{"ENOTDIR", importX(map[string]string{"node_modules/x": "not a directory"}), func(t *testing.T, dir string) {
+				wantErr(t, dir, "node_modules/x/package.json", syscall.ENOTDIR, true)
+			}, importKeepsLimit(false)},
+			{"missing", importX(nil), func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules/x")
+			}, importKeepsLimit(false)},
+		}},
+		{"nodeModulesHas", []row{
+			{"EACCES", shadowedCfg(map[string]string{"node_modules/other/package.json": `{"name":"other"}`}), func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable
+				wantErr(t, dir, "node_modules/cfg", os.ErrPermission, true)
+			}, shadowKeepsLimit(true)},
+			{"ELOOP", shadowedCfg(nil), func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules")
+				wantErr(t, dir, "node_modules/cfg", syscall.ELOOP, true)
+			}, shadowKeepsLimit(true)},
+			{"missing", shadowedCfg(nil), func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules")
+			}, shadowKeepsLimit(false)},
+			{"ELOOP above the build root", shadowedCfg(nil), func(t *testing.T, dir string) {
+				loop(t, filepath.Dir(dir), "node_modules")
+				wantErr(t, filepath.Dir(dir), "node_modules/cfg", syscall.ELOOP, true)
+			}, shadowKeepsLimit(true)},
+			{"ENAMETOOLONG resolving the real path of the importer", nil, func(t *testing.T, dir string) {
+				longReal = filepath.Join(physicallyDeep(t, dir), "app")
+				writeFiles(t, longReal, shadowedCfg(nil))
+				if _, err := filepath.EvalSymlinks(longReal); !errors.Is(err, syscall.ENAMETOOLONG) {
+					t.Fatalf("EvalSymlinks: %v, want %v", err, syscall.ENAMETOOLONG)
+				}
+			}, func(t *testing.T, _ string) { shadowKeepsLimit(true)(t, longReal) }},
+		}},
 		{"installedPackage package dir", []row{
 			{"EACCES", with(map[string]string{"node_modules/absent-package/package.json": `{"name":"absent-package"}`}), func(t *testing.T, dir string) {
 				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable

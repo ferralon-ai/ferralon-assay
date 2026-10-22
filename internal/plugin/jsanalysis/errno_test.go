@@ -221,6 +221,27 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		}
 	}
 
+	// memberTree is a workspace whose member foo a.js requires; node_modules exists but holds
+	// no copy of foo.
+	memberTree := map[string]string{
+		"package.json":              `{"name":"app","workspaces":["packages/*"]}`,
+		"packages/foo/package.json": `{"name":"foo"}`,
+		"packages/foo/index.js":     js,
+		"a.js":                      "const foo = require('foo');\n",
+		"node_modules/.keep":        "",
+	}
+	memberShadowed := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			prog := mustLoad(t, dir)
+			if prog == nil {
+				return
+			}
+			if got := prog.resolver().loadsOutOfTree("a.js", "foo", true); got != want {
+				t.Errorf("loadsOutOfTree = %v, want %v", got, want)
+			}
+		}
+	}
+
 	type row struct {
 		name  string
 		files map[string]string
@@ -357,6 +378,19 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 				wantListErr(t, dir, "packages", os.ErrPermission)
 			}, manifestsRead("", false)},
 			{"missing", nil, nil, manifestsRead("missing", true)},
+		}},
+		{"memberShadowed node_modules candidate", []row{
+			{"EACCES", memberTree, func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable
+				wantErr(t, dir, "node_modules/foo.js", os.ErrPermission, true)
+			}, memberShadowed(true)},
+			{"ELOOP", memberTree, func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules/foo")
+				wantErr(t, dir, "node_modules/foo", syscall.ELOOP)
+			}, memberShadowed(true)},
+			{"missing", memberTree, func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules/foo")
+			}, memberShadowed(false)},
 		}},
 		{"installCommand lockfile", []row{
 			{"EACCES", map[string]string{"package.json": `{"name":"app"}`}, func(t *testing.T, dir string) {

@@ -989,6 +989,72 @@ func TestUndeterminedReason_JSStylesheetImport(t *testing.T) {
 	}
 }
 
+// TestUndeterminedReason_JSWorkspaceMemberShadow: a bare specifier naming a workspace member
+// runs the member's code only when Node's node_modules walk from the importer finds the member
+// itself, through a symlink to its directory, or finds nothing. A real directory or file under
+// the name, nearer to the importer or at the root, or a symlink to another directory, is
+// different code Node loads instead, and the verdict is held. So is a candidate that cannot be
+// followed.
+func TestUndeterminedReason_JSWorkspaceMemberShadow(t *testing.T) {
+	const src = "const j = require('foo');\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+	const viaSrc = "const j = require('./src/app');\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+	installed := map[string]string{
+		"package.json": `{"name":"foo","version":"9.9.9"}`,
+		"index.js":     "const JSON5 = require('json5');\nmodule.exports = { parse: (s) => JSON5.parse(s) };\n",
+	}
+	tree := func(installedAt ...string) map[string]string {
+		files := map[string]string{
+			"package.json":              `{"name":"fixture","workspaces":["packages/*"],"dependencies":{"json5":"2.2.1"}}`,
+			"packages/foo/package.json": `{"name":"foo","version":"1.0.0"}`,
+			"packages/foo/index.js":     "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"src/app.js":                "module.exports = require('foo');\n",
+		}
+		for _, at := range installedAt {
+			for name, body := range installed {
+				files[at+"/"+name] = body
+			}
+		}
+		return files
+	}
+	withFile := func(files map[string]string, name, body string) map[string]string {
+		files[name] = body
+		return files
+	}
+	member := map[string]string{"node_modules/foo": "../packages/foo"}
+	cases := []struct {
+		name  string
+		src   string
+		files map[string]string
+		links map[string]string // symlink path to its target
+		held  bool
+	}{
+		{"an installed copy at the root", src, tree("node_modules/foo"), nil, true},
+		{"an installed copy nearer the importer than the member's link", viaSrc, tree("src/node_modules/foo"), member, true},
+		{"a link to another directory", src, tree("vendor/foo"), map[string]string{"node_modules/foo": "../vendor/foo"}, true},
+		{"a file Node tries before the member's link", src, withFile(tree(), "node_modules/foo.js", installed["index.js"]), member, true},
+		{"a link that loops", src, tree(), map[string]string{"node_modules/foo": "foo"}, true},
+		{"the member's link at the root", src, tree(), member, false},
+		{"the member's link reached from a nested importer", viaSrc, tree(), member, false},
+		{"no installed copy", src, tree(), nil, false},
+		{"a dangling link", src, tree(), map[string]string{"node_modules/foo": "../gone"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, edges := gateStoreFromJSLinked(t, tc.src, tc.files, tc.links)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			reason, ok := undeterminedReason(store, "a1", json5Package)
+			if tc.held && (!ok || reason != report.ReasonAnalysisDidNotRun) {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+			if !tc.held && ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
+	}
+}
+
 // json5Package is the package the gate assesses: the dependency every program loads or could.
 var json5Package = &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.2.1", PURL: "pkg:npm/json5@2.2.1"}
 
@@ -996,6 +1062,13 @@ var json5Package = &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.
 // entries), runs the JS producer over it, and stores the call graph and reachability
 // partiality, run-wide and scoped, as the reachability and exposure-footprint artifacts.
 func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifact.MemStore, int) {
+	t.Helper()
+	return gateStoreFromJSLinked(t, src, files, nil)
+}
+
+// gateStoreFromJSLinked is gateStoreFromJS with symlinks added to the tree, each at its path
+// pointing to its target as written.
+func gateStoreFromJSLinked(t *testing.T, src string, files, links map[string]string) (*artifact.MemStore, int) {
 	t.Helper()
 	dir := t.TempDir()
 	tree := map[string]string{
@@ -1013,6 +1086,15 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 		}
 		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
+		}
+	}
+	for name, target := range links {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, p); err != nil {
+			t.Skipf("symlink: %v", err)
 		}
 	}
 	ctx := context.Background()

@@ -199,7 +199,7 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		return false
 	}
 	dir, mm, sub, ok := rs.workspaceMember(spec)
-	if !ok {
+	if !ok || rs.memberShadowed(fromModule, mm.name, dir) {
 		return true
 	}
 	var targets []string
@@ -779,6 +779,55 @@ func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, 
 		}
 	}
 	return "", nil, "", false
+}
+
+// memberShadowed reports whether Node's node_modules walk from fromModule's directory up to the
+// build root finds, for package name, something other than the workspace member at memberDir.
+// The first directory holding a candidate decides: a file Node's CommonJS LOAD_AS_FILE would
+// try, or a real directory, is different code; a symlink is the member only when its target's
+// real path is the member directory's. A candidate that cannot be stat'ed or followed, for any
+// reason but a missing path, counts as shadowing. A walk that finds nothing leaves the member.
+func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
+		return true
+	}
+	memberReal, err := filepath.EvalSymlinks(filepath.Join(rs.prog.root, filepath.FromSlash(memberDir)))
+	if err != nil {
+		return true
+	}
+	dir := path.Dir(fromModule)
+	for {
+		if dir == "." {
+			dir = ""
+		}
+		if path.Base(dir) != "node_modules" {
+			base := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name))
+			for _, ext := range []string{".js", ".json", ".node"} {
+				if _, err := os.Lstat(base + ext); err == nil || !absent(err) {
+					return true
+				}
+			}
+			fi, err := os.Lstat(base)
+			switch {
+			case err != nil && !absent(err):
+				return true
+			case err == nil && fi.Mode()&os.ModeSymlink == 0:
+				return true
+			case err == nil:
+				real, err := filepath.EvalSymlinks(base)
+				if err == nil {
+					return real != memberReal
+				}
+				if !absent(err) {
+					return true
+				}
+			}
+		}
+		if dir == "" {
+			return false
+		}
+		dir = path.Dir(dir)
+	}
 }
 
 func (rs *resolver) rootManifest() (*pkgManifest, bool) {

@@ -32,8 +32,9 @@ func TestGoModuleAxisHonoursReplace(t *testing.T) {
 			wantReason:  ReasonInsufficient,
 		},
 		{
+			// The module-wide decoy comes first, so precedence cannot fall out of file order.
 			name:        "E1b a replace naming the required version wins over the module-wide one",
-			replace:     "replace golang.org/x/text v0.3.8 => golang.org/x/text v0.3.6\n\nreplace golang.org/x/text => golang.org/x/text v0.3.8\n",
+			replace:     "replace golang.org/x/text => golang.org/x/text v0.3.8\n\nreplace golang.org/x/text v0.3.8 => golang.org/x/text v0.3.6\n",
 			wantVersion: "v0.3.6",
 			wantReason:  ReasonInsufficient,
 		},

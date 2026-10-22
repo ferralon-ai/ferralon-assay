@@ -183,6 +183,10 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"CI working-directory outside the tree", tree(map[string]string{".github/workflows/ci.yml": ci("../other", "inst sync")}), true, ""},
 		{"upward walk leaves the tree", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "tools/run.sh": "inst sync\n"}, true, ""},
 		{"upward walk reaches a manifest outside the build root", tree(map[string]string{"app/reqs.txt": "x==1\n", "app/tools/run.sh": "inst run build\n"}), true, "app"},
+		{"sources an extensionless file", tree(map[string]string{"install.sh": ". ./scripts/prod\ninst sync\n", "scripts/prod": "inst add x\n"}), true, ""},
+		{"sources a file that is not a surface", tree(map[string]string{"install.sh": "source ./scripts/prod.inc\ninst sync\n", "scripts/prod.inc": "inst add x\n"}), true, ""},
+		{"sources a file named by a variable", tree(map[string]string{"install.sh": ". ./scripts/$ENV.sh\ninst sync\n", "scripts/prod.sh": "echo\n"}), true, ""},
+		{"sources a file in a directory the walk skips", tree(map[string]string{"install.sh": ". node_modules/x/env.sh\ninst sync\n", "node_modules/x/env.sh": "inst add x\n"}), true, ""},
 		{"script fetches the file it installs", tree(map[string]string{"install.sh": "curl -fsSL -o inst.toml https://example.com/x\ninst sync\n"}), true, ""},
 
 		// Binding in a Dockerfile.
@@ -206,6 +210,7 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"allowed forms", tree(map[string]string{"Makefile": "deps:\n\tinst sync -q\n\tinst install -r reqs.txt\n\tinst run build\n"}), false, ""},
 		{"package.json script running an allowed form", tree(map[string]string{"package.json": `{"scripts":{"build":"inst run build"}}`}), false, ""},
 		{"run wrapper", tree(map[string]string{"Procfile": "web: instw run serve\n"}), false, ""},
+		{"sources an in-tree script", tree(map[string]string{"install.sh": ". ./env.sh\ninst sync\n", "env.sh": "export A=1\n"}), false, ""},
 		{"cd to an in-tree directory", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "install.sh": "cd app && inst sync\n"}, false, ""},
 		{"CI working-directory in the tree", tree(map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", ".github/workflows/ci.yml": ci("app", "inst sync")}), false, ""},
 		{"Dockerfile COPY, install, COPY . ., run", tree(map[string]string{"Dockerfile": docker + "inst sync\nCOPY . .\nRUN inst run build\nCMD [\"inst\", \"run\", \"serve\"]\n"}), false, ""},

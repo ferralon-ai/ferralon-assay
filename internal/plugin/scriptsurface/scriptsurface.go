@@ -228,6 +228,26 @@ func (v *Veto) mention(args []string) {
 	}
 }
 
+// walkedSurface reports whether p is an in-tree script surface outside every directory the
+// walk skips.
+func (v *Veto) walkedSurface(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil || !v.inRoot(p) {
+		return false
+	}
+	for _, part := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
+		if part != "." && buildtree.Skipped(part) {
+			return false
+		}
+	}
+	head, err := buildtree.Head(p)
+	if err != nil {
+		return false
+	}
+	_, ok := surfaceOf(p, head)
+	return ok
+}
+
 func (v *Veto) inRoot(p string) bool {
 	rel, err := filepath.Rel(v.root, p)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
@@ -498,6 +518,13 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			cur.cd(nil)
 		} else {
 			cur.cd(words)
+		}
+		return ""
+	case ".", "source":
+		// The sourced file's commands run here; they are checked only when it is a surface
+		// the walk reads itself.
+		if seg.expands || len(words) < 2 || !cur.sourced(words[1]) {
+			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}
 		return ""
 	}

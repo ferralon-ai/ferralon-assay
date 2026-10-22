@@ -207,6 +207,9 @@ func (c *dockerCursor) other() { c.st.taintAll() }
 
 func (c *dockerCursor) File(p string) bool { return c.Hosts(p) != nil }
 
+// sourced is false: a file in the image is not one the walk checks.
+func (c *dockerCursor) sourced(string) bool { return false }
+
 func (c *dockerCursor) Hosts(p string) []string {
 	if !path.IsAbs(p) && !c.known || strings.ContainsAny(p, "*?[~") {
 		return nil

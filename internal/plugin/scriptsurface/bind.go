@@ -24,6 +24,9 @@ type cursor interface {
 	Binder
 	cd(words []string) // nil when the target is not literal
 	other()            // a command that runs no installer and may change files
+	// sourced reports whether p, from every directory the command may run in, names an in-tree
+	// script surface the walk checks on its own.
+	sourced(p string) bool
 }
 
 // hostCursor is the set of host directories a command may run in.
@@ -67,6 +70,18 @@ func (c *hostCursor) merge(o *hostCursor) {
 }
 
 func (c *hostCursor) File(p string) bool { return c.Hosts(p) != nil }
+
+func (c *hostCursor) sourced(p string) bool {
+	if c.unknown || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "*?[~") {
+		return false
+	}
+	for _, d := range c.dirs {
+		if !c.v.walkedSurface(filepath.Join(d, p)) {
+			return false
+		}
+	}
+	return true
+}
 
 func (c *hostCursor) Hosts(p string) []string {
 	if c.unknown || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "*?[~") {

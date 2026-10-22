@@ -1,6 +1,7 @@
 package depreach
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -78,6 +79,23 @@ func TestReach_LambdaHandleCycles(t *testing.T) {
 			classes: lambdaSvc(callApply, transformerSite(viaRelay), relayIface, siteOf("com/acme/Other", relay, selfRef))},
 		{name: "two lambdas calling each other's interfaces, one more reaching the sink", ingress: handle, want: ReachableCandidate,
 			classes: lambdaSvc(callApply, transformerSite(viaRelay), relayIface, siteOf("com/acme/Other", relay, selfRef), siteOf("com/acme/Third", relay, staticImpl))},
+	})
+}
+
+// Many method references re-dispatching on the interface they implement resolve each
+// lambda once per dispatch, not once per order they can be met in.
+func TestReach_LambdaHandleCycleBreadth(t *testing.T) {
+	handle := mref(svc, "handle", "(Ljava/lang/String;)V")
+	callApply := edge(classfile.EdgeInterface, transformer, "apply", applyDesc)
+	selfRef := handleArg(classfile.RefInvokeInterface, transformer, "apply", applyDesc)
+	classes := lambdaSvc(callApply, transformerSite(selfRef))
+	for i := range 30 {
+		classes = append(classes, siteOf(fmt.Sprintf("com/acme/Ref%d", i), transformer, selfRef))
+	}
+	runReachCases(t, []reachCase{
+		{name: "thirty method references to the implemented method", ingress: handle, want: NotExploitable, classes: classes},
+		{name: "thirty method references beside a lambda reaching the sink", ingress: handle, want: ReachableCandidate,
+			classes: append(classes[:len(classes):len(classes)], siteOf("com/acme/Other", transformer, staticImpl))},
 	})
 }
 

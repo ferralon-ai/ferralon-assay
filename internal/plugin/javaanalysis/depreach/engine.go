@@ -36,7 +36,7 @@ type Engine struct {
 	hiddenDone  bool                         // hidden is computed
 	linked      bool                         // every class the run's classpath defines is loaded (SetLinked)
 	unlinked    map[string]bool              // unlinkable cache
-	resolving   map[string]bool              // lambda implementations being resolved (lambdaImpl)
+	resolving   map[string]bool              // lambda implementations met in the outermost lambdaImpl
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -791,17 +791,21 @@ func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.
 //
 // A handle can call back into a dispatch that reaches the same lambda: a method
 // reference t::apply implementing the interface whose apply it calls, or two lambdas
-// whose handles call each other's interfaces. Re-entered while it is being resolved,
-// the implementation adds nothing: its targets and hazards are those the outer
-// resolution is already collecting. Nothing caches a result, so no partial one
-// outlives that outer resolution.
+// whose handles call each other's interfaces. Within the outermost resolution, an
+// implementation met again adds nothing: every frame folds its targets and hazards into
+// that outermost result, which already holds them or is collecting them. Keeping each
+// implementation until the outermost one returns, not just while it is on the stack,
+// resolves it once per resolution rather than once per path to it. Nothing caches a
+// result, so no partial one outlives that outermost resolution.
 func (e *Engine) lambdaImpl(from string, h classfile.MethodHandle, opaque string) ([]*classfile.Method, bool, string) {
 	key := fmt.Sprintf("%s %d %s", from, h.Kind, h.Ref.String())
 	if e.resolving[key] {
 		return nil, false, ""
 	}
+	if len(e.resolving) == 0 {
+		defer clear(e.resolving)
+	}
 	e.resolving[key] = true
-	defer delete(e.resolving, key)
 	ts, hz, w := e.resolveHandle(from, h)
 	switch {
 	case hz && w == "":

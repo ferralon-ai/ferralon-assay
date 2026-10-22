@@ -284,6 +284,8 @@ func TestAssetsGraphClosure_UnresolvedDependencyIsUnbounded(t *testing.T) {
 
 // TestResolveDependencySymbols_NoAssetsOrNotRestored: without restore output the package's
 // code is unknown → scoped, nothing resolved; the first-party decoy is still never matched.
+// A package restore didn't record is unknown too while the build isn't closed (here, a
+// vendored assembly); absent_test.go covers the closed build.
 func TestResolveDependencySymbols_NoAssetsOrNotRestored(t *testing.T) {
 	t.Setenv("NUGET_PACKAGES", t.TempDir())
 	noAssets := composeILBuildDir(t, map[string][]byte{
@@ -291,6 +293,7 @@ func TestResolveDependencySymbols_NoAssetsOrNotRestored(t *testing.T) {
 		"Decoy.cs":   []byte(`namespace Newtonsoft.Json { public static class JsonConvert { public static object DeserializeObject(string s) { return null; } } }`),
 	})
 	other := newDepFixture(t, `"Other/1.0.0":{"type":"package"}`, `"Other/1.0.0":{"type":"package","path":"other/1.0.0"}`)
+	writeFixtureFile(t, other.buildDir, "lib/Vendor.dll", "MZ")
 	for name, dir := range map[string]string{"no assets": noAssets, "package not restored": other.buildDir} {
 		t.Run(name, func(t *testing.T) {
 			res := resolveNewtonsoft(t, depFixture{buildDir: dir}, "Newtonsoft.Json.JsonConvert.DeserializeObject")

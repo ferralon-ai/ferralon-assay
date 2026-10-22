@@ -300,21 +300,22 @@ func endsOperand(clean []rune, p int) bool {
 // or assigned, so that it is the global's. Each Symbol, bare or a member (whose object may
 // be the global), must be followed by `.` or `(` and not name a function, or a TS namespace
 // or module (dotted or not), or be read by a typeof on the same line. A with statement may
-// put any object's Symbol in scope; a literal 'Symbol' may key a write to the global; an
-// escaped identifier may spell Symbol unseen; and an HTML-like comment, which a script
-// reads to the end of its line, or a slash stripJS may lex otherwise than the runtime, may
-// hide a binding from the scan or a token from the runtime.
+// put any object's Symbol in scope; an escaped identifier may spell Symbol unseen; and an
+// HTML-like comment, which a script reads to the end of its line, may show the scan a
+// token the runtime skips. The scan reads clean, which stripJS lexes by approximation, so
+// the module also counts only when clean shows every Symbol of the source, and every with
+// a parenthesis or comment follows, and hides nothing between a Symbol (or the head of
+// its dotted name) and its neighbouring tokens: whatever stripJS
+// misreads, it then cannot hide a binding of Symbol, nor what binds it. U+FEFF, which is
+// space to the runtime but not to the scan, is refused outright.
 func symbolPlain(clean, src []rune) bool {
 	if text := string(clean); strings.ContainsRune(text, '\\') || strings.Contains(text, "<!--") || strings.Contains(text, "-->") {
 		return false
 	}
-	if slashAmbiguous(clean, src) {
+	if strings.ContainsRune(string(src), '\uFEFF') || !wordsShown(clean, src) {
 		return false
 	}
 	for i := 0; i < len(clean); {
-		if clean[i] == '_' && symbolLiteral(src, i) {
-			return false
-		}
 		if !isIdentPart(clean[i]) {
 			i++
 			continue
@@ -322,7 +323,7 @@ func symbolPlain(clean, src []rune) bool {
 		w, next := readWord(clean, i)
 		switch {
 		case w == "Symbol":
-			if !symbolRead(clean, src, i, next) {
+			if !symbolRead(clean, src, i, next) || blanked(clean, src, skipSpaceBack(clean, chainHead(clean, i)-1)+1, i) || blanked(clean, src, next, skipSpace(clean, next)) {
 				return false
 			}
 		case w == "with" && !memberName(clean, i):
@@ -368,71 +369,33 @@ func chainHead(clean []rune, i int) int {
 	}
 }
 
-// regexKeywords are the keywords a regex may follow, where stripJS, seeing a word, reads a
-// slash as division.
-var regexKeywords = map[string]bool{
-	"return": true, "typeof": true, "case": true, "do": true, "else": true, "in": true, "of": true,
-	"instanceof": true, "new": true, "delete": true, "void": true, "throw": true, "yield": true,
-	"await": true, "default": true, "extends": true,
+// wordsShown reports whether clean shows every Symbol and with word of src, a with as
+// much as a comment that could hide its parenthesis.
+func wordsShown(clean, src []rune) bool {
+	for i := 0; i < len(src); {
+		if !isIdentPart(src[i]) {
+			i++
+			continue
+		}
+		w, next := readWord(src, i)
+		if (w == "Symbol" || w == "with") && string(clean[i:next]) != w {
+			if q := skipSpace(src, next); w == "Symbol" || q < len(src) && (src[q] == '(' || src[q] == '/') {
+				return false
+			}
+		}
+		i = next
+	}
+	return true
 }
 
-// slashAmbiguous reports whether stripJS may have lexed some slash otherwise than the
-// runtime: as division after `)`, `}` or a keyword, where a regex may start, or as a regex
-// after `++`, `--`, a postfix `!` or a `>` other than an arrow's, where a division may
-// follow. Up to its first such slash, stripJS lexes as the runtime does, so a module
-// without one is lexed faithfully throughout.
-func slashAmbiguous(clean, src []rune) bool {
-	for i, c := range src {
-		if c != '/' {
-			continue
-		}
-		j := skipSpaceBack(clean, i-1)
-		if j < 0 {
-			continue
-		}
-		if clean[i] == '/' {
-			if clean[j] == ')' || clean[j] == '}' {
-				return true
-			}
-			if w, s := wordBefore(clean, j); regexKeywords[w] && !memberName(clean, s) {
-				return true
-			}
-			continue
-		}
-		if i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*') || src[i-1] == '/' || src[i-1] == '*' {
-			continue
-		}
-		switch clean[j] {
-		case '+', '-':
-			if j > 0 && clean[j-1] == clean[j] {
-				return true
-			}
-		case '>':
-			if j == 0 || clean[j-1] != '=' {
-				return true
-			}
-		case '!':
-			k := skipSpaceBack(clean, j-1)
-			if k < 0 {
-				continue
-			}
-			if w, s := wordBefore(clean, k); w != "" && !(regexKeywords[w] && !memberName(clean, s)) || clean[k] == ')' || clean[k] == ']' || clean[k] == '_' {
-				return true
-			}
+// blanked reports whether clean blanks to space any source that is not space in [from, to).
+func blanked(clean, src []rune, from, to int) bool {
+	for k := max(from, 0); k < to && k < len(clean); k++ {
+		if unicode.IsSpace(clean[k]) && !unicode.IsSpace(src[k]) {
+			return true
 		}
 	}
 	return false
-}
-
-// symbolLiteral reports whether the string or template literal opening at i is exactly
-// 'Symbol'.
-func symbolLiteral(src []rune, i int) bool {
-	const name = "Symbol"
-	e := i + 1 + len(name)
-	if e >= len(src) || src[i] != '\'' && src[i] != '"' && src[i] != '`' {
-		return false
-	}
-	return string(src[i+1:e]) == name && src[e] == src[i]
 }
 
 // literalFunction reports whether the Function constructor call whose argument list opens

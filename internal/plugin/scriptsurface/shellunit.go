@@ -45,6 +45,7 @@ func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 		walk(n)
 	}
 	var tops []*yaml.Node
+	docs, plain := 0, true
 	dec := yaml.NewDecoder(bytes.NewReader([]byte(src)))
 	for {
 		var doc yaml.Node
@@ -54,17 +55,16 @@ func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 			}
 			break
 		}
+		docs++
+		plain = plain && plainYAML(&doc)
 		if len(doc.Content) == 1 && doc.Content[0].Kind == yaml.MappingNode {
 			tops = append(tops, doc.Content[0])
 		}
 	}
 	var reused map[string]bool
-	indirect := false
+	indirect := docs != 1 || !plain
 	if gitlab {
 		reused = reusedJobs(tops)
-		for _, top := range tops {
-			indirect = indirect || aliasOrMerge(top)
-		}
 	}
 	for _, top := range tops {
 		if gitlab {
@@ -80,8 +80,9 @@ func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 				// as what runs with its script may be another job's before_script. In a set of
 				// files joined by include, that is any job: another file may extend it. GitLab
 				// keeps the last of a repeated key, so a job that repeats one is read alone too.
-				// An alias or a << merge anywhere in the file may stand for any key, value or
-				// job name the join reads, so a file with one has every job read alone.
+				// A file that is not one document of plain YAML (see plainYAML) may give GitLab
+				// keys, values or job names other than the text spells, so it has every job
+				// read alone.
 				name := top.Content[i].Value
 				alone := included || strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil || repeatsKey(job) || indirect
 				pre := 0
@@ -184,20 +185,45 @@ func mayInclude(top *yaml.Node) bool {
 	return false
 }
 
-// aliasOrMerge reports whether n or anything in it is an alias or a << merge key.
-func aliasOrMerge(n *yaml.Node) bool {
-	if n.Kind == yaml.AliasNode {
+// implicitTags are the tags a plain scalar resolves to that GitLab reads as the same text.
+var implicitTags = map[string]bool{"!!str": true, "!!int": true, "!!float": true, "!!bool": true, "!!null": true}
+
+// plainYAML reports whether n and everything in it is YAML that means what it spells:
+// documents, mappings with plain-scalar keys other than <<, sequences and scalars, with no
+// anchor, no alias and no tag written in the text but !reference on a list of such scalars.
+// The join reads only such files; anything else, including YAML features this does not name,
+// fails.
+func plainYAML(n *yaml.Node) bool {
+	if n.Anchor != "" {
+		return false
+	}
+	switch {
+	case n.Kind == yaml.DocumentNode:
+	case n.Style&yaml.TaggedStyle != 0:
+		if n.Tag != "!reference" || n.Kind != yaml.SequenceNode {
+			return false
+		}
+		for _, c := range n.Content {
+			if c.Kind != yaml.ScalarNode || !plainYAML(c) {
+				return false
+			}
+		}
 		return true
+	case n.Kind == yaml.MappingNode && n.Tag == "!!map":
+	case n.Kind == yaml.SequenceNode && n.Tag == "!!seq":
+	case n.Kind == yaml.ScalarNode && implicitTags[n.Tag]:
+	default:
+		return false
 	}
 	for i, c := range n.Content {
-		if n.Kind == yaml.MappingNode && i%2 == 0 && c.Value == "<<" {
-			return true
+		if n.Kind == yaml.MappingNode && i%2 == 0 && (c.Kind != yaml.ScalarNode || c.Value == "<<") {
+			return false
 		}
-		if aliasOrMerge(c) {
-			return true
+		if !plainYAML(c) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // repeatsKey reports whether a mapping has the same key more than once.

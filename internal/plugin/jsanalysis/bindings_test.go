@@ -49,8 +49,10 @@ r\165ctor'`, "constructor"},
 		{"lone backslash", `'\`, ""},
 		{"template octal escape", "`\\143onstructor`", ""},
 		{"template decimal escape", "`\\8`", ""},
+		{"template NUL escape before a digit", "`\\01`", ""},
 		{"line break in a string", "'constr\nuctor'", ""},
 		{"unterminated", `'constructor`, ""},
+		{"no literal at the position", `constructor`, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

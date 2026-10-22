@@ -972,6 +972,8 @@ func TestUndeterminedReason_JSEscapedLoaderSpellingNeverRefutes(t *testing.T) {
 		{"Function as an escaped key of the global", "globalThis['\\x46unction'](process.argv[3])();\n"},
 		{"eval as an escaped key of the global", "globalThis['\\u0065val'](process.argv[3]);\n"},
 		{"dlopen as an escaped key of process", "const m = { exports: {} };\nprocess['\\x64lopen'](m, './x.node');\n"},
+		{"constructor of an escaped constructor key after a comma, read for its name", "const g = function () {};\nconst label = g[0, '\\x63onstructor'].constructor.name;\n"},
+		{"malformed escaped key of the module object", "const j = module['\\x6']('json5');\n"},
 		{"constructor member spelled with an identifier escape", "const g = function () {};\ng.\\u0063onstructor(process.argv[3])();\n"},
 		{"constructor destructured under an identifier escape", "const { \\u{63}onstructor: F } = function () {};\nF(process.argv[3])();\n"},
 		{"Function spelled with an identifier escape", "\\u0046unction(process.argv[3])();\n"},

@@ -235,8 +235,9 @@ func (e *Engine) closureFrom(owner string, seeds []string) []string {
 // On a linked classpath (SetLinked) neither kind is seeded when it cannot exist. A class
 // that cannot link has no instance, and neither has any subtype, since creating a class
 // resolves its superclass and each direct superinterface (JVMS 5.3.5). A lambda site
-// whose interface is neither loaded nor one the JDK may define produces no object: linking
-// the site resolves its method type, which names the interface (JVMS 5.4.3.5, 5.4.3.6). A
+// whose interface or marker interface is neither loaded nor one the JDK may define produces
+// no object: linking the site resolves its method type, which names the interface, and its
+// static arguments, which name the markers (JVMS 5.4.3.5, 5.4.3.6). A
 // class some loader defines at run time reaches the program only through reflection or a
 // ClassLoader body, which the search meets as a hazard.
 func (e *Engine) hiddenSubtypes() []string {
@@ -1374,7 +1375,8 @@ func (e *Engine) platformLoadable(c string) bool {
 // trusts the launch the way the build graph does: an agent that appends to the system
 // classpath at run time, or a JDK vendor's own packages (OpenJ9's com/ibm, GraalVM's,
 // JavaFX), could supply the supertype.
-// On a linked classpath such a class is also no receiver of any call (hiddenSubtypes).
+// On a linked classpath such a class is also no hidden receiver of calls on types it is
+// not known to extend (hiddenSubtypes).
 // An unlisted classpath (Classpath.Unlisted) is never linked.
 func (e *Engine) SetLinked(linked bool) {
 	linked = linked && !e.unlisted

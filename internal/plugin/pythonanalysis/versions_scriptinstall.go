@@ -54,14 +54,22 @@ var scriptSpec = scriptsurface.Spec{
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`)
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
-// mamba, micromamba, and any word starting pip or conda.
+// mamba, micromamba, any word starting pip or conda, and an interpreter option that runs one
+// as a module with its name attached (-mpip, -Impip).
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba":
 		return true
 	}
+	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
+		return true
+	}
 	return strings.HasPrefix(word, "pip") || strings.HasPrefix(word, "conda")
 }
+
+// attachedModuleRE matches a cluster of interpreter short options ending in -m with the
+// module name attached, which CPython reads as -m <name>.
+var attachedModuleRE = regexp.MustCompile(`^-[A-Za-z]*m(.+)$`)
 
 var (
 	pipHeadRE    = regexp.MustCompile(`^pip(?:\d+(?:\.\d+)?)?$`)

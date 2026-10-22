@@ -52,6 +52,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"unknown installer: easy_install", map[string]string{"requirements.txt": reqs, "install.sh": "easy_install jinja2\n"}, false, ""},
 		{"pip3.12 named", map[string]string{"requirements.txt": reqs, "install.sh": "pip3.12 install jinja2==3.1.2\n"}, false, ""},
 		{"python -m pip named", map[string]string{"requirements.txt": reqs, "install.sh": "python3 -m pip install jinja2==3.1.2\n"}, false, ""},
+		{"python -mpip, module attached", map[string]string{"requirements.txt": reqs, "install.sh": "python3 -mpip install jinja2==3.1.2\n"}, false, ""},
+		{"python -Impip, module attached to an option cluster", map[string]string{"requirements.txt": reqs, "install.sh": "python -Impip install -r requirements.txt\n"}, false, ""},
+		{"python -mpip of a read file still withholds", map[string]string{"requirements.txt": reqs, "Makefile": "deps:\n\tpython -mpip install -r requirements.txt\n"}, false, ""},
 
 		// Expansions, variables and lines that do not tokenise.
 		{"PIP_INDEX_URL set by Dockerfile ENV", map[string]string{"requirements.txt": reqs,

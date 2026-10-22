@@ -199,7 +199,7 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		return false
 	}
 	dir, mm, sub, ok := rs.workspaceMember(spec)
-	if !ok {
+	if !ok || rs.memberShadowed(fromModule, mm.name, dir) {
 		return true
 	}
 	var targets []string
@@ -779,6 +779,98 @@ func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, 
 		}
 	}
 	return "", nil, "", false
+}
+
+// memberShadowed reports whether Node's node_modules walk for package name, from the importing
+// module fromModule, finds something other than the workspace member at memberDir. Node walks
+// from the importing file's real path, so the walk runs from its logical directory and again
+// from the real directory of each source file the module can be. Each walk climbs past the
+// build root to the filesystem root, as Node's does, and runs twice: once skipping
+// node_modules/node_modules as CommonJS require does, once checking it as ESM import does.
+// In each run the first directory holding a candidate decides: a file Node's CommonJS
+// LOAD_AS_FILE would try, or a real directory, is different code; a symlink is the member only
+// when its target's real path is the member directory's. A path that cannot be stat'ed or
+// followed, for any reason but a missing path, counts as shadowing. The member stands only
+// when no run finds anything else.
+func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
+		return true
+	}
+	root := filepath.Clean(rs.prog.root)
+	memberReal, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(memberDir)))
+	if err != nil {
+		return true
+	}
+	// decides reports whether dir's node_modules holds a candidate for name, and if so whether
+	// it shadows the member.
+	decides := func(dir string) (bool, bool) {
+		base := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		for _, ext := range []string{".js", ".json", ".node"} {
+			if _, err := os.Lstat(base + ext); err == nil || !absent(err) {
+				return true, true
+			}
+		}
+		fi, err := os.Lstat(base)
+		switch {
+		case err != nil:
+			return !absent(err), true
+		case fi.Mode()&os.ModeSymlink == 0:
+			return true, true
+		}
+		real, err := filepath.EvalSymlinks(base)
+		if err != nil {
+			return !absent(err), true
+		}
+		return true, real != memberReal
+	}
+	// walk runs Node's walk from dir to the filesystem root. CommonJS require skips
+	// node_modules/node_modules (skipNested); ESM import does not.
+	walk := func(dir string, skipNested bool) bool {
+		for {
+			if !skipNested || filepath.Base(dir) != "node_modules" {
+				if decided, shadowed := decides(dir); decided {
+					return shadowed
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return false
+			}
+			dir = parent
+		}
+	}
+	// either is shadowed when the walk of either loader finds a copy: the importer's kind is
+	// not tracked here.
+	either := func(dir string) bool {
+		return walk(dir, true) || walk(dir, false)
+	}
+	if either(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule)))) {
+		return true
+	}
+	exts := []string{vueExtension}
+	for ext := range jsExtensions {
+		exts = append(exts, ext)
+	}
+	for _, ext := range exts {
+		file := filepath.Join(root, filepath.FromSlash(fromModule)+ext)
+		if _, err := os.Lstat(file); err != nil {
+			if absent(err) {
+				continue
+			}
+			return true
+		}
+		real, err := filepath.EvalSymlinks(file)
+		if err != nil {
+			if absent(err) {
+				continue
+			}
+			return true
+		}
+		if either(filepath.Dir(real)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (rs *resolver) rootManifest() (*pkgManifest, bool) {

@@ -231,12 +231,24 @@ func (e *Engine) closureFrom(owner string, seeds []string) []string {
 // dependency type, and the unopened interfaces lambdas implement; subtypeClosure adds
 // everything below them. A JDK supertype hides nothing: the JDK cannot extend a class
 // or interface from the classpath.
+//
+// On a linked classpath (SetLinked) neither kind is seeded when it cannot exist. A class
+// that cannot link has no instance, and neither has any subtype, since creating a class
+// resolves its superclass and each direct superinterface (JVMS 5.3.5). A lambda site
+// whose interface or marker interface is neither loaded nor one the JDK may define produces
+// no object: linking the site resolves its method type, which names the interface, and its
+// static arguments, which name the markers (JVMS 5.4.3.5, 5.4.3.6). A
+// class some loader defines at run time reaches the program only through reflection or a
+// ClassLoader body, which the search meets as a hazard.
 func (e *Engine) hiddenSubtypes() []string {
 	if e.hiddenDone {
 		return e.hidden
 	}
 	e.hiddenDone = true
 	for _, c := range e.classes {
+		if e.linked && e.unlinkable(c.Name) {
+			continue
+		}
 		for _, s := range append([]string{c.Super}, c.Interfaces...) {
 			if s != "" && e.classes[s] == nil && !e.platform(s) {
 				e.hidden = append(e.hidden, c.Name)
@@ -245,7 +257,7 @@ func (e *Engine) hiddenSubtypes() []string {
 		}
 	}
 	for t := range e.lambdas {
-		if e.classes[t] == nil && !e.platform(t) {
+		if e.classes[t] == nil && !e.platform(t) && !(e.linked && !BootOnly(t, 0)) {
 			e.hidden = append(e.hidden, t)
 		}
 	}
@@ -1363,13 +1375,23 @@ func (e *Engine) platformLoadable(c string) bool {
 // trusts the launch the way the build graph does: an agent that appends to the system
 // classpath at run time, or a JDK vendor's own packages (OpenJ9's com/ibm, GraalVM's,
 // JavaFX), could supply the supertype.
+// On a linked classpath such a class is also no hidden receiver of calls on types it is
+// not known to extend (hiddenSubtypes).
 // An unlisted classpath (Classpath.Unlisted) is never linked.
 func (e *Engine) SetLinked(linked bool) {
 	linked = linked && !e.unlisted
 	if linked != e.linked {
 		e.linked = linked
-		e.loadable = map[string]bool{}
+		e.resetLinkage()
 	}
+}
+
+// resetLinkage empties every cache filled under the other linked bit: the engine is
+// reused across runs, and each run sets its own.
+func (e *Engine) resetLinkage() {
+	e.loadable = map[string]bool{}
+	e.hidden, e.hiddenDone = nil, false
+	e.held = map[string]heldTypes{}
 }
 
 // unlinkable reports whether loaded class c cannot link on a linked classpath: some

@@ -193,7 +193,7 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 // Function on the next line starts a new one.
 func functionConsumed(clean, src []rune, b, p int) bool {
 	if w, _ := wordBefore(clean, b); w == "instanceof" {
-		return !lineBreakAfter(clean, b) && endsOperand(clean, p)
+		return !lineBreakAfter(clean, src, b) && endsOperand(clean, p)
 	}
 	w, q := dotWord(clean, p)
 	if w != "prototype" {
@@ -258,10 +258,12 @@ func calledHere(clean []rune, p int) bool {
 	return false
 }
 
-// lineBreakAfter reports whether a line terminator lies in the space that follows b.
-func lineBreakAfter(clean []rune, b int) bool {
+// lineBreakAfter reports whether a line terminator lies in the space that follows b. It
+// reads src, since a block comment blanked in clean keeps only its line feeds and any line
+// terminator inside one breaks the line.
+func lineBreakAfter(clean, src []rune, b int) bool {
 	for k := b + 1; k < len(clean) && unicode.IsSpace(clean[k]); k++ {
-		switch clean[k] {
+		switch src[k] {
 		case '\n', '\r', '\u2028', '\u2029':
 			return true
 		}
@@ -316,7 +318,7 @@ func symbolPlain(clean, src []rune) bool {
 		w, next := readWord(clean, i)
 		switch {
 		case w == "Symbol":
-			if !symbolRead(clean, i, next) {
+			if !symbolRead(clean, src, i, next) {
 				return false
 			}
 		case w == "with" && !memberName(clean, i):
@@ -330,10 +332,10 @@ func symbolPlain(clean, src []rune) bool {
 }
 
 // symbolRead reports whether the Symbol word at i, ending before next, is only read.
-func symbolRead(clean []rune, i, next int) bool {
+func symbolRead(clean, src []rune, i, next int) bool {
 	b := skipSpaceBack(clean, i-1)
 	prev, _ := wordBefore(clean, b)
-	if prev == "typeof" && !lineBreakAfter(clean, b) {
+	if prev == "typeof" && !lineBreakAfter(clean, src, b) {
 		return true
 	}
 	if prev == "function" || prev == "namespace" || prev == "module" || b >= 0 && clean[b] == '*' {

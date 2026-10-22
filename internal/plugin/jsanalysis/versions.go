@@ -58,7 +58,8 @@ import (
 // installed copy was read (lockSetCovers), and no yarn cache archive could hold another copy.
 //
 // Exhaustive is set only when the lockfiles cover every package.json under the build dir
-// (exhaustive.go), so a coordinate absent from All is provably not installed; with no lockfile
+// (exhaustive.go) and no script surface may install a package outside them (unreadSurfaces),
+// so a coordinate absent from All is provably not installed; with no lockfile
 // (the declared-seed path) or any doubt it stays false and absence proves nothing.
 //
 // "plugin resolves, pipeline ranges" symmetry (matching Java): this op resolves only the
@@ -81,7 +82,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all    []plugin.ResolvedDependency
 		parsed = make(map[string]lockInfo, len(locks))
 	)
-	parseFailed := unreadSurfaces(req.BuildDir, locks) || !copiesRead
+	unread, scriptWithheld := unreadSurfaces(req.BuildDir, locks)
+	parseFailed := unread || !copiesRead
 	lockFailed := false // a lock that does not parse; exhaustiveLockSet judges every other surface itself
 	for _, l := range locks {
 		info, ok := parseLockfile(l)
@@ -110,7 +112,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
-		Exhaustive: exhaustiveLockSet(req.BuildDir, req.Coordinate, parsed, lockFailed),
+		Exhaustive: exhaustiveLockSet(req.BuildDir, req.Coordinate, parsed, lockFailed) && !scriptWithheld,
 	}
 	want := normalizeNPMCoordinate(req.Coordinate)
 	installs := append(all[:len(all):len(all)], copies...)

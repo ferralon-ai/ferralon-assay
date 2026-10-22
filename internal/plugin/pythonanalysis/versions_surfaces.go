@@ -24,9 +24,10 @@ import (
 // content, so a surface this lane has no reader for vetoes by default instead of being
 // listed one name at a time.
 
-// versionSurfaces returns the manifests version resolution parses, and whether any other
-// install surface under root goes unread.
-func versionSurfaces(root string) (manifests []string, unread bool) {
+// versionSurfaces returns the manifests version resolution parses, whether any other install
+// surface under root goes unread, and whether a script surface may install a package no
+// manifest or lock read here names (scriptsurface.Veto.Withheld).
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -58,10 +59,8 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 			unread = true
 		}
 	}
-	if veto.Rebound() {
-		unread = true
-	}
-	return manifests, unread
+	scriptWithheld = veto.Withheld()
+	return manifests, unread || scriptWithheld, scriptWithheld
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

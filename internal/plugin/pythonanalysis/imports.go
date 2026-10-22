@@ -289,7 +289,7 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete, re
 			}
 		}
 	}
-	manifests, unread := versionSurfaces(buildDir)
+	manifests, unread, _ := versionSurfaces(buildDir)
 	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
 	for _, f := range manifests {
 		data, err := readRegular(f)

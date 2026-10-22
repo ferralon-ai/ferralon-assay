@@ -99,7 +99,8 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"Pipfile without a lock", map[string]string{"Pipfile": "[packages]\npyjwt = \"*\"\n"}, false},
 		{"environment.yml", map[string]string{"environment.yml": "dependencies:\n  - pip:\n    - pyjwt\n"}, false},
 		{"tox.ini with deps", map[string]string{"tox.ini": "[testenv]\ndeps = pyjwt\n"}, false},
-		{"tox.ini without deps", map[string]string{"tox.ini": "[tox]\nenvlist = py312\n"}, true},
+		// tox installs the project into each env it makes, resolving its dependencies itself.
+		{"tox.ini without deps", map[string]string{"tox.ini": "[tox]\nenvlist = py312\n"}, false},
 		{"noxfile.py installing", map[string]string{"noxfile.py": "def tests(session):\n    session.install(\"pyjwt\")\n"}, false},
 		{"MANIFEST.in", map[string]string{"MANIFEST.in": "include README.md\n"}, true},
 
@@ -176,6 +177,54 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 			// An installed copy is a found match of its own (installedCopies); no other row
 			// holds PyJWT anywhere.
 			if r.Found && r.Match.Source != "site-packages" {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
+// B3: a script surface the version veto withholds on may install a package no manifest or
+// lock read here names, so it withholds Exhaustive too; a kept form installs only what a read
+// lock holds and does not. Every row keeps a uv.lock that would otherwise prove PyJWT absent.
+func TestResolveVersions_ExhaustiveScriptInstall(t *testing.T) {
+	const (
+		docker  = "FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN "
+		pdmLock = "[metadata]\ngroups = [\"default\"]\n\n[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\ndependencies = [\"jinja2>=3.1\"]\n\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n"
+		poLock  = "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[package.dependencies]\njinja2 = \">=3.1.2\"\n\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n"
+	)
+	uv := func(extra map[string]string) map[string]string {
+		files := map[string]string{"pyproject.toml": exPyproject, "uv.lock": exUVLock}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"Dockerfile installs the coordinate after a locked sync", uv(map[string]string{"Dockerfile": docker + "uv sync --frozen && pip install pyjwt\n"}), false},
+		{"shell script installs the coordinate", uv(map[string]string{"install.sh": "pip install pyjwt\n"}), false},
+		{"Makefile installs the coordinate", uv(map[string]string{"Makefile": "install:\n\tpip install pyjwt\n"}), false},
+		{"Dockerfile fetches over the lock, then syncs it", uv(map[string]string{"Dockerfile": docker + "curl -o uv.lock https://example.com/x && uv sync --frozen\n"}), false},
+		{"Dockerfile copies an unplaced stage over the tree, then syncs", uv(map[string]string{"Dockerfile": "FROM python:3.12 AS builder\nRUN true\nFROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nCOPY --from=builder /app .\nRUN uv sync --frozen\n"}), false},
+		{"PowerShell installs the coordinate", uv(map[string]string{"install.ps1": "pip install pyjwt\n"}), false},
+		{"Pipfile synced by pipenv", uv(map[string]string{"Pipfile": "[packages]\nflask = \"*\"\n", "Pipfile.lock": "{}\n", "Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY Pipfile Pipfile.lock ./\nRUN pipenv sync\n"}), false},
+
+		// Kept forms install only what a read lock holds.
+		{"Dockerfile uv sync --frozen", uv(map[string]string{"Dockerfile": docker + "uv sync --frozen\n"}), true},
+		{"Dockerfile uv sync --locked", uv(map[string]string{"Dockerfile": docker + "uv sync --locked\n"}), true},
+		{"Dockerfile pdm sync", map[string]string{"pyproject.toml": exPyproject, "pdm.lock": pdmLock, "Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml pdm.lock ./\nRUN pdm sync\n"}, true},
+		{"Dockerfile poetry install", map[string]string{"pyproject.toml": exPyproject, "poetry.lock": poLock, "Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml poetry.lock ./\nRUN poetry install\n"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "PyJWT")
+			if r.Found {
 				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
 			}
 			if r.Exhaustive != tt.want {

@@ -207,6 +207,11 @@ func (v *Veto) Rebound() bool {
 	return false
 }
 
+// Withheld reports whether the rule withheld on any surface the walk classified, or a command
+// may rewrite a file an allowed command binds to: the build may install a package no manifest
+// or lock read here names. Call it after the walk.
+func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() }
+
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
 // mention records the base names of a command's arguments, a redirect's or an option's

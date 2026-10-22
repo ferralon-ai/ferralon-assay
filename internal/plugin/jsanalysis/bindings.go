@@ -49,7 +49,7 @@ type moduleBindings struct {
 	prefixLoads   []prefixLoad       // require/import() whose specifier is a literal prefix plus a runtime value
 	dynImport     bool               // saw a runtime-computed ESM target `import(expr)` with no static prefix
 	computedReq   bool               // saw a runtime-computed CJS target `require(var)` with no static prefix
-	nativeLoad    bool               // saw dlopen, getBuiltinModule or _linkedBinding, which load code this lane never reads
+	nativeLoad    bool               // saw dlopen, getBuiltinModule, _linkedBinding or binding, which load code this lane never reads
 	evaluated     bool               // saw eval or the Function constructor, which run code built at run time
 }
 
@@ -136,6 +136,9 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 		mb.evaluated = true
 	}
 	mb.patternKeys(clean, src, globals)
+	if processComputedKey(clean, src, ls.process.names) {
+		mb.nativeLoad = true
+	}
 	i := 0
 	for i < n {
 		if !isIdentStart(clean[i]) {
@@ -160,6 +163,9 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 			i = next
 		case word == "_load", word == "dlopen", word == "getBuiltinModule", word == "_linkedBinding", word == "eval":
 			mb.memberUse(clean, i, word)
+			i = next
+		case (word == "binding" || word == "mainModule") && (memberName(clean, i) || destructuredKey(clean, i, next)):
+			hazardMember(&mb, word)
 			i = next
 		case word == "arguments":
 			mb.argumentsUse(clean, i, next, frames)

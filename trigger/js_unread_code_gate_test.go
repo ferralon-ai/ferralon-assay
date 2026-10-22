@@ -1389,6 +1389,91 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"contextify binding through process off an imported global", `
+import g from './g.js';
+new (g.process.binding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"mainModule require through process off an imported global", `
+import g from './g.js';
+g.process.mainModule.require(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"vm through a quoted getBuiltinModule pattern key off an object property's process", `
+const o = { g: globalThis };
+const { 'getBuiltinModule': gb } = o.g.process;
+gb('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through a concatenated getBuiltinModule key off an object property's process", `
+const o = { g: globalThis };
+o.g.process['getBuiltin' + 'Module']('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through Reflect.get with a concatenated key off an object property's process", `
+const o = { g: globalThis };
+Reflect.get(o.g.process, 'getBuiltin' + 'Module')('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"contextify binding off process renamed in a pattern off an imported global", `
+import g from './g.js';
+const { process: pr } = g;
+new (pr.binding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"mainModule require off process renamed in a pattern off an imported global", `
+import g from './g.js';
+const { process: pr } = g;
+pr.mainModule.require(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"contextify binding by a bracket key off process renamed in a pattern off an imported global", `
+import g from './g.js';
+const { process: pr } = g;
+new (pr['binding']('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"vm through a concatenated key off a local holding an object property's process", `
+const o = { g: globalThis };
+const pr = o.g.process;
+pr['getBuiltin' + 'Module']('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"contextify binding through Reflect.get off process renamed in a pattern off an imported global", `
+import g from './g.js';
+const { process: pr } = g;
+new (Reflect.get(pr, 'binding')('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"vm through a quoted getBuiltinModule pattern key off process renamed in a pattern off an imported global", `
+import g from './g.js';
+const { process: pr } = g;
+const { 'getBuiltinModule': gb } = pr;
+gb('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1448,8 +1533,9 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"process renamed and nested in patterns off globalThis, data members only", "const { process: pr } = globalThis;\nconst { process: { env } } = globalThis;\nconst mode = pr.env.NODE_ENV || env.HOME;\nconst j = require('./plugins');", nil},
-		{"process renamed in a pattern off a local object, any member", "const opts = { process: { binding: String } };\nconst { process: pr } = opts;\nconst m = pr.binding('x');\nconst j = require('./plugins');", nil},
+		{"process renamed in a pattern off a local object, any member", "const opts = { process: { run: String } };\nconst { process: pr } = opts;\nconst m = pr.run('x');\nconst j = require('./plugins');", nil},
 		{"process as a method of a local queue and of a call result", "const j = require('./plugins');\nconst queue = new j.Queue('jobs');\nqueue.process((job) => job);\nfunction getQueue() { return queue; }\ngetQueue().process((job) => job);\nthis.queues[0].process((job) => job);", nil},
+		{"process data read and a process property written off an object property", "const o = { g: { process: { env: { MODE: 'x' } } } };\nconst mode = o.g.process.env.MODE;\nconst job = {};\njob.process = mode;\nconst j = require('./plugins');", nil},
 		{"a local object named global read for process data", "const global = { process: { env: { MODE: 'x' } } };\nconst mode = global.process.env.MODE;\nconst j = require('./plugins');", nil},
 		{"process as a method of a queue under a parameter named global", "const j = require('./plugins');\nfunction run(global, job) { global.queue.process(job); return global.getQueue().process(job); }\nrun({ queue: new j.Queue('jobs'), getQueue: () => null }, {});", nil},
 		{"literal import() of an in-tree module", "let j = { parse: (s) => s };\nimport('./plugins/index.js').then((m) => { j = m; });", nil},

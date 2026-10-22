@@ -1293,6 +1293,28 @@ function load(s) { return 'a \
 require(process.argv[3]) b' + s.trim(); }
 load(process.argv[2]);
 `, false},
+		{"constructor of a function tagged flush against a template", `
+const g = function () {};
+function run(s) { return g.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"Function reached as [].constructor.constructor, tagged flush", `
+function run(s) { return [].constructor.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"Function tagged flush against a template", `
+function run(s) { return Function^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"optional constructor of a function tagged flush", `
+const g = function () {};
+function run(s) { return g?.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"new this.constructor tagged flush in a class method called on a function", `
+class A { m(s) { return new this.constructor^a${s}^; } }
+A.prototype.m.call(function () {}, process.argv[3]);
+` + tail, true},
 		{"strings holding braces", `
 const t = '{ "a": 1 }';
 const f = "{0} items";

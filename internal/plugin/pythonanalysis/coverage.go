@@ -129,11 +129,14 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
 			}
-			switch strings.Fields(line)[0] {
-			case "--require-hashes":
-				out.hashed = true
-			case "--no-require-hashes":
-				out.hashOff = true
+			// pip parses every option on the line, not just the first.
+			for _, f := range strings.Fields(line) {
+				switch f {
+				case "--require-hashes":
+					out.hashed = true
+				case "--no-require-hashes":
+					out.hashOff = true
+				}
 			}
 			continue
 		}

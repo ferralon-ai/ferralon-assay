@@ -27,6 +27,13 @@ type cursor interface {
 	// sourced reports whether p, from every directory the command may run in, names an in-tree
 	// script surface the walk checks on its own.
 	sourced(p string) bool
+	// at returns the one place a literal path names from the directory the command runs in,
+	// keyed so that two keys are equal only when they name the same place; false when it names
+	// no one place.
+	at(p string) (string, bool)
+	// venv is the key of the virtual environment the last command other than a directory
+	// change created, or "".
+	venv() *string
 }
 
 // hostCursor is the set of host directories a command may run in.
@@ -34,6 +41,7 @@ type hostCursor struct {
 	v       *Veto
 	dirs    []string
 	unknown bool
+	made    string
 }
 
 func (c *hostCursor) cd(words []string) {
@@ -82,6 +90,20 @@ func (c *hostCursor) sourced(p string) bool {
 	}
 	return true
 }
+
+func (c *hostCursor) at(p string) (string, bool) {
+	switch {
+	case p == "" || strings.ContainsAny(p, "$`*?[~"):
+		return "", false
+	case filepath.IsAbs(p):
+		return "abs:" + filepath.Clean(p), true
+	case c.unknown || len(c.dirs) != 1:
+		return "", false
+	}
+	return "rel:" + filepath.Join(c.dirs[0], p), true
+}
+
+func (c *hostCursor) venv() *string { return &c.made }
 
 func (c *hostCursor) Hosts(p string) []string {
 	if c.unknown || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "*?[~") {

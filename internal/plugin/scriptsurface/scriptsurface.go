@@ -32,6 +32,14 @@
 // the stage, with nothing since that could have changed it: a COPY --from, ADD, heredoc or
 // unresolvable COPY over it, or any RUN command that is not itself an allowed form.
 //
+// A file run with . or source runs its commands in place, so it withholds unless it is a
+// literal in-tree script surface the walk checks on its own, or only sets PATH: a
+// version-manager init script named exactly as pathOnlyScripts lists it, or a literal
+// <dir>/bin/activate whose <dir> names the same one place as the virtual environment the
+// command before it, directory changes aside, created. That command must be in the same
+// cursor: the same shell text on the host, the same line of any other host surface, the same
+// RUN in a Dockerfile.
+//
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
 // the install reads it, so it withholds too (Veto.Rebound).
@@ -433,7 +441,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			if rl.shell {
 				lineKind = kindShell
 			}
-			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown}
+			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown, made: carry.made}
 			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
@@ -512,8 +520,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if len(words) == 0 {
 		return ""
 	}
+	made := *cur.venv()
+	*cur.venv() = venvMade(seg, cur)
 	switch words[0] {
 	case "cd", "pushd", "popd":
+		*cur.venv() = made // the venv's key was taken where it was made
 		if seg.expands {
 			cur.cd(nil)
 		} else {
@@ -522,8 +533,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return ""
 	case ".", "source":
 		// The sourced file's commands run here; they are checked only when it is a surface
-		// the walk reads itself.
-		if seg.expands || len(words) < 2 || !cur.sourced(words[1]) {
+		// the walk reads itself, or when it only sets PATH.
+		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}
 		return ""
@@ -551,6 +562,76 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install command: " + strings.Join(words, " ")
 	}
 	return ""
+}
+
+// pathOnlyScripts are the version-manager init scripts, as written after . or source, that
+// only set PATH and functions when sourced and install nothing.
+var pathOnlyScripts = map[string]bool{
+	"$NVM_DIR/nvm.sh": true, "$HOME/.nvm/nvm.sh": true, "~/.nvm/nvm.sh": true,
+	"$HOME/.cargo/env": true, "~/.cargo/env": true,
+}
+
+// pathOnly reports whether a . or source of a file the walk does not read only sets PATH: one
+// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate of the virtual
+// environment that made, the previous command but for directory changes, created at the same
+// place.
+func pathOnly(seg segment, cur cursor, made string) bool {
+	if len(seg.words) != 2 {
+		return false
+	}
+	op := seg.words[1]
+	if pathOnlyScripts[op] {
+		return seg.expands == strings.Contains(op, "$")
+	}
+	dir, ok := strings.CutSuffix(op, "/bin/activate")
+	if seg.expands || !ok {
+		return false
+	}
+	key, ok := cur.at(dir)
+	return ok && made != "" && key == made
+}
+
+var pythonRE = regexp.MustCompile(`^python(?:\d+(?:\.\d+)?)?$`)
+
+// venvMade returns the key of the virtual environment a command creates: python -m venv <dir>,
+// virtualenv <dir>, or uv venv [<dir>] (.venv when there is none), with flags before or after
+// <dir> and -p, --python or --prompt taking the next word. "" when it is none of these, or
+// its directory is not one place.
+func venvMade(seg segment, cur cursor) string {
+	words := seg.words
+	head, ok := CommandName(words[0])
+	var args []string
+	switch {
+	case seg.expands || !ok:
+		return ""
+	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
+		args = words[3:]
+	case head == "virtualenv":
+		args = words[1:]
+	case head == "uv" && len(words) >= 2 && words[1] == "venv":
+		args = words[2:]
+	default:
+		return ""
+	}
+	var dirs []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-p" || a == "--python" || a == "--prompt":
+			i++
+		case strings.HasPrefix(a, "--directory") || strings.HasPrefix(a, "--project"):
+			return ""
+		case !strings.HasPrefix(a, "-"):
+			dirs = append(dirs, a)
+		}
+	}
+	switch {
+	case len(dirs) == 0 && head == "uv":
+		dirs = []string{".venv"}
+	case len(dirs) != 1:
+		return ""
+	}
+	key, _ := cur.at(dirs[0])
+	return key
 }
 
 // installVerbs are the subcommands with which a package manager installs or re-locks.

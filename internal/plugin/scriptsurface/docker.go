@@ -185,6 +185,7 @@ type dockerCursor struct {
 	st    *dockerStage
 	dir   string
 	known bool
+	made  string
 }
 
 func (c *dockerCursor) cd(words []string) {
@@ -209,6 +210,20 @@ func (c *dockerCursor) File(p string) bool { return c.Hosts(p) != nil }
 
 // sourced is false: a file in the image is not one the walk checks.
 func (c *dockerCursor) sourced(string) bool { return false }
+
+func (c *dockerCursor) at(p string) (string, bool) {
+	switch {
+	case p == "" || strings.ContainsAny(p, "$`*?[~"):
+		return "", false
+	case path.IsAbs(p):
+		return path.Clean(p), true
+	case !c.known:
+		return "", false
+	}
+	return path.Join(c.dir, p), true
+}
+
+func (c *dockerCursor) venv() *string { return &c.made }
 
 func (c *dockerCursor) Hosts(p string) []string {
 	if !path.IsAbs(p) && !c.known || strings.ContainsAny(p, "*?[~") {

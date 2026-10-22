@@ -457,5 +457,11 @@ func TestReach_ProviderRootsLambdas(t *testing.T) {
 				staticMeth(svc, "boot", "()V", site, edge(classfile.EdgeStatic, "javax/net/ssl/HttpsURLConnection", "setDefaultHostnameVerifier", "(L"+hv+";)V")),
 				meth(svc, "handle", handleD, jdkTouch),
 				staticMeth(svc, "lambda$boot$0", d, sinkCall()...))}},
+		{name: "lambda HostnameVerifier with an unfollowable implementation", ingress: ingress, want: Undetermined, why: "invokedynamic", classes: []classfile.Class{
+			class(svc, "java/lang/Object", nil,
+				meth(svc, "<init>", "()V"),
+				staticMeth(svc, "boot", "()V", indy("verify", "()L"+hv+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+					classfile.BootstrapArg{MethodType: d}, handleArg(classfile.RefGetField, svc, "f", "Z"), classfile.BootstrapArg{MethodType: d}))),
+				meth(svc, "handle", handleD, jdkTouch))}},
 	})
 }

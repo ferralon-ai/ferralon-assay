@@ -36,6 +36,7 @@ type Engine struct {
 	hiddenDone  bool                         // hidden is computed
 	linked      bool                         // every class the run's classpath defines is loaded (SetLinked)
 	unlinked    map[string]bool              // unlinkable cache
+	resolving   map[string]bool              // lambda implementations met in the outermost lambdaImpl
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -153,6 +154,7 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		unlinked:    map[string]bool{},
 		lambdas:     map[string][]lambdaSite{},
 		held:        map[string]heldTypes{},
+		resolving:   map[string]bool{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
 		methodsHold: cp.JDK == platformMethodsJDK,
@@ -229,12 +231,24 @@ func (e *Engine) closureFrom(owner string, seeds []string) []string {
 // dependency type, and the unopened interfaces lambdas implement; subtypeClosure adds
 // everything below them. A JDK supertype hides nothing: the JDK cannot extend a class
 // or interface from the classpath.
+//
+// On a linked classpath (SetLinked) neither kind is seeded when it cannot exist. A class
+// that cannot link has no instance, and neither has any subtype, since creating a class
+// resolves its superclass and each direct superinterface (JVMS 5.3.5). A lambda site
+// whose interface or marker interface is neither loaded nor one the JDK may define produces
+// no object: linking the site resolves its method type, which names the interface, and its
+// static arguments, which name the markers (JVMS 5.4.3.5, 5.4.3.6). A
+// class some loader defines at run time reaches the program only through reflection or a
+// ClassLoader body, which the search meets as a hazard.
 func (e *Engine) hiddenSubtypes() []string {
 	if e.hiddenDone {
 		return e.hidden
 	}
 	e.hiddenDone = true
 	for _, c := range e.classes {
+		if e.linked && e.unlinkable(c.Name) {
+			continue
+		}
 		for _, s := range append([]string{c.Super}, c.Interfaces...) {
 			if s != "" && e.classes[s] == nil && !e.platform(s) {
 				e.hidden = append(e.hidden, c.Name)
@@ -243,7 +257,7 @@ func (e *Engine) hiddenSubtypes() []string {
 		}
 	}
 	for t := range e.lambdas {
-		if e.classes[t] == nil && !e.platform(t) {
+		if e.classes[t] == nil && !e.platform(t) && !(e.linked && !BootOnly(t, 0)) {
 			e.hidden = append(e.hidden, t)
 		}
 	}
@@ -712,7 +726,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 			// static/special leaf, an argument can re-enter application code (C8
 			// re-entry seam).
 			if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
-				return nil, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
+				return targets, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
 			}
 		}
 		// The inherited platform body also runs with the receiver as `this`.
@@ -786,7 +800,24 @@ func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.
 
 // lambdaImpl resolves a lambda's implementation handle, naming opaque when the
 // handle itself cannot be followed.
+//
+// A handle can call back into a dispatch that reaches the same lambda: a method
+// reference t::apply implementing the interface whose apply it calls, or two lambdas
+// whose handles call each other's interfaces. Within the outermost resolution, an
+// implementation met again adds nothing: every frame folds its targets and hazards into
+// that outermost result, which already holds them or is collecting them. Keeping each
+// implementation until the outermost one returns, not just while it is on the stack,
+// resolves it once per resolution rather than once per path to it. Nothing caches a
+// result, so no partial one outlives that outermost resolution.
 func (e *Engine) lambdaImpl(from string, h classfile.MethodHandle, opaque string) ([]*classfile.Method, bool, string) {
+	key := fmt.Sprintf("%s %d %s", from, h.Kind, h.Ref.String())
+	if e.resolving[key] {
+		return nil, false, ""
+	}
+	if len(e.resolving) == 0 {
+		defer clear(e.resolving)
+	}
+	e.resolving[key] = true
 	ts, hz, w := e.resolveHandle(from, h)
 	switch {
 	case hz && w == "":
@@ -1344,13 +1375,23 @@ func (e *Engine) platformLoadable(c string) bool {
 // trusts the launch the way the build graph does: an agent that appends to the system
 // classpath at run time, or a JDK vendor's own packages (OpenJ9's com/ibm, GraalVM's,
 // JavaFX), could supply the supertype.
+// On a linked classpath such a class is also no hidden receiver of calls on types it is
+// not known to extend (hiddenSubtypes).
 // An unlisted classpath (Classpath.Unlisted) is never linked.
 func (e *Engine) SetLinked(linked bool) {
 	linked = linked && !e.unlisted
 	if linked != e.linked {
 		e.linked = linked
-		e.loadable = map[string]bool{}
+		e.resetLinkage()
 	}
+}
+
+// resetLinkage empties every cache filled under the other linked bit: the engine is
+// reused across runs, and each run sets its own.
+func (e *Engine) resetLinkage() {
+	e.loadable = map[string]bool{}
+	e.hidden, e.hiddenDone = nil, false
+	e.held = map[string]heldTypes{}
 }
 
 // unlinkable reports whether loaded class c cannot link on a linked classpath: some

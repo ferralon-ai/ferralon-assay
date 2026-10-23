@@ -13,6 +13,7 @@ import (
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -104,27 +105,6 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		}
 	}
 
-	// replace map: modfile carries what `go mod graph` hides (the redirect target).
-	// Keyed by old path; a versioned old-key ("path v1.2.3") wins over a wildcard.
-	type replaceTarget struct {
-		newPath, newVersion string
-		filesystem          bool
-	}
-	replaces := map[string]replaceTarget{}
-	for _, rep := range mf.Replace {
-		t := replaceTarget{newPath: rep.New.Path, newVersion: rep.New.Version}
-		// A New with no version whose path is a filesystem path (./ ../ or absolute)
-		// is a local replace: the selection is not pinned to a verifiable version.
-		if rep.New.Version == "" && (strings.HasPrefix(rep.New.Path, ".") || strings.HasPrefix(rep.New.Path, "/") || filepath.IsAbs(rep.New.Path)) {
-			t.filesystem = true
-		}
-		if rep.Old.Version != "" {
-			replaces[rep.Old.Path+" "+rep.Old.Version] = t
-		} else {
-			replaces[rep.Old.Path] = t
-		}
-	}
-
 	// go.sum supplies the artifact integrity digest without acquisition (C2 bullet 4).
 	sums := readGoSum(filepath.Join(req.BuildDir, "go.sum"))
 	haveLockfile := len(sums) > 0
@@ -177,10 +157,8 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 
 		// Apply a replace (versioned key first, then wildcard) — the redirect the
 		// graph does not show. A filesystem replace has no verifiable version.
-		if rep, ok := replaces[path+" "+ver]; ok {
-			applyReplace(&n, path, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
-		} else if rep, ok := replaces[path]; ok {
-			applyReplace(&n, path, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
+		if rep, ok := gomod.Replacement(mf, path, ver); ok {
+			applyReplace(&n, path, rep, &nodeReasons)
 		}
 
 		n.PURL = goPURL(path, n.Version)
@@ -240,17 +218,17 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 // so declare it (source_unpinned) rather than present a fabricated or blank version
 // as resolved. The module PATH remains the requiring coordinate (the require still
 // names it); a replace by another module records that module's path beside it.
-func applyReplace(n *plugin.DependencyNode, path, newPath, newVersion string, filesystem bool, reasons *[]string) {
-	if filesystem {
+func applyReplace(n *plugin.DependencyNode, path string, rep gomod.Target, reasons *[]string) {
+	if rep.Filesystem {
 		n.Version = ""
 		*reasons = append(*reasons, plugin.PartialReasonSourceUnpinned)
 		return
 	}
-	if newVersion != "" {
-		n.Version = newVersion
+	if rep.Version != "" {
+		n.Version = rep.Version
 	}
-	if newPath != path {
-		n.Replace = newPath
+	if rep.Path != path {
+		n.Replace = rep.Path
 	}
 }
 

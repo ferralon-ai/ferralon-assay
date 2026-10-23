@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
@@ -66,11 +67,15 @@ func TestEveryPathRanksRowsByThisRunsSignals(t *testing.T) {
 			if err := rep.Validate(); err != nil {
 				t.Fatalf("Validate: %v", err)
 			}
+			claims := new(intel.Claims)
+			for _, f := range rep.Advisories {
+				claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
+			}
 			for _, f := range rep.Advisories {
 				if f.Verdict != report.VerdictDisqualified {
 					t.Errorf("%s verdict = %s; ranking must not touch it", f.Advisory.ID, f.Verdict)
 				}
-				want := priorityFor(f.Advisory, sig)
+				want := priorityFor(f.Advisory, sig, claims)
 				if f.Priority == nil || *f.Priority != *want {
 					t.Errorf("%s Priority = %+v, want this run's %+v", f.Advisory.ID, f.Priority, want)
 				}
@@ -84,7 +89,7 @@ func TestEveryPathRanksRowsByThisRunsSignals(t *testing.T) {
 //
 //   - The pipeline and verdict packages never import internal/intel and never name a Priority.
 //   - In this package, no function reachable from findingInBuild — the verdict decision, including
-//     every grounds.go helper it calls — names Priority, the signals, priorityFor or rankBy, and
+//     every grounds.go helper it calls — names Priority, the signals, priorityFor or rankWith, and
 //     neither does any function in grounds.go itself.
 //
 // The call graph is the static one over this package's own function and method names, which
@@ -114,7 +119,7 @@ func TestNoVerdictCodeReadsPriority(t *testing.T) {
 		return files
 	}
 	// forbidden names the identifiers that read priority or signals.
-	forbidden := map[string]bool{"Priority": true, "WithPriority": true, "priorityFor": true, "rankBy": true, "Signals": true, "intel": true}
+	forbidden := map[string]bool{"Priority": true, "WithPriority": true, "priorityFor": true, "rankWith": true, "Signals": true, "intel": true}
 	reads := func(n ast.Node) string {
 		hit := ""
 		ast.Inspect(n, func(n ast.Node) bool {

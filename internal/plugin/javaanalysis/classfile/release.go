@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // release.go — folding a multi-release JAR's version entries into one body per class.
@@ -19,8 +20,16 @@ import (
 // name on the release that lacks it, so the ancestor's body would never be a target. Such a
 // one-sided member is admitted only when no ancestor can declare it: every ancestor is
 // loaded and none declares it, or the ancestor is java/lang/Object and the member is not one
-// of Object's. Private methods, constructors and static initializers are never resolved
-// through an ancestor, so they are always admitted. A class whose two bodies disagree on the
+// of Object's, or the ancestor is an unread java/ class and the member is a field or its
+// descriptor names a type no JDK release defines (ReleaseMerge.JDKType). Only the boot and
+// platform loaders define a java/ class, so it is JDK code, and JDK code is compiled against
+// the JDK alone: everything above it is JDK code too, and none of it names a type outside the
+// JDK. So no such ancestor declares the accessor javac emits for an instance member, which
+// takes the class it serves. A field matters
+// only for the class a getstatic or putstatic initializes, and a JDK class's initializer is
+// JDK code, so a field the merged class hides from a java/ ancestor loses no application
+// target. Private methods, constructors and static initializers are never resolved through
+// an ancestor, so they are always admitted. A class whose two bodies disagree on the
 // super class, the interfaces, or a shared method's flags cannot be merged at all.
 
 // ReleaseMerge accumulates the override bodies of one class set.
@@ -30,6 +39,9 @@ type ReleaseMerge struct {
 	oneSided map[string][]member
 	// origin names the version entry each override came from, for conflict messages.
 	origin map[string]string
+	// JDKType reports whether some JDK release may define the named class. When nil, every
+	// unread ancestor may declare any member.
+	JDKType func(name string) bool
 }
 
 type member struct {
@@ -184,6 +196,9 @@ func (m *ReleaseMerge) ancestorMayDeclare(name string, s member) (string, bool) 
 		}
 		ac, ok := m.classes[a]
 		if !ok {
+			if strings.HasPrefix(a, "java/") && (s.field || m.namesNonJDKType(s.desc)) {
+				continue
+			}
 			return "under ancestor " + a + ", whose members are unread", true
 		}
 		if s.field {
@@ -203,6 +218,27 @@ func (m *ReleaseMerge) ancestorMayDeclare(name string, s member) (string, bool) 
 		stack = append(stack, ac.Interfaces...)
 	}
 	return "", false
+}
+
+// namesNonJDKType reports whether descriptor desc names a class no JDK release defines.
+func (m *ReleaseMerge) namesNonJDKType(desc string) bool {
+	if m.JDKType == nil {
+		return false
+	}
+	for {
+		i := strings.IndexByte(desc, 'L')
+		if i < 0 {
+			return false
+		}
+		j := strings.IndexByte(desc[i:], ';')
+		if j < 0 {
+			return false
+		}
+		if !m.JDKType(desc[i+1 : i+j]) {
+			return true
+		}
+		desc = desc[i+j+1:]
+	}
 }
 
 // resolvedByName reports whether a method can be selected through an ancestor's member of

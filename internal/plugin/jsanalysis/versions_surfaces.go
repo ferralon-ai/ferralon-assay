@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -24,9 +25,10 @@ import (
 // deno, a pnpmfile, a copy under .yarn or .pnpm-store, a lock in a directory lockFiles skips)
 // vetoes by default instead of being listed one name at a time.
 
-// unreadSurfaces reports whether any install surface under root goes unread; locks is what
-// lockFiles(root) returned.
-func unreadSurfaces(root string, locks []string) bool {
+// unreadSurfaces reports whether any install surface under root goes unread, and whether a
+// script surface may install a package no lock or manifest read here names
+// (scriptsurface.Veto.Withheld); locks is what lockFiles(root) returned.
+func unreadSurfaces(root string, locks []string) (unread, scriptWithheld bool) {
 	read := make(map[string]bool, len(locks))
 	for _, l := range locks {
 		read[l] = true
@@ -36,12 +38,14 @@ func unreadSurfaces(root string, locks []string) bool {
 			read[m] = true
 		}
 	}
-	for _, c := range buildtree.Candidates(root, npmInstallSurface, func(path string) bool { return read[path] }) {
+	veto := scriptsurface.New(root, func(path string) bool { return read[path] }, scriptSpec)
+	for _, c := range buildtree.Candidates(root, veto.Classify(npmInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
-			return true
+			unread = true
 		}
 	}
-	return false
+	scriptWithheld = veto.Withheld()
+	return unread || scriptWithheld, scriptWithheld
 }
 
 // npmSurfaceNames are the lowercased manifests and lockfiles npm, yarn, pnpm, bun, deno and

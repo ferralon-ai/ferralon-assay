@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -47,6 +48,19 @@ func scopedTargetPrefixed(p plugin.Partiality, prefix string) bool {
 	for _, s := range p.Scoped {
 		for _, tg := range s.Targets {
 			if strings.HasPrefix(tg, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// scopedTargetNamed reports whether a scoped limit is bounded to exactly the package name.
+func scopedTargetNamed(p plugin.Partiality, name string) bool {
+	purl := originPURL(name)
+	for _, s := range p.Scoped {
+		for _, tg := range s.Targets {
+			if tg == purl || strings.HasPrefix(tg, purl+"@") {
 				return true
 			}
 		}
@@ -148,6 +162,21 @@ func TestRequireDot_InvalidPackageNameIsUnbounded(t *testing.T) {
 			}
 			if scopedTargetPrefixed(cg.Partiality, "pkg:npm/"+spec[:1]) {
 				t.Errorf("a scoped limit is bounded to an invalid name: %+v", cg.Partiality.Scoped)
+			}
+		})
+	}
+	// A scoped name with no part, a part starting with ".", or no slash at all, and the empty
+	// name, are no package either.
+	for _, spec := range []string{"@s/.x", "@s/", "@s", ""} {
+		t.Run("scoped or empty "+strconv.Quote(spec), func(t *testing.T) {
+			cg, _ := dotRun(t, "wrap/lib/sub", wrapPkg(map[string]string{
+				"index.js": "", "lib/sub.js": "require('" + spec + "');\nmodule.exports = function sub() {};\n"}))
+			if !hasReason(cg.Partiality, plugin.PartialReasonUnresolvedModule) {
+				t.Errorf("want run-wide %s; got %v / %+v", plugin.PartialReasonUnresolvedModule, cg.Partiality.Reasons, cg.Partiality.Scoped)
+			}
+			name, _ := splitBareSpecifier(spec)
+			if scopedTargetNamed(cg.Partiality, name) {
+				t.Errorf("a scoped limit is bounded to %q: %+v", name, cg.Partiality.Scoped)
 			}
 		})
 	}

@@ -345,6 +345,23 @@ func TestSemantic_G1PnpmLockVersionGate(t *testing.T) {
 	}
 }
 
+// TestSemantic_G1SelfDescribingUnknownVersion: a lock of an unread version whose packages name
+// themselves would otherwise place cleanly; the version gate alone withholds it.
+func TestSemantic_G1SelfDescribingUnknownVersion(t *testing.T) {
+	q := qPkg("1.0.0")
+	for _, tc := range []struct {
+		ver      string
+		withheld bool
+	}{{"9.0", false}, {"7.0", true}} {
+		lock := "lockfileVersion: '" + tc.ver + "'\n\nimporters:\n\n  '.': {}\n\npackages:\n\n  'opaque':\n    resolution: {integrity: " +
+			sri(q.build(t)) + "}\n    name: q\n    version: 1.0.0\n\nsnapshots:\n\n  'opaque': {}\n"
+		dir := semProgram(t, pnpmLockFile, lock, map[string]string{"package.json": manifestWith("app", nil, "")})
+		if cg := semRun(t, dir, semStore(t, q)); runWide(cg) != tc.withheld {
+			t.Errorf("%s: run-wide = %v, want %v; got %+v", tc.ver, runWide(cg), tc.withheld, cg.Partiality)
+		}
+	}
+}
+
 // TestSemantic_G2PnpmEnvDocument: pnpm 10's environment document is not placed; config
 // dependencies or a third document withhold.
 func TestSemantic_G2PnpmEnvDocument(t *testing.T) {

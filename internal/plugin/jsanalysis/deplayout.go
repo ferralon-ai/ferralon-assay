@@ -321,14 +321,8 @@ func installedName(installPath string) string {
 // the lock's edges; a phantom load of a name the region pins no copy of continues the walk above
 // the region's root. A load the region can only bound by several copies resolves to nothing.
 func (l *depLayout) lookup(fromDir, name string) *depEntry {
-	e, _ := l.find(fromDir, name)
-	return e
-}
-
-// find is lookup that also returns the copies a semantic region could only bound a load by.
-func (l *depLayout) find(fromDir, name string) (*depEntry, []*depEntry) {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
-		return nil, nil
+		return nil
 	}
 	dir := fromDir
 	if dir == "." {
@@ -342,22 +336,22 @@ func (l *depLayout) find(fromDir, name string) (*depEntry, []*depEntry) {
 	}
 	for {
 		if r := l.regionAt(dir); r != nil && r.semantic {
-			if e, copies, found := r.resolve(dir, name); found {
-				return e, copies
+			if e, found := r.resolve(dir, name); found {
+				return e
 			}
 			if r.prefix == "" {
-				return nil, nil
+				return nil
 			}
 			dir = parent(r.prefix)
 			continue
 		}
 		if path.Base(dir) != "node_modules" {
 			if e := l.byPath[path.Join(dir, "node_modules", name)]; e != nil {
-				return e, nil
+				return e
 			}
 		}
 		if dir == "" {
-			return nil, nil
+			return nil
 		}
 		dir = parent(dir)
 	}

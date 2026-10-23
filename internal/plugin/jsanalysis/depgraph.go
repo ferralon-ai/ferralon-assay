@@ -161,12 +161,6 @@ func (rs *resolver) resolveDepBare(fromModule, spec, imported string, arity int,
 	}
 	e, mods := rs.depTargets(fromModule, spec, algo == algoCJS)
 	if e == nil {
-		name, _ := splitBareSpecifier(spec)
-		if _, copies := rs.prog.deps.layout.find(moduleDir(fromModule), name); len(copies) > 0 {
-			// A phantom load of a name pinned more than once: the load site's scoped limit,
-			// bounded by the name, covers whichever copy runs.
-			base.InstanceID = originPURL(name)
-		}
 		return base
 	}
 	base.InstanceID = e.purl

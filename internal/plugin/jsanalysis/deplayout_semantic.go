@@ -20,7 +20,7 @@ import (
 //     nothing: the bundled copy is unread;
 //  3. a package loading its own name resolves to itself;
 //  4. any other (phantom) load resolves to the one copy the region pins, or, with several, to
-//     none of them, reported back so the load site can bound the limit by every copy.
+//     none of them: the load site's limit, bounded by the name, covers whichever copy runs.
 //
 // The phantom rule over-approximates every hoist setting: a load that pnpm or yarn did not in
 // fact make loadable gains an edge it would not have at run time, and never loses one.
@@ -132,33 +132,33 @@ func (l *depLayout) regionAt(dir string) *depRegion {
 
 // resolve answers a load of name from the build-relative directory dir inside r. found is false
 // only for a phantom load of a name r pins no copy of: Node's walk then continues above r.
-func (r *depRegion) resolve(dir, name string) (e *depEntry, copies []*depEntry, found bool) {
+func (r *depRegion) resolve(dir, name string) (e *depEntry, found bool) {
 	if ip := installPathOf(dir + "/_"); ip != "" {
 		req := r.byPath[ip]
 		if req == nil {
-			return nil, nil, true
+			return nil, true
 		}
 		if t, ok := req.deps[name]; ok {
-			return t, nil, true
+			return t, true
 		}
 		if req.bundles[name] {
-			return nil, nil, true
+			return nil, true
 		}
 		if installedName(req.path) == name {
-			return req, nil, true
+			return req, true
 		}
 	} else if imp := r.importerAt(dir); imp != nil {
 		if t, ok := imp.deps[name]; ok {
-			return t, nil, true
+			return t, true
 		}
 	}
 	switch c := r.copies[name]; len(c) {
 	case 0:
-		return nil, nil, false
+		return nil, false
 	case 1:
-		return c[0], nil, true
+		return c[0], true
 	default:
-		return nil, c, true
+		return nil, true
 	}
 }
 

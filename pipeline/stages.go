@@ -3069,6 +3069,9 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 		if dc := s.deps.cacheFor(store, c.ID); dc != "" {
 			req.DependencyCache = dc
 			req.Package = admittedPackagePURL(store, c.ID)
+			if req.Package == "" {
+				req.PackageVersions = affectedInstalledVersions(store, c.ID)
+			}
 		}
 		res, err := s.plugin.ResolveDependencySymbols(ctx, req)
 		if err != nil {
@@ -3593,6 +3596,34 @@ func admittedPackagePURL(store artifact.Store, caseID string) string {
 		purl = purl[:at]
 	}
 	return purl + "@" + version
+}
+
+// affectedInstalledVersions returns the assessed package's installed versions that are not provably
+// outside the advisory's affected ranges, for when the copies disagree and the inventory resolved no
+// single version. It is nil when one version was resolved, when the package is the scanned project
+// itself, or when the inventory lists no versions. A version the ranges cannot place is kept.
+func affectedInstalledVersions(store artifact.Store, caseID string) []string {
+	if RootSubject(store, caseID) {
+		return nil
+	}
+	if _, ok := ResolvedVersion(store, caseID); ok {
+		return nil
+	}
+	axis, ok := extractVersionAxis(store, caseID)
+	if !ok {
+		return nil
+	}
+	rngs, rangeKnown := extractAffectedRange(store, caseID)
+	var out []string
+	for _, v := range axis.Versions {
+		if rangeKnown {
+			if outside, ok := versionOutsideRanges(v, rngs); ok && outside {
+				continue
+			}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // resolvedSinkSCIP reads the upstream vulnerable-symbol artifact and returns the first resolved SCIP

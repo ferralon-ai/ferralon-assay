@@ -188,7 +188,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // exported methods govulncheck never searched, or a library's callers may contradict. load supplies
 // the loaded program, and is asked for it only to build the graph or to withhold a refutation.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error)) (plugin.ReachabilityResult, error) {
-	cg, err := reconcileCallGraph(buildDir, load)
+	cg, err := reconcileCallGraph(ctx, buildDir, load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
@@ -592,7 +592,7 @@ func (r goRelease) toolchain() string {
 func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string) (vulnScan, error) {
 	// The scan covers every advisory govulncheck knows for the tree; the advisory is selected only
 	// when the stream is parsed. So one stream per tree and environment answers every advisory.
-	out, err := runCached("govulncheck", append([]string{req.BuildDir}, env...), func() ([]byte, error) {
+	out, err := runCached(ctx, "govulncheck", append([]string{req.BuildDir}, env...), func() ([]byte, error) {
 		return govulncheckStream(ctx, req.BuildDir, env)
 	})
 	if err != nil {
@@ -634,8 +634,8 @@ func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]by
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
 // once per tree per scan through the run cache. The program load reads the process environment, so
 // that is part of the key.
-func reconcileCallGraph(buildDir string, load func() (*LoadResult, error)) (plugin.CallGraphResult, error) {
-	b, err := runCached("callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (plugin.CallGraphResult, error) {
+	b, err := runCached(ctx, "callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
 		loaded, err := load()
 		if err != nil {
 			return nil, err

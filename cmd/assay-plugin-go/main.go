@@ -20,9 +20,14 @@ import (
 	"os"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
+
+// envRunCacheDir carries the per-scan run cache directory the host sets for this subprocess (see
+// plugin.WithRunCacheDir); empty or unset, nothing is cached.
+const envRunCacheDir = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
 
 func main() {
 	// This process exists ONLY to analyze a single standalone module dir (the analyzed
@@ -34,7 +39,8 @@ func main() {
 	// fail with "directory prefix . does not contain modules listed in go.work". Neutralize
 	// it once at entry so every in-process analyzer is workspace-blind.
 	_ = os.Setenv("GOWORK", "off")
-	if err := run(context.Background(), os.Stdin, os.Stdout); err != nil {
+	ctx := goanalysis.WithRunCacheDir(context.Background(), os.Getenv(envRunCacheDir))
+	if err := run(ctx, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

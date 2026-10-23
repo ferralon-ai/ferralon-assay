@@ -38,10 +38,10 @@ func TestRunCached(t *testing.T) {
 			if tt.cacheDir {
 				dir = t.TempDir()
 			}
-			t.Setenv(EnvRunCacheDir, dir)
+			ctx := WithRunCacheDir(context.Background(), dir)
 			runs := 0
 			for i, key := range tt.keys {
-				out, err := runCached("test", key, func() ([]byte, error) {
+				out, err := runCached(ctx, "test", key, func() ([]byte, error) {
 					runs++
 					if tt.failFirst && runs == 1 {
 						return nil, errors.New("tool failed")
@@ -75,12 +75,12 @@ func TestRunGovulncheckSlicesCachedStream(t *testing.T) {
 {"finding":{"osv":"GO-2024-0001","trace":[{"module":"example.com/dep","version":"v1.0.0","package":"example.com/dep/a","function":"Vuln"},{"module":"example.com/app","package":"example.com/app","function":"main"}]}}
 {"finding":{"osv":"GO-2024-0002","trace":[{"module":"example.com/dep","version":"v1.0.0","package":"example.com/dep/b"}]}}
 `
-	t.Setenv(EnvRunCacheDir, t.TempDir())
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
 	// A build dir that does not exist: a cache miss would run govulncheck and fail, so a pass proves
 	// every slice came from the cached stream.
 	buildDir := filepath.Join(t.TempDir(), "absent")
 	env := []string{"GOWORK=off"}
-	if _, err := runCached("govulncheck", append([]string{buildDir}, env...), func() ([]byte, error) {
+	if _, err := runCached(ctx, "govulncheck", append([]string{buildDir}, env...), func() ([]byte, error) {
 		return []byte(stream), nil
 	}); err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestRunGovulncheckSlicesCachedStream(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := runGovulncheck(context.Background(), plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: tt.vulnID}, env)
+			got, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: tt.vulnID}, env)
 			if err != nil {
 				t.Fatalf("runGovulncheck: %v", err)
 			}
@@ -109,7 +109,7 @@ func TestRunGovulncheckSlicesCachedStream(t *testing.T) {
 			if !reflect.DeepEqual(got, want) || len(got.findings) != tt.wantLen {
 				t.Errorf("findings = %+v, want %+v (len %d)", got, want, tt.wantLen)
 			}
-			out, err := runCached("govulncheck", append([]string{buildDir}, env...), func() ([]byte, error) {
+			out, err := runCached(ctx, "govulncheck", append([]string{buildDir}, env...), func() ([]byte, error) {
 				t.Fatal("cache miss")
 				return nil, nil
 			})
@@ -151,7 +151,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(EnvRunCacheDir, t.TempDir())
+			ctx := WithRunCacheDir(context.Background(), t.TempDir())
 			files := map[string]string{}
 			for k, v := range tree {
 				files[k] = v
@@ -162,14 +162,14 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 			dir := writeTree(t, files)
 			// Seeded under the key Reachability asks for, so no govulncheck runs: a key mismatch
 			// would scan the tree for real, find nothing, and fail the kept case.
-			if _, err := runCached("govulncheck", append([]string{dir}, reachBaseEnv()...), func() ([]byte, error) {
+			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv()...), func() ([]byte, error) {
 				return []byte(stream), nil
 			}); err != nil {
 				t.Fatal(err)
 			}
 			// The first advisory builds the cached call graph; the second reads it.
 			for i := range 2 {
-				res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-2099-0001"})
+				res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-2099-0001"})
 				if err != nil {
 					t.Fatalf("advisory %d: %v", i, err)
 				}
@@ -192,10 +192,10 @@ func TestRunCacheKeys(t *testing.T) {
 	buildDir := filepath.Join(t.TempDir(), "absent")
 
 	t.Run("govulncheck", func(t *testing.T) {
-		t.Setenv(EnvRunCacheDir, t.TempDir())
+		ctx := WithRunCacheDir(context.Background(), t.TempDir())
 		const stream = `{"finding":{"osv":"GO-2024-0001","trace":[{"module":"example.com/dep","version":"v1.0.0","package":"example.com/dep"}]}}` + "\n"
 		seeded := []string{"GOWORK=off", "GOTOOLCHAIN=go1.22.0"}
-		if _, err := runCached("govulncheck", append([]string{buildDir}, seeded...), func() ([]byte, error) {
+		if _, err := runCached(ctx, "govulncheck", append([]string{buildDir}, seeded...), func() ([]byte, error) {
 			return []byte(stream), nil
 		}); err != nil {
 			t.Fatal(err)
@@ -211,7 +211,7 @@ func TestRunCacheKeys(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				got, err := runGovulncheck(context.Background(), plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: "GO-2024-0001"}, tt.env)
+				got, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: "GO-2024-0001"}, tt.env)
 				if hit := err == nil && len(got.findings) == 1; hit != tt.wantHit {
 					t.Errorf("served from the seed = %v, want %v (err %v)", hit, tt.wantHit, err)
 				}
@@ -220,9 +220,9 @@ func TestRunCacheKeys(t *testing.T) {
 	})
 
 	t.Run("call graph", func(t *testing.T) {
-		t.Setenv(EnvRunCacheDir, t.TempDir())
+		ctx := WithRunCacheDir(context.Background(), t.TempDir())
 		seed := plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}}
-		if _, err := runCached("callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+		if _, err := runCached(ctx, "callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
 			return json.Marshal(seed)
 		}); err != nil {
 			t.Fatal(err)
@@ -232,11 +232,11 @@ func TestRunCacheKeys(t *testing.T) {
 			loads++
 			return nil, errors.New("tree loaded")
 		}
-		if got, err := reconcileCallGraph(buildDir, load); err != nil || !reflect.DeepEqual(got, seed) || loads != 0 {
+		if got, err := reconcileCallGraph(ctx, buildDir, load); err != nil || !reflect.DeepEqual(got, seed) || loads != 0 {
 			t.Fatalf("same environment: got %+v, %v after %d loads, want the seed and no load", got, err, loads)
 		}
 		t.Setenv("ASSAY_RUN_CACHE_KEY_PROBE", "1")
-		if _, err := reconcileCallGraph(buildDir, load); err == nil || loads != 1 {
+		if _, err := reconcileCallGraph(ctx, buildDir, load); err == nil || loads != 1 {
 			t.Fatalf("changed environment: err %v after %d loads, want a fresh load", err, loads)
 		}
 	})
@@ -246,7 +246,7 @@ func TestRunCacheKeys(t *testing.T) {
 // the whole entry or a miss, never a prefix: a govulncheck stream cut after a package-level finding
 // parses cleanly and would refute a module the dropped lines show is called.
 func TestRunCachedReadersSeeWholeEntries(t *testing.T) {
-	t.Setenv(EnvRunCacheDir, t.TempDir())
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 1<<17) // 2 MiB
 	for round := range 16 {
 		key := []string{"/src", strconv.Itoa(round)}
@@ -257,7 +257,7 @@ func TestRunCachedReadersSeeWholeEntries(t *testing.T) {
 				defer wg.Done()
 				for hits := 0; hits < 2; {
 					computed := false
-					out, err := runCached("test", key, func() ([]byte, error) {
+					out, err := runCached(ctx, "test", key, func() ([]byte, error) {
 						computed = true
 						return payload, nil
 					})

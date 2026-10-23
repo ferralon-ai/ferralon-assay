@@ -44,8 +44,8 @@ func WithRunCacheDir(dir string) Option {
 	return func(p *goPlugin) { p.env = append(p.env, goRunCacheDirEnv+"="+dir) }
 }
 
-// goRunCacheDirEnv is read by cmd/assay-plugin-go (see internal/plugin/goanalysis), so the run
-// cache travels on the child's environment rather than on the plugin protocol.
+// goRunCacheDirEnv is read by cmd/assay-plugin-go, which hands it to the analyzer, so the run cache
+// travels on the child's environment rather than on the plugin protocol.
 const goRunCacheDirEnv = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
 
 // NewGoPlugin constructs the subprocess-backed plugin client. Binary discovery (§4.4):

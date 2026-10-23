@@ -1,27 +1,31 @@
 package goanalysis
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"path/filepath"
-
-	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
-// EnvRunCacheDir names a directory the host creates for one scan and removes after it (see
-// plugin.WithRunCacheDir). Each analyzer op runs in its own process, so without it every advisory's
-// reachability run re-executes govulncheck over the whole tree and rebuilds the reconciliation call
-// graph, getting the same answer each time. With it set, those per-tree results are computed once
-// per scan and kept here. Unset, nothing is cached and every run computes its own.
-var EnvRunCacheDir = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
+type runCacheDirKey struct{}
+
+// WithRunCacheDir returns ctx carrying the run cache: a directory the host creates for one scan and
+// removes after it (see plugin.WithRunCacheDir). Each analyzer op runs in its own process, so without
+// it every advisory's reachability run re-executes govulncheck over the whole tree and rebuilds the
+// reconciliation call graph, getting the same answer each time. With it, those per-tree results are
+// computed once per scan and kept there. Without it, or with an empty dir, nothing is cached and
+// every run computes its own.
+func WithRunCacheDir(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, runCacheDirKey{}, dir)
+}
 
 // runCached returns the bytes compute produces for the given key, reusing an earlier result from the
 // run cache when one exists. A failed compute is never stored. A cache that cannot be read or written
 // degrades to computing, never to an error. Writes go through a rename so a concurrent reader sees
 // either nothing or a whole entry.
-func runCached(kind string, key []string, compute func() ([]byte, error)) ([]byte, error) {
-	dir := os.Getenv(EnvRunCacheDir)
+func runCached(ctx context.Context, kind string, key []string, compute func() ([]byte, error)) ([]byte, error) {
+	dir, _ := ctx.Value(runCacheDirKey{}).(string)
 	if dir == "" {
 		return compute()
 	}

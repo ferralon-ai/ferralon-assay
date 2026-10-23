@@ -260,6 +260,21 @@ func TestDepGraph_OnlyTheOnPathCopy(t *testing.T) {
 			t.Errorf("%s: resolved = %v, want %v", purl, got, tc.want)
 		}
 	}
+	// Copies that disagree leave Package unversioned; the host lists the installed versions the
+	// advisory's ranges do not rule out, and only an on-path copy at one of them resolves.
+	for _, tc := range []struct {
+		versions []string
+		want     []string
+	}{
+		{[]string{"6.5.0", "6.7.0"}, []string{"npm:qs@6.7.0#parse"}},
+		{[]string{"6.5.0"}, nil},
+		{nil, nil},
+	} {
+		res := mustResolve(t, plugin.ResolveSymbolsRequest{BuildDir: f.dir, PURL: "pkg:npm/qs", PackageVersions: tc.versions, AdvisorySymbols: []string{"qs.parse"}, DependencyCache: cache})
+		if got := resolvedSCIPs(res); !slices.Equal(got, tc.want) {
+			t.Errorf("versions %v: resolved = %v, want %v", tc.versions, got, tc.want)
+		}
+	}
 }
 
 // TestDepGraph_Controls: every way dependency code goes unread or carries a limit keeps the

@@ -337,6 +337,10 @@ type ResolveSymbolsRequest struct {
 	// ReachabilityRequest. A lane that tells installed copies apart resolves the advisory's
 	// symbols only on the copy at that version. Empty means unknown.
 	Package string `json:"package,omitempty"`
+	// PackageVersions, when Package carries no version because the installed copies disagree,
+	// lists the installed versions not shown outside the advisory's affected ranges; the lane
+	// resolves the symbols on a copy at any of them.
+	PackageVersions []string `json:"package_versions,omitempty"`
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
 	DependencyCache string `json:"dependency_cache,omitempty"`

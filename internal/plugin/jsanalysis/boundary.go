@@ -359,9 +359,8 @@ func boundaryCandidates(pkg, version, symbol string) []string {
 // the call graph. A node resolves only when the graph has an edge into it; its Origin is the
 // lockfile-resolved package of the specifier it was imported through, and is absent when no
 // selected lockfile resolved that package. When the graph tells pkg's installed copies apart
-// (dependency code was read) and version names the admitted copy, only that copy's nodes
-// resolve.
-func resolveBoundarySymbols(pkg, version string, symbols []string, edges []plugin.CallEdge, bp buildPackages) (resolved []plugin.Symbol, origins map[string]string, matched map[string][]string) {
+// (dependency code was read), only the nodes of a copy whose version is in versions resolve.
+func resolveBoundarySymbols(pkg string, versions []string, symbols []string, edges []plugin.CallEdge, bp buildPackages) (resolved []plugin.Symbol, origins map[string]string, matched map[string][]string) {
 	nodes := map[string]bool{}
 	versioned := false
 	for _, e := range edges {
@@ -371,11 +370,18 @@ func resolveBoundarySymbols(pkg, version string, symbols []string, edges []plugi
 		}
 	}
 	if !versioned {
-		version = ""
+		versions = []string{""}
+	}
+	candidates := func(s string) []string {
+		var ids []string
+		for _, v := range versions {
+			ids = append(ids, boundaryCandidates(pkg, v, s)...)
+		}
+		return ids
 	}
 	seen := map[string]bool{}
 	for _, s := range symbols {
-		for _, id := range boundaryCandidates(pkg, version, s) {
+		for _, id := range candidates(s) {
 			if !nodes[id] {
 				continue
 			}

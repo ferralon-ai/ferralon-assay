@@ -125,7 +125,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
-	resolved, origins, matched := resolveBoundarySymbols(pkg, purlVersion(req.Package, pkg), req.AdvisorySymbols, graph.Edges, bp)
+	resolved, origins, matched := resolveBoundarySymbols(pkg, admittedVersions(req, pkg), req.AdvisorySymbols, graph.Edges, bp)
 	if len(resolved) == 0 {
 		return out, nil
 	}
@@ -135,6 +135,15 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	out.Resolved = append(out.Resolved, resolved...)
 	out.Origins, out.Matched = origins, matched
 	return out, nil
+}
+
+// admittedVersions is the set of pkg's installed versions the advisory's symbols resolve on: the
+// version Package pins, else PackageVersions.
+func admittedVersions(req plugin.ResolveSymbolsRequest, pkg string) []string {
+	if v := purlVersion(req.Package, pkg); v != "" {
+		return []string{v}
+	}
+	return req.PackageVersions
 }
 
 // jsSymbolMatches reports whether sym corresponds to any wanted advisory identifier.

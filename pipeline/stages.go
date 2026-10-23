@@ -166,8 +166,8 @@ func AssessStages(opts ...AssessOption) []Stage {
 		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
 	}
 	return append(stages,
-		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
+		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
 		exposureFootprintStage{},
 	)
 }
@@ -3043,6 +3043,7 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 type symbolMapping struct {
 	plugin           plugin.LanguagePlugin
 	skipDisqualified bool
+	deps             *dependencyAcquirer
 }
 
 func (symbolMapping) Name() string              { return "symbol_mapping" }
@@ -3059,12 +3060,17 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 			return err
 		}
 		purl, advisorySymbols := advisoryPURLAndSymbols(store, c.ID)
-		res, err := s.plugin.ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{
+		req := plugin.ResolveSymbolsRequest{
 			BuildDir:        buildDir,
 			VulnID:          c.Request.Vulnerability.ID,
 			PURL:            purl,
 			AdvisorySymbols: advisorySymbols,
-		})
+		}
+		if dc := s.deps.cacheFor(store, c.ID); dc != "" {
+			req.DependencyCache = dc
+			req.Package = admittedPackagePURL(store, c.ID)
+		}
+		res, err := s.plugin.ResolveDependencySymbols(ctx, req)
 		if err != nil {
 			return err
 		}
@@ -3142,6 +3148,7 @@ type reachabilityIngress struct {
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 	skipDisqualified bool
+	deps             *dependencyAcquirer
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3229,7 +3236,8 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// normalized-advisory artifact's aliases.
 	vulnID := govulnMatchID(store, c.ID, c.Request.Vulnerability.ID)
 
-	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir})
+	depCache := s.deps.cacheFor(store, c.ID)
+	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, DependencyCache: depCache})
 	if err != nil {
 		return err
 	}
@@ -3243,11 +3251,12 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
-		BuildDir:    buildDir,
-		VulnID:      vulnID,
-		Symbols:     sinks,
-		GoToolchain: requestedToolchain,
-		Package:     admittedPackagePURL(store, c.ID),
+		BuildDir:        buildDir,
+		VulnID:          vulnID,
+		Symbols:         sinks,
+		GoToolchain:     requestedToolchain,
+		Package:         admittedPackagePURL(store, c.ID),
+		DependencyCache: depCache,
 	})
 	if err != nil {
 		return err
@@ -3317,7 +3326,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}, DependencyCache: depCache})
 		if err != nil {
 			return err
 		}

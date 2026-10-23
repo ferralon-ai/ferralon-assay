@@ -49,11 +49,12 @@
 // content, and git never runs a hook under that name, so it withholds nothing while nothing
 // in the build may reach one. Any of these triggers makes every sample hook a surface again:
 // a surface's text naming .sample, hooks, dotglob or a .git directory, a glob over
-// dot-names, a directory change or prefix whose argument expands, the text of an in-tree
-// JavaScript, TypeScript, Python or Ruby file naming .sample or a .git directory, or a
-// symlink into a .git directory. The gate reads only those: script surfaces, and the raw
-// text of those source files. The build is trusted, so a form written to evade them is out
-// of scope. A sample hook is not a script the walk reads, so sourcing one withholds.
+// dot-names, a directory change or prefix whose argument expands, the raw text of any other
+// in-tree file naming .sample, dotglob or a .git directory, or a symlink into a .git
+// directory. The gate reads three things: the script surfaces; symlink targets; and every
+// other regular file outside .git except those no build runner executes (binary files,
+// docs, lockfiles and ignore files). The build is trusted, so a form written to evade them
+// is out of scope. A sample hook is not a script the walk reads, so sourcing one withholds.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
@@ -61,6 +62,7 @@
 package scriptsurface
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"os"
@@ -279,9 +281,9 @@ func (v *Veto) samplesLive() bool {
 // directory change or prefix this cannot read, which can land in a hooks directory.
 var (
 	mentionRE = regexp.MustCompile(`\.sample|hooks|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
-	// sourceRE is the mention trigger for a build script in a language no surface parses. It
-	// leaves out hooks, which every React tree's src/hooks would match.
-	sourceRE  = regexp.MustCompile(`\.sample|\.git(?:$|[^A-Za-z0-9_])`)
+	// sourceRE is the mention trigger for an in-tree file no surface parses. It leaves out
+	// hooks, which every React tree's src/hooks would match.
+	sourceRE  = regexp.MustCompile(`\.sample|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
 	dotGlobRE = regexp.MustCompile(`(?:^|[\s/"'=;&|()<>` + "`" + `])\.[^\s/"'=;&|()<>` + "`" + `]*[*?\[{]`)
 	dynDirRE  = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|-C|--prefix|--cwd)(?:\s+-{1,2}[A-Za-z]*)*(?:\s+|=)[^\s;&|)]*[$` + "`" + `]`)
 )
@@ -291,30 +293,68 @@ func (v *Veto) trigger(text string) {
 	v.triggered = v.triggered || mentionRE.MatchString(text) || dotGlobRE.MatchString(text) || dynDirRE.MatchString(text)
 }
 
-// sourceExts are the build-script languages no surface parses, whose files a lifecycle
-// script commonly runs (node scripts/setup.js, python3 tools/setup.py).
-var sourceExts = map[string]bool{".js": true, ".mjs": true, ".cjs": true, ".ts": true, ".mts": true,
-	".cts": true, ".py": true, ".rb": true}
+// lockfiles are the package-manager lockfiles, which record resolved URLs and no commands.
+var lockfiles = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.json": true, "yarn.lock": true,
+	"pnpm-lock.yaml": true, "bun.lock": true}
+
+// inertName reports whether no build runner executes the file at path, by its name: docs
+// (Markdown, reStructuredText, AsciiDoc, plain text, LICENSE, CHANGELOG, AUTHORS), a lockfile
+// or an ignore file (.gitignore, .dockerignore, .npmignore).
+func inertName(path string) bool {
+	lower := strings.ToLower(filepath.Base(path))
+	switch filepath.Ext(lower) {
+	case ".md", ".markdown", ".rst", ".adoc", ".txt":
+		return true
+	}
+	return strings.HasPrefix(lower, "license") || strings.HasPrefix(lower, "changelog") ||
+		strings.HasPrefix(lower, "authors") || lockfiles[lower] || strings.HasSuffix(lower, "ignore")
+}
+
+// binarySniff is how much of a file's start is searched for a NUL byte, which marks it binary.
+const binarySniff = 8 << 10
 
 // treeReaches reports whether the build outside the script surfaces may reach a sample hook:
-// an in-tree source file in sourceExts whose text sourceRE matches, or a symlink pointing
-// into a .git directory, so a path that names neither may reach a hooks directory. A source
-// file or link that cannot be read counts.
+// an in-tree regular file outside .git that is not a surface, not binary and not inertName
+// whose text sourceRE matches, or a symlink pointing into a .git directory, so a path that names neither
+// may reach a hooks directory. A file or link that cannot be read counts.
 func (v *Veto) treeReaches() bool {
 	found := false
 	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if sourceExts[strings.ToLower(filepath.Ext(e.Path))] && !e.D.IsDir() {
-			if e.Escapes {
+		// Nothing a build runs lives in a .git directory or a .git file (a worktree's or
+		// submodule's gitdir pointer) except hooks, which sampleHook classifies; git's own
+		// metadata names .git in remote URLs, logs and info/exclude.
+		if e.D.Name() == ".git" && !e.Symlink {
+			if e.D.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if e.Escapes {
+			found = true
+			return filepath.SkipAll
+		}
+		if e.D.Type().IsRegular() && !inertName(e.Path) {
+			head, err := buildtree.Head(e.Path)
+			if err != nil {
 				found = true
 				return filepath.SkipAll
 			}
-			if data, err := v.spec.ReadRegular(e.Path); err != nil || sourceRE.Match(data) {
+			if _, ok := surfaceOf(e.Path, head); ok {
+				return nil
+			}
+			data, err := v.spec.ReadRegular(e.Path)
+			if err != nil {
 				found = true
 				return filepath.SkipAll
 			}
+			if bytes.IndexByte(data[:min(len(data), binarySniff)], 0) < 0 && sourceRE.Match(data) {
+				found = true
+				return filepath.SkipAll
+			}
+			return nil
 		}
 		if !e.Symlink {
 			return nil

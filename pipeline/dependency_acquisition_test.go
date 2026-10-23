@@ -325,22 +325,31 @@ func TestDependencyAcquisitionTokenNotRecorded(t *testing.T) {
 	}
 }
 
-// A non-JS build gets no dependency_acquisition artifact and no inventory call.
+// goInventoryPlugin is inventoryPlugin claiming the Go lane.
+type goInventoryPlugin struct{ inventoryPlugin }
+
+func (goInventoryPlugin) Language() string { return "go" }
+
+// A non-JS build gets no dependency_acquisition artifact, whichever plugin the stage holds.
 func TestDependencyAcquisitionSkipsNonJS(t *testing.T) {
-	store := artifact.NewMemStore()
-	c := &assessment.Assessment{ID: "case-go"}
-	if _, err := PutArtifact(store, c, "codebase_inventory", artifact.TypeInventory, "", map[string]string{"build_dir": t.TempDir(), "language": "go"}); err != nil {
-		t.Fatal(err)
-	}
-	stage := dependencyAcquisition{plugin: inventoryPlugin{}, acq: &dependencyAcquirer{
-		cfg:   DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: t.TempDir()},
-		byDir: map[string]*acquiredBuild{},
-	}}
-	if err := stage.Run(context.Background(), c, store); err != nil {
-		t.Fatal(err)
-	}
-	if _, ran := DependencyAcquisitionOf(store, c.ID); ran {
-		t.Fatal("dependency_acquisition recorded a result for a Go build")
+	for _, p := range []plugin.LanguagePlugin{inventoryPlugin{}, goInventoryPlugin{}} {
+		t.Run(p.Language()+" plugin", func(t *testing.T) {
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "case-go"}
+			if _, err := PutArtifact(store, c, "codebase_inventory", artifact.TypeInventory, "", map[string]string{"build_dir": t.TempDir(), "language": "go"}); err != nil {
+				t.Fatal(err)
+			}
+			stage := dependencyAcquisition{plugin: p, acq: &dependencyAcquirer{
+				cfg:   DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: t.TempDir()},
+				byDir: map[string]*acquiredBuild{},
+			}}
+			if err := stage.Run(context.Background(), c, store); err != nil {
+				t.Fatal(err)
+			}
+			if _, ran := DependencyAcquisitionOf(store, c.ID); ran {
+				t.Fatal("dependency_acquisition recorded a result for a Go build")
+			}
+		})
 	}
 }
 

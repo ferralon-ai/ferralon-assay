@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -65,8 +66,12 @@ func (f *runFlags) resolveSignals() error {
 }
 
 // signalsSummary is the run summary's one line about signals, as of now: which file the findings
-// were ranked with and the date of its newest EPSS value — with a warning, never a failure, when
-// that is older than -advisory-signals-max-age — or that there were none, and so no priority.
+// were ranked with, the date of its newest EPSS value, and how many of its EPSS values are older
+// than -advisory-signals-max-age — with a warning, never a failure, when the newest is older than
+// that bound or over half of them are — or that there were none, and so no priority.
+//
+// The newest value alone hides a file that is mostly old: one fresh value keeps it young while
+// nearly every other value is weeks behind it. The share is what says how old the ranking is.
 func (f *runFlags) signalsSummary(now time.Time) string {
 	sig := f.resolvedSignals
 	if sig == nil {
@@ -81,11 +86,43 @@ func (f *runFlags) signalsSummary(now time.Time) string {
 	if !ok {
 		return line + "; it carries no EPSS value"
 	}
+	maxAge, bound := *f.signalsMaxAge, formatBound(*f.signalsMaxAge)
 	age := now.Sub(newest)
 	days := int(age / (24 * time.Hour))
 	line += fmt.Sprintf("; newest EPSS as_of %s (%d day(s) old)", newest.Format(time.DateOnly), days)
-	if age > *f.signalsMaxAge {
-		line += fmt.Sprintf(" — WARNING: stale, older than the %s bound (-advisory-signals-max-age); loaded anyway, and each value carries its own date", *f.signalsMaxAge)
+	stale, total := sig.StaleEPSS(now, maxAge)
+	line += fmt.Sprintf("; EPSS: %d/%d (%d%%) older than %s", stale, total, percentOf(stale, total), bound)
+	const loaded = " (-advisory-signals-max-age); loaded anyway, and each value carries its own date"
+	switch {
+	case age > maxAge:
+		line += " — WARNING: stale, even the newest EPSS value is older than the " + bound + " bound" + loaded
+	case stale*2 > total:
+		line += " — WARNING: stale, over half the EPSS values are older than the " + bound + " bound" + loaded
 	}
 	return line
+}
+
+// formatBound renders a max-age bound in whole days when it is one ("7d"), else as a duration.
+func formatBound(d time.Duration) string {
+	const day = 24 * time.Hour
+	if d%day == 0 {
+		return fmt.Sprintf("%dd", d/day)
+	}
+	return d.String()
+}
+
+// percentOf is n as a whole percentage of total, rounded, but never 0% for a non-zero n or 100% for
+// an n short of total: a share that is not all (or none) never prints as if it were.
+func percentOf(n, total int) int {
+	if total == 0 {
+		return 0
+	}
+	p := int(math.Round(100 * float64(n) / float64(total)))
+	switch {
+	case p == 0 && n > 0:
+		return 1
+	case p == 100 && n < total:
+		return 99
+	}
+	return p
 }

@@ -366,7 +366,7 @@ inputs:
       OVERRIDE for the run-snapshot endpoint a linked run pushes to (GHE / substrate / dev). Empty
       (default) = use the endpoint baked into the pinned scanner release; like ingest-url it enables
       nothing on its own. When a linked scan has assessed this repository's CANONICAL REF it pushes
-      its own tegron.report.v2 verdict layer there at run time, under the workflow's GitHub-Actions
+      its own tegron.report.v3 verdict layer there at run time, under the workflow's GitHub-Actions
       OIDC token (audience ferralon-ingest, id-token: write) — the push the console fleet view
       renders a live assessment from. The canonical ref is the one .github/ferralon.yml `analyze.ref`
       designates, and, absent that file, your repository's default branch — so a repository that sets

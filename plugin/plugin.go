@@ -380,10 +380,18 @@ type DependencyVersionResult struct {
 	// lockfile or pins it directly. False (the default) means other versions cannot be ruled out.
 	MatchesComplete bool `json:"matches_complete,omitempty"`
 	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
-	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
-	// from All is provably not a dependency. Build-isolation environments are not runtime
-	// installs: a build requirement (PEP 517 build-system.requires, setup_requires) is a
-	// declaration in All, but what the build backend pulls in transitively is not enumerated.
+	// a complete, edge-bearing lockfile covering every manifest it found, or a JVM build graph
+	// whose producer observed every way the build installs a dependency (buildgraph.Graph.Complete)
+	// and that marks nothing it installs as unlisted. A coordinate absent from All is then provably
+	// not installed by the build. The claim covers the build alone: what a container image, a
+	// deploy step or a Java agent adds at run time is outside it. A shaded copy inside another
+	// artifact is not a package of its own. Build-isolation environments are not runtime installs:
+	// a build requirement (PEP 517 build-system.requires, setup_requires) is a declaration in All,
+	// but what the build backend pulls in transitively is not enumerated.
+	// The .NET lane, whose All lists declarations only, sets it for the request's coordinate
+	// alone: every project is settled on a trusted project.assets.json, the coordinate is not
+	// one the SDK delivers outside it, and nothing else can bring a package in, so a coordinate
+	// that is not Found is provably not a dependency.
 	// False (the default, and every plugin that does not set it) means absence from All proves
 	// nothing and a consumer must fail open.
 	Exhaustive bool `json:"exhaustive,omitempty"`

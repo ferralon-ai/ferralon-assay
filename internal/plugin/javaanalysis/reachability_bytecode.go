@@ -61,7 +61,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 		reasons[r] = true
 	}
 
-	rc, err := loadReachClosure(buildDir, fp.classes, opts...)
+	rc, err := loadReachClosure(buildDir, fp.classes, fp.cp, opts...)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -77,6 +77,10 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 	for _, r := range entry.reasons {
 		reasons[r] = true
 	}
+	// A class whose supertype the run's classpath lacks cannot link: only when that classpath
+	// is the loaded one, the build's own, which a licensed launch runs on. The engine is the
+	// cached one, so this is set on every run, never left from the last.
+	rc.Engine.SetLinked(rc.Listed && len(rc.Reasons) == 0 && fp.complete() && entry.licenses())
 	mains := mainRoots(fp.classes)
 	ingresses, unmapped := ingressRoots(prog, fp.classes)
 	if len(mains) == 0 {

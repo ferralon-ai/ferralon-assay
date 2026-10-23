@@ -63,8 +63,9 @@ func TestReachability_IngressToSinkPath(t *testing.T) {
 
 // TestReachability_DynamicDispatchIsPartial proves the inv.5 honesty boundary: a program
 // whose only call to the sink is through a COMPUTED member call the lexer cannot resolve
-// yields NO ingress→sink path AND declares Partial (dynamic_dispatch + no_known_ingress) —
-// never a confident "not reachable".
+// never gets a fabricated ingress→sink path, and declares Partial (dynamic_dispatch). The
+// sink's value is stored in an object, so it is an escape root: it is searched, and its
+// path is the root alone with no ingress claimed.
 func TestReachability_DynamicDispatchIsPartial(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -99,14 +100,14 @@ function route(req, res) {
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}
-	if len(res.Paths) != 0 {
-		t.Fatalf("a computed-dispatch sink must yield NO resolved path (lexer cannot see the edge); got %+v", res.Paths)
+	if len(res.Paths) != 1 {
+		t.Fatalf("the address-taken sink is an escape root and must yield exactly its root path; got %+v", res.Paths)
+	}
+	if p := res.Paths[0]; p.Ingress != (plugin.Symbol{}) || len(p.Trace) != 1 || p.Trace[0].SCIP != sink {
+		t.Fatalf("a computed-dispatch sink must not get an ingress→sink path (lexer cannot see the edge); got %+v", p)
 	}
 	if res.Partiality.Complete {
 		t.Fatal("a computed-dispatch miss must be declared Partial, never a confident not-reachable")
-	}
-	if !hasReason(res.Partiality, plugin.PartialReasonNoIngress) {
-		t.Fatalf("an unreached sink must declare no_known_ingress; got %v", res.Partiality.Reasons)
 	}
 	if !hasReason(res.Partiality, plugin.PartialReasonDynamicDispatch) {
 		t.Fatalf("a computed-member call must declare dynamic_dispatch; got %v", res.Partiality.Reasons)

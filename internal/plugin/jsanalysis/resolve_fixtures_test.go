@@ -103,7 +103,7 @@ func TestC5_ThreeDistinctPartialityReasons(t *testing.T) {
 		"c5.js": `
 import { debounce } from 'lodash';
 const cfg = require(configPath);
-const lazy = import('./' + variant);
+const lazy = import(variant);
 
 function run() {
     return debounce(handler);

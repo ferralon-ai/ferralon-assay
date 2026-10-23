@@ -187,6 +187,37 @@ func TestLayoutVeto_RunCache(t *testing.T) {
 			t.Errorf("a vetoed build must not read a clean build's scan; got %+v", cg.Partiality)
 		}
 	})
+	t.Run("graph_caches_scan", func(t *testing.T) {
+		ctx, dir := newCtx()
+		_ = graph(ctx, clean, cCache)
+		if ents, err := filepath.Glob(filepath.Join(dir, "installsurfaces-*")); err != nil || len(ents) != 1 {
+			t.Fatalf("the call graph must cache the scan: one installsurfaces entry expected, got %v (%v)", ents, err)
+		}
+	})
+	// A corrupt entry is not an answer: both callers recompute and the vetoed build still withholds.
+	for _, bad := range []struct{ name, content string }{
+		{"corrupt_entry_garbage", "not json"},
+		{"corrupt_entry_empty", ""},
+		{"corrupt_entry_truncated", `{"Unread":tr`},
+	} {
+		t.Run(bad.name, func(t *testing.T) {
+			ctx, dir := newCtx()
+			_ = versions(ctx, vetoed)
+			ents, err := filepath.Glob(filepath.Join(dir, "installsurfaces-*"))
+			if err != nil || len(ents) != 1 {
+				t.Fatalf("one installsurfaces entry expected, got %v (%v)", ents, err)
+			}
+			if err := os.WriteFile(ents[0], []byte(bad.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if cg := graph(ctx, vetoed, vCache); !runWideWithheld(cg) {
+				t.Errorf("call graph must recompute past a corrupt entry and withhold; got %+v", cg.Partiality)
+			}
+			if res := versions(ctx, vetoed); res.Exhaustive || res.Partiality.Complete {
+				t.Errorf("versions op must recompute past a corrupt entry and withhold; got %+v", res)
+			}
+		})
+	}
 	t.Run("scan_is_cached", func(t *testing.T) {
 		ctx, dir := newCtx()
 		_ = versions(ctx, clean)
@@ -198,4 +229,28 @@ func TestLayoutVeto_RunCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// TestLayoutVeto_NoLock: a build with no lock at all still honours the veto.
+func TestLayoutVeto_NoLock(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		files    map[string]string
+		withheld bool
+	}{
+		{"ci_install_without_lock", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: npm install q@1.0.0\n")}, true},
+		{"control_no_surface_without_lock", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"index.js": guardIdle, "package.json": `{"name":"app","version":"1.0.0"}`}
+			maps.Copy(files, tc.files)
+			cg := withDeps(t, writeProgram(t, files), artifactcache.NewMemStore(nil))
+			if got := runWideWithheld(cg); got != tc.withheld {
+				t.Errorf("withheld run-wide = %v, want %v; got %+v", got, tc.withheld, cg.Partiality)
+			}
+			if !tc.withheld && !cg.Partiality.Complete {
+				t.Errorf("control must stay complete; got %+v", cg.Partiality)
+			}
+		})
+	}
 }

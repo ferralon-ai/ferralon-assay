@@ -232,6 +232,9 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	provByEdge := map[plugin.CallEdge]provenance{}
 	rootsSet := map[string]bool{}
 	var flags partialFlags
+	// A computed read accepted for its literal receiver holds only while no module of the
+	// build may set a prototype the lane does not see.
+	anyExempt, anyProto := false, false
 	addEdge := func(e plugin.CallEdge, prov provenance) {
 		if !seen[e] {
 			seen[e] = true
@@ -255,6 +258,8 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		if f.bindings.evaluated {
 			flags.evaluated = true
 		}
+		anyExempt = anyExempt || f.bindings.literalExempt
+		anyProto = anyProto || f.bindings.protoWrite
 		// A module that loads an out-of-tree package runs that package's code, whatever it
 		// later does with the binding, so the run executed code this lane did not open.
 		for _, ls := range f.bindings.specifiers {
@@ -341,6 +346,10 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				rootsSet[symID] = true
 			}
 		}
+	}
+
+	if anyExempt && anyProto {
+		flags.evaluated = true
 	}
 
 	sort.Slice(edges, func(i, j int) bool {

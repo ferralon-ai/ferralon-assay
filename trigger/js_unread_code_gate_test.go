@@ -29,6 +29,426 @@ func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 		src   string
 		files map[string]string // added to or replacing the default tree
 	}{
+
+		// W1
+		{"Function reached through a parameter and one data key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(r) { return r[k](process.argv[3])(); } invoke(g);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W2-declaration
+		{"Function reached from a local declaration", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W2-expression
+		{"Function reached from a local expression", "const j = { parse: String };\nconst g = function () {};\nconst k = process.argv[4]; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W2-arrow
+		{"Function reached from a local arrow", "const j = { parse: String };\nconst g = () => {};\nconst k = process.argv[4]; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W3-index
+		{"Function reached through optional index", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng?.[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W3-call
+		{"Function reached through optional call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k]?.(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W3-both
+		{"Function reached through optional both", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng?.[k]?.(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W4
+		{"Function reached through a parenthesised inner index", "const j = { parse: String };\nconst k = process.argv[4]; const g = {}; (g[k])[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W5
+		{"Function reached through an aliased inner index", "const j = { parse: String };\nconst k = process.argv[4]; const g = {}; const C = g[k]; C[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W6
+		{"Function aliased from one data key and later called", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst F = g[k]; F(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W7
+		{"Function passed from one data key to a callee", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(F) { return F(process.argv[3])(); } invoke(g[k]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W8-return
+		{"Function escaped through return", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction pick(r) { return r[k]; } pick(g);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W8-export
+		{"Function escaped through export", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nexport const F = g[k];\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W8-array
+		{"Function escaped through array", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst values = [g[k]];\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W8-object
+		{"Function escaped through object", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst value = { F: g[k] };\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W8-spread
+		{"Function escaped through spread", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst value = { ...g[k] };\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W9-call
+		{"Function invoked through call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k].call(null, process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W9-apply
+		{"Function invoked through apply", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k].apply(null, [process.argv[3]])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W9-bind
+		{"Function invoked through bind", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k].bind(null, process.argv[3])()();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W9-reflect
+		{"Function invoked through reflect", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nReflect.apply(g[k], null, [process.argv[3]])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W10
+		{"Function used as a template tag", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k]`return 1`();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W11
+		{"Function constructed through one data key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nnew (g[k])(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W12
+		{"Function reached through concatenated literal key pieces", "const j = { parse: String };\n(function () {})['con' + 'structor'](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W13-concat
+		{"Function reached through a data concat key", "const j = { parse: String };\nfunction g() {}\ng['con' + process.argv[4]](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W13-template
+		{"Function reached through a data template key", "const j = { parse: String };\nfunction g() {}\ng[`con${process.argv[4]}`](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W14-const
+		{"Function reached through a const key binding", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W14-ternary
+		{"Function reached through a ternary key binding", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[5] ? 'name' : process.argv[4]; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W14-or
+		{"Function reached through a or key binding", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4] || 'name'; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W14-nullish
+		{"Function reached through a nullish key binding", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4] ?? 'name'; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W15-length
+		{"Function reached through a data object length member", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(data) { return g[data.length](process.argv[3])(); } invoke({ length: k });\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W15-key
+		{"Function reached through a data object key member", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(data) { return g[data.key](process.argv[3])(); } invoke({ key: k });\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W16
+		{"Function reached through a counter reassigned from data", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nlet i = 0; i++; if (process.argv[5]) i = k; g[i](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W17-for-in
+		{"Function indexed by names from a different receiver through for-in", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst x = { [k]: 1 }; for (const name in x) { g[name](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W17-keys
+		{"Function indexed by names from a different receiver through Object.keys", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst x = { [k]: 1 }; for (const name of Object.keys(x)) { g[name](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W18-names
+		{"Function reached through prototype own names names", "const j = { parse: String };\nconst p = Object.getPrototypeOf(function () {}); for (const name of Object.getOwnPropertyNames(p)) { p[name](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W18-keys
+		{"Function reached through prototype own names keys", "const j = { parse: String };\nconst p = Object.getPrototypeOf(function () {}); for (const name of Reflect.ownKeys(p)) { p[name](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W19
+		{"Function inherited through an object literal prototype", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = { __proto__: g }; r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W20
+		{"Function inherited after a prototype write in the same file", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {}; Object.setPrototypeOf(r, g); r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W21
+		{"Function inherited after a prototype write in another file", "const j = { parse: String };\nimport { r } from './receiver.js';\nimport './mutate.js';\nconst k = process.argv[4]; r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", map[string]string{"mutate.js": "import { r } from './receiver.js'; function g() {} Object.setPrototypeOf(r, g);", "receiver.js": "export const r = {};"}},
+
+		// W21-local
+		{"Function on a local plain receiver with a prototype channel elsewhere", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nimport './mutate.js';\nconst r = {}; r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", map[string]string{"mutate.js": "const other = {}; function g() {} Object.setPrototypeOf(other, g);"}},
+
+		// W22
+		{"Function read from a receiver spreading unknown data", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(data) { const r = { ...data }; return r[k](process.argv[3])(); } invoke({ [k]: g });\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W23
+		{"Function read from a receiver reassigned from a parameter", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(data) { let r = {}; r = data; return r[k](process.argv[3])(); } invoke(g);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W24
+		{"Function read from a method this bound to a function", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst holder = { invoke() { return this[k](process.argv[3])(); } }; holder.invoke.call(g);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W25
+		{"Function read from an imported in-tree binding", "const j = { parse: String };\nimport { g } from './receiver.js'; const k = process.argv[4]; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", map[string]string{"receiver.js": "export function g() {}"}},
+
+		// W26
+		{"Function read through an array coerced key", "const j = { parse: String };\nfunction g() {} g[['constructor']](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W27
+		{"Function read through Reflect get and an array coerced key", "const j = { parse: String };\nfunction g() {} Reflect.get(g, ['constructor'])(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W28
+		{"Function read through Reflect apply targeting Reflect get", "const j = { parse: String };\nfunction g() {} Reflect.apply(Reflect.get, null, [g, 'constructor'])(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W29-values
+		{"Function read from descriptor enumeration values", "const j = { parse: String };\nconst p = Object.getPrototypeOf(function () {}); const ds = Object.getOwnPropertyDescriptors(p); Object.values(ds).find(d => typeof d.value === \"function\").value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W29-entries
+		{"Function read from descriptor enumeration entries", "const j = { parse: String };\nconst p = Object.getPrototypeOf(function () {}); const ds = Object.getOwnPropertyDescriptors(p); Object.entries(ds).find(pair => typeof pair[1].value === \"function\")[1].value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W30
+		{"Function read through Reflect get with a data key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nReflect.get(g, k)(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W31-Object-value
+		{"Function read through Object descriptor value", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst p = Object.getPrototypeOf(g);Object.getOwnPropertyDescriptor(p, k).value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W31-Object-get
+		{"Function read through Object descriptor get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst p = { get [k]() { return Object.getPrototypeOf(g)[k]; } };Object.getOwnPropertyDescriptor(p, k).get(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W31-Reflect-value
+		{"Function read through Reflect descriptor value", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst p = Object.getPrototypeOf(g);Reflect.getOwnPropertyDescriptor(p, k).value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W31-Reflect-get
+		{"Function read through Reflect descriptor get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst p = { get [k]() { return Object.getPrototypeOf(g)[k]; } };Reflect.getOwnPropertyDescriptor(p, k).get(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W32
+		{"Function read through computed destructuring", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst { [k]: F } = g; F(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W33-alias
+		{"Function read through a alias of Reflect get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst get = Reflect.get; get(g, k)(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W33-destructure
+		{"Function read through a destructure of Reflect get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst { get } = Reflect; get(g, k)(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W34-callback
+		{"Function getter escaped through callback", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction use(get) { return get(g, k); } use(Reflect.get);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W34-object
+		{"Function getter escaped through object", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst api = { get: Reflect.get };\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// G5-Reflect-reclassified
+		{"Reflect indexed by a data member", "const j = { parse: String };\nfunction g() {} const m = process.argv[4]; Reflect[m](g, process.argv[5])(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// G5-Object-reclassified
+		{"Object indexed by a data member", "const j = { parse: String };\nfunction g() {} const m = process.argv[4]; Object[m](Object.getPrototypeOf(g), process.argv[5]).value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W35-constructor-member
+		{"Function reached through own-key enumeration of a constructor member", "const j = { parse: String };\nconst r = { run: s => s, constructor: Function };\nfor (const k in r) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W35-member-write
+		{"Function reached through own-key enumeration after a member write", "const j = { parse: String };\nconst r = { run: s => s };\nr.constructor = Function;\nfor (const k of Object.keys(r)) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-*: each row holds one key, receiver, prototype-channel or 2a guard on its own.
+		// M-key-assignment
+		{"Function reached through an assignment-expression key binding", "const j = { parse: String };\nfunction g() {}\nlet x;\nconst k = (x = process.argv[4]); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-generic
+		{"Function reached through a generic call key binding", "", map[string]string{"index.ts": "const j = { parse: String };\nfunction g() {}\nfunction id<T>(v: T): T { return v; }\nconst k = id<string>(process.argv[4]); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}},
+
+		// M-key-Symbol-shadowed
+		{"Function reached through a shadowed Symbol key binding", "const j = { parse: String };\nfunction g() {}\nconst Symbol = (s) => s;\nconst k = Symbol(process.argv[4]); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-undefined-shadowed
+		{"Function reached through a parameter named undefined", "const j = { parse: String };\nfunction g() {}\nfunction h(undefined) { g[undefined](process.argv[3])(); }\nh(process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-rebound
+		{"Function reached through a key rebound by destructuring", "const j = { parse: String };\nfunction g() {}\nlet k = 'name';\n[k] = [process.argv[4]];\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-compound
+		{"Function reached through a key extended with data", "const j = { parse: String };\nfunction g() {}\nlet k = 'na';\nk += process.argv[4];\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-import
+		{"Function reached through an imported key", "const j = { parse: String };\nfunction g() {}\nimport k from 'key-name';\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-top-var
+		{"Function reached through a top-level var key rewritten on the global object", "const j = { parse: String };\nfunction g() {}\nvar k = 'name';\nglobalThis.k = process.argv[4];\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-symbol-description
+		{"Function reached through a key destructured from a symbol description", "const j = { parse: String };\nfunction g() {}\nconst { description: k } = Symbol(process.argv[4]);\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-entries-value
+		{"Function reached through an Object.entries value with a prototype channel", "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst r = { a: process.argv[4] };\nfor (const [n, k] of Object.entries(r)) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-array-element
+		{"Function reached through a data element of an iterated array", "const j = { parse: String };\nfunction g() {}\nfor (const k of ['name', process.argv[4]]) { g[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-Object-shadowed
+		{"Function reached through a shadowed Object.keys with a prototype channel", "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst Object = { keys: () => [process.argv[4]] };\nconst r = { name: 1 };\nfor (const k of Object.keys(r)) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-reduce
+		{"Function reached through a reduce accumulator seeded with data", "const j = { parse: String };\nfunction g() {}\n['name'].reduce((k) => { g[k](process.argv[3])(); return k; }, process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-template-cut
+		{"Function reached through a template whose substitution holds a comma", "const j = { parse: String };\nfunction g() {}\nconst k = `x${0, process.argv[4]}`.slice(1); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-key-template-escape
+		{"Function reached through an escaped template piece", "const j = { parse: String };\nfunction g() {}\nconst k = `\\x63${process.argv[4]}`; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-receiver-top-var
+		{"Function reached through a top-level var receiver rewritten on the global object", "const j = { parse: String };\nfunction g() {}\nvar r = { run: (s) => s };\nglobalThis.r = g;\nconst k = process.argv[4];\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-receiver-rebound
+		{"Function reached through a receiver rebound by destructuring", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nlet r = { run: (s) => s };\n[r] = [g];\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-receiver-param-var
+		{"Function reached through a parameter redeclared as a function-scoped var", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(r) { r[k](process.argv[3])(); var r = { run: (s) => s }; } invoke(g);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-receiver-constructor-key
+		{"Code evaluated through a constructor member of an enumerated literal", "const j = { parse: String };\nfunction g() {}\nconst r = { run: (s) => s, constructor: require('vm').runInThisContext };\nfor (const k in r) { r[k](process.argv[3]); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-receiver-quoted-constructor-key
+		{"Code evaluated through a quoted constructor member of an enumerated literal", "const j = { parse: String };\nfunction g() {}\nconst r = { run: (s) => s, 'constructor': require('vm').runInThisContext };\nfor (const k in r) { r[k](process.argv[3]); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-receiver-member
+		{"Function reached through a member receiver named like a local literal", "const j = { parse: String };\nfunction g() {}\nconst r = { run: (s) => s };\nconst x = { r: g };\nconst k = process.argv[4];\nx.r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-enum-other-literal
+		{"Function reached through keys enumerated from a different literal with a prototype channel", "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst x = { constructor: 1 };\nconst r = { run: (s) => s };\nfor (const k in x) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-enum-parameter
+		{"Code evaluated through keys enumerated from a parameter receiver", "const j = { parse: String };\nfunction g() {}\nfunction h(r) { for (const k in r) { r[k](process.argv[3])(); } }\nh(require('vm'));\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-hidden-text
+		{"Function inherited through a prototype write in text the lexer blanks", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nconst el = <p>don't</p>; Object.setPrototypeOf(r, g);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-hidden-receiver
+		{"Function on a plain receiver in text the lexer blanks with a prototype channel elsewhere", "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst k = process.argv[4];\nconst el = <p>don't</p>; const r = {}; r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-computed-write
+		{"Function inherited through a computed write with a data key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nr[process.argv[5]] = g;\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-quoted-key
+		{"Function inherited through a quoted __proto__ key in a prototype value", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nObject.setPrototypeOf(r, { '__proto__': g });\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-bare-key
+		{"Function inherited through a __proto__ key in a prototype value", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nObject.setPrototypeOf(r, { __proto__: g });\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-setPrototypeOf-alias
+		{"Function inherited through an aliased setPrototypeOf", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nconst sp = Object.setPrototypeOf;\nsp(r, g);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-Reflect.set-spread
+		{"Function inherited through Reflect.set with spread arguments", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nconst args = [r, '__proto__', g];\nReflect.set(...args);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-Reflect.set-key
+		{"Function inherited through Reflect.set with a data key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nReflect.set(r, process.argv[5], g);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-proto-member-assign
+		{"Function inherited through a __proto__ assignment", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nr.__proto__ = g;\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-2a-package-path
+		{"Function reached through a constructor path array handed to a package", "const j = { parse: String };\nfunction g() {}\nconst _ = require('lodash');\n_.get(g, ['constructor'])(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// M-2a-concat
+		{"Function reached through a constructor path array copied by concat", "const j = { parse: String };\nfunction g() {}\nconst _ = require('lodash');\n_.get(g, ['constructor'].concat([]))(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// X*: second-hop keys, literal-bracket reflective members, block functions over a var and
+		// private names. E*p and K24p hold the enumeration and callback-parameter guards.
+		// X1
+		{"Function invoked through a second key bound to call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst c = 'call';\ng[k][c](null, process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X2
+		{"Function invoked through a parenthesised second key naming call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k][('call')](null, process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X3
+		{"Function invoked through a concatenated second key naming call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k]['ca' + 'll'](null, process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X5
+		{"Function invoked through apply on a const holding a data-keyed read", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst F = g[k];\nconst c = 'apply';\nF[c](null, [process.argv[3]])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X6
+		{"Function bound through a second key bound to bind", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst c = 'bind';\ng[k][c](null, process.argv[3])()();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X9
+		{"Function read through Reflect get spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nReflect['get'](g, k)(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X10b
+		{"Function read through an Object descriptor spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nObject[\"getOwnPropertyDescriptor\"](Object.getPrototypeOf(g), k).value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X11
+		{"Function read through Reflect reached by a literal bracket on globalThis", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nglobalThis['Reflect'].get(g, k)(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X12
+		{"Function inherited through Reflect setPrototypeOf spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst o = {};\nReflect['setPrototypeOf'](o, g);\no[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X13
+		{"Function inherited through Object setPrototypeOf spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst o = {};\nObject['setPrototypeOf'](o, g);\no[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X17
+		{"Function reached through a var receiver overwritten by a block function declaration", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; if (k) { function o() {} } return o[k](process.argv[3])(); }\nrun(process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X18
+		{"Function reached through a private field named like a local literal", "const j = { parse: String };\nfunction g() {}\nclass A { #o = g; m(k) { const o = {}; return this.#o[k](process.argv[3])(); } }\nnew A().m(process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X18-key
+		{"Function reached through a private field key named like a safe local key", "const j = { parse: String };\nfunction g() {}\nclass A { #k = process.argv[4]; m() { const k = 'name'; return g[this.#k](process.argv[3])(); } }\nnew A().m();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		{"Function read through a descriptor value named by a concatenated key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst v = 'val' + 'ue';\nObject.getOwnPropertyDescriptor(Object.getPrototypeOf(g), k)[v](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		{"Function read through a descriptor get named by a concatenated key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst v = 'g' + 'et';\nObject.getOwnPropertyDescriptor(Object.getPrototypeOf(g), k)[v](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E01p
+		{"Function enumerated from a literal after a member write of a reflective read", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\no.b = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E02p
+		{"Function enumerated from a literal after a computed write of a reflective read", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\no['b'] = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E03p
+		{"Function enumerated from a literal handed to a call that writes it", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\nfunction put(t) { t.b = Reflect['get'](g, process.argv[4]); }\nput(o);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E04p
+		{"Function enumerated from a literal written through an alias", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\nconst t = o;\nt.b = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// K24p
+		{"Function reached through an iterated array rewritten through its callback", "const j = { parse: String };\nfunction g() {}\n['a'].forEach((k, i, arr) => { arr[0] = process.argv[4]; g[arr](process.argv[3])(); });\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E01w
+		{"Function enumerated from a literal after a member write of a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nwith ({ c: process.argv[4] }) { o.b = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E02w
+		{"Function enumerated from a literal after a computed write of a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nwith ({ c: process.argv[4] }) { o['b'] = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E03w
+		{"Function enumerated from a literal handed to a call that writes a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nfunction put(t) { with ({ c: process.argv[4] }) { t.b = g[c]; } }\nput(o);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E04w
+		{"Function enumerated from a literal written through an alias with a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nconst t = o;\nwith ({ c: process.argv[4] }) { t.b = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A1
+		{"Function reached through Reflect indexed by a const naming get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; Reflect[m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A2
+		{"Function reached through Reflect indexed by a concatenation naming get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Reflect['g' + 'et'](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A3
+		{"Function reached through Reflect indexed by a parenthesised get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Reflect[('get')](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A5
+		{"Function reached through a prototype set by Object indexed by a const", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'setPrototypeOf'; const o = {}; Object[m](o, g); o[k](process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A6
+		{"Function reached through a descriptor from Object indexed by a concatenation", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Object['getOwnProperty' + 'Descriptor'](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A25
+		{"Function reached through Reflect.apply of Reflect indexed by a const", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; Reflect.apply(Reflect[m], null, [g, k])(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// U1
+		{"Function reached through Reflect indexed by a key that never resolves", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Reflect[process.argv[5]](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S1
+		{"Function reached through Reflect read as a member of the global", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; globalThis.Reflect[m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S2
+		{"Function reached through Reflect read from the global by a literal key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; globalThis['Reflect'][m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S3
+		{"Function reached through Reflect read from a function's this by a const key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; const r = 'Reflect'; function f() { return this[r][m](g, k)(process.argv[3])(); } f();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S4
+		{"Function reached through a parenthesised Object", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; (Object)[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S5
+		{"Function reached through Object as the last operand of a comma", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; (0, Object)[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S6
+		{"Function reached through Reflect indexed by optional chaining", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; Reflect?.[m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S7
+		{"Function reached through Object handed to a function as an argument", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; function f(O) { return O[m](Object.getPrototypeOf(g), k).value(process.argv[3])(); } f(Object);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S8
+		{"Function reached through Object held in an object literal", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; const o = { O: Object }; o.O[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S9
+		{"Function reached through a class extending Object indexed by a const", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; class X extends Object {} X[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S10
+		{"Function reached through Reflect.get reading Object under a const key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; Reflect.get(Object, m)(Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A12
+		{"Function bound over a var receiver by an if body without braces", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; if (k) function o() {} return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A13
+		{"Function bound over a var receiver by a switch case", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; switch (1) { case 1: function o() {} } return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A14
+		{"Function bound over a var receiver by a labelled declaration", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; { l: function o() {} } return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// B1
+		{"Function bound over a var receiver from a doubly nested block", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; { { function o() {} } } return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// B2
+		{"Function bound over a var receiver by a do-while body", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; do { function o() {} } while (0); return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// U2-with
+		{"Function reached through Reflect indexed by a const a with statement rebinds", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'has'; with ({ m: 'get' }) { Reflect[m](g, k)(process.argv[3])(); }function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S11
+		{"Function reached through Reflect read from a function's this by a parameter key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; function f(r) { return this[r][m](g, k)(process.argv[3])(); } f('Reflect');function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// U3-let
+		{"Function reached through Reflect indexed by a let a loop update rebinds", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; for (let m = 'has'; m; m = m === 'has' ? 'get' : '') { if (m === 'get') Reflect[m](g, k)(process.argv[3])(); }function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		{"binding alias", `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }
@@ -1514,6 +1934,123 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		src   string
 		files map[string]string
 	}{
+
+		// C1
+		{"dispatch table indexed by a safe literal", "const j = { parse: String };\nconst table = { run: s => s }; table['run']('x');", nil},
+
+		// C2
+		{"scoped dispatch table indexed by data", "const j = { parse: String };\nfunction dispatch(k) { const table = { run: s => s }; return table[k]('x'); } dispatch(process.argv[4]);", nil},
+
+		// C3
+		{"top-level const dispatch table indexed by data", "const j = { parse: String };\nconst table = { run: s => s }; table[process.argv[4]]('x');", nil},
+
+		// C3-private
+		{"top-level const dispatch table beside an updated private field of its name", "const j = { parse: String };\nconst table = { run: s => s }; class A { #table; m() { this.#table++; } } table[process.argv[4]]('x');", nil},
+
+		// R3C1
+		{"Object indexed by a const naming keys", "const j = { parse: String };\nconst table = { run: s => s }; const m = 'keys'; Object[m](table).length; table[process.argv[4]]('x');", nil},
+
+		// R3C2
+		{"Reflect indexed by a concatenation naming has", "const j = { parse: String };\nconst table = { run: s => s }; Reflect['h' + 'as'](table, 'run'); table[process.argv[4]]('x');", nil},
+
+		// R3C3
+		{"var receiver beside a same-named function declared in a nested function", "const j = { parse: String };\nfunction run(k) { var o = { a: s => s }; function h() { { function o() {} } } return o[k]('x'); } run(process.argv[4]);", nil},
+
+		// R3C4
+		{"Object and Reflect only tested", "const j = { parse: String };\nconst table = { run: s => s }; if (table instanceof Object && typeof Reflect === 'object' && table.constructor === Object) { table[process.argv[4]]('x'); }", nil},
+
+		// C5
+		{"function array indexed by a numeric counter", "const j = { parse: String };\nconst table = [s => s]; for (let i = 0; i < table.length; i++) table[i]('x');", nil},
+
+		// C6-arithmetic
+		{"function indexed by a arithmetic key", "const j = { parse: String };\nfunction g() {} g[process.argv[4] - 1]('x');", nil},
+
+		// C6-unary
+		{"function indexed by a unary key", "const j = { parse: String };\nfunction g() {} g[+process.argv[4]]('x');", nil},
+
+		// C6-numeric
+		{"function indexed by a numeric key", "const j = { parse: String };\nfunction g() {} g[0]('x');", nil},
+
+		// C7-concat
+		{"function indexed by a digit-ending concat", "const j = { parse: String };\nfunction g() {} g[process.argv[4] + 1]('x');", nil},
+
+		// C7-template
+		{"function indexed by a digit-ending template", "const j = { parse: String };\nfunction g() {} g[`${process.argv[4]}1`]('x');", nil},
+
+		// C8-concat
+		{"function indexed by an impossible concat key", "const j = { parse: String };\nfunction g() {} g['_' + process.argv[4]]('x');", nil},
+
+		// C8-template
+		{"function indexed by an impossible template key", "const j = { parse: String };\nfunction g() {} g[`X${process.argv[4]}`]('x');", nil},
+
+		// C9-for-of
+		{"safe literal iteration through for-of", "const j = { parse: String };\nfunction g() {} for (const k of ['name', 'length']) { g[k]('x'); }", nil},
+
+		// C9-foreach
+		{"safe literal iteration through foreach", "const j = { parse: String };\nfunction g() {} ['name', 'length'].forEach(k => g[k]('x'));", nil},
+
+		// C10-for-in
+		{"same receiver own enumeration through for-in", "const j = { parse: String };\nconst r = { run: s => s }; for (const k in r) { r[k]('x'); }", nil},
+
+		// C10-keys
+		{"same receiver own enumeration through keys", "const j = { parse: String };\nconst r = { run: s => s }; for (const k of Object.keys(r)) { r[k]('x'); }", nil},
+
+		// C10-entries
+		{"same receiver own enumeration through entries", "const j = { parse: String };\nconst r = { run: s => s }; for (const [k, value] of Object.entries(r)) { r[k]('x'); }", nil},
+
+		// C11-includes
+		{"constructor deny list searched with includes", "const j = { parse: String };\nconst k = process.argv[4]; if (['constructor'].includes(k)) load('x');", nil},
+
+		// C11-indexOf
+		{"constructor deny list searched with indexOf", "const j = { parse: String };\nconst k = process.argv[4]; if (['constructor'].indexOf(k)) load('x');", nil},
+
+		// C11-some
+		{"constructor deny list searched with some", "const j = { parse: String };\nconst k = process.argv[4]; if (['constructor'].some(x => x === k)) load('x');", nil},
+
+		// C12-compare
+		{"data keyed function member only used as compare", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nif (g[k] === null) load(\"x\");", nil},
+
+		// C12-typeof
+		{"data keyed function member only used as typeof", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nif (typeof g[k] === \"function\") load(\"x\");", nil},
+
+		// C12-assign
+		{"data keyed function member only used as assign", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k] = 1;", nil},
+
+		// C12-arithmetic
+		{"data keyed function member only used as arithmetic", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst n = g[k] - 1;", nil},
+
+		// C12-member
+		{"data keyed function member only used as member", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst n = g[k].name;", nil},
+
+		// C12-alias
+		{"data keyed function member only used as alias", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst F = g[k]; if (typeof F === \"function\" && F.name !== \"\") load(\"x\");", nil},
+
+		// C13
+		{"numeric matrix read written and compared", "const j = { parse: String };\nconst grid = [[0]]; let n = 0; for (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }", nil},
+
+		// C14
+		{"Reflect get with a safe literal", "const j = { parse: String };\nfunction g() {} const name = Reflect.get(g, 'name');", nil},
+
+		// C15-member
+		{"descriptors result only used as member", "const j = { parse: String };\nfunction g() {} const n = Object.getOwnPropertyDescriptors(g).name;", nil},
+
+		// C15-in
+		{"descriptors result only used as in", "const j = { parse: String };\nfunction g() {} if ('name' in Object.getOwnPropertyDescriptors(g)) load('x');", nil},
+
+		// C15-hasOwnProperty
+		{"descriptors result only used as hasOwnProperty", "const j = { parse: String };\nfunction g() {} if (Object.getOwnPropertyDescriptors(g).hasOwnProperty('name')) load('x');", nil},
+
+		// C-key-const
+		{"safe keys propagated through const", "const j = { parse: String };\nfunction g() {} const key = 'name'; g[key]('x');", nil},
+
+		// C-key-ternary
+		{"safe keys propagated through ternary", "const j = { parse: String };\nfunction g() {} const key = process.argv[5] ? 'name' : 'length'; g[key]('x');", nil},
+
+		// C-key-or
+		{"safe keys propagated through or", "const j = { parse: String };\nfunction g() {} const key = 'name' || 'length'; g[key]('x');", nil},
+
+		// C-key-nullish
+		{"safe keys propagated through nullish", "const j = { parse: String };\nfunction g() {} const key = 'name' ?? 'length'; g[key]('x');", nil},
 		{"plain require of an in-tree module", "const j = require('./plugins');", nil},
 		{"static import of an in-tree module", "import { parse } from './plugins/index.js';\nconst j = { parse };", nil},
 		{"require property of a plain object", "const opts = { a: 1 };\nconst r = opts.require;\nconst j = require('./plugins');", nil},
@@ -1532,7 +2069,31 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"a prototype-pollution guard on a constructor key", "function set(o, k, v) { if (k === '__proto__' || k === 'constructor') return; o[k] = v; }\nconst name = Reflect.get(set, 'name');\nconst j = require('./plugins');", nil},
 		{"arguments inside class methods", "class A { m() { return arguments[0]; } static s() { return arguments.length; } constructor() { this.n = arguments.length; } }\nconst j = require('./plugins');", nil},
 		{"this.constructor constructed with no arguments", "class Box { clone() { return new this.constructor(); } }\nfunction Foo() {}\nFoo.prototype.clone = function () { return new this.constructor; };\nclass Reg { static make() { return new this.constructor(); } }\nconst j = require('./plugins');", nil},
-		{"the webpack 5 runtime handing its module record to a module factory", "var __webpack_modules__ = {};\nvar __webpack_module_cache__ = {};\nfunction __webpack_require__(moduleId) {\n  var cachedModule = __webpack_module_cache__[moduleId];\n  if (cachedModule !== undefined) return cachedModule.exports;\n  var module = __webpack_module_cache__[moduleId] = { exports: {} };\n  __webpack_modules__[moduleId](module, module.exports, __webpack_require__);\n  return module.exports;\n}\nconst j = require('./plugins');", nil},
+		{"the webpack 5 runtime handing its module record to a module factory", `(() => { // webpackBootstrap
+	var __webpack_modules__ = ({
+"./src/a.js":
+((module) => {
+module.exports = { f: (s) => String(s).trim() };
+})
+	});
+	var __webpack_module_cache__ = {};
+	function __webpack_require__(moduleId) {
+		var cachedModule = __webpack_module_cache__[moduleId];
+		if (cachedModule !== undefined) {
+			return cachedModule.exports;
+		}
+		var module = __webpack_module_cache__[moduleId] = {
+			exports: {}
+		};
+		__webpack_modules__[moduleId](module, module.exports, __webpack_require__);
+		return module.exports;
+	}
+const a = __webpack_require__(/*! ./a */ "./src/a.js");
+console.log(a.f(process.argv[2]));
+})()
+;
+const j = require('./plugins');`, nil},
+		{"the minified webpack 5 runtime handing its module record to a module factory", "(()=>{var r={967:r=>{r.exports={f:r=>String(r).trim()}}},o={};const t=function t(e){var s=o[e];if(void 0!==s)return s.exports;var n=o[e]={exports:{}};return r[e](n,n.exports,t),n.exports}(967);console.log(t.f(process.argv[2]))})();\nconst j = require('./plugins');", nil},
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"process renamed and nested in patterns off globalThis, data members only", "const { process: pr } = globalThis;\nconst { process: { env } } = globalThis;\nconst mode = pr.env.NODE_ENV || env.HOME;\nconst j = require('./plugins');", nil},

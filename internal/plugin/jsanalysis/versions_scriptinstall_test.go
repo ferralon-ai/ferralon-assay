@@ -19,7 +19,6 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		yarnPkg  = `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.18.0"}}`
 
 		sampleInstall = "#!/bin/sh\nnpm install left-pad\n"
-		sampleEcho    = "#!/bin/sh\necho\n"
 	)
 	pkg := func(scripts string) string {
 		if scripts == "" {
@@ -31,6 +30,14 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		files := map[string]string{"package.json": pkg(""), "package-lock.json": lock}
 		for k, v := range extra {
 			files[k] = v
+		}
+		return files
+	}
+	// sample is a build holding an installing sample hook, with scripts and further files.
+	sample := func(scripts string, more ...string) map[string]string {
+		files := npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(scripts)})
+		for i := 0; i+1 < len(more); i += 2 {
+			files[more[i]] = more[i+1]
 		}
 		return files
 	}
@@ -158,8 +165,21 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"sample hook run in a command substitution", npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(`"x":"echo $(./.git/hooks/pre-commit.sample)"`)}), false, ""},
 		{"sample hook run in backticks", npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(`"x":"echo ` + "`./.git/hooks/pre-commit.sample`" + `"`)}), false, ""},
 		{"lock rewritten in a group", npm(map[string]string{"package.json": pkg(`"pre":"{ sed -i s/x/y/ package-lock.json; }","build":"npm ci"`)}), false, ""},
-		{"glob of every source file beside a sample hook", npm(map[string]string{".git/hooks/pre-commit.sample": sampleEcho, "package.json": pkg(`"format":"prettier --write \"src/**/*\""`)}), true, ""},
-		{"glob of the build root beside a sample hook", npm(map[string]string{".git/hooks/pre-commit.sample": sampleEcho, "package.json": pkg(`"clean":"rm -rf *"`)}), true, ""},
+		{"sample hook run with a glued redirect", sample(`"x":"./.git/hooks/pre-commit.sample>out"`), false, ""},
+		{"sample hook run in a glued group", sample(`"x":"{ ./.git/hooks/pre-commit.sample&&true; }"`), false, ""},
+		{"sample hook run in a glued command substitution", sample(`"x":"echo $(./.git/hooks/pre-commit.sample)x"`), false, ""},
+		{"sample hook run in sh -c", sample(`"x":"sh -c 'echo \"$(./.git/hooks/pre-commit.sample)\"'"`), false, ""},
+		{"sample hooks run by a script's loop", sample(`"x":"sh scripts/hooks.sh"`, "scripts/hooks.sh", "for h in .git/hooks/*.sample; do sh \"$h\"; done\n"), false, ""},
+		{"sample hooks run after command cd", sample(`"x":"command cd .git/hooks && sh ./*.sample"`), false, ""},
+		{"sample hook run by a sourced script", sample(`"x":". ./go.sh"`, "go.sh", "cd .git/hooks && ./pre-commit.sample\n"), false, ""},
+		{"sample hooks run through eval", sample(`"x":"eval 'cd .git/hooks && ./*.sample'"`), false, ""},
+		{"sample hooks run through a dot-glob", sample(`"x":"cd .g*/h* && ./*"`), false, ""},
+		{"sample hooks run from a variable directory", sample(`"x":"cd \"$GITDIR\" && ./*"`), false, ""},
+		{"glob of every source file beside a sample hook", sample(`"format":"prettier --write \"src/**/*\""`), true, ""},
+		{"glob of the build root beside a sample hook", sample(`"clean":"rm -rf *"`), true, ""},
+		{"glob of another directory beside a sample hook", sample(`"zip":"cd dist && zip -r x.zip *"`, "dist/a.txt", "a\n"), true, ""},
+		{"glob of every dotted name in the build root beside a sample hook", sample(`"copy":"cp *.* out/"`), true, ""},
+		{"build beside a sample hook", sample(`"build":"tsc"`), true, ""},
 		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), false, ""},
 	}
 	for _, tt := range tests {
@@ -264,6 +284,29 @@ func TestResolveVersions_ScriptForms(t *testing.T) {
 			}
 			if r.Match.Resolved != tt.want {
 				t.Fatalf("Resolved = %v, want %v (match %+v)", r.Match.Resolved, tt.want, r.Match)
+			}
+		})
+	}
+}
+
+// A symlink into .git lets a path naming neither reach a sample hook, so the hooks are surfaces.
+func TestResolveVersions_SampleHookThroughSymlink(t *testing.T) {
+	const lock = `{"name":"app","lockfileVersion":3,"packages":{` +
+		`"":{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"}},` +
+		`"node_modules/express":{"version":"4.19.2"}}}`
+	for _, tt := range []struct{ name, script string }{
+		{"cp of sample hooks through the link", `cp s*/h/*.sample x/`},
+		{"sample hook run through the link", `sh src/h/pre-commit.s*`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{"package-lock.json": lock,
+				".git/hooks/pre-commit.sample": "#!/bin/sh\nnpm install left-pad\n",
+				"package.json":                 `{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"},"scripts":{"x":"` + tt.script + `"}}`})
+			if err := os.Symlink(filepath.Join("..", ".git", "hooks"), filepath.Join(dir, "src", "h")); err != nil {
+				t.Fatal(err)
+			}
+			if r := resolveJS(t, dir, "express"); !r.Found || r.Match.Resolved {
+				t.Fatalf("Found = %v, Resolved = %v, want found and withheld", r.Found, r.Match.Resolved)
 			}
 		})
 	}

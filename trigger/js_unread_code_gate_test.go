@@ -371,6 +371,78 @@ func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 
 		// E04w
 		{"Function enumerated from a literal written through an alias with a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nconst t = o;\nwith ({ c: process.argv[4] }) { t.b = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A1
+		{"Function reached through Reflect indexed by a const naming get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; Reflect[m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A2
+		{"Function reached through Reflect indexed by a concatenation naming get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Reflect['g' + 'et'](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A3
+		{"Function reached through Reflect indexed by a parenthesised get", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Reflect[('get')](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A5
+		{"Function reached through a prototype set by Object indexed by a const", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'setPrototypeOf'; const o = {}; Object[m](o, g); o[k](process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A6
+		{"Function reached through a descriptor from Object indexed by a concatenation", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Object['getOwnProperty' + 'Descriptor'](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A25
+		{"Function reached through Reflect.apply of Reflect indexed by a const", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; Reflect.apply(Reflect[m], null, [g, k])(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// U1
+		{"Function reached through Reflect indexed by a key that never resolves", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; Reflect[process.argv[5]](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S1
+		{"Function reached through Reflect read as a member of the global", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; globalThis.Reflect[m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S2
+		{"Function reached through Reflect read from the global by a literal key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; globalThis['Reflect'][m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S3
+		{"Function reached through Reflect read from a function's this by a const key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; const r = 'Reflect'; function f() { return this[r][m](g, k)(process.argv[3])(); } f();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S4
+		{"Function reached through a parenthesised Object", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; (Object)[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S5
+		{"Function reached through Object as the last operand of a comma", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; (0, Object)[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S6
+		{"Function reached through Reflect indexed by optional chaining", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; Reflect?.[m](g, k)(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S7
+		{"Function reached through Object handed to a function as an argument", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; function f(O) { return O[m](Object.getPrototypeOf(g), k).value(process.argv[3])(); } f(Object);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S8
+		{"Function reached through Object held in an object literal", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; const o = { O: Object }; o.O[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S9
+		{"Function reached through a class extending Object indexed by a const", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; class X extends Object {} X[m](Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S10
+		{"Function reached through Reflect.get reading Object under a const key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'getOwnPropertyDescriptor'; Reflect.get(Object, m)(Object.getPrototypeOf(g), k).value(process.argv[3])();function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A12
+		{"Function bound over a var receiver by an if body without braces", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; if (k) function o() {} return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A13
+		{"Function bound over a var receiver by a switch case", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; switch (1) { case 1: function o() {} } return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// A14
+		{"Function bound over a var receiver by a labelled declaration", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; { l: function o() {} } return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// B1
+		{"Function bound over a var receiver from a doubly nested block", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; { { function o() {} } } return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// B2
+		{"Function bound over a var receiver by a do-while body", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; do { function o() {} } while (0); return o[k](process.argv[3])(); } run(process.argv[4]);function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// U2-with
+		{"Function reached through Reflect indexed by a const a with statement rebinds", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'has'; with ({ m: 'get' }) { Reflect[m](g, k)(process.argv[3])(); }function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// S11
+		{"Function reached through Reflect read from a function's this by a parameter key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; function f(r) { return this[r][m](g, k)(process.argv[3])(); } f('Reflect');function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		{"binding alias", `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }
@@ -1234,6 +1306,18 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 
 		// C3-private
 		{"top-level const dispatch table beside an updated private field of its name", "const j = { parse: String };\nconst table = { run: s => s }; class A { #table; m() { this.#table++; } } table[process.argv[4]]('x');", nil},
+
+		// R3C1
+		{"Object indexed by a const naming keys", "const j = { parse: String };\nconst table = { run: s => s }; const m = 'keys'; Object[m](table).length; table[process.argv[4]]('x');", nil},
+
+		// R3C2
+		{"Reflect indexed by a concatenation naming has", "const j = { parse: String };\nconst table = { run: s => s }; Reflect['h' + 'as'](table, 'run'); table[process.argv[4]]('x');", nil},
+
+		// R3C3
+		{"var receiver beside a same-named function declared in a nested function", "const j = { parse: String };\nfunction run(k) { var o = { a: s => s }; function h() { { function o() {} } } return o[k]('x'); } run(process.argv[4]);", nil},
+
+		// R3C4
+		{"Object and Reflect only tested", "const j = { parse: String };\nconst table = { run: s => s }; if (table instanceof Object && typeof Reflect === 'object' && table.constructor === Object) { table[process.argv[4]]('x'); }", nil},
 
 		// C5
 		{"function array indexed by a numeric counter", "const j = { parse: String };\nconst table = [s => s]; for (let i = 0; i < table.length; i++) table[i]('x');", nil},

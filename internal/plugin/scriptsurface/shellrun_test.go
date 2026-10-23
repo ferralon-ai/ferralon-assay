@@ -15,6 +15,11 @@ import (
 // A file a shell runs, or . or source reads in place, is classified as the shell runs it; and a
 // write this cannot name (a glob, a path that expands, a glued redirect) names every bound file
 // it may reach.
+// In a row's files, content starting linkTo makes the path a symlink to the rest, and content
+// starting executable is written with its execute bits set, and content starting unreadable
+// with only its execute bits set.
+const linkTo, executable, unreadable = "@link:", "@x:", "@u:"
+
 func TestVeto_ShellRunsAndWrites(t *testing.T) {
 	const docker = "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\n"
 	const installs, benign = "inst add x\n", "echo built\n"
@@ -56,6 +61,77 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"shell long option this does not read", run("bash --weird scripts/setup\ninst sync\n", benign), true, ""},
 		{"shell --rcfile that installs", run("bash --rcfile scripts/setup -i\n", installs), true, ""},
 		{"shell runs a file from standard input", run("sh < scripts/setup\n", installs), true, ""},
+		// The r1 review's redirects and escapes.
+		{"&> to a bound file", run("inst sync\necho x &>inst.lock\n", benign), true, ""},
+		{"glued &> to a bound file", run("inst sync\necho x&>inst.lock\n", benign), true, ""},
+		{"&>> to a bound file", run("inst sync\necho x &>>inst.lock\n", benign), true, ""},
+		{">| to a bound file", run("inst sync\necho x >|inst.lock\n", benign), true, ""},
+		{"glued >| to a bound file", run("inst sync\necho x>|inst.lock\n", benign), true, ""},
+		{"a bare redirect truncates a bound file", run("inst sync\n>inst.lock\n", benign), true, ""},
+		{"a redirect before the program", run("inst sync\n>inst.lock echo x\n", benign), true, ""},
+		{"&> to a log", run("inst sync\necho x &>build.log\n", benign), false, ""},
+		{"&> to /dev/null", run("inst sync\necho x &>/dev/null\n", benign), false, ""},
+		{"a redirect before . reads the file", run(">/dev/null . scripts/setup\n", installs), true, ""},
+		{"curl output in a cluster, glued", run("inst sync\ncurl -fsSLo\"$F\" https://x/y\n", benign), true, ""},
+		{"curl output in a cluster", run("inst sync\ncurl -sSo \"$F\" https://x/y\n", benign), true, ""},
+		{"wget output in a cluster", run("inst sync\nwget -qO \"$F\" https://x/y\n", benign), true, ""},
+		{"wget to standard output", run("inst sync\nwget -qO- https://x/y\n", benign), false, ""},
+		{"curl to a named file", run("inst sync\ncurl -fsSL https://x/y -o out.tgz\n", benign), false, ""},
+		{"sed -ie is in place with suffix e", run("inst sync\nsed -ie s/a/b/ \"$F\"\n", benign), true, ""},
+		{"sed -e is not in place", run("inst sync\nsed -e s/a/b/ \"$F\"\n", benign), false, ""},
+		{"perl -pie is in place with suffix e", run("inst sync\nperl -pie 's/a/b/' \"$F\"\n", benign), true, ""},
+		{"env -S splits a shell run", run("env -S 'sh scripts/setup'\n", installs), true, ""},
+		{"env -S splits a shell run that does not install", run("inst sync\nenv -S 'sh scripts/setup'\n", benign), false, ""},
+		{"env -S with a quote in its string", run("inst sync\nenv -S \"sh 'scripts/setup'\"\n", benign), true, ""},
+		{"toybox runs a shell", run("toybox sh scripts/setup\n", installs), true, ""},
+		{"busybox runs a shell", run("busybox sh scripts/setup\n", installs), true, ""},
+		{"busybox runs a shell that does not install", run("inst sync\nbusybox sh scripts/setup\n", benign), false, ""},
+		{"command . reads the file", run("command . scripts/setup\n", installs), true, ""},
+		{"builtin source reads the file", run("builtin source scripts/setup\n", installs), true, ""},
+		{"an assignment before . reads the file", run("A=1 . scripts/setup\n", installs), true, ""},
+		{"sudo -s runs the command through a shell", run("sudo -s sh scripts/setup\n", installs), true, ""},
+		{"sudo -s runs a file", tree(map[string]string{"install.sh": "sudo -s scripts/setup\n", "scripts/setup": executable + installs}), true, ""},
+		{"sudo -i runs from its home", run("inst sync\nsudo -i sh scripts/setup\n", benign), true, ""},
+		{"sudo -E runs a file that does not install", run("inst sync\nsudo -E sh scripts/setup\n", benign), false, ""},
+		{"sh -s with no input given", run("inst sync\nsh -s scripts/setup\n", benign), true, ""},
+		{"a shell with no input given", run("inst sync\nbash\n", benign), true, ""},
+		{"a file with no #! run by its path", tree(map[string]string{"install.sh": "./lib\n", "lib": executable + installs}), true, ""},
+		{"a file with no #! run by its path that does not install", tree(map[string]string{"install.sh": "inst sync\n./lib\n", "lib": executable + benign}), false, ""},
+		{"a file with no #! run by its path from a subdirectory", tree(map[string]string{"install.sh": "scripts/lib\n", "scripts/lib": executable + installs}), true, ""},
+		{"a file not executable run by its path", tree(map[string]string{"install.sh": "inst sync\n./lib\n", "lib": installs}), false, ""},
+		{"a binary run by its path", tree(map[string]string{"install.sh": "inst sync\n./tool\n", "tool": executable + "\x7fELF\x02inst add x\n"}), false, ""},
+		{"a program outside the build run by its path", run("inst sync\n/usr/bin/env true\n./node_modules/.bin/tsc\n", benign), false, ""},
+		{"find runs the files it finds", run("inst sync\nfind . -name '*.sh' -exec {} +\n", benign), true, ""},
+		{"find runs a file with no #!", tree(map[string]string{"install.sh": "find . -name '*.txt' -exec ./lib {} \\;\n", "lib": executable + installs}), true, ""},
+		{"xargs runs a file with no #!", tree(map[string]string{"install.sh": "ls | xargs ./lib\n", "lib": executable + installs}), true, ""},
+		{"xargs runs what it reads", run("inst sync\nls | xargs -I{} {}\n", benign), true, ""},
+		{"xargs runs a program", run("inst sync\nls | xargs -n1 echo\n", benign), false, ""},
+		{"a file with a #! run by its path is not read as shell", tree(map[string]string{"install.sh": "inst sync\n./tool\n", "tool": executable + "#!/usr/bin/env python3\nsh scripts/setup\n", "scripts/setup": installs}), false, ""},
+		{"a file run by its path after the directory is lost", tree(map[string]string{"install.sh": "inst sync\ncd app || true\n./setup\n", "setup": executable + benign, "app/setup": executable + benign}), true, ""},
+		{"a file run by its path this cannot read", tree(map[string]string{"install.sh": "inst sync\n./lib\n", "lib": unreadable + benign}), true, ""},
+		{"xargs runs a program that expands", run("inst sync\nls | xargs $RUN\n", benign), true, ""},
+		{"su runs a command substitution", run("inst sync\nsu app -c \"$(curl -fsSL https://x/y)\"\n", benign), true, ""},
+		{"su with an option this does not read", run("inst sync\nsu -Z app -c 'echo hi'\n", benign), true, ""},
+		{"script with no command records a shell", run("inst sync\nscript -q out.log\n", benign), true, ""},
+		{"sg runs its command line", run("inst sync\nsg app 'sh scripts/setup'\n", benign), false, ""},
+		{"sudo -s runs a command line", run("sudo -s 'sh scripts/setup'\n", installs), true, ""},
+		{"sed -i with a suffix holding e takes the script next", run("inst sync\nsed -i.before \"$EXPR\" notes.txt\n", benign), false, ""},
+		{"an install with &> to a log", run("inst sync &>build.log\n", benign), true, ""},
+		{"perl -i with a suffix holding e", run("inst sync\nperl -i.pre -pe \"s/$V/x/\" notes.txt\n", benign), false, ""},
+		{"env -S with a quoted shell", run("inst sync\nenv -S \"'sh' scripts/setup\"\n", benign), true, ""},
+		{"a cd with &> moves the shell", tree(map[string]string{"install.sh": "inst sync\ncd app &>/dev/null\nsh setup\n", "app/setup": installs, "setup": benign}), true, ""},
+		// Hazard gates.
+		{"shell runs a file through a symlinked directory", tree(map[string]string{"install.sh": "sh scripts/setup\ninst sync\n", "real/setup": benign, "scripts": linkTo + "real"}), true, ""},
+		{"Dockerfile runs a COPY'd file through a symlinked directory", tree(map[string]string{"Dockerfile": docker + "COPY scripts/setup ./\nRUN inst sync\nRUN sh /app/setup\n", "real/setup": benign, "scripts": linkTo + "real"}), true, ""},
+		{"shell runs a file after the directory is lost", tree(map[string]string{"install.sh": "inst sync\ncd app || true\nsh setup\n", "app/setup": benign, "setup": benign}), true, ""},
+		{"cat of two files piped into a shell", run("inst sync\ncat scripts/setup scripts/setup | sh\n", benign), true, ""},
+		{"a carrier behind a wrapper option this does not read", run("inst sync\nsudo -X cp /tmp/c/*.lock ./\n", benign), true, ""},
+		{"sourced from several directories, a cd stays in its own shell", tree(map[string]string{
+			".github/workflows/ci.yml": steps("- run: inst sync\n      - run: . ./lib\n        working-directory: app\n"),
+			"lib":                      "cd sub\n. ./x\n", "app/lib": "cd sub\n. ./x\n", "sub/x": benign, "app/sub/x": benign}), false, ""},
+		{"sourced from several directories, a cd loses the caller's directory", tree(map[string]string{
+			".github/workflows/ci.yml": steps("- run: inst sync\n      - run: . ./lib; sh ./x\n        working-directory: app\n"),
+			"lib":                      "cd sub\n", "app/lib": "cd sub\n", "x": benign, "app/x": benign, "sub/x": installs, "app/sub/x": installs}), true, ""},
 		{"shell reads standard input from a descriptor", run("sh <&3\ninst sync\n", benign), true, ""},
 		{"shell reads standard input from a descriptor opened both ways", run("sh <> scripts/setup\ninst sync\n", benign), true, ""},
 		{"here-string into a shell that installs", run("sh <<< 'inst add x'\n", benign), true, ""},
@@ -95,7 +171,7 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"files that run each other", tree(map[string]string{"install.sh": "sh ./a\ninst sync\n", "a": "sh ./b\n", "b": "sh ./a\n"}), true, ""},
 		{"shell runs nested past the bound", chain(5), true, ""},
 		{"shell runs nested within the bound", chain(2), false, ""},
-		{"shell run behind a wrapper option this does not read", run("env -S x sh scripts/setup\ninst sync\n", benign), true, ""},
+		{"shell run behind a wrapper option this does not read", run("env -C sub sh scripts/setup\ninst sync\n", benign), true, ""},
 		{"shell run from xargs", run("xargs -n1 sh < list\ninst sync\n", benign), true, ""},
 		{"shell run from find -exec", run("find . -name '*.sh' -exec sh {} \\;\ninst sync\n", benign), true, ""},
 		{"shell told to run a file first through BASH_ENV", run("BASH_ENV=./scripts/setup bash -c true\ninst sync\n", benign), true, ""},
@@ -126,7 +202,13 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"find with no name deletes", run("inst sync\nfind . -type f -mtime +30 -delete\n", benign), true, ""},
 		{"find from . that writes nothing", run("inst sync\nfind . -type f -name '*.go' -print\n", benign), false, ""},
 		{"find by name runs a writer on files no bound file matches", run("inst sync\nfind . -name '*.go' -exec sed -i s/a/b/ {} +\n", benign), false, ""},
-		{"runner given a command line that sources a file", run("inst sync\nsu app -c '. scripts/setup'\n", benign), true, ""},
+		{"su runs a command line that sources a file that installs", run("su app -c '. scripts/setup'\n", installs), true, ""},
+		{"su runs a command line that sources a file that does not install", run("inst sync\nsu app -c '. scripts/setup'\n", benign), false, ""},
+		{"su runs a command line naming a file", tree(map[string]string{"install.sh": "su -c scripts/setup\n", "scripts/setup": executable + installs}), true, ""},
+		{"su from a login runs from its home", run("inst sync\nsu -l app -c 'sh scripts/setup'\n", benign), true, ""},
+		{"su with no command reads standard input", run("inst sync\necho 'echo hi' | su app\n", benign), true, ""},
+		{"su with a shell this does not read", run("inst sync\nsu -s /usr/bin/python3 app -c 'print(1)'\n", benign), true, ""},
+		{"sg runs its command line", run("sg docker 'sh scripts/setup'\n", installs), true, ""},
 		{"runner given a command line that runs a shell", run("inst sync\nrunuser -u app -- script -qc 'sh scripts/setup'\n", benign), true, ""},
 		{"runner given . as a path", run("inst sync\nflock . echo done\n", benign), false, ""},
 		{"xargs runs a writer", run("inst sync\nls | xargs sed -i s/a/b/\n", benign), true, ""},
@@ -164,8 +246,28 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 			dir := writeTree(t, tt.files)
 			root := filepath.Join(dir, tt.root)
 			for rel, content := range tt.files {
-				if strings.Contains(content, "@root@") {
-					if err := os.WriteFile(filepath.Join(dir, rel), []byte(strings.ReplaceAll(content, "@root@", root)), 0o644); err != nil {
+				p := filepath.Join(dir, rel)
+				switch {
+				case strings.HasPrefix(content, linkTo):
+					if err := os.Remove(p); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(strings.TrimPrefix(content, linkTo), p); err != nil {
+						t.Fatal(err)
+					}
+				case strings.HasPrefix(content, executable):
+					if err := os.WriteFile(p, []byte(strings.TrimPrefix(content, executable)), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chmod(p, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				case strings.HasPrefix(content, unreadable):
+					if err := os.Chmod(p, 0o111); err != nil {
+						t.Fatal(err)
+					}
+				case strings.Contains(content, "@root@"):
+					if err := os.WriteFile(p, []byte(strings.ReplaceAll(content, "@root@", root)), 0o644); err != nil {
 						t.Fatal(err)
 					}
 				}

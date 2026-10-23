@@ -896,6 +896,10 @@ const maxRunDepth = 4
 // command applies the rule to one simple command run from cur, and returns why it withholds,
 // or "" when it does not.
 func (v *Veto) command(seg segment, cur cursor, depth int) string {
+	seg = leadRedirects(seg)
+	if n := sourceHead(seg.words); n > 0 {
+		seg = seg.drop(n)
+	}
 	words := seg.words
 	if len(words) == 0 {
 		return ""

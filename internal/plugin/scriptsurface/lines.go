@@ -267,16 +267,24 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 		case c == '(' || c == ')' || (c == '{' || c == '}') && !inWord:
 			return nil, false, false
 		case c == '<' || c == '>':
-			// A redirect starts a word of its own, an fd number before it aside, as the shell
+			// A redirect starts a word of its own, an fd number or &> aside, as the shell
 			// reads x>f.
-			if inWord && strings.Trim(word.String(), "0123456789<>") != "" {
+			if inWord && strings.Trim(word.String(), "0123456789<>&") != "" {
 				endWord()
 			}
-			redir = redir || !inWord || strings.Trim(word.String(), "0123456789<>") == ""
+			redir = redir || !inWord || strings.Trim(word.String(), "0123456789<>&") == ""
 			word.WriteByte(c)
 			inWord = true
 		case c == '&' && inWord && strings.HasSuffix(word.String(), ">") || c == '&' && inWord && strings.HasSuffix(word.String(), "<"):
 			// >&2 and 2>&1 duplicate a descriptor; they end nothing.
+			word.WriteByte(c)
+		case c == '&' && i+1 < len(s) && s[i+1] == '>' && (i == 0 || s[i-1] != '&'):
+			// &> and &>> redirect both outputs; they end nothing.
+			endWord()
+			word.WriteByte(c)
+			inWord = true
+		case c == '|' && inWord && strings.HasSuffix(word.String(), ">") && redir:
+			// >| writes past noclobber; it ends nothing.
 			word.WriteByte(c)
 		case c == ';' || c == '&' || c == '|':
 			cur.background = c == '&' && (i == 0 || !strings.ContainsRune("&|>", rune(s[i-1]))) && (i+1 == len(s) || !strings.ContainsRune("&>", rune(s[i+1])))

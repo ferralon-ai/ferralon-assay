@@ -1,6 +1,9 @@
 package jsanalysis
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -17,6 +20,8 @@ import (
 // install nothing:
 //
 //	npm ci                               refuses a lock package.json has moved past
+//	npm install|i                        with no package argument, when the npm lock beside
+//	                                     the package.json it installs covers it (lockCovers)
 //	yarn [install] --frozen-lockfile     refuses a yarn.lock package.json has moved past
 //	pnpm install --frozen-lockfile       refuses a pnpm-lock.yaml package.json has moved past
 //	npm run|run-script <name>            runs a script and installs nothing; the script, like
@@ -27,27 +32,34 @@ import (
 // with only --ignore-scripts and subset flags added (npm: --production and --omit, --include
 // or --only with a value from laneSubsetConfigs; yarn and pnpm: --production), and with the package.json
 // each binds to (the nearest at or above the command's directory, as npm finds it) and its
-// lock read here. npm run, run-script and start may also carry one --prefix <dir>, which binds
-// them to <dir>/package.json alone, read here and a surface the walk checks itself; any npm
-// form may follow assignments to laneSubsetConfigs variables. concurrently may carry only
-// concurrentlyFlags. Anything else that names a package manager withholds: a package argument,
-// another flag, a bare npm install, yarn or pnpm install (each re-locks), yarn install
+// lock read here. npm run, run-script, start and install may also carry one --prefix <dir>,
+// which binds them to <dir>/package.json alone, read here and a surface the walk checks
+// itself. A bare install binds only to the package.json in its package root and the npm locks
+// beside it, never one above (laneLockPreserving). Any npm form may follow assignments to
+// laneSubsetConfigs variables. concurrently may carry only concurrentlyFlags. Anything else
+// that names a package manager withholds: a package argument, another flag, a bare npm
+// install its lock does not cover, yarn or pnpm install (each re-locks), yarn install
 // --immutable (yarn 1 ignores it), npm exec, npx, pnpx, bunx, yarn dlx, pnpm run (pnpm
 // installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
 // names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
 // npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
 // read, and what binds a command to a file, is lane-neutral, in scriptsurface.
 
-// scriptSpec is the JavaScript lane's part of the rule. It names no run wrapper: npm and yarn
-// run a package.json script, gated where it is written, not a command line.
-var scriptSpec = scriptsurface.Spec{
-	Token:       laneToken,
-	Env:         laneEnvRE,
-	EnvKeeps:    laneEnvKeeps,
-	Allowed:     laneAllowed,
-	Concurrent:  laneConcurrent,
-	ReadRegular: readRegular,
-	Absent:      absent,
+// scriptSpec is the JavaScript lane's part of the rule for the build at root, whose lockfiles
+// (path → what parseLockfile read) are locks. It names no run wrapper: npm and yarn run a
+// package.json script, gated where it is written, not a command line.
+func scriptSpec(root string, locks map[string]lockInfo) scriptsurface.Spec {
+	return scriptsurface.Spec{
+		Token:    laneToken,
+		Env:      laneEnvRE,
+		EnvKeeps: laneEnvKeeps,
+		Allowed: func(words []string, b scriptsurface.Binder) bool {
+			return laneAllowed(words, b, root, locks)
+		},
+		Concurrent:  laneConcurrent,
+		ReadRegular: readRegular,
+		Absent:      absent,
+	}
 }
 
 // laneEnvRE matches an npm_config_* (any case), YARN_*, or NPM_FLAGS/PNPM_FLAGS/BUN_FLAGS
@@ -133,7 +145,7 @@ func laneNPMFlags(args []string) bool {
 
 // laneAllowed reports whether a command holding a package-manager token, already free of
 // expansions and redirects, is one of the allowed forms and binds to files read here.
-func laneAllowed(words []string, b scriptsurface.Binder) bool {
+func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[string]lockInfo) bool {
 	for len(words) > 0 && laneKeptAssignment(words[0]) {
 		words = words[1:]
 	}
@@ -149,6 +161,9 @@ func laneAllowed(words []string, b scriptsurface.Binder) bool {
 		switch words[1] {
 		case "ci":
 			return laneNPMFlags(words[2:]) && b.Nearest("package.json", "package-lock.json", "npm-shrinkwrap.json") != nil
+		case "install", "i":
+			dir, rest, ok := lanePrefix(words[2:])
+			return ok && laneNPMFlags(rest) && laneLockPreserving(b, dir, root, locks)
 		case "run", "run-script":
 			dir, rest, ok := lanePrefix(words[2:])
 			return ok && len(rest) == 1 && rest[0] != "" && !strings.HasPrefix(rest[0], "-") && lanePackage(b, dir)
@@ -223,6 +238,106 @@ func lanePackage(b scriptsurface.Binder, dir string) bool {
 		return b.Nearest("package.json") != nil
 	}
 	return b.Prefixed(dir, "package.json") != nil
+}
+
+// npmLocks are the lockfiles npm install reads, the first ahead of the second.
+var npmLocks = []string{"npm-shrinkwrap.json", "package-lock.json"}
+
+// npmrcLockSafeKeys are the .npmrc settings that leave what a bare npm install puts in
+// node_modules to the lock: where packages are fetched from and with which credentials, proxy
+// and TLS, and what npm prints. Every setting that changes resolution or the lock itself
+// (package-lock, shrinkwrap, legacy-peer-deps, save-*, prefer-offline, …) is left out.
+var npmrcLockSafeKeys = map[string]bool{
+	"registry": true, "always-auth": true, "strict-ssl": true, "ca": true, "cafile": true,
+	"proxy": true, "https-proxy": true, "noproxy": true, "email": true,
+	"fund": true, "audit": true, "loglevel": true, "progress": true, "update-notifier": true,
+}
+
+// laneLockPreserving reports whether a bare npm install run with package root dir ("." when it
+// has no --prefix) installs exactly what its lock records: the package root's package.json is
+// read here (Prefixed, with npmLocks) and declares no install rewrite, every npm lock in that
+// same directory parsed and covers it (lockCovers, the predicate exhaustiveness uses), there
+// is at least one, neither it nor any package.json above it inside root names workspaces,
+// which would make npm install against another lock or install other projects too, and every
+// .npmrc there or above inside root sets only npmrcLockSafeKeys, so none turns the lock off.
+// Anything this cannot read withholds.
+func laneLockPreserving(b scriptsurface.Binder, dir, root string, locks map[string]lockInfo) bool {
+	if dir == "" {
+		dir = "."
+	}
+	pkgs := b.Prefixed(dir, "package.json", npmLocks...)
+	if pkgs == nil {
+		return false
+	}
+	for _, p := range pkgs {
+		m, ok := readPackageJSON(p)
+		if !ok || m.rewrites {
+			return false
+		}
+		d := filepath.Dir(p)
+		covered := 0
+		for _, name := range npmLocks {
+			l, ok := locks[filepath.Join(d, name)]
+			if !ok {
+				continue
+			}
+			if l.kind != lockNPM && l.kind != lockNPMv1 || !lockCovers(l, d, ".", m.declared) {
+				return false
+			}
+			covered++
+		}
+		if covered == 0 || npmWorkspaceAt(root, d) || !npmrcLockSafe(root, d) {
+			return false
+		}
+	}
+	return true
+}
+
+// npmrcLockSafe reports whether every .npmrc in dir or a directory above it inside root sets
+// only npmrcLockSafeKeys, and can be read.
+func npmrcLockSafe(root, dir string) bool {
+	for {
+		f := filepath.Join(dir, ".npmrc")
+		if _, err := os.Lstat(f); err == nil && !npmrcSetsOnly(root, f, npmrcLockSafeKeys) || err != nil && !absent(err) {
+			return false
+		}
+		if dir == root {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// npmWorkspaceAt reports whether the package.json in dir or any directory above it inside root
+// has a "workspaces" field, or is there but cannot be read or decoded.
+func npmWorkspaceAt(root, dir string) bool {
+	for {
+		data, err := readRegular(filepath.Join(dir, "package.json"))
+		switch {
+		case err == nil:
+			var m map[string]json.RawMessage
+			if json.Unmarshal(data, &m) != nil {
+				return true
+			}
+			if _, ok := m["workspaces"]; ok {
+				return true
+			}
+		case !absent(err):
+			return true
+		}
+		if dir == root {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return true
+		}
+		dir = parent
+	}
 }
 
 // laneConcurrent returns the commands concurrently starts, and whether words runs it. A flag

@@ -213,7 +213,7 @@ func (c *dockerCursor) fork() cursor {
 
 // Prefixed is nil: a package root inside the image is not a build-tree directory the walk
 // reads.
-func (c *dockerCursor) Prefixed(string, string) []string { return nil }
+func (c *dockerCursor) Prefixed(string, string, ...string) []string { return nil }
 
 func (c *dockerCursor) File(p string) bool { return c.Hosts(p) != nil }
 

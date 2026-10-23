@@ -21,8 +21,9 @@ type Binder interface {
 	// command told to treat dir as its package root (npm --prefix dir) reads, without looking
 	// above it. dir must be a literal relative path with no .. part, inside the build and
 	// reached through no symlink, and dir/name a regular file, read here, that the walk checks
-	// as a surface on its own. nil when any is not.
-	Prefixed(dir, name string) []string
+	// as a surface on its own. With locks given, each of them that is there in dir must be a
+	// regular file read here, reached through no symlink. nil when any is not.
+	Prefixed(dir, name string, locks ...string) []string
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -218,7 +219,7 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 	return found
 }
 
-func (c *hostCursor) Prefixed(dir, name string) []string {
+func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
 	if c.unknown || len(c.dirs) == 0 || dir == "" || filepath.IsAbs(dir) || strings.ContainsAny(dir, "$`*?[{~") {
 		return nil
 	}
@@ -232,14 +233,30 @@ func (c *hostCursor) Prefixed(dir, name string) []string {
 		f := filepath.Join(d, dir, name)
 		// The walk yields no path through a symlinked directory, so read refuses one too. A
 		// symlinked file is the lane's to read: a read that follows the link passes it, and
-		// only unlinked refuses it here, though Candidates withholds the run on one regardless.
-		if !c.v.inRoot(f) || !c.v.unlinked(f) || !c.v.walkedSurface(f) || !c.v.read(f) {
+		// only unlinked (in packageFile) refuses it here, though Candidates withholds the run
+		// on one regardless.
+		if !c.v.packageFile(f) || !c.v.walkedSurface(f) {
 			return nil
+		}
+		for _, l := range locks {
+			lf := filepath.Join(d, dir, l)
+			if _, err := os.Lstat(lf); err != nil && !c.v.spec.Absent(err) || err == nil && !c.v.packageFile(lf) {
+				return nil
+			}
 		}
 		found = append(found, f)
 	}
 	c.v.bind(name)
+	for _, l := range locks {
+		c.v.bind(l)
+	}
 	return found
+}
+
+// packageFile reports whether f is inside the build, reached through no symlink, and a regular
+// file read here.
+func (v *Veto) packageFile(f string) bool {
+	return v.inRoot(f) && v.unlinked(f) && v.read(f)
 }
 
 // lockAbove reports whether the nearest of locks at or above dir, inside root, is read here.

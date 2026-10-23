@@ -40,8 +40,8 @@ func (f *runFlags) dependencyCodeOption() (pipeline.AssessOption, error) {
 // NODE_AUTH_TOKEN, NPM_TOKEN and the names -dependency-npmrc-env adds; any other ${VAR} a
 // .npmrc references reads as unset (artifactcache/acquire/npmrc.go).
 func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisition, error) {
-	mode := flagOrEnv(*f.depCode, envDependencyCode)
-	cache := flagOrEnv(*f.depCache, envDependencyCache)
+	mode := flagOrEnv(*f.depCode, os.Getenv(envDependencyCode))
+	cache := flagOrEnv(*f.depCache, os.Getenv(envDependencyCache))
 	var m pipeline.DependencyCodeMode
 	switch mode {
 	case "", "off":
@@ -58,7 +58,7 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 	case string(pipeline.DependencyCodeOffline):
 		m = pipeline.DependencyCodeOffline
 		if cache == "" {
-			return nil, fmt.Errorf("-dependency-code=offline reads only a seeded cache: set -dependency-cache or %s", envDependencyCache)
+			return nil, fmt.Errorf("-dependency-code=offline reads only a seeded cache: set -dependency-cache or %s", os.Getenv(envDependencyCache))
 		}
 	default:
 		return nil, fmt.Errorf("-dependency-code=%q: want off, fetch or offline", mode)
@@ -68,7 +68,7 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 		return nil, fmt.Errorf("-dependency-cache: %w", err)
 	}
 	var allow []string
-	for _, name := range strings.Split(flagOrEnv(*f.depNPMRCEnv, envDependencyNPMRCEnv), ",") {
+	for _, name := range strings.Split(flagOrEnv(*f.depNPMRCEnv, os.Getenv(envDependencyNPMRCEnv)), ",") {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
@@ -79,7 +79,7 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 		allow = append(allow, name)
 	}
 	var timeout time.Duration
-	if v := flagOrEnv(*f.depTimeout, envDependencyTimeout); v != "" {
+	if v := flagOrEnv(*f.depTimeout, os.Getenv(envDependencyTimeout)); v != "" {
 		timeout, err = time.ParseDuration(v)
 		if err != nil || timeout <= 0 {
 			return nil, fmt.Errorf("-dependency-timeout=%q: want a positive duration such as 15m", v)
@@ -88,9 +88,11 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 	return &pipeline.DependencyAcquisition{Mode: m, CacheDir: abs, LookupEnv: os.LookupEnv, AllowEnv: allow, Timeout: timeout}, nil
 }
 
+// flagOrEnv returns flag when set, else env. Callers read env with os.Getenv on the constant so
+// the internal/brand entry-point gate can resolve every key.
 func flagOrEnv(flag, env string) string {
 	if v := strings.TrimSpace(flag); v != "" {
 		return v
 	}
-	return strings.TrimSpace(os.Getenv(env))
+	return strings.TrimSpace(env)
 }

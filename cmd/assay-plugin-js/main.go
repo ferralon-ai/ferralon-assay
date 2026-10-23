@@ -32,12 +32,18 @@ import (
 	"os"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// envRunCacheDir carries the per-scan run cache directory the host sets for this subprocess (see
+// plugin.WithJSRunCacheDir); empty or unset, nothing is cached.
+const envRunCacheDir = brand.EnvPrefix + "_JS_RUN_CACHE_DIR"
+
 func main() {
-	if err := run(context.Background(), os.Stdin, os.Stdout); err != nil {
+	ctx := jsanalysis.WithRunCacheDir(context.Background(), os.Getenv(envRunCacheDir))
+	if err := run(ctx, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

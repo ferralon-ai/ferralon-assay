@@ -141,8 +141,9 @@ func (l *depLayout) addUnplacedDeps(deps []plugin.ResolvedDependency) {
 	}
 }
 
-// manifestsDeclareDeps reports whether any package.json at or under root, outside skipped
-// trees, declares a dependency. A manifest that cannot be read or decoded counts as declaring.
+// manifestsDeclareDeps reports whether any package.json at or under root, outside node_modules
+// and .git, declares a dependency. A workspace member may sit under any directory name (build/,
+// vendor/), so nothing else is pruned. A manifest that cannot be read or decoded counts as declaring.
 func manifestsDeclareDeps(root string) bool {
 	declares := false
 	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -151,7 +152,7 @@ func manifestsDeclareDeps(root string) bool {
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
-			if p != root && skipDir(d.Name()) {
+			if p != root && (d.Name() == "node_modules" || d.Name() == ".git") {
 				return filepath.SkipDir
 			}
 			return nil

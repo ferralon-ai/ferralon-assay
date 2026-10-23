@@ -305,6 +305,9 @@ type lockInfo struct {
 	// specs a format records without their field (pnpm v5 specifiers). A yarn.lock records berry
 	// workspaces here with no specs.
 	importers map[string]map[string]map[string]string
+	// peers maps each npm v2/v3 project, keyed like importers, to the peerDependencies specs it
+	// recorded. It is kept apart from importers so a peer alone never makes a project recorded.
+	peers map[string]map[string]string
 	// descriptors is every "name@range" a yarn.lock entry header lists.
 	descriptors map[string]bool
 }
@@ -321,6 +324,7 @@ func newLockInfo(kind string) lockInfo {
 		kind:        kind,
 		names:       map[string]bool{},
 		importers:   map[string]map[string]map[string]string{},
+		peers:       map[string]map[string]string{},
 		descriptors: map[string]bool{},
 	}
 }
@@ -432,11 +436,13 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 				}
 				for field, deps := range map[string]map[string]string{
 					"dependencies": pkg.Dependencies, "devDependencies": pkg.DevDependencies, "optionalDependencies": pkg.OptionalDependencies,
-					"peerDependencies": pkg.PeerDependencies,
 				} {
 					for n, spec := range deps {
 						info.record(project, field, n, spec)
 					}
+				}
+				if len(pkg.PeerDependencies) > 0 {
+					info.peers[project] = pkg.PeerDependencies
 				}
 				if installPath == "" {
 					// The "" install path is the root project itself, not a dependency — skip

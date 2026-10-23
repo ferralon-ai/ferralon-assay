@@ -58,7 +58,7 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 	case string(pipeline.DependencyCodeOffline):
 		m = pipeline.DependencyCodeOffline
 		if cache == "" {
-			return nil, fmt.Errorf("-dependency-code=offline reads only a seeded cache: set -dependency-cache or %s", os.Getenv(envDependencyCache))
+			return nil, fmt.Errorf("-dependency-code=offline reads only a seeded cache: set -dependency-cache or %s", envDependencyCache)
 		}
 	default:
 		return nil, fmt.Errorf("-dependency-code=%q: want off, fetch or offline", mode)

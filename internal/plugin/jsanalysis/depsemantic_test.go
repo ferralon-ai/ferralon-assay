@@ -1209,6 +1209,8 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		"intermediate_pre_script":          {"apps/web", apps(`{"name":"apps","scripts":{"prebuild":"npm i q@1 --no-save"}}`)},
 		"intermediate_post_script":         {"apps/web", apps(`{"name":"apps","scripts":{"posttest":"npm i q@1 --no-save"}}`)},
 		"intermediate_prepare":             {"apps/web", apps(`{"name":"apps","scripts":{"prepare":"npm i q@1 --no-save"}}`)},
+		"intermediate_install_hook":        {"apps/web", apps(`{"name":"apps","scripts":{"install":"npm i q@1 --no-save"}}`)},
+		"intermediate_dependencies_hook":   {"apps/web", apps(`{"name":"apps","scripts":{"dependencies":"npm i q@1 --no-save"}}`)},
 		"root_npmrc_hoist":                 {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "registry=https://npm.acme.dev/\npublic-hoist-pattern[]=*\n"}},
 		"root_npmrc_unparseable":           {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "\"${HOIST}\"=true\n"}},
 	} {

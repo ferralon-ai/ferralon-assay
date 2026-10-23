@@ -217,12 +217,9 @@ var inertManifestKeys = map[string]bool{
 	"postcss": true, "remarkConfig": true, "size-limit": true, "release": true, "renovate": true,
 }
 
-// installHookScripts are the script names npm, yarn or pnpm may run on an install that do not
-// already fall in a hook class (installHook).
-var installHookScripts = map[string]bool{
-	"install": true, "prepare": true, "dependencies": true, "prepublish": true,
-	"prepublishOnly": true, "prepack": true,
-}
+// installHookScripts are the install hooks outside installHook's pre and post classes. prepare,
+// prepublish, prepublishOnly and prepack fall in the pre class.
+var installHookScripts = map[string]bool{"install": true, "dependencies": true}
 
 // installHook reports whether a script name may run on an install. Rather than list each
 // manager's hooks, any pre or post script, any manager-namespaced script (pnpm:devPreinstall) and

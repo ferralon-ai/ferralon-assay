@@ -1201,6 +1201,15 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 			"apps/package.json": `{"name":"apps","private":true,"workspaces":["web"]}`,
 		}))
 	})
+	t.Run("intermediate_pnpm_importer", func(t *testing.T) {
+		sPkg := sp("s", "1.0.0", nil, nil)
+		resolves(t)(nested(t, "apps/web", map[string]string{
+			"package.json":        manifestWith("app", nil, ""),
+			"pnpm-workspace.yaml": "packages:\n  - apps\n",
+			pnpmLockFile:          pnpmLockText(t, "9.0", map[string]map[string]string{".": {}, "apps": {"s": "1.0.0"}}, sPkg),
+			"apps/package.json":   manifestWith("apps", map[string]string{"s": "1.0.0"}, ""),
+		}))
+	})
 	t.Run("intermediate_npm_workspace", func(t *testing.T) {
 		resolves(t)(nested(t, "apps/web", map[string]string{
 			"package.json":      manifestWith("app", nil, `,"workspaces":["apps"]`),

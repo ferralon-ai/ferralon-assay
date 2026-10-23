@@ -83,8 +83,13 @@ type DependencyAcquisitionResult struct {
 	// Unread lists every other lock-pinned npm package, sorted by PURL.
 	Unread []UnreadDependency `json:"unread,omitempty"`
 	// InventoryPartial carries the inventory's own partiality reasons: packages it could not
-	// enumerate are absent from both Read and Unread.
+	// enumerate are absent from both Read and Unread. An inventory that fails outright,
+	// including one cut off by the stage deadline, enumerates nothing and records
+	// plugin.PartialReasonToolFailure, a run-wide reason, never a scoped absence.
 	InventoryPartial []string `json:"inventory_partial,omitempty"`
+	// InventoryCancelled marks an inventory failure caused by the stage deadline or the run's
+	// context ending, so a timeout is not read as a plugin defect.
+	InventoryCancelled bool `json:"inventory_cancelled,omitempty"`
 }
 
 // UnreadDependency is one package acquisition left unread, with one of the Unread* reasons and,
@@ -115,7 +120,7 @@ const fetchTimeout = 2 * time.Minute
 // defaultAcquireTimeout bounds the whole stage when DependencyAcquisition.Timeout is zero.
 const defaultAcquireTimeout = 15 * time.Minute
 
-func (d *dependencyAcquirer) result(ctx context.Context, buildDir string, p plugin.LanguagePlugin) DependencyAcquisitionResult {
+func (d *dependencyAcquirer) result(ctx context.Context, buildDir, checkoutRoot string, p plugin.LanguagePlugin) DependencyAcquisitionResult {
 	d.mu.Lock()
 	b, ok := d.byDir[buildDir]
 	if !ok {
@@ -123,7 +128,7 @@ func (d *dependencyAcquirer) result(ctx context.Context, buildDir string, p plug
 		d.byDir[buildDir] = b
 	}
 	d.mu.Unlock()
-	b.once.Do(func() { b.res = d.acquire(ctx, buildDir, p) })
+	b.once.Do(func() { b.res = d.acquire(ctx, buildDir, checkoutRoot, p) })
 	return b.res
 }
 
@@ -131,7 +136,7 @@ type npmPin struct {
 	purl, digest string
 }
 
-func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plugin.LanguagePlugin) DependencyAcquisitionResult {
+func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot string, p plugin.LanguagePlugin) DependencyAcquisitionResult {
 	res := DependencyAcquisitionResult{Mode: string(d.cfg.Mode)}
 	timeout := d.cfg.Timeout
 	if timeout <= 0 {
@@ -142,6 +147,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plu
 	inv, err := p.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
 	if err != nil {
 		res.InventoryPartial = []string{plugin.PartialReasonToolFailure}
+		res.InventoryCancelled = ctx.Err() != nil
 		return res
 	}
 	if !inv.Partiality.Complete {
@@ -165,7 +171,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plu
 	var npmrcErr error
 	var fetcher *acquire.Acquirer
 	if d.cfg.Mode == DependencyCodeFetch {
-		npmrc, npmrcErr = acquire.LoadNPMConfig(acquire.NPMRCSources{ProjectDir: buildDir, LookupEnv: d.cfg.LookupEnv, AllowEnv: d.cfg.AllowEnv})
+		npmrc, npmrcErr = acquire.LoadNPMConfig(acquire.NPMRCSources{ProjectDir: buildDir, CheckoutRoot: checkoutRoot, LookupEnv: d.cfg.LookupEnv, AllowEnv: d.cfg.AllowEnv})
 		client := d.cfg.Client
 		if client == nil {
 			client = &http.Client{Timeout: fetchTimeout}
@@ -246,18 +252,21 @@ func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc a
 	return nil
 }
 
+// classifyAcquireError names why err left purl unread. A concrete finding (a policy refusal,
+// bytes that do not match the lock, a malformed pin) keeps its reason even when the deadline has
+// since passed; only an error the deadline could itself have caused reads as cancelled.
 func classifyAcquireError(ctx context.Context, purl string, err error) *UnreadDependency {
 	u := &UnreadDependency{PURL: purl}
 	var pr *artifactcache.PolicyReason
 	switch {
-	case ctx.Err() != nil:
-		u.Reason = UnreadCancelled
 	case errors.As(err, &pr):
 		u.Reason, u.Detail = UnreadPolicyRefused, pr.Code
 	case errors.Is(err, artifactcache.ErrIntegrityMismatch):
 		u.Reason = UnreadIntegrityMismatch
 	case errors.Is(err, artifactcache.ErrMalformedRef), errors.Is(err, artifactcache.ErrUnpinnedArtifact):
 		u.Reason = UnreadMalformedIntegrity
+	case ctx.Err() != nil:
+		u.Reason = UnreadCancelled
 	case errors.Is(err, artifactcache.ErrDeclaredAbsent):
 		u.Reason = UnreadNotServed
 	default:
@@ -279,31 +288,42 @@ func (s dependencyAcquisition) Run(ctx context.Context, c *assessment.Assessment
 	if s.acq == nil || s.plugin == nil {
 		return nil
 	}
-	buildDir, language, err := inventoryBuildLanguage(store, c.ID)
+	buildDir, checkoutRoot, language, err := inventoryBuildLanguage(store, c.ID)
 	if err != nil {
 		return err
 	}
 	if buildDir == "" || language != checkout.LangJS || s.plugin.Language() != language {
 		return nil
 	}
-	res := s.acq.result(ctx, buildDir, s.plugin)
+	res := s.acq.result(ctx, buildDir, checkoutRoot, s.plugin)
 	_, err = PutArtifact(store, c, s.Name(), TypeDependencyAcquisition, "npm", res)
 	return err
 }
 
-func inventoryBuildLanguage(store artifact.Store, caseID string) (string, string, error) {
+// inventoryBuildLanguage returns the inventory's build dir, the checkout root the build dir must
+// stay inside, and the language. The root is the workspace plan's: checkout_root equals the
+// primary project's root, which for a project in a subdirectory is the build dir itself.
+func inventoryBuildLanguage(store artifact.Store, caseID string) (string, string, string, error) {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {
-		return "", "", err
+		return "", "", "", err
 	}
 	var inv struct {
-		BuildDir string `json:"build_dir"`
-		Language string `json:"language"`
+		BuildDir      string `json:"build_dir"`
+		CheckoutRoot  string `json:"checkout_root"`
+		Language      string `json:"language"`
+		WorkspacePlan struct {
+			Root string `json:"root"`
+		} `json:"workspace_plan"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return inv.BuildDir, inv.Language, nil
+	root := inv.WorkspacePlan.Root
+	if root == "" {
+		root = inv.CheckoutRoot
+	}
+	return inv.BuildDir, root, inv.Language, nil
 }
 
 // DependencyAcquisitionOf returns the dependency_acquisition result recorded for caseID, and

@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/artifactcache"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -69,15 +72,24 @@ func newFakeRegistries() *fakeRegistries {
 // serve answers every request on host with body; a nil body answers 404.
 func (r *fakeRegistries) serve(t *testing.T, host string, body []byte) {
 	t.Helper()
+	r.serveStatus(t, host, 0, body)
+}
+
+// serveStatus answers every request on host with status when it is non-zero, else as serve.
+func (r *fakeRegistries) serveStatus(t *testing.T, host string, status int, body []byte) {
+	t.Helper()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.requests[host] = append(r.requests[host], req.Header.Get("Authorization"))
 		r.mu.Unlock()
-		if body == nil {
+		switch {
+		case status != 0:
+			w.WriteHeader(status)
+		case body == nil:
 			http.NotFound(w, req)
-			return
+		default:
+			_, _ = w.Write(body)
 		}
-		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
@@ -138,6 +150,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		seed     []byte
 		digest   string
 		registry string // registry host the .npmrc names; "" is registry.test
+		status   int    // non-zero: registry.test answers every request with this status
 		timeout  time.Duration
 		wantRead int
 		want     string // Unread reason, "" when read
@@ -152,6 +165,12 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "NPM_TOKEN"`},
 		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed},
 		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1},
+		{name: "empty per-host token refuses before any request", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential"},
+		{name: "top-level auth refuses before any request", mode: DependencyCodeFetch, npmrc: "_auth=Zm9vOmJhcg==", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential"},
+		{name: "public registry reads with an optional token unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
+		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1},
+		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1},
+		{name: "401 with no auth configured", mode: DependencyCodeFetch, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1},
 		{name: "transport failure", mode: DependencyCodeFetch, registry: "down.test", served: tarball, digest: sri512(tarball), want: UnreadFetchFailed},
 		{name: "stage deadline passes", mode: DependencyCodeFetch, timeout: time.Nanosecond, served: tarball, digest: sri512(tarball), want: UnreadCancelled},
 		{name: "offline empty cache", mode: DependencyCodeOffline, served: tarball, digest: sri512(tarball), want: UnreadNotCached},
@@ -162,7 +181,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			regs := newFakeRegistries()
-			regs.serve(t, "registry.test", tt.served)
+			regs.serveStatus(t, "registry.test", tt.status, tt.served)
 			build, cache := t.TempDir(), t.TempDir()
 			registry := tt.registry
 			if registry == "" {
@@ -179,7 +198,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 				cfg:   DependencyAcquisition{Mode: tt.mode, CacheDir: cache, LookupEnv: envMap(tt.env), Timeout: tt.timeout, Client: regs.client},
 				byDir: map[string]*acquiredBuild{},
 			}
-			res := d.result(context.Background(), build, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode(qs, tt.digest)}})
+			res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode(qs, tt.digest)}})
 			if res.Read != tt.wantRead {
 				t.Fatalf("Read = %d, want %d (unread %+v)", res.Read, tt.wantRead, res.Unread)
 			}
@@ -196,10 +215,125 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 			if strings.Contains(detail, acqSecret) {
 				t.Fatal("unread detail carries the token")
 			}
-			if n := len(regs.seen("registry.test")); n != tt.wantReqs {
+			seen := regs.seen("registry.test")
+			if n := len(seen); n != tt.wantReqs {
 				t.Fatalf("registry requests = %d, want %d", n, tt.wantReqs)
 			}
+			if len(tt.env) == 0 {
+				for _, a := range seen {
+					if a != "" {
+						t.Fatalf("anonymous fetch carried Authorization %q", a)
+					}
+				}
+			}
 		})
+	}
+}
+
+// A concrete finding keeps its reason after the deadline; only an error the deadline could have
+// caused reads as cancelled.
+func TestClassifyAcquireErrorAfterDeadline(t *testing.T) {
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "integrity mismatch", err: fmt.Errorf("verify: %w", artifactcache.ErrIntegrityMismatch), want: UnreadIntegrityMismatch},
+		{name: "policy refusal", err: &artifactcache.PolicyReason{Code: artifactcache.PolicyMissingCredential}, want: UnreadPolicyRefused},
+		{name: "malformed pin", err: artifactcache.ErrMalformedRef, want: UnreadMalformedIntegrity},
+		{name: "not served", err: artifactcache.ErrDeclaredAbsent, want: UnreadCancelled},
+		{name: "transport", err: context.DeadlineExceeded, want: UnreadCancelled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyAcquireError(expired, "pkg:npm/qs@6.5.2", tt.err).Reason; got != tt.want {
+				t.Fatalf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// slowInventoryPlugin's inventory outlasts any deadline; failingInventoryPlugin's fails at once.
+type slowInventoryPlugin struct{ inventoryPlugin }
+
+func (slowInventoryPlugin) ResolveInventory(ctx context.Context, _ plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+	<-ctx.Done()
+	return plugin.DependencyInventory{}, ctx.Err()
+}
+
+type failingInventoryPlugin struct{ inventoryPlugin }
+
+func (failingInventoryPlugin) ResolveInventory(context.Context, plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+	return plugin.DependencyInventory{}, errors.New("lock unreadable")
+}
+
+// An inventory cut off by the stage deadline enumerates nothing: it records the run-wide
+// tool_failure, marked cancelled so it is not read as a plugin defect.
+func TestDependencyAcquisitionInventoryDeadline(t *testing.T) {
+	tests := []struct {
+		name          string
+		plugin        plugin.LanguagePlugin
+		wantCancelled bool
+	}{
+		{name: "inventory outlasts the deadline", plugin: slowInventoryPlugin{}, wantCancelled: true},
+		{name: "inventory fails", plugin: failingInventoryPlugin{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			build := t.TempDir()
+			d := &dependencyAcquirer{
+				cfg:   DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: t.TempDir(), Timeout: 10 * time.Millisecond},
+				byDir: map[string]*acquiredBuild{},
+			}
+			res := d.result(context.Background(), build, build, tt.plugin)
+			if len(res.InventoryPartial) != 1 || res.InventoryPartial[0] != plugin.PartialReasonToolFailure {
+				t.Fatalf("InventoryPartial = %v, want [%s]", res.InventoryPartial, plugin.PartialReasonToolFailure)
+			}
+			if res.InventoryCancelled != tt.wantCancelled {
+				t.Fatalf("InventoryCancelled = %v, want %v", res.InventoryCancelled, tt.wantCancelled)
+			}
+			if res.Read != 0 || len(res.Unread) != 0 {
+				t.Fatalf("read %d unread %v from an inventory that enumerated nothing", res.Read, res.Unread)
+			}
+		})
+	}
+}
+
+// A build dir reached through a directory symlink that leaves the checkout must not make the
+// target directory's .npmrc the project layer.
+func TestDependencyAcquisitionContainsBuildDir(t *testing.T) {
+	tarball := []byte("qs tarball bytes")
+	regs := newFakeRegistries()
+	regs.serve(t, "registry.test", tarball)
+	regs.serve(t, "home.test", tarball)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, ".npmrc"), []byte("registry=https://home.test/\n//home.test/:_authToken=${NODE_AUTH_TOKEN}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(checkout, ".npmrc"), []byte("registry=https://registry.test/"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(checkout, "app")
+	if err := os.Symlink(outside, linked); err != nil {
+		t.Fatal(err)
+	}
+	d := &dependencyAcquirer{
+		cfg: DependencyAcquisition{Mode: DependencyCodeFetch, CacheDir: t.TempDir(), Client: regs.client,
+			LookupEnv: envMap(map[string]string{"NODE_AUTH_TOKEN": acqSecret})},
+		byDir: map[string]*acquiredBuild{},
+	}
+	res := d.result(context.Background(), linked, checkout, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode("pkg:npm/qs@6.5.2", sri512(tarball))}})
+	if res.Read != 0 || len(res.Unread) != 1 || res.Unread[0].Reason != UnreadNPMRCMalformed {
+		t.Fatalf("read %d unread %+v, want one npmrc_malformed", res.Read, res.Unread)
+	}
+	if strings.Contains(res.Unread[0].Detail, acqSecret) {
+		t.Fatal("unread detail carries the token")
+	}
+	if n := len(regs.seen("home.test")); n != 0 {
+		t.Fatalf("the out-of-checkout registry saw %d requests", n)
 	}
 }
 
@@ -237,7 +371,7 @@ func TestDependencyAcquisitionTokenIsolation(t *testing.T) {
 			LookupEnv: envMap(map[string]string{"NODE_AUTH_TOKEN": acqSecret, "HOME": home})},
 		byDir: map[string]*acquiredBuild{},
 	}
-	res := d.result(context.Background(), build, inventoryPlugin{nodes: []plugin.DependencyNode{
+	res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{
 		npmNode("pkg:npm/%40a/lib@1.0.0", sri512(a)),
 		npmNode("pkg:npm/qs@6.5.2", sri512(b)),
 	}})

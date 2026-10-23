@@ -338,7 +338,8 @@ signature. A JS scan run with `-dependency-code=fetch` (off by default) also fet
 lock-pinned package tarball by name and version from the configured registry (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
-is presented only to the host it is bound to. What any of this carries is dependency metadata — module paths,
+is presented only to the host it is bound to. Fetch mode trusts the repository's `.npmrc` with
+those token variables, exactly as `npm ci` does. What any of this carries is dependency metadata — module paths,
 versions, package coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 

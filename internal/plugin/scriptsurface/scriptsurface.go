@@ -16,8 +16,9 @@
 // manifest and lock it installs. A command that names a token anywhere in its words withholds
 // unless it carries no $ or backtick and no redirect and the lane's Allowed accepts it; a run
 // wrapper the lane does not name, a surface that sets one of the lane's variables, and a line
-// that names a token and does not tokenise withhold too. A Spec missing any decision withholds
-// on every surface it recognises.
+// that names a token and does not tokenise withhold too. A variable the lane's EnvKeeps names
+// only selects among the packages a lock read here records, so setting it does not. A Spec
+// missing any required decision withholds on every surface it recognises.
 //
 // Binding follows the directory a command runs in. On the host it starts at the surface's
 // directory (shell scripts, Makefiles, Procfiles, package.json, tox.ini, noxfile.py) or the
@@ -59,16 +60,21 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
-// Spec is what a lane decides. Every field but RunWrapper and RunBinds is required.
+// Spec is what a lane decides. Every field but EnvKeeps, RunWrapper and RunBinds is required.
 type Spec struct {
 	// Token reports whether a word names one of the lane's installers or package runners.
 	Token func(word string) bool
 	// Env matches one of the lane's installer variables being set.
 	Env *regexp.Regexp
+	// EnvKeeps reports whether an installer variable Env matched, by its name, only selects
+	// which of the packages a lock read here records get installed, so setting it installs
+	// nothing outside that lock. nil means none does.
+	EnvKeeps func(name string) bool
 	// Allowed reports whether a command naming a token, already free of expansions and
 	// redirects, is one of the lane's allowed forms and binds, through b, to the manifest and
 	// lock it installs. Every other command naming a token withholds.
@@ -256,6 +262,17 @@ func (v *Veto) sampleHook(p string) bool {
 	return ok && stem != ""
 }
 
+// setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep.
+func (v *Veto) setsEnv(src string) bool {
+	for _, m := range v.spec.Env.FindAllString(src, -1) {
+		name := strings.TrimLeftFunc(m, func(r rune) bool { return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+		if v.spec.EnvKeeps == nil || !v.spec.EnvKeeps(name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
 // mention records the base names of a command's arguments, a redirect's or an option's
@@ -318,7 +335,7 @@ func (v *Veto) surface(path string, head []byte) (string, bool) {
 		}
 		src = string(data)
 	}
-	if v.spec.Env.MatchString(src) {
+	if v.setsEnv(src) {
 		return "script surface sets an installer variable", true
 	}
 	var why string
@@ -821,9 +838,13 @@ func FlagsOnly(args []string, allowed map[string]bool, need ...string) bool {
 var wordRE = regexp.MustCompile(`[A-Za-z0-9_.+-]+`)
 
 // hasToken reports whether a word of text, or a part of one split at - or _, names a token,
-// so a hyphenated tool or action name (npm-install, setup-uv) names its installer too.
+// so a hyphenated tool or action name (npm-install, setup-uv) names its installer too. A
+// variable the lane's EnvKeeps keeps (npm_config_production) names none.
 func (v *Veto) hasToken(text string) bool {
 	for _, w := range wordRE.FindAllString(text, -1) {
+		if v.spec.EnvKeeps != nil && v.spec.EnvKeeps(w) {
+			continue
+		}
 		if v.spec.Token(w) {
 			return true
 		}

@@ -30,14 +30,15 @@ import (
 // --immutable (yarn 1 ignores it), npm exec, npx, pnpx, bunx, yarn dlx, pnpm run (pnpm
 // installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
 // names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
-// npm or yarn the build runs reads it. How a surface is read, and what binds a command to a
-// file, is lane-neutral, in scriptsurface.
+// npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
+// read, and what binds a command to a file, is lane-neutral, in scriptsurface.
 
 // scriptSpec is the JavaScript lane's part of the rule. It names no run wrapper: npm and yarn
 // run a package.json script, gated where it is written, not a command line.
 var scriptSpec = scriptsurface.Spec{
 	Token:       laneToken,
 	Env:         laneEnvRE,
+	EnvKeeps:    laneEnvKeeps,
 	Allowed:     laneAllowed,
 	ReadRegular: readRegular,
 	Absent:      absent,
@@ -47,6 +48,21 @@ var scriptSpec = scriptsurface.Spec{
 // (which Netlify passes to its own install) name that is not a $, ${ or attribute reference,
 // so is being set.
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS)`)
+
+// laneSubsetConfigs are the npm configs that only choose which of the packages a lock
+// records get installed (devDependencies, optionalDependencies, peers), never what a package
+// resolves to: exhaustive.go counts every locked package as present whatever its dev or
+// optional flag, so setting one installs nothing outside the lock read here.
+var laneSubsetConfigs = map[string]bool{"production": true, "omit": true, "include": true, "only": true}
+
+// laneEnvKeeps reports whether name, which laneEnvRE matched, is npm_config_<config> (any case)
+// for one of laneSubsetConfigs.
+func laneEnvKeeps(name string) bool {
+	if len(name) < len("npm_config_") || !strings.EqualFold(name[:len("npm_config_")], "npm_config_") {
+		return false
+	}
+	return laneSubsetConfigs[strings.ToLower(name[len("npm_config_"):])]
+}
 
 // laneToken reports whether word is a JavaScript package manager or package runner, an alias
 // or wrapper that runs one (yarnpkg, cnpm, ni and its nci, nlx, nu, na), or a tool

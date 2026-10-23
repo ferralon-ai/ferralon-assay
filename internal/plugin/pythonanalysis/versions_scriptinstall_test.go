@@ -84,6 +84,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 			"Dockerfile": "FROM python:3.12\nENV PIP_INDEX_URL=https://pkgs.example.com/simple\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}, false, ""},
 		{"UV_ variable in CI", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
 			".github/workflows/ci.yml": "on: push\nenv:\n  UV_INDEX_URL: https://pkgs.example.com/simple\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync --locked\n"}, false, ""},
+		{"UV_NO_DEV in CI: this lane keeps no variable", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
+			".github/workflows/ci.yml": "on: push\nenv:\n  UV_NO_DEV: \"1\"\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync --locked\n"}, false, ""},
+		{"PIP_ONLY_BINARY exported: this lane keeps no variable", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_ONLY_BINARY=:all:\npip install -r requirements.txt\n"}, false, ""},
 		{"flag outside the allowed set", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --index-url https://x -r requirements.txt\n"}, false, ""},
 
 		{"folded run joins a pin to an allowed form", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: >\n          pip install -r requirements.txt\n          jinja2==3.1.2\n"}, false, ""},

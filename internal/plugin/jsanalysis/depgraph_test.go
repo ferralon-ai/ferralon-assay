@@ -488,3 +488,30 @@ func TestDepGraph_NoTokenInRecords(t *testing.T) {
 		}
 	}
 }
+
+// The base graph's unversioned edges stay in the augmented graph. A call that never told the
+// copies apart resolves whatever versions the host lists, as it does without dependency code;
+// a versioned node resolves only for a listed version.
+func TestDepGraph_UnversionedNodesStillResolve(t *testing.T) {
+	edge := func(callee string) plugin.CallEdge {
+		return plugin.CallEdge{Caller: plugin.Symbol{SCIP: "scip-typescript npm . . app/`<module-init>`()."}, Callee: plugin.Symbol{SCIP: callee}}
+	}
+	edges := []plugin.CallEdge{edge("npm:multer#diskStorage"), edge("npm:multer@1.4.2#memoryStorage")}
+	for _, tc := range []struct {
+		versions []string
+		want     []string
+	}{
+		{nil, []string{"npm:multer#diskStorage"}},
+		{[]string{"1.4.2"}, []string{"npm:multer#diskStorage", "npm:multer@1.4.2#memoryStorage"}},
+		{[]string{"1.4.3"}, []string{"npm:multer#diskStorage"}},
+	} {
+		resolved, _, _ := resolveBoundarySymbols("multer", tc.versions, []string{"multer.diskStorage", "multer.memoryStorage"}, edges, buildPackages{})
+		var got []string
+		for _, s := range resolved {
+			got = append(got, s.SCIP)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("versions %v: resolved = %v, want %v", tc.versions, got, tc.want)
+		}
+	}
+}

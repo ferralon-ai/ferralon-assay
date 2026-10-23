@@ -358,24 +358,22 @@ func boundaryCandidates(pkg, version, symbol string) []string {
 // resolveBoundarySymbols maps the request's advisory symbols onto boundary nodes present in
 // the call graph. A node resolves only when the graph has an edge into it; its Origin is the
 // lockfile-resolved package of the specifier it was imported through, and is absent when no
-// selected lockfile resolved that package. When the graph tells pkg's installed copies apart
-// (dependency code was read), only the nodes of a copy whose version is in versions resolve.
+// selected lockfile resolved that package. An unversioned node, a call into pkg that does not
+// tell its installed copies apart, always resolves; a versioned one, a call into a copy whose
+// code was read, resolves only when its version is in versions.
 func resolveBoundarySymbols(pkg string, versions []string, symbols []string, edges []plugin.CallEdge, bp buildPackages) (resolved []plugin.Symbol, origins map[string]string, matched map[string][]string) {
 	nodes := map[string]bool{}
-	versioned := false
 	for _, e := range edges {
 		if isBoundaryID(e.Callee.SCIP) {
 			nodes[e.Callee.SCIP] = true
-			versioned = versioned || strings.HasPrefix(e.Callee.SCIP, boundaryScheme+pkg+"@")
 		}
 	}
-	if !versioned {
-		versions = []string{""}
-	}
 	candidates := func(s string) []string {
-		var ids []string
+		ids := boundaryCandidates(pkg, "", s)
 		for _, v := range versions {
-			ids = append(ids, boundaryCandidates(pkg, v, s)...)
+			if v != "" {
+				ids = append(ids, boundaryCandidates(pkg, v, s)...)
+			}
 		}
 		return ids
 	}

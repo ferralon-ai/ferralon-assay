@@ -15,10 +15,11 @@ import (
 // FindIngresses identifies framework-idiomatic entry points in the module at
 // req.BuildDir: the program main(s) and net/http handler shapes
 // (func(http.ResponseWriter, *http.Request) / http.HandlerFunc), plus
-// statically-discoverable registered routes (http.HandleFunc / ServeMux). It
-// never guesses arbitrary exported funcs as ingresses — an unrecognized func is
-// simply not an ingress (absence is declared at the reachability layer, not
-// fabricated here). A load/SSA-build failure is a hard error (inv.4).
+// statically-discoverable registered routes (http.HandleFunc / ServeMux, macaron,
+// chi and gin). It never guesses arbitrary exported funcs as ingresses — an
+// unrecognized func is simply not an ingress (absence is declared at the
+// reachability layer, not fabricated here). A load/SSA-build failure is a hard error
+// (inv.4).
 func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	sp, res, err := loadSSA(ctx, req.BuildDir)
 	if err != nil {
@@ -189,9 +190,9 @@ type route struct {
 //     statically-resolved handler func, not just the second arg — middleware that
 //     is a call result (bind(...)/bindIgnErr(...)) resolves to no static function
 //     and is conservatively skipped.
-//   - github.com/go-chi/chi and github.com/go-chi/chi/v5: see chiRegistrar. The
-//     router is identified by the import path of the package DECLARING the called
-//     method, never by a type or method name alone.
+//   - github.com/go-chi/chi, github.com/go-chi/chi/v5 and github.com/gin-gonic/gin:
+//     see pathRouter. The router is identified by the import path of the package
+//     DECLARING the called method, never by a type or method name alone.
 //
 // A registrar whose pattern is not a constant (or, for Combo's chained verbs, is
 // carried on the Combo call rather than the verb call) still contributes its
@@ -207,8 +208,8 @@ func (s *ssaProgram) discoverRoutes() []route {
 					continue
 				}
 				common := call.Common()
-				chiName, isChi := chiRegistrar(common)
-				if !isChi {
+				router, name := pathRegistrar(common)
+				if router == nil {
 					callee := common.StaticCallee()
 					if callee == nil || !isHTTPRouteRegistrar(callee) {
 						continue
@@ -220,8 +221,9 @@ func (s *ssaProgram) discoverRoutes() []route {
 				if !common.IsInvoke() && common.Signature().Recv() != nil && len(args) > 0 {
 					args = args[1:]
 				}
-				// chi's Method/MethodFunc take the HTTP method ahead of the pattern.
-				if isChi && chiMethodRegistrars[chiName] && len(args) > 0 {
+				// chi's Method/MethodFunc and gin's Handle/Match take the HTTP method(s)
+				// ahead of the pattern.
+				if router != nil && router.methodFirst[name] && len(args) > 0 {
 					args = args[1:]
 				}
 				if len(args) == 0 {
@@ -236,8 +238,8 @@ func (s *ssaProgram) discoverRoutes() []route {
 					handlerArgs = args[1:]
 				}
 				resolve := staticHandler
-				if isChi {
-					resolve = s.chiHandler
+				if router != nil {
+					resolve = func(v ssa.Value) *ssa.Function { return s.routerHandler(router, v) }
 				}
 				for _, h := range s.collectHandlers(handlerArgs, resolve) {
 					routes = append(routes, route{selector: selector, symbol: h})
@@ -251,8 +253,9 @@ func (s *ssaProgram) discoverRoutes() []route {
 // collectHandlers returns the SCIP ids of every statically-resolved handler func
 // among args, unwrapping the variadic slice that a ...Handler registrar packs its
 // handlers into. resolve maps one arg to its handler func (staticHandler, or
-// chiHandler for a chi registrar). A non-handler arg (a constant, a middleware call
-// result) resolves to nothing and is skipped — honesty over reach (inv.5).
+// routerHandler for a pathRouter registrar). A non-handler arg (a constant, a
+// middleware call result) resolves to nothing and is skipped — honesty over reach
+// (inv.5).
 func (s *ssaProgram) collectHandlers(args []ssa.Value, resolve func(ssa.Value) *ssa.Function) []string {
 	var out []string
 	seen := map[*ssa.Function]bool{}
@@ -334,42 +337,113 @@ var chiRegistrarMethods = map[string]bool{
 // method, ahead of the route pattern.
 var chiMethodRegistrars = map[string]bool{"Method": true, "MethodFunc": true}
 
-// chiRegistrar reports whether common calls a chi route registrar, returning the
-// method name. Both call shapes are matched by the import path of the package that
-// declares the called method: a static call on the concrete router ((*chi.Mux).Get)
-// and an interface (invoke) call on chi.Router — the shape of every registration
-// inside a Route/Group closure or on a With result, which has no static callee.
-func chiRegistrar(common *ssa.CallCommon) (string, bool) {
+// ginPkgPaths is the import path of the gin router. A package with gin's name, types
+// or methods under any other path is not gin.
+var ginPkgPaths = map[string]bool{"github.com/gin-gonic/gin": true}
+
+// ginRegistrarMethods are the gin methods that register a handler chain against a
+// route, declared on *gin.RouterGroup (and reached through *gin.Engine, which embeds
+// it) and on the gin.IRoutes interface: the verb methods and Any take (pattern,
+// ...HandlerFunc), Handle takes (method, pattern, ...HandlerFunc) and Match takes
+// ([]method, pattern, ...HandlerFunc). Every handler in a route's chain is an
+// ingress, as with macaron. Use and Group are intentionally excluded: Use's
+// middleware runs for every route and is no route of its own, and Group's handler
+// arguments are the group's middleware, the same; the routes registered on the
+// *RouterGroup a Group returns are recognized at their own call sites.
+var ginRegistrarMethods = map[string]bool{
+	"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true,
+	"HEAD": true, "OPTIONS": true, "Any": true, "Handle": true, "Match": true,
+}
+
+// ginMethodRegistrars are the ginRegistrarMethods whose leading argument is the HTTP
+// method (Handle) or methods (Match), ahead of the route pattern.
+var ginMethodRegistrars = map[string]bool{"Handle": true, "Match": true}
+
+// ginWrappers are gin's adapters from a net/http handler to a gin.HandlerFunc. A
+// registered WrapF(f) or WrapH(h) ingresses as the first-party f, or h's ServeHTTP,
+// that it wraps; the closure gin builds around it is never a handler.
+var ginWrappers = map[string]bool{"WrapF": true, "WrapH": true}
+
+// pathRouter is a third-party router recognized by import path — the rule chi set
+// and gin reuses:
+//
+//   - the router is identified by the import path of the package DECLARING the
+//     called method (paths), never by a type or method name alone;
+//   - the registrar methods (registrars) are recognized as a static call on the
+//     concrete router and as an interface (invoke) call on the package's router
+//     interface;
+//   - the registrars in methodFirst take the HTTP method(s) ahead of the route
+//     pattern, and that argument is skipped so the selector is the pattern;
+//   - grouping closures and middleware (chi's Route/Group/With, gin's Use/Group) are
+//     no registrar: their arguments are not route handlers;
+//   - adapter and router ServeHTTP methods are excluded, deriving the adapter
+//     package from the http.Handler interface the value is boxed into (routerHandler);
+//   - the package's own net/http adapters (wrappers) resolve to the handler they wrap.
+type pathRouter struct {
+	paths, registrars, methodFirst, wrappers map[string]bool
+}
+
+var (
+	chiRouter = &pathRouter{paths: chiPkgPaths, registrars: chiRegistrarMethods, methodFirst: chiMethodRegistrars}
+	ginRouter = &pathRouter{paths: ginPkgPaths, registrars: ginRegistrarMethods,
+		methodFirst: ginMethodRegistrars, wrappers: ginWrappers}
+	pathRouters = []*pathRouter{chiRouter, ginRouter}
+)
+
+// pathRegistrar reports the pathRouter whose route registrar common calls, and the
+// method name; nil when it calls none. Both call shapes are matched by the import
+// path of the package that declares the called method: a static call on the concrete
+// router ((*chi.Mux).Get, (*gin.RouterGroup).GET) and an interface (invoke) call on
+// the router interface (chi.Router, gin.IRoutes) — the shape of every chi
+// registration inside a Route/Group closure or on a With result, which has no static
+// callee.
+func pathRegistrar(common *ssa.CallCommon) (*pathRouter, string) {
 	var pkg *types.Package
 	var name string
 	if common.IsInvoke() {
 		if common.Method == nil {
-			return "", false
+			return nil, ""
 		}
 		pkg, name = common.Method.Pkg(), common.Method.Name()
 	} else {
 		callee := common.StaticCallee()
 		if callee == nil || callee.Pkg == nil {
-			return "", false
+			return nil, ""
 		}
 		pkg, name = callee.Pkg.Pkg, callee.Name()
 	}
-	if pkg == nil || !chiPkgPaths[pkg.Path()] || !chiRegistrarMethods[name] {
-		return "", false
+	if pkg == nil {
+		return nil, ""
 	}
-	return name, true
+	for _, r := range pathRouters {
+		if r.paths[pkg.Path()] && r.registrars[name] {
+			return r, name
+		}
+	}
+	return nil, ""
 }
 
-// chiHandler is staticHandler plus the http.Handler that chi's Handle, Method and
-// Mount take: a concrete value boxed into the interface contributes its ServeHTTP
-// method. A chi router mounted as a sub-router, or an adapter handler type (an
-// http.HandlerFunc held in a variable), is skipped: the sub-router's own
-// registrations are the ingresses, and the adapter's ServeHTTP is no first-party
-// handler. The adapter package is the one declaring the http.Handler interface the
-// value is boxed into — net/http in real code, named explicitly as well.
-func (s *ssaProgram) chiHandler(v ssa.Value) *ssa.Function {
+// routerHandler is staticHandler plus two shapes a pathRouter registrar takes. A
+// call to one of the router package's own wrappers (gin.WrapF / gin.WrapH) resolves
+// to the handler it wraps. And an http.Handler (chi's Handle, Method and Mount, the
+// value gin.WrapH takes): a concrete value boxed into the interface contributes its
+// ServeHTTP method. A router mounted as a sub-router (a chi Mux, a gin Engine), or an
+// adapter handler type (an http.HandlerFunc held in a variable), is skipped: the
+// sub-router's own registrations are the ingresses, and the adapter's ServeHTTP is
+// no first-party handler. The adapter package is the one declaring the http.Handler
+// interface the value is boxed into — net/http in real code, named explicitly as
+// well.
+func (s *ssaProgram) routerHandler(r *pathRouter, v ssa.Value) *ssa.Function {
 	if fn := staticHandler(v); fn != nil {
 		return fn
+	}
+	if call, ok := v.(*ssa.Call); ok {
+		w := call.Call.StaticCallee()
+		if w == nil || w.Pkg == nil || !r.paths[w.Pkg.Pkg.Path()] || !r.wrappers[w.Name()] ||
+			len(call.Call.Args) != 1 {
+			return nil
+		}
+		return s.routerHandler(r, call.Call.Args[0])
 	}
 	mi, ok := v.(*ssa.MakeInterface)
 	if !ok {
@@ -378,7 +452,7 @@ func (s *ssaProgram) chiHandler(v ssa.Value) *ssa.Function {
 	t := mi.X.Type()
 	adapter := namedTypePkg(mi.Type())
 	if pkg := namedTypePkg(t); pkg == nil || pkg.Path() == "net/http" ||
-		(adapter != nil && pkg.Path() == adapter.Path()) || chiPkgPaths[pkg.Path()] {
+		(adapter != nil && pkg.Path() == adapter.Path()) || r.paths[pkg.Path()] {
 		return nil
 	}
 	sel := s.prog.MethodSets.MethodSet(t).Lookup(nil, "ServeHTTP")

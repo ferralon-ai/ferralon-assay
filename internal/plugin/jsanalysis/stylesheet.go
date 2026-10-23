@@ -842,15 +842,19 @@ var npmrcRegistryKeys = map[string]bool{
 
 // npmrcHooks reports whether the .npmrc at file sets anything but npmrcPlainKeys or
 // npmrcRegistryKeys, or cannot be read. npm, pnpm and yarn classic all read a project .npmrc.
-// Lines end at \n or \r, a line starting with '#' or ';' is a comment, and a line with no key
-// sets nothing. A key loses one pair of enclosing quotes, as npm's ini parser removes them, and is
-// then compared case-insensitively, with _ as -. A key npm may rewrite (a quote, escape, ${…}
-// substitution, '#' or ';' left in it, or any non-ASCII character such as a byte-order mark)
-// counts, whatever it spells.
-func npmrcHooks(root, file string) bool {
+func npmrcHooks(root, file string) bool { return !npmrcSetsOnly(root, file, npmrcPlainKeys) }
+
+// npmrcSetsOnly reports whether the .npmrc at file can be read and sets nothing but keys in
+// plain, a scoped registry (@scope:registry) or npmrcRegistryKeys. Lines end at \n or \r, a
+// line starting with '#' or ';' is a comment, and a line with no key sets nothing. A key loses
+// one pair of enclosing quotes, as npm's ini parser removes them, and is then compared
+// case-insensitively, with _ as -. A key npm may rewrite (a quote, escape, ${…} substitution,
+// '#' or ';' left in it, or any non-ASCII character such as a byte-order mark) is refused,
+// whatever it spells.
+func npmrcSetsOnly(root, file string, plain map[string]bool) bool {
 	data, ok := readInRoot(root, file, maxStyleManifest)
 	if !ok {
-		return true
+		return false
 	}
 	for _, line := range strings.FieldsFunc(string(data), func(r rune) bool { return r == '\n' || r == '\r' }) {
 		key, _, _ := strings.Cut(line, "=")
@@ -858,7 +862,7 @@ func npmrcHooks(root, file string) bool {
 			continue
 		}
 		if strings.ContainsFunc(key, func(r rune) bool { return r > unicode.MaxASCII }) {
-			return true
+			return false
 		}
 		key = strings.TrimSpace(key)
 		if len(key) >= 2 && (key[0] == '"' || key[0] == '\'') && key[len(key)-1] == key[0] {
@@ -868,21 +872,21 @@ func npmrcHooks(root, file string) bool {
 			continue
 		}
 		if strings.ContainsAny(key, "\"'\\$#;") {
-			return true
+			return false
 		}
 		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
 		if strings.HasPrefix(key, "//") {
 			if !npmrcRegistryKeys[key[strings.LastIndexByte(key, ':')+1:]] {
-				return true
+				return false
 			}
 			continue
 		}
 		scope := strings.HasPrefix(key, "@") && strings.HasSuffix(key, ":registry")
-		if !scope && !npmrcPlainKeys[key] {
-			return true
+		if !scope && !plain[key] {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // maxStyleManifest bounds the read of a package.json the tooling check inspects.

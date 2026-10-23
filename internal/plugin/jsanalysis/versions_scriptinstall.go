@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -197,13 +198,24 @@ func lanePackage(b scriptsurface.Binder, dir string) bool {
 // npmLocks are the lockfiles npm install reads, the first ahead of the second.
 var npmLocks = []string{"npm-shrinkwrap.json", "package-lock.json"}
 
+// npmrcLockSafeKeys are the .npmrc settings that leave what a bare npm install puts in
+// node_modules to the lock: where packages are fetched from and with which credentials, proxy
+// and TLS, and what npm prints. Every setting that changes resolution or the lock itself
+// (package-lock, shrinkwrap, legacy-peer-deps, save-*, prefer-offline, …) is left out.
+var npmrcLockSafeKeys = map[string]bool{
+	"registry": true, "always-auth": true, "strict-ssl": true, "ca": true, "cafile": true,
+	"proxy": true, "https-proxy": true, "noproxy": true, "email": true,
+	"fund": true, "audit": true, "loglevel": true, "progress": true, "update-notifier": true,
+}
+
 // laneLockPreserving reports whether a bare npm install run with package root dir ("." when it
 // has no --prefix) installs exactly what its lock records: the package root's package.json is
 // read here (Prefixed, with npmLocks) and declares no install rewrite, every npm lock in that
-// same directory parsed and
-// covers it (lockCovers, the predicate exhaustiveness uses), there is at least one, and neither
-// it nor any package.json above it inside root names workspaces, which would make npm install
-// against another lock or install other projects too. Anything this cannot read withholds.
+// same directory parsed and covers it (lockCovers, the predicate exhaustiveness uses), there
+// is at least one, neither it nor any package.json above it inside root names workspaces,
+// which would make npm install against another lock or install other projects too, and every
+// .npmrc there or above inside root sets only npmrcLockSafeKeys, so none turns the lock off.
+// Anything this cannot read withholds.
 func laneLockPreserving(b scriptsurface.Binder, dir, root string, locks map[string]lockInfo) bool {
 	if dir == "" {
 		dir = "."
@@ -229,11 +241,30 @@ func laneLockPreserving(b scriptsurface.Binder, dir, root string, locks map[stri
 			}
 			covered++
 		}
-		if covered == 0 || npmWorkspaceAt(root, d) {
+		if covered == 0 || npmWorkspaceAt(root, d) || !npmrcLockSafe(root, d) {
 			return false
 		}
 	}
 	return true
+}
+
+// npmrcLockSafe reports whether every .npmrc in dir or a directory above it inside root sets
+// only npmrcLockSafeKeys, and can be read.
+func npmrcLockSafe(root, dir string) bool {
+	for {
+		f := filepath.Join(dir, ".npmrc")
+		if _, err := os.Lstat(f); err == nil && !npmrcSetsOnly(root, f, npmrcLockSafeKeys) || err != nil && !absent(err) {
+			return false
+		}
+		if dir == root {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // npmWorkspaceAt reports whether the package.json in dir or any directory above it inside root

@@ -175,7 +175,8 @@ func governingLocks(dir string, byDir map[string][]lockInfo) (string, []lockInfo
 
 // lockCovers reports whether one lockfile records the project at rel (relative to the lock's
 // directory) with every declared name, and the same spec for each name it installs from (for a
-// v1 package-lock, a version satisfying it).
+// v1 package-lock, a version at the root satisfying it, for every declared field peers
+// included).
 func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]string) bool {
 	for _, deps := range declared {
 		for n := range deps {
@@ -211,7 +212,9 @@ func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]
 		}
 		return true
 	default: // lockNPMv1 records no specs, only the version installed for each root dependency
-		for _, f := range rangedDependencyFields {
+		// A root peer is held to its range too: npm 7+ installs the root's own peers and
+		// replaces a locked copy outside the range.
+		for _, f := range lockedDependencyFields {
 			for n, spec := range declared[f] {
 				if rel != "." || !rangeSatisfied(l.rootVersions[n], spec) {
 					return false

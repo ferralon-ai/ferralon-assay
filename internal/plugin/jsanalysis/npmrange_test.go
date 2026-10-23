@@ -35,6 +35,8 @@ func TestRangeSatisfied(t *testing.T) {
 		{"0.0.0", "^0.0.0", true},
 		{"0.0.1", "^0.0.0", false},
 		{"1.0.0", "^0.9.0", false},
+		{"1.2.5", "^0.2.3", false},
+		{"1.0.3", "^0.0.3", false},
 
 		// Tilde: below the next minor.
 		{"1.2.9", "~1.2.3", true},

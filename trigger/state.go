@@ -174,7 +174,9 @@ func joinSortedUnique(names []string) string {
 // inheritBaseline produces the PR-inherit fast-path Report: it re-emits the baseline's
 // findings/SBOM verbatim for the PR head's subject, carrying a Baseline pointer back
 // to the baseline it inherited (so a reader knows the verdicts were not re-derived).
-func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *statestore.State) *report.Report {
+// fresh and notes are assessUnrowed's rows and limits for the advisories the baseline
+// holds no row for; a fresh row never shares a key with a baseline row.
+func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *statestore.State, fresh []report.AdvisoryFinding, notes []report.PartialityNote) *report.Report {
 	b := report.NewBuilder(report.Subject{
 		Repo:           req.Subject.Repo,
 		Revision:       req.Subject.Revision,
@@ -191,6 +193,10 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	for i := range baseline.Advisories {
 		b.AddFinding(withInventoryLimits(baseline.Advisories[i], req.DiffLimits))
 	}
+	for _, f := range fresh {
+		b.AddFinding(f)
+	}
+	b.AddPartiality(notes...)
 	// Disclose, on the inherited fast path, what the head-SBOM resolution could not
 	// resolve — so a diff that inherited because a lane's inventory was unavailable is
 	// distinguishable in the Report from one that inherited because nothing changed
@@ -220,6 +226,55 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	rep := b.Build()
 	return &rep
+}
+
+// unrowedAdvisories returns the work-set advisories the baseline holds no row for, each once,
+// in work-set order. A row is looked up as reanalyzeSlice looks it up: by (id, source) and, for
+// a migrated v1 row with no source, by id.
+func unrowedAdvisories(baseline *report.Report, advisories []assessment.VulnRef) []assessment.VulnRef {
+	rows := make(map[string]struct{}, len(baseline.Advisories))
+	for _, f := range baseline.Advisories {
+		rows[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
+	}
+	var out []assessment.VulnRef
+	for _, adv := range advisories {
+		_, ok := rows[adv.ID+"\x00"+adv.Source]
+		if !ok {
+			_, ok = rows[adv.ID+"\x00"]
+		}
+		if ok {
+			continue
+		}
+		rows[adv.ID+"\x00"+adv.Source] = struct{}{}
+		out = append(out, adv)
+	}
+	return out
+}
+
+// assessUnrowed runs S1–S6 for the fast path's unrowed advisories, building each row as
+// reanalyzeSlice builds a fresh one, against the baseline SBOM the inherited Report carries
+// (the head's, since nothing changed). A failed assessment gets an undetermined row and a
+// note naming it, so no advisory comes back without a row.
+func assessUnrowed(ctx context.Context, baseline *report.Report, req PRInheritRequest, advisories []assessment.VulnRef) ([]report.AdvisoryFinding, []report.PartialityNote) {
+	var findings []report.AdvisoryFinding
+	var notes []report.PartialityNote
+	for _, adv := range advisories {
+		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
+		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
+		if err != nil {
+			findings = append(findings, assessFailureFinding(adv, err))
+			notes = append(notes, assessFailureNote(adv, err))
+			continue
+		}
+		notes = append(notes, partialityNotes(st, assessmentID)...)
+		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, baseline.SBOM.Packages)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(baseline.SBOM, req.DiffLimits)), req.DiffLimits)
+		if note, ok := limitNoteFor(f); ok {
+			notes = append(notes, note)
+		}
+		findings = append(findings, f)
+	}
+	return findings, notes
 }
 
 // reanalyzeSlice re-runs S1–S6 for the advisories whose package changed, then merges

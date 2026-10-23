@@ -217,11 +217,18 @@ func TestResolveVersions_ScriptForms(t *testing.T) {
 		{"prefix: no dir", tree(`"client":"npm start --prefix"`, nil), nil, false},
 		{"prefix: npm test is not a prefixed form", tree(`"t":"npm test --prefix frontend"`, nil), nil, false},
 		{"prefix: npm start with another argument", tree(`"client":"npm start --prefix frontend extra"`, nil), nil, false},
+		{"prefix: absolute dir", tree(`"build":"npm run build --prefix /frontend"`, nil), nil, false},
+		{"prefix: after a cd to an expansion", tree(`"build":"cd $X && npm run build --prefix frontend"`, nil), nil, false},
+		{"prefix: after a cd to no directory", tree(`"build":"cd nowhere && npm run build --prefix frontend"`, nil), nil, false},
+		{"prefix: package.json rewritten first", tree(`"build":"sed -i s/x/y/ frontend/package.json; npm run build --prefix frontend"`, nil), nil, false},
+		{"prefix: dir literally named with a glob character", tree(`"client":"npm start --prefix front*"`, map[string]string{"front*/package.json": front}), nil, false},
+		{"prefix: dir literally named with a brace", tree(`"client":"npm start --prefix fr{o,}ntend"`, map[string]string{"fr{o,}ntend/package.json": front}), nil, false},
 
 		// (d) concurrently.
 		{"concurrently: two npm runs", tree(`"dev":"concurrently \"npm run server\" \"npm run client\"","server":"node server","client":"npm start --prefix frontend"`, nil), nil, true},
 		{"concurrently: -k and a prefixed start", tree(`"dev":"concurrently -k \"npm run server\" \"npm start --prefix frontend\""`, nil), nil, true},
 		{"concurrently: each command runs in a shell of its own", tree(`"dev":"concurrently \"cd nowhere\" \"npm ci\""`, nil), nil, true},
+		{"concurrently: a cd in one command does not move the next", tree(`"dev":"concurrently \"cd frontend\" \"npm start --prefix frontend\""`, nil), nil, true},
 		{"concurrently: a named install", tree(`"dev":"concurrently \"npm run server\" \"npm install left-pad\""`, nil), nil, false},
 		{"concurrently: an unknown flag", tree(`"dev":"concurrently --passthrough-arguments \"npm run server\""`, nil), nil, false},
 		{"concurrently: a valued flag", tree(`"dev":"concurrently -n api,web \"npm run server\" \"npm run client\""`, nil), nil, false},

@@ -197,6 +197,8 @@ type Veto struct {
 	vetoed    map[string]bool
 	bound     map[string]bool // lowercased base names of files allowed commands bind to
 	mentioned map[string]bool // lowercased base names other commands take as arguments
+	ran       map[string]bool // lowercased base names other commands run as the program
+	globs     map[string]bool // lowercased words holding a glob character, as paths
 	samples   map[string]bool // lowercased base names of the sample hooks surface passed over
 }
 
@@ -204,7 +206,8 @@ type Veto struct {
 // whether version resolution reads the file at a path. spec decides the lane's installers.
 func New(root string, read func(string) bool, spec Spec) *Veto {
 	return &Veto{root: filepath.Clean(root), read: read, spec: spec, vetoed: map[string]bool{},
-		bound: map[string]bool{}, mentioned: map[string]bool{}, samples: map[string]bool{}}
+		bound: map[string]bool{}, mentioned: map[string]bool{}, ran: map[string]bool{},
+		globs: map[string]bool{}, samples: map[string]bool{}}
 }
 
 // Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on is
@@ -241,11 +244,29 @@ func (v *Veto) Rebound() bool {
 // after the walk.
 func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.sampleNamed() }
 
-// sampleNamed reports whether a command anywhere in the build names, as an argument, a sample
-// hook surface passed over, so may run it or install it as a live hook.
+// sampleNamed reports whether a command anywhere in the build names a sample hook surface
+// passed over, as an argument or as the program it runs, so may run it or install it as a
+// live hook. A name holding a glob character names every sample it matches.
 func (v *Veto) sampleNamed() bool {
 	for name := range v.samples {
-		if v.mentioned[name] {
+		if v.mentioned[name] || v.ran[name] || v.globNames(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// globNames reports whether a glob some command takes names the sample hook name: its base
+// matches name, and it has no directory, a hooks directory or a directory that is itself a
+// glob. A glob into any other directory, such as dist/*, cannot reach a hooks directory.
+func (v *Veto) globNames(name string) bool {
+	for g := range v.globs {
+		dir, base := path.Split(g)
+		dir = strings.TrimSuffix(dir, "/")
+		if dir != "" && path.Base(dir) != "hooks" && !strings.ContainsAny(dir, "*?[") {
+			continue
+		}
+		if ok, err := path.Match(base, name); ok || err != nil {
 			return true
 		}
 	}
@@ -296,14 +317,22 @@ func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))]
 
 // mention records the base names of a command's arguments, a redirect's or an option's
 // target included.
-func (v *Veto) mention(args []string) {
-	for _, a := range args {
+func (v *Veto) mention(args []string) { v.note(v.mentioned, args) }
+
+// note records in names the lowercased base name of each word, past any redirect and up to the
+// last =, and in globs each such word holding a glob character.
+func (v *Veto) note(names map[string]bool, words []string) {
+	for _, a := range words {
 		a = strings.TrimLeft(a, "0123456789<>&")
 		if i := strings.LastIndexByte(a, '='); i >= 0 {
 			a = a[i+1:]
 		}
-		if b := strings.ToLower(path.Base(filepath.ToSlash(a))); b != "" && b != "." && b != "/" {
-			v.mentioned[b] = true
+		a = strings.ToLower(filepath.ToSlash(a))
+		if b := path.Base(a); b != "" && b != "." && b != "/" {
+			names[b] = true
+		}
+		if strings.ContainsAny(a, "*?[") {
+			v.globs[path.Clean(a)] = true
 		}
 	}
 }
@@ -668,6 +697,9 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	if !v.segmentHasToken(words) {
 		v.mention(words[1:])
+		// The program itself is kept apart so a command word never reads as rewriting a file
+		// Rebound guards; it can still run a sample hook.
+		v.note(v.ran, words[:1])
 		cur.other()
 		return ""
 	}
@@ -698,6 +730,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 // withholds, as does a runner with none or nested too deep.
 func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 	why := "install command: " + strings.Join(words, " ")
+	// Each nested command is a strictly shorter string, so the depth bound here is defence in
+	// depth; a run wrapper's script body is not, and needs it.
 	if len(cmds) == 0 || depth >= maxRunDepth {
 		return why
 	}

@@ -220,7 +220,7 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 }
 
 func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
-	if c.unknown || len(c.dirs) == 0 || dir == "" || filepath.IsAbs(dir) || strings.ContainsAny(dir, "$`*?[~") {
+	if c.unknown || len(c.dirs) == 0 || dir == "" || filepath.IsAbs(dir) || strings.ContainsAny(dir, "$`*?[{~") {
 		return nil
 	}
 	for _, part := range strings.Split(filepath.ToSlash(dir), "/") {
@@ -231,6 +231,8 @@ func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
 	found := make([]string, 0, len(c.dirs))
 	for _, d := range c.dirs {
 		f := filepath.Join(d, dir, name)
+		// The walk yields no path through a symlink, so read already refuses one; unlinked
+		// and read (in packageFile) are each defence in depth behind the other and the walk.
 		if !c.v.packageFile(f) || !c.v.walkedSurface(f) {
 			return nil
 		}

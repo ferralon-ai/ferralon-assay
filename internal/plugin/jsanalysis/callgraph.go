@@ -17,7 +17,7 @@ type program struct {
 	files      []fileParse
 	readFailed bool
 	skipped    bool
-	root       string // build dir (for reading package.json / tsconfig.json; never node_modules)
+	root       string // build dir (for reading package.json / tsconfig.json; never node_modules source)
 	// modules indexes every in-tree module by its path-based id: its bindings, its
 	// module-level functions, and its class methods. It replaces the former global
 	// (name,arity) funcsByKey / funcsByName maps — resolution is now import-scoped.
@@ -25,6 +25,9 @@ type program struct {
 	// moduleSet is the set of in-tree module ids, used for extension/index resolution
 	// of a relative specifier.
 	moduleSet map[string]bool
+	// sources maps a module id to the source files that yield it (one per extension), so
+	// a walk that depends on where the file really lives can resolve the file itself.
+	sources map[string][]string
 	// buildCtx caches the PLAN-163 build context (bundler alias/define map with
 	// provenance) the resolver injection point exposes; nil until the first resolver()
 	// call computes it once. It reads the static bundler configs and executes nothing (C4).
@@ -62,6 +65,7 @@ func (d funcDecl) scip() string {
 // resolve import-scoped calls).
 type fileParse struct {
 	module    string
+	escapes   fileEscapes
 	decls     []decl
 	calls     []callSite
 	ingresses []ingressMarker
@@ -111,6 +115,7 @@ func loadProgram(buildDir string) (*program, error) {
 		root:      buildDir,
 		modules:   map[string]*moduleIndex{},
 		moduleSet: map[string]bool{},
+		sources:   map[string][]string{},
 	}
 	for _, f := range files {
 		data, err := readRegular(f)
@@ -119,6 +124,7 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, f)
+		prog.sources[module] = append(prog.sources[module], f)
 		var pr parseResult
 		if filepath.Ext(f) == vueExtension {
 			pr = parseVueSFC(module, string(data))
@@ -128,7 +134,7 @@ func loadProgram(buildDir string) (*program, error) {
 		if pr.skipped {
 			prog.skipped = true
 		}
-		fp := fileParse{module: pr.module, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses, bindings: pr.bindings}
+		fp := fileParse{module: pr.module, escapes: pr.escapes, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses, bindings: pr.bindings}
 		prog.files = append(prog.files, fp)
 		prog.moduleSet[pr.module] = true
 		prog.indexModule(fp)
@@ -229,10 +235,17 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	// A computed read accepted for its literal receiver holds only while no module of the
 	// build may set a prototype the lane does not see.
 	anyExempt, anyProto := false, false
+	addEdge := func(e plugin.CallEdge, prov provenance) {
+		if !seen[e] {
+			seen[e] = true
+			edges = append(edges, e)
+			provByEdge[e] = prov
+		}
+	}
 
 	for _, f := range prog.files {
-		// Module-level runtime-computed specifiers (import(expr) / require(var)) are
-		// declared limits even though they emit no call site (§6).
+		// Module-level runtime-computed specifiers (import(expr) / require(var)) with no
+		// static prefix are declared limits even though they emit no call site (§6).
 		if f.bindings.dynImport {
 			flags.dynImport = true
 		}
@@ -259,31 +272,52 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			case !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec):
 				flags.unreadModule = true
 			}
+			// A literal import() whose resolution meets any condition outside Node's defaults
+			// keeps the limit a computed import() declares (loadMeetsUnmodeledCondition).
+			if ls.dynImport && !flags.dynImport && rs.loadMeetsUnmodeledCondition(f.module, ls.spec) {
+				flags.dynImport = true
+			}
+		}
+		// A static-prefix load whose files are all in-tree modules gets an edge to each.
+		// Its suffix may still traverse out of the prefix (prefixSuffixMayTraverse), so the
+		// computed limit stays run-wide beside the edges.
+		for _, pl := range f.bindings.prefixLoads {
+			reason, algo := plugin.PartialReasonComputedRequireSpecifier, algoCJS
+			if pl.dyn {
+				reason, algo = plugin.PartialReasonDynamicImportSpecifier, algoESM
+			}
+			kind, mods := rs.classifyPrefixLoad(f.module, pl)
+			if kind == prefixFirstParty {
+				caller := sym(funcSCIP(f.module, pl.caller.enclosing, pl.caller.name, pl.caller.arity))
+				for _, m := range mods {
+					addEdge(plugin.CallEdge{Caller: caller, Callee: sym(moduleInitSCIP(m))}, provenance{Algo: algo})
+				}
+				if !prefixSuffixMayTraverse {
+					continue
+				}
+			}
+			accumulateReason(&flags, reason)
 		}
 		// Module code runs when the module is loaded, and any first-party module may be
 		// loaded, so every module's top-level frame is a root.
 		rootsSet[moduleInitSCIP(f.module)] = true
+		// Every function opaque code could call back is a root (escape.go).
+		for _, d := range f.decls {
+			if f.escapes.root(d) {
+				rootsSet[funcSCIP(f.module, d.enclosing, d.name, d.arity)] = true
+			}
+		}
 		for _, cs := range f.calls {
 			caller := sym(funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity))
 			if cs.calleeFrame {
 				// The frame that registers an inline handler reaches it: the scanner minted
 				// both ends in this file, so there is nothing to resolve.
-				e := plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}
-				if !seen[e] {
-					seen[e] = true
-					edges = append(edges, e)
-					provByEdge[e] = provenance{Algo: algoLocal}
-				}
+				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}, provenance{Algo: algoLocal})
 				continue
 			}
 			r := rs.resolveCallSite(f.module, cs)
 			if target, ok := r.edge(); ok {
-				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
-				if !seen[e] {
-					seen[e] = true
-					edges = append(edges, e)
-					provByEdge[e] = r.Prov
-				}
+				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 				continue
 			}
 			if target, prov, ok := br.callee(f.module, cs); ok {

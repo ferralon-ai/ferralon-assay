@@ -980,6 +980,12 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 		member := b >= 0 && clean[b] == '.'
 		switch {
 		case member:
+			if !isGlobalBase(word) {
+				break
+			}
+			if cs, ok := gs.globalChain(clean, memberDot(clean, b), false); ok && flowsTo(clean, start, cs) && globalValue(clean, next, end) {
+				return true // `global.globalThis`: a global name read off the global
+			}
 		case word == "Function":
 			if p := skipSpace(clean, next); p < end && clean[p] == '(' {
 				if _, e := parseParamArity(clean, p); skipSpace(clean, e) < end && clean[skipSpace(clean, e)] == '(' {
@@ -996,21 +1002,26 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 			if w, _ := wordBefore(clean, b); w == "typeof" || !flowsTo(clean, start, i) {
 				break
 			}
-			p := skipSpace(clean, next)
-			if andTest(clean, p) {
-				break
+			if globalValue(clean, next, end) {
+				return true
 			}
-			if p < end && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(') {
-				break
-			}
-			if p+1 < end && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=' {
-				break
-			}
-			return true
 		}
 		i = next
 	}
 	return false
+}
+
+// globalValue reports whether a global-valued operand ending at next, in an expression ending
+// at end, is taken as a value: not tested, compared, or read for a member, index or call.
+func globalValue(clean []rune, next, end int) bool {
+	p := skipSpace(clean, next)
+	if andTest(clean, p) {
+		return false
+	}
+	if p < end && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(') {
+		return false
+	}
+	return !(p+1 < end && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=')
 }
 
 // callsReturnThis reports whether the name at [i, next) is called plainly and declares a
@@ -1044,7 +1055,7 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 	n := len(clean)
 	b := skipSpaceBack(clean, i-1)
 	if b >= 0 && clean[b] == '.' {
-		r, ok := gs.globalReceiver(clean, b)
+		r, ok := gs.globalChain(clean, memberDot(clean, b), false)
 		if !ok {
 			return
 		}
@@ -1089,21 +1100,43 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 	}
 }
 
-// globalReceiver reports whether the member access whose '.' is at b reads from the global
-// through a chain of global names (`globalThis.global`, `window.window`), and returns where
-// the chain starts.
-func (gs *globalScope) globalReceiver(clean []rune, b int) (int, bool) {
-	for {
-		w, s := wordBefore(clean, skipSpaceBack(clean, b-1))
-		if !isGlobalBase(w) {
+// globalChain reports whether the member operator at op reads from the global object
+// through a chain of global names whose first name resolves to the global
+// (`global.globalThis`, `window.self.globalThis`), and returns where the chain starts. With
+// groups, a receiver ending in a group, call or index anywhere in the chain counts as well,
+// since this lane does not know its value, and so does a first name spelled as a global
+// name even where a local shadows it.
+func (gs *globalScope) globalChain(clean []rune, op int, groups bool) (int, bool) {
+	k := skipSpaceBack(clean, op-1)
+	for k >= 0 {
+		if clean[k] == ')' || clean[k] == ']' {
+			if s := receiverStart(clean, op); groups && s >= 0 {
+				return s, true
+			}
 			return 0, false
 		}
-		if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
-			b = d
+		if !isIdentPart(clean[k]) {
+			return 0, false
+		}
+		w, s := wordBefore(clean, k)
+		if w == "_" {
+			return 0, false // a string or template literal
+		}
+		if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' && !(d >= 1 && clean[d-1] == '.') {
+			if !isGlobalBase(w) {
+				return 0, false
+			}
+			k = skipSpaceBack(clean, memberDot(clean, d)-1)
 			continue
+		}
+		if groups {
+			// A shadowing parameter or import named global, window or self is how factory
+			// and UMD code receives the global object, so the spelling alone counts here.
+			return s, isGlobalBase(w) || gs.isGlobal(w, s)
 		}
 		return s, gs.isGlobal(w, s)
 	}
+	return 0, false
 }
 
 // thisFrames classifies, for every '{' in clean, whether `this` directly inside that

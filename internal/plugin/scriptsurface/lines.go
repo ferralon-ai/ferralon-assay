@@ -9,29 +9,46 @@ import (
 // logicalLines splits src into logical lines, joining a line that ends in an odd run of
 // backslashes to the next. joined is false when the last line still continues.
 func logicalLines(src string) (lines []string, joined bool) {
+	lines, _, joined = logicalLinesAt(src)
+	return lines, joined
+}
+
+// logicalLinesAt is logicalLines, also returning the source line, from 0, each starts on.
+func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 	var cur strings.Builder
-	for _, l := range strings.Split(src, "\n") {
+	start := 0
+	for i, l := range strings.Split(src, "\n") {
 		l = strings.TrimSuffix(l, "\r")
+		if cur.Len() == 0 {
+			start = i
+		}
 		if n := len(l) - len(strings.TrimRight(l, `\`)); n%2 == 1 {
 			cur.WriteString(l[:len(l)-1])
 			cur.WriteByte(' ')
 			continue
 		}
 		cur.WriteString(l)
-		lines = append(lines, cur.String())
+		lines, starts = append(lines, cur.String()), append(starts, start)
 		cur.Reset()
 	}
 	if cur.Len() > 0 {
-		return append(lines, cur.String()), false
+		return append(lines, cur.String()), append(starts, start), false
 	}
-	return lines, true
+	return lines, starts, true
 }
 
 // segment is one simple command: its words, unquoted, and whether its text holds a $ or
-// a backtick anywhere.
+// a backtick anywhere. guarded marks one that follows &&, ||, | or &, which may not run, or not
+// before what follows it; and marks one that follows &&, which runs only if the command before
+// it did; background marks one a lone & ends, which may not have finished when what follows runs.
+// end is the operator that ends it (&&, ||, |, & or ;), or "" at the end of the text.
 type segment struct {
-	words   []string
-	expands bool
+	words      []string
+	expands    bool
+	guarded    bool
+	and        bool
+	background bool
+	end        string
 }
 
 // dataKeys are keys whose values a build never runs as a command.
@@ -70,10 +87,10 @@ func valuedKey(line string) string {
 
 // commandSegments unwraps a logical line by its surface kind and splits the command it
 // holds. ok is false when the line does not tokenise.
-func commandSegments(kind, line string) ([]segment, bool) {
+func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 	s := strings.TrimSpace(line)
 	if strings.HasPrefix(s, "#") || kind == kindData && strings.HasPrefix(s, "//") {
-		return nil, true
+		return nil, true, false
 	}
 	switch kind {
 	case kindMakefile:
@@ -82,21 +99,22 @@ func commandSegments(kind, line string) ([]segment, bool) {
 		s = strings.TrimSpace(strings.TrimPrefix(s, "- "))
 		if m := keyRE.FindStringSubmatch(s); m != nil {
 			if dataKeys[strings.ToLower(strings.Trim(m[1], `"'`))] {
-				return nil, true
+				return nil, true, false
 			}
 			s = strings.TrimSpace(s[len(m[0]):])
 		}
 		switch {
 		case s == "", strings.HasPrefix(s, "|"), strings.HasPrefix(s, ">"):
-			return nil, true
+			return nil, true, false
 		case strings.HasPrefix(s, "{"):
-			return nil, false
+			return nil, false, false
 		case strings.HasPrefix(s, "["):
-			return execForm(strings.TrimSuffix(s, ","))
+			segs, ok = execForm(strings.TrimSuffix(s, ","))
+			return segs, ok, false
 		case strings.HasPrefix(s, `"`), strings.HasPrefix(s, "'"):
 			val, ok := quotedValue(s)
 			if !ok {
-				return nil, false
+				return nil, false, false
 			}
 			s = val
 		}
@@ -163,10 +181,10 @@ func quotedValue(s string) (string, bool) {
 // shellSegments splits shell text into simple commands on unquoted &&, ||, ;, | and &,
 // and each into words with quotes removed. An unquoted # starting a word ends the text. ok is
 // false for an unterminated quote, a trailing backslash, or an unquoted parenthesis or brace
-// (a subshell, group or function body this does not follow).
-func shellSegments(s string) ([]segment, bool) {
+// (a subshell, group or function body this does not follow). dangles is true when the text
+// ends in &&, || or |, so that the next line continues the list.
+func shellSegments(s string) (segs []segment, ok, dangles bool) {
 	var (
-		segs   []segment
 		cur    segment
 		word   strings.Builder
 		inWord bool
@@ -195,7 +213,7 @@ func shellSegments(s string) ([]segment, bool) {
 		case c == '\'':
 			j := strings.IndexByte(s[i+1:], '\'')
 			if j < 0 {
-				return nil, false
+				return nil, false, false
 			}
 			word.WriteString(s[i+1 : i+1+j])
 			i += j + 1
@@ -214,13 +232,13 @@ func shellSegments(s string) ([]segment, bool) {
 				word.WriteByte(s[j])
 			}
 			if j >= len(s) {
-				return nil, false
+				return nil, false, false
 			}
 			i = j
 			inWord = true
 		case c == '\\':
 			if i+1 >= len(s) {
-				return nil, false
+				return nil, false, false
 			}
 			i++
 			word.WriteByte(s[i])
@@ -229,25 +247,40 @@ func shellSegments(s string) ([]segment, bool) {
 			endWord()
 		case c == '#' && !inWord:
 			endSeg()
-			return segs, true
+			return segs, true, dangling(s[:i])
 		case c == '(' || c == ')' || (c == '{' || c == '}') && !inWord:
-			return nil, false
+			return nil, false, false
 		case c == ';' || c == '&' || c == '|':
+			cur.background = c == '&' && (i == 0 || !strings.ContainsRune("&|>", rune(s[i-1]))) && (i+1 == len(s) || !strings.ContainsRune("&>", rune(s[i+1])))
+			cur.end = string(c)
+			if c != ';' && i+1 < len(s) && s[i+1] == c {
+				cur.end += string(c)
+			}
 			endSeg()
+			cur.guarded = c != ';'
+			cur.and = c == '&' && i > 0 && s[i-1] == '&'
 		default:
 			word.WriteByte(c)
 			inWord = true
 		}
 	}
 	endSeg()
-	return segs, true
+	return segs, true, dangling(s)
+}
+
+// dangling reports whether shell text ends in &&, || or |, which continue onto the next line.
+func dangling(s string) bool {
+	s = strings.TrimRight(s, " \t")
+	return strings.HasSuffix(s, "&&") || strings.HasSuffix(s, "|")
 }
 
 // yamlLine is a line of a YAML surface as read: shell marks the text of a folded scalar,
-// already unwrapped, which is read as shell text, not as a "key: value" line.
+// already unwrapped, which is read as shell text, not as a "key: value" line; start is the
+// line, of those read, that the scalar it is part of starts on.
 type yamlLine struct {
 	text  string
 	shell bool
+	start int
 }
 
 // blockHeaderRE matches a block scalar indicator: | or >, then an indentation or chomping
@@ -263,7 +296,7 @@ func foldYAML(lines []string) []yamlLine {
 	var out []yamlLine
 	for i := 0; i < len(lines); i++ {
 		col, key, val, ok := yamlScalarStart(lines[i])
-		out = append(out, yamlLine{text: lines[i]})
+		out = append(out, yamlLine{text: lines[i], start: i})
 		if !ok {
 			continue
 		}
@@ -275,7 +308,7 @@ func foldYAML(lines []string) []yamlLine {
 		switch m := blockHeaderRE.FindStringSubmatch(val); {
 		case m != nil && m[1] == "|":
 			for _, l := range lines[i+1 : end] {
-				out = append(out, yamlLine{text: l})
+				out = append(out, yamlLine{text: l, start: i})
 			}
 			i = end - 1
 		case m != nil:
@@ -292,7 +325,7 @@ func foldYAML(lines []string) []yamlLine {
 			}
 			if run {
 				for _, p := range foldedPieces(lines[i+1:end], base) {
-					out = append(out, yamlLine{text: p, shell: true})
+					out = append(out, yamlLine{text: p, shell: true, start: i})
 				}
 			}
 			i = end - 1
@@ -314,7 +347,7 @@ func foldYAML(lines []string) []yamlLine {
 			out[len(out)-1].text = strings.TrimRight(lines[i], " \t") + " " + groups[0]
 			if run {
 				for _, g := range groups[1:] {
-					out = append(out, yamlLine{text: g, shell: true})
+					out = append(out, yamlLine{text: g, shell: true, start: i})
 				}
 			}
 			i = end - 1

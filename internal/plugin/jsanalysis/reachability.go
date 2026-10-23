@@ -41,6 +41,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	adj := buildAdjacency(cg.Edges)
 	nodes := graphNodes(cg.Edges)
 	sources := entrySymbols(ing.Ingresses, cg.Roots)
+	ingressSources := entrySymbols(ing.Ingresses, nil)
 
 	reasons := map[string]bool{}
 	for _, r := range cg.Partiality.Reasons {
@@ -53,7 +54,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	var paths []plugin.ReachPath
 	for _, s := range req.Symbols {
 		sink := sym(s)
-		trace := shortestPath(adj, sources, sink)
+		trace, ingress := ingressFirstPath(adj, ingressSources, sources, sink)
 		if trace == nil {
 			// A sink the lexical graph cannot connect to any ingress is UNKNOWN, never
 			// "safe": the sink may be absent from the source graph (library/dynamic) or
@@ -63,10 +64,6 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 			}
 			reasons[plugin.PartialReasonNoIngress] = true
 			continue
-		}
-		var ingress plugin.Symbol
-		if len(trace) > 0 {
-			ingress = trace[0]
 		}
 		paths = append(paths, plugin.ReachPath{
 			Sink:    sink,
@@ -81,6 +78,17 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	part := plugin.Partial(sortedReasons(reasons)...)
 	part.Scoped = cg.Partiality.Scoped
 	return plugin.ReachabilityResult{Partiality: part, Paths: paths}, nil
+}
+
+// ingressFirstPath finds the shortest path to sink from a discovered ingress, falling back
+// to any call-graph root. Roots include module top-level frames and escape roots, which are
+// searched so no callback edge hides a sink but are not attacker ingresses: the returned
+// ingress is set only when the path starts at one.
+func ingressFirstPath(adj map[plugin.Symbol][]plugin.Symbol, ingresses, sources []plugin.Symbol, sink plugin.Symbol) ([]plugin.Symbol, plugin.Symbol) {
+	if trace := shortestPath(adj, ingresses, sink); trace != nil {
+		return trace, trace[0]
+	}
+	return shortestPath(adj, sources, sink), plugin.Symbol{}
 }
 
 // entrySymbols is the set of static-reachability entry points: every discovered ingress

@@ -45,9 +45,14 @@
 // already a file the build holds.
 //
 // A sample hook git writes into a hooks directory (pre-commit.sample in .git/hooks, a nested
-// repository's .git/hooks or a submodule's .git/modules/<name>/hooks) is not a surface: git
-// never runs a hook under that name. It is not a script the walk reads either, so
-// sourcing one withholds, as does a command anywhere in the build that names one.
+// repository's .git/hooks or a submodule's .git/modules/<name>/hooks) is git's template
+// content, and git never runs a hook under that name, so it withholds nothing while nothing
+// in the build may reach one. Any of these triggers makes every sample hook a surface again:
+// a surface's text naming .sample, hooks or a .git directory, a glob over dot-names, a
+// directory change or prefix whose argument expands, or a symlink into a .git directory. The
+// triggers catch the natural forms a build uses; the build is trusted, so a form written to
+// evade them is out of scope. A sample hook is not a script the walk reads, so sourcing one
+// withholds.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
@@ -56,6 +61,7 @@ package scriptsurface
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -198,25 +204,22 @@ type Veto struct {
 	vetoed    map[string]bool
 	bound     map[string]bool // lowercased base names of files allowed commands bind to
 	mentioned map[string]bool // lowercased base names other commands take as arguments
-	ran       map[string]bool // lowercased base names other commands run as the program
-	globs     []glob          // words holding a glob character, each with where it ran
-	samples   map[string]bool // lowercased base names of the sample hooks surface passed over
-	sampleAt  []string        // lowercased slash-form paths of those sample hooks
+	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
+	triggered bool            // a surface's text may reach a sample hook (trigger)
 }
 
-// glob is a word some command takes that holds a glob character, with the directories the
-// command may run in; dirs is nil when that is not known.
-type glob struct {
-	pat  string
-	dirs []string
+// sampleRun is what the rule found in one sample hook, classified as any other surface but
+// apart from the rest of the build: why it withholds, and what its commands bind and mention.
+type sampleRun struct {
+	why              string
+	bound, mentioned map[string]bool
 }
 
 // New returns a Veto for the build rooted at root. read is the lane walk's own fullyRead:
 // whether version resolution reads the file at a path. spec decides the lane's installers.
 func New(root string, read func(string) bool, spec Spec) *Veto {
 	return &Veto{root: filepath.Clean(root), read: read, spec: spec, vetoed: map[string]bool{},
-		bound: map[string]bool{}, mentioned: map[string]bool{}, ran: map[string]bool{},
-		samples: map[string]bool{}}
+		bound: map[string]bool{}, mentioned: map[string]bool{}}
 }
 
 // Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on is
@@ -248,118 +251,72 @@ func (v *Veto) Rebound() bool {
 }
 
 // Withheld reports whether the rule withheld on any surface the walk classified, a command
-// may rewrite a file an allowed command binds to, or a command names a sample hook the rule
-// passed over: the build may install a package no manifest or lock read here names. Call it
-// after the walk.
-func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.sampleNamed() }
+// may rewrite a file an allowed command binds to, or a sample hook is live: the build may
+// install a package no manifest or lock read here names. Call it after the walk.
+func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.samplesLive() }
 
-// sampleNamed reports whether a command anywhere in the build names a sample hook surface
-// passed over, as an argument or as the program it runs, so may run it or install it as a
-// live hook. A name holding a glob character names every sample it matches.
-func (v *Veto) sampleNamed() bool {
-	for name := range v.samples {
-		if v.mentioned[name] || v.ran[name] || v.globNames(name) {
+// samplesLive reports whether, once something in the build may reach a sample hook, the
+// sample hooks read as surfaces withhold: one of them withholds on its own, or a command in
+// one names a file a command anywhere binds to.
+func (v *Veto) samplesLive() bool {
+	if len(v.samples) == 0 || !v.triggered && !v.linkIntoGit() {
+		return false
+	}
+	bound, mentioned := maps.Clone(v.bound), maps.Clone(v.mentioned)
+	for _, s := range v.samples {
+		if s.why != "" {
+			return true
+		}
+		maps.Copy(bound, s.bound)
+		maps.Copy(mentioned, s.mentioned)
+	}
+	for name := range bound {
+		if mentioned[name] {
 			return true
 		}
 	}
 	return false
 }
 
-// globNames reports whether a glob some command takes names the sample hook name. From known
-// directories the glob, joined to each, names it when it matches the sample's path, ** matching
-// any number of segments; through a symlinked directory, when its last segment matches name.
-// Otherwise (the directory not known, the glob absolute or leaving the build) it names it when
-// its last segment matches name and its directory is empty, a hooks directory or itself a glob:
-// a glob into any other directory, such as dist/*, cannot reach a hooks directory. A malformed
-// pattern names every sample.
-func (v *Veto) globNames(name string) bool {
-	for _, g := range v.globs {
-		if v.globReaches(g, name) {
-			return true
-		}
-	}
-	return false
+// The text triggers. Each is a natural way a command reaches a sample hook: naming one, its
+// hooks directory or a .git directory; a glob over dot-names, which can match .git; or a
+// directory change or prefix this cannot read, which can land in a hooks directory.
+var (
+	mentionRE = regexp.MustCompile(`\.sample|hooks|\.git(?:$|[^A-Za-z0-9_])`)
+	dotGlobRE = regexp.MustCompile(`(?:^|[\s/"'=;&|()<>` + "`" + `])\.[^\s/"'=;&|()<>` + "`" + `]*[*?\[{]`)
+	dynDirRE  = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|-C|--prefix|--cwd)(?:\s+-{1,2}[A-Za-z]*)*(?:\s+|=)[^\s;&|)]*[$` + "`" + `]`)
+)
+
+// trigger notes whether a surface's raw text may reach a sample hook.
+func (v *Veto) trigger(text string) {
+	v.triggered = v.triggered || mentionRE.MatchString(text) || dotGlobRE.MatchString(text) || dynDirRE.MatchString(text)
 }
 
-func (v *Veto) globReaches(g glob, name string) bool {
-	if len(g.dirs) > 0 && !path.IsAbs(g.pat) {
-		joined, ok, linked := []string(nil), true, false
-		for _, d := range g.dirs {
-			j := filepath.Join(d, filepath.FromSlash(g.pat))
-			if !v.inRoot(j) {
-				ok = false
-				break
-			}
-			linked = linked || v.linkedPrefix(j)
-			joined = append(joined, strings.ToLower(filepath.ToSlash(j)))
+// linkIntoGit reports whether a symlink in the build points into a .git directory, so a path
+// that names neither may reach a hooks directory. A link that cannot be read counts.
+func (v *Veto) linkIntoGit() bool {
+	found := false
+	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
+		if err != nil || !e.Symlink {
+			return nil
 		}
-		if ok && linked {
-			m, err := path.Match(strings.ToLower(path.Base(g.pat)), name)
-			return m || err != nil
+		target, err := os.Readlink(e.Path)
+		if err != nil {
+			found = true
+			return filepath.SkipAll
 		}
-		if ok {
-			for _, j := range joined {
-				for _, s := range v.sampleAt {
-					if segMatch(strings.Split(j, "/"), strings.Split(s, "/")) {
-						return true
-					}
-				}
-			}
-			return false
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(e.Path), target)
 		}
-	}
-	p := strings.ToLower(path.Clean(g.pat))
-	dir, base := path.Split(p)
-	dir = strings.TrimSuffix(dir, "/")
-	if dir != "" && path.Base(dir) != "hooks" && !strings.ContainsAny(dir, globChars) {
-		return false
-	}
-	ok, err := path.Match(base, name)
-	return ok || err != nil
-}
-
-// linkedPrefix reports whether a directory between the build root and p's first segment
-// holding a glob character is a symlink, so the glob may reach a place its path does not name.
-func (v *Veto) linkedPrefix(p string) bool {
-	rel, err := filepath.Rel(v.root, p)
-	if err != nil {
-		return true
-	}
-	at := v.root
-	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
-		if strings.ContainsAny(seg, globChars) {
-			return false
-		}
-		at = filepath.Join(at, seg)
-		if fi, err := os.Lstat(at); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// globChars are the characters that make a word a glob.
-const globChars = "*?["
-
-// segMatch reports whether the glob segments pat match the path segments name, a ** segment
-// matching any number of them and a malformed segment matching any one.
-func segMatch(pat, name []string) bool {
-	if len(pat) == 0 {
-		return len(name) == 0
-	}
-	if pat[0] == "**" {
-		for i := 0; i <= len(name); i++ {
-			if segMatch(pat[1:], name[i:]) {
-				return true
+		for _, seg := range strings.Split(filepath.Clean(target), string(filepath.Separator)) {
+			if seg == ".git" {
+				found = true
+				return filepath.SkipAll
 			}
 		}
-		return false
-	}
-	if len(name) == 0 {
-		return false
-	}
-	ok, err := path.Match(pat[0], name[0])
-	return (ok || err != nil) && segMatch(pat[1:], name[1:])
+		return nil
+	})
+	return found
 }
 
 // sampleHook reports whether p is a sample hook: a name ending in .sample directly in a hooks
@@ -405,39 +362,16 @@ func (v *Veto) setsEnv(src string) bool {
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
 // mention records the base names of a command's arguments, a redirect's or an option's
-// target included. cur is where the command runs, nil when that is not known.
-func (v *Veto) mention(args []string, cur cursor) { v.note(v.mentioned, args, cur) }
-
-// note records in names the lowercased base name of each word, past any redirect, the shell
-// punctuation around it and up to the last =, and in globs each such word holding a glob
-// character, with the directories cur may run in. A brace list names each word it expands to,
-// and a range is a glob; a word with a $ in a hooks directory is a glob, each segment holding
-// the $ standing for any name.
-func (v *Veto) note(names map[string]bool, words []string, cur cursor) {
-	var dirs []string
-	if c, ok := cur.(*hostCursor); ok && !c.unknown {
-		dirs = append([]string(nil), c.dirs...)
-	}
-	for _, w := range words {
+// target included.
+func (v *Veto) mention(args []string) {
+	for _, w := range args {
 		w = trimShell(w)
 		if i := strings.LastIndexByte(w, '='); i >= 0 {
 			w = trimShell(w[i+1:])
 		}
 		for _, a := range braces(filepath.ToSlash(w), 0) {
 			if b := strings.ToLower(path.Base(a)); b != "" && b != "." && b != "/" {
-				names[b] = true
-			}
-			if d, _ := path.Split(a); strings.Contains(a, "$") && path.Base(strings.TrimSuffix(d, "/")) == "hooks" {
-				segs := strings.Split(a, "/")
-				for i, s := range segs {
-					if strings.Contains(s, "$") {
-						segs[i] = "*"
-					}
-				}
-				a = strings.Join(segs, "/")
-			}
-			if strings.ContainsAny(a, globChars) {
-				v.globs = append(v.globs, glob{pat: path.Clean(a), dirs: dirs})
+				v.mentioned[b] = true
 			}
 		}
 	}
@@ -551,16 +485,26 @@ func (v *Veto) inRoot(p string) bool {
 }
 
 // surface reports whether the file at path is a script surface the rule withholds on, and why.
+// A sample hook is classified apart and withholds nothing here (samplesLive).
 func (v *Veto) surface(path string, head []byte) (string, bool) {
 	s, ok := surfaceOf(path, head)
 	if !ok || head == nil {
 		return "", false
 	}
-	if v.sampleHook(path) {
-		v.samples[strings.ToLower(filepath.Base(path))] = true
-		v.sampleAt = append(v.sampleAt, strings.ToLower(filepath.ToSlash(path)))
-		return "", false
+	if !v.sampleHook(path) {
+		return v.classify(s, path, head, true)
 	}
+	bound, mentioned := v.bound, v.mentioned
+	v.bound, v.mentioned = map[string]bool{}, map[string]bool{}
+	why, _ := v.classify(s, path, head, false)
+	v.samples = append(v.samples, sampleRun{why: why, bound: v.bound, mentioned: v.mentioned})
+	v.bound, v.mentioned = bound, mentioned
+	return "", false
+}
+
+// classify applies the rule to a script surface of type s, and with scan notes whether its
+// text may reach a sample hook.
+func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (string, bool) {
 	if !v.spec.complete() {
 		return "script surface under an incomplete lane spec", true
 	}
@@ -576,25 +520,36 @@ func (v *Veto) surface(path string, head []byte) (string, bool) {
 		return "script surface sets an installer variable", true
 	}
 	var why string
+	units := []unit{{text: src}}
 	switch {
 	case s.kind == kindDockerfile:
 		why = v.dockerfile(path, src)
 	case s.kind == kindOpaque:
 		why = v.opaque(src)
 	case strings.EqualFold(filepath.Ext(path), ".json"):
-		if units, ok := jsonUnits(path, src); ok {
+		// A decodable JSON surface's text is its commands, so a dependency named like a
+		// trigger (eslint-plugin-react-hooks) is not one.
+		if u, ok := jsonUnits(path, src); ok {
+			units = u
 			why = v.host(s, kindShell, path, units)
 			break
 		}
-		why = v.host(s, kindData, path, []unit{{text: src}})
+		why = v.host(s, kindData, path, units)
 	case gitlabCI[strings.ToLower(filepath.Base(path))]:
-		units, w := v.gitlabIncludes(path, src, map[string]bool{path: true}, 0)
+		included, w := v.gitlabIncludes(path, src, map[string]bool{path: true}, 0)
 		if w != "" {
 			return w, true
 		}
-		why = v.host(s, s.kind, path, append([]unit{{text: src}}, units...))
+		units = append(units, included...)
+		why = v.host(s, s.kind, path, units)
 	default:
-		why = v.host(s, s.kind, path, []unit{{text: src}})
+		why = v.host(s, s.kind, path, units)
+	}
+	for _, u := range units {
+		if scan {
+			v.trigger(u.text)
+			v.trigger(strings.Join(u.exec, " "))
+		}
 	}
 	return why, why != ""
 }
@@ -609,7 +564,7 @@ func (v *Veto) opaque(src string) string {
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
 		}
-		v.mention(strings.Fields(line), nil)
+		v.mention(strings.Fields(line))
 	}
 	return ""
 }
@@ -769,8 +724,8 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				if expandedInstallLine(line) {
 					return "install verb after an expansion that does not tokenise"
 				}
+				v.mention(strings.Fields(line))
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
-				v.mention(strings.Fields(line), cur)
 			}
 			for _, seg := range segs {
 				if why := v.command(seg, cur, 0); why != "" {
@@ -885,10 +840,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words[1:], cur)
-		// The program itself is kept apart so a command word never reads as rewriting a file
-		// Rebound guards; it can still run a sample hook.
-		v.note(v.ran, words[:1], cur)
+		v.mention(words[1:])
 		cur.other()
 		return ""
 	}

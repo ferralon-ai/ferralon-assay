@@ -401,6 +401,7 @@ type packageLockPkg struct {
 	Dependencies         map[string]string `json:"dependencies"`
 	DevDependencies      map[string]string `json:"devDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
 }
 
 type packageLockDep struct {
@@ -431,6 +432,7 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 				}
 				for field, deps := range map[string]map[string]string{
 					"dependencies": pkg.Dependencies, "devDependencies": pkg.DevDependencies, "optionalDependencies": pkg.OptionalDependencies,
+					"peerDependencies": pkg.PeerDependencies,
 				} {
 					for n, spec := range deps {
 						info.record(project, field, n, spec)

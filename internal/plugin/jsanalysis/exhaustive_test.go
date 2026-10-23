@@ -46,6 +46,23 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		pnpmCustomReg  = "lockfileVersion: 5.4\n\nspecifiers:\n  express: ^4.18.0\n  left-pad: ^1.3.0\n\npackages:\n\n  /express/4.18.2:\n    resolution: {integrity: sha512-x}\n\n  /left-pad/1.3.0:\n    resolution: {integrity: sha512-y}\n\n  registry.example.com/absent-package/2.2.1:\n    resolution: {tarball: https://registry.example.com/absent-package/-/absent-package-2.2.1.tgz}\n"
 		yarnWorkspaces = `{"name":"app","workspaces":["tools"],"dependencies":{"express":"^4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}}`
 	)
+	// peerLock is a v2/v3 lock that locked the root and the tools workspace against react peer
+	// range rootPeer and toolPeer.
+	peerLock := func(version, rootPeer, toolPeer string) string {
+		return `{"name":"app","lockfileVersion":` + version + `,"packages":{
+  "": {"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"react":"` + rootPeer + `"}},
+  "tools": {"name":"tool","peerDependencies":{"react":"` + toolPeer + `"}},
+  "node_modules/express": {"version":"4.18.2"},
+  "node_modules/react": {"version":"17.0.2","peer":true},
+  "node_modules/tool": {"resolved":"tools","link":true}}}`
+	}
+	peerPkg := func(name, peer string) string {
+		deps := ""
+		if name == "app" {
+			deps = `"dependencies":{"express":"^4.18.0"},`
+		}
+		return `{"name":"` + name + `",` + deps + `"peerDependencies":{"react":"` + peer + `"}}`
+	}
 	// rewrite is exPkgJSON with one more top-level field.
 	rewrite := func(field string) string { return strings.TrimSuffix(exPkgJSON, "}") + "," + field + "}" }
 	// catalogLock is exPnpmV9 as pnpm writes it for a left-pad declared as catalog:.
@@ -107,6 +124,12 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 nested workspace the lock records", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV3Tools, "tools/package.json": toolJSON}, true},
 		{"S1 classic yarn workspace named by the root", map[string]string{"package.json": yarnWorkspaces, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, true},
 		{"S1 classic yarn project not a workspace", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, false},
+		// npm v2/v3 records the project's own peer ranges and re-resolves a drifted one.
+		{"S1 package-lock v3 root peer drift", map[string]string{"package.json": peerPkg("app", "^18.0.0"), "package-lock.json": peerLock("3", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, false},
+		{"S1 package-lock v3 workspace peer drift", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("3", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^18.0.0")}, false},
+		{"S1 package-lock v3 peer specs match", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("3", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, true},
+		{"S1 package-lock v2 root peer drift", map[string]string{"package.json": peerPkg("app", "^18.0.0"), "package-lock.json": peerLock("2", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, false},
+		{"S1 package-lock v2 peer specs match", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("2", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, true},
 		{"S1 stale lock beside a covering one", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "yarn.lock": yarnStale}, false},
 
 		// B6: every file that looks like a JS manifest or lockfile, by name or content, is read

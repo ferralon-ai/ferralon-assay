@@ -26,10 +26,12 @@ package jsanalysis
 //   - each governing lockfile, on its own, keys every name the package.json declares in
 //     dependencies, devDependencies, optionalDependencies or peerDependencies, and recorded the
 //     same spec for each non-peer one (npm v2/v3 project entries, yarn header descriptors, pnpm
-//     importer specifiers), so a non-frozen install would not re-resolve it. A v1 package-lock
-//     records no specs, so it never covers a package.json that declares one. Peers are checked by
-//     name: a peer the lock does not install is still expected present at runtime (the host
-//     provides it), so its absence here proves nothing;
+//     importer specifiers), so a non-frozen install would not re-resolve it. npm v2/v3 also
+//     records the project's own peers, and npm re-resolves a drifted one, so there a peer's spec
+//     must match too. A v1 package-lock records no specs, so it never covers a package.json that
+//     declares one. Yarn and pnpm peers are checked by name: a peer the lock does not install is
+//     still expected present at runtime (the host provides it), so its absence here proves
+//     nothing;
 //   - the coordinate is not the name of any package.json under the build dir: a lockfile does
 //     not list the project (or a workspace package) as its own dependency, so its absence from
 //     the lock proves nothing about a first-party advisory;
@@ -46,6 +48,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
@@ -55,6 +58,10 @@ var lockedDependencyFields = []string{"dependencies", "devDependencies", "option
 
 // rangedDependencyFields are the fields a lockfile installs from and records the spec of.
 var rangedDependencyFields = []string{"dependencies", "devDependencies", "optionalDependencies"}
+
+// npmRangedDependencyFields adds the project peers npm v2/v3 records the spec of: npm installs a
+// root or workspace peer and re-resolves it when the package.json range no longer matches.
+var npmRangedDependencyFields = append(slices.Clone(rangedDependencyFields), "peerDependencies")
 
 // exhaustiveLockSet reports whether the parsed lockfiles (path → what parseLockfile read)
 // enumerate every installable package for every package.json under root.
@@ -186,7 +193,11 @@ func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]
 		if !ok {
 			return false
 		}
-		for _, f := range rangedDependencyFields {
+		fields := rangedDependencyFields
+		if l.kind == lockNPM {
+			fields = npmRangedDependencyFields
+		}
+		for _, f := range fields {
 			for n, spec := range declared[f] {
 				if !specRecorded(recorded, f, n, spec) {
 					return false

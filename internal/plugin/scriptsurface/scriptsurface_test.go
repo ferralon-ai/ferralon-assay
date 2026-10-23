@@ -76,7 +76,7 @@ func withheld(root string, spec Spec) bool {
 			return true
 		}
 	}
-	return v.Rebound()
+	return v.Withheld()
 }
 
 // gitlabChain is a pipeline whose local includes nest n files deep, none of which installs.
@@ -436,6 +436,48 @@ func TestVeto_SpecDecidesEveryKeep(t *testing.T) {
 				f[k] = v
 			}
 			if got := withheld(writeTree(t, f), tt.spec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Git never runs a hook under a .sample name, so the sample hooks in the build root's own
+// .git/hooks are not surfaces. Every other hook, path and suffix is, and a build that sources
+// or names a sample hook withholds.
+func TestVeto_SampleHooks(t *testing.T) {
+	const hook = "#!/bin/sh\n. git-sh-setup\n"
+	tree := func(extra map[string]string) map[string]string {
+		files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool // withheld
+	}{
+		{"sample hook sourcing git-sh-setup", tree(map[string]string{".git/hooks/pre-rebase.sample": hook}), false},
+		{"sample hook that installs", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\ninst add x\n"}), false},
+		{"live hook sourcing git-sh-setup", tree(map[string]string{".git/hooks/pre-rebase": hook}), true},
+		{"live hook that installs", tree(map[string]string{".git/hooks/post-checkout": "#!/bin/sh\ninst add x\n"}), true},
+		{"suffix after .sample", tree(map[string]string{".git/hooks/pre-rebase.sample.sh": hook}), true},
+		{"suffix .sample with no name", tree(map[string]string{".git/hooks/.sample": hook}), true},
+		{"suffix .sample in another case", tree(map[string]string{".git/hooks/pre-rebase.SAMPLE": hook}), true},
+		{".sample outside .git/hooks", tree(map[string]string{"scripts/pre-rebase.sample": hook}), true},
+		{".sample directly under .git", tree(map[string]string{".git/pre-rebase.sample": hook}), true},
+		{".sample in a directory under .git/hooks", tree(map[string]string{".git/hooks/old/pre-rebase.sample": hook}), true},
+		{".sample in a nested repository's hooks", tree(map[string]string{"vendor/lib/.git/hooks/pre-rebase.sample": hook}), true},
+		{".sample in a submodule's hooks", tree(map[string]string{".git/modules/lib/hooks/pre-rebase.sample": hook}), true},
+		{"script sources a sample hook", tree(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\necho\n", "build.sh": ". .git/hooks/pre-rebase.sample\n"}), true},
+		{"script runs a sample hook", tree(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\necho\n", "build.sh": "sh .git/hooks/pre-rebase.sample\n"}), true},
+		{"script makes a sample hook live", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "cp .git/hooks/pre-commit.sample .git/hooks/pre-commit\n"}), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := withheld(writeTree(t, tt.files), testSpec); got != tt.want {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
 			}
 		})

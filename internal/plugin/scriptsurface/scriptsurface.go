@@ -43,6 +43,10 @@
 // &, or inside an if, case or loop) creates nothing here, nor does one whose bin/activate is
 // already a file the build holds.
 //
+// A sample hook git writes into the build root's .git/hooks (pre-commit.sample) is not a
+// surface: git never runs a hook under that name. It is not a script the walk reads either, so
+// sourcing one withholds, as does a command anywhere in the build that names one.
+//
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
 // the install reads it, so it withholds too (Veto.Rebound).
@@ -181,13 +185,14 @@ type Veto struct {
 	vetoed    map[string]bool
 	bound     map[string]bool // lowercased base names of files allowed commands bind to
 	mentioned map[string]bool // lowercased base names other commands take as arguments
+	samples   map[string]bool // lowercased base names of the sample hooks surface passed over
 }
 
 // New returns a Veto for the build rooted at root. read is the lane walk's own fullyRead:
 // whether version resolution reads the file at a path. spec decides the lane's installers.
 func New(root string, read func(string) bool, spec Spec) *Veto {
 	return &Veto{root: filepath.Clean(root), read: read, spec: spec, vetoed: map[string]bool{},
-		bound: map[string]bool{}, mentioned: map[string]bool{}}
+		bound: map[string]bool{}, mentioned: map[string]bool{}, samples: map[string]bool{}}
 }
 
 // Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on is
@@ -218,10 +223,38 @@ func (v *Veto) Rebound() bool {
 	return false
 }
 
-// Withheld reports whether the rule withheld on any surface the walk classified, or a command
-// may rewrite a file an allowed command binds to: the build may install a package no manifest
-// or lock read here names. Call it after the walk.
-func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() }
+// Withheld reports whether the rule withheld on any surface the walk classified, a command
+// may rewrite a file an allowed command binds to, or a command names a sample hook the rule
+// passed over: the build may install a package no manifest or lock read here names. Call it
+// after the walk.
+func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.sampleNamed() }
+
+// sampleNamed reports whether a command anywhere in the build names, as an argument, a sample
+// hook surface passed over, so may run it or install it as a live hook.
+func (v *Veto) sampleNamed() bool {
+	for name := range v.samples {
+		if v.mentioned[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// sampleHook reports whether p is one of the sample hooks git writes into the build root's own
+// .git/hooks: git runs a hook only under its exact name, so never one ending in .sample. A
+// .git anywhere else, a directory under hooks, and any other suffix are not.
+func (v *Veto) sampleHook(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) != 3 || parts[0] != ".git" || parts[1] != "hooks" {
+		return false
+	}
+	stem, ok := strings.CutSuffix(parts[2], ".sample")
+	return ok && stem != ""
+}
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
@@ -240,10 +273,10 @@ func (v *Veto) mention(args []string) {
 }
 
 // walkedSurface reports whether p is an in-tree script surface outside every directory the
-// walk skips.
+// walk skips, and not a sample hook.
 func (v *Veto) walkedSurface(p string) bool {
 	rel, err := filepath.Rel(v.root, p)
-	if err != nil || !v.inRoot(p) {
+	if err != nil || !v.inRoot(p) || v.sampleHook(p) {
 		return false
 	}
 	for _, part := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
@@ -268,6 +301,10 @@ func (v *Veto) inRoot(p string) bool {
 func (v *Veto) surface(path string, head []byte) (string, bool) {
 	s, ok := surfaceOf(path, head)
 	if !ok || head == nil {
+		return "", false
+	}
+	if v.sampleHook(path) {
+		v.samples[strings.ToLower(filepath.Base(path))] = true
 		return "", false
 	}
 	if !v.spec.complete() {

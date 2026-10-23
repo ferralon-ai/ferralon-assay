@@ -126,6 +126,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"source ~/.nvm/nvm.sh in a CI run", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: source ~/.nvm/nvm.sh && npm ci\n"}), true, ""},
 		{"cargo env then npm ci", npm(map[string]string{"install.sh": ". \"$HOME/.cargo/env\"\nnpm ci\n"}), true, ""},
 		{"yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, true, ""},
+		{"git sample hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\n. git-sh-setup\n"}), true, ""},
+		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

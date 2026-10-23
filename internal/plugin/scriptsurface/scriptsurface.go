@@ -47,11 +47,12 @@
 // repository's .git/hooks or a submodule's .git/modules/<name>/hooks) is git's template
 // content, and git never runs a hook under that name, so it withholds nothing while nothing
 // in the build may reach one. Any of these triggers makes every sample hook a surface again:
-// a surface's text naming .sample, hooks or a .git directory, a glob over dot-names, a
-// directory change or prefix whose argument expands, or a symlink into a .git directory. The
-// triggers catch the natural forms a build uses; the build is trusted, so a form written to
-// evade them is out of scope. A sample hook is not a script the walk reads, so sourcing one
-// withholds.
+// a surface's text naming .sample, hooks, dotglob or a .git directory, a glob over
+// dot-names, a directory change or prefix whose argument expands, the text of an in-tree
+// JavaScript, TypeScript, Python or Ruby file naming .sample or a .git directory, or a
+// symlink into a .git directory. The gate reads only those: script surfaces, and the raw
+// text of those source files. The build is trusted, so a form written to evade them is out
+// of scope. A sample hook is not a script the walk reads, so sourcing one withholds.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
@@ -248,7 +249,7 @@ func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.sa
 // sample hooks read as surfaces withhold: one of them withholds on its own, or a command in
 // one names a file a command anywhere binds to.
 func (v *Veto) samplesLive() bool {
-	if len(v.samples) == 0 || !v.triggered && !v.linkIntoGit() {
+	if len(v.samples) == 0 || !v.triggered && !v.treeReaches() {
 		return false
 	}
 	bound, mentioned := maps.Clone(v.bound), maps.Clone(v.mentioned)
@@ -271,7 +272,10 @@ func (v *Veto) samplesLive() bool {
 // hooks directory or a .git directory; a glob over dot-names, which can match .git; or a
 // directory change or prefix this cannot read, which can land in a hooks directory.
 var (
-	mentionRE = regexp.MustCompile(`\.sample|hooks|\.git(?:$|[^A-Za-z0-9_])`)
+	mentionRE = regexp.MustCompile(`\.sample|hooks|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
+	// sourceRE is the mention trigger for a build script in a language no surface parses. It
+	// leaves out hooks, which every React tree's src/hooks would match.
+	sourceRE  = regexp.MustCompile(`\.sample|\.git(?:$|[^A-Za-z0-9_])`)
 	dotGlobRE = regexp.MustCompile(`(?:^|[\s/"'=;&|()<>` + "`" + `])\.[^\s/"'=;&|()<>` + "`" + `]*[*?\[{]`)
 	dynDirRE  = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|-C|--prefix|--cwd)(?:\s+-{1,2}[A-Za-z]*)*(?:\s+|=)[^\s;&|)]*[$` + "`" + `]`)
 )
@@ -281,12 +285,32 @@ func (v *Veto) trigger(text string) {
 	v.triggered = v.triggered || mentionRE.MatchString(text) || dotGlobRE.MatchString(text) || dynDirRE.MatchString(text)
 }
 
-// linkIntoGit reports whether a symlink in the build points into a .git directory, so a path
-// that names neither may reach a hooks directory. A link that cannot be read counts.
-func (v *Veto) linkIntoGit() bool {
+// sourceExts are the build-script languages no surface parses, whose files a lifecycle
+// script commonly runs (node scripts/setup.js, python3 tools/setup.py).
+var sourceExts = map[string]bool{".js": true, ".mjs": true, ".cjs": true, ".ts": true, ".mts": true,
+	".cts": true, ".py": true, ".rb": true}
+
+// treeReaches reports whether the build outside the script surfaces may reach a sample hook:
+// an in-tree source file in sourceExts whose text sourceRE matches, or a symlink pointing
+// into a .git directory, so a path that names neither may reach a hooks directory. A source
+// file or link that cannot be read counts.
+func (v *Veto) treeReaches() bool {
 	found := false
 	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
-		if err != nil || !e.Symlink {
+		if err != nil {
+			return nil
+		}
+		if sourceExts[strings.ToLower(filepath.Ext(e.Path))] && !e.D.IsDir() {
+			if e.Escapes {
+				found = true
+				return filepath.SkipAll
+			}
+			if data, err := v.spec.ReadRegular(e.Path); err != nil || sourceRE.Match(data) {
+				found = true
+				return filepath.SkipAll
+			}
+		}
+		if !e.Symlink {
 			return nil
 		}
 		target, err := os.Readlink(e.Path)
@@ -310,9 +334,10 @@ func (v *Veto) linkIntoGit() bool {
 
 // sampleHook reports whether p is a sample hook: a name ending in .sample directly in a hooks
 // directory that is a repository's .git/hooks (the build root's or a nested one's) or a
-// submodule's .git/modules/<name>/hooks. Git runs a hook only under its exact name, so never
-// one ending in .sample. A directory under hooks, a hooks directory anywhere else, an empty
-// name and any other suffix are not.
+// submodule's .git/modules/<name>/hooks. Those are the only directories git itself fills
+// with samples, and git runs a hook only under its exact name, so never one ending in
+// .sample. Any other .sample file (.githooks/, tools/hooks/, a directory under hooks) stays a
+// surface, as do an empty name and any other suffix.
 func (v *Veto) sampleHook(p string) bool {
 	rel, err := filepath.Rel(v.root, p)
 	if err != nil {

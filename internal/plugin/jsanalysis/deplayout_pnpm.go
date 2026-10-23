@@ -51,14 +51,14 @@ var pnpmWorkspaceKeys = map[string]bool{
 // inRegionModules reports whether a virtualStoreDir or modulesDir setting keeps every directory
 // Node's walk passes, from a stored package up to the region root, inside the region's own
 // node_modules, which holds only copies the lock pins. A store elsewhere would put the walk
-// through directories the lane does not model.
+// through directories the lane does not model; a "$" may expand from the environment.
 func inRegionModules(key, v string) bool {
 	v = strings.Trim(strings.TrimSpace(v), `"'`)
 	if key == "modulesDir" || key == "modules-dir" {
 		return v == "node_modules"
 	}
 	c := path.Clean(v)
-	return !strings.Contains(v, `\`) && !path.IsAbs(c) && strings.HasPrefix(c, "node_modules/")
+	return !strings.ContainsAny(v, `\$`) && !path.IsAbs(c) && strings.HasPrefix(c, "node_modules/")
 }
 
 // maxPatchBytes caps one patch file read.

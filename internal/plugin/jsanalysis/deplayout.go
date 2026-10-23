@@ -123,18 +123,86 @@ func buildDepLayout(buildDir string) *depLayout {
 				l.incomplete = true
 				continue
 			}
+			r := &depRegion{prefix: prefix, workspaces: map[string]bool{}}
 			if len(lock.Packages) > 0 {
 				l.addNpmV2(prefix, lock.Packages)
+				for key := range lock.Packages {
+					if key != "" && installedName(key) == "" {
+						r.workspaces[path.Join(prefix, key)] = true
+					}
+				}
 			} else {
 				l.addNpmV1(prefix, "", lock.Dependencies)
 			}
-			l.regions = append(l.regions, &depRegion{prefix: prefix})
+			l.regions = append(l.regions, r)
 		}
 	}
-	if l.doubleClaimed() {
+	if l.doubleClaimed() || l.outerManifestUnlocked(buildDir) {
 		l.incomplete = true
 	}
 	return l
+}
+
+// outerManifestUnlocked reports a package.json that declares dependencies (or cannot be read) in
+// a directory above a nested semantic region, up to the build root, that no lock installs for.
+// The walk out of the region treats a directory with no placed entry as holding no install, which
+// holds only where a lock accounts for it: discovery makes a root only where it finds a lock, so
+// a lock-less manifest there may be installed with copies the lane never sees.
+func (l *depLayout) outerManifestUnlocked(buildDir string) bool {
+	checked := map[string]bool{}
+	for _, r := range l.regions {
+		if !r.semantic || r.prefix == "" {
+			continue
+		}
+		for a := relParent(r.prefix); ; a = relParent(a) {
+			if !checked[a] {
+				checked[a] = true
+				if !l.installsFor(a) && manifestDeclaresDeps(filepath.Join(buildDir, filepath.FromSlash(a), "package.json")) {
+					return true
+				}
+			}
+			if a == "" {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// installsFor reports whether some lock installs the dependencies of the manifest in the
+// build-relative directory dir: dir is a lock root, a semantic importer or an npm workspace.
+func (l *depLayout) installsFor(dir string) bool {
+	for _, r := range l.regions {
+		if r.prefix == dir || r.workspaces[dir] {
+			return true
+		}
+		for _, imp := range r.importers {
+			if imp.dir == dir {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// manifestDeclaresDeps reports whether the package.json at p declares any dependency, or exists
+// and cannot be read or parsed.
+func manifestDeclaresDeps(p string) bool {
+	if _, err := os.Lstat(p); absent(err) {
+		return false
+	}
+	var m invManifest
+	data, err := readRegular(p)
+	return err != nil || json.Unmarshal(data, &m) != nil ||
+		len(m.Dependencies)+len(m.DevDependencies)+len(m.OptionalDependencies)+len(m.PeerDependencies) > 0
+}
+
+// relParent returns the build-relative parent of dir ("" for the build root).
+func relParent(dir string) string {
+	if dir = path.Dir(dir); dir == "." {
+		return ""
+	}
+	return dir
 }
 
 // doubleClaimed reports a directory two locks both install for: an npm install path inside a
@@ -217,11 +285,7 @@ func manifestsDeclareDeps(root string) bool {
 		if d.Name() != "package.json" {
 			return nil
 		}
-		var m invManifest
-		data, err := readRegular(p)
-		if err != nil || json.Unmarshal(data, &m) != nil ||
-			len(m.Dependencies)+len(m.DevDependencies)+
-				len(m.OptionalDependencies)+len(m.PeerDependencies) > 0 {
+		if manifestDeclaresDeps(p) {
 			declares = true
 			return filepath.SkipAll
 		}
@@ -342,12 +406,6 @@ func (l *depLayout) walk(fromDir, name string) (*depEntry, []*depEntry) {
 	if dir == "." {
 		dir = ""
 	}
-	parent := func(d string) string {
-		if d = path.Dir(d); d == "." {
-			return ""
-		}
-		return d
-	}
 	for {
 		if r := l.regionAt(dir); r != nil && r.semantic {
 			e, copies, decided := r.resolve(dir, name)
@@ -356,7 +414,7 @@ func (l *depLayout) walk(fromDir, name string) (*depEntry, []*depEntry) {
 			}
 			cands := slices.Clone(copies)
 			if r.prefix != "" {
-				oe, outer := l.walk(parent(r.prefix), name)
+				oe, outer := l.walk(relParent(r.prefix), name)
 				if oe != nil {
 					outer = []*depEntry{oe}
 				}
@@ -379,7 +437,7 @@ func (l *depLayout) walk(fromDir, name string) (*depEntry, []*depEntry) {
 		if dir == "" {
 			return nil, nil
 		}
-		dir = parent(dir)
+		dir = relParent(dir)
 	}
 }
 

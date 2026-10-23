@@ -22,7 +22,10 @@ import (
 //  4. any other (phantom) load may find any copy the region pins (one pnpm or yarn hoisted) or,
 //     when none is hoisted where the requirer's walk passes, whatever Node's walk finds above the
 //     region's root. Its candidates are the union of both: one candidate resolves to it, several
-//     resolve to none, and the load site's limit targets every candidate.
+//     resolve to none, and the load site's limit targets every candidate. The walk above is
+//     closed-world only over directories some lock installs for, so a dependency-declaring
+//     package.json on it that no lock covers leaves the layout incomplete
+//     (outerManifestUnlocked).
 //
 // The phantom rule over-approximates every hoist and linker setting: whatever copy the load runs
 // is a candidate, so a load either gains an edge or is bounded by a limit, and is never silently
@@ -45,6 +48,9 @@ type depRegion struct {
 	copies map[string][]*depEntry
 	// byPath holds the region's placed entries by synthetic install path.
 	byPath map[string]*depEntry
+	// workspaces are an npm region's workspace directories (build-relative): the lock installs
+	// their manifests' dependencies.
+	workspaces map[string]bool
 }
 
 // depImporter is one first-party project of a semantic region: its build-relative directory and

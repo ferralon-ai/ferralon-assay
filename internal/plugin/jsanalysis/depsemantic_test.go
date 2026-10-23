@@ -1083,6 +1083,9 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 		"workspace_modules_dir":           {"web/pnpm-workspace.yaml": "modulesDir: vendor\n"},
 		"npmrc_virtual_store_outside":     {"web/.npmrc": "virtual-store-dir=../.pnpm-store\n"},
 		"npmrc_modules_dir":               {"web/.npmrc": "modules-dir = vendor\n"},
+		"workspace_virtual_store_dotdot":  {"web/pnpm-workspace.yaml": "virtualStoreDir: node_modules/../../store\n"},
+		"workspace_virtual_store_env":     {"web/pnpm-workspace.yaml": "virtualStoreDir: node_modules/${STORE}\n"},
+		"npmrc_virtual_store_env":         {"web/.npmrc": "virtual-store-dir=node_modules/$STORE\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir, store := pnpmWeb(false, extra)
@@ -1132,4 +1135,77 @@ func semRun(t *testing.T, dir string, store artifactcache.Store) plugin.CallGrap
 	idle := withDeps(t, dir, store)
 	loaded.Partiality = idle.Partiality
 	return loaded
+}
+
+// TestSemantic_G18OuterManifest: the walk out of a nested region is closed-world only over
+// directories a lock installs for. A dependency-declaring package.json above the region that no
+// lock covers may be installed with copies the lane never sees, and withholds; one a lock covers,
+// or one that declares nothing, does not.
+func TestSemantic_G18OuterManifest(t *testing.T) {
+	imp := map[string]string{"o": "1.0.0", "p": "1.0.0"}
+	nested := func(t *testing.T, region string, files map[string]string) (string, artifactcache.Store) {
+		t.Helper()
+		o := sp("o", "1.0.0", map[string]string{"q": "2.0.0"}, nil)
+		p := sp("p", "1.0.0", nil, map[string]string{"index.js": callsQ})
+		q2 := qPkg("2.0.0")
+		files[region+"/package.json"] = manifestWith("web", imp, "")
+		files[region+"/index.js"] = runsP
+		files[region+"/"+pnpmLockFile] = pnpmLockText(t, "9.0", map[string]map[string]string{".": imp}, o, p, q2)
+		files[region+"/.npmrc"] = "hoist=false\n"
+		return writeProgram(t, files), semStore(t, o, p, q2)
+	}
+	emptyLock := `{"name":"x","lockfileVersion":3,"requires":true,"packages":{"":{"name":"x"}}}`
+	withholds := func(t *testing.T) func(string, artifactcache.Store) {
+		return func(dir string, store artifactcache.Store) {
+			t.Helper()
+			if cg := semRun(t, dir, store); !buildDepLayout(dir).incomplete || !runWide(cg) {
+				t.Errorf("an unlocked manifest above the region withholds; got %+v", cg.Partiality)
+			}
+		}
+	}
+	resolves := func(t *testing.T) func(string, artifactcache.Store) {
+		return func(dir string, store artifactcache.Store) {
+			t.Helper()
+			if cg := semRun(t, dir, store); buildDepLayout(dir).incomplete || !reaches(cg, "q", "2.0.0") {
+				t.Errorf("nothing unaccounted above the region: resolves to q@2.0.0; got %+v", cg.Partiality)
+			}
+		}
+	}
+	t.Run("root_manifest_no_lock", func(t *testing.T) {
+		withholds(t)(nested(t, "web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}))
+	})
+	t.Run("intermediate_manifest_no_lock", func(t *testing.T) {
+		withholds(t)(nested(t, "apps/web", map[string]string{
+			"package.json":      manifestWith("app", nil, ""),
+			"package-lock.json": emptyLock,
+			"apps/package.json": manifestWith("apps", map[string]string{"q": "1.0.0"}, ""),
+		}))
+	})
+	t.Run("intermediate_manifest_unreadable", func(t *testing.T) {
+		dir, store := nested(t, "apps/web", map[string]string{
+			"package.json":      manifestWith("app", nil, ""),
+			"package-lock.json": emptyLock,
+			"apps/package.json": `{"name":"apps"}`,
+		})
+		m := filepath.Join(dir, "apps", "package.json")
+		if err := os.Chmod(m, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(m, 0o644) })
+		withholds(t)(dir, store)
+	})
+	t.Run("intermediate_manifest_no_deps", func(t *testing.T) {
+		resolves(t)(nested(t, "apps/web", map[string]string{
+			"package.json":      manifestWith("app", nil, ""),
+			"package-lock.json": emptyLock,
+			"apps/package.json": `{"name":"apps","private":true,"workspaces":["web"]}`,
+		}))
+	})
+	t.Run("intermediate_npm_workspace", func(t *testing.T) {
+		resolves(t)(nested(t, "apps/web", map[string]string{
+			"package.json":      manifestWith("app", nil, `,"workspaces":["apps"]`),
+			"package-lock.json": `{"name":"x","lockfileVersion":3,"requires":true,"packages":{"":{"name":"x","workspaces":["apps"]},"apps":{"name":"apps","dependencies":{"r":"1.0.0"}},"node_modules/apps":{"resolved":"apps","link":true}}}`,
+			"apps/package.json": manifestWith("apps", map[string]string{"r": "1.0.0"}, ""),
+		}))
+	})
 }

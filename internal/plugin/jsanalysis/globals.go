@@ -48,6 +48,8 @@ type globalScope struct {
 	patterns [][3]int                 // destructuring pattern bracket, source start and end
 	occ      map[string][]int         // name → positions it is written at, other than as a member (lazy)
 	keyMemo  map[keyMemoKey]keyMemoVal
+	withs    int              // 0 not yet scanned, 1 no with statement, 2 a with statement
+	fnScopes map[string][]int // function name → the function scope of each function keyword naming it (lazy)
 }
 
 // globalDecl is one declared name; start == end when it has no initialiser.

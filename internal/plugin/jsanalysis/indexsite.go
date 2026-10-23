@@ -36,6 +36,12 @@ func newKeyJudge(clean, src []rune, gs *globalScope, word string) *keyJudge {
 	return &keyJudge{clean: clean, src: src, gs: gs, word: word, seen: map[int]bool{}}
 }
 
+// may reports whether the key clean[from:to] may evaluate to j.word.
+func (j *keyJudge) may(from, to int) bool {
+	ok, enums := j.keySafe(from, to)
+	return !ok || len(enums) > 0
+}
+
 // keySafe judges clean[from:to] and returns the enumerated receivers its safety rests on.
 func (j *keyJudge) keySafe(from, to int) (bool, []int) {
 	j.enums, j.cycle = nil, false
@@ -372,6 +378,107 @@ func (j *keyJudge) expr(from, to int) bool {
 		return false
 	}
 	return j.ident(w, from)
+}
+
+// staticKey returns the one string clean[from:to] evaluates to on every run: a string
+// literal, a template with no substitution, a parenthesised one, a + chain of them, or a
+// const whose only binding is initialised with one. A with statement anywhere in the
+// module may put any object's member in place of the const, so then nothing is static.
+func (j *keyJudge) staticKey(from, to int) (string, bool) {
+	if j.gs.withStatement(j.clean) {
+		return "", false
+	}
+	return j.static(from, to, 0)
+}
+
+func (j *keyJudge) static(from, to, depth int) (string, bool) {
+	clean, src := j.clean, j.src
+	from, to = trimRange(clean, from, to)
+	if from >= to || depth > 16 {
+		return "", false
+	}
+	if clean[from] == '(' && closeOf(clean, from) == to-1 {
+		return j.static(from+1, to-1, depth+1)
+	}
+	ops, ok := j.topOps(from, to)
+	if !ok {
+		return "", false
+	}
+	if len(ops) > 0 {
+		var b strings.Builder
+		s := from
+		for _, o := range append(ops, topOp{to, "+"}) {
+			if o.op != "+" {
+				return "", false
+			}
+			v, ok := j.static(s, o.at, depth+1)
+			if !ok {
+				return "", false
+			}
+			b.WriteString(v)
+			s = o.at + 1
+		}
+		return b.String(), true
+	}
+	if stringLiteral(clean, src, from) {
+		if src[from] == '`' {
+			e, _, subs, ok := templateScan(clean, src, from)
+			if !ok || subs > 0 || !templateEnds(clean, e, to) {
+				return "", false
+			}
+		} else if to != from+1 {
+			return "", false
+		}
+		v := specifierAt(src, from)
+		return v, v != ""
+	}
+	w, e := readWord(clean, from)
+	if w == "" || e != to || !isIdentStart(clean[from]) {
+		return "", false
+	}
+	ds := j.gs.lookup(w, from)
+	if len(ds) == 0 {
+		return "", false
+	}
+	for _, d := range ds[1:] {
+		if j.gs.decls[d].at != j.gs.decls[ds[0]].at {
+			return "", false // more than one binding
+		}
+	}
+	if dl := j.gs.decls[ds[0]]; dl.kind == 'c' && dl.pat < 0 && dl.start < dl.end && !dl.weak {
+		return j.static(dl.start, dl.end, depth+1)
+	}
+	return "", false
+}
+
+// withStatement reports whether a with statement appears anywhere in clean.
+func (gs *globalScope) withStatement(clean []rune) bool {
+	if gs.withs == 0 {
+		gs.withs = 1
+		for i := 0; i < len(clean); {
+			if !isIdentStart(clean[i]) || i > 0 && isIdentPart(clean[i-1]) {
+				i++
+				continue
+			}
+			w, next := readWord(clean, i)
+			if q := skipSpace(clean, next); w == "with" && !memberName(clean, i) && q < len(clean) && clean[q] == '(' {
+				gs.withs = 2
+				break
+			}
+			i = next
+		}
+	}
+	return gs.withs == 2
+}
+
+// reflectSafe are, for Reflect and Object, the members a computed key may name: none of
+// them returns a function, reads a member by a key or changes a prototype. Every other key,
+// and every key that is not static, may name one that does (get, getOwnPropertyDescriptor,
+// setPrototypeOf, apply, construct, or a member Function.prototype gives both objects).
+var reflectSafe = map[string]map[string]bool{
+	"Object": {"keys": true, "is": true, "isFrozen": true, "isSealed": true, "isExtensible": true,
+		"freeze": true, "seal": true, "preventExtensions": true, "hasOwn": true},
+	"Reflect": {"has": true, "isExtensible": true, "preventExtensions": true},
 }
 
 // piece reports whether the operand clean[from:to] of a + chain puts into the result text
@@ -890,19 +997,40 @@ func (gs *globalScope) literalReceiver(clean, src []rune, name string, i int) bo
 	return true
 }
 
-// blockFunction reports whether a function declaration named name has scope as its nearest
-// function scope. In sloppy code one declared in a nested block also assigns the function to
-// that scope's var of the same name when the declaration runs.
+// blockFunction reports whether a function named name is declared anywhere in the code of
+// the function whose scope is scope, outside the functions nested in it. One at the top
+// level of the body binds the name over the var; in sloppy code one in any other statement
+// position (a block, an if or loop body without braces, a switch case, a labelled
+// statement) also assigns the function to the var when it runs. Every function keyword
+// followed by the name counts, so no position is left to classify; a named function
+// expression, which binds nothing there, counts too.
 func (gs *globalScope) blockFunction(clean []rune, name string, scope int) bool {
-	tf := gs.tf
-	for _, dl := range gs.decls {
-		if dl.kind != 'f' || dl.name != name {
-			continue
+	if gs.fnScopes == nil {
+		gs.fnScopes = map[string][]int{}
+		tf := gs.tf
+		for i := 0; i < len(clean); {
+			if !isIdentStart(clean[i]) || i > 0 && isIdentPart(clean[i-1]) {
+				i++
+				continue
+			}
+			w, next := readWord(clean, i)
+			if w == "function" && !memberName(clean, i) {
+				q := skipSpace(clean, next)
+				if q < len(clean) && clean[q] == '*' {
+					q = skipSpace(clean, q+1)
+				}
+				if f, _ := peekWord(clean, q); f != "" {
+					s := tf.block(i)
+					for s >= 0 && !tf.scope[s] && !namespaceBlock(clean, tf.opens[s]) {
+						s = tf.parent[s]
+					}
+					gs.fnScopes[f] = append(gs.fnScopes[f], s)
+				}
+			}
+			i = next
 		}
-		s := dl.scope
-		for s >= 0 && !tf.scope[s] && !namespaceBlock(clean, tf.opens[s]) {
-			s = tf.parent[s]
-		}
+	}
+	for _, s := range gs.fnScopes[name] {
 		if s == scope {
 			return true
 		}
@@ -1018,6 +1146,7 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 	n := len(clean)
 	j := newKeyJudge(clean, src, gs, "constructor")
 	pj := newKeyJudge(clean, src, gs, "__proto__")
+	rj, oj := newKeyJudge(clean, src, gs, "Reflect"), newKeyJudge(clean, src, gs, "Object")
 	hops := newHopJudges(clean, src, gs)
 	var initOf map[int]int
 	constFollow := func(start, next int, descriptor bool) bool {
@@ -1162,11 +1291,22 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 				protoWrite = true
 			}
 		}
+		start := receiverStart(clean, op)
+		if v, ok := j.staticKey(ka, kb); ok && (v == "Reflect" || v == "Object") {
+			// Any object's Reflect or Object member may be the global's (globalThis['Reflect']).
+			if reflectiveUse(clean, src, j, v, max(start, 0), e+1) {
+				evaluated = true
+			}
+		} else if r := skipSpaceBack(clean, op-1); !ok && r >= 0 && isIdentPart(clean[r]) {
+			// A key that may be Reflect or Object on the global, or on a this that may be it.
+			if w, s := wordBefore(clean, r); (w == "this" && gs.tf.globalAt(s) || w != "this" && gs.isGlobal(w, s)) && (rj.may(ka, kb) || oj.may(ka, kb)) && reflectiveUse(clean, src, j, "Reflect", max(start, 0), e+1) {
+				evaluated = true
+			}
+		}
 		if stringLiteral(clean, src, ka) && wholeKey(clean, src, ka) {
 			memberUse(specifierAt(src, ka), true, op, op, e+1)
 			continue // keyedUse judges a literal key
 		}
-		start := receiverStart(clean, op)
 		recv := skipSpaceBack(clean, op-1)
 		if w, s := wordBefore(clean, recv); w != "" {
 			recv = s
@@ -1198,8 +1338,13 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 		b := skipSpaceBack(clean, i-1)
 		member := b >= 0 && clean[b] == '.' && !(b >= 2 && clean[b-1] == '.' && clean[b-2] == '.')
 		switch {
-		case !member && (word == "Reflect" || word == "Object") && len(gs.lookup(word, i)) == 0:
-			if reflectiveUse(clean, src, gs, j, word, i, next) {
+		case !member && (word == "Reflect" || word == "Object") && len(gs.lookup(word, i)) == 0 && !bindingSite(clean, i, next, b, skipSpace(clean, next)):
+			if reflectiveUse(clean, src, j, word, i, next) {
+				evaluated = true
+			}
+		case member && (word == "Reflect" || word == "Object"):
+			// Any object's Reflect or Object member may be the global's (globalThis.Reflect).
+			if reflectiveUse(clean, src, j, word, receiverStart(clean, memberDot(clean, b)), next) {
 				evaluated = true
 			}
 		case !member && word == "getOwnPropertyDescriptor" && b >= 0 && (clean[b] == '{' || clean[b] == ',') && destructuredKey(clean, i, next):
@@ -1418,12 +1563,14 @@ func plainValue(clean, src []rune, from, to int) bool {
 	return false
 }
 
-// reflectiveUse reports whether the unshadowed Reflect or Object at i is used in a way that
-// can read a member under a key the lane does not see: Reflect.get or
-// getOwnPropertyDescriptor (Object's getOwnPropertyDescriptor) taken without being called,
-// either object indexed by a key that is not a literal, or Reflect handed on as a value
-// (Object only as a whole initializer or destructuring source).
-func reflectiveUse(clean, src []rune, gs *globalScope, j *keyJudge, word string, i, next int) bool {
+// reflectiveUse reports whether the Reflect or Object (word) whose expression starts at i
+// and ends before next is used in a way that can read a member under a key the lane does
+// not see: Reflect.get or getOwnPropertyDescriptor (Object's getOwnPropertyDescriptor)
+// taken without being called, either object indexed by a key that is not static or names
+// a member outside reflectSafe, or the object used as a value anywhere but where it is
+// only tested (typeof, and for Object also instanceof, new or an equality test) or
+// written.
+func reflectiveUse(clean, src []rune, j *keyJudge, word string, i, next int) bool {
 	n := len(clean)
 	reads := func(m string) bool {
 		return m == "getOwnPropertyDescriptor" || word == "Reflect" && m == "get"
@@ -1442,27 +1589,26 @@ func reflectiveUse(clean, src []rune, gs *globalScope, j *keyJudge, word string,
 		c := skipSpace(clean, e)
 		return reads(m) && !(c < n && clean[c] == '(' || optionalCall(clean, c))
 	case q < n && clean[q] == '[':
-		e := closeBracket(clean, q)
-		a := skipSpace(clean, q+1)
-		if stringLiteral(clean, src, a) && wholeKey(clean, src, a) {
-			if !reads(specifierAt(src, a)) {
-				return false
-			}
-			c := skipSpace(clean, e+1)
-			return !(c < n && clean[c] == '(' || optionalCall(clean, c))
-		}
-		ok, enums := j.keySafe(q+1, e)
-		return !ok || len(enums) > 0
+		v, ok := j.staticKey(q+1, closeBracket(clean, q))
+		return !ok || !reflectSafe[word][v]
+	case p < n && clean[p] == '(' || assignAfter(clean, p) || updateBefore(clean, i):
+		return false
 	}
 	b := skipSpaceBack(clean, i-1)
-	if word == "Reflect" {
-		w, _ := wordBefore(clean, b)
-		return w != "typeof"
+	w, _ := wordBefore(clean, b)
+	if w == "typeof" {
+		return false
 	}
-	if b >= 1 && clean[b] == '=' && !strings.ContainsRune("=!<>+-*/%&|^?", clean[b-1]) && valueTail(clean, next) {
+	if word == "Reflect" {
 		return true
 	}
-	return false
+	if w == "instanceof" || w == "new" {
+		return false
+	}
+	equality := func(k int) bool {
+		return k+1 < n && (clean[k] == '=' || clean[k] == '!') && clean[k+1] == '='
+	}
+	return !(equality(p) || b >= 1 && clean[b] == '=' && equality(b-1) || b >= 2 && clean[b] == '=' && equality(b-2))
 }
 
 // ownKeysRead reports whether the result of an own-keys or descriptors call, whose member

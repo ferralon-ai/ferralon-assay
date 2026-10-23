@@ -80,8 +80,12 @@
 # signals.json.gz, downloaded only after the signature check and pinned to the sha256 the signed
 # bundles.json names (bundle_version 1.1.0 or later), is passed to the scanner as -advisory-signals.
 # A release that cannot supply verified signals (an older bundle_version, no `signals` object, no
-# asset, a mismatch) fails the run. A corpus directory handed to `advisory-corpus` is ranked with its
-# own root signals.json, when it has one.
+# asset, a mismatch) fails the run. VERSION REQUIREMENT: a scanner release carrying the
+# `-advisory-signals` flag, which the scan step passes whenever a release is read; see the note on
+# `advisory-corpus-policy` below. Verified is not fresh: a stale signals file still loads, with a
+# warning in the scan log. A corpus directory handed to `advisory-corpus` is ranked with its own root
+# signals.json, when it has one. The git fetch fetches no signals, so a run on that route alone (no
+# `advisory-corpus-policy`) ranks nothing.
 # TRUST LIMIT: the signature proves bundles.json came from the identity the CALLER names, as
 # certified by the Sigstore public-good trust root; both are trusted, not verified, here. Assay
 # names no signer of its own. A ref that names no release, and a policy the release publishes no
@@ -270,7 +274,9 @@ inputs:
       scanner-version default carries it before you opt in. A release that lacks it fails the scan
       loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
       input; if that is what you get, raise scanner-version to a release that
-      carries it.
+      carries it. On this git route without advisory-corpus-policy, no EPSS/KEV signals are
+      fetched, so findings carry no EPSS/KEV priority; to get priority, set advisory-corpus-policy
+      (the release route), which reads the verified signals of the corpus release the ref names.
     required: false
     default: ""
   advisory-corpus-ref:
@@ -299,7 +305,13 @@ inputs:
       too, verified: the release's signals.json.gz must match the sha256 its signed bundles.json
       names, and is passed to the scanner as -advisory-signals. A release that cannot supply them
       (bundles.json older than bundle_version 1.1.0, no signals object, no asset, or a mismatch)
-      FAILS the run. A policy the release
+      FAILS the run. Verified is not fresh: the check proves the file is the one the signed release
+      names, not that its values are recent, so a stale signals file still loads, with a warning in
+      the scan log. VERSION REQUIREMENT: a scanner release carrying the -advisory-signals flag —
+      confirm the release named by the scanner-version default carries it before you set this
+      input. A release that lacks it fails the scan loudly ("flag provided but not defined:
+      -advisory-signals") rather than ranking without the verified signals; if that is what you
+      get, raise scanner-version to a release that carries it. A policy the release
       publishes no bundle for is read from the git fetch, using the policy's manifest. Empty
       (default) = the whole corpus via the git fetch, exactly as without this input. Ignored when
       advisory-corpus is set. Bundles need a scanner release whose -advisory-corpus accepts a

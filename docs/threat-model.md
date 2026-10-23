@@ -18,11 +18,13 @@ A run configured with `advisory-corpus-repo` (recommended — see the README's
 [Advisory corpus](../README.md#advisory-corpus)) additionally clones that public corpus repository
 from **`github.com`** before the scan: unauthenticated (it presents no token), shallow (`--depth 1`)
 and sparse (the manifest and record partitions only). It sends the repository coordinates and nothing
-about your code. With `advisory-corpus-policy` set and a bundle published for that policy, it instead
-downloads the release's `bundles.json`, `<policy>.jsonl.gz` and `signals.json.gz` as **`github.com`** release assets
-(which redirect to **`release-assets.githubusercontent.com`**) and the policy manifest from
-**`raw.githubusercontent.com`**, likewise unauthenticated and carrying nothing
-about your code. To verify the release signature first, that route also downloads cosign from the
+about your code. With `advisory-corpus-policy` set and the ref naming a corpus release, it downloads
+`bundles.json` and `signals.json.gz`, plus `<policy>.jsonl.gz` when a bundle is published for that
+policy, as **`github.com`** release assets (which redirect to
+**`release-assets.githubusercontent.com`**). A bundle replaces the clone, and with it the route also
+fetches the policy manifest from **`raw.githubusercontent.com`**. These requests are likewise
+unauthenticated and carry nothing about your code. To verify the release signature first, that route
+also downloads cosign from the
 `sigstore/cosign` release on **`github.com`** and fetches the Sigstore trust root from the Sigstore TUF
 CDN, **`tuf-repo-cdn.sigstore.dev`**; neither request carries anything about your code.
 

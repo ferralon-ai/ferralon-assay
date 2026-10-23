@@ -254,12 +254,19 @@ from the same verified release: after the signature check the Action downloads t
 it to the scanner as `-advisory-signals`. This holds whenever a release is read, including for a policy
 with no bundle. A release that cannot supply verified signals fails the run: a `bundles.json` older
 than `bundle_version` 1.1.0 (which predates the signals asset), a missing `signals` object or asset,
-or a sha256 mismatch. A corpus directory handed to `advisory-corpus` is ranked with its own root
-`signals.json`, when it has one ([operator guide](docs/operator-guide.md#epss-and-kev)). What stays trusted rather than verified is the
-Sigstore trust root and the identity you supply. A policy with no bundle, or a ref that names no
-release, is read through the git fetch, which is not signature-checked. On the CLI, `-advisory-corpus` takes either a corpus directory or a bundle
-file; for a bundle the `Report`'s corpus digest is the sha256 of the `.gz`, the value `bundles.json`
-publishes for it.
+or a sha256 mismatch. Verified is not fresh: the check proves the file is the one the signed
+release names, not that its values are recent, so a stale signals file still loads, with a warning
+in the scan log. Passing the signals needs a scanner release carrying the `-advisory-signals` flag;
+one that lacks it fails the scan with "flag provided but not defined", so raise `scanner-version`
+if you see that. On the git route, with `advisory-corpus-repo` and no `advisory-corpus-policy`, no
+signals are fetched, so findings carry no EPSS/KEV priority; to get priority, set
+`advisory-corpus-policy` (the release route). A corpus directory handed to `advisory-corpus` is
+ranked with its own root `signals.json`, when it has one
+([operator guide](docs/operator-guide.md#epss-and-kev)). What stays trusted rather than verified is
+the Sigstore trust root and the identity you supply. A policy with no bundle, or a ref that names no
+release, is read through the git fetch, which is not signature-checked. On the CLI,
+`-advisory-corpus` takes either a corpus directory or a bundle file; for a bundle the `Report`'s
+corpus digest is the sha256 of the `.gz`, the value `bundles.json` publishes for it.
 
 The CLI reads the corpus from `-advisory-corpus` or, when the flag is absent, the
 `ASSAY_ADVISORY_CORPUS_DIR` environment variable (the name says directory; it accepts a bundle file

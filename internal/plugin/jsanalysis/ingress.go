@@ -121,11 +121,11 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		return out, nil
 	}
 
-	graph, _, err := callGraphInternal(req.BuildDir)
+	graph, err := callGraphFor(ctx, req.BuildDir, req.DependencyCache)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
-	resolved, origins, matched := resolveBoundarySymbols(pkg, req.AdvisorySymbols, graph.Edges, bp)
+	resolved, origins, matched := resolveBoundarySymbols(pkg, purlVersion(req.Package, pkg), req.AdvisorySymbols, graph.Edges, bp)
 	if len(resolved) == 0 {
 		return out, nil
 	}

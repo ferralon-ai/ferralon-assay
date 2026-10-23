@@ -35,6 +35,8 @@ type program struct {
 	// styleTooling caches whether the tree holds a bundler or transform config that can change
 	// what a stylesheet import loads; nil until first use.
 	styleTooling *bool
+	// deps is the dependency code read into the program (depgraph.go); nil when none is.
+	deps *depGraph
 }
 
 // moduleIndex is one module's resolution surface: the names it binds (imports), the
@@ -199,9 +201,11 @@ func (p *program) resolveIngressSymbol(module string, in ingressMarker) string {
 // an ambiguous/unknown name, or a >1 declaration match yields NO edge and a declared
 // partiality reason — the inv.5 honesty boundary: an unresolved callee is never rendered
 // as a (wrong) edge or as reachability.
-func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
-	res, _, err := callGraphInternal(req.BuildDir)
-	return res, err
+//
+// With req.DependencyCache set, the lock-pinned dependency code that store holds is read
+// into the graph as well (depgraph.go).
+func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+	return callGraphFor(ctx, req.BuildDir, req.DependencyCache)
 }
 
 // partialFlags accumulates the call graph's declared limits across all files.
@@ -213,6 +217,9 @@ type partialFlags struct {
 	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
 	evaluated     bool // eval or the Function constructor (evaluated_code)
 	stylesheet    bool // a stylesheet import whose only code is the loader runtime (scoped uninspectable_package)
+	toolFailure   bool // dependency code the read budget cut off with no package to attribute it to (tool_failure)
+	unsupported   bool // a skipped construct in dependency code (unsupported_phase1)
+	scoped        []plugin.ScopedReason
 }
 
 // callGraphInternal builds the graph and returns it alongside the per-edge provenance
@@ -224,24 +231,66 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	if err != nil {
 		return plugin.CallGraphResult{}, nil, err
 	}
-	rs := prog.resolver()
-	br := newBoundaryResolver(prog, rs)
+	g := buildGraph(prog)
+	return g.result(callGraphPartiality(prog, g.flags)), g.prov, nil
+}
 
-	seen := map[plugin.CallEdge]bool{}
-	var edges []plugin.CallEdge
-	provByEdge := map[plugin.CallEdge]provenance{}
-	rootsSet := map[string]bool{}
-	var flags partialFlags
+// graphBuild accumulates a call graph's edges, their provenance, its roots and its limits.
+type graphBuild struct {
+	seen  map[plugin.CallEdge]bool
+	edges []plugin.CallEdge
+	prov  map[plugin.CallEdge]provenance
+	roots map[string]bool
+	flags partialFlags
 	// A computed read accepted for its literal receiver holds only while no module of the
 	// build may set a prototype the lane does not see.
-	anyExempt, anyProto := false, false
-	addEdge := func(e plugin.CallEdge, prov provenance) {
-		if !seen[e] {
-			seen[e] = true
-			edges = append(edges, e)
-			provByEdge[e] = prov
-		}
+	anyExempt, anyProto bool
+}
+
+func newGraphBuild() *graphBuild {
+	return &graphBuild{seen: map[plugin.CallEdge]bool{}, prov: map[plugin.CallEdge]provenance{}, roots: map[string]bool{}}
+}
+
+func (g *graphBuild) add(e plugin.CallEdge, prov provenance) {
+	if !g.seen[e] {
+		g.seen[e] = true
+		g.edges = append(g.edges, e)
+		g.prov[e] = prov
 	}
+}
+
+// result renders the build as a sorted, deterministic CallGraphResult.
+func (g *graphBuild) result(part plugin.Partiality) plugin.CallGraphResult {
+	edges := append([]plugin.CallEdge(nil), g.edges...)
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
+			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
+		}
+		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
+	})
+	rootIDs := make([]string, 0, len(g.roots))
+	for r := range g.roots {
+		rootIDs = append(rootIDs, r)
+	}
+	sort.Strings(rootIDs)
+	roots := make([]plugin.Symbol, 0, len(rootIDs))
+	for _, r := range rootIDs {
+		roots = append(roots, sym(r))
+	}
+	return plugin.CallGraphResult{
+		Partiality: part,
+		Algorithm:  "source-lexical",
+		Edges:      edges,
+		Roots:      roots,
+	}
+}
+
+// buildGraph builds the first-party call graph over prog.
+func buildGraph(prog *program) *graphBuild {
+	rs := prog.resolver()
+	br := newBoundaryResolver(prog, rs)
+	g := newGraphBuild()
+	flags := &g.flags
 
 	for _, f := range prog.files {
 		// Module-level runtime-computed specifiers (import(expr) / require(var)) with no
@@ -258,8 +307,8 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		if f.bindings.evaluated {
 			flags.evaluated = true
 		}
-		anyExempt = anyExempt || f.bindings.literalExempt
-		anyProto = anyProto || f.bindings.protoWrite
+		g.anyExempt = g.anyExempt || f.bindings.literalExempt
+		g.anyProto = g.anyProto || f.bindings.protoWrite
 		// A module that loads an out-of-tree package runs that package's code, whatever it
 		// later does with the binding, so the run executed code this lane did not open.
 		for _, ls := range f.bindings.specifiers {
@@ -290,21 +339,21 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			if kind == prefixFirstParty {
 				caller := sym(funcSCIP(f.module, pl.caller.enclosing, pl.caller.name, pl.caller.arity))
 				for _, m := range mods {
-					addEdge(plugin.CallEdge{Caller: caller, Callee: sym(moduleInitSCIP(m))}, provenance{Algo: algo})
+					g.add(plugin.CallEdge{Caller: caller, Callee: sym(moduleInitSCIP(m))}, provenance{Algo: algo})
 				}
 				if !prefixSuffixMayTraverse {
 					continue
 				}
 			}
-			accumulateReason(&flags, reason)
+			accumulateReason(flags, reason)
 		}
 		// Module code runs when the module is loaded, and any first-party module may be
 		// loaded, so every module's top-level frame is a root.
-		rootsSet[moduleInitSCIP(f.module)] = true
+		g.roots[moduleInitSCIP(f.module)] = true
 		// Every function opaque code could call back is a root (escape.go).
 		for _, d := range f.decls {
 			if f.escapes.root(d) {
-				rootsSet[funcSCIP(f.module, d.enclosing, d.name, d.arity)] = true
+				g.roots[funcSCIP(f.module, d.enclosing, d.name, d.arity)] = true
 			}
 		}
 		for _, cs := range f.calls {
@@ -312,30 +361,25 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			if cs.calleeFrame {
 				// The frame that registers an inline handler reaches it: the scanner minted
 				// both ends in this file, so there is nothing to resolve.
-				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}, provenance{Algo: algoLocal})
+				g.add(plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}, provenance{Algo: algoLocal})
 				continue
 			}
 			r := rs.resolveCallSite(f.module, cs)
 			if target, ok := r.edge(); ok {
-				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
+				g.add(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 				continue
 			}
 			if target, prov, ok := br.callee(f.module, cs); ok {
 				// An edge into a package-boundary node names the dependency member the call
 				// enters; it is not an inspection of the package, which stays uninspectable.
-				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
-				if !seen[e] {
-					seen[e] = true
-					edges = append(edges, e)
-					provByEdge[e] = prov
-				}
+				g.add(plugin.CallEdge{Caller: caller, Callee: sym(target)}, prov)
 				flags.uninspectable = true
 			}
 			switch r.Kind {
 			case resolvePackage:
 				flags.uninspectable = true
 			default: // resolveUnresolved (or a first-party module with no unique symbol)
-				accumulateReason(&flags, r.Reason)
+				accumulateReason(flags, r.Reason)
 			}
 		}
 		// Framework ingress handler functions are call-graph roots. An ingress whose
@@ -343,38 +387,15 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		// no root.
 		for _, in := range f.ingresses {
 			if symID := prog.resolveIngressSymbol(f.module, in); symID != "" {
-				rootsSet[symID] = true
+				g.roots[symID] = true
 			}
 		}
 	}
 
-	if anyExempt && anyProto {
+	if g.anyExempt && g.anyProto {
 		flags.evaluated = true
 	}
-
-	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
-			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
-		}
-		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
-	})
-
-	rootIDs := make([]string, 0, len(rootsSet))
-	for r := range rootsSet {
-		rootIDs = append(rootIDs, r)
-	}
-	sort.Strings(rootIDs)
-	roots := make([]plugin.Symbol, 0, len(rootIDs))
-	for _, r := range rootIDs {
-		roots = append(roots, sym(r))
-	}
-
-	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, flags),
-		Algorithm:  "source-lexical",
-		Edges:      edges,
-		Roots:      roots,
-	}, provByEdge, nil
+	return g
 }
 
 // accumulateReason maps a declined call's reason code onto the graph's partial flags.
@@ -402,10 +423,10 @@ func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
 	if flags.unresolved {
 		reasons = append(reasons, plugin.PartialReasonDynamicDispatch)
 	}
-	if prog.readFailed {
+	if prog.readFailed || flags.toolFailure {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
-	if prog.skipped {
+	if prog.skipped || flags.unsupported {
 		reasons = append(reasons, plugin.PartialReasonUnsupported)
 	}
 	if flags.uninspectable {
@@ -427,6 +448,7 @@ func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
 	if flags.stylesheet {
 		scoped = append(scoped, stylesheetRuntime())
 	}
+	scoped = append(scoped, flags.scoped...)
 	if len(reasons) == 0 && len(scoped) == 0 {
 		return plugin.Complete()
 	}

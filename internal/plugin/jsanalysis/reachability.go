@@ -29,7 +29,7 @@ import (
 //
 // A load failure is a hard error (inv.4).
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir, DependencyCache: req.DependencyCache})
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

@@ -96,6 +96,9 @@ type resolver struct {
 	// EXPOSES it; it does NOT apply it — the resolution methods below are unchanged this
 	// cycle. Consult it via lookupAlias.
 	bctx *buildContext
+	// packageOnly keeps every bare specifier a package resolution even when dependency code is
+	// read, so boundary nodes are still traced through it.
+	packageOnly bool
 }
 
 // resolver constructs the resolver at PLAN-162's injection point, wiring in the exposed
@@ -694,6 +697,9 @@ func (rs *resolver) resolveBareSpecifier(fromModule, spec, imported string, arit
 	if target, conds, ok := rs.resolveWorkspaceMember(fromModule, spec); ok {
 		return rs.lookupImportedName(target, imported, arity, provenance{Algo: algoExports, Conditions: conds})
 	}
+	if rs.prog.deps != nil && !rs.packageOnly {
+		return rs.resolveDepBare(fromModule, spec, imported, arity, algo)
+	}
 	return resolution{
 		Kind:    resolvePackage,
 		Subpath: bareSubpath(spec),
@@ -790,7 +796,7 @@ func (rs *resolver) resolveModuleOfBinding(fromModule string, b binding) (string
 	if target, _, ok := rs.resolveTsPaths(fromModule, b.Specifier); ok {
 		return target, algoPathsAlias
 	}
-	return "", algo
+	return rs.depModuleOfSpecifier(fromModule, b.Specifier, b.Kind == bindRequire), algo
 }
 
 // resolveModuleOfSpecifier resolves a specifier (relative or bare-first-party) to an
@@ -805,7 +811,7 @@ func (rs *resolver) resolveModuleOfSpecifier(fromModule, spec string) string {
 	if target, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
 		return target
 	}
-	return ""
+	return rs.depModuleOfSpecifier(fromModule, spec, false)
 }
 
 // resolveRelative resolves a relative specifier against fromModule's directory and
@@ -823,7 +829,12 @@ func (rs *resolver) resolveRelative(fromModule, spec string) string {
 	if path.Ext(cand) == vueExtension {
 		cand = strings.TrimSuffix(cand, vueExtension)
 	}
-	return rs.matchModule(cand)
+	m := rs.matchModule(cand)
+	if m == "" && rs.prog.deps.owns(fromModule) {
+		// Package code commonly requires a sibling by its file name ("./lib/parse.js").
+		m = rs.matchModule(stripJSExt(cand))
+	}
+	return m
 }
 
 // matchModule returns the module path when cand (or cand/index) is an in-tree module.
@@ -936,6 +947,9 @@ func parsePkgManifest(data []byte) *pkgManifest {
 // governingPackageJSON finds the nearest package.json up-tree from fromModule's file,
 // returning its parsed manifest and its build-root-relative directory.
 func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, string) {
+	if p := rs.prog.deps.pkgOf(fromModule); p != nil {
+		return p.manifest, p.entry.path
+	}
 	dir := path.Dir(fromModule)
 	if dir == "." {
 		dir = ""
@@ -963,6 +977,9 @@ func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, strin
 // (by that member's package.json name) to a first-party module through the member's own
 // exports/main. Returns the target module and the condition set consulted.
 func (rs *resolver) resolveWorkspaceMember(fromModule, spec string) (string, []string, bool) {
+	if rs.prog.deps.owns(fromModule) {
+		return "", nil, false
+	}
 	root, ok := rs.rootManifest()
 	if !ok || len(root.workspaces) == 0 {
 		return "", nil, false
@@ -1270,6 +1287,9 @@ func (rs *resolver) loadTsconfig(dir, rel string, depth int) *tsconfigResolved {
 // resolves the mapped location to an in-tree module. Returns the module and the governing
 // tsconfig path.
 func (rs *resolver) resolveTsPaths(fromModule, spec string) (string, string, bool) {
+	if rs.prog.deps.owns(fromModule) {
+		return "", "", false
+	}
 	ts := rs.governingTsconfig(fromModule)
 	if ts == nil || len(ts.paths) == 0 {
 		return "", "", false

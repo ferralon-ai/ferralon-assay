@@ -29,7 +29,7 @@ const taintPrecisionNote = "lexical call-graph path-presence only: ingress→sin
 // unresolved lexical callees) is also folded in, and a sink with no path from any ingress
 // declares no_known_ingress (NEVER "safe"). A load failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir, DependencyCache: req.DependencyCache})
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}

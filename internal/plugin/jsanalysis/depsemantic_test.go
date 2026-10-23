@@ -1172,7 +1172,9 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		}
 	}
 	// Rows over directories above the region that no lock covers. Each map is the files beside
-	// the region; a root lock (covered) is added unless the row writes its own root files.
+	// the region; a root lock (covered) is added unless the row writes its own root files. Script
+	// rows run an opaque command the install veto cannot read as an install, so each pins the
+	// scripts rule itself.
 	locked := func(files map[string]string) map[string]string {
 		if _, ok := files["package.json"]; !ok {
 			files["package.json"] = `{"name":"app","private":true}`
@@ -1199,18 +1201,26 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		"intermediate_workspaces":          {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true,"workspaces":["lib"]}`, "apps/lib/package.json": manifestWith("lib", map[string]string{"q": "1.0.0"}, "")})},
 		"intermediate_malformed":           {"apps/web", apps(`{"name":"apps",`)},
 		"intermediate_unknown_key":         {"apps/web", apps(`{"name":"apps","overrides":{"q":"1.0.0"}}`)},
-		"intermediate_install_script":      {"apps/web", apps(`{"name":"apps","scripts":{"postinstall":"npm i q@1"}}`)},
+		"intermediate_install_script":      {"apps/web", apps(`{"name":"apps","scripts":{"postinstall":"node setup.js"}}`)},
 		"intermediate_npmrc":               {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.npmrc": "x=y\n"})},
 		"intermediate_installed_on_disk":   {"apps/web", locked(map[string]string{"apps/node_modules/q/package.json": `{"name":"q","version":"1.0.0"}`})},
 		"intermediate_pnpmfile":            {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.pnpmfile.cjs": "module.exports = {}\n"})},
 		"intermediate_empty_dependencies":  {"apps/web", apps(`{"name":"apps","dependencies":{}}`)},
-		"intermediate_pnpm_dev_preinstall": {"apps/web", apps(`{"name":"apps","scripts":{"pnpm:devPreinstall":"npm i q@1 --no-save"}}`)},
-		"intermediate_namespaced_script":   {"apps/web", apps(`{"name":"apps","scripts":{"yarn:bootstrap":"npm i q@1 --no-save"}}`)},
-		"intermediate_pre_script":          {"apps/web", apps(`{"name":"apps","scripts":{"prebuild":"npm i q@1 --no-save"}}`)},
-		"intermediate_post_script":         {"apps/web", apps(`{"name":"apps","scripts":{"posttest":"npm i q@1 --no-save"}}`)},
-		"intermediate_prepare":             {"apps/web", apps(`{"name":"apps","scripts":{"prepare":"npm i q@1 --no-save"}}`)},
-		"intermediate_install_hook":        {"apps/web", apps(`{"name":"apps","scripts":{"install":"npm i q@1 --no-save"}}`)},
-		"intermediate_dependencies_hook":   {"apps/web", apps(`{"name":"apps","scripts":{"dependencies":"npm i q@1 --no-save"}}`)},
+		"intermediate_pnpm_dev_preinstall": {"apps/web", apps(`{"name":"apps","scripts":{"pnpm:devPreinstall":"node setup.js"}}`)},
+		"intermediate_namespaced_script":   {"apps/web", apps(`{"name":"apps","scripts":{"yarn:bootstrap":"node setup.js"}}`)},
+		"intermediate_pre_script":          {"apps/web", apps(`{"name":"apps","scripts":{"prebuild":"node setup.js"}}`)},
+		"intermediate_post_script":         {"apps/web", apps(`{"name":"apps","scripts":{"posttest":"node setup.js"}}`)},
+		"intermediate_prepare":             {"apps/web", apps(`{"name":"apps","scripts":{"prepare":"node setup.js"}}`)},
+		"intermediate_install_hook":        {"apps/web", apps(`{"name":"apps","scripts":{"install":"node setup.js"}}`)},
+		"intermediate_dependencies_hook":   {"apps/web", apps(`{"name":"apps","scripts":{"dependencies":"node setup.js"}}`)},
+		"intermediate_binding_gyp":         {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/binding.gyp": "{'targets':[]}\n"})},
+		"root_binding_gyp_no_lock":         {"web", map[string]string{"package.json": `{"name":"app","private":true}`, "binding.gyp": "{'targets':[]}\n"}},
+		"intermediate_package_yaml":        {"apps/web", locked(map[string]string{"apps/package.yaml": "name: apps\ndependencies:\n  q: 1.0.0\n"})},
+		"intermediate_package_json5":       {"apps/web", locked(map[string]string{"apps/package.json5": "{name: 'apps', dependencies: {q: '1.0.0'}}\n"})},
+		"root_package_yaml_no_json":        {"web", map[string]string{"package.yaml": "name: app\ndependencies:\n  q: 1.0.0\n"}},
+		"intermediate_npmrc_node_linker":   {"apps/web", locked(map[string]string{"apps/.npmrc": "registry=https://npm.acme.dev/\nnode-linker=hoisted\n"})},
+		"intermediate_npmrc_peer_keys":     {"apps/web", locked(map[string]string{"apps/.npmrc": "registry=https://npm.acme.dev/\nlegacy-peer-deps=true\n"})},
+		"intermediate_pnpm_key":            {"apps/web", apps(`{"name":"apps","private":true,"pnpm":{"neverBuiltDependencies":[]}}`)},
 		"root_npmrc_hoist":                 {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "registry=https://npm.acme.dev/\npublic-hoist-pattern[]=*\n"}},
 		"root_npmrc_unparseable":           {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "\"${HOIST}\"=true\n"}},
 	} {
@@ -1291,6 +1301,62 @@ func TestSemantic_LayoutVeto(t *testing.T) {
 				}
 				if !tc.withheld && (incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
 					t.Errorf("control resolves q@1.0.0 through the %s layout; incomplete=%v got %+v", mgr, incomplete, cg.Partiality)
+				}
+			})
+		}
+	}
+}
+
+// TestSemantic_DepBindingGyp: a pnpm or yarn classic package that ships a binding.gyp and sets no
+// install or preinstall script gets `node-gyp rebuild` at install, an install script the lock
+// does not mark, so it withholds run-wide like an explicit one.
+func TestSemantic_DepBindingGyp(t *testing.T) {
+	for _, mgr := range []string{"pnpm", "yarn"} {
+		for name, gyp := range map[string]bool{"binding_gyp": true, "control": false} {
+			t.Run(mgr+"_"+name, func(t *testing.T) {
+				q := qPkg("1.0.0")
+				pFiles := map[string]string{"index.js": callsQ}
+				if gyp {
+					pFiles["binding.gyp"] = "{'targets':[]}\n"
+				}
+				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, pFiles)
+				lockName, lock := pnpmLockFile, pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}}, p, q)
+				if mgr == "yarn" {
+					lockName, lock = yarnLockFile, yarnLockText(t, p, q)
+				}
+				dir := semProgram(t, lockName, lock, map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, "")})
+				cg := semRun(t, dir, semStore(t, p, q))
+				if gyp && !runWide(cg) {
+					t.Errorf("a %s package with a binding.gyp and no install script withholds run-wide; got %+v", mgr, cg.Partiality)
+				}
+				if !gyp && (runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+					t.Errorf("control resolves q@1.0.0 through the %s layout; got %+v", mgr, cg.Partiality)
+				}
+			})
+		}
+	}
+}
+
+// TestSemantic_PnpmAltManifest: pnpm installs a region root or member from package.yaml or
+// package.json5 when it has no package.json. The lane reads neither, so a region holding one
+// withholds, beside a package.json (the root row) or alone (the member row).
+func TestSemantic_PnpmAltManifest(t *testing.T) {
+	for _, alt := range []string{"package.yaml", "package.json5"} {
+		for name, files := range map[string]map[string]string{
+			"root":   {alt: "name: app\n"},
+			"member": {"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - lib\n", "lib/" + alt: "name: lib\n"},
+		} {
+			t.Run(alt+"_"+name, func(t *testing.T) {
+				q := qPkg("1.0.0")
+				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+				importers := map[string]map[string]string{".": {"p": "1.0.0"}}
+				if name == "member" {
+					importers["lib"] = map[string]string{}
+				}
+				dir := semProgram(t, pnpmLockFile, pnpmLockText(t, "9.0", importers, p, q), files)
+				cg := semRun(t, dir, semStore(t, p, q))
+				if !buildDepLayout(context.Background(), dir).incomplete || !runWide(cg) {
+					t.Errorf("a pnpm region with an unread %s withholds; got %+v", alt, cg.Partiality)
 				}
 			})
 		}

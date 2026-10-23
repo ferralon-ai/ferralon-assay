@@ -180,12 +180,20 @@ func (l *depLayout) outerUnaccounted(buildDir string) bool {
 
 // installConfigFiles are the files whose presence lets a package manager install into, or
 // configure an install of, their directory without its package.json declaring anything: a
-// workspace root, a lock, an rc file, a pnpmfile hook, or an install already on disk. A .npmrc is
-// judged by its keys instead (outerNpmrcKeys).
-var installConfigFiles = []string{
+// workspace root, a lock, an rc file, a pnpmfile hook, a manifest pnpm reads in place of
+// package.json (pnpmAltManifests), a binding.gyp (npm, pnpm and yarn run `node-gyp rebuild` for
+// it at install when no install or preinstall script is set), or an install already on disk. A
+// .npmrc is judged by its keys instead (outerNpmrcKeys). The install veto flags a pnpmfile on its
+// own; it stays here so this judgment does not rest on the veto's name matching.
+var installConfigFiles = append([]string{
 	"pnpm-workspace.yaml", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs", ".pnpmfile.mjs",
 	"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "node_modules",
-}
+	"binding.gyp",
+}, pnpmAltManifests...)
+
+// pnpmAltManifests are the manifests pnpm installs from when a directory has no package.json.
+// The lane reads neither, so a directory holding one is never judged by its package.json alone.
+var pnpmAltManifests = []string{"package.yaml", "package.json5"}
 
 // outerNpmrcKeys are the .npmrc settings an inert directory may set. Each chooses where packages
 // are fetched from and how (registry, TLS, proxy, retries) or what an install prints, audits or

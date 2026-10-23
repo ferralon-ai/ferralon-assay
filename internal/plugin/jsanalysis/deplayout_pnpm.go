@@ -482,6 +482,9 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		return nil, false
 	}
 	cfg.members = members
+	if pnpmAltManifestIn(root, globs) {
+		return nil, false
+	}
 	for _, dir := range append([]string{"."}, members...) {
 		data, ok := readOptional(filepath.Join(root, filepath.FromSlash(dir), "package.json"))
 		if !ok {
@@ -494,6 +497,45 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		cfg.manifests[dir] = m
 	}
 	return cfg, true
+}
+
+// pnpmAltManifestIn reports whether root, or a directory the workspace globs select, holds a
+// pnpmAltManifests file, or whether the walk fails. workspaceMembers finds members by
+// package.json, so a member with only a package.yaml would otherwise go unseen.
+func pnpmAltManifestIn(root string, globs []string) bool {
+	for _, f := range pnpmAltManifests {
+		if _, err := os.Lstat(filepath.Join(root, f)); !absent(err) {
+			return true
+		}
+	}
+	if len(globs) == 0 {
+		return false
+	}
+	found := false
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && (d.Name() == "node_modules" || d.Name() == ".git") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !slices.Contains(pnpmAltManifests, d.Name()) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, filepath.Dir(p))
+		if err != nil {
+			return err
+		}
+		if rel = filepath.ToSlash(rel); rel != "." && workspaceSelects(globs, rel) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found || err != nil
 }
 
 // checkConfig holds the lock to the configuration: overrides and patches the lock does not

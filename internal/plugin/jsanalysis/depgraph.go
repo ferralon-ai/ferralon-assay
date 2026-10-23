@@ -137,9 +137,19 @@ func (rs *resolver) frontEntryModules(fromModule, spec string) []string {
 	if e == nil || rs.prog.deps.pkgs[e.path] == nil {
 		return nil
 	}
+	return rs.frontEntriesAt(e.path)
+}
+
+// frontEntriesAt is frontEntryModules for the read package installed at pkgPath: the modules
+// its module and browser entries select. It is nil when no read package has its root there.
+func (rs *resolver) frontEntriesAt(pkgPath string) []string {
+	p := rs.prog.deps.pkgs[pkgPath]
+	if p == nil || p.manifest == nil {
+		return nil
+	}
 	var out []string
-	for _, t := range rs.prog.deps.pkgs[e.path].manifest.frontEntries {
-		if m := rs.depModuleAt(e.path, t); m != "" && !slices.Contains(out, m) {
+	for _, t := range p.manifest.frontEntries {
+		if m := rs.depModuleAt(pkgPath, t); m != "" && !slices.Contains(out, m) {
 			out = append(out, m)
 		}
 	}
@@ -505,7 +515,13 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			algo := loadAlgo(ls.viaRequire)
 			switch {
 			case isRelativeLoad(ls.spec):
-				if m := rs.resolveRelative(f.module, ls.spec); m != "" {
+				m, dir, viaDir := rs.resolveRelativeDir(f.module, ls.spec)
+				if viaDir && anyFrontend {
+					// A bundler loading a package root ("require('..')" from inside it) takes its
+					// module and browser entries, as for a load by name.
+					loadEdges(f, rs.frontEntriesAt(dir), algo)
+				}
+				if m != "" {
 					loadEdges(f, []string{m}, algo)
 					continue
 				}
@@ -591,18 +607,19 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 	return ctx.Err() == nil
 }
 
-// validNPMName reports whether name, the package part of a bare specifier, can name an npm
-// package at all: no segment starts with "." or "_", and it holds no "..".
+// validNPMName reports whether name, the package part of a bare specifier, can be bounded to
+// pkg:npm/<name>. It rejects only the names a resolver could read as something other than a
+// package: empty, a leading "." or "_", a scoped part starting with ".", or a ".." anywhere
+// (which deplayout.lookup also refuses). It is not full npm name validation: the other names
+// npm forbids are MODULE_NOT_FOUND in Node, so a limit bounded to them stays sound.
 func validNPMName(name string) bool {
 	if name == "" || strings.Contains(name, "..") {
 		return false
 	}
-	seg := name
-	if strings.HasPrefix(name, "@") {
-		_, seg, _ = strings.Cut(name, "/")
+	if scope, part, ok := strings.Cut(name, "/"); ok && strings.HasPrefix(scope, "@") {
+		return part != "" && !strings.HasPrefix(part, ".")
 	}
-	return seg != "" && !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_") &&
-		!strings.HasPrefix(seg, ".") && !strings.HasPrefix(seg, "_")
+	return !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_") && !strings.HasPrefix(name, "@")
 }
 
 // isDepSpecifier reports whether a load names an npm package: bare, and not a Node built-in.

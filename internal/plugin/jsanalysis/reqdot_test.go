@@ -365,3 +365,74 @@ func TestRequireDot_UnderscoreDefaultImport(t *testing.T) {
 		}
 	})
 }
+
+// TestRequireDot_PrefixLoadsStayUnbounded: a static-prefix load whose prefix is "." or ".."
+// ('..' + x, `..${x}`) names no directory the lane can enumerate: x may continue the name
+// ("..foo", a package) as well as the path. The load stays a run-wide computed or dynamic
+// limit, and enumerating it must not slice a prefix that holds no "/".
+func TestRequireDot_PrefixLoadsStayUnbounded(t *testing.T) {
+	for _, tc := range []struct {
+		name, src, reason string
+	}{
+		{"'..' + x", "const n = process.argv[2];\nrequire('..' + n);\n", plugin.PartialReasonComputedRequireSpecifier},
+		{"'.' + x", "const n = process.argv[2];\nrequire('.' + n);\n", plugin.PartialReasonComputedRequireSpecifier},
+		{"`..${x}`", "const n = process.argv[2];\nimport(`..${n}`);\n", plugin.PartialReasonDynamicImportSpecifier},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("the analyzer panicked: %v", r)
+				}
+			}()
+			cg := firstPartyGraph(t, map[string]string{"src/a/index.js": tc.src, "src/a/b.js": "module.exports = 1;\n"})
+			if !hasReason(cg.Partiality, tc.reason) {
+				t.Errorf("want run-wide %s; got %v", tc.reason, cg.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// TestRequireDot_FrontendDirectoryLoad: under a stock Create React App build, a dependency's
+// "require('..')" that reaches its package root loads the module and browser entries a bundler
+// may pick, as a load of the package by name does, not main alone.
+func TestRequireDot_FrontendDirectoryLoad(t *testing.T) {
+	p := guardPkg(map[string]string{
+		"package.json": `{"name":"dep","version":"1.0.0","main":"cjs.js","module":"esm.js"}`,
+		"cjs.js":       "exports.run = function run() {};\n",
+		"esm.js":       "export function run() {}\n",
+		"lib/sub.js":   "require('..');\nmodule.exports = function sub() {};\n",
+	})
+	const src = "import sub from 'dep/lib/sub';\nsub();\n"
+	cra := newDepFixture(t, map[string]string{
+		"package.json": `{"name":"web","version":"0.1.0","private":true,"dependencies":{"react-scripts":"5.0.1","dep":"1.0.0"},"scripts":{"start":"react-scripts start","build":"react-scripts build"}}`,
+		"src/index.js": src,
+	}, p)
+	if cg := withDeps(t, cra.dir, cra.memStore()); !loadsDepModule(cg, "esm") || !loadsDepModule(cg, "cjs") {
+		t.Errorf("a CRA build's '..' load of the package root must load module and main; edges %+v", cg.Edges)
+	}
+	node := newDepFixture(t, map[string]string{"src/index.js": src}, p)
+	if cg := withDeps(t, node.dir, node.memStore()); loadsDepModule(cg, "esm") || !loadsDepModule(cg, "cjs") {
+		t.Errorf("outside a frontend build the '..' load takes main only; edges %+v", cg.Edges)
+	}
+}
+
+// TestRequireDot_ScopedUnderscoreNameIsBounded: npm allows a scoped part to start with "_", so
+// a missing "@s/_x" keeps a limit bounded to its name; "foo..bar", which the layout never
+// resolves, stays unbounded.
+func TestRequireDot_ScopedUnderscoreNameIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		spec    string
+		bounded bool
+	}{{"@s/_x", true}, {"foo..bar", false}} {
+		t.Run(tc.spec, func(t *testing.T) {
+			cg, _ := dotRun(t, "wrap/lib/sub", wrapPkg(map[string]string{
+				"index.js": "", "lib/sub.js": "require('" + tc.spec + "');\nmodule.exports = function sub() {};\n"}))
+			if got := scopedTargetPrefixed(cg.Partiality, originPURL(tc.spec)); got != tc.bounded {
+				t.Errorf("bounded limit = %v, want %v; scoped %+v", got, tc.bounded, cg.Partiality.Scoped)
+			}
+			if got := hasReason(cg.Partiality, plugin.PartialReasonUnresolvedModule); got == tc.bounded {
+				t.Errorf("run-wide %s = %v, want %v", plugin.PartialReasonUnresolvedModule, got, !tc.bounded)
+			}
+		})
+	}
+}

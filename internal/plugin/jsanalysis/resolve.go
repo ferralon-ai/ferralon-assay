@@ -821,14 +821,17 @@ func (rs *resolver) resolveModuleOfSpecifier(fromModule, spec string) string {
 // (dirModule). A specifier Node treats as naming a directory (".", "..", or one ending in "/",
 // "/." or "/..") skips the file step. A candidate above the build root resolves to nothing.
 func (rs *resolver) resolveRelative(fromModule, spec string) string {
-	dir := path.Dir(fromModule)
-	if dir == "." {
-		dir = ""
-	}
-	cand := path.Join(dir, spec)
+	m, _, _ := rs.resolveRelativeDir(fromModule, spec)
+	return m
+}
+
+// resolveRelativeDir is resolveRelative that also reports, when the load reaches Node's
+// directory step, the build-root-relative directory it loads (viaDir true).
+func (rs *resolver) resolveRelativeDir(fromModule, spec string) (mod, dir string, viaDir bool) {
+	cand := path.Join(moduleDir(fromModule), spec)
 	cand = strings.TrimPrefix(cand, "./")
 	if cand == ".." || strings.HasPrefix(cand, "../") {
-		return ""
+		return "", "", false
 	}
 	if cand == "." {
 		cand = ""
@@ -842,14 +845,14 @@ func (rs *resolver) resolveRelative(fromModule, spec string) string {
 			file = strings.TrimSuffix(file, vueExtension)
 		}
 		if rs.prog.moduleSet[file] {
-			return file
+			return file, "", false
 		}
 		// Package code commonly requires a sibling by its file name ("./lib/parse.js").
 		if stripped := stripJSExt(file); rs.prog.deps.owns(fromModule) && rs.prog.moduleSet[stripped] {
-			return stripped
+			return stripped, "", false
 		}
 	}
-	return rs.dirModule(cand)
+	return rs.dirModule(cand), cand, true
 }
 
 // namesDirectory reports whether Node's CommonJS loader resolves spec as a directory only,

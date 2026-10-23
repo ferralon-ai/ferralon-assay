@@ -282,8 +282,9 @@ func (v *Veto) samplesLive() bool {
 var (
 	mentionRE = regexp.MustCompile(`\.sample|hooks|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
 	// sourceRE is the mention trigger for an in-tree file no surface parses. It leaves out
-	// hooks, which every React tree's src/hooks would match.
-	sourceRE  = regexp.MustCompile(`\.sample|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
+	// hooks, which every React tree's src/hooks would match, and needs .sample to end a
+	// name, as a hook's does, so texture.sample( and ep.sample_params don't match.
+	sourceRE  = regexp.MustCompile(`\.sample(?:$|[^A-Za-z0-9_$(])|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
 	dotGlobRE = regexp.MustCompile(`(?:^|[\s/"'=;&|()<>` + "`" + `])\.[^\s/"'=;&|()<>` + "`" + `]*[*?\[{]`)
 	dynDirRE  = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|-C|--prefix|--cwd)(?:\s+-{1,2}[A-Za-z]*)*(?:\s+|=)[^\s;&|)]*[$` + "`" + `]`)
 )

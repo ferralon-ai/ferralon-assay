@@ -517,6 +517,10 @@ func TestVeto_SampleHooks(t *testing.T) {
 		{"glob of every source file", sampleRun(`prettier --write "src/**/*"` + "\n"), false},
 		{"glob of the build root", sampleRun("rm -rf *\n"), false},
 		{"glob of the build root with an extension", sampleRun("cp *.* dist/\n"), false},
+		{"python build script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "python3 tools/setup.py\n", "tools/setup.py": "import subprocess\nsubprocess.run(['sh', '.git/hooks/pre-commit.sample'])\n"}), true},
+		{"dotglob loop", sampleRun("shopt -s dotglob\nfor f in */*/*; do sh \"$f\"; done\n"), true},
+		{"sample hook in a JSON exec form", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".devcontainer.json": `{"postCreateCommand":["sh",".git/hooks/pre-commit.sample"]}`}), true},
+		{"node build script and React hooks", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/build.js\n", "scripts/build.js": "require('fs').copyFileSync('a', 'b')\n", "src/hooks/useThing.ts": "export const useThing = () => 1\n", "src/index.ts": "import { useThing } from './hooks/useThing'\n"}), false},
 		{"dirless glob after cd into another directory", tree(map[string]string{".git/hooks/pre-commit.sample": install, "dist/a.txt": "x\n", "build.sh": "cd dist && zip -r ../out.zip *\n"}), false},
 	}
 	for _, tt := range tests {

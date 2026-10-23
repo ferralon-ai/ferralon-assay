@@ -196,6 +196,10 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"glob of another directory beside a sample hook", sample(`"zip":"cd dist && zip -r x.zip *"`, "dist/a.txt", "a\n"), true, ""},
 		{"glob of every dotted name in the build root beside a sample hook", sample(`"copy":"cp *.* out/"`), true, ""},
 		{"build beside a sample hook", sample(`"build":"tsc"`), true, ""},
+		{"sample hook run by a node build script", sample(`"prepare":"node scripts/setup.js"`, "scripts/setup.js", "require('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"), false, ""},
+		{"sample hooks run by a node script's readdir loop", sample(`"prepare":"node scripts/prepare.js"`, "scripts/prepare.js", "const fs = require('fs'), cp = require('child_process')\nfor (const h of fs.readdirSync('.git/hooks')) cp.execSync('sh ' + h, {cwd: '.git/hooks'})\n"), false, ""},
+		{"sample hook run by an ES module postinstall", sample(`"postinstall":"node tools/init.mjs"`, "tools/init.mjs", "import { execSync } from 'node:child_process'\nexecSync('sh .git/hooks/pre-commit.sample')\n"), false, ""},
+		{"node build script and React hooks beside a sample hook", sample(`"build":"node scripts/build.js"`, "scripts/build.js", "require('fs').copyFileSync('src/index.html', 'dist/index.html')\n", "src/hooks/useThing.ts", "export function useThing() { return 1 }\n", "src/index.ts", "import { useThing } from './hooks/useThing'\n"), true, ""},
 		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), false, ""},
 	}
 	for _, tt := range tests {

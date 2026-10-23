@@ -1159,7 +1159,7 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		return func(dir string, store artifactcache.Store) {
 			t.Helper()
 			if cg := semRun(t, dir, store); !buildDepLayout(dir).incomplete || !runWide(cg) {
-				t.Errorf("an unlocked manifest above the region withholds; got %+v", cg.Partiality)
+				t.Errorf("an unaccounted directory above the region withholds; got %+v", cg.Partiality)
 			}
 		}
 	}
@@ -1171,22 +1171,42 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 			}
 		}
 	}
-	t.Run("root_manifest_no_lock", func(t *testing.T) {
-		withholds(t)(nested(t, "web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}))
-	})
-	t.Run("intermediate_manifest_no_lock", func(t *testing.T) {
-		withholds(t)(nested(t, "apps/web", map[string]string{
-			"package.json":      manifestWith("app", nil, ""),
-			"package-lock.json": emptyLock,
-			"apps/package.json": manifestWith("apps", map[string]string{"q": "1.0.0"}, ""),
-		}))
-	})
+	// Rows over directories above the region that no lock covers. Each map is the files beside
+	// the region; a root lock (covered) is added unless the row writes its own root files.
+	locked := func(files map[string]string) map[string]string {
+		if _, ok := files["package.json"]; !ok {
+			files["package.json"] = `{"name":"app","private":true}`
+			files["package-lock.json"] = emptyLock
+		}
+		return files
+	}
+	apps := func(manifest string) map[string]string {
+		return locked(map[string]string{"apps/package.json": manifest})
+	}
+	for name, tc := range map[string]struct {
+		region string
+		files  map[string]string
+	}{
+		"root_manifest_no_lock":          {"web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}},
+		"root_deps_absent_intermediate":  {"apps/web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}},
+		"root_workspaces":                {"web", map[string]string{"package.json": `{"name":"app","private":true,"workspaces":["packages/*"]}`, "packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, "")}},
+		"root_pnpm_workspace":            {"web", map[string]string{"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - packages/*\n", ".npmrc": "shamefully-hoist=true\n", "packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, "")}},
+		"root_pnpm_workspace_only":       {"web", map[string]string{"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - packages/*\n"}},
+		"intermediate_manifest_no_lock":  {"apps/web", apps(manifestWith("apps", map[string]string{"q": "1.0.0"}, ""))},
+		"intermediate_dev_dependencies":  {"apps/web", apps(`{"name":"apps","devDependencies":{"q":"1.0.0"}}`)},
+		"intermediate_optional_deps":     {"apps/web", apps(`{"name":"apps","optionalDependencies":{"q":"1.0.0"}}`)},
+		"intermediate_peer_dependencies": {"apps/web", apps(`{"name":"apps","peerDependencies":{"q":"1.0.0"}}`)},
+		"intermediate_workspaces":        {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true,"workspaces":["lib"]}`, "apps/lib/package.json": manifestWith("lib", map[string]string{"q": "1.0.0"}, "")})},
+		"intermediate_malformed":         {"apps/web", apps(`{"name":"apps",`)},
+		"intermediate_unknown_key":       {"apps/web", apps(`{"name":"apps","overrides":{"q":"1.0.0"}}`)},
+		"intermediate_install_script":    {"apps/web", apps(`{"name":"apps","scripts":{"postinstall":"npm i q@1"}}`)},
+		"intermediate_npmrc":             {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.npmrc": "x=y\n"})},
+		"intermediate_installed_on_disk": {"apps/web", locked(map[string]string{"apps/node_modules/q/package.json": `{"name":"q","version":"1.0.0"}`})},
+	} {
+		t.Run(name, func(t *testing.T) { withholds(t)(nested(t, tc.region, tc.files)) })
+	}
 	t.Run("intermediate_manifest_unreadable", func(t *testing.T) {
-		dir, store := nested(t, "apps/web", map[string]string{
-			"package.json":      manifestWith("app", nil, ""),
-			"package-lock.json": emptyLock,
-			"apps/package.json": `{"name":"apps"}`,
-		})
+		dir, store := nested(t, "apps/web", apps(`{"name":"apps"}`))
 		m := filepath.Join(dir, "apps", "package.json")
 		if err := os.Chmod(m, 0); err != nil {
 			t.Fatal(err)
@@ -1194,17 +1214,17 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		t.Cleanup(func() { _ = os.Chmod(m, 0o644) })
 		withholds(t)(dir, store)
 	})
-	t.Run("intermediate_manifest_no_deps", func(t *testing.T) {
-		resolves(t)(nested(t, "apps/web", map[string]string{
-			"package.json":      manifestWith("app", nil, ""),
-			"package-lock.json": emptyLock,
-			"apps/package.json": `{"name":"apps","private":true,"workspaces":["web"]}`,
-		}))
-	})
+	for name, files := range map[string]map[string]string{
+		"absent_intermediate":         locked(map[string]string{}),
+		"intermediate_name_private":   apps(`{"name":"apps","private":true}`),
+		"intermediate_inert_metadata": apps(`{"name":"apps","version":"1.0.0","private":true,"type":"module","engines":{"node":">=20"},"scripts":{"build":"tsc"},"packageManager":"npm@11.0.0"}`),
+	} {
+		t.Run(name, func(t *testing.T) { resolves(t)(nested(t, "apps/web", files)) })
+	}
 	t.Run("intermediate_pnpm_importer", func(t *testing.T) {
 		sPkg := sp("s", "1.0.0", nil, nil)
 		resolves(t)(nested(t, "apps/web", map[string]string{
-			"package.json":        manifestWith("app", nil, ""),
+			"package.json":        `{"name":"app","private":true}`,
 			"pnpm-workspace.yaml": "packages:\n  - apps\n",
 			pnpmLockFile:          pnpmLockText(t, "9.0", map[string]map[string]string{".": {}, "apps": {"s": "1.0.0"}}, sPkg),
 			"apps/package.json":   manifestWith("apps", map[string]string{"s": "1.0.0"}, ""),
@@ -1212,7 +1232,7 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 	})
 	t.Run("intermediate_npm_workspace", func(t *testing.T) {
 		resolves(t)(nested(t, "apps/web", map[string]string{
-			"package.json":      manifestWith("app", nil, `,"workspaces":["apps"]`),
+			"package.json":      `{"name":"app","private":true,"workspaces":["apps"]}`,
 			"package-lock.json": `{"name":"x","lockfileVersion":3,"requires":true,"packages":{"":{"name":"x","workspaces":["apps"]},"apps":{"name":"apps","dependencies":{"r":"1.0.0"}},"node_modules/apps":{"resolved":"apps","link":true}}}`,
 			"apps/package.json": manifestWith("apps", map[string]string{"r": "1.0.0"}, ""),
 		}))

@@ -137,18 +137,21 @@ func buildDepLayout(buildDir string) *depLayout {
 			l.regions = append(l.regions, r)
 		}
 	}
-	if l.doubleClaimed() || l.outerManifestUnlocked(buildDir) {
+	if l.doubleClaimed() || l.outerUnaccounted(buildDir) {
 		l.incomplete = true
 	}
 	return l
 }
 
-// outerManifestUnlocked reports a package.json that declares dependencies (or cannot be read) in
-// a directory above a nested semantic region, up to the build root, that no lock installs for.
-// The walk out of the region treats a directory with no placed entry as holding no install, which
-// holds only where a lock accounts for it: discovery makes a root only where it finds a lock, so
-// a lock-less manifest there may be installed with copies the lane never sees.
-func (l *depLayout) outerManifestUnlocked(buildDir string) bool {
+// outerUnaccounted reports a directory above a nested semantic region, up to the build root,
+// that the walk out of the region cannot treat as empty. That walk takes a directory with no
+// placed entry to hold no install, which holds only on positive grounds: a lock installs for the
+// directory (installsFor), or nothing there can make a package manager install into its
+// node_modules (inertDir). Discovery makes a root only where it finds a lock, so a lock-less
+// manifest with dependencies or workspaces, or a workspace or package-manager config, may be
+// installed with copies the lane never sees. The scan stops at the build root, where Node's walk
+// does not: sound when the build directory is the checkout root.
+func (l *depLayout) outerUnaccounted(buildDir string) bool {
 	checked := map[string]bool{}
 	for _, r := range l.regions {
 		if !r.semantic || r.prefix == "" {
@@ -157,7 +160,7 @@ func (l *depLayout) outerManifestUnlocked(buildDir string) bool {
 		for a := relParent(r.prefix); ; a = relParent(a) {
 			if !checked[a] {
 				checked[a] = true
-				if !l.installsFor(a) && manifestDeclaresDeps(filepath.Join(buildDir, filepath.FromSlash(a), "package.json")) {
+				if !l.installsFor(a) && !inertDir(filepath.Join(buildDir, filepath.FromSlash(a))) {
 					return true
 				}
 			}
@@ -167,6 +170,77 @@ func (l *depLayout) outerManifestUnlocked(buildDir string) bool {
 		}
 	}
 	return false
+}
+
+// installConfigFiles are the files whose presence lets a package manager install into, or
+// configure an install of, their directory without its package.json declaring anything: a
+// workspace root, a lock, an rc file, a pnpmfile hook, or an install already on disk.
+var installConfigFiles = []string{
+	"pnpm-workspace.yaml", ".yarnrc", ".yarnrc.yml", ".npmrc", ".pnpmfile.cjs", ".pnpmfile.mjs",
+	"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "node_modules",
+}
+
+// inertManifestKeys are the package.json keys that cannot make npm, yarn or pnpm install anything
+// into the manifest's directory. Most describe or publish the package. type, main, module, types
+// and typings steer how the package itself loads, never what node_modules holds; engines and
+// packageManager pick the tool, not the tree; scripts is admitted without its install lifecycle
+// hooks (inertScripts). Any other key, including workspaces and every dependency map (even an
+// empty one, which is simpler than proving it empty), leaves the directory unaccounted.
+var inertManifestKeys = map[string]bool{
+	"name": true, "version": true, "private": true, "description": true, "license": true,
+	"author": true, "contributors": true, "repository": true, "homepage": true, "bugs": true,
+	"keywords": true, "engines": true, "type": true, "scripts": true, "files": true, "main": true,
+	"module": true, "types": true, "typings": true, "funding": true, "publishConfig": true,
+	"packageManager": true,
+}
+
+// installLifecycleScripts run on a plain install of the project and may install anything.
+var installLifecycleScripts = map[string]bool{
+	"preinstall": true, "install": true, "postinstall": true, "prepublish": true,
+	"preprepare": true, "prepare": true, "postprepare": true, "dependencies": true,
+}
+
+// inertDir reports whether the build directory dir holds nothing that installs into its
+// node_modules: no installConfigFiles entry, and a package.json that is absent or readable,
+// parseable and made only of inertManifestKeys.
+func inertDir(dir string) bool {
+	for _, f := range installConfigFiles {
+		if _, err := os.Lstat(filepath.Join(dir, f)); !absent(err) {
+			return false
+		}
+	}
+	p := filepath.Join(dir, "package.json")
+	if _, err := os.Lstat(p); absent(err) {
+		return true
+	}
+	data, err := readRegular(p)
+	if err != nil {
+		return false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(data, &m) != nil || m == nil {
+		return false
+	}
+	for k, v := range m {
+		if !inertManifestKeys[k] || k == "scripts" && !inertScripts(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// inertScripts reports whether a scripts value is an object with no install lifecycle hook.
+func inertScripts(v json.RawMessage) bool {
+	var scripts map[string]json.RawMessage
+	if json.Unmarshal(v, &scripts) != nil {
+		return false
+	}
+	for k := range scripts {
+		if installLifecycleScripts[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // installsFor reports whether some lock installs the dependencies of the manifest in the

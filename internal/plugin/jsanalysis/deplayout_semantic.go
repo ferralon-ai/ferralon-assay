@@ -23,9 +23,9 @@ import (
 //     when none is hoisted where the requirer's walk passes, whatever Node's walk finds above the
 //     region's root. Its candidates are the union of both: one candidate resolves to it, several
 //     resolve to none, and the load site's limit targets every candidate. The walk above is
-//     closed-world only over directories some lock installs for, so a dependency-declaring
-//     package.json on it that no lock covers leaves the layout incomplete
-//     (outerManifestUnlocked).
+//     closed-world only over directories it has positive grounds for: a lock installs for them,
+//     or nothing there can install into their node_modules. Any other directory on it, up to the
+//     build root, leaves the layout incomplete (outerUnaccounted).
 //
 // The phantom rule over-approximates every hoist and linker setting: whatever copy the load runs
 // is a candidate, so a load either gains an edge or is bounded by a limit, and is never silently

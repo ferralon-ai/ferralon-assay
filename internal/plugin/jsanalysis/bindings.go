@@ -251,7 +251,7 @@ func parseImportForm(clean, src []rune, pos int, mb *moduleBindings, add func(bi
 	if clean[p] == '.' { // import.meta
 		return pos
 	}
-	if clean[p] == '_' { // side-effect import 'x'
+	if clean[p] == '_' && isStrAt(src, p) { // side-effect import 'x', not a default import named _x
 		mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, p)})
 		return p + 1
 	}

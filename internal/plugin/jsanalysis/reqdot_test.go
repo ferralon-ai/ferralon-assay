@@ -337,3 +337,31 @@ func TestRequireDot_FirstPartyUndecidableDirectoriesWithhold(t *testing.T) {
 		}
 	})
 }
+
+// TestRequireDot_UnderscoreDefaultImport: a default import whose local name starts with "_"
+// (Babel's compiled helpers write `import _x from "./x"`) is a binding and a load of "./x",
+// not a side-effect import of an empty specifier. Read as the latter it lost the load, and the
+// invalid-name gate would turn the empty name into a run-wide limit.
+func TestRequireDot_UnderscoreDefaultImport(t *testing.T) {
+	t.Run("dependency code", func(t *testing.T) {
+		cg, paths := dotRun(t, "wrap", wrapPkg(map[string]string{
+			"package.json": `{"name":"wrap","version":"1.0.0","main":"index.mjs","dependencies":{"qs":"6.7.0"}}`,
+			"index.mjs":    "import _go from './go.mjs';\nexport default function w() { _go(); }\n",
+			"go.mjs":       "import qs from 'qs';\nexport default function go() { qs.parse('a'); }\n"}))
+		if paths == 0 {
+			t.Errorf("no path to %s through the _go default import", qsSink)
+		}
+		if hasReason(cg.Partiality, plugin.PartialReasonUnresolvedModule) {
+			t.Errorf("a well-formed import declared %s", plugin.PartialReasonUnresolvedModule)
+		}
+	})
+	t.Run("first party", func(t *testing.T) {
+		cg := firstPartyGraph(t, map[string]string{
+			"index.js": "import _m, { go } from './go';\nexport function run() { go(); }\nrun();\n",
+			"go.js":    "export function go() { return 1; }\nexport default 1;\n",
+		})
+		if !hasEdge(cg.Edges, scipManager+" . . index/run().", scipManager+" . . go/go().") {
+			t.Errorf("want run -> go/go(); edges %+v", cg.Edges)
+		}
+	})
+}

@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ferralon-ai/ferralon-assay/artifactcache"
 )
 
 const npmrcSecret = "NPMRC_SECRET_TOKEN_v1_MUSTNOTLEAK"
@@ -33,6 +31,7 @@ func TestLoadNPMConfigRouting(t *testing.T) {
 		project string
 		user    string
 		env     map[string]string
+		allow   []string
 		pkg     string
 		want    string
 	}{
@@ -43,7 +42,7 @@ func TestLoadNPMConfigRouting(t *testing.T) {
 		{name: "project over user config", project: "registry=https://project.test/", user: "registry=https://user.test/", pkg: "qs", want: "https://project.test/"},
 		{name: "user config alone", user: "@acme:registry=https://npm.pkg.github.com", pkg: "@acme/lib", want: "https://npm.pkg.github.com/"},
 		{name: "env registry over files", project: "registry=https://project.test/", env: map[string]string{"NPM_CONFIG_REGISTRY": "https://env.test/"}, pkg: "qs", want: "https://env.test/"},
-		{name: "env expansion", project: "registry=https://${MIRROR_HOST}/", env: map[string]string{"MIRROR_HOST": "m.test"}, pkg: "qs", want: "https://m.test/"},
+		{name: "env expansion in the user config", user: "registry=https://${MIRROR_HOST}/", env: map[string]string{"MIRROR_HOST": "m.test"}, allow: []string{"MIRROR_HOST"}, pkg: "qs", want: "https://m.test/"},
 		{name: "comments and quoting", project: "; c\n# c\nregistry = \"https://q.test/\"\n", pkg: "qs", want: "https://q.test/"},
 	}
 	for _, tt := range tests {
@@ -63,7 +62,7 @@ func TestLoadNPMConfigRouting(t *testing.T) {
 				}
 				env["NPM_CONFIG_USERCONFIG"] = p
 			}
-			cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir, LookupEnv: envOf(env)})
+			cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir, LookupEnv: envOf(env), AllowEnv: tt.allow})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,14 +79,14 @@ func TestLoadNPMConfigTokenBinding(t *testing.T) {
 	dir := t.TempDir()
 	writeNPMRC(t, dir, strings.Join([]string{
 		"@acme:registry=https://npm.acme.test/",
-		"//npm.acme.test/:_authToken=${ACME_TOKEN}",
+		"//npm.acme.test/:_authToken=${NODE_AUTH_TOKEN}",
 		"//elsewhere.test/:_authToken=other",
 	}, "\n"))
-	cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir, LookupEnv: envOf(map[string]string{"ACME_TOKEN": npmrcSecret})})
+	cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir, LookupEnv: envOf(map[string]string{"NODE_AUTH_TOKEN": npmrcSecret})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pol := cfg.PolicyFor("@acme/lib", "")
+	pol := cfg.PolicyFor("@acme/lib")
 	if pol.Credentials.For("npm.acme.test").IsEmpty() {
 		t.Fatal("acme token not bound to npm.acme.test")
 	}
@@ -124,6 +123,10 @@ func TestLoadNPMConfigFailsClosed(t *testing.T) {
 		{name: "bad boolean", project: "always-auth=sometimes"},
 		{name: "two token paths on one host", project: "//h.test/a/:_authToken=x\n//h.test/b/:_authToken=y"},
 		{name: "relative user config", env: map[string]string{"NPM_CONFIG_USERCONFIG": "rel/npmrc"}},
+		{name: "env reference to a variable outside the allowlist", project: "//registry.npmjs.org/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": npmrcSecret}},
+		{name: "env reference in the project registry URL", project: "registry=https://r.test/x/${NPM_TOKEN}/", env: map[string]string{"NPM_TOKEN": npmrcSecret}},
+		{name: "env reference in a project scope registry URL", project: "@acme:registry=https://${NPM_TOKEN}.test/", env: map[string]string{"NPM_TOKEN": "acme"}},
+		{name: "env reference in a project per-host key", project: "//${NPM_TOKEN}/:_authToken=x", env: map[string]string{"NPM_TOKEN": "r.test"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -174,48 +177,89 @@ func TestLoadNPMConfigReadSurface(t *testing.T) {
 	if cfg.RegistryFor("qs") != "https://user.test/" {
 		t.Fatalf("registry = %q", cfg.RegistryFor("qs"))
 	}
-	if cfg.PolicyFor("qs", "").Allowlist.Allows("home.test") {
+	if cfg.PolicyFor("qs").Allowlist.Allows("home.test") {
 		t.Fatal("$HOME/.npmrc was honored")
 	}
 }
 
-func TestPolicyForAuthAndHints(t *testing.T) {
-	dir := t.TempDir()
-	writeNPMRC(t, dir, strings.Join([]string{
-		"@acme:registry=https://npm.acme.test/",
-		"//npm.acme.test/:always-auth=true",
-		"@basic:registry=https://basic.test/",
-		"//basic.test/:_auth=Zm9vOmJhcg==",
-	}, "\n"))
-	cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.PolicyFor("@acme/x", "").Registries["npm"].RequireAuth {
-		t.Fatal("always-auth host must require auth")
-	}
-	if !cfg.PolicyFor("@basic/x", "").Registries["npm"].RequireAuth {
-		t.Fatal("an auth form this package cannot present must refuse anonymous fetches")
-	}
-	if cfg.PolicyFor("qs", "").Registries["npm"].RequireAuth {
-		t.Fatal("public registry must not require auth")
-	}
-
-	ref := artifactcache.Ref{PURL: "pkg:npm/qs@6.5.2", Digest: "sha1:" + strings.Repeat("0", 40)}
+func TestPolicyForRequireAuth(t *testing.T) {
 	tests := []struct {
-		hint, want string
+		name    string
+		project string
+		pkg     string
+		want    bool
 	}{
-		{"https://registry.npmjs.org/qs/-/qs-6.5.2.tgz", "https://registry.npmjs.org/qs/-/qs-6.5.2.tgz"},
-		{"https://evil.test/qs/-/qs-6.5.2.tgz", "https://registry.npmjs.org/qs/-/qs-6.5.2.tgz"},
-		{"http://registry.npmjs.org/qs/-/qs-6.5.2.tgz", "https://registry.npmjs.org/qs/-/qs-6.5.2.tgz"},
-		{"https://u:p@registry.npmjs.org/qs.tgz", "https://registry.npmjs.org/qs/-/qs-6.5.2.tgz"},
-		{"", "https://registry.npmjs.org/qs/-/qs-6.5.2.tgz"},
+		{name: "always-auth host", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:always-auth=true", pkg: "@acme/x", want: true},
+		{name: "auth form this package cannot present", project: "@basic:registry=https://basic.test/\n//basic.test/:_auth=Zm9vOmJhcg==", pkg: "@basic/x", want: true},
+		{name: "empty per-host token", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=", pkg: "@acme/x", want: true},
+		{name: "optional token reference left empty", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=${NODE_AUTH_TOKEN?}", pkg: "@acme/x", want: true},
+		{name: "top-level auth on the default registry", project: "_authToken=x", pkg: "qs", want: true},
+		{name: "top-level auth on a configured default registry", project: "registry=https://mirror.test/\n_auth=Zm9vOmJhcg==", pkg: "qs", want: true},
+		{name: "public registry", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=t", pkg: "qs"},
 	}
 	for _, tt := range tests {
-		pol := cfg.PolicyFor("qs", tt.hint)
-		got, err := pol.Backends["npm"].ResolveURL(ref, pol.Registries["npm"])
-		if err != nil || got != tt.want {
-			t.Errorf("hint %q: got %q, %v; want %q", tt.hint, got, err, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeNPMRC(t, dir, tt.project)
+			cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.PolicyFor(tt.pkg).Registries["npm"].RequireAuth; got != tt.want {
+				t.Fatalf("RequireAuth = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Only DefaultNPMRCEnv and operator-named variables reach a .npmrc reference, and a token
+// bound through them still goes only to its own host.
+func TestLoadNPMConfigEnvAllowlist(t *testing.T) {
+	env := map[string]string{"GITHUB_TOKEN": "ghs_" + npmrcSecret, "NODE_AUTH_TOKEN": npmrcSecret, "CORP_TOKEN": npmrcSecret}
+	tests := []struct {
+		name    string
+		project string
+		allow   []string
+		bound   bool
+	}{
+		{name: "optional reference to GITHUB_TOKEN binds nothing", project: "//registry.npmjs.org/:_authToken=${GITHUB_TOKEN?}"},
+		{name: "allowlisted NODE_AUTH_TOKEN", project: "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}", bound: true},
+		{name: "operator-added name", project: "//registry.npmjs.org/:_authToken=${CORP_TOKEN}", allow: []string{"CORP_TOKEN"}, bound: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeNPMRC(t, dir, tt.project)
+			cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir, LookupEnv: envOf(env), AllowEnv: tt.allow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := !cfg.PolicyFor("qs").Credentials.For("registry.npmjs.org").IsEmpty(); got != tt.bound {
+				t.Fatalf("token bound = %v, want %v", got, tt.bound)
+			}
+		})
+	}
+	// A project file cannot name GITHUB_TOKEN and get it, even when the operator allows
+	// another name.
+	dir := t.TempDir()
+	writeNPMRC(t, dir, "//registry.npmjs.org/:_authToken=${GITHUB_TOKEN}")
+	if _, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir, LookupEnv: envOf(env), AllowEnv: []string{"CORP_TOKEN"}}); !errors.Is(err, ErrMalformedNPMRC) {
+		t.Fatalf("err = %v, want ErrMalformedNPMRC", err)
+	}
+}
+
+// A symlinked project .npmrc could point at the runner's own configuration, so it is refused.
+func TestLoadNPMConfigRefusesSymlinkedProjectFile(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "home.npmrc")
+	if err := os.WriteFile(outside, []byte("registry=https://home.test/\n//home.test/:_authToken="+npmrcSecret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, ".npmrc")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir})
+	if !errors.Is(err, ErrMalformedNPMRC) {
+		t.Fatalf("err = %v, want ErrMalformedNPMRC", err)
 	}
 }

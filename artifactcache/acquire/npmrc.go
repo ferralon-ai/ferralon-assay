@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ferralon-ai/ferralon-assay/artifactcache"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 )
 
@@ -28,11 +27,22 @@ const DefaultNPMRegistry = "https://registry.npmjs.org/"
 // implicit discovery: the runner sets it on purpose, and actions/setup-node writes the
 // registry and its auth token there (a file under RUNNER_TEMP), so a CI build that
 // installs from a private registry configures it only through this variable.
+//
+// The environment is read only through an allowlist: DefaultNPMRCEnv plus the names in
+// AllowEnv. A ${VAR} reference to any other variable behaves exactly as if VAR were unset.
+// A repository's .npmrc must not be able to draw an arbitrary secret from the scanner's
+// environment (a CI token, a state token) and present it to a host the same file names.
 type NPMRCSources struct {
 	ProjectDir string                            // the directory holding the build's package.json and lock
 	LookupEnv  func(key string) (string, bool)   // environment the runner provides; nil reads nothing
+	AllowEnv   []string                          // variable names readable beyond DefaultNPMRCEnv, as the operator lists them
 	readFile   func(name string) ([]byte, error) // test seam; os.ReadFile when nil
 }
+
+// DefaultNPMRCEnv is the set of environment variables LoadNPMConfig reads without the
+// operator naming them: npm's own configuration variables and the token variables
+// actions/setup-node and npm's documentation use.
+var DefaultNPMRCEnv = []string{"NPM_CONFIG_USERCONFIG", "NPM_CONFIG_REGISTRY", "NODE_AUTH_TOKEN", "NPM_TOKEN"}
 
 // NPMConfig is the registry view of a build's npm configuration: which registry serves
 // each package, which hosts may be contacted, and which token belongs to which host.
@@ -91,10 +101,7 @@ const (
 // npm's: NPM_CONFIG_REGISTRY over the project file over the user config file. Any
 // malformed source fails the whole load with an error wrapping ErrMalformedNPMRC.
 func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
-	lookup := src.LookupEnv
-	if lookup == nil {
-		lookup = func(string) (string, bool) { return "", false }
-	}
+	lookup := allowedEnv(src.LookupEnv, src.AllowEnv)
 	read := src.readFile
 	if read == nil {
 		read = os.ReadFile
@@ -102,6 +109,13 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 
 	merged := map[string]npmrcEntry{}
 	layer := func(name, source string) error {
+		if source == sourceProject {
+			// A committed symlink could point the project layer at a file outside the
+			// checkout, such as the runner's own $HOME/.npmrc.
+			if fi, err := os.Lstat(name); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+				return &npmrcError{source: source, reason: "is a symbolic link"}
+			}
+		}
 		b, err := read(name)
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -136,6 +150,28 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 		merged["registry"] = npmrcEntry{value: r, source: sourceEnv}
 	}
 	return buildNPMConfig(merged)
+}
+
+// allowedEnv restricts lookup to DefaultNPMRCEnv and extra. Any other name reads as unset.
+func allowedEnv(lookup func(string) (string, bool), extra []string) func(string) (string, bool) {
+	if lookup == nil {
+		return func(string) (string, bool) { return "", false }
+	}
+	allowed := map[string]bool{}
+	for _, n := range DefaultNPMRCEnv {
+		allowed[n] = true
+	}
+	for _, n := range extra {
+		if n = strings.TrimSpace(n); n != "" {
+			allowed[n] = true
+		}
+	}
+	return func(name string) (string, bool) {
+		if !allowed[name] {
+			return "", false
+		}
+		return lookup(name)
+	}
 }
 
 // envRef matches npm's ${NAME} and ${NAME?} references. A plain reference to an unset
@@ -183,6 +219,12 @@ func parseNPMRC(text, source string, lookup func(string) (string, bool)) (map[st
 		if v, err = unquoteNPMRC(v, source, line); err != nil {
 			return nil, err
 		}
+		// In the project file an environment reference may sit only in a value that is not
+		// a URL: a key (which names the host a token binds to) or a registry URL built from
+		// the environment could carry a secret to a host, or into a request path.
+		if source == sourceProject && (envRef.MatchString(k) || (urlBearingKey(k) && envRef.MatchString(v))) {
+			return nil, &npmrcError{source: source, line: line, reason: "environment reference in a registry host or URL"}
+		}
 		if k, err = expandEnv(k, source, line, lookup); err != nil {
 			return nil, err
 		}
@@ -192,6 +234,11 @@ func parseNPMRC(text, source string, lookup func(string) (string, bool)) (map[st
 		out[k] = npmrcEntry{value: v, source: source, line: line}
 	}
 	return out, nil
+}
+
+// urlBearingKey reports whether k's value is a registry URL.
+func urlBearingKey(k string) bool {
+	return k == "registry" || (strings.HasPrefix(k, "@") && strings.HasSuffix(k, ":registry"))
 }
 
 func unquoteNPMRC(v, source string, line int) (string, error) {
@@ -234,6 +281,15 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 		}
 		alwaysAuth = b
 	}
+	// Top-level auth keys apply to the default registry. None is a form this package
+	// presents, so they only mark that registry as needing auth: its packages are refused
+	// as missing_credential rather than fetched anonymously and misread as not served.
+	defaultAuth := false
+	for _, k := range []string{"_auth", "_authToken", "username", "_password"} {
+		if _, ok := entries[k]; ok {
+			defaultAuth = true
+		}
+	}
 
 	tokens := map[string]checkout.Credential{}
 	tokenPath := map[string]string{} // host -> the //host/path/ prefix its token came from
@@ -266,6 +322,7 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 					return NPMConfig{}, &npmrcError{source: e.source, line: e.line, reason: "two tokens for one host under different paths"}
 				}
 				tokenPath[host] = prefix
+				cfg.requireAuth[host] = true
 				if e.value != "" {
 					tokens[host] = checkout.NewCredential(e.value)
 				}
@@ -285,6 +342,10 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 		}
 	}
 
+	if defaultAuth {
+		u, _ := url.Parse(cfg.defaultRegistry) // registryBase already parsed it
+		cfg.requireAuth[canonicalizeHostString(u.Hostname())] = true
+	}
 	registries := []string{cfg.defaultRegistry}
 	for _, r := range cfg.scopes {
 		registries = append(registries, r)
@@ -346,49 +407,19 @@ func (c NPMConfig) RegistryFor(name string) string {
 	return c.defaultRegistry
 }
 
-// PolicyFor returns the acquisition policy for one npm package. resolvedHint is the lock's
-// resolved URL. It is used as the fetch URL only when it is an HTTPS URL on a host the
-// configuration allowlists; otherwise the URL is built from the package's registry. The
-// lock's integrity still decides whether the bytes are accepted.
-func (c NPMConfig) PolicyFor(name, resolvedHint string) Policy {
+// PolicyFor returns the acquisition policy for one npm package: its tarball URL is built
+// from the registry that serves name, by name and version. The lock's integrity decides
+// whether the bytes are accepted.
+func (c NPMConfig) PolicyFor(name string) Policy {
 	reg := c.RegistryFor(name)
 	u, _ := url.Parse(reg)
 	host := canonicalizeHostString(u.Hostname())
-	var backend RegistryBackend = npmBackend{}
-	if hint, ok := c.allowedHint(resolvedHint); ok {
-		backend = hintedBackend{url: hint}
-	}
 	return Policy{
 		Allowlist:   c.allow,
 		Registries:  map[string]RegistryConfig{"npm": {BaseURL: reg, RequireAuth: c.requireAuth[host]}},
-		Backends:    map[string]RegistryBackend{"npm": backend},
+		Backends:    map[string]RegistryBackend{"npm": npmBackend{}},
 		Credentials: c.creds,
 	}
-}
-
-func (c NPMConfig) allowedHint(hint string) (string, bool) {
-	if hint == "" {
-		return "", false
-	}
-	u, err := url.Parse(hint)
-	if err != nil || u.Scheme != "https" || u.User != nil {
-		return "", false
-	}
-	h, err := canonicalHost(u)
-	if err != nil || !c.allow.Allows(h) {
-		return "", false
-	}
-	return u.String(), true
-}
-
-// hintedBackend fetches from a lock's resolved URL that already passed the allowlist.
-// The Acquirer still re-checks the host and binds the credential by it.
-type hintedBackend struct{ url string }
-
-func (hintedBackend) Ecosystem() string { return "npm" }
-
-func (b hintedBackend) ResolveURL(artifactcache.Ref, RegistryConfig) (string, error) {
-	return b.url, nil
 }
 
 // NPMNameOf returns the npm package name ("qs", "@scope/pkg") a "pkg:npm/…@version" PURL

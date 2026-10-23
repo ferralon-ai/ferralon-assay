@@ -186,3 +186,62 @@ The symbol indexer's `skipDir` excludes `node_modules` (and `dist`, `build`, `ou
 
 None of these put an npm coordinate or version into a symbol string; the Layer-1 `"."` limitation
 stands.
+
+## Declined call sites and escaped frames
+
+`CallGraph` connects a call only when the resolver finds a unique in-tree declaration, and declares
+every other call as a partiality reason. Beside those run-wide reasons it puts two lists on the wire,
+so a reader can tell whether an unresolved call could reach a given function
+(`plugin.CallGraphResult.Unresolved` and `.Escaped`; `callgraph.go`). Both are additive and
+`omitempty`, and `ProtocolVersion` stays `tegron.plugin.v1`.
+
+**`Unresolved` lists every declined site, or the result says it does not.** It has one
+`plugin.UnresolvedCall` per site behind `dynamic_dispatch` and the `relationship_unexpressed:*`
+reasons:
+
+- every call `resolveCallSite` declines, including a call into a package and a call the package
+  boundary connects to a dependency member;
+- every module-level load the scan records per module rather than per call: an out-of-tree package
+  load, a relative specifier naming no in-tree source, a computed `require`/`import()`, a native
+  load (`dlopen`) and `eval`/`Function`. Each is one entry on the module's top-level frame
+  (`<module-init>`), with `Callee` naming the loader;
+- every static-prefix load (`require('./locales/' + lang)`), on the frame that holds it. It keeps
+  its edges to the in-tree modules the prefix names.
+
+`relationship_unexpressed:unlisted_sites` (`plugin.PartialReasonUnlistedSites`) is set **if and only
+if** a declined site is missing from the list. The lane sets it for the body of evaluated code, which
+it never reads, for a source file it could not read, and for the run-wide prototype judgment that
+turns a literal-receiver computed read into `evaluated_code`. Without it, the list is complete. A
+reason no entry carries (`tool_failure`, `unsupported_phase1`) is not attributable to a listed site.
+Scoped limits (the stylesheet loader runtime) are not sites; they keep their own package `Targets`.
+
+**`Targets` over-approximates.** It is present only when the site's candidate set is complete and
+bounded: a name that resolves to more than one declaration, or to declarations none of whose arities
+match (`pickFunc`). It then lists every declaration of that name, whatever its arity, because JS does
+not dispatch on arity. It is complete to the same standard as an edge. A receiver the lane does not
+track, a package call or a call entering a package omits it, and omitted means the site could reach
+anything.
+
+**`Escaped` is every frame a hidden call or load can land on.** It is #106's escape roots
+(`escape.go`):
+
+- class members;
+- functions whose name is used as a value (passed, stored, returned, exported, spread, wrapped,
+  constructed, a JSX tag, a template substitution);
+- exported functions and named function expressions;
+- every function of a module that reaches functions by computed name (`.vue`, `eval`/`Function`,
+  script-mode globals).
+
+It also holds every module's top-level frame, which any load may run. A reader treats an escaped
+frame as callable from any `Unresolved` entry without `Targets`. A function missing from `Escaped`
+runs only as a root or through the `Edges` and `Targets` that reach it.
+
+**What this gives tegron on FERRALON-JS-SSRF-0001.** `fetchUrl` is escaped on all three trees,
+including tegron's path-removing patch, because `module.exports = { fetchUrl }` uses its name as a
+value. #106 counts that as an escape root, whether or not any in-tree module loads `./fetcher`. None
+of the declined sites is bounded, so the path-removing tree stays `graph_partial` under the narrowing
+rule, not path-dead.
+
+The contract is tested in `unresolved_test.go`. Its `TestMain` holds every call graph the package's
+tests build to the invariant: `len(Unresolved)` equals the declined-site count, `unlisted_sites`
+matches the unlisted flag, and every site reason is carried by an entry.

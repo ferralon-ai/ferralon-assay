@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -63,6 +64,9 @@ type resolution struct {
 	Subpath    string // selected subpath within a package ("." | "./client" | …)
 	Reason     string // a PartialReason* code; non-empty for resolvePackage and resolveUnresolved
 	Prov       provenance
+	// Candidates is every declaration a declined name can denote, set only when that set is
+	// complete and bounded (pickFunc); empty means the call could reach anything.
+	Candidates []string
 }
 
 // edge reports whether this resolution emits a call-graph edge and to which target.
@@ -759,6 +763,11 @@ func (rs *resolver) lookupInModule(module, name string, arity int, prov provenan
 
 // pickFunc selects the single declaration matching arity (arity<0 matches any). Zero or
 // more-than-one matches decline (fail-closed), preserving the soundness invariant.
+//
+// A declined pick still knows what the name denotes: one of decls, to the same standard an edge
+// would hold had exactly one matched. JS does not dispatch on arity, so the call can run a
+// declaration whose arity differs from the site's; the candidates are therefore every one of
+// decls, not only the arity matches.
 func (rs *resolver) pickFunc(module string, decls []funcDecl, arity int, prov provenance) resolution {
 	var match *funcDecl
 	count := 0
@@ -769,7 +778,16 @@ func (rs *resolver) pickFunc(module string, decls []funcDecl, arity int, prov pr
 		}
 	}
 	if count != 1 {
-		return unresolvedWith(plugin.PartialReasonDynamicDispatch)
+		r := unresolvedWith(plugin.PartialReasonDynamicDispatch)
+		seen := map[string]bool{}
+		for _, d := range decls {
+			if id := d.scip(); !seen[id] {
+				seen[id] = true
+				r.Candidates = append(r.Candidates, id)
+			}
+		}
+		sort.Strings(r.Candidates)
+		return r
 	}
 	return resolution{Kind: resolveFirstParty, Module: module, Target: match.scip(), Prov: prov}
 }

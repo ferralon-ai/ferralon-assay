@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -16,8 +17,11 @@ import (
 type program struct {
 	files      []fileParse
 	readFailed bool
-	skipped    bool
-	root       string // build dir (for reading package.json / tsconfig.json; never node_modules source)
+	// unreadSource records a source file that could not be read: its call sites are in no
+	// list, unlike a resolver read failure, which only weakens the sites it resolves.
+	unreadSource bool
+	skipped      bool
+	root         string // build dir (for reading package.json / tsconfig.json; never node_modules source)
 	// modules indexes every in-tree module by its path-based id: its bindings, its
 	// module-level functions, and its class methods. It replaces the former global
 	// (name,arity) funcsByKey / funcsByName maps — resolution is now import-scoped.
@@ -121,6 +125,7 @@ func loadProgram(buildDir string) (*program, error) {
 		data, err := readRegular(f)
 		if err != nil {
 			prog.readFailed = true
+			prog.unreadSource = true
 			continue
 		}
 		module := moduleOf(buildDir, f)
@@ -198,11 +203,27 @@ func (p *program) resolveIngressSymbol(module string, in ingressMarker) string {
 // resolves to a dependency (node_modules, never opened), a runtime-computed specifier,
 // an ambiguous/unknown name, or a >1 declaration match yields NO edge and a declared
 // partiality reason — the inv.5 honesty boundary: an unresolved callee is never rendered
-// as a (wrong) edge or as reachability.
+// as a (wrong) edge or as reachability. Each such site is listed in Unresolved, and every
+// frame a hidden call could land on in Escaped (buildCallGraph).
 func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
 	res, _, err := callGraphInternal(req.BuildDir)
 	return res, err
 }
+
+// graphBuild is one call-graph build plus the bookkeeping its completeness contract is
+// tested against: declined counts every call or load the build declined to connect, each
+// counted where its reason is accumulated, apart from the Unresolved entry built for it;
+// unlisted records a declined site no entry can list (PartialReasonUnlistedSites).
+type graphBuild struct {
+	res      plugin.CallGraphResult
+	prov     map[plugin.CallEdge]provenance
+	declined int
+	unlisted bool
+}
+
+// graphBuilt, when non-nil, sees every build. Only tests set it, to hold the completeness
+// contract on every program the package's tests build.
+var graphBuilt func(buildDir string, b graphBuild)
 
 // partialFlags accumulates the call graph's declared limits across all files.
 type partialFlags struct {
@@ -213,6 +234,7 @@ type partialFlags struct {
 	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
 	evaluated     bool // eval or the Function constructor (evaluated_code)
 	stylesheet    bool // a stylesheet import whose only code is the loader runtime (scoped uninspectable_package)
+	unlisted      bool // a declined site Unresolved cannot list (unlisted_sites)
 }
 
 // callGraphInternal builds the graph and returns it alongside the per-edge provenance
@@ -220,9 +242,26 @@ type partialFlags struct {
 // jsanalysis-internal map parallel to the edge set, and C5 asserts against it via a
 // package-internal test hook rather than the serialized edge.
 func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.CallEdge]provenance, error) {
-	prog, err := loadProgram(buildDir)
+	b, err := buildCallGraph(buildDir)
 	if err != nil {
 		return plugin.CallGraphResult{}, nil, err
+	}
+	if graphBuilt != nil {
+		graphBuilt(buildDir, b)
+	}
+	return b.res, b.prov, nil
+}
+
+// buildCallGraph is callGraphInternal's body.
+//
+// Every call or load the build declines is listed in Unresolved (plugin.UnresolvedCall), and
+// declined counts it where its reason is accumulated. A declined site no entry can list sets
+// unlisted, which declares PartialReasonUnlistedSites. Escaped is every escape root plus every
+// module's top-level frame.
+func buildCallGraph(buildDir string) (graphBuild, error) {
+	prog, err := loadProgram(buildDir)
+	if err != nil {
+		return graphBuild{}, err
 	}
 	rs := prog.resolver()
 	br := newBoundaryResolver(prog, rs)
@@ -231,7 +270,17 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	var edges []plugin.CallEdge
 	provByEdge := map[plugin.CallEdge]provenance{}
 	rootsSet := map[string]bool{}
+	escapedSet := map[string]bool{}
 	var flags partialFlags
+	var unresolved []plugin.UnresolvedCall
+	declined := 0
+	flags.unlisted = prog.unreadSource || prog.skipped
+	// decline accumulates one declined site's reason and counts the site; its entry is
+	// appended beside each call.
+	decline := func(reason string) {
+		declined++
+		accumulateReason(&flags, reason)
+	}
 	// A computed read accepted for its literal receiver holds only while no module of the
 	// build may set a prototype the lane does not see.
 	anyExempt, anyProto := false, false
@@ -244,38 +293,52 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	}
 
 	for _, f := range prog.files {
+		moduleInit := sym(moduleInitSCIP(f.module))
+		// load lists a load the scan records per module, not per call, on the module's
+		// top-level frame.
+		load := func(loader, reason string) {
+			decline(reason)
+			unresolved = append(unresolved, plugin.UnresolvedCall{Caller: moduleInit, Callee: loader, Arity: 1, Reason: reason})
+		}
 		// Module-level runtime-computed specifiers (import(expr) / require(var)) with no
 		// static prefix are declared limits even though they emit no call site (§6).
 		if f.bindings.dynImport {
-			flags.dynImport = true
+			load("import", plugin.PartialReasonDynamicImportSpecifier)
 		}
 		if f.bindings.computedReq {
-			flags.computedReq = true
+			load("require", plugin.PartialReasonComputedRequireSpecifier)
 		}
 		if f.bindings.nativeLoad {
-			flags.unreadModule = true
+			load("dlopen", plugin.PartialReasonUnresolvedModule)
 		}
 		if f.bindings.evaluated {
-			flags.evaluated = true
+			// The evaluated code's own calls and loads are never read, so no entry lists them.
+			load("eval", plugin.PartialReasonEvaluatedCode)
+			flags.unlisted = true
 		}
 		anyExempt = anyExempt || f.bindings.literalExempt
 		anyProto = anyProto || f.bindings.protoWrite
 		// A module that loads an out-of-tree package runs that package's code, whatever it
 		// later does with the binding, so the run executed code this lane did not open.
 		for _, ls := range f.bindings.specifiers {
-			if !flags.uninspectable && rs.loadsOutOfTree(f.module, ls.spec, ls.viaRequire) {
-				flags.uninspectable = true
+			loader := "import"
+			if ls.viaRequire {
+				loader = "require"
+			}
+			if rs.loadsOutOfTree(f.module, ls.spec, ls.viaRequire) {
+				load(loader, plugin.PartialReasonUninspectablePackage)
 			}
 			switch {
-			case !flags.stylesheet && rs.stylesheetImport(f.module, ls.spec):
+			case rs.stylesheetImport(f.module, ls.spec):
+				// A scoped limit, not a site: it carries its own package Targets.
 				flags.stylesheet = true
-			case !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec):
-				flags.unreadModule = true
+			case rs.loadsUnreadModule(f.module, ls.spec):
+				load(loader, plugin.PartialReasonUnresolvedModule)
 			}
 			// A literal import() whose resolution meets any condition outside Node's defaults
 			// keeps the limit a computed import() declares (loadMeetsUnmodeledCondition).
-			if ls.dynImport && !flags.dynImport && rs.loadMeetsUnmodeledCondition(f.module, ls.spec) {
-				flags.dynImport = true
+			if ls.dynImport && rs.loadMeetsUnmodeledCondition(f.module, ls.spec) {
+				load(loader, plugin.PartialReasonDynamicImportSpecifier)
 			}
 		}
 		// A static-prefix load whose files are all in-tree modules gets an edge to each.
@@ -287,8 +350,8 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				reason, algo = plugin.PartialReasonDynamicImportSpecifier, algoESM
 			}
 			kind, mods := rs.classifyPrefixLoad(f.module, pl)
+			caller := sym(funcSCIP(f.module, pl.caller.enclosing, pl.caller.name, pl.caller.arity))
 			if kind == prefixFirstParty {
-				caller := sym(funcSCIP(f.module, pl.caller.enclosing, pl.caller.name, pl.caller.arity))
 				for _, m := range mods {
 					addEdge(plugin.CallEdge{Caller: caller, Callee: sym(moduleInitSCIP(m))}, provenance{Algo: algo})
 				}
@@ -296,15 +359,25 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 					continue
 				}
 			}
-			accumulateReason(&flags, reason)
+			// The suffix may leave the prefix, so the load stays unbounded beside its edges.
+			loader := "require"
+			if pl.dyn {
+				loader = "import"
+			}
+			decline(reason)
+			unresolved = append(unresolved, plugin.UnresolvedCall{Caller: caller, Callee: loader, Arity: 1, Reason: reason})
 		}
 		// Module code runs when the module is loaded, and any first-party module may be
-		// loaded, so every module's top-level frame is a root.
+		// loaded, so every module's top-level frame is a root, and escaped: a load the lane
+		// cannot see may run it.
 		rootsSet[moduleInitSCIP(f.module)] = true
-		// Every function opaque code could call back is a root (escape.go).
+		escapedSet[moduleInitSCIP(f.module)] = true
+		// Every function opaque code could call back is a root (escape.go), and escaped.
 		for _, d := range f.decls {
 			if f.escapes.root(d) {
-				rootsSet[funcSCIP(f.module, d.enclosing, d.name, d.arity)] = true
+				id := funcSCIP(f.module, d.enclosing, d.name, d.arity)
+				rootsSet[id] = true
+				escapedSet[id] = true
 			}
 		}
 		for _, cs := range f.calls {
@@ -320,7 +393,8 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 				continue
 			}
-			if target, prov, ok := br.callee(f.module, cs); ok {
+			target, prov, enters := br.callee(f.module, cs)
+			if enters {
 				// An edge into a package-boundary node names the dependency member the call
 				// enters; it is not an inspection of the package, which stays uninspectable.
 				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
@@ -331,12 +405,20 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				}
 				flags.uninspectable = true
 			}
-			switch r.Kind {
-			case resolvePackage:
-				flags.uninspectable = true
-			default: // resolveUnresolved (or a first-party module with no unique symbol)
-				accumulateReason(&flags, r.Reason)
+			reason := plugin.PartialReasonUninspectablePackage
+			if r.Kind != resolvePackage { // resolveUnresolved (or a first-party module with no unique symbol)
+				reason = contributedReason(r.Reason)
 			}
+			decline(reason)
+			// A package can call back any function value handed to it, so a call that enters a
+			// package is never bounded; a declined name lists what it can denote (pickFunc).
+			var targets []plugin.Symbol
+			if r.Kind != resolvePackage && !enters {
+				for _, c := range r.Candidates {
+					targets = append(targets, sym(c))
+				}
+			}
+			unresolved = append(unresolved, plugin.UnresolvedCall{Caller: caller, Callee: calleeAsWritten(cs), Arity: cs.calleeArity, Reason: reason, Targets: targets})
 		}
 		// Framework ingress handler functions are call-graph roots. An ingress whose
 		// handler reference does not resolve to a single declared function contributes
@@ -349,7 +431,9 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	}
 
 	if anyExempt && anyProto {
+		// A run-wide judgment, not a site: no entry can list what it hides.
 		flags.evaluated = true
+		flags.unlisted = true
 	}
 
 	sort.Slice(edges, func(i, j int) bool {
@@ -369,23 +453,86 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		roots = append(roots, sym(r))
 	}
 
-	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, flags),
-		Algorithm:  "source-lexical",
-		Edges:      edges,
-		Roots:      roots,
-	}, provByEdge, nil
+	escIDs := make([]string, 0, len(escapedSet))
+	for id := range escapedSet {
+		escIDs = append(escIDs, id)
+	}
+	sort.Strings(escIDs)
+	escaped := make([]plugin.Symbol, 0, len(escIDs))
+	for _, id := range escIDs {
+		escaped = append(escaped, sym(id))
+	}
+	sortUnresolved(unresolved)
+
+	return graphBuild{
+		res: plugin.CallGraphResult{
+			Partiality: callGraphPartiality(prog, flags),
+			Algorithm:  "source-lexical",
+			Edges:      edges,
+			Roots:      roots,
+			Unresolved: unresolved,
+			Escaped:    escaped,
+		},
+		prov:     provByEdge,
+		declined: declined,
+		unlisted: flags.unlisted,
+	}, nil
 }
 
-// accumulateReason maps a declined call's reason code onto the graph's partial flags.
-func accumulateReason(flags *partialFlags, reason string) {
+// calleeAsWritten renders a call site's callee as the source names it: its dotted chain
+// ("head.name", "this.name", "a.b.name"), or the bare name.
+func calleeAsWritten(cs callSite) string {
+	if len(cs.chain) > 0 {
+		return strings.Join(cs.chain, ".")
+	}
+	if cs.head != "" && cs.head != cs.calleeName {
+		return cs.head + "." + cs.calleeName
+	}
+	return cs.calleeName
+}
+
+// sortUnresolved orders entries by caller, callee, arity and reason, so a build's output is
+// deterministic.
+func sortUnresolved(us []plugin.UnresolvedCall) {
+	sort.SliceStable(us, func(i, j int) bool {
+		a, b := us[i], us[j]
+		switch {
+		case a.Caller.SCIP != b.Caller.SCIP:
+			return a.Caller.SCIP < b.Caller.SCIP
+		case a.Callee != b.Callee:
+			return a.Callee < b.Callee
+		case a.Arity != b.Arity:
+			return a.Arity < b.Arity
+		}
+		return a.Reason < b.Reason
+	})
+}
+
+// contributedReason is the reason code a declined call's resolver reason contributes to the
+// graph: the module-resolution codes keep their own, every other decline is dynamic_dispatch.
+func contributedReason(reason string) string {
 	switch reason {
+	case plugin.PartialReasonUninspectablePackage, plugin.PartialReasonDynamicImportSpecifier,
+		plugin.PartialReasonComputedRequireSpecifier, plugin.PartialReasonUnresolvedModule,
+		plugin.PartialReasonEvaluatedCode:
+		return reason
+	}
+	return plugin.PartialReasonDynamicDispatch
+}
+
+// accumulateReason maps a declined site's reason code onto the graph's partial flags.
+func accumulateReason(flags *partialFlags, reason string) {
+	switch contributedReason(reason) {
 	case plugin.PartialReasonUninspectablePackage:
 		flags.uninspectable = true
 	case plugin.PartialReasonDynamicImportSpecifier:
 		flags.dynImport = true
 	case plugin.PartialReasonComputedRequireSpecifier:
 		flags.computedReq = true
+	case plugin.PartialReasonUnresolvedModule:
+		flags.unreadModule = true
+	case plugin.PartialReasonEvaluatedCode:
+		flags.evaluated = true
 	default:
 		flags.unresolved = true
 	}
@@ -422,6 +569,9 @@ func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
 	}
 	if flags.evaluated {
 		reasons = append(reasons, plugin.PartialReasonEvaluatedCode)
+	}
+	if flags.unlisted {
+		reasons = append(reasons, plugin.PartialReasonUnlistedSites)
 	}
 	var scoped []plugin.ScopedReason
 	if flags.stylesheet {

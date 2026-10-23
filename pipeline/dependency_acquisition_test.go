@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // lock SRI fixture
 	"crypto/sha512"
 	"crypto/tls"
 	"encoding/base64"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -64,13 +66,17 @@ func newFakeRegistries() *fakeRegistries {
 	return r
 }
 
-// serve answers every request on host with body.
+// serve answers every request on host with body; a nil body answers 404.
 func (r *fakeRegistries) serve(t *testing.T, host string, body []byte) {
 	t.Helper()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.requests[host] = append(r.requests[host], req.Header.Get("Authorization"))
 		r.mu.Unlock()
+		if body == nil {
+			http.NotFound(w, req)
+			return
+		}
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
@@ -85,6 +91,11 @@ func (r *fakeRegistries) seen(host string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.requests[host]...)
+}
+
+func sri1(b []byte) string {
+	sum := sha1.Sum(b) //nolint:gosec // lock SRI fixture
+	return "sha1:" + base64.StdEncoding.EncodeToString(sum[:])
 }
 
 func sri512(b []byte) string {
@@ -126,15 +137,23 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		served   []byte
 		seed     []byte
 		digest   string
+		registry string // registry host the .npmrc names; "" is registry.test
+		timeout  time.Duration
 		wantRead int
 		want     string // Unread reason, "" when read
+		detail   string
 		wantReqs int
 	}{
 		{name: "fetch verifies and reads", mode: DependencyCodeFetch, served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
 		{name: "fetch sri mismatch", mode: DependencyCodeFetch, served: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1},
 		{name: "no lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "", want: UnreadNoIntegrity},
 		{name: "malformed lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "sha512:short", want: UnreadMalformedIntegrity},
-		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${UNSET_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed},
+		{name: "fetch verifies a sha1-only lock entry", mode: DependencyCodeFetch, served: tarball, digest: sri1(tarball), wantRead: 1, wantReqs: 1},
+		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "NPM_TOKEN"`},
+		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed},
+		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1},
+		{name: "transport failure", mode: DependencyCodeFetch, registry: "down.test", served: tarball, digest: sri512(tarball), want: UnreadFetchFailed},
+		{name: "stage deadline passes", mode: DependencyCodeFetch, timeout: time.Nanosecond, served: tarball, digest: sri512(tarball), want: UnreadCancelled},
 		{name: "offline empty cache", mode: DependencyCodeOffline, served: tarball, digest: sri512(tarball), want: UnreadNotCached},
 		{name: "offline seeded cache", mode: DependencyCodeOffline, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "offline tampered cache", mode: DependencyCodeOffline, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
@@ -145,7 +164,11 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 			regs := newFakeRegistries()
 			regs.serve(t, "registry.test", tt.served)
 			build, cache := t.TempDir(), t.TempDir()
-			npmrc := "registry=https://registry.test/\n" + tt.npmrc
+			registry := tt.registry
+			if registry == "" {
+				registry = "registry.test"
+			}
+			npmrc := "registry=https://" + registry + "/\n" + tt.npmrc
 			if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -153,19 +176,25 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 				seedCache(t, cache, tt.digest, tt.seed)
 			}
 			d := &dependencyAcquirer{
-				cfg:   DependencyAcquisition{Mode: tt.mode, CacheDir: cache, LookupEnv: envMap(tt.env), Client: regs.client},
+				cfg:   DependencyAcquisition{Mode: tt.mode, CacheDir: cache, LookupEnv: envMap(tt.env), Timeout: tt.timeout, Client: regs.client},
 				byDir: map[string]*acquiredBuild{},
 			}
 			res := d.result(context.Background(), build, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode(qs, tt.digest)}})
 			if res.Read != tt.wantRead {
 				t.Fatalf("Read = %d, want %d (unread %+v)", res.Read, tt.wantRead, res.Unread)
 			}
-			got := ""
+			got, detail := "", ""
 			if len(res.Unread) == 1 {
-				got = res.Unread[0].Reason
+				got, detail = res.Unread[0].Reason, res.Unread[0].Detail
 			}
 			if got != tt.want {
 				t.Fatalf("unread reason = %q, want %q", got, tt.want)
+			}
+			if tt.detail != "" && detail != tt.detail {
+				t.Fatalf("unread detail = %q, want %q", detail, tt.detail)
+			}
+			if strings.Contains(detail, acqSecret) {
+				t.Fatal("unread detail carries the token")
 			}
 			if n := len(regs.seen("registry.test")); n != tt.wantReqs {
 				t.Fatalf("registry requests = %d, want %d", n, tt.wantReqs)
@@ -198,14 +227,14 @@ func TestDependencyAcquisitionTokenIsolation(t *testing.T) {
 	npmrc := strings.Join([]string{
 		"registry=https://registry.b.test/",
 		"@a:registry=https://npm.a.test/",
-		"//npm.a.test/:_authToken=${A_TOKEN}",
+		"//npm.a.test/:_authToken=${NODE_AUTH_TOKEN}",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	d := &dependencyAcquirer{
 		cfg: DependencyAcquisition{Mode: DependencyCodeFetch, CacheDir: t.TempDir(), Client: regs.client,
-			LookupEnv: envMap(map[string]string{"A_TOKEN": acqSecret, "HOME": home})},
+			LookupEnv: envMap(map[string]string{"NODE_AUTH_TOKEN": acqSecret, "HOME": home})},
 		byDir: map[string]*acquiredBuild{},
 	}
 	res := d.result(context.Background(), build, inventoryPlugin{nodes: []plugin.DependencyNode{
@@ -232,9 +261,9 @@ func TestDependencyAcquisitionTokenNotRecorded(t *testing.T) {
 	build, cache := t.TempDir(), t.TempDir()
 	npmrc := strings.Join([]string{
 		"registry=https://registry.test/",
-		"//registry.test/:_authToken=${TOK}",
+		"//registry.test/:_authToken=${CORP_TOKEN}",
 		"@a:registry=https://npm.a.test/",
-		"//npm.a.test/:_authToken=${TOK}",
+		"//npm.a.test/:_authToken=${CORP_TOKEN}",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
 		t.Fatal(err)
@@ -250,7 +279,7 @@ func TestDependencyAcquisitionTokenNotRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	stage := dependencyAcquisition{plugin: p, acq: &dependencyAcquirer{
-		cfg:   DependencyAcquisition{Mode: DependencyCodeFetch, CacheDir: cache, Client: regs.client, LookupEnv: envMap(map[string]string{"TOK": acqSecret})},
+		cfg:   DependencyAcquisition{Mode: DependencyCodeFetch, CacheDir: cache, Client: regs.client, LookupEnv: envMap(map[string]string{"CORP_TOKEN": acqSecret}), AllowEnv: []string{"CORP_TOKEN"}},
 		byDir: map[string]*acquiredBuild{},
 	}}
 	if err := stage.Run(context.Background(), c, store); err != nil {
@@ -293,6 +322,25 @@ func TestDependencyAcquisitionTokenNotRecorded(t *testing.T) {
 	raw, _ := json.Marshal(res)
 	if strings.Contains(string(raw), "registry.test") || strings.Contains(string(raw), "npm.a.test") {
 		t.Fatalf("result names a registry host: %s", raw)
+	}
+}
+
+// A non-JS build gets no dependency_acquisition artifact and no inventory call.
+func TestDependencyAcquisitionSkipsNonJS(t *testing.T) {
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "case-go"}
+	if _, err := PutArtifact(store, c, "codebase_inventory", artifact.TypeInventory, "", map[string]string{"build_dir": t.TempDir(), "language": "go"}); err != nil {
+		t.Fatal(err)
+	}
+	stage := dependencyAcquisition{plugin: inventoryPlugin{}, acq: &dependencyAcquirer{
+		cfg:   DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: t.TempDir()},
+		byDir: map[string]*acquiredBuild{},
+	}}
+	if err := stage.Run(context.Background(), c, store); err != nil {
+		t.Fatal(err)
+	}
+	if _, ran := DependencyAcquisitionOf(store, c.ID); ran {
+		t.Fatal("dependency_acquisition recorded a result for a Go build")
 	}
 }
 

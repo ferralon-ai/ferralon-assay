@@ -54,9 +54,15 @@ type DependencyAcquisition struct {
 	// CacheDir is the artifactcache DiskStore root acquisition publishes into and the JS lane
 	// reads from.
 	CacheDir string
-	// LookupEnv is the environment .npmrc ${VAR} references, NPM_CONFIG_USERCONFIG and
-	// NPM_CONFIG_REGISTRY resolve against. nil reads no variable.
+	// LookupEnv is the environment NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY and .npmrc ${VAR}
+	// references resolve against. Only acquire.DefaultNPMRCEnv and AllowEnv are read through it;
+	// nil reads no variable.
 	LookupEnv func(string) (string, bool)
+	// AllowEnv names further variables a .npmrc ${VAR} reference may read.
+	AllowEnv []string
+	// Timeout bounds the whole stage; zero uses defaultAcquireTimeout. Pins not finished by then
+	// are recorded UnreadCancelled.
+	Timeout time.Duration
 	// Client supplies the transport; nil uses one with a per-request timeout.
 	Client *http.Client
 }
@@ -106,6 +112,9 @@ const acquireWorkers = 8
 // fetchTimeout bounds one tarball request when the caller supplies no client.
 const fetchTimeout = 2 * time.Minute
 
+// defaultAcquireTimeout bounds the whole stage when DependencyAcquisition.Timeout is zero.
+const defaultAcquireTimeout = 15 * time.Minute
+
 func (d *dependencyAcquirer) result(ctx context.Context, buildDir string, p plugin.LanguagePlugin) DependencyAcquisitionResult {
 	d.mu.Lock()
 	b, ok := d.byDir[buildDir]
@@ -124,6 +133,12 @@ type npmPin struct {
 
 func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plugin.LanguagePlugin) DependencyAcquisitionResult {
 	res := DependencyAcquisitionResult{Mode: string(d.cfg.Mode)}
+	timeout := d.cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultAcquireTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	inv, err := p.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
 	if err != nil {
 		res.InventoryPartial = []string{plugin.PartialReasonToolFailure}
@@ -147,10 +162,17 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plu
 	}
 
 	var npmrc acquire.NPMConfig
-	npmrcErr := error(nil)
+	var npmrcErr error
+	var fetcher *acquire.Acquirer
 	if d.cfg.Mode == DependencyCodeFetch {
-		npmrc, npmrcErr = acquire.LoadNPMConfig(acquire.NPMRCSources{ProjectDir: buildDir, LookupEnv: d.cfg.LookupEnv})
+		npmrc, npmrcErr = acquire.LoadNPMConfig(acquire.NPMRCSources{ProjectDir: buildDir, LookupEnv: d.cfg.LookupEnv, AllowEnv: d.cfg.AllowEnv})
+		client := d.cfg.Client
+		if client == nil {
+			client = &http.Client{Timeout: fetchTimeout}
+		}
+		fetcher = acquire.NewAcquirer(d.cfg.CacheDir, client)
 	}
+	disk := artifactcache.NewDiskStore(d.cfg.CacheDir)
 
 	outcomes := make([]*UnreadDependency, len(pins))
 	sem := make(chan struct{}, acquireWorkers)
@@ -161,7 +183,8 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plu
 			continue
 		}
 		if npmrcErr != nil {
-			outcomes[i] = &UnreadDependency{PURL: pin.purl, Reason: UnreadNPMRCMalformed}
+			// npmrcError text names the file and line, never a value.
+			outcomes[i] = &UnreadDependency{PURL: pin.purl, Reason: UnreadNPMRCMalformed, Detail: npmrcErr.Error()}
 			continue
 		}
 		wg.Add(1)
@@ -169,7 +192,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plu
 		go func(i int, pin npmPin) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			outcomes[i] = d.acquireOne(ctx, pin, npmrc)
+			outcomes[i] = d.acquireOne(ctx, pin, npmrc, fetcher, disk)
 		}(i, pin)
 	}
 	wg.Wait()
@@ -188,10 +211,13 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir string, p plu
 // acquireOne leaves pin's verified bytes in the cache and returns nil, or says why it could not.
 // Only reason codes leave this function: an error string can carry a URL, and nothing here may
 // echo configuration back.
-func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc acquire.NPMConfig) *UnreadDependency {
+func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc acquire.NPMConfig, fetcher *acquire.Acquirer, disk artifactcache.Store) *UnreadDependency {
 	ref := artifactcache.Ref{PURL: pin.purl, Digest: pin.digest}
 	unread := func(reason, detail string) *UnreadDependency {
 		return &UnreadDependency{PURL: pin.purl, Reason: reason, Detail: detail}
+	}
+	if ctx.Err() != nil {
+		return unread(UnreadCancelled, "")
 	}
 	if _, _, err := artifactcache.DecodeDigest(pin.digest); err != nil {
 		return unread(UnreadMalformedIntegrity, "")
@@ -201,16 +227,12 @@ func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc a
 		if err != nil {
 			return unread(UnreadMalformedIntegrity, "")
 		}
-		client := d.cfg.Client
-		if client == nil {
-			client = &http.Client{Timeout: fetchTimeout}
-		}
-		if _, err := acquire.NewAcquirer(d.cfg.CacheDir, client).Acquire(ctx, ref, npmrc.PolicyFor(name, "")); err != nil {
+		if _, err := fetcher.Acquire(ctx, ref, npmrc.PolicyFor(name)); err != nil {
 			return classifyAcquireError(ctx, pin.purl, err)
 		}
 	}
 
-	h, err := artifactcache.NewDiskStore(d.cfg.CacheDir).Lookup(ctx, ref)
+	h, err := disk.Lookup(ctx, ref)
 	switch {
 	case errors.Is(err, artifactcache.ErrDeclaredAbsent):
 		return unread(UnreadNotCached, "")

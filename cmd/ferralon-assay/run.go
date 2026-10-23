@@ -471,6 +471,8 @@ type runFlags struct {
 	buildGraphTool   *string
 	depCode          *string
 	depCache         *string
+	depNPMRCEnv      *string
+	depTimeout       *string
 	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
@@ -555,8 +557,10 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 
-		depCode:  fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: off; fetch, which fetches each package-lock-pinned tarball from the registry the repository's .npmrc names and verifies it against the lock's integrity hash; or offline, which reads only an operator-seeded -dependency-cache. Overrides "+envDependencyCode+" (default: off)"),
-		depCache: fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
+		depCode:     fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: off; fetch, which fetches each package-lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; or offline, which reads only an operator-seeded -dependency-cache. Overrides "+envDependencyCode+" (default: off)"),
+		depCache:    fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
+		depNPMRCEnv: fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
+		depTimeout:  fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
 	}
 }
 

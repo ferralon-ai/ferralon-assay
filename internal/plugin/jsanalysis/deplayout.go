@@ -44,7 +44,8 @@ type depLayout struct {
 	byPath map[string]*depEntry
 	// berry marks a yarn berry lock anywhere in the build: its install layout is not modeled.
 	berry bool
-	// incomplete marks a lockfile that could not be read or selected.
+	// incomplete marks a lockfile that could not be read or selected, or an install surface the
+	// lane does not read (installSurfaces): the build may install a copy no lock read here places.
 	incomplete bool
 	// unplaced are the packages pnpm and yarn classic locks pin. Their install layout is not
 	// modeled yet, so they are never read and Node's walk never finds them.
@@ -61,9 +62,14 @@ func (l *depLayout) entries() []*depEntry {
 }
 
 // buildDepLayout reads every selected npm lockfile under buildDir into one layout. yarn classic
-// and pnpm locks contribute unplaced entries; yarn berry marks the layout.
-func buildDepLayout(buildDir string) *depLayout {
+// and pnpm locks contribute unplaced entries; yarn berry marks the layout. An install surface the
+// versions op would not read, or a script that may install a package outside the locks read here,
+// leaves the whole layout incomplete: neither names the packages it changes.
+func buildDepLayout(ctx context.Context, buildDir string) *depLayout {
 	l := &depLayout{byPath: map[string]*depEntry{}}
+	if unread, _ := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) }); unread {
+		l.incomplete = true
+	}
 	roots, read := discoverProjectRoots(buildDir)
 	if !read {
 		l.incomplete = true

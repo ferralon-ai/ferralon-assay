@@ -36,32 +36,48 @@ type depEntry struct {
 	// scriptsUnknown marks an entry from a lock that does not record install scripts (npm v1,
 	// pnpm, yarn classic): unread, it may run one.
 	scriptsUnknown bool
+	// deps are the entry's own lock edges by load name (pnpm and yarn classic only).
+	deps map[string]*depEntry
+	// bundles are the names the read tarball ships under its own node_modules.
+	bundles map[string]bool
+	// patched marks a pnpm entry the install patches: its tarball is verified for its manifest
+	// facts, and its code, which is not what runs, is never read.
+	patched bool
 }
 
 // depLayout is the install tree the selected lockfiles describe, keyed by install path. Node's
 // resolution walk runs over it instead of over the disk.
 type depLayout struct {
+	// byPath holds the npm entries; each semantic region holds its own.
 	byPath map[string]*depEntry
+	// regions are the lock roots, npm (walked by path) and semantic (pnpm, yarn classic).
+	regions []*depRegion
 	// berry marks a yarn berry lock anywhere in the build: its install layout is not modeled.
 	berry bool
 	// incomplete marks a lockfile that could not be read or selected.
 	incomplete bool
-	// unplaced are the packages pnpm and yarn classic locks pin. Their install layout is not
-	// modeled yet, so they are never read and Node's walk never finds them.
+	// unplaced are the packages of a pnpm or yarn classic lock the lane could not place: never
+	// read, and never found by lookup.
 	unplaced []*depEntry
 }
 
-// entries returns the layout's entries in install-path order.
+// entries returns every placed entry, npm and semantic, in install-path order.
 func (l *depLayout) entries() []*depEntry {
-	out := make([]*depEntry, 0, len(l.byPath))
-	for _, p := range slices.Sorted(maps.Keys(l.byPath)) {
-		out = append(out, l.byPath[p])
+	all := maps.Clone(l.byPath)
+	for _, r := range l.regions {
+		if r.semantic {
+			maps.Copy(all, r.byPath)
+		}
+	}
+	out := make([]*depEntry, 0, len(all))
+	for _, p := range slices.Sorted(maps.Keys(all)) {
+		out = append(out, all[p])
 	}
 	return out
 }
 
-// buildDepLayout reads every selected npm lockfile under buildDir into one layout. yarn classic
-// and pnpm locks contribute unplaced entries; yarn berry marks the layout.
+// buildDepLayout reads every selected lockfile under buildDir into one layout: npm locks by
+// install path, pnpm and yarn classic locks as semantic regions; yarn berry marks the layout.
 func buildDepLayout(buildDir string) *depLayout {
 	l := &depLayout{byPath: map[string]*depEntry{}}
 	roots, read := discoverProjectRoots(buildDir)
@@ -96,9 +112,9 @@ func buildDepLayout(buildDir string) *depLayout {
 				l.berry = true
 				continue
 			}
-			l.addUnplaced(sel.path, sel.root)
+			l.addYarnClassic(prefix, sel.root, sel.path, data)
 		case "pnpm":
-			l.addUnplaced(sel.path, sel.root)
+			l.addPnpm(prefix, sel.root, sel.path, data)
 		case "npm":
 			var lock npmLock
 			if json.Unmarshal(data, &lock) != nil {
@@ -110,9 +126,40 @@ func buildDepLayout(buildDir string) *depLayout {
 			} else {
 				l.addNpmV1(prefix, "", lock.Dependencies)
 			}
+			l.regions = append(l.regions, &depRegion{prefix: prefix})
 		}
 	}
+	if l.doubleClaimed() {
+		l.incomplete = true
+	}
 	return l
+}
+
+// doubleClaimed reports a directory two locks both install for: an npm install path inside a
+// semantic region, a semantic importer inside a deeper lock root, or a synthetic path an npm
+// lock also names. Longest-prefix choice would silently drop one lock's account of it.
+func (l *depLayout) doubleClaimed() bool {
+	for p := range l.byPath {
+		if r := l.regionAt(path.Dir(p)); r != nil && r.semantic {
+			return true
+		}
+	}
+	for _, r := range l.regions {
+		if !r.semantic {
+			continue
+		}
+		for _, imp := range r.importers {
+			if l.regionAt(imp.dir) != r {
+				return true
+			}
+		}
+		for p := range r.byPath {
+			if l.byPath[p] != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // addUnplaced records every package the pnpm or yarn classic lock at lockPath pins. The
@@ -266,9 +313,11 @@ func installedName(installPath string) string {
 	return name
 }
 
-// lookup runs Node's node_modules walk for package name from the build-relative directory
-// fromDir: each ancestor not itself named node_modules is probed for node_modules/<name>, up to
-// the build root.
+// lookup resolves package name loaded from the build-relative directory fromDir. Outside a
+// semantic region it runs Node's node_modules walk: each ancestor not itself named node_modules
+// is probed for node_modules/<name>, up to the build root. Inside one the region answers from
+// the lock's edges; a phantom load of a name the region pins no copy of continues the walk above
+// the region's root. A load the region can only bound by several copies resolves to nothing.
 func (l *depLayout) lookup(fromDir, name string) *depEntry {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
 		return nil
@@ -277,7 +326,23 @@ func (l *depLayout) lookup(fromDir, name string) *depEntry {
 	if dir == "." {
 		dir = ""
 	}
+	parent := func(d string) string {
+		if d = path.Dir(d); d == "." {
+			return ""
+		}
+		return d
+	}
 	for {
+		if r := l.regionAt(dir); r != nil && r.semantic {
+			if e, _, found := r.resolve(dir, name); found {
+				return e
+			}
+			if r.prefix == "" {
+				return nil
+			}
+			dir = parent(r.prefix)
+			continue
+		}
 		if path.Base(dir) != "node_modules" {
 			if e := l.byPath[path.Join(dir, "node_modules", name)]; e != nil {
 				return e
@@ -286,10 +351,7 @@ func (l *depLayout) lookup(fromDir, name string) *depEntry {
 		if dir == "" {
 			return nil
 		}
-		dir = path.Dir(dir)
-		if dir == "." {
-			dir = ""
-		}
+		dir = parent(dir)
 	}
 }
 

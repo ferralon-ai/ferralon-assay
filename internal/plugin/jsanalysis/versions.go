@@ -66,7 +66,7 @@ import (
 // concrete installed literal version. Advisory RANGE matching (^ ~ || x-ranges, npm
 // ordering) is applied by the pipeline disqualification predicate (pipeline/npm_version.go),
 // never here.
-func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
 		return plugin.DependencyVersionResult{}, fmt.Errorf("jsanalysis: stat build dir %q: %w", req.BuildDir, err)
@@ -95,7 +95,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		parsed[l] = info
 		all = append(all, info.deps...)
 	}
-	unread, scriptWithheld := unreadSurfaces(req.BuildDir, parsed)
+	unread, scriptWithheld := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
 	parseFailed = parseFailed || unread
 
 	part := plugin.Complete()

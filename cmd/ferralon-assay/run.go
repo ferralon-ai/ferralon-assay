@@ -526,7 +526,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// signalsPath is the EPSS/KEV signals file findings are ranked with. The scanner holds no
 		// signals of its own and fetches none: without one, no finding carries a priority.
 		signalsPath:   fs.String("advisory-signals", "", "path to an EPSS/KEV signals file (signals.json or signals.json.gz, signals_version 1.x) used to rank findings; each value is reported with its own date. Default: the signals.json of an -advisory-corpus directory, when it has one. Without signals no finding carries EPSS/KEV priority; overrides "+envAdvisorySignals),
-		signalsMaxAge: fs.Duration("advisory-signals-max-age", defaultSignalsMaxAge, "warn in the run summary when the newest EPSS value in the signals file is older than this (the file still loads)"),
+		signalsMaxAge: fs.Duration("advisory-signals-max-age", defaultSignalsMaxAge, "warn in the run summary when the newest EPSS value in the signals file, or over half of its EPSS values, are older than this (the file still loads)"),
 		// requireCorpus declares that this run EXPECTS a corpus. Without it, an absent corpus
 		// path is indistinguishable from a corpus fetch that failed and left the path empty.
 		requireCorpus: fs.Bool("require-advisory-corpus", false, "fail the run when no advisory corpus resolves, instead of falling back to the built-in advisory table; overrides "+envAdvisoryCorpusRequired),
@@ -542,7 +542,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
 
 		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
-		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's build (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK). With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
+		subjectJava: fs.String("subject-java-version", "", "the java.version of the JDK the SCANNED repository's program runs on, which must be the major version its build runs on (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target). Leave it unstated when the program runs on another JDK than the build. A toolchain the build graph records on another major version withholds the JDK's own method table from bytecode reachability. With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
 
 		// subjectMvnProf is the build's explicit Maven profile selection; a caller statement, never looked up.
 		// buildGraph is where a Java or Kotlin scan's dependency graph comes from (D7: no static fallback).
@@ -1204,7 +1204,8 @@ func runCVEWatch(args []string) error {
 	return cfg.graph.err()
 }
 
-// cveWatchRequest is the run's cve-watch request. A failed build graph holds the cursor, so the
+// cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
+// claim their aliases when the report is ranked. A failed build graph holds the cursor, so the
 // advisories this run assessed without it are assessed again on the next.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
@@ -1212,6 +1213,7 @@ func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchReq
 		Codebase:      cfg.codebase,
 		AssessOptions: cfg.assessOptions,
 		Signals:       signals,
+		Advisories:    cfg.advisories,
 		HoldCursor:    cfg.graph.err() != nil,
 	}
 }

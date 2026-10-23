@@ -43,8 +43,14 @@ const methodAttrSpecialName = 0x0800
 // assemblies of NuGet package id (at version, when non-empty), in the restore target the
 // first-party build binds to. Every limit is disclosed twice: as a scoped reason bounded by
 // the package's restore closure, and as a run-wide reason for consumers that read only
-// Reasons.
+// Reasons. A package that is provably not present in the build (absentFromBuild) gets only
+// dependency_not_in_build, scoped to its own PURL.
 func resolveInDependency(buildDir, id, version string, wanted []string) plugin.SymbolResolutionResult {
+	if absentFromBuild(buildDir, id) {
+		// Intake already settles this advisory as no_manifest_entry; a lookup that reaches here
+		// gets the same answer, bounded to this package.
+		return plugin.SymbolResolutionResult{Partiality: notInBuild(id)}
+	}
 	purl := nugetPackageURL(id)
 	build := locateFirstPartyBuild(buildDir)
 	reasons := map[string]bool{}
@@ -387,7 +393,10 @@ func readAssetsFile(buildDir string) (string, []byte, bool) {
 // assetsGraph is project.assets.json's resolved package graph: per target, each library
 // key ("<id>/<version>") with its type and declared dependency ids.
 type assetsGraph struct {
-	targets map[string]map[string]assetsLib
+	targets   map[string]map[string]assetsLib
+	downloads []string // normalized ids of every framework's downloadDependencies
+	// downloadsRead is false when the project section could not be read for them.
+	downloadsRead bool
 }
 
 type assetsLib struct {
@@ -404,7 +413,25 @@ func parseAssetsGraph(data []byte) *assetsGraph {
 	if err := json.Unmarshal(data, &af); err != nil {
 		return nil
 	}
-	return &assetsGraph{targets: af.Targets}
+	g := &assetsGraph{targets: af.Targets}
+	var pf struct {
+		Project struct {
+			Frameworks map[string]struct {
+				DownloadDependencies []struct {
+					Name string `json:"name"`
+				} `json:"downloadDependencies"`
+			} `json:"frameworks"`
+		} `json:"project"`
+	}
+	if json.Unmarshal(data, &pf) == nil {
+		g.downloadsRead = true
+		for _, fw := range pf.Project.Frameworks {
+			for _, d := range fw.DownloadDependencies {
+				g.downloads = append(g.downloads, normalizeNuGetCoordinate(d.Name))
+			}
+		}
+	}
+	return g
 }
 
 // occurrences returns every (target, library key) restore resolved package id to, matching

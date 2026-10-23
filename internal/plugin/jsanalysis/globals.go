@@ -46,6 +46,10 @@ type globalScope struct {
 	retThis  map[int]bool             // function block → whether it returns its own this (memo)
 	keyed    bool                     // a pattern takes a computed, Function, eval or require key from the global
 	patterns [][3]int                 // destructuring pattern bracket, source start and end
+	occ      map[string][]int         // name → positions it is written at, other than as a member (lazy)
+	keyMemo  map[keyMemoKey]keyMemoVal
+	withs    int              // 0 not yet scanned, 1 no with statement, 2 a with statement
+	fnScopes map[string][]int // function name → the function scope of each function keyword naming it (lazy)
 }
 
 // globalDecl is one declared name; start == end when it has no initialiser.
@@ -55,6 +59,11 @@ type globalDecl struct {
 	topVar     bool // a var at the top level
 	bare       bool // declared outside every block, so it runs before what follows it
 	weak       bool // declared in a block that may not be the scope it is read as; never shadows
+	at, scope  int  // the declared name's position and the scope that holds it
+	pat        int  // the bracket of the destructuring pattern declaring it, or -1
+	// kind is how the name is bound: 'p' a parameter, 'f' a function, 'i' an import, 'c',
+	// 'l' or 'v' a const, let or var, and 'a' an assignment.
+	kind byte
 }
 
 func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
@@ -70,13 +79,15 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 	// hoisted marks declarations made in a scope other than the block they appear in, out
 	// of a block that may be a method body: they hold values there but never shadow.
 	hoisted := false
+	var kind byte
+	pat := -1
 	add := func(scope, at int, name string, start, end int, topVar, bare bool) {
 		if gs.byScope[scope] == nil {
 			gs.byScope[scope] = map[string][]int{}
 		}
 		weak := scope >= 0 && tf.weak[scope] || hoisted
 		gs.byScope[scope][name] = append(gs.byScope[scope][name], len(gs.decls))
-		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare, weak})
+		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare, weak, at, scope, pat, kind})
 		if !weak {
 			gs.sites[at] = true // a weak declaration's name may be a use, so it stays one
 		}
@@ -106,10 +117,12 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 				gs.patterns = append(gs.patterns, [3]int{at, start, end})
 			}
 			sites, _ := patternSites(clean, at)
+			pat = at
 			for _, s := range sites {
 				name, _ := readWord(clean, s)
 				withDefault(scope, s, name, start, end, topVar, bare)
 			}
+			pat = -1
 		case at+3 <= n && string(clean[at:at+3]) == "...":
 			if s := skipSpace(clean, at+3); s < n && isIdentStart(clean[s]) {
 				name, _ := readWord(clean, s)
@@ -142,6 +155,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			gs.flows = append(gs.flows, thisArg) // the function's own this, judged as one
 		}
 		j := 0
+		kind = 'p'
 		for _, at := range paramSites(clean, pr[0], pr[1]) {
 			if w, _ := peekWord(clean, at); w == "this" {
 				continue // a TypeScript this parameter takes no argument
@@ -182,6 +196,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			if name, _ := peekWord(clean, at); name != "" {
 				// Strict code scopes a function declared in a block to that block; read it so
 				// in sloppy code too, so it never shadows outside the block.
+				kind = 'f'
 				add(tf.block(i), at, name, 0, 0, false, false)
 				if k, ok := gs.kwFrame[i]; ok {
 					gs.fnDecl[len(gs.decls)-1] = k
@@ -191,6 +206,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			if ambient(clean, tf, tf.block(i)) {
 				break
 			}
+			kind = 'i'
 			for _, at := range importSites(clean, next) {
 				name, _ := readWord(clean, at)
 				add(tf.block(i), at, name, 0, 0, false, false) // inside a block, a namespace's alias
@@ -202,6 +218,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			}
 			scope := block
 			header := -2
+			kind = word[0]
 			if word == "var" {
 				for scope >= 0 && !tf.scope[scope] && !namespaceBlock(clean, tf.opens[scope]) {
 					hoisted = hoisted || tf.weak[scope]
@@ -277,6 +294,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		for _, d := range gs.byScope[k][a.name] {
 			hoisted = hoisted && gs.decls[d].weak
 		}
+		kind = 'a'
 		add(k, a.at, a.name, a.start, a.end, false, false)
 		hoisted = false
 		gs.flows = append(gs.flows, [2]int{a.start, a.end})
@@ -849,6 +867,104 @@ func (gs *globalScope) lookup(name string, i int) []int {
 	}
 }
 
+// plainObject reports whether the name at i resolves to a local whose every value is an
+// object literal the lane can see: declared in a block or function (at the top level a var
+// of the name may alias the CommonJS wrapper's own parameter until it is assigned), never as
+// a parameter or destructured, with each declaration and assignment initialised by an object
+// literal, directly or as the last value of an assignment chain (`var module = c[id] = {
+// exports: {} }`), and never the target of a destructuring assignment or a for-in or for-of
+// head in that scope.
+func (gs *globalScope) plainObject(clean []rune, name string, i int) bool {
+	k := gs.tf.block(i)
+	for k >= 0 && len(gs.byScope[k][name]) == 0 {
+		k = gs.tf.parent[k]
+	}
+	if k < 0 {
+		return false
+	}
+	for _, d := range gs.byScope[k][name] {
+		decl := gs.decls[d]
+		if decl.weak || !objectLiteralValue(clean, decl.start, decl.end) {
+			return false
+		}
+		for _, pt := range gs.patterns {
+			if pt[1] == decl.start && pt[2] == decl.end {
+				return false
+			}
+		}
+	}
+	for at := gs.tf.opens[k] + 1; at < gs.tf.closes[k]; {
+		if !isIdentStart(clean[at]) || at > 0 && isIdentPart(clean[at-1]) {
+			at++
+			continue
+		}
+		word, next := readWord(clean, at)
+		if word == name && !gs.sites[at] && rebound(clean, at, next) {
+			return false
+		}
+		at = next
+	}
+	return true
+}
+
+// rebound reports whether the name at [at, next) may be given a new value other than by a
+// plain assignment: the head of a for-in or for-of, or an entry of a bracket that is
+// assigned from or iterated. A member read or an object key is never rebound.
+func rebound(clean []rune, at, next int) bool {
+	n := len(clean)
+	if b := skipSpaceBack(clean, at-1); b >= 0 && clean[b] == '.' {
+		return false
+	}
+	p := skipSpace(clean, next)
+	if p < n && clean[p] == ':' {
+		return false
+	}
+	if w, _ := peekWord(clean, p); w == "of" || w == "in" {
+		return true
+	}
+	for o := enclosingOpen(clean, at); o >= 0 && (clean[o] == '[' || clean[o] == '{'); o = enclosingOpen(clean, o) {
+		q := skipSpace(clean, closeOf(clean, o)+1)
+		if q < n && clean[q] == '=' && !(q+1 < n && (clean[q+1] == '=' || clean[q+1] == '>')) {
+			return true
+		}
+		if w, _ := peekWord(clean, q); w == "of" || w == "in" {
+			return true
+		}
+	}
+	return false
+}
+
+// objectLiteralValue reports whether clean[start:end] is an object literal, or a chain of
+// plain assignments whose last value is one. A compound or logical assignment in the chain
+// may keep the target's old value, so it is not.
+func objectLiteralValue(clean []rune, start, end int) bool {
+	if start >= end {
+		return false
+	}
+	v, depth := start, 0
+	for k := start; k < end; k++ {
+		switch c := clean[k]; c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '=':
+			if depth != 0 || k+1 < end && (clean[k+1] == '=' || clean[k+1] == '>') {
+				continue
+			}
+			if k > start && strings.ContainsRune("=!<>", clean[k-1]) {
+				continue
+			}
+			if k > start && strings.ContainsRune("+-*/%&|^?", clean[k-1]) {
+				return false
+			}
+			v = k + 1
+		}
+	}
+	v = skipSpace(clean, v)
+	return v < end && clean[v] == '{' && skipSpace(clean, closeOf(clean, v)+1) >= end
+}
+
 // yieldsGlobal reports whether the expression in clean[start:end] can evaluate to the
 // global: a global-valued name or `this` that is the global in value position (not a member
 // read, call or index of it, and not under typeof), a call of a Function constructor call,
@@ -864,6 +980,12 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 		member := b >= 0 && clean[b] == '.'
 		switch {
 		case member:
+			if !isGlobalBase(word) {
+				break
+			}
+			if cs, ok := gs.globalChain(clean, memberDot(clean, b), false); ok && flowsTo(clean, start, cs) && globalValue(clean, next, end) {
+				return true // `global.globalThis`: a global name read off the global
+			}
 		case word == "Function":
 			if p := skipSpace(clean, next); p < end && clean[p] == '(' {
 				if _, e := parseParamArity(clean, p); skipSpace(clean, e) < end && clean[skipSpace(clean, e)] == '(' {
@@ -880,21 +1002,26 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 			if w, _ := wordBefore(clean, b); w == "typeof" || !flowsTo(clean, start, i) {
 				break
 			}
-			p := skipSpace(clean, next)
-			if andTest(clean, p) {
-				break
+			if globalValue(clean, next, end) {
+				return true
 			}
-			if p < end && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(') {
-				break
-			}
-			if p+1 < end && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=' {
-				break
-			}
-			return true
 		}
 		i = next
 	}
 	return false
+}
+
+// globalValue reports whether a global-valued operand ending at next, in an expression ending
+// at end, is taken as a value: not tested, compared, or read for a member, index or call.
+func globalValue(clean []rune, next, end int) bool {
+	p := skipSpace(clean, next)
+	if andTest(clean, p) {
+		return false
+	}
+	if p < end && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(') {
+		return false
+	}
+	return !(p+1 < end && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=')
 }
 
 // callsReturnThis reports whether the name at [i, next) is called plainly and declares a
@@ -928,7 +1055,7 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 	n := len(clean)
 	b := skipSpaceBack(clean, i-1)
 	if b >= 0 && clean[b] == '.' {
-		r, ok := gs.globalReceiver(clean, b)
+		r, ok := gs.globalChain(clean, memberDot(clean, b), false)
 		if !ok {
 			return
 		}
@@ -973,21 +1100,43 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 	}
 }
 
-// globalReceiver reports whether the member access whose '.' is at b reads from the global
-// through a chain of global names (`globalThis.global`, `window.window`), and returns where
-// the chain starts.
-func (gs *globalScope) globalReceiver(clean []rune, b int) (int, bool) {
-	for {
-		w, s := wordBefore(clean, skipSpaceBack(clean, b-1))
-		if !isGlobalBase(w) {
+// globalChain reports whether the member operator at op reads from the global object
+// through a chain of global names whose first name resolves to the global
+// (`global.globalThis`, `window.self.globalThis`), and returns where the chain starts. With
+// groups, a receiver ending in a group, call or index anywhere in the chain counts as well,
+// since this lane does not know its value, and so does a first name spelled as a global
+// name even where a local shadows it.
+func (gs *globalScope) globalChain(clean []rune, op int, groups bool) (int, bool) {
+	k := skipSpaceBack(clean, op-1)
+	for k >= 0 {
+		if clean[k] == ')' || clean[k] == ']' {
+			if s := receiverStart(clean, op); groups && s >= 0 {
+				return s, true
+			}
 			return 0, false
 		}
-		if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
-			b = d
+		if !isIdentPart(clean[k]) {
+			return 0, false
+		}
+		w, s := wordBefore(clean, k)
+		if w == "_" {
+			return 0, false // a string or template literal
+		}
+		if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' && !(d >= 1 && clean[d-1] == '.') {
+			if !isGlobalBase(w) {
+				return 0, false
+			}
+			k = skipSpaceBack(clean, memberDot(clean, d)-1)
 			continue
+		}
+		if groups {
+			// A shadowing parameter or import named global, window or self is how factory
+			// and UMD code receives the global object, so the spelling alone counts here.
+			return s, isGlobalBase(w) || gs.isGlobal(w, s)
 		}
 		return s, gs.isGlobal(w, s)
 	}
+	return 0, false
 }
 
 // thisFrames classifies, for every '{' in clean, whether `this` directly inside that
@@ -1435,6 +1584,18 @@ func (tf *thisFrames) block(i int) int {
 func (tf *thisFrames) topLevel(i int) bool {
 	for k := tf.block(i); k >= 0; k = tf.parent[k] {
 		if tf.fn[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// outsideFunctions reports whether position i is outside every function body, counting a
+// class body (which binds this but not arguments) as outside: a computed member key in a
+// class body is evaluated in the scope enclosing the class.
+func (tf *thisFrames) outsideFunctions(i int) bool {
+	for k := tf.block(i); k >= 0; k = tf.parent[k] {
+		if tf.fn[k] && !tf.members[k] {
 			return false
 		}
 	}

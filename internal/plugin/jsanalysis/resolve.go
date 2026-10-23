@@ -76,7 +76,8 @@ func unresolvedWith(reason string) resolution {
 
 // Resolver resolves lexical names in a module's scope to concrete in-tree declarations,
 // using that module's bindings + the CJS/ESM/exports/imports/paths algorithm over the
-// whole-program index. It never opens node_modules and never executes source.
+// whole-program index. It never opens node_modules source (it reads an installed
+// package.json for its exports map) and never executes source.
 type Resolver interface {
 	// ResolveCall resolves a bare call `name(arity)` occurring in fromModule.
 	ResolveCall(fromModule string, name string, arity int) resolution
@@ -167,8 +168,8 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 
 // loadsOutOfTree reports whether a literal specifier written in fromModule loads code from
 // outside the tree: a bare specifier that no tsconfig paths alias or workspace member claims,
-// or a `#…` subpath import or workspace member whose selectable targets are not all in-tree
-// modules. viaRequire marks a require() load (see loadConditions). Loading a module runs its
+// one a paths alias claims but Node resolves elsewhere (pathsShadowed), or a `#…` subpath import or workspace member whose selectable targets are not all the
+// in-tree module call edges are built into (edgeModule). viaRequire marks a require() load (see loadConditions). Loading a module runs its
 // top-level code, so the run executes code this lane does not open however the binding, if
 // any, is used afterwards.
 func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) bool {
@@ -182,30 +183,28 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 			return true
 		}
 		targets := exportsTargets(pkg.imports, spec, conds)
+		edge := rs.edgeModule(pkg.imports, spec, pkgDir)
 		for _, t := range targets {
-			if strings.HasPrefix(t, "#") {
+			if !isRelativeSpecifier(t) {
+				// a `#…` chain or a package: edges are never built through either
+				// (resolveImportsSubpath), so its calls are missed even when it is in-tree
 				return true
 			}
-			if !isRelativeSpecifier(t) { // an imports entry may map to a package
-				if rs.loadsOutOfTree(fromModule, t, viaRequire) {
-					return true
-				}
-				continue
-			}
-			if rs.moduleFromDirRelative(pkgDir, t) == "" {
+			if m := rs.moduleFromDirRelative(pkgDir, t); m == "" || m != edge {
 				return true
 			}
 		}
 		return len(targets) == 0
 	}
 	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
-		return false
+		return rs.pathsShadowed(fromModule, spec)
 	}
 	dir, mm, sub, ok := rs.workspaceMember(spec)
-	if !ok {
+	if !ok || rs.memberShadowed(fromModule, mm.name, dir) {
 		return true
 	}
 	var targets []string
+	edge, _, _ := rs.resolveWorkspaceMember(fromModule, spec)
 	switch {
 	case mm.exports != nil:
 		targets = exportsTargets(mm.exports, sub, conds)
@@ -217,16 +216,238 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		targets = []string{"index"}
 	}
 	for _, t := range targets {
-		if rs.moduleFromDirRelative(dir, t) == "" {
+		if m := rs.moduleFromDirRelative(dir, t); m == "" || m != edge {
 			return true
 		}
 	}
 	return len(targets) == 0
 }
 
-// loadConditions is the set of exports/imports conditions a load can match under Node's
-// defaults. A require() load matches "require"; any other form may match "require" or
-// "import", because a transpiler can emit ESM syntax as require().
+// pathsShadowed reports whether Node loads something other than the in-tree target of the
+// tsconfig `paths` alias that claims bare specifier spec. tsc does not rewrite the specifier
+// and Node ignores `paths`, so at run time Node resolves it itself: to a core module, to the
+// governing package's own exports (self-reference), or to whatever its node_modules walk
+// finds. Any of those, or a node_modules candidate that cannot be stat'ed, keeps the limit.
+func (rs *resolver) pathsShadowed(fromModule, spec string) bool {
+	if isNodeBuiltin(spec) {
+		return true
+	}
+	name, _ := splitBareSpecifier(spec)
+	if self, _ := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == name && self.exports != nil {
+		return true
+	}
+	return rs.nodeModulesHas(fromModule, name)
+}
+
+// nodeModulesHas reports whether Node's node_modules walk from fromModule's directory to the
+// filesystem root finds any candidate for package name: the package directory (with or
+// without a package.json) or a file Node's CommonJS LOAD_AS_FILE would try. Node walks the
+// ancestors of the importer's real path, or of its path as given under
+// --preserve-symlinks(-main), so both chains are walked: they differ when an ancestor of the
+// build root, or the importer file itself, is a symlink. Above the build root (a workspace member whose node_modules is
+// hoisted to the repository root) only Lstat runs; nothing there is read. A stat or
+// symlink-resolution error other than a missing path counts as found.
+func (rs *resolver) nodeModulesHas(fromModule, name string) bool {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
+		return true
+	}
+	has := func(dir string) bool {
+		if filepath.Base(dir) == "node_modules" {
+			return false
+		}
+		base := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		for _, cand := range []string{base, base + ".js", base + ".json", base + ".node"} {
+			if _, err := os.Lstat(cand); err == nil || !absent(err) {
+				return true
+			}
+		}
+		return false
+	}
+	dir := path.Dir(fromModule)
+	for {
+		if dir == "." {
+			dir = ""
+		}
+		if has(filepath.Join(rs.prog.root, filepath.FromSlash(dir))) {
+			return true
+		}
+		if dir == "" {
+			break
+		}
+		dir = path.Dir(dir)
+	}
+	root, err := filepath.Abs(rs.prog.root)
+	if err != nil {
+		return true
+	}
+	ancestorsHave := func(dir string) bool {
+		for ; ; dir = filepath.Dir(dir) {
+			if has(dir) {
+				return true
+			}
+			if dir == filepath.Dir(dir) {
+				return false
+			}
+		}
+	}
+	if ancestorsHave(filepath.Dir(root)) {
+		return true
+	}
+	files := rs.prog.sources[fromModule]
+	if len(files) == 0 {
+		return true
+	}
+	for _, f := range files {
+		abs, err := filepath.Abs(f)
+		if err != nil {
+			return true
+		}
+		real, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			if !absent(err) {
+				return true
+			}
+			continue
+		}
+		if ancestorsHave(filepath.Dir(real)) {
+			return true
+		}
+	}
+	return false
+}
+
+// loadMeetsUnmodeledCondition reports whether resolving a literal specifier passes through an
+// exports/imports conditions map with any key outside loadConditions, "types" included: a
+// `#…` subpath import (and any package it maps to), or the exports of the package a bare
+// specifier names (a workspace member, the governing package itself, or the installed
+// package Node's node_modules walk finds). Node can select that branch (`node
+// --conditions=development`), loading a file whose calls the lane did not follow. This is
+// stricter than loadsOutOfTree, which declares only when such a branch selects a module other
+// than edgeModule, ignores a declaration-only "types" branch, and stops at a tsconfig `paths`
+// alias. A `paths` alias does not end this check: tsc does not rewrite the specifier, so at
+// run time Node resolves it itself. Only the manifest is read; an uninstalled package has
+// none, and one that cannot be read safely keeps the limit.
+func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
+	conds := loadConditions(false)
+	switch {
+	case isRelativeSpecifier(spec):
+		return false
+	case strings.HasPrefix(spec, "#"):
+		pkg, _ := rs.governingPackageJSON(fromModule)
+		if pkg == nil || pkg.imports == nil {
+			return false
+		}
+		if subpathHasUnmodeledCondition(pkg.imports, spec, conds) {
+			return true
+		}
+		for _, t := range exportsTargets(pkg.imports, spec, conds) {
+			if !isRelativeSpecifier(t) && !strings.HasPrefix(t, "#") && rs.loadMeetsUnmodeledCondition(fromModule, t) {
+				return true
+			}
+		}
+		return false
+	}
+	if _, mm, sub, ok := rs.workspaceMember(spec); ok {
+		return mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+	}
+	name, sub := splitBareSpecifier(spec)
+	if self, _ := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == name && self.exports != nil {
+		return subpathHasUnmodeledCondition(self.exports, sub, conds)
+	}
+	mm, unsafe := rs.installedManifest(fromModule, name)
+	if unsafe {
+		return true
+	}
+	return mm != nil && mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+}
+
+// maxInstalledManifest bounds the read of an installed package.json.
+const maxInstalledManifest = 1 << 20
+
+// installedManifest returns the package.json of npm package name that Node's node_modules
+// walk from fromModule's directory finds, or nil when none is installed. unsafe reports a
+// candidate it will not read: one whose real path leaves the build root, that is not a
+// regular file, or that exceeds maxInstalledManifest, and one whose stat fails with an error
+// other than a missing path.
+func (rs *resolver) installedManifest(fromModule, name string) (mm *pkgManifest, unsafe bool) {
+	if name == "" || strings.ContainsAny(name, `\:`) || strings.Count(name, "/") > 1 || strings.Contains(name, "..") ||
+		(strings.Contains(name, "/") && !strings.HasPrefix(name, "@")) {
+		return nil, false
+	}
+	dir := path.Dir(fromModule)
+	for {
+		if dir == "." {
+			dir = ""
+		}
+		if path.Base(dir) != "node_modules" {
+			full := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name), "package.json")
+			_, err := os.Lstat(full)
+			switch {
+			case err == nil:
+				data, ok := readInRoot(rs.prog.root, full, maxInstalledManifest)
+				if !ok {
+					return nil, true
+				}
+				return parsePkgManifest(data), false
+			case !absent(err):
+				return nil, true
+			}
+		}
+		if dir == "" {
+			return nil, false
+		}
+		dir = path.Dir(dir)
+	}
+}
+
+// subpathHasUnmodeledCondition reports whether any conditions map exportsTargets would walk
+// for subpath has a key outside conds.
+func subpathHasUnmodeledCondition(field interface{}, subpath string, conds map[string]bool) bool {
+	for _, e := range subpathEntries(field, subpath) {
+		if hasUnmodeledCondition(e.node, conds) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnmodeledCondition(node interface{}, conds map[string]bool) bool {
+	switch v := node.(type) {
+	case []interface{}:
+		for _, e := range v {
+			if hasUnmodeledCondition(e, conds) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for k, sub := range v {
+			if !conds[k] || hasUnmodeledCondition(sub, conds) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// edgeModule is the in-tree module call edges are built into for subpath of an imports or
+// exports field under the resolver's fixed conditions (rs.conditions), or "" when there is
+// none. A load whose selectable target is another module runs code this lane reads but
+// builds no edges into, so loadsOutOfTree declares it.
+func (rs *resolver) edgeModule(field interface{}, subpath, dir string) string {
+	rel, _, ok := resolveExportsField(field, subpath, rs.conditions())
+	if !ok || !isRelativeSpecifier(rel) {
+		return ""
+	}
+	return rs.moduleFromDirRelative(dir, rel)
+}
+
+// loadConditions is the set of Node's default exports/imports conditions a load can match.
+// Node's defaults are "node", "import", "require", "default", "module-sync" and, unless
+// --no-addons, "node-addons" (nodejs.org/api/packages.html#conditional-exports); this lane
+// treats all of them as matching. A require() load matches "require"; any other form may
+// match "require" or "import", because a transpiler can emit ESM syntax as require(). Any
+// condition outside Node's defaults ("development", "browser", "worker", a bundler's or a
+// framework's own) is selectable too (see conditionSelectable).
 func loadConditions(viaRequire bool) map[string]bool {
 	conds := map[string]bool{"node": true, "node-addons": true, "module-sync": true, "default": true, "require": true}
 	if !viaRequire {
@@ -240,28 +461,88 @@ func loadConditions(viaRequire bool) map[string]bool {
 // so every branch whose condition is in conds counts, as does each matching pattern and each
 // fallback-array entry. A subpath the field does not expose yields no target.
 func exportsTargets(field interface{}, subpath string, conds map[string]bool) []string {
+	var out []string
+	for _, e := range subpathEntries(field, subpath) {
+		for _, t := range conditionTargets(e.node, conds, nil) {
+			if e.pattern {
+				t = strings.ReplaceAll(t, "*", e.star)
+			}
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// subpathEntry is one node of an exports/imports field that a subpath selects; star is the
+// text a pattern key's "*" stands for.
+type subpathEntry struct {
+	node    interface{}
+	pattern bool
+	star    string
+}
+
+// subpathEntries returns the nodes of an exports/imports field that subpath selects: the
+// whole field for "." when it is a target or a conditions map, else the exact key, else every
+// matching pattern key.
+func subpathEntries(field interface{}, subpath string) []subpathEntry {
 	m, isMap := field.(map[string]interface{})
 	if !isMap || isConditionsMap(m) {
 		if subpath != "." {
 			return nil
 		}
-		return conditionTargets(field, conds, nil)
+		return []subpathEntry{{node: field}}
 	}
 	if node, ok := m[subpath]; ok {
-		return conditionTargets(node, conds, nil)
+		return []subpathEntry{{node: node}}
 	}
-	var out []string
+	var out []subpathEntry
 	for key, node := range m {
 		prefix, suffix, ok := strings.Cut(key, "*")
 		if !ok || len(subpath) < len(prefix)+len(suffix) || !strings.HasPrefix(subpath, prefix) || !strings.HasSuffix(subpath, suffix) {
 			continue
 		}
-		star := subpath[len(prefix) : len(subpath)-len(suffix)]
-		for _, t := range conditionTargets(node, conds, nil) {
-			out = append(out, strings.ReplaceAll(t, "*", star))
-		}
+		out = append(out, subpathEntry{node: node, pattern: true, star: subpath[len(prefix) : len(subpath)-len(suffix)]})
 	}
 	return out
+}
+
+// conditionSelectable reports whether the branch under condition key k can be the one a load
+// runs. A key in conds matches by default. A key outside Node's defaults matches whenever the
+// run sets it (node --conditions, a bundler, a test runner), which the build tree does not
+// record, so it counts as selectable too and each of its targets must be in-tree. A "types"
+// branch naming only declaration files is read by type checkers and never loaded.
+func conditionSelectable(k string, sub interface{}, conds map[string]bool) bool {
+	switch k {
+	case "node", "node-addons", "module-sync", "default", "require", "import":
+		return conds[k]
+	case "types":
+		return !declarationOnly(sub)
+	}
+	return true
+}
+
+// declarationOnly reports whether node names at least one target, under any condition, and
+// every one is a TypeScript declaration file.
+func declarationOnly(node interface{}) bool {
+	switch v := node.(type) {
+	case string:
+		return strings.HasSuffix(v, ".d.ts") || strings.HasSuffix(v, ".d.mts") || strings.HasSuffix(v, ".d.cts")
+	case []interface{}:
+		for _, e := range v {
+			if !declarationOnly(e) {
+				return false
+			}
+		}
+		return len(v) > 0
+	case map[string]interface{}:
+		for _, sub := range v {
+			if !declarationOnly(sub) {
+				return false
+			}
+		}
+		return len(v) > 0
+	}
+	return false
 }
 
 func conditionTargets(node interface{}, conds map[string]bool, out []string) []string {
@@ -274,7 +555,7 @@ func conditionTargets(node interface{}, conds map[string]bool, out []string) []s
 		}
 	case map[string]interface{}:
 		for k, sub := range v {
-			if conds[k] {
+			if conditionSelectable(k, sub, conds) {
 				out = conditionTargets(sub, conds, out)
 			}
 		}
@@ -600,7 +881,8 @@ func stripJSExt(p string) string {
 	return p
 }
 
-// --- package.json / tsconfig loading (metadata only; never node_modules) ---
+// --- package.json / tsconfig loading (metadata only; never node_modules source, which
+// installedManifest reads only for an installed package.json's exports map) ---
 
 // pkgManifest is the resolver's view of a package.json: identity, module type, and the
 // raw exports/imports maps (interpreted by resolveExportsField).
@@ -726,6 +1008,98 @@ func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, 
 		}
 	}
 	return "", nil, "", false
+}
+
+// memberShadowed reports whether Node's node_modules walk for package name, from the importing
+// module fromModule, finds something other than the workspace member at memberDir. Node walks
+// from the importing file's real path, so the walk runs from its logical directory and again
+// from the real directory of each source file the module can be. Each walk climbs past the
+// build root to the filesystem root, as Node's does, and runs twice: once skipping
+// node_modules/node_modules as CommonJS require does, once checking it as ESM import does.
+// In each run the first directory holding a candidate decides: a file Node's CommonJS
+// LOAD_AS_FILE would try, or a real directory, is different code; a symlink is the member only
+// when its target's real path is the member directory's. A path that cannot be stat'ed or
+// followed, for any reason but a missing path, counts as shadowing. The member stands only
+// when no run finds anything else.
+func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
+		return true
+	}
+	root := filepath.Clean(rs.prog.root)
+	memberReal, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(memberDir)))
+	if err != nil {
+		return true
+	}
+	// decides reports whether dir's node_modules holds a candidate for name, and if so whether
+	// it shadows the member.
+	decides := func(dir string) (bool, bool) {
+		base := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		for _, ext := range []string{".js", ".json", ".node"} {
+			if _, err := os.Lstat(base + ext); err == nil || !absent(err) {
+				return true, true
+			}
+		}
+		fi, err := os.Lstat(base)
+		switch {
+		case err != nil:
+			return !absent(err), true
+		case fi.Mode()&os.ModeSymlink == 0:
+			return true, true
+		}
+		real, err := filepath.EvalSymlinks(base)
+		if err != nil {
+			return !absent(err), true
+		}
+		return true, real != memberReal
+	}
+	// walk runs Node's walk from dir to the filesystem root. CommonJS require skips
+	// node_modules/node_modules (skipNested); ESM import does not.
+	walk := func(dir string, skipNested bool) bool {
+		for {
+			if !skipNested || filepath.Base(dir) != "node_modules" {
+				if decided, shadowed := decides(dir); decided {
+					return shadowed
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return false
+			}
+			dir = parent
+		}
+	}
+	// either is shadowed when the walk of either loader finds a copy: the importer's kind is
+	// not tracked here.
+	either := func(dir string) bool {
+		return walk(dir, true) || walk(dir, false)
+	}
+	if either(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule)))) {
+		return true
+	}
+	exts := []string{vueExtension}
+	for ext := range jsExtensions {
+		exts = append(exts, ext)
+	}
+	for _, ext := range exts {
+		file := filepath.Join(root, filepath.FromSlash(fromModule)+ext)
+		if _, err := os.Lstat(file); err != nil {
+			if absent(err) {
+				continue
+			}
+			return true
+		}
+		real, err := filepath.EvalSymlinks(file)
+		if err != nil {
+			if absent(err) {
+				continue
+			}
+			return true
+		}
+		if either(filepath.Dir(real)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (rs *resolver) rootManifest() (*pkgManifest, bool) {

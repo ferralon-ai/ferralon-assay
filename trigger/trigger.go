@@ -148,9 +148,9 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		// the whole-graph inventory above does.
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, sbom.Packages)
 		// A toolchain advisory the scan could not adjudicate is a first-class `undetermined`
-		// row in tegron.report.v2, plus the scan-level limit that explains it.
-		// v1 had to withhold the row entirely, having no cell for "the advisory applies and
-		// we established nothing"; the row is what makes the omission legible at the count.
+		// row, plus the scan-level limit that explains it. The report has carried such rows
+		// since v2; v1 withheld the row entirely, having no cell for "the advisory applies and
+		// we established nothing". The row is what makes the omission legible at the count.
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes)
 		b.AddFinding(f)
 		if note, ok := limitNoteFor(f); ok {
@@ -165,7 +165,7 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		AdvisoryCursor:  req.Cursor,
 		Timestamp:       time.Now().UTC(),
 	})
-	b.WithPriority(rankBy(req.Signals))
+	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
 	rep, err := b.BuildValidated()
 	if err != nil {
@@ -285,6 +285,10 @@ type CVEWatchRequest struct {
 	AssessOptions []pipeline.AssessOption
 	// Signals mirrors PRInheritRequest.Signals.
 	Signals *intel.Signals
+	// Advisories is the run's work set. CVE-watch assesses only the newly-relevant advisories, but
+	// every advisory here still claims its aliases when the report is ranked, so an inherited row
+	// ranks as it did in the baseline over the same work set.
+	Advisories []assessment.VulnRef
 	// HoldCursor keeps the stored cursor on an earnest run, so its new advisories are assessed
 	// again next run. Set it when this run's analysis inputs could not be had (a failed build
 	// graph): the Report is still written, but the advisories it could not assess stay new.

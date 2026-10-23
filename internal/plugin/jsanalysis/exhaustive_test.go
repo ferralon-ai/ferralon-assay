@@ -173,6 +173,49 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 	}
 }
 
+// B3: a script surface the version veto withholds on may install a package no lock or
+// manifest read here names, so it withholds Exhaustive too; a kept form installs only what a
+// read lock holds and does not.
+func TestResolveVersions_ExhaustiveScriptInstall(t *testing.T) {
+	const docker = "FROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN "
+	npm := func(extra map[string]string) map[string]string {
+		files := map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	withScripts := strings.TrimSuffix(exPkgJSON, "}")
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"Dockerfile installs the coordinate after npm ci", npm(map[string]string{"Dockerfile": docker + "npm ci && npm install absent-package\n"}), false},
+		{"postinstall installs the coordinate", npm(map[string]string{"package.json": withScripts + `,"scripts":{"postinstall":"npm install absent-package"}}`}), false},
+		{"Dockerfile npm install, which may rewrite the lock", npm(map[string]string{"Dockerfile": docker + "npm install\n"}), false},
+		{"PowerShell installs the coordinate", npm(map[string]string{"deploy.ps1": "npm install absent-package\n"}), false},
+
+		// Kept forms install only what a read lock holds.
+		{"Dockerfile npm ci", npm(map[string]string{"Dockerfile": docker + "npm ci\n"}), true},
+		{"Dockerfile npm ci --omit=dev", npm(map[string]string{"Dockerfile": docker + "npm ci --omit=dev\n"}), true},
+		{"Dockerfile yarn --frozen-lockfile", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nRUN yarn --frozen-lockfile\n"}, true},
+		{"Dockerfile pnpm install --frozen-lockfile", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json pnpm-lock.yaml ./\nRUN pnpm install --frozen-lockfile\n"}, true},
+		{"Dockerfile npm ci, then a script that builds", npm(map[string]string{"package.json": withScripts + `,"scripts":{"build":"tsc"}}`, "Dockerfile": docker + "npm ci && npm run build\n"}), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveJS(t, writeLockTree(t, tt.files), "absent-package")
+			if r.Found {
+				t.Fatalf("absent-package unexpectedly found")
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
 // B2, B6: the walk never follows a symlink. A symlinked manifest, a directory linked from
 // outside the build dir or into node_modules, or an installed package linked from outside the
 // build dir, is not fully read; an in-tree workspace link, and a directory linked to one the walk

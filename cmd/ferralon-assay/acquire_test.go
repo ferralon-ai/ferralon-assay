@@ -76,7 +76,7 @@ func TestSelectPlugin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.lang, func(t *testing.T) {
-			p, err := selectPlugin(tc.lang, "/fake/analyzer-bin", nil)
+			p, err := selectPlugin(tc.lang, "/fake/analyzer-bin", nil, nil)
 			if err != nil {
 				t.Fatalf("selectPlugin(%q): %v", tc.lang, err)
 			}
@@ -86,7 +86,7 @@ func TestSelectPlugin(t *testing.T) {
 		})
 	}
 
-	if _, err := selectPlugin(checkout.LangUnknown, "", nil); err == nil {
+	if _, err := selectPlugin(checkout.LangUnknown, "", nil, nil); err == nil {
 		t.Fatal("selectPlugin(unknown): expected error, got nil")
 	}
 }

@@ -318,6 +318,45 @@ func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 
 		// M-2a-concat
 		{"Function reached through a constructor path array copied by concat", "const j = { parse: String };\nfunction g() {}\nconst _ = require('lodash');\n_.get(g, ['constructor'].concat([]))(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// X*: second-hop keys, literal-bracket reflective members, block functions over a var and
+		// private names. E*p and K24p hold the enumeration and callback-parameter guards.
+		// X1
+		{"Function invoked through a second key bound to call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst c = 'call';\ng[k][c](null, process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X2
+		{"Function invoked through a parenthesised second key naming call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k][('call')](null, process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X3
+		{"Function invoked through a concatenated second key naming call", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\ng[k]['ca' + 'll'](null, process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X5
+		{"Function invoked through apply on a const holding a data-keyed read", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst F = g[k];\nconst c = 'apply';\nF[c](null, [process.argv[3]])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X6
+		{"Function bound through a second key bound to bind", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst c = 'bind';\ng[k][c](null, process.argv[3])()();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X9
+		{"Function read through Reflect get spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nReflect['get'](g, k)(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X10b
+		{"Function read through an Object descriptor spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nObject[\"getOwnPropertyDescriptor\"](Object.getPrototypeOf(g), k).value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X11
+		{"Function read through Reflect reached by a literal bracket on globalThis", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nglobalThis['Reflect'].get(g, k)(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X12
+		{"Function inherited through Reflect setPrototypeOf spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst o = {};\nReflect['setPrototypeOf'](o, g);\no[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X13
+		{"Function inherited through Object setPrototypeOf spelled with a literal bracket", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst o = {};\nObject['setPrototypeOf'](o, g);\no[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X17
+		{"Function reached through a var receiver overwritten by a block function declaration", "const j = { parse: String };\nfunction g() {}\nfunction run(k) { var o = {}; if (k) { function o() {} } return o[k](process.argv[3])(); }\nrun(process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X18
+		{"Function reached through a private field named like a local literal", "const j = { parse: String };\nfunction g() {}\nclass A { #o = g; m(k) { const o = {}; return this.#o[k](process.argv[3])(); } }\nnew A().m(process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// X18-key
+		{"Function reached through a private field key named like a safe local key", "const j = { parse: String };\nfunction g() {}\nclass A { #k = process.argv[4]; m() { const k = 'name'; return g[this.#k](process.argv[3])(); } }\nnew A().m();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E01p
+		{"Function enumerated from a literal after a member write of a reflective read", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\no.b = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E02p
+		{"Function enumerated from a literal after a computed write of a reflective read", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\no['b'] = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E03p
+		{"Function enumerated from a literal handed to a call that writes it", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\nfunction put(t) { t.b = Reflect['get'](g, process.argv[4]); }\nput(o);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// E04p
+		{"Function enumerated from a literal written through an alias", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\nconst t = o;\nt.b = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		// K24p
+		{"Function reached through an iterated array rewritten through its callback", "const j = { parse: String };\nfunction g() {}\n['a'].forEach((k, i, arr) => { arr[0] = process.argv[4]; g[arr](process.argv[3])(); });\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		{"binding alias", `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }

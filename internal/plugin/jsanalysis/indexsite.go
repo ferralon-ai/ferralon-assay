@@ -684,6 +684,10 @@ func (gs *globalScope) occurrences(clean []rune, name string) []int {
 			}
 			w, next := readWord(clean, i)
 			b := skipSpaceBack(clean, i-1)
+			if b >= 0 && clean[b] == '#' {
+				i = next // a private name is never a variable
+				continue
+			}
 			if !(b >= 0 && clean[b] == '.' && !(b >= 2 && clean[b-1] == '.' && clean[b-2] == '.')) {
 				gs.occ[w] = append(gs.occ[w], i)
 			}
@@ -849,7 +853,7 @@ func (gs *globalScope) literalReceiver(clean, src []rune, name string, i int) bo
 		case 'c', 'l':
 			named = true
 		case 'v':
-			if scope < 0 {
+			if scope < 0 || gs.blockFunction(clean, name, dl.scope) {
 				return false
 			}
 			named = true
@@ -884,6 +888,26 @@ func (gs *globalScope) literalReceiver(clean, src []rune, name string, i int) bo
 		}
 	}
 	return true
+}
+
+// blockFunction reports whether a function declaration named name has scope as its nearest
+// function scope. In sloppy code one declared in a nested block also assigns the function to
+// that scope's var of the same name when the declaration runs.
+func (gs *globalScope) blockFunction(clean []rune, name string, scope int) bool {
+	tf := gs.tf
+	for _, dl := range gs.decls {
+		if dl.kind != 'f' || dl.name != name {
+			continue
+		}
+		s := dl.scope
+		for s >= 0 && !tf.scope[s] && !namespaceBlock(clean, tf.opens[s]) {
+			s = tf.parent[s]
+		}
+		if s == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // compoundAfter reports whether a compound assignment other than ||=, &&= and ??=, or a
@@ -936,7 +960,7 @@ func (gs *globalScope) enumReceiverOK(clean, src []rune, recv int, enums []int) 
 	}
 	ds := gs.lookup(name, recv)
 	for _, e := range enums {
-		if w, _ := peekWord(clean, e); w != name || !gs.sameVariable(name, ds, e) {
+		if w, _ := peekWord(clean, e); w != name || e > 0 && clean[e-1] == '#' || !gs.sameVariable(name, ds, e) {
 			return false
 		}
 	}
@@ -994,6 +1018,7 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 	n := len(clean)
 	j := newKeyJudge(clean, src, gs, "constructor")
 	pj := newKeyJudge(clean, src, gs, "__proto__")
+	hops := newHopJudges(clean, src, gs)
 	var initOf map[int]int
 	constFollow := func(start, next int, descriptor bool) bool {
 		if initOf == nil {
@@ -1025,7 +1050,7 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 			if gs.sites[o] || !gs.sameVariable(dl.name, ds, o) {
 				continue
 			}
-			if !readOnly(clean, src, o, o+len([]rune(dl.name)), descriptor) {
+			if !readOnly(clean, src, hops, o, o+len([]rune(dl.name)), descriptor) {
 				return false
 			}
 		}
@@ -1038,16 +1063,70 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 		if ok && (len(enums) == 0 || gs.enumReceiverOK(clean, src, recv, enums)) {
 			return
 		}
-		if readOnly(clean, src, start, next, descriptor) || constFollow(start, next, descriptor) {
+		if readOnly(clean, src, hops, start, next, descriptor) || constFollow(start, next, descriptor) {
 			return
 		}
 		if w, _ := peekWord(clean, recv); w != "" && w != "this" && isIdentStart(clean[recv]) {
-			if b := skipSpaceBack(clean, recv-1); !(b >= 0 && clean[b] == '.') && gs.literalReceiver(clean, src, w, recv) {
+			if b := skipSpaceBack(clean, recv-1); !(b >= 0 && (clean[b] == '.' || clean[b] == '#')) && gs.literalReceiver(clean, src, w, recv) {
 				exempt = true
 				return
 			}
 		}
 		evaluated = true
+	}
+	// memberUse judges a member named word, read through the operator at dot (a dot, or the
+	// bracket of a whole-literal key) and ending before next, or a bare word when !member.
+	memberUse := func(word string, member bool, dot, i, next int) {
+		p := skipSpace(clean, next)
+		called := p < n && clean[p] == '(' || optionalCall(clean, p)
+		callOpen := p
+		if optionalCall(clean, p) {
+			callOpen = skipSpace(clean, p+2)
+		}
+		switch {
+		case member && (word == "getOwnPropertyDescriptors" || word == "getOwnPropertyNames" || word == "ownKeys"):
+			if !called || !ownKeysRead(clean, src, gs, dot, closeOf(clean, callOpen)+1) {
+				evaluated = true
+			}
+		case member && (word == "get" || word == "getOwnPropertyDescriptor") && called:
+			if r := receiverName(clean, src, dot); (r == "Reflect" || r == "Object" && word == "getOwnPropertyDescriptor") && len(gs.lookup(r, i)) == 0 {
+				args := callArgs(clean, callOpen)
+				if len(args) >= 2 && !(stringLiteral(clean, src, args[1][0]) && args[1][1] == args[1][0]+1) {
+					start := receiverStart(clean, dot)
+					recv := args[0][0]
+					if w, e := peekWord(clean, recv); w == "" || e != args[0][1] {
+						recv = args[0][1] - 1
+					}
+					site(recv, args[1][0], args[1][1], start, closeOf(clean, callOpen)+1, word == "getOwnPropertyDescriptor")
+				}
+			}
+		case word == "setPrototypeOf":
+			if !called {
+				protoWrite = true
+			} else if args := callArgs(clean, callOpen); len(args) < 2 || !protoValue(clean, args[1][0], args[1][1]) {
+				protoWrite = true
+			}
+		case member && word == "create" && called:
+			if r := receiverName(clean, src, dot); r == "Object" {
+				args := callArgs(clean, callOpen)
+				if len(args) == 0 || !protoValue(clean, args[0][0], args[0][1]) || len(args) > 1 && literalValue(clean, args[1][0], args[1][1]) < 0 {
+					protoWrite = true
+				}
+			}
+		case member && word == "defineProperties":
+			if args := callArgs(clean, callOpen); !called || len(args) < 2 || literalValue(clean, args[1][0], args[1][1]) < 0 {
+				protoWrite = true
+			}
+		case member && word == "set" && called:
+			if r := receiverName(clean, src, dot); r == "Reflect" {
+				args := callArgs(clean, callOpen)
+				if len(args) < 2 {
+					protoWrite = true
+				} else if safe, enums := pj.keySafe(args[1][0], args[1][1]); !safe || len(enums) > 0 {
+					protoWrite = true
+				}
+			}
+		}
 	}
 	for p := 0; p < n; p++ {
 		if clean[p] != '[' {
@@ -1084,6 +1163,7 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 			}
 		}
 		if stringLiteral(clean, src, ka) && wholeKey(clean, src, ka) {
+			memberUse(specifierAt(src, ka), true, op, op, e+1)
 			continue // keyedUse judges a literal key
 		}
 		start := receiverStart(clean, op)
@@ -1117,61 +1197,13 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 		}
 		b := skipSpaceBack(clean, i-1)
 		member := b >= 0 && clean[b] == '.' && !(b >= 2 && clean[b-1] == '.' && clean[b-2] == '.')
-		p := skipSpace(clean, next)
-		called := p < n && clean[p] == '(' || optionalCall(clean, p)
-		callOpen := p
-		if optionalCall(clean, p) {
-			callOpen = skipSpace(clean, p+2)
-		}
 		switch {
 		case !member && (word == "Reflect" || word == "Object") && len(gs.lookup(word, i)) == 0:
 			if reflectiveUse(clean, src, gs, j, word, i, next) {
 				evaluated = true
 			}
-		case member && (word == "getOwnPropertyDescriptors" || word == "getOwnPropertyNames" || word == "ownKeys"):
-			if !called || !ownKeysRead(clean, src, gs, memberDot(clean, b), closeOf(clean, callOpen)+1) {
-				evaluated = true
-			}
-		case member && (word == "get" || word == "getOwnPropertyDescriptor") && called:
-			if r, _ := wordBefore(clean, skipSpaceBack(clean, memberDot(clean, b)-1)); (r == "Reflect" || r == "Object" && word == "getOwnPropertyDescriptor") && len(gs.lookup(r, i)) == 0 {
-				args := callArgs(clean, callOpen)
-				if len(args) >= 2 && !(stringLiteral(clean, src, args[1][0]) && args[1][1] == args[1][0]+1) {
-					start := receiverStart(clean, memberDot(clean, b))
-					recv := args[0][0]
-					if w, e := peekWord(clean, recv); w == "" || e != args[0][1] {
-						recv = args[0][1] - 1
-					}
-					site(recv, args[1][0], args[1][1], start, closeOf(clean, callOpen)+1, word == "getOwnPropertyDescriptor")
-				}
-			}
 		case !member && word == "getOwnPropertyDescriptor" && b >= 0 && (clean[b] == '{' || clean[b] == ',') && destructuredKey(clean, i, next):
 			evaluated = true
-		case word == "setPrototypeOf":
-			if !called {
-				protoWrite = true
-			} else if args := callArgs(clean, callOpen); len(args) < 2 || !protoValue(clean, args[1][0], args[1][1]) {
-				protoWrite = true
-			}
-		case member && word == "create" && called:
-			if r, _ := wordBefore(clean, skipSpaceBack(clean, memberDot(clean, b)-1)); r == "Object" {
-				args := callArgs(clean, callOpen)
-				if len(args) == 0 || !protoValue(clean, args[0][0], args[0][1]) || len(args) > 1 && literalValue(clean, args[1][0], args[1][1]) < 0 {
-					protoWrite = true
-				}
-			}
-		case member && word == "defineProperties":
-			if args := callArgs(clean, callOpen); !called || len(args) < 2 || literalValue(clean, args[1][0], args[1][1]) < 0 {
-				protoWrite = true
-			}
-		case member && word == "set" && called:
-			if r, _ := wordBefore(clean, skipSpaceBack(clean, memberDot(clean, b)-1)); r == "Reflect" {
-				args := callArgs(clean, callOpen)
-				if len(args) < 2 {
-					protoWrite = true
-				} else if safe, enums := pj.keySafe(args[1][0], args[1][1]); !safe || len(enums) > 0 {
-					protoWrite = true
-				}
-			}
 		case word == "__proto__":
 			q := skipSpace(clean, next)
 			switch {
@@ -1180,6 +1212,8 @@ func indexScan(clean, src []rune, gs *globalScope) (evaluated, exempt, protoWrit
 			case !member && q < n && clean[q] == ':' && !(q+1 < n && clean[q+1] == ':'):
 				protoWrite = protoWrite || !protoValue(clean, q+1, initEnd(clean, q+1))
 			}
+		default:
+			memberUse(word, member, memberDot(clean, max(b, 0)), i, next)
 		}
 		i = next
 	}
@@ -1214,11 +1248,43 @@ func indexedValue(clean []rune, tf *thisFrames, op int) bool {
 	return false
 }
 
+// hopJudges judge the key of a read indexed again, against each member that invokes or
+// returns a function's constructor, and against a property descriptor's value, get and set.
+type hopJudges struct {
+	call, desc []*keyJudge
+}
+
+func newHopJudges(clean, src []rune, gs *globalScope) *hopJudges {
+	h := &hopJudges{}
+	for _, w := range []string{"call", "apply", "bind", "constructor", "valueOf"} {
+		h.call = append(h.call, newKeyJudge(clean, src, gs, w))
+	}
+	for _, w := range []string{"value", "get", "set"} {
+		h.desc = append(h.desc, newKeyJudge(clean, src, gs, w))
+	}
+	return h
+}
+
+// may reports whether the key clean[from:to] may name one of the judged members.
+func (h *hopJudges) may(from, to int, descriptor bool) bool {
+	js := h.call
+	if descriptor {
+		js = append(append([]*keyJudge{}, h.call...), h.desc...)
+	}
+	for _, j := range js {
+		if ok, enums := j.keySafe(from, to); !ok || len(enums) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // readOnly reports whether a computed read whose value spans [start, next) is used only
-// where it is neither called nor handed on (indexPairRead), and is not indexed by a literal
-// naming a member that invokes or returns a function's constructor. A property descriptor
-// (descriptor) is also not read for its value, get or set, which hold the member.
-func readOnly(clean, src []rune, start, next int, descriptor bool) bool {
+// where it is neither called nor handed on (indexPairRead). A read indexed again by a key
+// that may name a member invoking or returning a function's constructor (or, for a
+// property descriptor, its value, get or set) is read-only only when that second read is.
+// A property descriptor (descriptor) is also not read for its value, get or set by member.
+func readOnly(clean, src []rune, h *hopJudges, start, next int, descriptor bool) bool {
 	n := len(clean)
 	p := skipSpace(clean, next)
 	q := p
@@ -1226,16 +1292,9 @@ func readOnly(clean, src []rune, start, next int, descriptor bool) bool {
 		q = skipSpace(clean, p+2)
 	}
 	if q < n && clean[q] == '[' {
-		a := skipSpace(clean, q+1)
-		if stringLiteral(clean, src, a) && wholeKey(clean, src, a) {
-			switch specifierAt(src, a) {
-			case "call", "apply", "bind", "constructor", "valueOf":
-				return false
-			case "value", "get", "set":
-				if descriptor {
-					return false
-				}
-			}
+		e := closeBracket(clean, q)
+		if e < n && h.may(q+1, e, descriptor) {
+			return readOnly(clean, src, h, start, e+1, false)
 		}
 	}
 	if descriptor {
@@ -1250,6 +1309,22 @@ func readOnly(clean, src []rune, start, next int, descriptor bool) bool {
 		}
 	}
 	return indexPairRead(clean, start, next)
+}
+
+// receiverName returns the name of the object a member operator at dot reads from: the
+// word before it, or the value of a whole string-literal key when a bracket closes there.
+func receiverName(clean, src []rune, dot int) string {
+	k := skipSpaceBack(clean, dot-1)
+	if k >= 0 && clean[k] == ']' {
+		if o := openBefore(clean, k); o >= 0 {
+			if a := skipSpace(clean, o+1); stringLiteral(clean, src, a) && wholeKey(clean, src, a) {
+				return specifierAt(src, a)
+			}
+		}
+		return ""
+	}
+	w, _ := wordBefore(clean, k)
+	return w
 }
 
 // callArgs returns the trimmed argument ranges of the call whose '(' is at o.

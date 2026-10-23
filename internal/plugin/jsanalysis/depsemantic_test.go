@@ -1187,21 +1187,30 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		region string
 		files  map[string]string
 	}{
-		"root_manifest_no_lock":          {"web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}},
-		"root_deps_absent_intermediate":  {"apps/web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}},
-		"root_workspaces":                {"web", map[string]string{"package.json": `{"name":"app","private":true,"workspaces":["packages/*"]}`, "packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, "")}},
-		"root_pnpm_workspace":            {"web", map[string]string{"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - packages/*\n", ".npmrc": "shamefully-hoist=true\n", "packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, "")}},
-		"root_pnpm_workspace_only":       {"web", map[string]string{"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - packages/*\n"}},
-		"intermediate_manifest_no_lock":  {"apps/web", apps(manifestWith("apps", map[string]string{"q": "1.0.0"}, ""))},
-		"intermediate_dev_dependencies":  {"apps/web", apps(`{"name":"apps","devDependencies":{"q":"1.0.0"}}`)},
-		"intermediate_optional_deps":     {"apps/web", apps(`{"name":"apps","optionalDependencies":{"q":"1.0.0"}}`)},
-		"intermediate_peer_dependencies": {"apps/web", apps(`{"name":"apps","peerDependencies":{"q":"1.0.0"}}`)},
-		"intermediate_workspaces":        {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true,"workspaces":["lib"]}`, "apps/lib/package.json": manifestWith("lib", map[string]string{"q": "1.0.0"}, "")})},
-		"intermediate_malformed":         {"apps/web", apps(`{"name":"apps",`)},
-		"intermediate_unknown_key":       {"apps/web", apps(`{"name":"apps","overrides":{"q":"1.0.0"}}`)},
-		"intermediate_install_script":    {"apps/web", apps(`{"name":"apps","scripts":{"postinstall":"npm i q@1"}}`)},
-		"intermediate_npmrc":             {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.npmrc": "x=y\n"})},
-		"intermediate_installed_on_disk": {"apps/web", locked(map[string]string{"apps/node_modules/q/package.json": `{"name":"q","version":"1.0.0"}`})},
+		"root_manifest_no_lock":            {"web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}},
+		"root_deps_absent_intermediate":    {"apps/web", map[string]string{"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, "")}},
+		"root_workspaces":                  {"web", map[string]string{"package.json": `{"name":"app","private":true,"workspaces":["packages/*"]}`, "packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, "")}},
+		"root_pnpm_workspace":              {"web", map[string]string{"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - packages/*\n", ".npmrc": "shamefully-hoist=true\n", "packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, "")}},
+		"root_pnpm_workspace_only":         {"web", map[string]string{"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - packages/*\n"}},
+		"intermediate_manifest_no_lock":    {"apps/web", apps(manifestWith("apps", map[string]string{"q": "1.0.0"}, ""))},
+		"intermediate_dev_dependencies":    {"apps/web", apps(`{"name":"apps","devDependencies":{"q":"1.0.0"}}`)},
+		"intermediate_optional_deps":       {"apps/web", apps(`{"name":"apps","optionalDependencies":{"q":"1.0.0"}}`)},
+		"intermediate_peer_dependencies":   {"apps/web", apps(`{"name":"apps","peerDependencies":{"q":"1.0.0"}}`)},
+		"intermediate_workspaces":          {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true,"workspaces":["lib"]}`, "apps/lib/package.json": manifestWith("lib", map[string]string{"q": "1.0.0"}, "")})},
+		"intermediate_malformed":           {"apps/web", apps(`{"name":"apps",`)},
+		"intermediate_unknown_key":         {"apps/web", apps(`{"name":"apps","overrides":{"q":"1.0.0"}}`)},
+		"intermediate_install_script":      {"apps/web", apps(`{"name":"apps","scripts":{"postinstall":"npm i q@1"}}`)},
+		"intermediate_npmrc":               {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.npmrc": "x=y\n"})},
+		"intermediate_installed_on_disk":   {"apps/web", locked(map[string]string{"apps/node_modules/q/package.json": `{"name":"q","version":"1.0.0"}`})},
+		"intermediate_pnpmfile":            {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.pnpmfile.cjs": "module.exports = {}\n"})},
+		"intermediate_empty_dependencies":  {"apps/web", apps(`{"name":"apps","dependencies":{}}`)},
+		"intermediate_pnpm_dev_preinstall": {"apps/web", apps(`{"name":"apps","scripts":{"pnpm:devPreinstall":"npm i q@1 --no-save"}}`)},
+		"intermediate_namespaced_script":   {"apps/web", apps(`{"name":"apps","scripts":{"yarn:bootstrap":"npm i q@1 --no-save"}}`)},
+		"intermediate_pre_script":          {"apps/web", apps(`{"name":"apps","scripts":{"prebuild":"npm i q@1 --no-save"}}`)},
+		"intermediate_post_script":         {"apps/web", apps(`{"name":"apps","scripts":{"posttest":"npm i q@1 --no-save"}}`)},
+		"intermediate_prepare":             {"apps/web", apps(`{"name":"apps","scripts":{"prepare":"npm i q@1 --no-save"}}`)},
+		"root_npmrc_hoist":                 {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "registry=https://npm.acme.dev/\npublic-hoist-pattern[]=*\n"}},
+		"root_npmrc_unparseable":           {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "\"${HOIST}\"=true\n"}},
 	} {
 		t.Run(name, func(t *testing.T) { withholds(t)(nested(t, tc.region, tc.files)) })
 	}
@@ -1218,9 +1227,17 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		"absent_intermediate":         locked(map[string]string{}),
 		"intermediate_name_private":   apps(`{"name":"apps","private":true}`),
 		"intermediate_inert_metadata": apps(`{"name":"apps","version":"1.0.0","private":true,"type":"module","engines":{"node":">=20"},"scripts":{"build":"tsc"},"packageManager":"npm@11.0.0"}`),
+		"intermediate_tool_config":    apps(`{"name":"apps","private":true,"prettier":{"semi":false},"browserslist":["defaults"],"eslintConfig":{"root":true}}`),
+		"intermediate_npmrc_registry": locked(map[string]string{"apps/.npmrc": "@acme:registry=https://npm.acme.dev/\n//npm.acme.dev/:_authToken=${NPM_TOKEN}\nstrict-ssl=true\n"}),
 	} {
 		t.Run(name, func(t *testing.T) { resolves(t)(nested(t, "apps/web", files)) })
 	}
+	t.Run("root_npmrc_registry", func(t *testing.T) {
+		resolves(t)(nested(t, "web", map[string]string{
+			"package.json": `{"name":"app","private":true}`,
+			".npmrc":       "registry=https://npm.acme.dev/\n@acme:registry=https://npm.acme.dev/\n",
+		}))
+	})
 	t.Run("intermediate_pnpm_importer", func(t *testing.T) {
 		sPkg := sp("s", "1.0.0", nil, nil)
 		resolves(t)(nested(t, "apps/web", map[string]string{

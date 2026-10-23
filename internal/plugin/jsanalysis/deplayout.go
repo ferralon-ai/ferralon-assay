@@ -160,7 +160,7 @@ func (l *depLayout) outerUnaccounted(buildDir string) bool {
 		for a := relParent(r.prefix); ; a = relParent(a) {
 			if !checked[a] {
 				checked[a] = true
-				if !l.installsFor(a) && !inertDir(filepath.Join(buildDir, filepath.FromSlash(a))) {
+				if !l.installsFor(a) && !inertDir(buildDir, filepath.Join(buildDir, filepath.FromSlash(a))) {
 					return true
 				}
 			}
@@ -174,40 +174,77 @@ func (l *depLayout) outerUnaccounted(buildDir string) bool {
 
 // installConfigFiles are the files whose presence lets a package manager install into, or
 // configure an install of, their directory without its package.json declaring anything: a
-// workspace root, a lock, an rc file, a pnpmfile hook, or an install already on disk.
+// workspace root, a lock, an rc file, a pnpmfile hook, or an install already on disk. A .npmrc is
+// judged by its keys instead (outerNpmrcKeys).
 var installConfigFiles = []string{
-	"pnpm-workspace.yaml", ".yarnrc", ".yarnrc.yml", ".npmrc", ".pnpmfile.cjs", ".pnpmfile.mjs",
+	"pnpm-workspace.yaml", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs", ".pnpmfile.mjs",
 	"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "node_modules",
 }
 
+// outerNpmrcKeys are the .npmrc settings an inert directory may set. Each chooses where packages
+// are fetched from and how (registry, TLS, proxy, retries) or what an install prints, audits or
+// saves; none adds a package, moves one between node_modules directories or loads code. A scoped
+// registry (@scope:registry) and a key scoped to one registry's credentials (//host/:_authToken)
+// pass too (npmrcSetsOnly). Hoist and linker settings, pnpmfile and global-pnpmfile, and any
+// unknown key withhold, as does a file npmrcSetsOnly cannot read or parse.
+var outerNpmrcKeys = map[string]bool{
+	"registry": true, "always-auth": true, "strict-ssl": true, "ca": true, "cafile": true,
+	"proxy": true, "https-proxy": true, "noproxy": true, "fetch-retries": true,
+	"fetch-timeout": true, "fund": true, "audit": true, "loglevel": true, "progress": true,
+	"update-notifier": true, "save-exact": true, "save-prefix": true,
+}
+
 // inertManifestKeys are the package.json keys that cannot make npm, yarn or pnpm install anything
-// into the manifest's directory. Most describe or publish the package. type, main, module, types
-// and typings steer how the package itself loads, never what node_modules holds; engines and
-// packageManager pick the tool, not the tree; scripts is admitted without its install lifecycle
-// hooks (inertScripts). Any other key, including workspaces and every dependency map (even an
-// empty one, which is simpler than proving it empty), leaves the directory unaccounted.
+// into the manifest's directory. Any other key, including workspaces and every dependency map
+// (even an empty one, which is simpler than proving it empty), leaves the directory unaccounted.
 var inertManifestKeys = map[string]bool{
+	// Describe or publish the package.
 	"name": true, "version": true, "private": true, "description": true, "license": true,
 	"author": true, "contributors": true, "repository": true, "homepage": true, "bugs": true,
-	"keywords": true, "engines": true, "type": true, "scripts": true, "files": true, "main": true,
-	"module": true, "types": true, "typings": true, "funding": true, "publishConfig": true,
-	"packageManager": true,
+	"keywords": true, "files": true, "funding": true, "publishConfig": true,
+	// Steer how the package itself loads, never what node_modules holds.
+	"type": true, "main": true, "module": true, "types": true, "typings": true, "sideEffects": true,
+	// Pick the tool or fail an install on a mismatch, never change the tree.
+	"engines": true, "packageManager": true,
+	// Admitted without an install hook (inertScripts).
+	"scripts": true,
+	// Exposed to scripts as npm_package_config_* environment, never read by an installer.
+	"config": true,
+	// Tool configuration read only by the named tool when it runs, never by a package manager.
+	"prettier": true, "browserslist": true, "eslintConfig": true, "eslintIgnore": true,
+	"stylelint": true, "jest": true, "babel": true, "lint-staged": true, "husky": true,
+	"commitlint": true, "nyc": true, "c8": true, "ava": true, "mocha": true, "xo": true,
+	"postcss": true, "remarkConfig": true, "size-limit": true, "release": true, "renovate": true,
 }
 
-// installLifecycleScripts run on a plain install of the project and may install anything.
-var installLifecycleScripts = map[string]bool{
-	"preinstall": true, "install": true, "postinstall": true, "prepublish": true,
-	"preprepare": true, "prepare": true, "postprepare": true, "dependencies": true,
+// installHookScripts are the script names npm, yarn or pnpm may run on an install that do not
+// already fall in a hook class (installHook).
+var installHookScripts = map[string]bool{
+	"install": true, "prepare": true, "dependencies": true, "prepublish": true,
+	"prepublishOnly": true, "prepack": true,
 }
 
-// inertDir reports whether the build directory dir holds nothing that installs into its
-// node_modules: no installConfigFiles entry, and a package.json that is absent or readable,
-// parseable and made only of inertManifestKeys.
-func inertDir(dir string) bool {
+// installHook reports whether a script name may run on an install. Rather than list each
+// manager's hooks, any pre or post script, any manager-namespaced script (pnpm:devPreinstall) and
+// the named install hooks count; prebuild and postbuild are lost to precision.
+func installHook(name string) bool {
+	return strings.HasPrefix(name, "pre") || strings.HasPrefix(name, "post") ||
+		strings.Contains(name, ":") || installHookScripts[name]
+}
+
+// inertDir reports whether dir, a directory inside the build root buildDir, holds nothing that
+// installs into its node_modules: no installConfigFiles entry, a .npmrc that is absent or sets
+// only outerNpmrcKeys, and a package.json that is absent or readable, parseable and made only of
+// inertManifestKeys.
+func inertDir(buildDir, dir string) bool {
 	for _, f := range installConfigFiles {
 		if _, err := os.Lstat(filepath.Join(dir, f)); !absent(err) {
 			return false
 		}
+	}
+	rc := filepath.Join(dir, ".npmrc")
+	if _, err := os.Lstat(rc); !absent(err) && (err != nil || !npmrcSetsOnly(buildDir, rc, outerNpmrcKeys)) {
+		return false
 	}
 	p := filepath.Join(dir, "package.json")
 	if _, err := os.Lstat(p); absent(err) {
@@ -229,14 +266,14 @@ func inertDir(dir string) bool {
 	return true
 }
 
-// inertScripts reports whether a scripts value is an object with no install lifecycle hook.
+// inertScripts reports whether a scripts value is an object with no install hook.
 func inertScripts(v json.RawMessage) bool {
 	var scripts map[string]json.RawMessage
 	if json.Unmarshal(v, &scripts) != nil {
 		return false
 	}
 	for k := range scripts {
-		if installLifecycleScripts[k] {
+		if installHook(k) {
 			return false
 		}
 	}

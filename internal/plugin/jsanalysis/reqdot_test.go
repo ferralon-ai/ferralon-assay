@@ -296,6 +296,21 @@ func TestRequireDot_FirstPartyUndecidableDirectoriesWithhold(t *testing.T) {
 			t.Errorf("an unparsed main fell back to index: %+v", cg.Edges)
 		}
 	})
+	t.Run("node_modules is never read from disk", func(t *testing.T) {
+		// Without a dependency store the lane reads nothing under node_modules; an unreadable
+		// package.json there would mark the run tool_failure if it did.
+		dir := writeProgram(t, map[string]string{"package.json": `{"name":"app"}`, "index.js": "require('./node_modules/w/');\n"})
+		if err := os.MkdirAll(filepath.Join(dir, "node_modules", "w", "package.json"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cg, _, err := callGraphInternal(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hasReason(cg.Partiality, plugin.PartialReasonToolFailure) || !hasDidNotRun(cg.Partiality) {
+			t.Errorf("want a withheld load and no read under node_modules; got %v", cg.Partiality.Reasons)
+		}
+	})
 	t.Run("the build root's parent is never read", func(t *testing.T) {
 		// A package.json above the root that cannot be read would mark the run tool_failure if
 		// the lane opened it.

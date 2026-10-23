@@ -118,7 +118,8 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		// when each locked version satisfies the declared range, and nothing less.
 		{"#495 package-lock v1 whose versions satisfy every range", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, true},
 		{"#495 package-lock v1 version outside its range", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": lockV1}, false},
-		{"#495 package-lock v1 against a range form not modelled", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"4.x"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 against a range form not modelled", map[string]string{"package.json": `{"name":"app","dependencies":{"express":">= 4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 against an x-range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"4.x"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, true},
 		{"#495 package-lock v1 locking a prerelease", map[string]string{"package.json": exPkgJSON, "package-lock.json": strings.Replace(lockV1, "4.18.2", "4.19.0-rc.1", 1)}, false},
 		{"#495 package-lock v1 locking the name only nested", map[string]string{"package.json": exPkgJSON, "package-lock.json": `{"name":"app","lockfileVersion":1,"dependencies":{"left-pad":{"version":"1.3.0","dependencies":{"express":{"version":"4.18.2"}}}}}`}, false},
 		{"#495 package-lock v1 governing a nested project", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1, "tools/package.json": toolJSON}, false},
@@ -282,6 +283,8 @@ func TestResolveVersions_ExhaustivePeerSatisfied(t *testing.T) {
 		{"root peer range latest", `"ms":"latest"`, []string{ms213, react18}, false},
 		{"root peer git URL", `"ms":"github:vercel/ms"`, []string{ms213, react18}, false},
 		{"root peer on an aliased copy", msPeer, []string{`"node_modules/ms": {"name":"other","version":"2.1.3"}`, react18}, false},
+		{"root peer || range the lock satisfies", msPeer + `,"react":"^17.0.0 || ^18.0.0"`, []string{ms213, react18}, true},
+		{"root peer || range the lock does not satisfy", msPeer + `,"react":"^16 || ^17"`, []string{ms213, react18}, false},
 		{"root peer on a workspace link", msPeer + "," + toolPeer, []string{ms213, react18}, true},
 		{"root peer on a workspace link outside its range", msPeer + `,"tool":"^2.0.0"`, []string{ms213, react18}, false},
 	}

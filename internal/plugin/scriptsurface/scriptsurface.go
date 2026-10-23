@@ -52,8 +52,8 @@
 // dot-names, a directory change or prefix whose argument expands, the raw text of any other
 // in-tree file naming .sample, dotglob or a .git directory, or a symlink into a .git
 // directory. The gate reads three things: the script surfaces; symlink targets; and every
-// other regular file outside .git except those no build runner executes (binary files,
-// docs, lockfiles and ignore files). The build is trusted, so a form written to evade them
+// other regular file except those no build runner executes (binary files, docs, lockfiles,
+// ignore files, and inside .git everything but the active hooks). The build is trusted, so a form written to evade them
 // is out of scope. A sample hook is not a script the walk reads, so sourcing one withholds.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
@@ -69,6 +69,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -289,7 +290,7 @@ var (
 	// sourceRE is the mention trigger for an in-tree file no surface parses. It leaves out
 	// hooks, which every React tree's src/hooks would match, and needs .sample to end a
 	// name, as a hook's does, so texture.sample( and ep.sample_params don't match.
-	sourceRE  = regexp.MustCompile(`\.sample(?:$|[^A-Za-z0-9_$(])|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
+	sourceRE  = regexp.MustCompile(`\.sample(?:$|[^A-Za-z0-9_(])|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
 	dotGlobRE = regexp.MustCompile(`(?:^|[\s/"'=;&|()<>` + "`" + `])\.[^\s/"'=;&|()<>` + "`" + `]*[*?\[{]`)
 	dynDirRE  = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|-C|--prefix|--cwd)(?:\s+-{1,2}[A-Za-z]*)*(?:\s+|=)[^\s;&|)]*[$` + "`" + `]`)
 )
@@ -303,40 +304,53 @@ func (v *Veto) trigger(text string) {
 var lockfiles = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.json": true, "yarn.lock": true,
 	"pnpm-lock.yaml": true, "bun.lock": true}
 
+// docNames are the base-name prefixes of docs that carry no extension (LICENSE, LICENSE-MIT).
+var docNames = []string{"license", "licence", "copying", "changelog", "authors"}
+
 // inertName reports whether no build runner executes the file at path, by its name: docs
-// (Markdown, reStructuredText, AsciiDoc, plain text, LICENSE, CHANGELOG, AUTHORS), a lockfile
-// or an ignore file (.gitignore, .dockerignore, .npmignore).
+// (Markdown, reStructuredText, AsciiDoc, or an extensionless docNames file), a lockfile or
+// an ignore file (.gitignore, .dockerignore, .npmignore). Plain text is read, since
+// CMakeLists.txt is a build script.
 func inertName(path string) bool {
 	lower := strings.ToLower(filepath.Base(path))
 	switch filepath.Ext(lower) {
-	case ".md", ".markdown", ".rst", ".adoc", ".txt":
+	case ".md", ".markdown", ".rst", ".adoc":
 		return true
+	case "":
+		for _, d := range docNames {
+			if strings.HasPrefix(lower, d) {
+				return true
+			}
+		}
 	}
-	return strings.HasPrefix(lower, "license") || strings.HasPrefix(lower, "changelog") ||
-		strings.HasPrefix(lower, "authors") || lockfiles[lower] || strings.HasSuffix(lower, "ignore")
+	return lockfiles[lower] || strings.HasSuffix(lower, "ignore")
 }
 
 // binarySniff is how much of a file's start is searched for a NUL byte, which marks it binary.
 const binarySniff = 8 << 10
 
 // treeReaches reports whether the build outside the script surfaces may reach a sample hook:
-// an in-tree regular file outside .git that is not a surface, not binary and not inertName
-// whose text sourceRE matches, or a symlink pointing into a .git directory, so a path that names neither
-// may reach a hooks directory. A file or link that cannot be read counts.
+// an in-tree regular file that is not a surface, not binary and not inertName whose text
+// sourceRE matches, or a symlink pointing into a .git directory, so a path that names neither
+// may reach a hooks directory. Inside a .git directory only active hooks are read. A file or
+// link that cannot be read counts.
 func (v *Veto) treeReaches() bool {
 	found := false
 	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
 		if err != nil {
 			return nil
 		}
-		// Nothing a build runs lives in a .git directory or a .git file (a worktree's or
-		// submodule's gitdir pointer) except hooks, which sampleHook classifies; git's own
-		// metadata names .git in remote URLs, logs and info/exclude.
-		if e.D.Name() == ".git" && !e.Symlink {
-			if e.D.IsDir() {
-				return filepath.SkipDir
-			}
+		// A .git file is a worktree's or submodule's gitdir pointer. Inside a .git directory
+		// only the active hooks run, so only regular files in a git hooks directory that are
+		// not sample hooks are read; the rest is git's metadata, which names .git in remote
+		// URLs, logs and info/exclude. A symlink named .git is still checked as a link.
+		if e.D.Name() == ".git" && !e.Symlink && !e.D.IsDir() {
 			return nil
+		}
+		if v.inGitDir(e.Path) {
+			if !e.D.Type().IsRegular() || !v.gitHooksFile(e.Path) || v.sampleHook(e.Path) {
+				return nil
+			}
 		}
 		if e.Escapes {
 			found = true
@@ -391,6 +405,13 @@ func (v *Veto) treeReaches() bool {
 // .sample. Any other .sample file (.githooks/, tools/hooks/, a directory under hooks) stays a
 // surface, as do an empty name and any other suffix.
 func (v *Veto) sampleHook(p string) bool {
+	stem, ok := strings.CutSuffix(filepath.Base(p), ".sample")
+	return ok && stem != "" && v.gitHooksFile(p)
+}
+
+// gitHooksFile reports whether p sits directly in a .git/hooks directory (the build root's
+// or a nested repository's) or a submodule's .git/modules/<name>/hooks.
+func (v *Veto) gitHooksFile(p string) bool {
 	rel, err := filepath.Rel(v.root, p)
 	if err != nil {
 		return false
@@ -398,9 +419,6 @@ func (v *Veto) sampleHook(p string) bool {
 	parts := strings.Split(rel, string(filepath.Separator))
 	n := len(parts)
 	if n < 3 || parts[n-2] != "hooks" {
-		return false
-	}
-	if stem, ok := strings.CutSuffix(parts[n-1], ".sample"); !ok || stem == "" {
 		return false
 	}
 	if parts[n-3] == ".git" {
@@ -423,6 +441,16 @@ func (v *Veto) setsEnv(src string) bool {
 		}
 	}
 	return false
+}
+
+// inGitDir reports whether p lies inside a directory named .git.
+func (v *Veto) inGitDir(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	return slices.Contains(parts[:len(parts)-1], ".git")
 }
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }

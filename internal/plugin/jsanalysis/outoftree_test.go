@@ -209,6 +209,109 @@ func TestCallGraph_OutOfTreePackageNeverOnlyInherent(t *testing.T) {
 
 		// W35-member-write
 		{"Function reached through own-key enumeration after a member write", map[string]string{"app.js": "const j = { parse: String };\nconst r = { run: s => s };\nr.constructor = Function;\nfor (const k of Object.keys(r)) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-*: each row holds one key, receiver, prototype-channel or 2a guard on its own.
+		// M-key-assignment
+		{"Function reached through an assignment-expression key binding", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nlet x;\nconst k = (x = process.argv[4]); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-generic
+		{"Function reached through a generic call key binding", map[string]string{"app.ts": "const j = { parse: String };\nfunction g() {}\nfunction id<T>(v: T): T { return v; }\nconst k = id<string>(process.argv[4]); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-Symbol-shadowed
+		{"Function reached through a shadowed Symbol key binding", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst Symbol = (s) => s;\nconst k = Symbol(process.argv[4]); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-undefined-shadowed
+		{"Function reached through a parameter named undefined", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nfunction h(undefined) { g[undefined](process.argv[3])(); }\nh(process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-rebound
+		{"Function reached through a key rebound by destructuring", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nlet k = 'name';\n[k] = [process.argv[4]];\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-compound
+		{"Function reached through a key extended with data", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nlet k = 'na';\nk += process.argv[4];\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-import
+		{"Function reached through an imported key", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nimport k from 'key-name';\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-top-var
+		{"Function reached through a top-level var key rewritten on the global object", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nvar k = 'name';\nglobalThis.k = process.argv[4];\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-symbol-description
+		{"Function reached through a key destructured from a symbol description", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst { description: k } = Symbol(process.argv[4]);\ng[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-entries-value
+		{"Function reached through an Object.entries value with a prototype channel", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst r = { a: process.argv[4] };\nfor (const [n, k] of Object.entries(r)) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-array-element
+		{"Function reached through a data element of an iterated array", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nfor (const k of ['name', process.argv[4]]) { g[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-Object-shadowed
+		{"Function reached through a shadowed Object.keys with a prototype channel", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst Object = { keys: () => [process.argv[4]] };\nconst r = { name: 1 };\nfor (const k of Object.keys(r)) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-reduce
+		{"Function reached through a reduce accumulator seeded with data", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\n['name'].reduce((k) => { g[k](process.argv[3])(); return k; }, process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-template-cut
+		{"Function reached through a template whose substitution holds a comma", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = `x${0, process.argv[4]}`.slice(1); g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-key-template-escape
+		{"Function reached through an escaped template piece", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = `\\x63${process.argv[4]}`; g[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-receiver-top-var
+		{"Function reached through a top-level var receiver rewritten on the global object", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nvar r = { run: (s) => s };\nglobalThis.r = g;\nconst k = process.argv[4];\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-receiver-rebound
+		{"Function reached through a receiver rebound by destructuring", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nlet r = { run: (s) => s };\n[r] = [g];\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-receiver-param-var
+		{"Function reached through a parameter redeclared as a function-scoped var", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nfunction invoke(r) { r[k](process.argv[3])(); var r = { run: (s) => s }; } invoke(g);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-receiver-constructor-key
+		{"Code evaluated through a constructor member of an enumerated literal", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst r = { run: (s) => s, constructor: require('vm').runInThisContext };\nfor (const k in r) { r[k](process.argv[3]); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-receiver-quoted-constructor-key
+		{"Code evaluated through a quoted constructor member of an enumerated literal", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst r = { run: (s) => s, 'constructor': require('vm').runInThisContext };\nfor (const k in r) { r[k](process.argv[3]); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-receiver-member
+		{"Function reached through a member receiver named like a local literal", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst r = { run: (s) => s };\nconst x = { r: g };\nconst k = process.argv[4];\nx.r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-enum-other-literal
+		{"Function reached through keys enumerated from a different literal with a prototype channel", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst x = { constructor: 1 };\nconst r = { run: (s) => s };\nfor (const k in x) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-enum-parameter
+		{"Code evaluated through keys enumerated from a parameter receiver", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nfunction h(r) { for (const k in r) { r[k](process.argv[3])(); } }\nh(require('vm'));\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-hidden-text
+		{"Function inherited through a prototype write in text the lexer blanks", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nconst el = <p>don't</p>; Object.setPrototypeOf(r, g);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-hidden-receiver
+		{"Function on a plain receiver in text the lexer blanks with a prototype channel elsewhere", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst other = {};\nObject.setPrototypeOf(other, g);\nconst k = process.argv[4];\nconst el = <p>don't</p>; const r = {}; r[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-computed-write
+		{"Function inherited through a computed write with a data key", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nr[process.argv[5]] = g;\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-quoted-key
+		{"Function inherited through a quoted __proto__ key in a prototype value", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nObject.setPrototypeOf(r, { '__proto__': g });\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-bare-key
+		{"Function inherited through a __proto__ key in a prototype value", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nObject.setPrototypeOf(r, { __proto__: g });\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-setPrototypeOf-alias
+		{"Function inherited through an aliased setPrototypeOf", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nconst sp = Object.setPrototypeOf;\nsp(r, g);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-Reflect.set-spread
+		{"Function inherited through Reflect.set with spread arguments", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nconst args = [r, '__proto__', g];\nReflect.set(...args);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-Reflect.set-key
+		{"Function inherited through Reflect.set with a data key", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nReflect.set(r, process.argv[5], g);\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-proto-member-assign
+		{"Function inherited through a __proto__ assignment", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst r = {};\nr.__proto__ = g;\nr[k](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-2a-package-path
+		{"Function reached through a constructor path array handed to a package", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst _ = require('lodash');\n_.get(g, ['constructor'])(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// M-2a-concat
+		{"Function reached through a constructor path array copied by concat", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst _ = require('lodash');\n_.get(g, ['constructor'].concat([]))(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
 		{"direct member head", map[string]string{"app.js": `
 const JSON5 = require('json5');
 function load(s) { return JSON5.parse(s); }

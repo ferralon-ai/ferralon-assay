@@ -2,9 +2,11 @@ package jsanalysis
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -100,6 +102,9 @@ type resolver struct {
 	// EXPOSES it; it does NOT apply it — the resolution methods below are unchanged this
 	// cycle. Consult it via lookupAlias.
 	bctx *buildContext
+	// packageOnly keeps every bare specifier a package resolution even when dependency code is
+	// read, so boundary nodes are still traced through it.
+	packageOnly bool
 }
 
 // resolver constructs the resolver at PLAN-162's injection point, wiring in the exposed
@@ -159,7 +164,7 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 		return resolution{}, false
 	}
 	b, ok := mi.bindings.imports[head]
-	if !ok || strings.HasPrefix(b.Specifier, "#") || isRelativeSpecifier(b.Specifier) {
+	if !ok || strings.HasPrefix(b.Specifier, "#") || isRelativeLoad(b.Specifier) {
 		return resolution{}, false
 	}
 	algo := algoESM
@@ -179,7 +184,7 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) bool {
 	conds := loadConditions(viaRequire)
 	switch {
-	case isRelativeSpecifier(spec):
+	case isRelativeLoad(spec):
 		return false
 	case strings.HasPrefix(spec, "#"):
 		pkg, pkgDir := rs.governingPackageJSON(fromModule)
@@ -189,7 +194,7 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		targets := exportsTargets(pkg.imports, spec, conds)
 		edge := rs.edgeModule(pkg.imports, spec, pkgDir)
 		for _, t := range targets {
-			if !isRelativeSpecifier(t) {
+			if !isRelativeTarget(t) {
 				// a `#…` chain or a package: edges are never built through either
 				// (resolveImportsSubpath), so its calls are missed even when it is in-tree
 				return true
@@ -334,7 +339,7 @@ func (rs *resolver) nodeModulesHas(fromModule, name string) bool {
 func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 	conds := loadConditions(false)
 	switch {
-	case isRelativeSpecifier(spec):
+	case isRelativeLoad(spec):
 		return false
 	case strings.HasPrefix(spec, "#"):
 		pkg, _ := rs.governingPackageJSON(fromModule)
@@ -345,7 +350,7 @@ func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 			return true
 		}
 		for _, t := range exportsTargets(pkg.imports, spec, conds) {
-			if !isRelativeSpecifier(t) && !strings.HasPrefix(t, "#") && rs.loadMeetsUnmodeledCondition(fromModule, t) {
+			if !isRelativeTarget(t) && !strings.HasPrefix(t, "#") && rs.loadMeetsUnmodeledCondition(fromModule, t) {
 				return true
 			}
 		}
@@ -439,7 +444,7 @@ func hasUnmodeledCondition(node interface{}, conds map[string]bool) bool {
 // builds no edges into, so loadsOutOfTree declares it.
 func (rs *resolver) edgeModule(field interface{}, subpath, dir string) string {
 	rel, _, ok := resolveExportsField(field, subpath, rs.conditions())
-	if !ok || !isRelativeSpecifier(rel) {
+	if !ok || !isRelativeTarget(rel) {
 		return ""
 	}
 	return rs.moduleFromDirRelative(dir, rel)
@@ -572,7 +577,7 @@ func conditionTargets(node interface{}, conds map[string]bool, out []string) []s
 // code runs on load and can itself load packages, yet this lane never reads it. A JSON file
 // is data and runs nothing, and so, under stock tooling, is a stylesheet in the build tree.
 func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
-	if !isRelativeSpecifier(spec) || rs.resolveRelative(fromModule, spec) != "" {
+	if !isRelativeLoad(spec) || rs.resolveRelative(fromModule, spec) != "" {
 		return false
 	}
 	ext := path.Ext(spec)
@@ -589,7 +594,7 @@ func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
 // stylesheetImport reports whether spec is a relative import of a stylesheet that
 // stylesheetRunsNoCode exempts from unresolved_module; the caller declares its loader runtime.
 func (rs *resolver) stylesheetImport(fromModule, spec string) bool {
-	return isRelativeSpecifier(spec) && stylesheetExtensions[path.Ext(spec)] &&
+	return isRelativeLoad(spec) && stylesheetExtensions[path.Ext(spec)] &&
 		rs.resolveRelative(fromModule, spec) == "" &&
 		rs.stylesheetRunsNoCode(fromModule, path.Join(path.Dir(fromModule), spec))
 }
@@ -677,7 +682,7 @@ func (rs *resolver) resolveBinding(fromModule string, b binding, arity int) reso
 	switch {
 	case strings.HasPrefix(spec, "#"):
 		return rs.resolveImportsSubpath(fromModule, spec, b.Imported, arity)
-	case isRelativeSpecifier(spec):
+	case isRelativeLoad(spec):
 		target := rs.resolveRelative(fromModule, spec)
 		if target == "" {
 			return unresolvedWith(plugin.PartialReasonDynamicDispatch)
@@ -697,6 +702,9 @@ func (rs *resolver) resolveBareSpecifier(fromModule, spec, imported string, arit
 	}
 	if target, conds, ok := rs.resolveWorkspaceMember(fromModule, spec); ok {
 		return rs.lookupImportedName(target, imported, arity, provenance{Algo: algoExports, Conditions: conds})
+	}
+	if rs.prog.deps != nil && !rs.packageOnly {
+		return rs.resolveDepBare(fromModule, spec, imported, arity, algo)
 	}
 	return resolution{
 		Kind:    resolvePackage,
@@ -799,7 +807,7 @@ func (rs *resolver) resolveModuleOfBinding(fromModule string, b binding) (string
 	if b.Kind == bindRequire {
 		algo = algoCJS
 	}
-	if isRelativeSpecifier(b.Specifier) {
+	if isRelativeLoad(b.Specifier) {
 		return rs.resolveRelative(fromModule, b.Specifier), algo
 	}
 	if target, _, ok := rs.resolveWorkspaceMember(fromModule, b.Specifier); ok {
@@ -808,13 +816,13 @@ func (rs *resolver) resolveModuleOfBinding(fromModule string, b binding) (string
 	if target, _, ok := rs.resolveTsPaths(fromModule, b.Specifier); ok {
 		return target, algoPathsAlias
 	}
-	return "", algo
+	return rs.depModuleOfSpecifier(fromModule, b.Specifier, b.Kind == bindRequire), algo
 }
 
 // resolveModuleOfSpecifier resolves a specifier (relative or bare-first-party) to an
 // in-tree module, for re-export following.
 func (rs *resolver) resolveModuleOfSpecifier(fromModule, spec string) string {
-	if isRelativeSpecifier(spec) {
+	if isRelativeLoad(spec) {
 		return rs.resolveRelative(fromModule, spec)
 	}
 	if target, _, ok := rs.resolveWorkspaceMember(fromModule, spec); ok {
@@ -823,25 +831,134 @@ func (rs *resolver) resolveModuleOfSpecifier(fromModule, spec string) string {
 	if target, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
 		return target
 	}
+	return rs.depModuleOfSpecifier(fromModule, spec, false)
+}
+
+// resolveRelative resolves a relative specifier against fromModule's directory the way Node's
+// CommonJS loader does: a file first (the module set is extension-stripped), then the directory
+// (dirModule). A specifier Node treats as naming a directory (".", "..", or one ending in "/",
+// "/." or "/..") skips the file step. A candidate above the build root resolves to nothing.
+func (rs *resolver) resolveRelative(fromModule, spec string) string {
+	m, _, _ := rs.resolveRelativeDir(fromModule, spec)
+	return m
+}
+
+// resolveRelativeDir is resolveRelative that also reports, when the load reaches Node's
+// directory step, the build-root-relative directory it loads (viaDir true).
+func (rs *resolver) resolveRelativeDir(fromModule, spec string) (mod, dir string, viaDir bool) {
+	cand := path.Join(moduleDir(fromModule), spec)
+	cand = strings.TrimPrefix(cand, "./")
+	if cand == ".." || strings.HasPrefix(cand, "../") {
+		return "", "", false
+	}
+	if cand == "." {
+		cand = ""
+	}
+	if !namesDirectory(spec) {
+		// Vue SFC specifiers are, by tooling convention, always written with the extension
+		// ("./App.vue"); strip it so the candidate matches the `.vue`-stripped module id.
+		// Extensionless specifiers (the JS/TS norm) are unaffected.
+		file := cand
+		if path.Ext(file) == vueExtension {
+			file = strings.TrimSuffix(file, vueExtension)
+		}
+		if rs.prog.moduleSet[file] {
+			return file, "", false
+		}
+		// Package code commonly requires a sibling by its file name ("./lib/parse.js").
+		if stripped := stripJSExt(file); rs.prog.deps.owns(fromModule) && rs.prog.moduleSet[stripped] {
+			return stripped, "", false
+		}
+	}
+	return rs.dirModule(cand), cand, true
+}
+
+// namesDirectory reports whether Node's CommonJS loader resolves spec as a directory only,
+// never trying it as a file: ".", "..", or a specifier ending in "/", "/." or "/..".
+func namesDirectory(spec string) bool {
+	return spec == "." || spec == ".." || strings.HasSuffix(spec, "/") ||
+		strings.HasSuffix(spec, "/.") || strings.HasSuffix(spec, "/..")
+}
+
+// dirModule is the module Node's LOAD_AS_DIRECTORY selects for build-root-relative dir: the
+// file its package.json "main" names, else dir/index. A main that selects no parsed module
+// resolves to nothing rather than falling back to index: Node falls back only when the main
+// file is missing, which the module set cannot tell apart from a main naming a file the lane
+// did not parse. So does a directory whose package.json cannot be read (dirMain).
+func (rs *resolver) dirModule(dir string) string {
+	main, ok := rs.dirMain(dir)
+	switch {
+	case !ok:
+		return ""
+	case main != "":
+		return rs.depModuleAt(dir, main)
+	}
+	idx := path.Join(dir, "index")
+	if rs.prog.moduleSet[idx] {
+		return idx
+	}
 	return ""
 }
 
-// resolveRelative resolves a relative specifier against fromModule's directory and
-// selects an in-tree module by extension/index rules (module set is extension-stripped).
-func (rs *resolver) resolveRelative(fromModule, spec string) string {
-	dir := path.Dir(fromModule)
-	if dir == "." {
-		dir = ""
+// dirMain returns the "main" of the package.json in build-root-relative dir ("" when there is
+// none, or it names no main). ok is false when the lane cannot know it: a package.json inside a
+// read dependency package below its root (the tarball's file list shows it, but only the root
+// manifest is kept), any directory under node_modules that is not a read package's root (whose
+// files the lane never reads from disk), or a first-party package.json that cannot be read or
+// parsed.
+func (rs *resolver) dirMain(dir string) (string, bool) {
+	if d := rs.prog.deps; d != nil {
+		if p := d.pkgs[dir]; p != nil {
+			if p.manifest == nil {
+				return "", false
+			}
+			return p.manifest.main, true
+		}
+		if ip := installPathOf(dir + "/x"); ip != "" {
+			p := d.pkgs[ip]
+			if p == nil || p.files[strings.TrimPrefix(dir, ip+"/")+"/package.json"] {
+				return "", false
+			}
+			return "", true
+		}
 	}
-	cand := path.Join(dir, spec)
-	cand = strings.TrimPrefix(cand, "./")
-	// Vue SFC specifiers are, by tooling convention, always written with the extension
-	// ("./App.vue"); strip it so the candidate matches the `.vue`-stripped module id.
-	// Extensionless specifiers (the JS/TS norm) are unaffected.
-	if path.Ext(cand) == vueExtension {
-		cand = strings.TrimSuffix(cand, vueExtension)
+	if underNodeModules(dir) {
+		return "", false
 	}
-	return rs.matchModule(cand)
+	if rs.prog.dirMains == nil {
+		rs.prog.dirMains = map[string]dirMainEntry{}
+	}
+	if e, ok := rs.prog.dirMains[dir]; ok {
+		return e.main, e.ok
+	}
+	e := dirMainEntry{ok: true}
+	data, err := readRegular(filepath.Join(rs.prog.root, filepath.FromSlash(dir), "package.json"))
+	switch {
+	case err == nil:
+		if m := parsePkgManifest(data); m != nil {
+			e.main = m.main
+		} else {
+			e.ok = false
+		}
+	case !absent(err):
+		rs.prog.readFailed = true
+		e.ok = false
+	}
+	rs.prog.dirMains[dir] = e
+	return e.main, e.ok
+}
+
+// dirMainEntry caches one first-party directory's dirMain answer.
+type dirMainEntry struct {
+	main string
+	ok   bool
+}
+
+// underNodeModules reports whether build-root-relative dir is a node_modules directory or lies
+// inside one.
+func underNodeModules(dir string) bool {
+	return dir == "node_modules" || strings.HasPrefix(dir, "node_modules/") ||
+		strings.HasSuffix(dir, "/node_modules") || strings.Contains(dir, "/node_modules/")
 }
 
 // matchModule returns the module path when cand (or cand/index) is an in-tree module.
@@ -871,7 +988,18 @@ func (rs *resolver) conditions() []string {
 	return []string{"import", "node", "default"}
 }
 
-func isRelativeSpecifier(spec string) bool {
+// isRelativeLoad reports whether a specifier written in source resolves against the loading
+// file's directory: ".", "..", or a "./" or "../" prefix. This is Node's ESM rule, and its
+// CommonJS rule except for a specifier such as "..foo", which CommonJS loads as a file and ESM
+// rejects as an invalid package name (see validNPMName for how dependency code accounts for it).
+func isRelativeLoad(spec string) bool {
+	return spec == "." || spec == ".." || isRelativeTarget(spec)
+}
+
+// isRelativeTarget reports whether a package.json exports, imports or browser target is a path
+// inside the package. Node requires such a target to start with "./" and rejects "." and "..",
+// so this is stricter than isRelativeLoad.
+func isRelativeTarget(spec string) bool {
 	return strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")
 }
 
@@ -911,6 +1039,10 @@ type pkgManifest struct {
 	workspaces []string
 	exports    interface{}
 	imports    interface{}
+	// frontEntries are the module and browser field targets a bundler building for the
+	// browser may load in place of main: the module field, a string browser field, and every
+	// path an object browser field maps to.
+	frontEntries []string
 }
 
 type rawPkg struct {
@@ -920,6 +1052,8 @@ type rawPkg struct {
 	Workspaces json.RawMessage `json:"workspaces"`
 	Exports    json.RawMessage `json:"exports"`
 	Imports    json.RawMessage `json:"imports"`
+	Module     string          `json:"module"`
+	Browser    json.RawMessage `json:"browser"`
 }
 
 func parsePkgManifest(data []byte) *pkgManifest {
@@ -928,6 +1062,22 @@ func parsePkgManifest(data []byte) *pkgManifest {
 		return nil
 	}
 	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main}
+	if rp.Module != "" {
+		m.frontEntries = append(m.frontEntries, rp.Module)
+	}
+	if len(rp.Browser) > 0 {
+		var one string
+		var byPath map[string]any
+		if json.Unmarshal(rp.Browser, &one) == nil && one != "" {
+			m.frontEntries = append(m.frontEntries, one)
+		} else if json.Unmarshal(rp.Browser, &byPath) == nil {
+			for _, k := range slices.Sorted(maps.Keys(byPath)) {
+				if t, ok := byPath[k].(string); ok && isRelativeTarget(t) {
+					m.frontEntries = append(m.frontEntries, t)
+				}
+			}
+		}
+	}
 	if len(rp.Exports) > 0 {
 		_ = json.Unmarshal(rp.Exports, &m.exports)
 	}
@@ -954,6 +1104,9 @@ func parsePkgManifest(data []byte) *pkgManifest {
 // governingPackageJSON finds the nearest package.json up-tree from fromModule's file,
 // returning its parsed manifest and its build-root-relative directory.
 func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, string) {
+	if p := rs.prog.deps.pkgOf(fromModule); p != nil {
+		return p.manifest, p.entry.path
+	}
 	dir := path.Dir(fromModule)
 	if dir == "." {
 		dir = ""
@@ -981,6 +1134,9 @@ func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, strin
 // (by that member's package.json name) to a first-party module through the member's own
 // exports/main. Returns the target module and the condition set consulted.
 func (rs *resolver) resolveWorkspaceMember(fromModule, spec string) (string, []string, bool) {
+	if rs.prog.deps.owns(fromModule) {
+		return "", nil, false
+	}
 	root, ok := rs.rootManifest()
 	if !ok || len(root.workspaces) == 0 {
 		return "", nil, false
@@ -1288,6 +1444,9 @@ func (rs *resolver) loadTsconfig(dir, rel string, depth int) *tsconfigResolved {
 // resolves the mapped location to an in-tree module. Returns the module and the governing
 // tsconfig path.
 func (rs *resolver) resolveTsPaths(fromModule, spec string) (string, string, bool) {
+	if rs.prog.deps.owns(fromModule) {
+		return "", "", false
+	}
 	ts := rs.governingTsconfig(fromModule)
 	if ts == nil || len(ts.paths) == 0 {
 		return "", "", false

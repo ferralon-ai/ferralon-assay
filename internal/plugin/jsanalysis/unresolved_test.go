@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/artifactcache"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -19,7 +20,7 @@ import (
 func TestMain(m *testing.M) {
 	var mu sync.Mutex
 	var broken []string
-	graphBuilt = func(dir string, b graphBuild) {
+	graphBuilt = func(dir string, b builtGraph) {
 		if v := completenessViolations(b); len(v) > 0 {
 			mu.Lock()
 			broken = append(broken, dir+": "+strings.Join(v, "; "))
@@ -53,7 +54,7 @@ var siteReasons = []string{
 // reason the graph declares is carried by an entry (or unlisted_sites is declared); an entry's
 // reason is one the graph declares; Targets appears only on a declined name; Escaped is a set of
 // roots.
-func completenessViolations(b graphBuild) []string {
+func completenessViolations(b builtGraph) []string {
 	var v []string
 	res := b.res
 	if len(res.Unresolved) != b.declined {
@@ -531,5 +532,28 @@ func TestCompletenessViolations_CatchesADroppedEntry(t *testing.T) {
 	hidden.unlisted = true
 	if len(completenessViolations(hidden)) == 0 {
 		t.Error("an unlisted site without unlisted_sites passed")
+	}
+}
+
+// TestCallGraph_DependencyCodeDeclaresUnlisted: Unresolved and Escaped list first-party code
+// only, so a graph with dependency code read into it declares unlisted_sites, and an unconnected
+// call in that code draws no edge. With the package unread, the graph is the first-party one.
+func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
+	dep := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"dep","version":"1.0.0"}`,
+		"index.js":     "function hook() { return 1; }\nexports.run = function run() { hook?.(); };\n",
+	}}
+	f := newDepFixture(t, map[string]string{"index.js": "require('dep').run();\n"}, dep)
+	head := withDeps(t, f.dir, f.memStore())
+	if !hasReason(head.Partiality, plugin.PartialReasonUnlistedSites) {
+		t.Errorf("dependency code read without unlisted_sites: %+v", head.Partiality)
+	}
+	for _, e := range head.Edges {
+		if strings.Contains(e.Callee.SCIP, "hook") {
+			t.Errorf("an optional call in dependency code drew an edge: %s -> %s", e.Caller.SCIP, e.Callee.SCIP)
+		}
+	}
+	if absent := withDeps(t, f.dir, artifactcache.NewDeclaredAbsentStore()); hasReason(absent.Partiality, plugin.PartialReasonUnlistedSites) {
+		t.Errorf("control: no dependency code read, yet unlisted_sites: %+v", absent.Partiality)
 	}
 }

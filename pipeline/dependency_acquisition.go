@@ -327,6 +327,18 @@ func inventoryBuildLanguage(store artifact.Store, caseID string) (string, string
 	return inv.BuildDir, root, inv.Language, nil
 }
 
+// cacheFor returns the dependency cache the JS lane reads for caseID: set only when
+// dependency_acquisition ran for it.
+func (a *dependencyAcquirer) cacheFor(store artifact.Store, caseID string) string {
+	if a == nil {
+		return ""
+	}
+	if _, ok := DependencyAcquisitionOf(store, caseID); !ok {
+		return ""
+	}
+	return a.cfg.CacheDir
+}
+
 // DependencyAcquisitionOf returns the dependency_acquisition result recorded for caseID, and
 // whether the stage ran.
 func DependencyAcquisitionOf(store artifact.Store, caseID string) (DependencyAcquisitionResult, bool) {

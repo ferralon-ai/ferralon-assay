@@ -114,7 +114,17 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 package-lock spec drift", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": exLockV3}, false},
 		{"S1 yarn spec drift", map[string]string{"package.json": pkgJSONDrift, "yarn.lock": exYarnLock}, false},
 		{"S1 pnpm spec drift", map[string]string{"package.json": pkgJSONDrift, "pnpm-lock.yaml": exPnpmV9}, false},
-		{"S1 package-lock v1 records no specs", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, false},
+		// ferralon-ai/tracker#495: a v1 lock records no specs, so it covers its root project
+		// when each locked version satisfies the declared range, and nothing less.
+		{"#495 package-lock v1 whose versions satisfy every range", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, true},
+		{"#495 package-lock v1 version outside its range", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 against a range form not modelled", map[string]string{"package.json": `{"name":"app","dependencies":{"express":">= 4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 against an x-range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"4.x"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, true},
+		{"#495 package-lock v1 locking a prerelease", map[string]string{"package.json": exPkgJSON, "package-lock.json": strings.Replace(lockV1, "4.18.2", "4.19.0-rc.1", 1)}, false},
+		{"#495 package-lock v1 locking the name only nested", map[string]string{"package.json": exPkgJSON, "package-lock.json": `{"name":"app","lockfileVersion":1,"dependencies":{"left-pad":{"version":"1.3.0","dependencies":{"express":{"version":"4.18.2"}}}}}`}, false},
+		{"#495 package-lock v1 governing a nested project", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1, "tools/package.json": toolJSON}, false},
+		{"#495 package-lock v1 root peer outside its range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"left-pad":"^2.0.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 root peer inside its range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, true},
 		{"S1 nested project the lock does not record", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": toolJSON}, false},
 		{"S1 nested project the lock does not record, declaring only a peer it keys", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": `{"name":"tool","peerDependencies":{"express":"^4.18.0"}}`}, false},
 		{"S1 nested workspace the lock records", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV3Tools, "tools/package.json": toolJSON}, true},
@@ -225,6 +235,74 @@ func TestResolveVersions_ExhaustiveLegacyPeerOnlyWorkspace(t *testing.T) {
 	}
 	if r.Exhaustive {
 		t.Fatalf("Exhaustive = true, want false")
+	}
+}
+
+// ferralon-ai/tracker#506: an npm v2/v3 project's own peer covers only when the copy it resolves to
+// in the lock (the nearest <dir>/node_modules/<name> from the project up) satisfies its recorded
+// range. The root shape is the lock npm 11.14.1 writes with --legacy-peer-deps for debug 2.6.9
+// plus a root peer ms ^2.1.0: ms stays 2.0.0, and a plain npm install adds ms 2.1.3.
+func TestResolveVersions_ExhaustivePeerSatisfied(t *testing.T) {
+	const toolPkg = `{"name":"tool","version":"1.0.0","dependencies":{"debug":"2.6.9"},"peerDependencies":{"react":"^18.0.0"}}`
+	rootPkg := func(peer string) string {
+		return `{"name":"app","version":"1.0.0","workspaces":["tools"],"dependencies":{"debug":"2.6.9"},"peerDependencies":{` + peer + `}}`
+	}
+	// lock records the root (debug 2.6.9 and rootPeer) and the tools workspace (debug 2.6.9 and
+	// react ^18.0.0), plus the given install-path entries.
+	lock := func(rootPeer string, entries ...string) string {
+		return `{"name":"app","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{
+  "": {"name":"app","version":"1.0.0","workspaces":["tools"],"dependencies":{"debug":"2.6.9"},"peerDependencies":{` + rootPeer + `}},
+  "node_modules/debug": {"version":"2.6.9","dependencies":{"ms":"2.0.0"}},
+  "node_modules/tool": {"resolved":"tools","link":true},
+  "tools": {"name":"tool","version":"1.0.0","dependencies":{"debug":"2.6.9"},"peerDependencies":{"react":"^18.0.0"}},
+  ` + strings.Join(entries, ",\n  ") + `}}`
+	}
+	const (
+		ms200    = `"node_modules/ms": {"version":"2.0.0"}`
+		ms213    = `"node_modules/ms": {"version":"2.1.3"}`
+		react17  = `"node_modules/react": {"version":"17.0.2"}`
+		react18  = `"node_modules/react": {"version":"18.3.1"}`
+		msPeer   = `"ms":"^2.1.0"`
+		toolPeer = `"tool":"^1.0.0"`
+	)
+	tests := []struct {
+		name     string
+		rootPeer string
+		entries  []string
+		want     bool
+	}{
+		{"root peer the lock keeps below its range (--legacy-peer-deps)", msPeer, []string{ms200, react18}, false},
+		{"root peer satisfied", msPeer, []string{ms213, react18}, true},
+		{"workspace peer unsatisfied", msPeer, []string{ms213, react17}, false},
+		{"workspace peer satisfied by its own copy over the root's", msPeer,
+			[]string{ms213, react17, `"tools/node_modules/react": {"version":"18.3.1"}`}, true},
+		{"workspace peer shadowed by its own unsatisfying copy", msPeer,
+			[]string{ms213, react18, `"tools/node_modules/react": {"version":"17.0.2"}`}, false},
+		{"root peer with no copy it resolves to", msPeer,
+			[]string{`"node_modules/debug/node_modules/ms": {"version":"2.1.3"}`, react18}, false},
+		{"root peer range latest", `"ms":"latest"`, []string{ms213, react18}, false},
+		{"root peer git URL", `"ms":"github:vercel/ms"`, []string{ms213, react18}, false},
+		{"root peer on an aliased copy", msPeer, []string{`"node_modules/ms": {"name":"other","version":"2.1.3"}`, react18}, false},
+		{"root peer || range the lock satisfies", msPeer + `,"react":"^17.0.0 || ^18.0.0"`, []string{ms213, react18}, true},
+		{"root peer || range the lock does not satisfy", msPeer + `,"react":"^16 || ^17"`, []string{ms213, react18}, false},
+		{"root peer on a workspace link", msPeer + "," + toolPeer, []string{ms213, react18}, true},
+		{"root peer on a workspace link outside its range", msPeer + `,"tool":"^2.0.0"`, []string{ms213, react18}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{
+				"package.json":       rootPkg(tt.rootPeer),
+				"tools/package.json": toolPkg,
+				"package-lock.json":  lock(tt.rootPeer, tt.entries...),
+			}
+			r := resolveJS(t, writeLockTree(t, files), "absent-package")
+			if r.Found {
+				t.Fatalf("absent-package unexpectedly found")
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
 	}
 }
 

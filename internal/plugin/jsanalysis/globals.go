@@ -66,7 +66,7 @@ type globalDecl struct {
 	kind byte
 }
 
-func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
+func newGlobalScope(clean, src []rune, tf *thisFrames) *globalScope {
 	gs := &globalScope{tf: tf, byScope: map[int]map[string][]int{}, sites: map[int]bool{},
 		thisArg: map[int][2]int{}, thisIs: map[int]bool{}, fnDecl: map[int]int{},
 		kwFrame: map[int]int{}, retThis: map[int]bool{}}
@@ -207,7 +207,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 				break
 			}
 			kind = 'i'
-			for _, at := range importSites(clean, next) {
+			for _, at := range importSites(clean, src, next) {
 				name, _ := readWord(clean, at)
 				add(tf.block(i), at, name, 0, 0, false, false) // inside a block, a namespace's alias
 			}
@@ -526,7 +526,7 @@ func declareBlock(clean []rune, open int) bool {
 // at p binds: `import a, { b as c, type d } from` binds a, c and d; `import * as e from`
 // binds e; `import f = require(...)` binds f. A dynamic import() or import.meta binds none,
 // and neither does a TypeScript type-only import (`import type ...`, `{ type g }`).
-func importSites(clean []rune, p int) []int {
+func importSites(clean, src []rune, p int) []int {
 	n := len(clean)
 	if q := skipSpace(clean, p); q >= n || clean[q] == '(' || clean[q] == '.' {
 		return nil
@@ -538,8 +538,8 @@ func importSites(clean []rune, p int) []int {
 	typeOnly := false
 	for q := p; q < n; {
 		q = skipSpace(clean, q)
-		if q >= n || clean[q] == ';' || clean[q] == '_' {
-			break // the end, or the blanked module string
+		if q >= n || clean[q] == ';' || clean[q] == '_' && isStrAt(src, q) {
+			break // the end, or the blanked module string (a "_" in src starts a name)
 		}
 		if !isIdentStart(clean[q]) {
 			if clean[q] == '{' || clean[q] == ',' {

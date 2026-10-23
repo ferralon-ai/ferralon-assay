@@ -27,10 +27,11 @@ import (
 
 // unreadSurfaces reports whether any install surface under root goes unread, and whether a
 // script surface may install a package no lock or manifest read here names
-// (scriptsurface.Veto.Withheld); locks is what lockFiles(root) returned.
-func unreadSurfaces(root string, locks []string) (unread, scriptWithheld bool) {
+// (scriptsurface.Veto.Withheld); locks maps each path lockFiles(root) returned to what
+// parseLockfile read from it.
+func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithheld bool) {
 	read := make(map[string]bool, len(locks))
-	for _, l := range locks {
+	for l := range locks {
 		read[l] = true
 	}
 	for _, m := range packageManifests(root) {
@@ -38,7 +39,7 @@ func unreadSurfaces(root string, locks []string) (unread, scriptWithheld bool) {
 			read[m] = true
 		}
 	}
-	veto := scriptsurface.New(root, func(path string) bool { return read[path] }, scriptSpec)
+	veto := scriptsurface.New(root, func(path string) bool { return read[path] }, scriptSpec(root, locks))
 	for _, c := range buildtree.Candidates(root, veto.Classify(npmInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true

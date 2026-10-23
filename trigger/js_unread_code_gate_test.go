@@ -347,6 +347,7 @@ func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 		{"Function reached through a private field named like a local literal", "const j = { parse: String };\nfunction g() {}\nclass A { #o = g; m(k) { const o = {}; return this.#o[k](process.argv[3])(); } }\nnew A().m(process.argv[4]);\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		// X18-key
 		{"Function reached through a private field key named like a safe local key", "const j = { parse: String };\nfunction g() {}\nclass A { #k = process.argv[4]; m() { const k = 'name'; return g[this.#k](process.argv[3])(); } }\nnew A().m();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+		{"Function read through a descriptor value named by a concatenated key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4];\nconst v = 'val' + 'ue';\nObject.getOwnPropertyDescriptor(Object.getPrototypeOf(g), k)[v](process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		// E01p
 		{"Function enumerated from a literal after a member write of a reflective read", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\no.b = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		// E02p
@@ -1217,6 +1218,9 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 
 		// C3
 		{"top-level const dispatch table indexed by data", "const j = { parse: String };\nconst table = { run: s => s }; table[process.argv[4]]('x');", nil},
+
+		// C3-private
+		{"top-level const dispatch table beside a written private field of its name", "const j = { parse: String };\nconst table = { run: s => s }; class A { #table = {}; m() { this.#table.run = null; } } table[process.argv[4]]('x');", nil},
 
 		// C5
 		{"function array indexed by a numeric counter", "const j = { parse: String };\nconst table = [s => s]; for (let i = 0; i < table.length; i++) table[i]('x');", nil},

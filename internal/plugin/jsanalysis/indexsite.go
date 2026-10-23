@@ -960,7 +960,7 @@ func (gs *globalScope) enumReceiverOK(clean, src []rune, recv int, enums []int) 
 	}
 	ds := gs.lookup(name, recv)
 	for _, e := range enums {
-		if w, _ := peekWord(clean, e); w != name || e > 0 && clean[e-1] == '#' || !gs.sameVariable(name, ds, e) {
+		if w, _ := peekWord(clean, e); w != name || !gs.sameVariable(name, ds, e) {
 			return false
 		}
 	}

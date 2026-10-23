@@ -730,6 +730,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 // withholds, as does a runner with none or nested too deep.
 func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 	why := "install command: " + strings.Join(words, " ")
+	// Each nested command is a strictly shorter string, so the depth bound here is defence in
+	// depth; a run wrapper's script body is not, and needs it.
 	if len(cmds) == 0 || depth >= maxRunDepth {
 		return why
 	}

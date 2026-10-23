@@ -514,3 +514,28 @@ func TestDependencyAcquisitionStageOptIn(t *testing.T) {
 		t.Fatalf("stage order %s", got)
 	}
 }
+
+// The JS lane is handed the dependency cache only for a case dependency_acquisition ran for.
+func TestDependencyCacheForRequiresTheStage(t *testing.T) {
+	cache := t.TempDir()
+	acq := &dependencyAcquirer{cfg: DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: cache}}
+	ran := &assessment.Assessment{ID: "ran"}
+	store := artifact.NewMemStore()
+	if _, err := PutArtifact(store, ran, "dependency_acquisition", TypeDependencyAcquisition, "", DependencyAcquisitionResult{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		acq    *dependencyAcquirer
+		caseID string
+		want   string
+	}{
+		{"no acquirer", nil, "ran", ""},
+		{"stage did not run", acq, "other", ""},
+		{"stage ran", acq, "ran", cache},
+	} {
+		if got := tc.acq.cacheFor(store, tc.caseID); got != tc.want {
+			t.Errorf("%s: cacheFor = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

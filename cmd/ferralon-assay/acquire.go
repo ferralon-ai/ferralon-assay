@@ -166,14 +166,23 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	}
 	var goOpts []plugin.Option
 	if language == checkout.LangGo {
-		dir := scanGoRunCacheDir()
+		dir := scanRunCacheDir("go")
 		if dir != "" {
 			prev := cleanup
 			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
 		}
 		goOpts = append(goOpts, plugin.WithRunCacheDir(dir))
 	}
-	lp, err := selectPlugin(language, pluginBin, graph, goOpts, cfOpts...)
+	var jsOpts []plugin.JSOption
+	if language == checkout.LangJS {
+		dir := scanRunCacheDir("js")
+		if dir != "" {
+			prev := cleanup
+			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
+		}
+		jsOpts = append(jsOpts, plugin.WithJSRunCacheDir(dir))
+	}
+	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, cfOpts...)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -198,7 +207,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 // (the -plugin-go flag); when empty each constructor discovers its binary on PATH. Only one
 // plugin runs per scan (the tree is a single language), so a single override suffices. cfOpts
 // apply to the C-family plugin only, goOpts to the Go plugin only.
-func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
+func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
 	var graphFile string
 	if graph != nil {
 		graphFile = graph.file
@@ -223,9 +232,9 @@ func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option,
 		return plugin.NewKotlinPlugin(opts...)
 	case checkout.LangJS:
 		if bin != "" {
-			return plugin.NewJSPlugin(plugin.WithJSBinaryPath(bin))
+			jsOpts = append(jsOpts, plugin.WithJSBinaryPath(bin))
 		}
-		return plugin.NewJSPlugin()
+		return plugin.NewJSPlugin(jsOpts...)
 	case checkout.LangPython:
 		if bin != "" {
 			return plugin.NewPythonPlugin(plugin.WithPythonBinaryPath(bin))
@@ -266,16 +275,17 @@ func scanWasmCacheDir() string {
 	return dir
 }
 
-// scanGoRunCacheDir creates the private directory one scan's Go analyzer subprocesses share
-// per-tree results through (plugin.WithRunCacheDir). The caller removes it when the scan ends.
+// scanRunCacheDir creates the private directory one scan's analyzer subprocesses for lang share
+// per-tree results through (plugin.WithRunCacheDir, plugin.WithJSRunCacheDir). The caller removes
+// it when the scan ends.
 // Unlike the wasm cache it is never taken from the operator: its entries are keyed on the build
 // directory's path, so a directory that outlived one scan could answer for another tree at that
 // path. A directory that cannot be created leaves every advisory computing its own, which is slower
 // and changes no result.
-func scanGoRunCacheDir() string {
-	dir, err := os.MkdirTemp("", "assay-go-run-cache-")
+func scanRunCacheDir(lang string) string {
+	dir, err := os.MkdirTemp("", "assay-"+lang+"-run-cache-")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: go run cache dir: %v; each advisory rescans the tree\n", err)
+		fmt.Fprintf(os.Stderr, "warning: %s run cache dir: %v; each advisory rescans the tree\n", lang, err)
 		return ""
 	}
 	return dir

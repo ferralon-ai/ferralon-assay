@@ -61,7 +61,26 @@ func boundaryPackage(scip string) string {
 		spec = spec[:i]
 	}
 	name, _ := splitBareSpecifier(spec)
+	if i := strings.LastIndexByte(name, '@'); i > 0 {
+		name = name[:i]
+	}
 	return name
+}
+
+// purlVersion returns the version a pkg:npm PURL pins for package name, or "" when it names
+// another package or no version.
+func purlVersion(purl, name string) string {
+	if name == "" || npmPURLName(purl) != name {
+		return ""
+	}
+	if i := strings.IndexAny(purl, "?#"); i >= 0 {
+		purl = purl[:i]
+	}
+	i := strings.LastIndexByte(purl, '@')
+	if i <= strings.LastIndexByte(purl, '/') {
+		return ""
+	}
+	return purl[i+1:]
 }
 
 // boundaryResolver traces call sites to boundary nodes over one parsed program.
@@ -309,8 +328,13 @@ var internalEntries = map[string]map[string][]string{
 // boundaryCandidates returns the boundary ids an advisory symbol can name for package pkg:
 // the symbol with its "<pkg>." qualifier stripped (tough-cookie's symbols carry none), the
 // receiver table's spelling of its first segment (express res → response), and the public
-// members internalEntries says run it.
-func boundaryCandidates(pkg, symbol string) []string {
+// members internalEntries says run it. A non-empty version names the ids of the copy
+// installed at that version (npm:<pkg>@<version>#…) instead.
+func boundaryCandidates(pkg, version, symbol string) []string {
+	spec := pkg
+	if version != "" {
+		spec = pkg + "@" + version
+	}
 	path := stripArity(symbol)
 	if rest, ok := strings.CutPrefix(path, pkg+"."); ok {
 		path = rest
@@ -319,14 +343,14 @@ func boundaryCandidates(pkg, symbol string) []string {
 		return nil
 	}
 	segs := strings.Split(path, ".")
-	out := []string{boundaryRef{spec: pkg, members: segs}.id()}
+	out := []string{boundaryRef{spec: spec, members: segs}.id()}
 	if m := modelFor(pkg); m != nil {
 		if canon, ok := m.aliases[segs[0]]; ok {
-			out = append(out, boundaryRef{spec: pkg, members: append([]string{canon}, segs[1:]...)}.id())
+			out = append(out, boundaryRef{spec: spec, members: append([]string{canon}, segs[1:]...)}.id())
 		}
 	}
 	for _, member := range internalEntries[pkg][path] {
-		out = append(out, boundaryRef{spec: pkg, members: strings.Split(member, ".")}.id())
+		out = append(out, boundaryRef{spec: spec, members: strings.Split(member, ".")}.id())
 	}
 	return out
 }
@@ -334,17 +358,28 @@ func boundaryCandidates(pkg, symbol string) []string {
 // resolveBoundarySymbols maps the request's advisory symbols onto boundary nodes present in
 // the call graph. A node resolves only when the graph has an edge into it; its Origin is the
 // lockfile-resolved package of the specifier it was imported through, and is absent when no
-// selected lockfile resolved that package.
-func resolveBoundarySymbols(pkg string, symbols []string, edges []plugin.CallEdge, bp buildPackages) (resolved []plugin.Symbol, origins map[string]string, matched map[string][]string) {
+// selected lockfile resolved that package. An unversioned node, a call into pkg that does not
+// tell its installed copies apart, always resolves; a versioned one, a call into a copy whose
+// code was read, resolves only when its version is in versions.
+func resolveBoundarySymbols(pkg string, versions []string, symbols []string, edges []plugin.CallEdge, bp buildPackages) (resolved []plugin.Symbol, origins map[string]string, matched map[string][]string) {
 	nodes := map[string]bool{}
 	for _, e := range edges {
 		if isBoundaryID(e.Callee.SCIP) {
 			nodes[e.Callee.SCIP] = true
 		}
 	}
+	candidates := func(s string) []string {
+		ids := boundaryCandidates(pkg, "", s)
+		for _, v := range versions {
+			if v != "" {
+				ids = append(ids, boundaryCandidates(pkg, v, s)...)
+			}
+		}
+		return ids
+	}
 	seen := map[string]bool{}
 	for _, s := range symbols {
-		for _, id := range boundaryCandidates(pkg, s) {
+		for _, id := range candidates(s) {
 			if !nodes[id] {
 				continue
 			}

@@ -52,8 +52,9 @@
 // dot-names, a directory change or prefix whose argument expands, the raw text of any other
 // in-tree file naming .sample, dotglob or a .git directory, or a symlink into a .git
 // directory. The gate reads three things: the script surfaces; symlink targets; and every
-// other regular file except those no build runner executes (binary files, docs, lockfiles,
-// ignore files, and inside .git everything but the active hooks). The build is trusted, so a form written to evade them
+// other regular file except those no build runner executes (binary files; by exact name,
+// docs, lockfiles and dot-named ignore files unless they start with "#!"; and inside .git
+// everything but the active hooks). The build is trusted, so a form written to evade them
 // is out of scope. A sample hook is not a script the walk reads, so sourcing one withholds.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
@@ -299,33 +300,36 @@ func (v *Veto) trigger(text string) {
 var lockfiles = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.json": true, "yarn.lock": true,
 	"pnpm-lock.yaml": true, "bun.lock": true}
 
-// docNames are the base-name prefixes of docs that carry no extension (LICENSE, LICENSE-MIT).
-var docNames = []string{"license", "licence", "copying", "changelog", "authors"}
+// docNames are the exact base names, compared case-insensitively, of docs that carry no
+// extension. LICENSE-MIT and the like are not among them and are read.
+var docNames = map[string]bool{"license": true, "licence": true, "copying": true, "changelog": true,
+	"authors": true, "notice": true}
 
-// inertName reports whether no build runner executes the file at path, by its name: docs
-// (Markdown, reStructuredText, AsciiDoc, or an extensionless docNames file), a lockfile or
-// an ignore file (.gitignore, .dockerignore, .npmignore). Plain text is read, since
+// inertName reports whether no build runner executes the file at path, judged by its exact
+// name: docs (a .md, .markdown, .rst or .adoc extension, or a docNames base name), a lockfile,
+// or an ignore file (a base name that starts with "." and ends in "ignore": .gitignore,
+// .npmignore, .dockerignore). No prefix or suffix of a script's name exempts it, and a file
+// whose head starts with "#!" is never inert, whatever its name. Plain text is read, since
 // CMakeLists.txt is a build script.
-func inertName(path string) bool {
+func inertName(path string, head []byte) bool {
+	if bytes.HasPrefix(head, []byte("#!")) {
+		return false
+	}
 	lower := strings.ToLower(filepath.Base(path))
 	switch filepath.Ext(lower) {
 	case ".md", ".markdown", ".rst", ".adoc":
 		return true
-	case "":
-		for _, d := range docNames {
-			if strings.HasPrefix(lower, d) {
-				return true
-			}
-		}
 	}
-	return lockfiles[lower] || strings.HasSuffix(lower, "ignore")
+	return docNames[lower] || lockfiles[lower] ||
+		(strings.HasPrefix(lower, ".") && strings.HasSuffix(lower, "ignore"))
 }
 
 // binarySniff is how much of a file's start is searched for a NUL byte, which marks it binary.
 const binarySniff = 8 << 10
 
 // treeReaches reports whether the build outside the script surfaces may reach a sample hook:
-// an in-tree regular file that is not a surface, not binary and not inertName whose text
+// an in-tree regular file that is not a surface, not binary and not inertName (judged on its
+// head, so a "#!" script is read whatever its name) whose text
 // sourceRE matches, or a symlink pointing into a .git directory, so a path that names neither
 // may reach a hooks directory. Inside a .git directory only active hooks are read. A file or
 // link that cannot be read counts.
@@ -351,11 +355,14 @@ func (v *Veto) treeReaches() bool {
 			found = true
 			return filepath.SkipAll
 		}
-		if e.D.Type().IsRegular() && !inertName(e.Path) {
+		if e.D.Type().IsRegular() {
 			head, err := buildtree.Head(e.Path)
 			if err != nil {
 				found = true
 				return filepath.SkipAll
+			}
+			if inertName(e.Path, head) {
+				return nil
 			}
 			if _, ok := surfaceOf(e.Path, head); ok {
 				return nil

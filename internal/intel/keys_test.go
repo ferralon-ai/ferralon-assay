@@ -82,7 +82,6 @@ func TestParseRefusesKeysTheDigestCannotSee(t *testing.T) {
 		{"score before Score", scoreLast, `records[0] (CVE-1): epss: key "Score" is not the field "score"`},
 		{"a lone Score", rec(`"epss": {"Score": 0.9, ` + asOf + `}`), `records[0] (CVE-1): epss: key "Score" is not the field "score"`},
 		{"an exact duplicate", rec(`"epss": {"score": 0.1, "score": 0.9, ` + asOf + `}`), `records[0] (CVE-1): epss: key "score" appears more than once`},
-		{"an escaped duplicate", rec(`"epss": {"score": 0.1, "score": 0.9, ` + asOf + `}`), `records[0] (CVE-1): epss: key "score" appears more than once`},
 		{"a long-s variant", rec(`"epss": {"ſcore": 0.9, ` + asOf + `}`), "records[0] (CVE-1): epss: key \"ſcore\" is not the field \"score\""},
 		{"a variant inside kev", rec(`"kev": {"Listed": true, "listed": false, "catalog_version": "c", "date_released": "d"}`), `records[0] (CVE-1): kev: key "Listed" is not the field "listed"`},
 		{"a duplicate inside kev", rec(`"kev": {"listed": true, "catalog_version": "c", "date_released": "d", "listed": false}`), `records[0] (CVE-1): kev: key "listed" appears more than once`},

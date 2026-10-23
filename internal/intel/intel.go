@@ -11,9 +11,11 @@
 // value, and rejects a file that breaks that contract instead of loading part of it: a malformed
 // file is an error, never a silent degrade to fewer signals. Load and Parse also recompute the
 // file's signals_digest from its payload and refuse a file whose stated digest does not match, so
-// the digest a report names is one this scan verified, not one the file merely asserts; and they
-// refuse a key the digest and the loader would read differently (a repeated key, or two keys equal
-// but for case), so every value loaded is one the digest covered.
+// the digest a report names is one this scan verified, not one the file merely asserts. They also
+// refuse every key the digest cannot see: the digest hashes each object's exact keys, while the
+// loader matches keys to fields under case folding and keeps the last of a repeated key. So a case
+// variant of a known field ("Score" for "score"), two keys equal under case folding, and an exact
+// duplicate key are each an error, at any depth, and every value loaded is one the digest covered.
 //
 // It is ranking context only. Nothing that decides a verdict reads it (inv. 5).
 //
@@ -393,10 +395,10 @@ func (s *Signals) has(id string) bool {
 }
 
 // Claims indexes the advisories of one run by every identifier they name — each advisory's id and
-// each of its aliases — so that Attribute never takes the record of an alias some OTHER advisory also names. A
-// run's claims are its work set: every advisory the run was asked about, by its id and the aliases
-// its record lists, and every row its report holds, fresh or inherited. The zero value is empty and
-// ready to use; a nil *Claims names nothing.
+// each of its aliases — so that Attribute never takes the record of an alias some OTHER advisory
+// also names. A run's claims are its work set: every advisory the run was asked about, by its id
+// and the aliases its record lists, and every row its report holds, fresh or inherited. The zero
+// value is empty and ready to use; a nil *Claims names nothing.
 type Claims struct {
 	by map[string]map[string]struct{} // identifier → the ids of the advisories naming it
 }

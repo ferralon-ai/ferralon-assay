@@ -359,6 +359,18 @@ func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 		{"Function enumerated from a literal written through an alias", "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\nconst t = o;\nt.b = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		// K24p
 		{"Function reached through an iterated array rewritten through its callback", "const j = { parse: String };\nfunction g() {}\n['a'].forEach((k, i, arr) => { arr[0] = process.argv[4]; g[arr](process.argv[3])(); });\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E01w
+		{"Function enumerated from a literal after a member write of a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nwith ({ c: process.argv[4] }) { o.b = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E02w
+		{"Function enumerated from a literal after a computed write of a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nwith ({ c: process.argv[4] }) { o['b'] = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E03w
+		{"Function enumerated from a literal handed to a call that writes a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nfunction put(t) { with ({ c: process.argv[4] }) { t.b = g[c]; } }\nput(o);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// E04w
+		{"Function enumerated from a literal written through an alias with a read keyed under with", "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nconst t = o;\nwith ({ c: process.argv[4] }) { t.b = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		{"binding alias", `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }

@@ -353,6 +353,18 @@ func TestCallGraph_OutOfTreePackageNeverOnlyInherent(t *testing.T) {
 		{"Function enumerated from a literal written through an alias", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst o = { b: 0 };\nconst t = o;\nt.b = Reflect['get'](g, process.argv[4]);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
 		// K24p
 		{"Function reached through an iterated array rewritten through its callback", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\n['a'].forEach((k, i, arr) => { arr[0] = process.argv[4]; g[arr](process.argv[3])(); });\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// E01w
+		{"Function enumerated from a literal after a member write of a read keyed under with", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nwith ({ c: process.argv[4] }) { o.b = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// E02w
+		{"Function enumerated from a literal after a computed write of a read keyed under with", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nwith ({ c: process.argv[4] }) { o['b'] = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// E03w
+		{"Function enumerated from a literal handed to a call that writes a read keyed under with", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nfunction put(t) { with ({ c: process.argv[4] }) { t.b = g[c]; } }\nput(o);\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
+
+		// E04w
+		{"Function enumerated from a literal written through an alias with a read keyed under with", map[string]string{"app.js": "const j = { parse: String };\nfunction g() {}\nconst c = 'name';\nconst o = { b: 0 };\nconst t = o;\nwith ({ c: process.argv[4] }) { t.b = g[c]; }\nconst p = {};\nObject.setPrototypeOf(p, process.env);\nObject.keys(o).forEach(k => o[k](process.argv[3])());\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"}, plugin.PartialReasonEvaluatedCode},
 		{"direct member head", map[string]string{"app.js": `
 const JSON5 = require('json5');
 function load(s) { return JSON5.parse(s); }

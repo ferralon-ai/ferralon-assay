@@ -469,6 +469,10 @@ type runFlags struct {
 	subjectMvnProf   *string
 	buildGraph       *string
 	buildGraphTool   *string
+	depCode          *string
+	depCache         *string
+	depNPMRCEnv      *string
+	depTimeout       *string
 	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
@@ -552,6 +556,11 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		buildGraphTool: fs.String("build-graph-tool", "", "which build tool the build graph comes from: auto, maven or gradle. auto takes the one whose build files are at the repository root, and fails the run when both are; with a graph file, a stated tool must be the one that resolved it; with off it is unused. Overrides "+envBuildGraphTool+" (default: auto)"),
 
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
+
+		depCode:     fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: off; fetch, which fetches each package-lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; or offline, which reads only an operator-seeded -dependency-cache. Overrides "+envDependencyCode+" (default: off)"),
+		depCache:    fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
+		depNPMRCEnv: fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
+		depTimeout:  fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
 	}
 }
 
@@ -934,6 +943,13 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 	if opt != nil {
 		opts = append(opts, opt)
 	}
+	depOpt, err := f.dependencyCodeOption()
+	if err != nil {
+		return nil, err
+	}
+	if depOpt != nil {
+		opts = append(opts, depOpt)
+	}
 	return opts, nil
 }
 
@@ -954,6 +970,13 @@ func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipelin
 	}
 	if opt := subjectToolchainReachOption(); opt != nil {
 		opts = append(opts, opt)
+	}
+	depOpt, err := f.dependencyCodeOption()
+	if err != nil {
+		return nil, err
+	}
+	if depOpt != nil {
+		opts = append(opts, depOpt)
 	}
 	return opts, nil
 }

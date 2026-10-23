@@ -56,6 +56,9 @@ type AssessConfig struct {
 	// the plugin when disqualification_discovery already settled the advisory. Off by default. See
 	// WithSkipDisqualifiedAnalysis.
 	SkipDisqualifiedAnalysis bool
+	// DependencyAcquisition fills the dependency cache for a JS build. nil leaves the stage out.
+	// See WithDependencyAcquisition.
+	DependencyAcquisition *dependencyAcquirer
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -153,15 +156,20 @@ func AssessStages(opts ...AssessOption) []Stage {
 	for _, o := range opts {
 		o(cfg)
 	}
-	return []Stage{
+	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
 		maliciousPresence{},
 		disqualificationDiscovery{},
+	}
+	if cfg.DependencyAcquisition != nil {
+		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
+	}
+	return append(stages,
 		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
 		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
 		exposureFootprintStage{},
-	}
+	)
 }
 
 // SBOMStages returns ONLY the SBOM-producing stages — S1 advisory_intake + S2

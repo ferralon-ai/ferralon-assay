@@ -231,8 +231,10 @@ func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
 	found := make([]string, 0, len(c.dirs))
 	for _, d := range c.dirs {
 		f := filepath.Join(d, dir, name)
-		// The walk yields no path through a symlink, so read already refuses one; unlinked
-		// and read (in packageFile) are each defence in depth behind the other and the walk.
+		// The walk yields no path through a symlinked directory, so read refuses one too. A
+		// symlinked file is the lane's to read: a read that follows the link passes it, and
+		// only unlinked (in packageFile) refuses it here, though Candidates withholds the run
+		// on one regardless.
 		if !c.v.packageFile(f) || !c.v.walkedSurface(f) {
 			return nil
 		}

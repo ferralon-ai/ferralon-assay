@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/vuln/scan"
@@ -162,6 +163,8 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		// the analyzer's toolchain: the scan must still produce a result (an aborted scan
 		// would be a worse failure than a disclosed partial one), and ScanToolchain then
 		// reports the analyzer's toolchain so no caller mistakes this for a subject scan.
+		// The failed switched run is not cached, so every advisory retries it before reading the
+		// cached fallback stream; that costs time only, and caching the failure would not be safe.
 		env, scanToolchain, switched = baseEnv, goEnvVersion(ctx, req.BuildDir, baseEnv), false
 		scanned, err = runGovulncheck(ctx, req, env)
 	}
@@ -169,34 +172,36 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 
-	cg, err := reconcileCallGraph(ctx, req.BuildDir)
+	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
+	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
+	load := sync.OnceValues(func() (*LoadResult, error) { return LoadProgram(ctx, req.BuildDir) })
+	res, err := reconciledResult(ctx, scanned, req.BuildDir, env, load)
 	if err != nil {
-		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
-	}
-	res := evidenceResult(scanned.findings, cg, env)
-	if res.Refutation != nil {
-		// Only a refutation is ever withheld, and the withholds read the loaded packages, which
-		// the run cache cannot hold, so the program is loaded again only for one.
-		load, err := LoadProgram(ctx, req.BuildDir)
-		if err != nil {
-			return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
-		}
-		res = withholdRefutation(ctx, res, scanned, load.Packages, req.BuildDir, env)
+		return plugin.ReachabilityResult{}, err
 	}
 	res.ScanToolchain = scanToolchain
 	return res, nil
 }
 
-// scanResult turns one govulncheck run over the loaded build into the reachability result: it
-// reconciles the findings against the build's call graph and withholds a refutation that files the
-// build left out, exported methods govulncheck never searched, or a library's callers may
-// contradict.
-func scanResult(ctx context.Context, scanned vulnScan, load *LoadResult, buildDir string, env []string) (plugin.ReachabilityResult, error) {
-	cg, err := callGraphOf(load, "vta")
+// reconciledResult turns one govulncheck run into the reachability result: it reconciles the
+// findings against the build's call graph and withholds a refutation that files the build left out,
+// exported methods govulncheck never searched, or a library's callers may contradict. load supplies
+// the loaded program, and is asked for it only to build the graph or to withhold a refutation.
+func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error)) (plugin.ReachabilityResult, error) {
+	cg, err := reconcileCallGraph(buildDir, load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	return withholdRefutation(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env), nil
+	res := evidenceResult(scanned.findings, cg, env)
+	if res.Refutation == nil {
+		// Only a refutation is ever withheld.
+		return res, nil
+	}
+	loaded, err := load()
+	if err != nil {
+		return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
+	}
+	return withholdRefutation(ctx, res, scanned, loaded.Packages, buildDir, env), nil
 }
 
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
@@ -626,12 +631,16 @@ func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]by
 	return stdout.Bytes(), nil
 }
 
-// reconcileCallGraph returns the call graph Reachability reconciles paths against, built once per
-// tree per scan through the run cache. The program load reads the process environment, so that is
-// part of the key.
-func reconcileCallGraph(ctx context.Context, buildDir string) (plugin.CallGraphResult, error) {
+// reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
+// once per tree per scan through the run cache. The program load reads the process environment, so
+// that is part of the key.
+func reconcileCallGraph(buildDir string, load func() (*LoadResult, error)) (plugin.CallGraphResult, error) {
 	b, err := runCached("callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, Algorithm: "vta"})
+		loaded, err := load()
+		if err != nil {
+			return nil, err
+		}
+		cg, err := callGraphOf(loaded, "vta")
 		if err != nil {
 			return nil, err
 		}

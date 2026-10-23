@@ -179,20 +179,21 @@ func TestNewGoPlugin_ExplicitPathWins(t *testing.T) {
 }
 
 // TestWithRunCacheDir pins that the run cache reaches the subprocess on its environment, under the
-// name cmd/assay-plugin-go reads, and that an empty dir still sets it, empty, so a value inherited
+// name cmd/assay-plugin-go reads, and that it is otherwise set empty, last, so a value inherited
 // from the host's environment cannot turn the cache on.
 func TestWithRunCacheDir(t *testing.T) {
 	tests := []struct {
 		name    string
-		dir     string
+		opts    []Option
 		wantEnv []string
 	}{
-		{name: "dir set", dir: "/tmp/run-cache", wantEnv: []string{"ASSAY_GO_RUN_CACHE_DIR=/tmp/run-cache"}},
-		{name: "empty dir", dir: "", wantEnv: []string{"ASSAY_GO_RUN_CACHE_DIR="}},
+		{name: "no option", wantEnv: []string{"ASSAY_GO_RUN_CACHE_DIR="}},
+		{name: "dir set", opts: []Option{WithRunCacheDir("/tmp/run-cache")}, wantEnv: []string{"ASSAY_GO_RUN_CACHE_DIR=", "ASSAY_GO_RUN_CACHE_DIR=/tmp/run-cache"}},
+		{name: "empty dir", opts: []Option{WithRunCacheDir("")}, wantEnv: []string{"ASSAY_GO_RUN_CACHE_DIR=", "ASSAY_GO_RUN_CACHE_DIR="}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewGoPlugin(WithBinaryPath("/bin/true"), WithRunCacheDir(tt.dir))
+			p, err := NewGoPlugin(append([]Option{WithBinaryPath("/bin/true")}, tt.opts...)...)
 			if err != nil {
 				t.Fatalf("NewGoPlugin: %v", err)
 			}

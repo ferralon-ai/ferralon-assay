@@ -3,10 +3,14 @@ package goanalysis
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -177,5 +181,96 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRunCacheKeys pins what each per-tree result is keyed on, so one environment's answer never
+// serves another: the govulncheck stream on the child's exact environment, toolchain included, and
+// the call graph on the process environment the program load reads. Every entry is seeded for a
+// build dir that does not exist, so a hit returns the seed and a miss fails.
+func TestRunCacheKeys(t *testing.T) {
+	buildDir := filepath.Join(t.TempDir(), "absent")
+
+	t.Run("govulncheck", func(t *testing.T) {
+		t.Setenv(EnvRunCacheDir, t.TempDir())
+		const stream = `{"finding":{"osv":"GO-2024-0001","trace":[{"module":"example.com/dep","version":"v1.0.0","package":"example.com/dep"}]}}` + "\n"
+		seeded := []string{"GOWORK=off", "GOTOOLCHAIN=go1.22.0"}
+		if _, err := runCached("govulncheck", append([]string{buildDir}, seeded...), func() ([]byte, error) {
+			return []byte(stream), nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tests := []struct {
+			name    string
+			env     []string
+			wantHit bool
+		}{
+			{name: "same environment", env: seeded, wantHit: true},
+			{name: "no toolchain", env: []string{"GOWORK=off"}, wantHit: false},
+			{name: "other toolchain", env: []string{"GOWORK=off", "GOTOOLCHAIN=go1.23.0"}, wantHit: false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := runGovulncheck(context.Background(), plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: "GO-2024-0001"}, tt.env)
+				if hit := err == nil && len(got.findings) == 1; hit != tt.wantHit {
+					t.Errorf("served from the seed = %v, want %v (err %v)", hit, tt.wantHit, err)
+				}
+			})
+		}
+	})
+
+	t.Run("call graph", func(t *testing.T) {
+		t.Setenv(EnvRunCacheDir, t.TempDir())
+		seed := plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}}
+		if _, err := runCached("callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+			return json.Marshal(seed)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		loads := 0
+		load := func() (*LoadResult, error) {
+			loads++
+			return nil, errors.New("tree loaded")
+		}
+		if got, err := reconcileCallGraph(buildDir, load); err != nil || !reflect.DeepEqual(got, seed) || loads != 0 {
+			t.Fatalf("same environment: got %+v, %v after %d loads, want the seed and no load", got, err, loads)
+		}
+		t.Setenv("ASSAY_RUN_CACHE_KEY_PROBE", "1")
+		if _, err := reconcileCallGraph(buildDir, load); err == nil || loads != 1 {
+			t.Fatalf("changed environment: err %v after %d loads, want a fresh load", err, loads)
+		}
+	})
+}
+
+// TestRunCachedReadersSeeWholeEntries pins that a concurrent reader of an entry being written gets
+// the whole entry or a miss, never a prefix: a govulncheck stream cut after a package-level finding
+// parses cleanly and would refute a module the dropped lines show is called.
+func TestRunCachedReadersSeeWholeEntries(t *testing.T) {
+	t.Setenv(EnvRunCacheDir, t.TempDir())
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 1<<17) // 2 MiB
+	for round := range 16 {
+		key := []string{"/src", strconv.Itoa(round)}
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for hits := 0; hits < 2; {
+					computed := false
+					out, err := runCached("test", key, func() ([]byte, error) {
+						computed = true
+						return payload, nil
+					})
+					if err != nil || !bytes.Equal(out, payload) {
+						t.Errorf("round %d: read %d of %d bytes (err %v)", round, len(out), len(payload), err)
+						return
+					}
+					if !computed {
+						hits++
+					}
+				}
+			}()
+		}
+		wg.Wait()
 	}
 }

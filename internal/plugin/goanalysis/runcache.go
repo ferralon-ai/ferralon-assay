@@ -10,11 +10,10 @@ import (
 )
 
 // EnvRunCacheDir names a directory the host creates for one scan and removes after it (see
-// plugin.WithRunCacheDir). Each analyzer
-// op runs in its own process, so without it every advisory's reachability run re-executes govulncheck
-// over the whole tree and rebuilds the reconciliation call graph, getting the same answer each time.
-// With it set, those per-tree results are computed once per scan and kept here. Unset, nothing is
-// cached and every run computes its own.
+// plugin.WithRunCacheDir). Each analyzer op runs in its own process, so without it every advisory's
+// reachability run re-executes govulncheck over the whole tree and rebuilds the reconciliation call
+// graph, getting the same answer each time. With it set, those per-tree results are computed once
+// per scan and kept here. Unset, nothing is cached and every run computes its own.
 var EnvRunCacheDir = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
 
 // runCached returns the bytes compute produces for the given key, reusing an earlier result from the

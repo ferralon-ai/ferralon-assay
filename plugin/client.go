@@ -50,9 +50,10 @@ const goRunCacheDirEnv = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
 
 // NewGoPlugin constructs the subprocess-backed plugin client. Binary discovery (§4.4):
 // an explicit path via WithBinaryPath takes precedence; otherwise exec.LookPath resolves
-// BinaryName("go") on PATH.
+// BinaryName("go") on PATH. The run cache is off unless WithRunCacheDir turns it on, whatever
+// the host's environment says.
 func NewGoPlugin(opts ...Option) (LanguagePlugin, error) {
-	p := &goPlugin{}
+	p := &goPlugin{env: []string{goRunCacheDirEnv + "="}}
 	for _, opt := range opts {
 		opt(p)
 	}

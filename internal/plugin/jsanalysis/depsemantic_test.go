@@ -771,8 +771,12 @@ func TestSemantic_G16PlacedButUnread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasReason(res.Partiality, plugin.PartialReasonUninspectablePackage) && !hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
-		t.Errorf("budget: got %+v", res.Partiality)
+	qp := makePURL("q", "1.0.0")
+	budgetScoped := slices.ContainsFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+		return s.Reason == plugin.PartialReasonToolFailure && s.Package == qp
+	})
+	if !hasReason(res.Partiality, plugin.PartialReasonToolFailure) || !budgetScoped {
+		t.Errorf("budget: q must carry its own limit under a run-wide one; got %+v", res.Partiality)
 	}
 }
 

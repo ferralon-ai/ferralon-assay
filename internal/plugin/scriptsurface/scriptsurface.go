@@ -33,8 +33,20 @@
 // the stage, with nothing since that could have changed it: a COPY --from, ADD, heredoc or
 // unresolvable COPY over it, or any RUN command that is not itself an allowed form.
 //
-// A file run with . or source runs its commands in place, so it withholds unless it is a
-// literal in-tree script surface the walk checks on its own, or only sets PATH: a
+// A file a shell runs (sh f, bash -c '...', sh < f, cat f | sh, a heredoc or here-string into
+// a shell, eval of literal text) is read as the shell would run it, from a shell of its own
+// started where the command runs. A file run with . or source is read in place: its commands
+// run in the caller's shell, from its directory, and a cd there moves it. Either way the file
+// must be a literal path naming, from every directory the command may run in, a file inside
+// the build, reached through no symlink, not a sample hook, at most maxRunBytes, not already
+// running, and setting no installer variable; anything else a shell would run withholds: a
+// pipe into a shell from anything but cat of one literal file, process substitution, a
+// command substitution handed to a shell or eval, a heredoc whose body is not read as the
+// lines that follow, a wrapper option or runner (xargs, find -exec) this does not follow. In a
+// Dockerfile the file is the build-context file a COPY put at that container path, unchanged
+// since; the RUN still changes the stage as any other command does.
+//
+// A . or source of a file the walk does not read is still allowed when it only sets PATH: a
 // version-manager init script named exactly as pathOnlyScripts lists it, or a literal
 // <dir>/bin/activate whose <dir> names the same one place as the virtual environment the
 // command before it, directory changes aside, created. That command must be in the same
@@ -59,7 +71,10 @@
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
-// the install reads it, so it withholds too (Veto.Rebound).
+// the install reads it, so it withholds too (Veto.Rebound). A glob the shell expands, or find
+// matching names by a pattern, names every bound file its base matches; a write to a path
+// that expands (a redirect, or a writer's operand, holding a $ or backtick, the runner's own
+// output files aside) or through find or xargs with no name pattern names every bound file.
 package scriptsurface
 
 import (
@@ -211,6 +226,9 @@ type Veto struct {
 	mentioned map[string]bool // lowercased base names other commands take as arguments
 	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
 	triggered bool            // a surface's text may reach a sample hook (trigger)
+	scan      bool            // the surface being classified is scanned for triggers
+	lineShell bool            // the command is on a line of shell text whose next lines are read too
+	running   []string        // the files a shell run or . is reading, innermost last
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
@@ -246,14 +264,7 @@ func (v *Veto) FullyRead(path string) bool {
 
 // Rebound reports whether a command anywhere in the build names, as an argument, a file an
 // allowed command binds to, so may rewrite it first. Call it after the walk.
-func (v *Veto) Rebound() bool {
-	for name := range v.bound {
-		if v.mentioned[name] {
-			return true
-		}
-	}
-	return false
-}
+func (v *Veto) Rebound() bool { return rebinds(v.bound, v.mentioned) }
 
 // Withheld reports whether the rule withheld on any surface the walk classified, a command
 // may rewrite a file an allowed command binds to, or a sample hook is live: the build may
@@ -275,12 +286,7 @@ func (v *Veto) samplesLive() bool {
 		maps.Copy(bound, s.bound)
 		maps.Copy(mentioned, s.mentioned)
 	}
-	for name := range bound {
-		if mentioned[name] {
-			return true
-		}
-	}
-	return false
+	return rebinds(bound, mentioned)
 }
 
 // The text triggers. Each is a natural way a command reaches a sample hook: naming one, its
@@ -609,6 +615,7 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 	if !v.spec.complete() {
 		return "script surface under an incomplete lane spec", true
 	}
+	v.scan = scan
 	src := string(head)
 	if len(head) == buildtree.HeadSize {
 		data, err := v.spec.ReadRegular(path)
@@ -771,7 +778,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			continue
 		}
 		if u.exec != nil {
-			if why := v.command(segment{words: u.exec, expands: hasExpansion(u.exec)}, carry, 0); why != "" {
+			if why := v.command(segment{words: u.exec, expands: hasExpansion(u.exec), exec: true}, carry, 0); why != "" {
 				return why
 			}
 			continue
@@ -819,20 +826,18 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.
 				cur.mark.made, cur.wd = "", ""
-				if v.hasToken(line) {
-					return "install command that does not tokenise"
+				if why := v.untokenised(line, cur); why != "" {
+					return why
 				}
-				if expandedInstallLine(line) {
-					return "install verb after an expansion that does not tokenise"
-				}
-				v.mention(strings.Fields(line))
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
+			v.lineShell = lineKind == kindShell
 			for _, seg := range segs {
 				if why := v.command(seg, cur, 0); why != "" {
 					return why
 				}
 			}
+			v.lineShell = false
 			// Shell text (a script, a package.json script value) keeps its directory from line
 			// to line; a recipe line or a CI step may start back where the surface started.
 			if kind == kindShell {
@@ -930,17 +935,35 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		}
 		return ""
 	case ".", "source":
-		// The sourced file's commands run here; they are checked only when it is a surface
-		// the walk reads itself, or when it only sets PATH.
-		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {
+		// The sourced file's commands run here, from this shell: it is read in place, unless it
+		// only sets PATH.
+		if pathOnly(seg, cur, made) {
+			return ""
+		}
+		if seg.expands || len(words) < 2 {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
+		}
+		if why := v.runFile(words[1], cur, depth+1, true); why != "" {
+			return "sources a file not read as a script: " + strings.Join(words, " ") + " (" + why + ")"
 		}
 		return ""
 	}
 	if expandedInstall(words) {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
+	if why, ok := v.shellRun(seg, cur, depth); ok {
+		if why != "" {
+			return why
+		}
+		v.writes(seg)
+		v.globs(globbedWords(seg), carries(words), cur)
+		v.mention(words[1:])
+		cur.other()
+		return ""
+	}
 	if !v.segmentHasToken(words) {
+		v.writes(seg)
+		v.globs(globbedWords(seg), carries(words), cur)
 		v.mention(words[1:])
 		cur.other()
 		return ""
@@ -977,6 +1000,9 @@ func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 	if len(cmds) == 0 || depth >= maxRunDepth {
 		return why
 	}
+	prev := v.lineShell
+	v.lineShell = false
+	defer func() { v.lineShell = prev }()
 	for _, c := range cmds {
 		segs, ok, dangles := shellSegments(c)
 		if !ok || dangles || len(segs) == 0 {

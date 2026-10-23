@@ -80,10 +80,11 @@ type Signals struct {
 	// GeneratedAt is when the producer wrote the file. It is NOT the freshness of any value.
 	GeneratedAt string
 
-	records int
-	epss    map[string]EPSS
-	kev     map[string]KEV
-	newest  time.Time // the newest EPSS as_of; zero when the file carries no EPSS value
+	records  int
+	epss     map[string]EPSS
+	kev      map[string]KEV
+	newest   time.Time   // the newest EPSS as_of; zero when the file carries no EPSS value
+	epssAsOf []time.Time // every EPSS value's as_of, for StaleEPSS
 }
 
 // supportedVersion matches the signals_version majors this scanner reads: 1.x.
@@ -284,6 +285,7 @@ func (s *Signals) add(rec wireRecord, seen map[string]struct{}) error {
 			v.Percentile, v.HasPercentile = *e.Percentile, true
 		}
 		s.epss[id] = v
+		s.epssAsOf = append(s.epssAsOf, asOf)
 		if asOf.After(s.newest) {
 			s.newest = asOf
 		}
@@ -346,34 +348,182 @@ func (s *Signals) NewestEPSSAsOf() (time.Time, bool) {
 	return s.newest, true
 }
 
-// EPSS looks up the EPSS value for the first of ids the file has one for. Callers pass an
-// advisory's id followed by its aliases; ids are normalised (trimmed, uppercased) before lookup.
+// StaleEPSS counts the file's EPSS values whose as_of is more than maxAge before now (stale), out of
+// all of them (total). The newest as_of only bounds how fresh a value CAN be; this is how many are
+// old, which is what a reader of the ranking needs when most of a file is weeks behind its newest
+// value.
+func (s *Signals) StaleEPSS(now time.Time, maxAge time.Duration) (stale, total int) {
+	if s == nil {
+		return 0, 0
+	}
+	for _, asOf := range s.epssAsOf {
+		if now.Sub(asOf) > maxAge {
+			stale++
+		}
+	}
+	return stale, len(s.epssAsOf)
+}
+
+// EPSS looks up the EPSS value of the record keyed by id, normalised (trimmed, uppercased). It is
+// a lookup of one record, not a join: attributing a value to an advisory goes through Attribute.
 // Safe for concurrent use.
-func (s *Signals) EPSS(ids ...string) (EPSS, bool) {
+func (s *Signals) EPSS(id string) (EPSS, bool) {
 	if s == nil {
 		return EPSS{}, false
 	}
-	for _, id := range ids {
-		if v, ok := s.epss[normalise(id)]; ok {
-			return v, true
-		}
-	}
-	return EPSS{}, false
+	v, ok := s.epss[normalise(id)]
+	return v, ok
 }
 
-// KEV looks up the KEV observation for the first of ids the file has one for, the same way EPSS
-// does. The returned Identifier names the record it came from, so a caller can tell which id the
-// observation is about. Safe for concurrent use.
-func (s *Signals) KEV(ids ...string) (KEV, bool) {
+// KEV looks up the KEV observation of the record keyed by id, the same way EPSS does. Safe for
+// concurrent use.
+func (s *Signals) KEV(id string) (KEV, bool) {
 	if s == nil {
 		return KEV{}, false
 	}
-	for _, id := range ids {
-		if v, ok := s.kev[normalise(id)]; ok {
-			return v, true
+	v, ok := s.kev[normalise(id)]
+	return v, ok
+}
+
+// has reports whether the file holds a record keyed by the normalised id.
+func (s *Signals) has(id string) bool {
+	_, e := s.epss[id]
+	_, k := s.kev[id]
+	return e || k
+}
+
+// Claims indexes the advisories of one run by every identifier they name — each advisory's id and
+// each of its aliases — so that Attribute never takes the record of an alias some OTHER advisory also names. A
+// run's claims are its work set: every advisory the run was asked about, by its id and the aliases
+// its record lists, and every row its report holds, fresh or inherited. The zero value is empty and
+// ready to use; a nil *Claims names nothing.
+type Claims struct {
+	by map[string]map[string]struct{} // identifier → the ids of the advisories naming it
+}
+
+// Add records one advisory: its id and its aliases.
+func (c *Claims) Add(id string, aliases ...string) {
+	owner := normalise(id)
+	if owner == "" {
+		return
+	}
+	if c.by == nil {
+		c.by = make(map[string]map[string]struct{})
+	}
+	for _, ident := range append([]string{id}, aliases...) {
+		ident = normalise(ident)
+		if ident == "" {
+			continue
+		}
+		if c.by[ident] == nil {
+			c.by[ident] = make(map[string]struct{})
+		}
+		c.by[ident][owner] = struct{}{}
+	}
+}
+
+// ClaimedByOther reports whether an advisory other than the one with id names ident, as its id or
+// as an alias.
+func (c *Claims) ClaimedByOther(ident, id string) bool {
+	if c == nil {
+		return false
+	}
+	owner := normalise(id)
+	for other := range c.by[normalise(ident)] {
+		if other != owner {
+			return true
 		}
 	}
-	return KEV{}, false
+	return false
+}
+
+// Match is the one signals record attributed to an advisory. Identifier names the record; a value
+// the record does not carry is absent, never filled in from another record.
+type Match struct {
+	Identifier string
+	EPSS       EPSS
+	HasEPSS    bool
+	KEV        KEV
+	HasKEV     bool
+}
+
+// Attribute is the join of an advisory to the signals file: which ONE record, if any, its EPSS and
+// KEV values come from. EPSS and KEV score CVEs, while a GO, PYSEC, RUSTSEC or GHSA record is one
+// advisory's roll-up and may stand for several CVEs at once, so the rule only takes a record that
+// is about this advisory's own vulnerability:
+//
+//  1. The record keyed by the advisory's own id, when the file has one — that record and only that
+//     one. A value it lacks stays absent; no alias fills it in.
+//  2. Otherwise, if the advisory is keyed by a CVE: nothing. Its signal is the record under its own
+//     CVE, and the file has none. An alias record — a GO roll-up that may carry a sibling CVE's KEV
+//     listing, or another CVE — is never taken in its place.
+//  3. Otherwise (a GO-, GHSA-, PYSEC-, RUSTSEC- or house-keyed advisory with no record of its own):
+//     the records of its CVE aliases. Every CVE alias that has a record takes part, and their
+//     records must agree: the same KEV observation, or none, and the same EPSS value, or none, each
+//     with the same stamp. When any two disagree, nothing: which of the advisory's CVEs its signal
+//     is cannot be told from the file, and taking one would hand it CVE-A's stamped "not listed"
+//     while its CVE-B is KEV-listed. An alias some other advisory in claims (the run's work set)
+//     names — as that advisory's id or one of its aliases — still takes part in that check, but its
+//     record is never the one taken. When they agree, the first alias no other advisory names is
+//     taken, and which one does not change a value; when every alias with a record is claimed,
+//     nothing.
+//
+// A refused match is honest absence: ok is false and the row gets no priority, never a guess.
+// Safe for concurrent use.
+func (s *Signals) Attribute(id string, aliases []string, claims *Claims) (Match, bool) {
+	if s == nil {
+		return Match{}, false
+	}
+	own := normalise(id)
+	if s.has(own) {
+		return s.match(own), true
+	}
+	if isCVE(own) {
+		return Match{}, false
+	}
+	var m, first Match
+	found, voted := false, false
+	for _, alias := range aliases {
+		a := normalise(alias)
+		if a == own || !isCVE(a) || !s.has(a) {
+			continue
+		}
+		c := s.match(a)
+		if !voted {
+			first, voted = c, true
+		} else if !first.sameValues(c) {
+			return Match{}, false
+		}
+		if !found && !claims.ClaimedByOther(a, own) {
+			m, found = c, true
+		}
+	}
+	return m, found
+}
+
+// sameValues reports whether two matches carry the same values with the same stamps, whichever
+// record each came from. Whether a percentile was sourced is part of the EPSS value: a sourced 0 and
+// no percentile disagree.
+func (m Match) sameValues(o Match) bool {
+	if m.HasEPSS != o.HasEPSS || m.HasKEV != o.HasKEV {
+		return false
+	}
+	me, oe, mk, ok := m.EPSS, o.EPSS, m.KEV, o.KEV
+	me.Identifier, oe.Identifier, mk.Identifier, ok.Identifier = "", "", "", ""
+	return me == oe && mk == ok
+}
+
+// match assembles the values of the record keyed by the normalised id.
+func (s *Signals) match(id string) Match {
+	m := Match{Identifier: id}
+	m.EPSS, m.HasEPSS = s.epss[id]
+	m.KEV, m.HasKEV = s.kev[id]
+	return m
+}
+
+// isCVE reports whether a normalised identifier is a CVE id.
+func isCVE(id string) bool {
+	return strings.HasPrefix(id, "CVE-")
 }
 
 // normalise trims whitespace and uppercases an advisory id.

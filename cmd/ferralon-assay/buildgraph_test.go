@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -273,5 +274,14 @@ func TestCVEWatchRequestHoldsCursor(t *testing.T) {
 		if got := cveWatchRequest(&runConfig{graph: tc.graph}, nil).HoldCursor; got != tc.want {
 			t.Errorf("%s: HoldCursor = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A cve-watch run is asked about its whole work set, which claims its aliases when the report is
+// ranked, not only about the advisories new to its cursor.
+func TestCVEWatchRequestCarriesTheWorkSet(t *testing.T) {
+	ws := []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}, {ID: "GHSA-2099-aaaa-0001", Source: "ghsa"}}
+	if got := cveWatchRequest(&runConfig{advisories: ws}, nil).Advisories; !reflect.DeepEqual(got, ws) {
+		t.Errorf("Advisories = %v, want the work set %v", got, ws)
 	}
 }

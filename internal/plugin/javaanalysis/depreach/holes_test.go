@@ -18,6 +18,7 @@ type holeCase struct {
 	why     string // a substring of some hazard reason the row pins (optional)
 	via     string // a method the found path must pass through (ReachableCandidate rows)
 	cp      Classpath
+	linked  bool // the loaded classes are every class the run's classpath defines (SetLinked)
 }
 
 const holeMain = "com/acme/Main"
@@ -52,7 +53,9 @@ func runHoleCases(t *testing.T, cases []holeCase) {
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewEngineOn(append(tc.classes, urlFetcherDep()), tc.cp).Reach(holeIngress, holeSink)
+			e := NewEngineOn(append(tc.classes, urlFetcherDep()), tc.cp)
+			e.SetLinked(tc.linked)
+			r := e.Reach(holeIngress, holeSink)
 			if r.Verdict != tc.want {
 				t.Fatalf("verdict = %s, want %s (hazard=%q kinds=%v path=%s)", r.Verdict, tc.want, r.HazardWhy, r.HazardKinds, PathString(r.Path))
 			}
@@ -970,5 +973,334 @@ func TestResolveMethod_SuperclassChainFirst(t *testing.T) {
 	m, over := e.resolveMethod(impl, "describe", "()V")
 	if m == nil || m.Ref.Owner != parent || len(over) != 0 {
 		t.Errorf("resolveMethod = %v %v, want %s.describe and no override", m, over, parent)
+	}
+}
+
+// TestReach_LinkBoundLoadability: on a linked classpath a class whose supertype no
+// loaded class and no JDK package supplies cannot link (JVMS 5.3.5), so the JDK never
+// holds one and its methods are no provider roots.
+func TestReach_LinkBoundLoadability(t *testing.T) {
+	const (
+		d    = "com/acme/D"
+		base = "com/acme/Base"
+	)
+	touch := edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)
+	plugin := func(methods ...classfile.Method) []classfile.Class {
+		return []classfile.Class{
+			mainCalls(touch),
+			{Name: d, Super: objectClass, Interfaces: []string{"org/unopened/Plugin"}, Public: true, Methods: methods},
+		}
+	}
+	driver := func(super string) []classfile.Class {
+		return []classfile.Class{
+			mainCalls(edge(classfile.EdgeStatic, "java/sql/DriverManager", "getConnection", "(Ljava/lang/String;)Ljava/sql/Connection;")),
+			{Name: base, Super: objectClass, Interfaces: []string{super}, Public: true, Methods: []classfile.Method{
+				pubMethod(base, "<init>", "()V"),
+			}},
+			{Name: d, Super: base, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
+				pubMethod(d, "<init>", "()V"),
+				callsSink(d, "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"),
+			}},
+		}
+	}
+	runHoleCases(t, []holeCase{
+		{
+			name:    "an unopened supertype, unlinked",
+			classes: plugin(callsSink(d, "start", "()V")),
+			want:    ReachableCandidate, via: "D.start",
+		},
+		{
+			name:    "an unopened supertype, linked",
+			classes: plugin(callsSink(d, "start", "()V")),
+			linked:  true,
+			want:    NotExploitable,
+		},
+		{
+			name:    "an Object-returning method below an unopened supertype, unlinked",
+			classes: plugin(pubMethod(d, "get", "()Ljava/lang/Object;")),
+			want:    Undetermined, kind: HazardKindReentry,
+		},
+		{
+			name:    "an Object-returning method below an unopened supertype, linked",
+			classes: plugin(pubMethod(d, "get", "()Ljava/lang/Object;")),
+			linked:  true,
+			want:    NotExploitable,
+		},
+		{
+			name:    "a provider below a loaded class with an unopened supertype, unlinked",
+			classes: driver("org/unopened/Plugin"),
+			want:    ReachableCandidate, via: "D.connect",
+		},
+		{
+			name:    "a provider below a loaded class with an unopened supertype, linked",
+			classes: driver("org/unopened/Plugin"),
+			linked:  true,
+			want:    NotExploitable,
+		},
+		{
+			name:    "a provider below a loaded class with a JDK supertype, linked",
+			classes: driver("java/io/Serializable"),
+			linked:  true,
+			want:    ReachableCandidate, via: "D.connect",
+		},
+		{
+			name: "a provider with only JDK supertypes, linked",
+			classes: []classfile.Class{
+				mainCalls(edge(classfile.EdgeStatic, "java/sql/DriverManager", "getConnection", "(Ljava/lang/String;)Ljava/sql/Connection;")),
+				{Name: d, Super: objectClass, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
+					pubMethod(d, "<init>", "()V"),
+					callsSink(d, "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"),
+				}},
+			},
+			linked: true,
+			want:   ReachableCandidate, via: "D.connect",
+		},
+		{
+			// A JDK release may define the supertype even though a classpath JAR also does.
+			name: "a JDK-prefixed supertype a classpath JAR defines, linked",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			cp:     Classpath{Packages: map[string]bool{"javax/net": true}},
+			linked: true,
+			want:   ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "an Object-returning override of a JDK class, linked",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/util/Hashtable", Public: true, Methods: []classfile.Method{
+					pubMethod(d, "get", "(Ljava/lang/Object;)Ljava/lang/Object;"),
+				}},
+			},
+			linked: true,
+			want:   Undetermined, kind: HazardKindReentry, why: "returns java/lang/Object",
+		},
+		{
+			name:    "an unlisted classpath is never linked",
+			classes: plugin(callsSink(d, "start", "()V")),
+			cp:      Classpath{Unlisted: true},
+			linked:  true,
+			want:    ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "a supertype cycle is not taken as linking",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Interfaces: []string{d}, Public: true},
+				{Name: d, Super: objectClass, Interfaces: []string{base, "org/unopened/Plugin"}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			linked: true,
+			want:   NotExploitable,
+		},
+	})
+}
+
+// TestSetLinked_ResetsLoadable: the loadable cache answers for the linked bit it was
+// filled under.
+func TestSetLinked_ResetsLoadable(t *testing.T) {
+	const d = "com/acme/D"
+	e := NewEngine([]classfile.Class{
+		mainCalls(edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)),
+		{Name: d, Super: objectClass, Interfaces: []string{"org/unopened/Plugin"}, Public: true, Methods: []classfile.Method{
+			callsSink(d, "start", "()V"),
+		}},
+		urlFetcherDep(),
+	})
+	for _, step := range []struct {
+		linked bool
+		want   Verdict
+	}{{false, ReachableCandidate}, {true, NotExploitable}, {false, ReachableCandidate}} {
+		e.SetLinked(step.linked)
+		if r := e.Reach(holeIngress, holeSink); r.Verdict != step.want {
+			t.Fatalf("linked=%v: verdict = %s, want %s (hazard=%q)", step.linked, r.Verdict, step.want, r.HazardWhy)
+		}
+	}
+}
+
+// TestReach_LinkedHiddenSeeds: on a linked classpath a class below a supertype no loaded
+// class and no JDK package supplies, and a lambda of an interface neither supplies, has
+// no instance (JVMS 5.3.5, 5.4.3.6), so it is no hidden receiver of any call. Each pair
+// runs one fixture unlinked, where the hidden receiver answers, and linked.
+func TestReach_LinkedHiddenSeeds(t *testing.T) {
+	const (
+		cb     = "com/fw/Callback"
+		impl   = "com/acme/AppImpl"
+		l      = "com/acme/L"
+		d      = "com/acme/D"
+		absent = "com/lib/U"
+	)
+	callCb := mainCalls(edge(classfile.EdgeInterface, cb, "call", "()V"))
+	callback := ifaceWith(cb, nil, classfile.Method{Ref: mref(cb, "call", "()V"), Abstract: true, Public: true})
+	other := classfile.Class{Name: "com/acme/Other", Super: objectClass, Interfaces: []string{cb}, Methods: []classfile.Method{pubMethod("com/acme/Other", "call", "()V")}}
+	dispatch := func(extra ...classfile.Class) []classfile.Class {
+		return append([]classfile.Class{callCb, callback, other}, extra...)
+	}
+	below := func(super string, ifaces ...string) classfile.Class {
+		return classfile.Class{Name: impl, Super: super, Interfaces: ifaces, Methods: []classfile.Method{callsSink(impl, "call", "()V")}}
+	}
+	// A lambda in a method nothing calls, producing produced (and markers, through
+	// altMetafactory), whose call() reaches the sink.
+	lambdaOf := func(produced string, markers ...string) classfile.Class {
+		args := []classfile.BootstrapArg{{MethodType: "()V"}, handleArg(classfile.RefInvokeStatic, impl, "lambda$make$0", "()V"), {MethodType: "()V"}}
+		bsm, desc := "metafactory", lmfDesc
+		if len(markers) > 0 {
+			bsm, desc = "altMetafactory", lmfAltDesc
+			args = append(args, classfile.BootstrapArg{})
+			for _, m := range markers {
+				args = append(args, classfile.BootstrapArg{Class: m})
+			}
+		}
+		return classfile.Class{Name: impl, Super: objectClass, Methods: []classfile.Method{
+			{Ref: mref(impl, "make", "()L"+produced+";"), Static: true, Edges: []classfile.Edge{
+				indy("call", "()L"+produced+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, bsm, desc, args...)),
+			}},
+			{Ref: mref(impl, "lambda$make$0", "()V"), Static: true, Edges: sinkCall()},
+		}}
+	}
+	// specialReceivers: L.describe runs Object.toString on this, which calls
+	// this.hashCode; a hidden subtype of L overrides hashCode.
+	special := func(extra ...classfile.Class) []classfile.Class {
+		return append([]classfile.Class{
+			mainCalls(edge(classfile.EdgeStatic, l, "describe", "()V")),
+			{Name: l, Super: objectClass, Public: true, Methods: []classfile.Method{
+				{Ref: mref(l, "describe", "()V"), Static: true, Public: true, Edges: []classfile.Edge{
+					edge(classfile.EdgeSpecial, objectClass, "toString", "()Ljava/lang/String;"),
+				}},
+			}},
+		}, extra...)
+	}
+	// touchesPlatform: the Callback call touches the JDK only through a hidden receiver
+	// inheriting a JDK body, and only a touch lets the JDK load D as a Driver.
+	driver := classfile.Class{Name: d, Super: objectClass, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
+		pubMethod(d, "<init>", "()V"),
+		callsSink(d, "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"),
+	}}
+	// heldAs: the JDK can name D.reload only if some type D may be held as is unseen.
+	held := []classfile.Class{
+		mainCalls(edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)),
+		{Name: d, Super: "java/util/concurrent/CopyOnWriteArrayList", Public: true, Methods: []classfile.Method{callsSink(d, "reload", "()V")}},
+	}
+	jdk := Classpath{JDK: platformMethodsJDK}
+	type fixture struct {
+		name     string
+		classes  []classfile.Class
+		cp       Classpath
+		unlinked holeCase // want, kind, why, via when unlinked
+		linked   holeCase
+	}
+	reach := func(via string) holeCase { return holeCase{want: ReachableCandidate, via: via} }
+	clean := holeCase{want: NotExploitable}
+	var cases []holeCase
+	for _, f := range []fixture{
+		{name: "a class below an absent interface", classes: dispatch(below(objectClass, absent)), unlinked: reach("AppImpl.call"), linked: clean},
+		{name: "a class below an absent class", classes: dispatch(below("com/lib/Base")), unlinked: reach("AppImpl.call"), linked: clean},
+		{
+			name:     "a class below an absent interface, with no body of its own",
+			classes:  dispatch(classfile.Class{Name: impl, Super: objectClass, Interfaces: []string{absent}}),
+			unlinked: holeCase{want: Undetermined, kind: HazardKindUnloadedDependency, why: absent}, linked: clean,
+		},
+		{
+			name: "a class two levels below an absent interface",
+			classes: dispatch(
+				classfile.Class{Name: "com/acme/Mid", Super: objectClass, Interfaces: []string{absent}, Abstract: true},
+				classfile.Class{Name: "com/acme/Sub", Super: "com/acme/Mid", Methods: []classfile.Method{callsSink("com/acme/Sub", "call", "()V")}},
+			),
+			unlinked: reach("Sub.call"), linked: clean,
+		},
+		{
+			// A JDK release may define the supertype even though a classpath JAR also does.
+			name:     "a class below a JDK-prefixed type a classpath JAR defines",
+			classes:  dispatch(below("javax/net/SocketFactory")),
+			cp:       Classpath{Packages: map[string]bool{"javax/net": true}},
+			unlinked: reach("AppImpl.call"), linked: reach("AppImpl.call"),
+		},
+		{name: "a lambda of an absent interface", classes: dispatch(lambdaOf(absent)), unlinked: reach("lambda$make$0"), linked: clean},
+		{name: "a lambda with an absent marker interface", classes: dispatch(lambdaOf("java/lang/Runnable", absent)), unlinked: reach("lambda$make$0"), linked: clean},
+		{
+			name:     "a lambda of a JDK-prefixed interface a classpath JAR defines",
+			classes:  dispatch(lambdaOf("javax/net/Callback")),
+			cp:       Classpath{Packages: map[string]bool{"javax/net": true}},
+			unlinked: reach("lambda$make$0"), linked: reach("lambda$make$0"),
+		},
+		{
+			name: "a platform body run on this",
+			classes: special(classfile.Class{Name: impl, Super: objectClass, Interfaces: []string{absent}, Methods: []classfile.Method{
+				pubMethod(impl, "<init>", "()V"), callsSink(impl, "hashCode", "()I"),
+			}}),
+			unlinked: reach("AppImpl.hashCode"), linked: clean,
+		},
+		{
+			name:     "a call touching the JDK only through a hidden receiver",
+			classes:  dispatch(classfile.Class{Name: impl, Super: "java/util/AbstractList", Interfaces: []string{absent}}, driver),
+			unlinked: reach("D.connect"), linked: clean,
+		},
+		{
+			name:     "a provider method the JDK names only through an unseen type",
+			classes:  append(held, classfile.Class{Name: impl, Super: objectClass, Interfaces: []string{absent}}),
+			cp:       jdk,
+			unlinked: reach("D.reload"), linked: clean,
+		},
+	} {
+		u, k := f.unlinked, f.linked
+		u.name, u.classes, u.cp = f.name+", unlinked", f.classes, f.cp
+		k.name, k.classes, k.cp, k.linked = f.name+", linked", f.classes, f.cp, true
+		cases = append(cases, u, k)
+	}
+	runHoleCases(t, cases)
+}
+
+// TestReach_LinkedFrameworkCallbacks: a loaded framework calling a callback interface
+// dispatches to an application class below an absent supertype only while the run is
+// unlinked; on a linked run that class cannot exist.
+func TestReach_LinkedFrameworkCallbacks(t *testing.T) {
+	const (
+		runner = "com/fw/CommandLineRunner"
+		fwApp  = "com/fw/SpringApplication"
+		bean   = "com/acme/AppRunner"
+	)
+	classes := func(super string) []classfile.Class {
+		return []classfile.Class{
+			mainCalls(edge(classfile.EdgeStatic, fwApp, "run", "()V")),
+			{Name: fwApp, Super: objectClass, Public: true, Methods: []classfile.Method{
+				{Ref: mref(fwApp, "run", "()V"), Static: true, Public: true, Edges: []classfile.Edge{edge(classfile.EdgeInterface, runner, "run", "()V")}},
+			}},
+			ifaceWith(runner, nil, classfile.Method{Ref: mref(runner, "run", "()V"), Abstract: true, Public: true}),
+			{Name: "com/fw/DefaultRunner", Super: objectClass, Interfaces: []string{runner}, Methods: []classfile.Method{pubMethod("com/fw/DefaultRunner", "run", "()V")}},
+			{Name: bean, Super: super, Methods: []classfile.Method{pubMethod(bean, "<init>", "()V"), callsSink(bean, "run", "()V")}},
+		}
+	}
+	javaxNet := Classpath{Packages: map[string]bool{"javax/net": true}}
+	runHoleCases(t, []holeCase{
+		{name: "callback below an absent class, unlinked", classes: classes("org/unopened/Runner"), want: ReachableCandidate, via: "AppRunner.run"},
+		{name: "callback below an absent class, linked", classes: classes("org/unopened/Runner"), linked: true, want: NotExploitable},
+		{name: "callback below a JDK-prefixed class a classpath JAR defines, linked", classes: classes("javax/net/SocketFactory"), cp: javaxNet, linked: true, want: ReachableCandidate, via: "AppRunner.run"},
+	})
+}
+
+// TestSetLinked_ResetsHiddenSeeds: the hidden seeds, and the held types built from them,
+// answer for the linked bit they were filled under. Starting linked fills both caches
+// narrowed; an unlinked run that reused either would lose D.reload.
+func TestSetLinked_ResetsHiddenSeeds(t *testing.T) {
+	const d = "com/acme/D"
+	e := NewEngineOn([]classfile.Class{
+		mainCalls(edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)),
+		{Name: d, Super: "java/util/concurrent/CopyOnWriteArrayList", Public: true, Methods: []classfile.Method{callsSink(d, "reload", "()V")}},
+		{Name: "com/acme/AppImpl", Super: objectClass, Interfaces: []string{"com/lib/U"}},
+		urlFetcherDep(),
+	}, Classpath{JDK: platformMethodsJDK})
+	for _, step := range []struct {
+		linked bool
+		want   Verdict
+	}{{true, NotExploitable}, {false, ReachableCandidate}, {true, NotExploitable}} {
+		e.SetLinked(step.linked)
+		if r := e.Reach(holeIngress, holeSink); r.Verdict != step.want {
+			t.Fatalf("linked=%v: verdict = %s, want %s (hazard=%q)", step.linked, r.Verdict, step.want, r.HazardWhy)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel/inteltest"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -33,7 +34,7 @@ func prioritySignals(t *testing.T) *intel.Signals {
 // alias (the plumbing from AdvisoryFacts.Aliases all the way to report.Priority), with the value's
 // own stamp.
 func TestPriorityForResolvesViaCVEAlias(t *testing.T) {
-	p := priorityFor(report.Advisory{ID: "GO-2021-0113", Source: "osv", Aliases: []string{"CVE-2021-38561", "GHSA-ppp9-7jff-5vj2"}}, prioritySignals(t))
+	p := priorityFor(report.Advisory{ID: "GO-2021-0113", Source: "osv", Aliases: []string{"CVE-2021-38561", "GHSA-ppp9-7jff-5vj2"}}, prioritySignals(t), nil)
 	want := report.Priority{EPSSScore: 0.0123, EPSSPercentile: 0.456, HasPercentile: true, EPSSAsOf: "2026-10-18"}
 	if p == nil || *p != want {
 		t.Fatalf("priority = %+v, want %+v (EPSS via the CVE alias, no KEV fields)", p, want)
@@ -44,7 +45,7 @@ func TestPriorityForResolvesViaCVEAlias(t *testing.T) {
 // not-listed KEV observation is carried as one.
 func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
 	sig := prioritySignals(t)
-	got := priorityFor(report.Advisory{ID: "CVE-2025-8110", Source: "osv", Aliases: []string{"GO-2025-3900"}}, sig)
+	got := priorityFor(report.Advisory{ID: "CVE-2025-8110", Source: "osv", Aliases: []string{"GO-2025-3900"}}, sig, nil)
 	want := report.Priority{
 		EPSSScore: 0.91, EPSSPercentile: 0.99, HasPercentile: true, EPSSAsOf: "2026-10-19",
 		KEVListed: true, KEVDateAdded: "2025-07-28", KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z",
@@ -52,7 +53,7 @@ func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
 	if got == nil || *got != want {
 		t.Errorf("CVE-2025-8110 priority = %+v, want %+v", got, want)
 	}
-	got = priorityFor(report.Advisory{ID: "CVE-2024-55947", Source: "osv"}, sig)
+	got = priorityFor(report.Advisory{ID: "CVE-2024-55947", Source: "osv"}, sig, nil)
 	want = report.Priority{KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"}
 	if got == nil || *got != want {
 		t.Errorf("CVE-2024-55947 priority = %+v, want the stamped not-listed observation %+v", got, want)
@@ -60,27 +61,34 @@ func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
 }
 
 // TestSourcedZeroPercentileSurvivesEndToEnd: a sourced EPSS percentile of 0 (CVE-2026-50268's real
-// signals record) goes intel → report → JSON → decode and reads back as sourced, and the SARIF
-// projected from the decoded report carries epss_percentile 0 and rank 0. A record with no
-// percentile stays unsourced at every step.
+// signals record) goes intel → rankWith → report → JSON → decode and reads back as sourced, and the
+// SARIF projected from the decoded report carries epss_percentile 0 and rank 0 — for a CVE-keyed
+// advisory's own record, and for a GHSA advisory attributed through its one CVE alias. A record with
+// no percentile stays unsourced at every step.
 func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
-	sig, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 2,
+	sig, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 3,
 	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	  "records": [
 	    {"identifier": "CVE-2026-50268", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
+	    {"identifier": "CVE-ALIASED-ZERO", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
 	    {"identifier": "CVE-UNSOURCED", "epss": {"score": 0.00047, "as_of": "2026-08-02"}}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "c"})
-	for _, id := range []string{"CVE-2026-50268", "CVE-UNSOURCED"} {
+	for _, adv := range []report.Advisory{
+		{ID: "CVE-2026-50268", Source: "osv"},
+		{ID: "GHSA-pppp-qqqq-rrrr", Source: "ghsa", Aliases: []string{"CVE-ALIASED-ZERO"}},
+		{ID: "CVE-UNSOURCED", Source: "osv"},
+	} {
 		b.AddFinding(report.AdvisoryFinding{
-			Advisory: report.Advisory{ID: id, Source: "osv"},
+			Advisory: adv,
 			Verdict:  report.VerdictReachableCandidate,
 			Evidence: report.EvidenceSummary{Grade: report.GradeControlFlowOnly},
 		})
 	}
-	encoded, err := json.Marshal(b.WithPriority(rankBy(sig)).Build())
+	rankWith(b, sig, nil, pipeline.NewTableSource())
+	encoded, err := json.Marshal(b.Build())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +112,9 @@ func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
 	if err := decoded.Validate(); err != nil {
 		t.Fatalf("decoded report does not validate: %v", err)
 	}
+	if len(decoded.Advisories) != 3 || len(wire.Advisories) != 3 {
+		t.Fatalf("decoded %d rows, wire %d; want all 3", len(decoded.Advisories), len(wire.Advisories))
+	}
 	log, err := projection.ProjectReportSARIF(decoded)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +126,7 @@ func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
 
 	for i, f := range decoded.Advisories {
 		id := f.Advisory.ID
-		sourced := id == "CVE-2026-50268"
+		sourced := id != "CVE-UNSOURCED"
 		pct, onWire := wire.Advisories[i].Priority["epss_percentile"]
 		if wire.Advisories[i].Advisory.ID != id || onWire != sourced || (sourced && pct != 0.0) {
 			t.Errorf("%s: wire epss_percentile = %v (present %v), want present %v", id, pct, onWire, sourced)
@@ -140,11 +151,62 @@ func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
 // TestPriorityForNoSignalIsNil: a synthetic advisory with no id in the signals file, and any
 // advisory in a run with no signals at all, carries no Priority.
 func TestPriorityForNoSignalIsNil(t *testing.T) {
-	if p := priorityFor(report.Advisory{ID: "FERRALON-APP-SSRF-0001", Source: "osv"}, prioritySignals(t)); p != nil {
+	if p := priorityFor(report.Advisory{ID: "FERRALON-APP-SSRF-0001", Source: "osv"}, prioritySignals(t), nil); p != nil {
 		t.Errorf("expected nil priority for an id the signals file lacks, got %+v", p)
 	}
-	if p := priorityFor(report.Advisory{ID: "CVE-2025-8110", Source: "osv"}, nil); p != nil {
+	if p := priorityFor(report.Advisory{ID: "CVE-2025-8110", Source: "osv"}, nil, nil); p != nil {
 		t.Errorf("expected nil priority with no signals, got %+v", p)
+	}
+}
+
+// TestPriorityForRefusesSiblingThroughGOAlias: GO-2023-2102 stands for CVE-2023-39325 and for
+// KEV-listed CVE-2023-44487, and the file has no record of CVE-2023-39325's own. The CVE-keyed
+// advisory gets no priority from the GO roll-up, never its sibling's KEV listing.
+func TestPriorityForRefusesSiblingThroughGOAlias(t *testing.T) {
+	sig, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 2,
+	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	  "records": [
+	    {"identifier": "CVE-2023-44487", "epss": {"score": 0.99999, "percentile": 0.99997, "as_of": "2026-08-11"},
+	     "kev": {"listed": true, "date_added": "2023-10-10", "catalog_version": "2026.08.11", "date_released": "2026-08-11T18:59:43Z"}},
+	    {"identifier": "GO-2023-2102", "epss": {"score": 0.99999, "percentile": 0.99997, "as_of": "2026-08-11"},
+	     "kev": {"listed": true, "date_added": "2023-10-10", "catalog_version": "2026.08.11", "date_released": "2026-08-11T18:59:43Z"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adv := report.Advisory{ID: "CVE-2023-39325", Source: "osv", Aliases: []string{"GO-2023-2102", "GHSA-4374-p667-p6c8"}}
+	if p := priorityFor(adv, sig, nil); p != nil {
+		t.Errorf("CVE-2023-39325 priority = %+v; want none — the GO-2023-2102 record may be its sibling CVE-2023-44487's", *p)
+	}
+}
+
+// TestRankWithRefusesAnAliasAnotherRowNames: the run's rows are part of the work set the join
+// refuses a shared alias against, whatever else it holds. A GHSA row aliasing CVE-2021-38561 takes that CVE's EPSS when it
+// is alone, and none when the run also reports CVE-2021-38561 as a row of its own — which keeps it.
+func TestRankWithRefusesAnAliasAnotherRowNames(t *testing.T) {
+	sig := prioritySignals(t)
+	ghsa := report.AdvisoryFinding{Advisory: report.Advisory{ID: "GHSA-ppp9-7jff-5vj2", Source: "ghsa", Aliases: []string{"CVE-2021-38561"}}, Verdict: report.VerdictDisqualified}
+	cve := report.AdvisoryFinding{Advisory: report.Advisory{ID: "CVE-2021-38561", Source: "osv"}, Verdict: report.VerdictDisqualified}
+	build := func(fs ...report.AdvisoryFinding) map[string]*report.Priority {
+		b := report.NewBuilder(report.Subject{Repo: "github.com/example/widget"})
+		for _, f := range fs {
+			b.AddFinding(f)
+		}
+		rankWith(b, sig, nil, pipeline.NewTableSource())
+		got := make(map[string]*report.Priority)
+		for _, f := range b.Build().Advisories {
+			got[f.Advisory.ID] = f.Priority
+		}
+		return got
+	}
+	if p := build(ghsa)["GHSA-ppp9-7jff-5vj2"]; p == nil || p.EPSSAsOf != "2026-10-18" {
+		t.Errorf("GHSA row alone: priority = %+v, want CVE-2021-38561's EPSS through its alias", p)
+	}
+	got := build(ghsa, cve)
+	if p := got["GHSA-ppp9-7jff-5vj2"]; p != nil {
+		t.Errorf("GHSA row beside CVE-2021-38561's own row: priority = %+v, want none", *p)
+	}
+	if p := got["CVE-2021-38561"]; p == nil || p.EPSSAsOf != "2026-10-18" {
+		t.Errorf("CVE-2021-38561 row: priority = %+v, want its own record's EPSS", p)
 	}
 }
 

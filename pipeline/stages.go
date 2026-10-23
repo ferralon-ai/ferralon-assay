@@ -30,6 +30,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
 )
@@ -79,6 +80,19 @@ func WithCheckout(co checkout.Checkout) AssessOption {
 // default path is byte-identical to today.
 func WithAdvisorySource(src AdvisorySource) AssessOption {
 	return func(c *AssessConfig) { c.Source = src }
+}
+
+// AdvisorySourceOf returns the AdvisorySource a run assessed with opts reads advisory facts through:
+// the one WithAdvisorySource injected, else the process-wide default — the source S1 reads.
+func AdvisorySourceOf(opts ...AssessOption) AdvisorySource {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.Source != nil {
+		return cfg.Source
+	}
+	return defaultAdvisorySource()
 }
 
 // WithSubjectToolchain injects the two candidate EXACT sources of the subject's Go toolchain that
@@ -840,13 +854,13 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// established. They live in GuardSufficiency instead, which is Prove-side evidence framing
 	// that Assess never refutes on.
 	//
-	// Each entry carries ONLY its own OSV aliases. Merging them was customer-visible wrong:
-	// CISA's KEV catalog lists only CVE-2025-8110, and trigger's priorityFor joins the run's signals
-	// on ID + Aliases, so the successor sitting in the predecessor's alias array reported
-	// KEVListed against CVE-2024-55947 — which CISA does not list. The GO- ids are load-bearing,
-	// not decoration: they are the key govulncheck reports dependency findings under
-	// (reachcandidate.govulnMatchID, which takes the FIRST GO- alias — with one GO- id per entry
-	// that is now unambiguous, where the merged entry could only ever key one of the two).
+	// Each entry carries ONLY its own OSV aliases. They are two vulnerabilities, and every join on
+	// an entry's id and aliases has one slot per entry: CISA's KEV catalog lists only
+	// CVE-2025-8110, so the successor in the predecessor's alias array would attribute that listing
+	// to CVE-2024-55947, which CISA does not list (TestNoEntryAliasesAnotherEntrysPrimaryID guards
+	// the split). The GO- ids are load-bearing, not decoration: they are the key govulncheck reports
+	// dependency findings under (reachcandidate.govulnMatchID, which takes the FIRST GO- alias), and
+	// with one GO- id per entry that key is unambiguous.
 	"CVE-2024-55947": {
 		Aliases: []string{"GHSA-qf5v-rp47-55gg", "GO-2024-3356"},
 		PURL:    "pkg:golang/gogs.io/gogs/internal/db",
@@ -1561,15 +1575,20 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 	switch {
 	case module != "":
 		// A Go module coordinate resolves off go.mod with no plugin involved, so this branch
-		// carried no partiality at all — every Go scan disclosed nothing. Distinguish the two
+		// carried no partiality at all — every Go scan disclosed nothing. Distinguish the three
 		// ways the version comes back empty: an unreadable/unparseable go.mod means the
-		// version could not be established (disclose no_manifest), whereas a go.mod that
-		// parses and simply does not require the module means the codebase genuinely does not
-		// depend on it (honest absence — no disclosure, so a true not_exploitable stays
-		// unqualified).
-		v, manifestRead := moduleVersionFromGoMod(buildDir, module)
+		// version could not be established (disclose no_manifest); a module the go.mod requires
+		// but replaces with a local directory or another module is declared with no version
+		// that describes it (disclose source_unpinned and keep it declared, so the version axis
+		// stays open); and a go.mod that parses and simply does not require the module means the
+		// codebase genuinely does not depend on it (honest absence — no disclosure, so a true
+		// not_exploitable stays unqualified).
+		v, pinned, manifestRead := moduleVersionFromGoMod(buildDir, module)
 		if !manifestRead {
 			return depVersions{}, []string{plugin.PartialReasonNoManifest}, nil
+		}
+		if !pinned {
+			return depVersions{Found: true}, []string{plugin.PartialReasonSourceUnpinned}, nil
 		}
 		return singleVersion(v), nil, nil
 	case coordinate != "" && s.plugin != nil && s.plugin.Language() == language:
@@ -1989,29 +2008,38 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	return err
 }
 
-// moduleVersionFromGoMod parses buildDir/go.mod and returns the resolved version of the given
-// module path (the version on its require directive). Offline read of the pinned dependency
-// version.
+// moduleVersionFromGoMod parses buildDir/go.mod and returns the version the build selects for
+// module: its require version, or the version a same-module replace directive substitutes.
 //
-// manifestRead separates the two reasons the version can come back empty, which the caller must
-// tell apart: false means go.mod was absent or unparseable, so NOTHING about the dependency set
-// was established; true with an empty version means go.mod was read cleanly and does not require
-// the module, which is a real fact about the codebase.
-func moduleVersionFromGoMod(buildDir, module string) (version string, manifestRead bool) {
+// manifestRead separates the reasons the version can come back empty: false means go.mod was
+// absent or unparseable, so nothing about the dependency set was established; true with an
+// empty version and pinned true means go.mod does not require the module, a real fact about the
+// codebase. pinned false means the module is required but replaced by a local directory or by
+// another module, so the build compiles code no upstream version describes.
+func moduleVersionFromGoMod(buildDir, module string) (version string, pinned, manifestRead bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	for _, r := range mf.Require {
-		if r.Mod.Path == module {
-			return r.Mod.Version, true
+		if r.Mod.Path != module {
+			continue
+		}
+		t, ok := gomod.Replacement(mf, module, r.Mod.Version)
+		switch {
+		case !ok:
+			return r.Mod.Version, true, true
+		case t.Filesystem || t.Path != module:
+			return "", false, true
+		default:
+			return t.Version, true, true
 		}
 	}
-	return "", true
+	return "", true, true
 }
 
 // InventoryBuildDir returns the BuildDir recorded by codebase_inventory, or "" if none. S4/S5 read

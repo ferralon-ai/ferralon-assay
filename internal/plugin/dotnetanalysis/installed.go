@@ -57,9 +57,12 @@ type projectDir struct {
 //     packages.config with no project file beside it counts as is.
 //
 // Two project files in one directory share obj/ and the lock, so neither is attributed.
-// The reasons name every unknown copy added.
-func installedCopies(ev *evaluator, copies []nugetCopy, locks map[string]*lockFile, projects map[string]*projectDir, configs map[string]bool, want, coordinate string) ([]nugetCopy, []string, bool) {
+// The reasons name every unknown copy added. The first bool (settled) is true when every
+// project directory's installed set is restore's own record: a trusted assets file or a
+// current lockfile. The second is false when an assets file can't be parsed.
+func installedCopies(ev *evaluator, copies []nugetCopy, locks map[string]*lockFile, projects map[string]*projectDir, configs map[string]bool, want, coordinate string) ([]nugetCopy, []string, bool, bool) {
 	var (
+		recorded int
 		extra    []nugetCopy
 		reasons  []string
 		current  = make(map[string]bool)
@@ -97,11 +100,12 @@ dirs:
 			ac := ev.checkAssets(evals[0])
 			switch ac.status {
 			case assetsUnparsable:
-				return nil, nil, false
+				return nil, nil, false, false
 			case assetsTrusted:
 				for _, d := range assetsCopiesOf(ac.graph, want) {
 					extra = append(extra, nugetCopy{dep: d, dir: dir, kind: kindAssets})
 				}
+				recorded++
 				continue
 			case assetsUntrusted:
 				unknown(dir, ac.reason)
@@ -126,6 +130,7 @@ dirs:
 		lf, hasLock := locks[dir]
 		if hasLock && single && ev.lockCurrent(lf, evals[0]) {
 			current[dir] = true
+			recorded++
 			continue
 		}
 		if unconditional || !declares && (!refs || gov || ev.refsCover(evals, want)) {
@@ -156,7 +161,7 @@ dirs:
 		}
 		out = append(out, c)
 	}
-	return out, reasons, true
+	return out, reasons, len(projects) > 0 && recorded == len(projects), true
 }
 
 // refsCover reports whether every ProjectReference of evals leads only to projects whose
@@ -278,6 +283,11 @@ type msbuildFile struct {
 	props       []msbuildProp
 	projectRefs []msbuildProjectRef
 	versions    map[string]string // PackageVersion by normalized id (roleCentral only)
+	// opaque is set when a skipped subtree could bring code into the build outside restore
+	// (inertOpaque); assemblyRefs are the simple names of its Reference and FrameworkReference
+	// items. Neither changes what restore installs; both limit what completeBuild may claim.
+	opaque       bool
+	assemblyRefs []string
 }
 
 type msbuildImport struct {
@@ -381,6 +391,7 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 		metaCond  bool
 		text      strings.Builder
 		skip      int
+		inert     string // lowercased name of the skipped subtree's root
 	)
 	d := xml.NewDecoder(bytes.NewReader(stripBOM(data)))
 	for {
@@ -398,6 +409,24 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 			if skip > 0 || inertSubtree(depth, stack) {
 				if skip == 0 {
 					skip = depth
+					inert = strings.ToLower(name)
+					switch {
+					case depth == 2 && inert != "projectextensions", depth == 3 && !slices.Contains(inertItems, inert):
+						mf.opaque = true
+					case assemblyItem(inert):
+						include, _, _ := strings.Cut(attrValue(t.Attr, "include"), ",")
+						if !simpleAssemblyName(include) || inert == "reference" && !frameworkAssembly(include) {
+							mf.opaque = true
+						}
+						mf.assemblyRefs = append(mf.assemblyRefs, normalizeNuGetCoordinate(include))
+					}
+				} else if assemblyItem(inert) && !slices.Contains(referenceMetadata, strings.ToLower(name)) {
+					mf.opaque = true
+				}
+				for _, a := range t.Attr {
+					if k := strings.ToLower(a.Name.Local); k != "condition" && (k != "include" || !assemblyItem(inert)) && inertOpaque(inert, a.Value) {
+						mf.opaque = true
+					}
 				}
 				if restoreItem(name) {
 					return msbuildFile{}, false
@@ -514,6 +543,9 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 		case xml.CharData:
 			switch {
 			case skip > 0:
+				if inertOpaque(inert, string(t)) {
+					mf.opaque = true
+				}
 			case len(stack) == 3 && prop != "", len(stack) == 4 && (item != nil || pref != nil || pver != nil):
 				text.Write(t)
 			case strings.TrimSpace(string(t)) != "":
@@ -525,7 +557,7 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 			switch {
 			case skip > 0:
 				if depth == skip {
-					skip = 0
+					skip, inert = 0, ""
 				}
 			case depth == 4 && item != nil:
 				v := strings.TrimSpace(text.String())
@@ -697,18 +729,19 @@ func knownSDK(sdk string) bool {
 	return true
 }
 
+// restoreProperty reports whether a property (lowercased) is one of restoreProperties,
+// matched with any leading underscore removed.
+func restoreProperty(name string) bool {
+	name = strings.TrimLeft(name, "_")
+	return slices.ContainsFunc(restoreProperties, func(prefix string) bool { return strings.HasPrefix(name, prefix) })
+}
+
 // restoreSafe reports whether setting the lowercased property name to value (lowercased,
 // trimmed) leaves every version this reader reads in place.
 func restoreSafe(name string, conditioned bool, value string) bool {
 	name = strings.TrimLeft(name, "_")
-	restore := false
-	for _, prefix := range restoreProperties {
-		if strings.HasPrefix(name, prefix) {
-			restore = true
-		}
-	}
 	switch {
-	case !restore:
+	case !restoreProperty(name):
 		return true
 	case conditioned:
 		return false

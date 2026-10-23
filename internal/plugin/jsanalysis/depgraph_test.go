@@ -310,7 +310,7 @@ func TestDepGraph_Controls(t *testing.T) {
 		dir := writeProgram(t, map[string]string{
 			"package.json": `{"name":"app","version":"1.0.0","dependencies":{"dep":"1.0.0"}}`,
 			"yarn.lock":    "__metadata:\n  version: 6\n\n\"dep@npm:1.0.0\":\n  version: 1.0.0\n  resolution: \"dep@npm:1.0.0\"\n",
-			"index.js":     app,
+			"index.js":     idle,
 		})
 		cg := withDeps(t, dir, artifactcache.NewDeclaredAbsentStore())
 		if !hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) {
@@ -387,6 +387,7 @@ func TestDepGraph_FirstPartyByteIdentical(t *testing.T) {
 	programs := []map[string]string{
 		{"index.js": fixtureB, "package.json": `{"name":"app","version":"1.0.0"}`},
 		{"index.js": "const { f } = require('./lib');\nf();\n", "lib.js": "exports.f = function f() { eval('1'); };\n"},
+		{"index.js": "const { g } = require('./lib');\ng();\n", "lib.js": "exports.g = function g() { return 1; };\n", "package.json": `{"name":"app","version":"1.0.0"}`},
 		{"src/a.ts": "import { b } from './b';\nexport function a() { return b(); }\n", "src/b.ts": "export function b() { return 1; }\n", "tsconfig.json": "{}"},
 	}
 	for i, files := range programs {

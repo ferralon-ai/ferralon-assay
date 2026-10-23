@@ -328,11 +328,11 @@ func TestResolveVersions_ExhaustiveScriptInstall(t *testing.T) {
 		{"postinstall installs the coordinate", npm(map[string]string{"package.json": withScripts + `,"scripts":{"postinstall":"npm install absent-package"}}`}), false},
 		{"Dockerfile npm install, which may rewrite the lock", npm(map[string]string{"Dockerfile": docker + "npm install\n"}), false},
 		{"PowerShell installs the coordinate", npm(map[string]string{"deploy.ps1": "npm install absent-package\n"}), false},
+		{"Dockerfile yarn --frozen-lockfile, which yarn 1 does not hold to the lock", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nRUN yarn --frozen-lockfile\n"}, false},
 
 		// Kept forms install only what a read lock holds.
 		{"Dockerfile npm ci", npm(map[string]string{"Dockerfile": docker + "npm ci\n"}), true},
 		{"Dockerfile npm ci --omit=dev", npm(map[string]string{"Dockerfile": docker + "npm ci --omit=dev\n"}), true},
-		{"Dockerfile yarn --frozen-lockfile", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nRUN yarn --frozen-lockfile\n"}, true},
 		{"Dockerfile pnpm install --frozen-lockfile", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json pnpm-lock.yaml ./\nRUN pnpm install --frozen-lockfile\n"}, true},
 		{"Dockerfile npm ci, then a script that builds", npm(map[string]string{"package.json": withScripts + `,"scripts":{"build":"tsc"}}`, "Dockerfile": docker + "npm ci && npm run build\n"}), true},
 	}

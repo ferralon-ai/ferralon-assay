@@ -17,6 +17,12 @@ type Binder interface {
 	// the command may run in, each read here and unchanged; with locks given, the nearest of
 	// them at or above each must be read here and unchanged too. nil when any is not.
 	Nearest(name string, locks ...string) []string
+	// Prefixed returns dir/name from each directory the command may run in, the file a
+	// command told to treat dir as its package root (npm --prefix dir) reads, without looking
+	// above it. dir must be a literal relative path with no .. part, inside the build and
+	// reached through no symlink, and dir/name a regular file, read here, that the walk checks
+	// as a surface on its own. nil when any is not.
+	Prefixed(dir, name string) []string
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -24,6 +30,9 @@ type cursor interface {
 	Binder
 	cd(words []string) // nil when the target is not literal
 	other()            // a command that runs no installer and may change files
+	// fork returns a cursor for a command started from here in a shell of its own, whose
+	// directory changes do not reach this one.
+	fork() cursor
 	// sourced reports whether p, from every directory the command may run in, names an in-tree
 	// script surface the walk checks on its own.
 	sourced(p string) bool
@@ -87,6 +96,12 @@ func (c *hostCursor) cd(words []string) {
 }
 
 func (c *hostCursor) other() {}
+
+func (c *hostCursor) fork() cursor {
+	f := *c
+	f.dirs = append([]string(nil), c.dirs...)
+	return &f
+}
 
 func (c *hostCursor) merge(o *hostCursor) {
 	c.unknown = c.unknown || o.unknown
@@ -203,6 +218,27 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 	return found
 }
 
+func (c *hostCursor) Prefixed(dir, name string) []string {
+	if c.unknown || len(c.dirs) == 0 || dir == "" || filepath.IsAbs(dir) || strings.ContainsAny(dir, "$`*?[~") {
+		return nil
+	}
+	for _, part := range strings.Split(filepath.ToSlash(dir), "/") {
+		if part == ".." {
+			return nil
+		}
+	}
+	found := make([]string, 0, len(c.dirs))
+	for _, d := range c.dirs {
+		f := filepath.Join(d, dir, name)
+		if !c.v.inRoot(f) || !c.v.unlinked(f) || !c.v.walkedSurface(f) || !c.v.read(f) {
+			return nil
+		}
+		found = append(found, f)
+	}
+	c.v.bind(name)
+	return found
+}
+
 // lockAbove reports whether the nearest of locks at or above dir, inside root, is read here.
 func (c *hostCursor) lockAbove(dir string, locks []string) bool {
 	for ; c.v.inRoot(dir); dir = filepath.Dir(dir) {
@@ -255,6 +291,28 @@ func (v *Veto) glob(pattern string) (matches []string, ok bool) {
 		}
 	}
 	return matches, true
+}
+
+// unlinked reports whether p, inside root, is a regular file reached from root through no
+// symlink: every directory on the way, and p itself, is what it names.
+func (v *Veto) unlinked(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil {
+		return false
+	}
+	at := v.root
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		at = filepath.Join(at, part)
+		fi, err := os.Lstat(at)
+		if err != nil {
+			return false
+		}
+		if last := i == len(parts)-1; last && !fi.Mode().IsRegular() || !last && !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 func isDir(p string) bool {

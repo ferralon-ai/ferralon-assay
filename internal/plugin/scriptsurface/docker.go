@@ -206,6 +206,15 @@ func (c *dockerCursor) cd(words []string) {
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintAll() }
 
+func (c *dockerCursor) fork() cursor {
+	f := *c
+	return &f
+}
+
+// Prefixed is nil: a package root inside the image is not a build-tree directory the walk
+// reads.
+func (c *dockerCursor) Prefixed(string, string) []string { return nil }
+
 func (c *dockerCursor) File(p string) bool { return c.Hosts(p) != nil }
 
 // sourced is false: a file in the image is not one the walk checks.

@@ -22,10 +22,14 @@ import (
 //	npm run|run-script <name>            runs a script and installs nothing; the script, like
 //	npm test|t|start                     every package.json script value, passes the same gate
 //	yarn run <name>, yarn test|start
+//	concurrently "<cmd>" ...             runs each <cmd>, which passes the same gate
 //
 // with only --production, --omit=dev and --ignore-scripts added, and with the package.json
 // each binds to (the nearest at or above the command's directory, as npm finds it) and its
-// lock read here. Anything else that names a package manager withholds: a package argument,
+// lock read here. npm run, run-script and start may also carry one --prefix <dir>, which binds
+// them to <dir>/package.json alone, read here and a surface the walk checks itself; any npm
+// form may follow assignments to laneSubsetConfigs variables. concurrently may carry only
+// concurrentlyFlags. Anything else that names a package manager withholds: a package argument,
 // another flag, a bare npm install, yarn or pnpm install (each re-locks), yarn install
 // --immutable (yarn 1 ignores it), npm exec, npx, pnpx, bunx, yarn dlx, pnpm run (pnpm
 // installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
@@ -40,6 +44,7 @@ var scriptSpec = scriptsurface.Spec{
 	Env:         laneEnvRE,
 	EnvKeeps:    laneEnvKeeps,
 	Allowed:     laneAllowed,
+	Concurrent:  laneConcurrent,
 	ReadRegular: readRegular,
 	Absent:      absent,
 }
@@ -84,6 +89,12 @@ var laneFlags = map[string]bool{"--production": true, "--omit=dev": true, "--ign
 // laneAllowed reports whether a command holding a package-manager token, already free of
 // expansions and redirects, is one of the allowed forms and binds to files read here.
 func laneAllowed(words []string, b scriptsurface.Binder) bool {
+	for len(words) > 0 && laneKeptAssignment(words[0]) {
+		words = words[1:]
+	}
+	if len(words) == 0 {
+		return false
+	}
 	head, ok := scriptsurface.CommandName(words[0])
 	if !ok || len(words) < 2 {
 		return false
@@ -94,8 +105,12 @@ func laneAllowed(words []string, b scriptsurface.Binder) bool {
 		case "ci":
 			return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("package.json", "package-lock.json", "npm-shrinkwrap.json") != nil
 		case "run", "run-script":
-			return laneRunsScript(words, b)
-		case "test", "t", "start":
+			dir, rest, ok := lanePrefix(words[2:])
+			return ok && len(rest) == 1 && rest[0] != "" && !strings.HasPrefix(rest[0], "-") && lanePackage(b, dir)
+		case "start":
+			dir, rest, ok := lanePrefix(words[2:])
+			return ok && len(rest) == 0 && lanePackage(b, dir)
+		case "test", "t":
 			return len(words) == 2 && b.Nearest("package.json") != nil
 		}
 	case "yarn":
@@ -121,4 +136,65 @@ func laneAllowed(words []string, b scriptsurface.Binder) bool {
 // after it, bound to a package.json read here.
 func laneRunsScript(words []string, b scriptsurface.Binder) bool {
 	return len(words) == 3 && words[2] != "" && !strings.HasPrefix(words[2], "-") && b.Nearest("package.json") != nil
+}
+
+// laneKeptAssignment reports whether word is a leading NAME=value assignment to a variable
+// laneEnvKeeps keeps.
+func laneKeptAssignment(word string) bool {
+	name, _, ok := strings.Cut(word, "=")
+	return ok && laneEnvKeeps(name)
+}
+
+// lanePrefix takes one --prefix <dir> or --prefix=<dir> out of args, returning dir ("" when
+// there is none) and the args left; ok is false for a second one or one with no dir.
+func lanePrefix(args []string) (dir string, rest []string, ok bool) {
+	for i := 0; i < len(args); i++ {
+		var d string
+		switch a := args[i]; {
+		case a == "--prefix":
+			if i+1 == len(args) {
+				return "", nil, false
+			}
+			i++
+			d = args[i]
+		case strings.HasPrefix(a, "--prefix="):
+			d = strings.TrimPrefix(a, "--prefix=")
+		default:
+			rest = append(rest, a)
+			continue
+		}
+		if dir != "" || d == "" {
+			return "", nil, false
+		}
+		dir = d
+	}
+	return dir, rest, true
+}
+
+// lanePackage reports whether an npm command binds to a package.json read here: the nearest
+// one, or with --prefix dir, dir/package.json and no other.
+func lanePackage(b scriptsurface.Binder, dir string) bool {
+	if dir == "" {
+		return b.Nearest("package.json") != nil
+	}
+	return b.Prefixed(dir, "package.json") != nil
+}
+
+// laneConcurrent returns the commands concurrently starts, and whether words runs it. A flag
+// outside concurrentlyFlags, a valued one among them, returns none, which withholds.
+func laneConcurrent(words []string) ([]string, bool) {
+	if head, ok := scriptsurface.CommandName(words[0]); !ok || head != "concurrently" {
+		return nil, false
+	}
+	var cmds []string
+	for _, w := range words[1:] {
+		switch {
+		case concurrentlyFlags[w]:
+		case strings.HasPrefix(w, "-"):
+			return nil, true
+		default:
+			cmds = append(cmds, w)
+		}
+	}
+	return cmds, true
 }

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
 // shells are the POSIX-family shells a command may hand a file or shell text to.
@@ -105,6 +107,27 @@ func leadRedirects(seg segment) segment {
 	rotb := func(a []bool) []bool { return append(slices.Clone(a[n:]), a[:n]...) }
 	seg.words, seg.globbed, seg.redir = rot(seg.words), rotb(seg.globbed), rotb(seg.redir)
 	return seg
+}
+
+// keywordHead returns how many words before a command are reserved words that only lead into
+// it (if, then, do, else, elif, while, until, !, time and its -p), so that the command after
+// them is seen; 0 when there are none.
+func keywordHead(words []string) int {
+	n := 0
+	for n < len(words) {
+		switch words[n] {
+		case "if", "then", "do", "else", "elif", "while", "until", "!":
+			n++
+		case "time":
+			n++
+			if n < len(words) && words[n] == "-p" {
+				n++
+			}
+		default:
+			return n
+		}
+	}
+	return n
 }
 
 // sourceHead returns how many words before a . or source only prefix it (assignments,
@@ -221,6 +244,7 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 			}
 		case "sudo":
 			shell, login := false, false
+			var dir *string // -D, --chdir: the directory the command runs in
 		sudoArgs:
 			for ; i < len(args) && strings.HasPrefix(args[i], "-"); i++ {
 				a := args[i]
@@ -233,6 +257,16 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 					shell = true
 				case a == "--login":
 					shell, login = true, true
+				case a == "--chdir":
+					if i+1 >= len(args) {
+						return nil, false, false
+					}
+					i++
+					d := args[i]
+					dir = &d
+				case strings.HasPrefix(a, "--chdir="):
+					d := strings.TrimPrefix(a, "--chdir=")
+					dir = &d
 				case strings.HasPrefix(a, "--"):
 					return nil, false, false
 				default:
@@ -244,7 +278,18 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 							shell = true
 						case c == 'i':
 							shell, login = true, true
-						case strings.ContainsRune("ugChpUrtTD", c):
+						case c == 'D':
+							d := a[j+1:]
+							if d == "" {
+								if i+1 >= len(args) {
+									return nil, false, false
+								}
+								i++
+								d = args[i]
+							}
+							dir = &d
+							break cluster
+						case strings.ContainsRune("ugChpUrtT", c):
 							if j+1 == len(a) {
 								i++
 							}
@@ -255,19 +300,43 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 					}
 				}
 			}
-			if shell {
-				// -s and -i run the command through the target user's shell, -i from its home.
-				if i > len(args) {
-					i = len(args)
-				}
-				if i == len(args) {
+			if i > len(args) {
+				i = len(args)
+			}
+			if shell || dir != nil {
+				// -s and -i run the command through the target user's shell, -i from its home,
+				// each word escaped; -D runs it from dir. Each is read as sh -c of the words
+				// quoted back.
+				rest := args[i:]
+				if shell && len(rest) == 0 && dir == nil {
 					return []string{"sh"}, false, true
 				}
-				text := strings.Join(args[i:], " ")
-				if login {
-					text = `cd "$HOME"; ` + text
+				if dir != nil && !shell && len(rest) == 0 {
+					return nil, false, false
 				}
-				return []string{"sh", "-c", text}, false, true
+				quoted := make([]string, 0, len(rest)+2)
+				if dir != nil {
+					quoted = append(quoted, "cd", *dir, ";")
+				}
+				quoted = append(quoted, rest...)
+				var b strings.Builder
+				if login {
+					b.WriteString(`cd "$HOME"; `)
+				}
+				for k, w := range quoted {
+					if k > 0 {
+						b.WriteByte(' ')
+					}
+					if dir != nil && k == 2 {
+						b.WriteString(w) // the ; after cd
+						continue
+					}
+					b.WriteString(shellQuote(w))
+				}
+				if shell && len(rest) == 0 {
+					b.WriteString(" sh")
+				}
+				return []string{"sh", "-c", b.String()}, false, true
 			}
 		case "time":
 			for ; i < len(args) && strings.HasPrefix(args[i], "-"); i++ {
@@ -630,11 +699,15 @@ func runnerCommand(name string, args []string) (string, bool) {
 func (v *Veto) execFile(p string, cur cursor, depth int) (why string, handled bool) {
 	hosts, ok := cur.script(p)
 	if !ok {
-		if filepath.IsAbs(p) {
+		if filepath.IsAbs(p) || strings.HasPrefix(p, "~") {
 			return "", false
 		}
 		if fi, err := os.Stat(filepath.Join(v.root, p)); err == nil && fi.Mode().IsRegular() {
 			return "runs a file this cannot locate: " + p, true
+		}
+		// Wherever the shell is, a file of the build a shell would run may be the one named.
+		if v.mayExec(filepath.Base(p)) {
+			return "runs a file this cannot locate, which a build file may be: " + p, true
 		}
 		return "", false
 	}
@@ -655,6 +728,53 @@ func (v *Veto) execFile(p string, cur cursor, depth int) (why string, handled bo
 	return "", false
 }
 
+// shellExecs returns the lowercased base names of the files in the build a shell would run by
+// path: executable text with no #! line, or a symlink or a file this cannot read, which may be
+// one. It walks the tree once per Veto.
+func (v *Veto) shellExecs() map[string]bool {
+	if v.execs != nil {
+		return v.execs
+	}
+	v.execs = map[string]bool{}
+	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
+		if err != nil || e.D == nil || e.D.IsDir() || v.inGitDir(e.Path) {
+			return nil
+		}
+		name := strings.ToLower(e.D.Name())
+		if e.Symlink {
+			v.execs[name] = true
+			return nil
+		}
+		fi, err := e.D.Info()
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+			return nil
+		}
+		// Head is nil for an empty file or one holding a NUL, neither of which a shell runs.
+		head, err := buildtree.Head(e.Path)
+		if err != nil || head != nil && !bytes.HasPrefix(head, []byte("#!")) && !binary(head) {
+			v.execs[name] = true
+		}
+		return nil
+	})
+	return v.execs
+}
+
+// mayExec reports whether base, a file name that may be a glob, names a file of the build a
+// shell would run by path; a pattern this cannot match may name any.
+func (v *Veto) mayExec(base string) bool {
+	base = strings.ToLower(base)
+	execs := v.shellExecs()
+	if !strings.ContainsAny(base, "*?[\\") {
+		return execs[base]
+	}
+	for name := range execs {
+		if ok, err := path.Match(base, name); ok || err != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // binary reports whether a file's head is an executable format the kernel runs itself, or
 // holds a NUL byte.
 func binary(data []byte) bool {
@@ -669,7 +789,7 @@ func binary(data []byte) bool {
 
 // catFile returns the one literal file a cat command prints, and whether words is one.
 func catFile(words []string) (string, bool) {
-	args, inert, ok := unwrap(words)
+	args, inert, ok := unwrap(words[keywordHead(words):])
 	if !ok || inert || len(args) != 2 {
 		return "", false
 	}
@@ -729,13 +849,16 @@ func (v *Veto) runFile(p string, cur cursor, depth int, sourced bool) string {
 		if !sourced || len(hosts) > 1 {
 			run = cur.fork()
 		}
+		before := run.where()
 		v.running = append(v.running, h)
 		w := v.runText(src, run, depth)
 		v.running = v.running[:len(v.running)-1]
 		if w != "" {
 			return w
 		}
-		moves = moves || cdRE.MatchString(src)
+		// Whatever moved the host's shell, its own cd or one in a file it read in place, the
+		// caller's moved as well.
+		moves = moves || run.where() != before
 	}
 	if sourced && len(hosts) > 1 && moves {
 		cur.cd(nil)
@@ -798,6 +921,12 @@ func (v *Veto) untokenised(line string, cur cursor) string {
 	}
 	if shellLineRE.MatchString(strings.TrimSpace(line)) {
 		return "shell run that does not tokenise: " + strings.TrimSpace(line)
+	}
+	for _, f := range strings.Fields(line) {
+		f = trimShell(f)
+		if strings.Contains(f, "/") && !filepath.IsAbs(f) && !strings.HasPrefix(f, "~") && !strings.ContainsAny(f, "$`") && v.mayExec(path.Base(f)) {
+			return "runs a file by its path in a line that does not tokenise: " + strings.TrimSpace(line)
+		}
 	}
 	v.mention(strings.Fields(line))
 	v.globs(unquotedGlobWords(line), carriesRE.MatchString(line), cur)
@@ -1121,4 +1250,21 @@ func unquotedGlobWords(line string) []string {
 	}
 	flush()
 	return out
+}
+
+// shellQuote quotes a word so that shell text reads it back as the one word it is. Glob and
+// brace characters stay bare: the shell that gave the word expanded them already, and leaving
+// them to expand again names at least what it did.
+// A word that expands is double-quoted, so the text still reads it as one word whose value
+// this does not know.
+func shellQuote(w string) string {
+	switch {
+	case w == "":
+		return "''"
+	case strings.ContainsAny(w, "$`"):
+		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w) + `"`
+	case !strings.ContainsAny(w, " \t\n;&|<>()'\"\\#!"):
+		return w
+	}
+	return "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
 }

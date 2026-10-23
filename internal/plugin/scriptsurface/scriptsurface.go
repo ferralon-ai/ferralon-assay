@@ -229,6 +229,7 @@ type Veto struct {
 	scan      bool            // the surface being classified is scanned for triggers
 	lineShell bool            // the command is on a line of shell text whose next lines are read too
 	running   []string        // the files a shell run or . is reading, innermost last
+	execs     map[string]bool // shellExecs, once walked
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
@@ -897,14 +898,26 @@ const maxRunDepth = 4
 // or "" when it does not.
 func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	seg = leadRedirects(seg)
+	// A reserved word opening a body still counts toward the body depth below, and what
+	// follows it is the command.
+	opened, keyword := 0, false
+	if n := keywordHead(seg.words); n > 0 {
+		for _, w := range seg.words[:n] {
+			opened += blockDepth[w]
+		}
+		seg, keyword = leadRedirects(seg.drop(n)), true
+	}
 	if n := sourceHead(seg.words); n > 0 {
 		seg = seg.drop(n)
 	}
 	words := seg.words
+	mark := cur.venv()
 	if len(words) == 0 {
+		if mark.open >= 0 {
+			mark.open += opened
+		}
 		return ""
 	}
-	mark := cur.venv()
 	if mark.chain && !seg.and {
 		// The && list a cd was part of has ended: what runs now may run where the cd did not.
 		mark.made, mark.lost, mark.chain = "", true, false
@@ -914,7 +927,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if mark.open >= 0 {
 		// Below 0 a fi, done or esac closed a body the rule did not see open, such as a line
 		// of a heredoc: it no longer knows which body a command is in, so it stays below 0.
-		mark.open += blockDepth[words[0]]
+		if keyword {
+			mark.open += opened
+		} else {
+			mark.open += blockDepth[words[0]]
+		}
 	}
 	switch words[0] {
 	case "cd", "pushd", "popd":

@@ -1,6 +1,7 @@
 package scriptsurface
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,9 @@ type cursor interface {
 	present(p string) bool
 	// venv is the state of the venv rule at this command.
 	venv() *venvMark
+	// where describes where the shell is, so that two descriptions are equal only when a
+	// directory change between them moved nothing.
+	where() string
 }
 
 // venvMark is what the venv rule carries from command to command in one shell.
@@ -102,6 +106,10 @@ func (c *hostCursor) cd(words []string) {
 }
 
 func (c *hostCursor) other() {}
+
+func (c *hostCursor) where() string {
+	return fmt.Sprintf("%t %t %q %q", c.unknown, c.mark.lost, c.dirs, c.wd)
+}
 
 func (c *hostCursor) fork() cursor {
 	f := *c

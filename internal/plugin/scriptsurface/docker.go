@@ -2,6 +2,7 @@ package scriptsurface
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -205,6 +206,10 @@ func (c *dockerCursor) cd(words []string) {
 
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintAll() }
+
+func (c *dockerCursor) where() string {
+	return fmt.Sprintf("%t %t %q", c.known, c.mark.lost, c.dir)
+}
 
 func (c *dockerCursor) fork() cursor {
 	f := *c

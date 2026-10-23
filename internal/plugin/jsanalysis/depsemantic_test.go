@@ -699,10 +699,13 @@ func TestSemantic_G14YarnSha1Fragment(t *testing.T) {
 // TestSemantic_G15NoSRIUnreadable: entries without a registry integrity are placed but never
 // read, and withhold.
 func TestSemantic_G15NoSRIUnreadable(t *testing.T) {
+	// The git and directory rows carry the tarball's integrity too, so only the resolution's
+	// type keeps them unread.
+	integrity := sri(qPkg("1.0.0").build(t))
 	for name, res := range map[string]string{
 		"tarball":   "{tarball: https://example.com/q.tgz}",
-		"git":       "{type: git, repo: https://github.com/x/q, commit: " + strings.Repeat("a", 40) + "}",
-		"directory": "{type: directory, directory: ../q}",
+		"git":       "{integrity: " + integrity + ", type: git, repo: https://github.com/x/q, commit: " + strings.Repeat("a", 40) + "}",
+		"directory": "{integrity: " + integrity + ", type: directory, directory: ../q}",
 	} {
 		t.Run("pnpm_"+name, func(t *testing.T) {
 			cg := pnpmVariant(t, func(s string) string {
@@ -719,7 +722,7 @@ func TestSemantic_G15NoSRIUnreadable(t *testing.T) {
 	for name, resolved := range map[string]string{"file": "file:../q", "git": "git+https://github.com/x/q.git#v1"} {
 		t.Run("yarn_"+name, func(t *testing.T) {
 			p, q := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ}), qPkg("1.0.0")
-			q.resolved, q.integrity = resolved, "-"
+			q.resolved = resolved // the integrity stays: only the source keeps it unread
 			if cg := semRun(t, semProgram(t, yarnLockFile, yarnLockText(t, p, q), nil), semStore(t, p, q)); reaches(cg, "q", "1.0.0") || !runWide(cg) {
 				t.Errorf("got %+v", cg.Partiality)
 			}

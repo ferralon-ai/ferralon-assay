@@ -461,9 +461,11 @@ func pctEscape(s string) string {
 
 // mapIntegrity maps an SRI integrity string ("sha512-<b64>") to the algorithm-prefixed form
 // ("sha512:<b64>"): the separator '-' becomes ':', the base64 payload is untouched (not
-// decoded). When the value carries several space-separated hashes, the strongest supported
-// one wins (sha512 > sha256 > sha1), so the digest that verifies a tarball is never weaker
-// than the lock offers; with none supported, the first well-formed one is kept. An empty or
+// decoded). When the value carries several space-separated hashes, the strongest one wins
+// (sha512 > sha384 > sha256 > sha1, as npm ranks them), so the digest that verifies a tarball
+// is never weaker than the lock offers. sha384 is ranked though artifactcache cannot verify
+// it, so a lock whose strongest hash is sha384 fails closed rather than falling back to a
+// weaker one. With no ranked algorithm, the first well-formed hash is kept. An empty or
 // malformed value yields "".
 func mapIntegrity(sri string) string {
 	best, bestRank := "", -1
@@ -483,8 +485,8 @@ func mapIntegrity(sri string) string {
 	return best
 }
 
-// sriStrength ranks the SRI algorithms artifactcache can verify; any other algorithm ranks 0.
-var sriStrength = map[string]int{"sha1": 1, "sha256": 2, "sha512": 3}
+// sriStrength ranks SRI algorithms by strength; any other algorithm (md5 among them) ranks 0.
+var sriStrength = map[string]int{"sha1": 1, "sha256": 2, "sha384": 3, "sha512": 4}
 
 // artifactIdentity returns the selected artifact's filename. When the lockfile records a
 // tarball URL, its filename tail (minus any '#sha1' fragment) is used; otherwise the

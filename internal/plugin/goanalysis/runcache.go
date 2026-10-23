@@ -20,12 +20,18 @@ func WithRunCacheDir(ctx context.Context, dir string) context.Context {
 	return context.WithValue(ctx, runCacheDirKey{}, dir)
 }
 
+// RunCacheDir returns the run cache directory ctx carries, or "" when it carries none.
+func RunCacheDir(ctx context.Context) string {
+	dir, _ := ctx.Value(runCacheDirKey{}).(string)
+	return dir
+}
+
 // runCached returns the bytes compute produces for the given key, reusing an earlier result from the
 // run cache when one exists. A failed compute is never stored. A cache that cannot be read or written
 // degrades to computing, never to an error. Writes go through a rename so a concurrent reader sees
 // either nothing or a whole entry.
 func runCached(ctx context.Context, kind string, key []string, compute func() ([]byte, error)) ([]byte, error) {
-	dir, _ := ctx.Value(runCacheDirKey{}).(string)
+	dir := RunCacheDir(ctx)
 	if dir == "" {
 		return compute()
 	}

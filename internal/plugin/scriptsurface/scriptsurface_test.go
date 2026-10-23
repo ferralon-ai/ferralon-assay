@@ -480,6 +480,14 @@ func TestVeto_SampleHooks(t *testing.T) {
 		{"script sources a sample hook", tree(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\necho\n", "build.sh": ". .git/hooks/pre-rebase.sample\n"}), true},
 		{"script runs a sample hook", tree(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\necho\n", "build.sh": "sh .git/hooks/pre-rebase.sample\n"}), true},
 		{"script makes a sample hook live", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "cp .git/hooks/pre-commit.sample .git/hooks/pre-commit\n"}), true},
+		{"script execs a sample hook by path", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\ninst add x\n", "build.sh": "./.git/hooks/pre-commit.sample\n"}), true},
+		{"script execs a sample hook after cd", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\ninst add x\n", "build.sh": "cd .git/hooks && ./pre-commit.sample\n"}), true},
+		{"script makes every sample hook live in a cp loop", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "for f in .git/hooks/*.sample; do cp \"$f\" \"${f%.sample}\"; done\ngit commit -m x\n"}), true},
+		{"script renames every sample hook live", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "rename 's/\\.sample$//' .git/hooks/*\n"}), true},
+		{"glob in another directory", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "cp dist/* out/\n"}), false},
+		{"glob matching no sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "rm -f *.log\n"}), false},
+		{"glob in the hooks directory after cd", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "cd .git/hooks && rename 's/\\.sample$//' *\n"}), true},
+		{"script runs a program named like no sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "./tools/pre-commit\n"}), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

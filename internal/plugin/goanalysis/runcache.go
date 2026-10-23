@@ -12,9 +12,9 @@ type runCacheDirKey struct{}
 
 // WithRunCacheDir returns ctx carrying the run cache: a directory the host creates for one scan and
 // removes after it (see plugin.WithRunCacheDir). Each analyzer op runs in its own process, so without
-// it every advisory's reachability run re-executes govulncheck over the whole tree and rebuilds the
-// reconciliation call graph, getting the same answer each time. With it, those per-tree results are
-// computed once per scan and kept there. Without it, or with an empty dir, nothing is cached and
+// it every advisory re-executes govulncheck over the whole tree, rebuilds the reconciliation call
+// graph, re-indexes the program's symbols and re-searches its ingresses, getting the same answer
+// each time. With it, those per-tree results are computed once per scan and kept there. Without it, or with an empty dir, nothing is cached and
 // every run computes its own.
 func WithRunCacheDir(ctx context.Context, dir string) context.Context {
 	return context.WithValue(ctx, runCacheDirKey{}, dir)

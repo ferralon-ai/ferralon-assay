@@ -270,12 +270,12 @@ func scanWasmCacheDir() string {
 // per-tree results through (plugin.WithRunCacheDir). The caller removes it when the scan ends.
 // Unlike the wasm cache it is never taken from the operator: its entries are keyed on the build
 // directory's path, so a directory that outlived one scan could answer for another tree at that
-// path. A directory that cannot be created leaves every reachability run computing its own, which
-// is slower and changes no result.
+// path. A directory that cannot be created leaves every advisory computing its own, which is slower
+// and changes no result.
 func scanGoRunCacheDir() string {
 	dir, err := os.MkdirTemp("", "assay-go-run-cache-")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: go run cache dir: %v; each reachability run rescans the tree\n", err)
+		fmt.Fprintf(os.Stderr, "warning: go run cache dir: %v; each advisory rescans the tree\n", err)
 		return ""
 	}
 	return dir

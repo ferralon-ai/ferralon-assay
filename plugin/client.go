@@ -36,10 +36,10 @@ func WithBinaryPath(path string) Option {
 }
 
 // WithRunCacheDir hands the subprocess a directory, owned by the caller for one scan over one
-// checkout, where it keeps per-tree results every advisory's reachability run would otherwise
-// recompute: the govulncheck stream and the reconciliation call graph. The caller removes the
-// directory after the scan. An empty dir turns the cache off, including one the host process's own
-// environment would otherwise pass down, and every run computes its own.
+// checkout, where it keeps per-tree results every advisory's analysis would otherwise recompute:
+// the govulncheck stream, the reconciliation call graph, the symbol index and the taint ingresses.
+// The caller removes the directory after the scan. An empty dir turns the cache off, including one
+// the host process's own environment would otherwise pass down, and every run computes its own.
 func WithRunCacheDir(dir string) Option {
 	return func(p *goPlugin) { p.env = append(p.env, goRunCacheDirEnv+"="+dir) }
 }

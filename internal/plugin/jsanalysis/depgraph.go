@@ -99,7 +99,7 @@ func (rs *resolver) entryModules(pkg *depPackage, sub string, viaRequire bool) [
 	switch {
 	case pkg.manifest.exports != nil:
 		for _, t := range exportsTargets(pkg.manifest.exports, sub, loadConditions(viaRequire)) {
-			if isRelativeSpecifier(t) {
+			if isRelativeTarget(t) {
 				add(rs.depModuleAt(dir, t))
 			}
 		}
@@ -504,7 +504,7 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 		for _, ls := range b.specifiers {
 			algo := loadAlgo(ls.viaRequire)
 			switch {
-			case isRelativeSpecifier(ls.spec):
+			case isRelativeLoad(ls.spec):
 				if m := rs.resolveRelative(f.module, ls.spec); m != "" {
 					loadEdges(f, []string{m}, algo)
 					continue
@@ -530,6 +530,12 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 				e, mods := rs.depTargets(f.module, ls.spec, ls.viaRequire)
 				if e == nil {
 					name, _ := splitBareSpecifier(ls.spec)
+					if !validNPMName(name) {
+						// No package can carry this name, so nothing bounds what the load runs:
+						// CommonJS loads "..foo" as a file beside the caller.
+						flags.unreadModule = true
+						continue
+					}
 					flags.scoped = append(flags.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonUninspectablePackage, Package: pkg.entry.purl, Targets: []string{originPURL(name)}})
 					continue
 				}
@@ -585,9 +591,23 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 	return ctx.Err() == nil
 }
 
+// validNPMName reports whether name, the package part of a bare specifier, can name an npm
+// package at all: no segment starts with "." or "_", and it holds no "..".
+func validNPMName(name string) bool {
+	if name == "" || strings.Contains(name, "..") {
+		return false
+	}
+	seg := name
+	if strings.HasPrefix(name, "@") {
+		_, seg, _ = strings.Cut(name, "/")
+	}
+	return seg != "" && !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_") &&
+		!strings.HasPrefix(seg, ".") && !strings.HasPrefix(seg, "_")
+}
+
 // isDepSpecifier reports whether a load names an npm package: bare, and not a Node built-in.
 func isDepSpecifier(spec string) bool {
-	return spec != "" && !isRelativeSpecifier(spec) && !strings.HasPrefix(spec, "#") && !strings.HasPrefix(spec, "/") && !isNodeBuiltin(spec)
+	return spec != "" && !isRelativeLoad(spec) && !strings.HasPrefix(spec, "#") && !strings.HasPrefix(spec, "/") && !isNodeBuiltin(spec)
 }
 
 // depImportsTargets resolves a `#…` load from a dependency module through its package's imports
@@ -599,7 +619,7 @@ func (rs *resolver) depImportsTargets(pkg *depPackage, fromModule, spec string, 
 	targets := exportsTargets(pkg.manifest.imports, spec, loadConditions(viaRequire))
 	var out []string
 	for _, t := range targets {
-		if isRelativeSpecifier(t) {
+		if isRelativeTarget(t) {
 			m := rs.moduleFromDirRelative(pkg.entry.path, t)
 			if m == "" {
 				return nil, false

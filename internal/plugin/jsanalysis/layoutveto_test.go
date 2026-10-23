@@ -104,6 +104,8 @@ func TestLayoutVeto(t *testing.T) {
 		{"unread_member_manifest", false, map[string]string{"package.json": `{"name":"app","version":"1.0.0","private":true,"workspaces":["packages/*"]}`, "packages/a/package.json": "{"}, true},
 		{"unread_lock_in_skipped_dir", false, map[string]string{"vendor/tool/package.json": pkgJSON, "vendor/tool/package-lock.json": `{"name":"tool","lockfileVersion":3,"packages":{"":{"name":"tool"}}}`}, true},
 		{"unread_templated_manifest", false, map[string]string{"package.json.tmpl": `{"name":"app","version":"1.0.0","dependencies":{"q":"{{ .Q }}"}}`}, true},
+		{"yarn_frozen_install", false, map[string]string{"yarn.lock": "# yarn lockfile v1\n\nq@^2.0.0:\n  version \"2.0.0\"\n  resolved \"https://registry.npmjs.org/q/-/q-2.0.0.tgz\"\n", ".github/workflows/ci.yml": ciWorkflow("      - run: yarn install --frozen-lockfile\n")}, true},
+		{"yarn_frozen_bare", false, map[string]string{"yarn.lock": "# yarn lockfile v1\n\nq@^2.0.0:\n  version \"2.0.0\"\n  resolved \"https://registry.npmjs.org/q/-/q-2.0.0.tgz\"\n", ".github/workflows/ci.yml": ciWorkflow("      - run: yarn --frozen-lockfile\n")}, true},
 		{"unread_cached_copy", false, map[string]string{".pnpm-store/v3/q/package.json": `{"name":"q","version":"1.0.0"}`}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

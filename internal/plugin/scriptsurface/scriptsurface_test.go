@@ -442,6 +442,18 @@ func TestVeto_SpecDecidesEveryKeep(t *testing.T) {
 	}
 }
 
+// A glob through a symlinked directory may reach a hooks directory its path does not name.
+func TestVeto_SampleHookGlobThroughSymlink(t *testing.T) {
+	root := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n",
+		".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "cp tools/*.sample out/\n"})
+	if err := os.Symlink(filepath.Join(root, ".git", "hooks"), filepath.Join(root, "tools")); err != nil {
+		t.Fatal(err)
+	}
+	if !withheld(root, testSpec) {
+		t.Fatal("withheld = false, want true")
+	}
+}
+
 // Git never runs a hook under a .sample name, so the sample hooks in the build root's own
 // .git/hooks are not surfaces. Every other hook, path and suffix is, and a build that sources
 // or names a sample hook withholds.
@@ -453,6 +465,9 @@ func TestVeto_SampleHooks(t *testing.T) {
 			files[k] = v
 		}
 		return files
+	}
+	sampleRun := func(build string) map[string]string {
+		return tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": build})
 	}
 	tests := []struct {
 		name  string
@@ -488,6 +503,23 @@ func TestVeto_SampleHooks(t *testing.T) {
 		{"glob matching no sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "rm -f *.log\n"}), false},
 		{"glob in the hooks directory after cd", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "cd .git/hooks && rename 's/\\.sample$//' *\n"}), true},
 		{"script runs a program named like no sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "build.sh": "./tools/pre-commit\n"}), false},
+		{"script runs a sample hook in a group", sampleRun("{ ./.git/hooks/pre-commit.sample; }\n"), true},
+		{"script runs a sample hook in a command substitution", sampleRun("X=$(./.git/hooks/pre-commit.sample)\n"), true},
+		{"script runs a sample hook in backticks", sampleRun("echo `./.git/hooks/pre-commit.sample`\n"), true},
+		{"script makes a sample hook live by a brace list", sampleRun("mv .git/hooks/pre-commit{.sample,}\n"), true},
+		{"script runs a sample hook named through a variable suffix", sampleRun("./.git/hooks/pre-commit.$EXT\n"), true},
+		{"script runs a sample hook named through a loop variable", sampleRun("for h in pre-commit; do ./.git/hooks/$h.sample; done\n"), true},
+		{"glob of every source file", sampleRun(`prettier --write "src/**/*"` + "\n"), false},
+		{"glob of the build root", sampleRun("rm -rf *\n"), false},
+		{"glob of the build root with an extension", sampleRun("cp *.* dist/\n"), false},
+		{"dirless glob after cd into another directory", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\necho\n", "dist/a.txt": "x\n", "build.sh": "cd dist && zip -r ../out.zip *\n"}), false},
+		{"glob reaching a hooks directory through **", sampleRun("chmod +x **/*.sample\n"), true},
+		{"malformed glob in the hooks directory", sampleRun("ls .git/hooks/pre-commit[\n"), true},
+		{"glob leaving the build", sampleRun("cp ../*/*.sample x/\n"), true},
+		{"dirless glob from an unknown directory", sampleRun(`cd "$HOOKS" && rename 's/\.sample$//' *` + "\n"), true},
+		{"glob directory from an unknown directory", sampleRun(`cd "$TOP" && cp */*/*.sample x/` + "\n"), true},
+		{"malformed glob from an unknown directory", sampleRun(`cd "$TOP" && ls hooks/pre-commit[` + "\n"), true},
+		{"glob in another directory from an unknown directory", sampleRun(`cd "$TOP" && cp dist/* out/` + "\n"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -16,6 +16,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		docker   = "FROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN "
 		yarnLock = "# yarn lockfile v1\n\n\nexpress@^4.18.0:\n  version \"4.18.2\"\n"
 		yarnPkg  = `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.18.0"}}`
+
+		sampleInstall = "#!/bin/sh\nnpm install left-pad\n"
+		sampleEcho    = "#!/bin/sh\necho\n"
 	)
 	pkg := func(scripts string) string {
 		if scripts == "" {
@@ -150,6 +153,12 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"cargo env then npm ci", npm(map[string]string{"install.sh": ". \"$HOME/.cargo/env\"\nnpm ci\n"}), true, ""},
 		{"yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, true, ""},
 		{"git sample hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\n. git-sh-setup\n"}), true, ""},
+		{"sample hook run in a group", npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(`"x":"{ ./.git/hooks/pre-commit.sample; }"`)}), false, ""},
+		{"sample hook run in a command substitution", npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(`"x":"echo $(./.git/hooks/pre-commit.sample)"`)}), false, ""},
+		{"sample hook run in backticks", npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(`"x":"echo ` + "`./.git/hooks/pre-commit.sample`" + `"`)}), false, ""},
+		{"lock rewritten in a group", npm(map[string]string{"package.json": pkg(`"pre":"{ sed -i s/x/y/ package-lock.json; }","build":"npm ci"`)}), false, ""},
+		{"glob of every source file beside a sample hook", npm(map[string]string{".git/hooks/pre-commit.sample": sampleEcho, "package.json": pkg(`"format":"prettier --write \"src/**/*\""`)}), true, ""},
+		{"glob of the build root beside a sample hook", npm(map[string]string{".git/hooks/pre-commit.sample": sampleEcho, "package.json": pkg(`"clean":"rm -rf *"`)}), true, ""},
 		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), false, ""},
 	}
 	for _, tt := range tests {

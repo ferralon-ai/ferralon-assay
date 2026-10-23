@@ -3,6 +3,7 @@ package acquire
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -33,10 +34,13 @@ const DefaultNPMRegistry = "https://registry.npmjs.org/"
 // A repository's .npmrc must not be able to draw an arbitrary secret from the scanner's
 // environment (a CI token, a state token) and present it to a host the same file names.
 type NPMRCSources struct {
-	ProjectDir string                            // the directory holding the build's package.json and lock
-	LookupEnv  func(key string) (string, bool)   // environment the runner provides; nil reads nothing
-	AllowEnv   []string                          // variable names readable beyond DefaultNPMRCEnv, as the operator lists them
-	readFile   func(name string) ([]byte, error) // test seam; os.ReadFile when nil
+	ProjectDir string // the directory holding the build's package.json and lock
+	// CheckoutRoot is the checkout ProjectDir must resolve inside once every symlink is
+	// followed. Empty contains ProjectDir in itself, which checks nothing about its ancestors.
+	CheckoutRoot string
+	LookupEnv    func(key string) (string, bool)   // environment the runner provides; nil reads nothing
+	AllowEnv     []string                          // variable names readable beyond DefaultNPMRCEnv, as the operator lists them
+	readFile     func(name string) ([]byte, error) // test seam; os.ReadFile when nil
 }
 
 // DefaultNPMRCEnv is the set of environment variables LoadNPMConfig reads without the
@@ -51,6 +55,7 @@ type NPMConfig struct {
 	defaultRegistry string
 	scopes          map[string]string // "@scope" -> registry base URL
 	requireAuth     map[string]bool   // canonical host -> an anonymous fetch must be refused
+	authConfigured  map[string]bool   // canonical host -> an auth key names it, though it may present nothing
 	creds           RegistryCredentials
 	allow           Allowlist
 }
@@ -84,9 +89,11 @@ func (e *npmrcError) Error() string {
 
 func (e *npmrcError) Unwrap() error { return ErrMalformedNPMRC }
 
-// npmrcEntry is one key=value line after env expansion, kept with its origin.
+// npmrcEntry is one key=value line after env expansion, kept with its origin. raw is the
+// value before expansion: an optional ${VAR?} that expanded to "" is not an empty token.
 type npmrcEntry struct {
 	value  string
+	raw    string
 	source string
 	line   int
 }
@@ -109,14 +116,17 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 
 	merged := map[string]npmrcEntry{}
 	layer := func(name, source string) error {
-		if source == sourceProject {
-			// A committed symlink could point the project layer at a file outside the
-			// checkout, such as the runner's own $HOME/.npmrc.
-			if fi, err := os.Lstat(name); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
-				return &npmrcError{source: source, reason: "is a symbolic link"}
-			}
+		var b []byte
+		var err error
+		if source == sourceProject && src.readFile == nil {
+			b, err = readNoFollow(name)
+		} else {
+			b, err = read(name)
 		}
-		b, err := read(name)
+		var refused *npmrcError
+		if errors.As(err, &refused) {
+			return err
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
@@ -142,7 +152,11 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 		}
 	}
 	if src.ProjectDir != "" {
-		if err := layer(filepath.Join(src.ProjectDir, ".npmrc"), sourceProject); err != nil {
+		dir, err := containedDir(src.ProjectDir, src.CheckoutRoot)
+		if err != nil {
+			return NPMConfig{}, err
+		}
+		if err := layer(filepath.Join(dir, ".npmrc"), sourceProject); err != nil {
 			return NPMConfig{}, err
 		}
 	}
@@ -150,6 +164,58 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 		merged["registry"] = npmrcEntry{value: r, source: sourceEnv}
 	}
 	return buildNPMConfig(merged)
+}
+
+// containedDir resolves every symlink in dir and refuses a result outside root (resolved the
+// same way). A committed directory symlink could otherwise point the project layer at a
+// directory outside the checkout, such as the runner's home.
+func containedDir(dir, root string) (string, error) {
+	if root == "" {
+		root = dir
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", &npmrcError{source: sourceProject, reason: "project directory does not resolve"}
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", &npmrcError{source: sourceProject, reason: "checkout root does not resolve"}
+	}
+	rel, err := filepath.Rel(realRoot, realDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", &npmrcError{source: sourceProject, reason: "project directory resolves outside the checkout"}
+	}
+	return realDir, nil
+}
+
+// readNoFollow reads the project .npmrc, refusing a symlink or any other non-regular file. A
+// committed symlink could point at a file outside the checkout, such as the runner's own
+// $HOME/.npmrc. The file opened is checked to be the one Lstat saw, so swapping in a symlink
+// between the two calls is refused too.
+func readNoFollow(name string) ([]byte, error) {
+	before, err := os.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&fs.ModeSymlink != 0 {
+		return nil, &npmrcError{source: sourceProject, reason: "is a symbolic link"}
+	}
+	if !before.Mode().IsRegular() {
+		return nil, &npmrcError{source: sourceProject, reason: "is not a regular file"}
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(before, opened) {
+		return nil, &npmrcError{source: sourceProject, reason: "changed while being read"}
+	}
+	return io.ReadAll(f)
 }
 
 // allowedEnv restricts lookup to DefaultNPMRCEnv and extra. Any other name reads as unset.
@@ -228,10 +294,11 @@ func parseNPMRC(text, source string, lookup func(string) (string, bool)) (map[st
 		if k, err = expandEnv(k, source, line, lookup); err != nil {
 			return nil, err
 		}
+		raw := v
 		if v, err = expandEnv(v, source, line, lookup); err != nil {
 			return nil, err
 		}
-		out[k] = npmrcEntry{value: v, source: source, line: line}
+		out[k] = npmrcEntry{value: v, raw: raw, source: source, line: line}
 	}
 	return out, nil
 }
@@ -265,6 +332,7 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 		defaultRegistry: DefaultNPMRegistry,
 		scopes:          map[string]string{},
 		requireAuth:     map[string]bool{},
+		authConfigured:  map[string]bool{},
 	}
 	if e, ok := entries["registry"]; ok {
 		r, err := registryBase(e)
@@ -283,11 +351,17 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 	}
 	// Top-level auth keys apply to the default registry. None is a form this package
 	// presents, so they only mark that registry as needing auth: its packages are refused
-	// as missing_credential rather than fetched anonymously and misread as not served.
-	defaultAuth := false
+	// as missing_credential rather than fetched anonymously and misread as not served. An
+	// optional ${VAR?} reference that expanded to "" presents nothing, as in npm, so it
+	// fetches anonymously.
+	defaultAuth, defaultAuthOptional := false, false
 	for _, k := range []string{"_auth", "_authToken", "username", "_password"} {
-		if _, ok := entries[k]; ok {
-			defaultAuth = true
+		if e, ok := entries[k]; ok {
+			if emptyOptional(e) {
+				defaultAuthOptional = true
+			} else {
+				defaultAuth = true
+			}
 		}
 	}
 
@@ -322,6 +396,10 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 					return NPMConfig{}, &npmrcError{source: e.source, line: e.line, reason: "two tokens for one host under different paths"}
 				}
 				tokenPath[host] = prefix
+				cfg.authConfigured[host] = true
+				if emptyOptional(e) {
+					break // npm fetches anonymously; a 401/403 then reads as missing_credential
+				}
 				cfg.requireAuth[host] = true
 				if e.value != "" {
 					tokens[host] = checkout.NewCredential(e.value)
@@ -337,14 +415,21 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 			case "_auth", "_password", "username", "certfile", "keyfile":
 				// An auth form this package cannot present. The registry needs auth, so
 				// refuse an anonymous fetch instead of letting it fail as a false miss.
-				cfg.requireAuth[host] = true
+				cfg.authConfigured[host] = true
+				if !emptyOptional(e) {
+					cfg.requireAuth[host] = true
+				}
 			}
 		}
 	}
 
-	if defaultAuth {
+	if defaultAuth || defaultAuthOptional {
 		u, _ := url.Parse(cfg.defaultRegistry) // registryBase already parsed it
-		cfg.requireAuth[canonicalizeHostString(u.Hostname())] = true
+		h := canonicalizeHostString(u.Hostname())
+		cfg.authConfigured[h] = true
+		if defaultAuth {
+			cfg.requireAuth[h] = true
+		}
 	}
 	registries := []string{cfg.defaultRegistry}
 	for _, r := range cfg.scopes {
@@ -366,6 +451,12 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 	cfg.allow = NewAllowlist(hosts...)
 	cfg.creds = NewRegistryCredentials(bound)
 	return cfg, nil
+}
+
+// emptyOptional reports an auth value that is empty only because an optional ${VAR?}
+// reference expanded to "". A value written empty is not optional: it still requires auth.
+func emptyOptional(e npmrcEntry) bool {
+	return e.value == "" && e.raw != ""
 }
 
 func registryBase(e npmrcEntry) (string, error) {
@@ -416,7 +507,7 @@ func (c NPMConfig) PolicyFor(name string) Policy {
 	host := canonicalizeHostString(u.Hostname())
 	return Policy{
 		Allowlist:   c.allow,
-		Registries:  map[string]RegistryConfig{"npm": {BaseURL: reg, RequireAuth: c.requireAuth[host]}},
+		Registries:  map[string]RegistryConfig{"npm": {BaseURL: reg, RequireAuth: c.requireAuth[host], AuthConfigured: c.authConfigured[host] || c.requireAuth[host]}},
 		Backends:    map[string]RegistryBackend{"npm": npmBackend{}},
 		Credentials: c.creds,
 	}

@@ -173,9 +173,14 @@ func (a *Acquirer) Acquire(ctx context.Context, ref artifactcache.Ref, policy Po
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// A registry with configured auth that refuses the request lacks a credential this
+		// run could present; that is not evidence the artifact is absent.
+		if reg.AuthConfigured && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return AcquisitionRecord{}, &artifactcache.PolicyReason{PURL: ref.PURL, Host: host, Code: artifactcache.PolicyMissingCredential}
+		}
 		// Not found / not served: nothing acquired — honest ErrDeclaredAbsent, never an
-		// empty success. (A 401 on a private registry is pre-empted by the missing-credential
-		// refusal in checkTarget.)
+		// empty success. (A 401 on a registry that requires auth is pre-empted by the
+		// missing-credential refusal in checkTarget.)
 		return AcquisitionRecord{}, artifactcache.ErrDeclaredAbsent
 	}
 

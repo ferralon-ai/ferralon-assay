@@ -170,7 +170,11 @@ func TestLoadNPMConfigReadSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{user, filepath.Join(project, ".npmrc")}
+	realProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{user, filepath.Join(realProject, ".npmrc")}
 	if fmt.Sprint(reads) != fmt.Sprint(want) {
 		t.Fatalf("read %v, want exactly %v", reads, want)
 	}
@@ -184,17 +188,20 @@ func TestLoadNPMConfigReadSurface(t *testing.T) {
 
 func TestPolicyForRequireAuth(t *testing.T) {
 	tests := []struct {
-		name    string
-		project string
-		pkg     string
-		want    bool
+		name       string
+		project    string
+		pkg        string
+		want       bool
+		configured bool
 	}{
-		{name: "always-auth host", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:always-auth=true", pkg: "@acme/x", want: true},
-		{name: "auth form this package cannot present", project: "@basic:registry=https://basic.test/\n//basic.test/:_auth=Zm9vOmJhcg==", pkg: "@basic/x", want: true},
-		{name: "empty per-host token", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=", pkg: "@acme/x", want: true},
-		{name: "optional token reference left empty", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=${NODE_AUTH_TOKEN?}", pkg: "@acme/x", want: true},
-		{name: "top-level auth on the default registry", project: "_authToken=x", pkg: "qs", want: true},
-		{name: "top-level auth on a configured default registry", project: "registry=https://mirror.test/\n_auth=Zm9vOmJhcg==", pkg: "qs", want: true},
+		{name: "always-auth host", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:always-auth=true", pkg: "@acme/x", want: true, configured: true},
+		{name: "auth form this package cannot present", project: "@basic:registry=https://basic.test/\n//basic.test/:_auth=Zm9vOmJhcg==", pkg: "@basic/x", want: true, configured: true},
+		{name: "empty per-host token", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=", pkg: "@acme/x", want: true, configured: true},
+		{name: "optional token reference left empty fetches anonymously", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=${NODE_AUTH_TOKEN?}", pkg: "@acme/x", configured: true},
+		{name: "optional basic auth left empty fetches anonymously", project: "@basic:registry=https://basic.test/\n//basic.test/:_auth=${NPM_TOKEN?}", pkg: "@basic/x", configured: true},
+		{name: "top-level auth on the default registry", project: "_authToken=x", pkg: "qs", want: true, configured: true},
+		{name: "top-level auth on a configured default registry", project: "registry=https://mirror.test/\n_auth=Zm9vOmJhcg==", pkg: "qs", want: true, configured: true},
+		{name: "top-level optional token left empty fetches anonymously", project: "_authToken=${NPM_TOKEN?}", pkg: "qs", configured: true},
 		{name: "public registry", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=t", pkg: "qs"},
 	}
 	for _, tt := range tests {
@@ -205,8 +212,12 @@ func TestPolicyForRequireAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := cfg.PolicyFor(tt.pkg).Registries["npm"].RequireAuth; got != tt.want {
-				t.Fatalf("RequireAuth = %v, want %v", got, tt.want)
+			reg := cfg.PolicyFor(tt.pkg).Registries["npm"]
+			if reg.RequireAuth != tt.want {
+				t.Fatalf("RequireAuth = %v, want %v", reg.RequireAuth, tt.want)
+			}
+			if reg.AuthConfigured != tt.configured {
+				t.Fatalf("AuthConfigured = %v, want %v", reg.AuthConfigured, tt.configured)
 			}
 		})
 	}
@@ -261,5 +272,59 @@ func TestLoadNPMConfigRefusesSymlinkedProjectFile(t *testing.T) {
 	_, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir})
 	if !errors.Is(err, ErrMalformedNPMRC) {
 		t.Fatalf("err = %v, want ErrMalformedNPMRC", err)
+	}
+}
+
+// A project directory reached through a directory symlink that leaves the checkout could
+// make the project layer the runner's own configuration directory, so it is refused.
+func TestLoadNPMConfigContainsProjectDir(t *testing.T) {
+	outside := t.TempDir()
+	writeNPMRC(t, outside, "registry=https://home.test/\n//home.test/:_authToken="+npmrcSecret)
+	if err := os.Mkdir(filepath.Join(outside, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeNPMRC(t, filepath.Join(outside, "sub"), "registry=https://home.test/")
+	checkout := t.TempDir()
+	inside := filepath.Join(checkout, "pkg")
+	if err := os.Mkdir(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeNPMRC(t, inside, "registry=https://inside.test/")
+	if err := os.Symlink(outside, filepath.Join(checkout, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, filepath.Join(checkout, "alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		project string
+		wantErr bool
+		wantReg string
+	}{
+		{name: "project dir through a symlink leaving the checkout", project: filepath.Join(checkout, "linked"), wantErr: true},
+		{name: "project dir under a symlinked ancestor leaving the checkout", project: filepath.Join(checkout, "linked", "sub"), wantErr: true},
+		{name: "project dir through a symlink staying inside", project: filepath.Join(checkout, "alias"), wantReg: "https://inside.test/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: tt.project, CheckoutRoot: checkout})
+			if tt.wantErr {
+				if !errors.Is(err, ErrMalformedNPMRC) {
+					t.Fatalf("err = %v, want ErrMalformedNPMRC", err)
+				}
+				if strings.Contains(err.Error(), npmrcSecret) {
+					t.Fatal("error leaked a value")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.RegistryFor("qs"); got != tt.wantReg {
+				t.Fatalf("registry = %q, want %q", got, tt.wantReg)
+			}
+		})
 	}
 }

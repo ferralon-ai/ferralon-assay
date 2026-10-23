@@ -104,8 +104,6 @@ func TestLayoutVeto(t *testing.T) {
 		{"unread_member_manifest", false, map[string]string{"package.json": `{"name":"app","version":"1.0.0","private":true,"workspaces":["packages/*"]}`, "packages/a/package.json": "{"}, true},
 		{"unread_lock_in_skipped_dir", false, map[string]string{"vendor/tool/package.json": pkgJSON, "vendor/tool/package-lock.json": `{"name":"tool","lockfileVersion":3,"packages":{"":{"name":"tool"}}}`}, true},
 		{"unread_templated_manifest", false, map[string]string{"package.json.tmpl": `{"name":"app","version":"1.0.0","dependencies":{"q":"{{ .Q }}"}}`}, true},
-		{"yarn_frozen_install", false, map[string]string{"yarn.lock": "# yarn lockfile v1\n\nq@^2.0.0:\n  version \"2.0.0\"\n  resolved \"https://registry.npmjs.org/q/-/q-2.0.0.tgz\"\n", ".github/workflows/ci.yml": ciWorkflow("      - run: yarn install --frozen-lockfile\n")}, true},
-		{"yarn_frozen_bare", false, map[string]string{"yarn.lock": "# yarn lockfile v1\n\nq@^2.0.0:\n  version \"2.0.0\"\n  resolved \"https://registry.npmjs.org/q/-/q-2.0.0.tgz\"\n", ".github/workflows/ci.yml": ciWorkflow("      - run: yarn --frozen-lockfile\n")}, true},
 		{"unread_cached_copy", false, map[string]string{".pnpm-store/v3/q/package.json": `{"name":"q","version":"1.0.0"}`}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,6 +243,33 @@ func TestLayoutVeto_NoLock(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			files := map[string]string{"index.js": guardIdle, "package.json": `{"name":"app","version":"1.0.0"}`}
+			maps.Copy(files, tc.files)
+			cg := withDeps(t, writeProgram(t, files), artifactcache.NewMemStore(nil))
+			if got := runWideWithheld(cg); got != tc.withheld {
+				t.Errorf("withheld run-wide = %v, want %v; got %+v", got, tc.withheld, cg.Partiality)
+			}
+			if !tc.withheld && !cg.Partiality.Complete {
+				t.Errorf("control must stay complete; got %+v", cg.Partiality)
+			}
+		})
+	}
+}
+
+// TestLayoutVeto_Yarn: on a yarn classic build, a frozen yarn install withholds through the layout,
+// since yarn 1 does not hold a workspace to its lock under --frozen-lockfile.
+func TestLayoutVeto_Yarn(t *testing.T) {
+	const yarnLock = "# yarn lockfile v1\n"
+	for _, tc := range []struct {
+		name     string
+		files    map[string]string
+		withheld bool
+	}{
+		{"yarn_frozen_install", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: yarn install --frozen-lockfile\n")}, true},
+		{"yarn_frozen_bare", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: yarn --frozen-lockfile\n")}, true},
+		{"control_yarn_no_surface", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"index.js": guardIdle, "package.json": `{"name":"app","version":"1.0.0"}`, "yarn.lock": yarnLock}
 			maps.Copy(files, tc.files)
 			cg := withDeps(t, writeProgram(t, files), artifactcache.NewMemStore(nil))
 			if got := runWideWithheld(cg); got != tc.withheld {

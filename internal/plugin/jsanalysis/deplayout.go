@@ -144,7 +144,8 @@ func (l *depLayout) addUnplacedDeps(deps []plugin.ResolvedDependency) {
 // manifestsDeclareDeps reports whether any package.json at or under root, outside node_modules
 // and .git, declares a dependency. A workspace member may sit under any directory name (build/,
 // vendor/), so nothing else is pruned. A directory symlink is not followed and counts as
-// declaring: the member it links may declare dependencies the walk cannot see. A manifest that cannot be read or decoded counts as declaring.
+// declaring: the member it links may declare dependencies the walk cannot see. A manifest that
+// cannot be read or decoded counts as declaring.
 func manifestsDeclareDeps(root string) bool {
 	declares := false
 	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -170,7 +171,8 @@ func manifestsDeclareDeps(root string) bool {
 		var m invManifest
 		data, err := readRegular(p)
 		if err != nil || json.Unmarshal(data, &m) != nil ||
-			len(m.Dependencies)+len(m.DevDependencies)+len(m.OptionalDependencies)+len(m.PeerDependencies) > 0 {
+			len(m.Dependencies)+len(m.DevDependencies)+
+				len(m.OptionalDependencies)+len(m.PeerDependencies) > 0 {
 			declares = true
 			return filepath.SkipAll
 		}
@@ -240,7 +242,8 @@ func (l *depLayout) addNpmV1(prefix, parent string, deps map[string]npmLockDep) 
 			// A v1 lock does not record hasInstallScript.
 			scriptsUnknown: true,
 		}
-		e.unreadable = e.digest == "" || isGitResolved(dep.Resolved) || isGitResolved(dep.Version) ||
+		e.unreadable = e.digest == "" || isGitResolved(dep.Resolved) ||
+			isGitResolved(dep.Version) ||
 			strings.HasPrefix(dep.Version, "npm:") || strings.HasPrefix(dep.Version, "file:") ||
 			strings.HasPrefix(dep.Version, "link:") || strings.HasPrefix(dep.Resolved, "file:")
 		l.add(e)
@@ -330,7 +333,9 @@ func (bytesHandle) Close() error { return nil }
 
 // readDepPackage reads e's tarball from store into memory, verifies it against the lock's
 // integrity and unpacks it from those same bytes.
-func readDepPackage(ctx context.Context, store artifactcache.Store, e *depEntry) (*depPackage, error) {
+func readDepPackage(
+	ctx context.Context, store artifactcache.Store, e *depEntry,
+) (*depPackage, error) {
 	ref := artifactcache.Ref{PURL: e.purl, Digest: e.digest}
 	h, err := store.Lookup(ctx, ref)
 	if err != nil {
@@ -543,7 +548,8 @@ func manifestFacts(manifest []byte, files map[string]bool) (installScript, nativ
 			installScript = true
 		}
 	}
-	if gyp && strings.TrimSpace(m.Scripts["install"]) == "" && strings.TrimSpace(m.Scripts["preinstall"]) == "" {
+	if gyp && strings.TrimSpace(m.Scripts["install"]) == "" &&
+		strings.TrimSpace(m.Scripts["preinstall"]) == "" {
 		installScript = true
 	}
 	native = gyp

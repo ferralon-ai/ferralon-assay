@@ -199,7 +199,7 @@ func (br *boundaryResolver) valueAlgo(module string, chain []string, depth int) 
 // which are not npm packages.
 func (br *boundaryResolver) isPackageSpecifier(module string, b binding, algo resolveAlgo) bool {
 	spec := b.Specifier
-	if spec == "" || strings.HasPrefix(spec, "#") || isRelativeSpecifier(spec) || strings.HasPrefix(spec, "/") || isNodeBuiltin(spec) {
+	if spec == "" || strings.HasPrefix(spec, "#") || isRelativeLoad(spec) || strings.HasPrefix(spec, "/") || isNodeBuiltin(spec) {
 		return false
 	}
 	key := module + "\x00" + spec

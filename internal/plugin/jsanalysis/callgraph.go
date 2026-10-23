@@ -37,6 +37,9 @@ type program struct {
 	styleTooling *bool
 	// deps is the dependency code read into the program (depgraph.go); nil when none is.
 	deps *depGraph
+	// dirMains caches the first-party package.json "main" lookups of directory resolution
+	// (resolver.dirMain).
+	dirMains map[string]dirMainEntry
 }
 
 // moduleIndex is one module's resolution surface: the names it binds (imports), the

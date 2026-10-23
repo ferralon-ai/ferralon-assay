@@ -44,8 +44,9 @@
 // &, or inside an if, case or loop) creates nothing here, nor does one whose bin/activate is
 // already a file the build holds.
 //
-// A sample hook git writes into the build root's .git/hooks (pre-commit.sample) is not a
-// surface: git never runs a hook under that name. It is not a script the walk reads either, so
+// A sample hook git writes into a hooks directory (pre-commit.sample in .git/hooks, a nested
+// repository's .git/hooks or a submodule's .git/modules/<name>/hooks) is not a surface: git
+// never runs a hook under that name. It is not a script the walk reads either, so
 // sourcing one withholds, as does a command anywhere in the build that names one.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
@@ -246,20 +247,33 @@ func (v *Veto) sampleNamed() bool {
 	return false
 }
 
-// sampleHook reports whether p is one of the sample hooks git writes into the build root's own
-// .git/hooks: git runs a hook only under its exact name, so never one ending in .sample. A
-// .git anywhere else, a directory under hooks, and any other suffix are not.
+// sampleHook reports whether p is a sample hook: a name ending in .sample directly in a hooks
+// directory that is a repository's .git/hooks (the build root's or a nested one's) or a
+// submodule's .git/modules/<name>/hooks. Git runs a hook only under its exact name, so never
+// one ending in .sample. A directory under hooks, a hooks directory anywhere else, an empty
+// name and any other suffix are not.
 func (v *Veto) sampleHook(p string) bool {
 	rel, err := filepath.Rel(v.root, p)
 	if err != nil {
 		return false
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) != 3 || parts[0] != ".git" || parts[1] != "hooks" {
+	n := len(parts)
+	if n < 3 || parts[n-2] != "hooks" {
 		return false
 	}
-	stem, ok := strings.CutSuffix(parts[2], ".sample")
-	return ok && stem != ""
+	if stem, ok := strings.CutSuffix(parts[n-1], ".sample"); !ok || stem == "" {
+		return false
+	}
+	if parts[n-3] == ".git" {
+		return true
+	}
+	for i := 0; i+1 < n-3; i++ {
+		if parts[i] == ".git" && parts[i+1] == "modules" {
+			return true
+		}
+	}
+	return false
 }
 
 // setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep.

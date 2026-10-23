@@ -300,9 +300,10 @@ func (s dependencyAcquisition) Run(ctx context.Context, c *assessment.Assessment
 	return err
 }
 
-// inventoryBuildLanguage returns the inventory's build dir, the checkout root the build dir must
-// stay inside, and the language. The root is the workspace plan's: checkout_root equals the
-// primary project's root, which for a project in a subdirectory is the build dir itself.
+// inventoryBuildLanguage returns the inventory's build dir, the workspace plan's root, and the
+// language. Today's plans are single-project, so the root is the build dir itself and the
+// containment check in acquire.LoadNPMConfig compares the build dir with itself; the root is
+// passed so a multi-project plan, whose root differs, is contained without a further change.
 func inventoryBuildLanguage(store artifact.Store, caseID string) (string, string, string, error) {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {

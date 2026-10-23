@@ -167,8 +167,9 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 }
 
 // containedDir resolves every symlink in dir and refuses a result outside root (resolved the
-// same way). A committed directory symlink could otherwise point the project layer at a
-// directory outside the checkout, such as the runner's home.
+// same way). It matters once a workspace plan's root differs from the build dir: a committed
+// directory symlink could then point the project layer outside the checkout, such as at the
+// runner's home. A single-project plan passes the build dir as its own root.
 func containedDir(dir, root string) (string, error) {
 	if root == "" {
 		root = dir

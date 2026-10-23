@@ -334,8 +334,13 @@ fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
 `api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
 GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. What any of this carries is dependency metadata — module paths, versions, package
-coordinates — never source, never analysis results. The full picture, including where the
+signature. A JS scan run with `-dependency-code=fetch` (off by default) also fetches each
+lock-pinned package tarball by name and version from the configured registry (the repository's
+`.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
+only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
+is presented only to the host it is bound to. Fetch mode trusts the repository's `.npmrc` with
+those token variables, exactly as `npm ci` does. What any of this carries is dependency metadata — module paths,
+versions, package coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 
 ## Automatic upgrades

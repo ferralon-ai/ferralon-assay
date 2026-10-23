@@ -12,12 +12,18 @@ type runCacheDirKey struct{}
 
 // WithRunCacheDir returns ctx carrying the run cache: a directory the host creates for one scan and
 // removes after it (see plugin.WithRunCacheDir). Each analyzer op runs in its own process, so without
-// it every advisory's reachability run re-executes govulncheck over the whole tree and rebuilds the
-// reconciliation call graph, getting the same answer each time. With it, those per-tree results are
-// computed once per scan and kept there. Without it, or with an empty dir, nothing is cached and
+// it every advisory re-executes govulncheck over the whole tree, rebuilds the reconciliation call
+// graph, re-indexes the program's symbols and re-searches its ingresses, getting the same answer
+// each time. With it, those per-tree results are computed once per scan and kept there. Without it, or with an empty dir, nothing is cached and
 // every run computes its own.
 func WithRunCacheDir(ctx context.Context, dir string) context.Context {
 	return context.WithValue(ctx, runCacheDirKey{}, dir)
+}
+
+// RunCacheDir returns the run cache directory ctx carries, or "" when it carries none.
+func RunCacheDir(ctx context.Context) string {
+	dir, _ := ctx.Value(runCacheDirKey{}).(string)
+	return dir
 }
 
 // runCached returns the bytes compute produces for the given key, reusing an earlier result from the
@@ -25,7 +31,7 @@ func WithRunCacheDir(ctx context.Context, dir string) context.Context {
 // degrades to computing, never to an error. Writes go through a rename so a concurrent reader sees
 // either nothing or a whole entry.
 func runCached(ctx context.Context, kind string, key []string, compute func() ([]byte, error)) ([]byte, error) {
-	dir, _ := ctx.Value(runCacheDirKey{}).(string)
+	dir := RunCacheDir(ctx)
 	if dir == "" {
 		return compute()
 	}

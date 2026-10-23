@@ -39,11 +39,15 @@ func main() {
 	// fail with "directory prefix . does not contain modules listed in go.work". Neutralize
 	// it once at entry so every in-process analyzer is workspace-blind.
 	_ = os.Setenv("GOWORK", "off")
-	ctx := goanalysis.WithRunCacheDir(context.Background(), os.Getenv(envRunCacheDir))
-	if err := run(ctx, os.Stdin, os.Stdout); err != nil {
+	if err := run(analyzerContext(context.Background()), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// analyzerContext hands the analyzer the run cache directory the host set for this subprocess.
+func analyzerContext(ctx context.Context) context.Context {
+	return goanalysis.WithRunCacheDir(ctx, os.Getenv(envRunCacheDir))
 }
 
 // run reads one Request, dispatches, and writes one Response. It returns a non-nil error

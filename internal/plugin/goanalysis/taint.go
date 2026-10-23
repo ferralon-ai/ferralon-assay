@@ -2,6 +2,9 @@ package goanalysis
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -36,7 +39,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 		return plugin.TaintResult{}, err
 	}
 
-	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir})
+	ing, err := taintIngresses(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}
@@ -87,6 +90,27 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 		Paths:         paths,
 		PrecisionNote: taintPrecisionNote,
 	}, nil
+}
+
+// taintIngresses returns the ingresses ComputeTaint propagates from, found once per tree per scan
+// through the run cache: they depend only on the build, while every advisory's sinks differ. The
+// program load reads the process environment, so that is part of the key.
+func taintIngresses(ctx context.Context, buildDir string) (plugin.IngressResult, error) {
+	b, err := runCached(ctx, "ingresses", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+		ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(ing)
+	})
+	if err != nil {
+		return plugin.IngressResult{}, err
+	}
+	var ing plugin.IngressResult
+	if err := json.Unmarshal(b, &ing); err != nil {
+		return plugin.IngressResult{}, fmt.Errorf("decode cached ingresses: %w", err)
+	}
+	return ing, nil
 }
 
 // resolveIngressFuncs maps each ingress symbol (by SCIP id) to its SSA function

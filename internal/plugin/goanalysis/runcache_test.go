@@ -274,3 +274,85 @@ func TestRunCachedReadersSeeWholeEntries(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+// TestResolveDependencySymbolsFromCachedIndex pins that every advisory resolved against the cached
+// symbol index gets exactly what it gets from a fresh index, and that the index is built once.
+func TestResolveDependencySymbolsFromCachedIndex(t *testing.T) {
+	reqs := []plugin.ResolveSymbolsRequest{
+		{BuildDir: fixtureDir, PURL: "pkg:golang/tegron.test/fixturemod/util", AdvisorySymbols: []string{"Sink"}, VulnID: "GO-TEST-0001"},
+		{BuildDir: fixtureDir, PURL: "pkg:golang/tegron.test/fixturemod/util", AdvisorySymbols: []string{"NoSuchSymbol"}, VulnID: "GO-TEST-0002"},
+	}
+	resolve := func(ctx context.Context, req plugin.ResolveSymbolsRequest) string {
+		t.Helper()
+		res, err := ResolveDependencySymbols(ctx, req)
+		if err != nil {
+			t.Fatalf("%s: %v", req.VulnID, err)
+		}
+		b, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	want := make([]string, len(reqs))
+	for i, req := range reqs {
+		want[i] = resolve(context.Background(), req)
+	}
+
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	for round := range 2 {
+		for i, req := range reqs {
+			if got := resolve(ctx, req); got != want[i] {
+				t.Errorf("round %d, %s: cached resolution = %s, want %s", round, req.VulnID, got, want[i])
+			}
+		}
+	}
+	if _, err := runCached(ctx, "symbolindex", append([]string{fixtureDir}, os.Environ()...), func() ([]byte, error) {
+		t.Fatal("symbol index was not cached")
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestComputeTaintFromCachedIngresses pins that every advisory's taint run from the cached
+// ingresses gets exactly what it gets from a fresh ingress search, and that the search runs once.
+func TestComputeTaintFromCachedIngresses(t *testing.T) {
+	sinks := [][]string{
+		{sinkSCIPIn(t, taintFixtureDir, "/Sink().")},
+		{"scip-go gomod example.com/absent . example.com/absent/Nowhere()."},
+	}
+	taint := func(ctx context.Context, s []string) string {
+		t.Helper()
+		res, err := ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: taintFixtureDir, Sinks: s})
+		if err != nil {
+			t.Fatalf("%v: %v", s, err)
+		}
+		b, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	want := make([]string, len(sinks))
+	for i, s := range sinks {
+		want[i] = taint(context.Background(), s)
+	}
+
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	for round := range 2 {
+		for i, s := range sinks {
+			if got := taint(ctx, s); got != want[i] {
+				t.Errorf("round %d, sinks %v: cached taint = %s, want %s", round, s, got, want[i])
+			}
+		}
+	}
+	if _, err := runCached(ctx, "ingresses", append([]string{taintFixtureDir}, os.Environ()...), func() ([]byte, error) {
+		t.Fatal("ingresses were not cached")
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

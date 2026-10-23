@@ -650,8 +650,21 @@ func TestFetchCorpusBundleSignals_Verified(t *testing.T) {
 	if !bytes.Equal(got, fakeSignalsGz(t)) {
 		t.Fatal("signals.json.gz in DEST is not the release's asset")
 	}
-	if r.cosign == "" || !strings.Contains(r.out, "signals_digest "+fakeSignalsDigest) {
-		t.Fatalf("cosign ran = %v; output lacks the verified signals_digest:\n%s", r.cosign != "", r.out)
+	if r.cosign == "" {
+		t.Fatalf("cosign never ran:\n%s", r.out)
+	}
+	// The sha256 is what was checked, so it is the only value the verified line names; the
+	// sidecar's signals_digest is labelled as its claim, never as verified.
+	if !strings.Contains(r.out, "==> Signals asset verified: signals.json.gz of "+fakeTag+" (sha256 ") {
+		t.Fatalf("output lacks the verified sha256 line:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "bundles.json signals_digest (claimed, not checked by this script): "+fakeSignalsDigest+"\n") {
+		t.Fatalf("output lacks the labelled bundles.json signals_digest:\n%s", r.out)
+	}
+	for _, line := range strings.Split(r.out, "\n") {
+		if strings.Contains(line, "verified") && strings.Contains(line, fakeSignalsDigest) {
+			t.Fatalf("a verified line names the unchecked signals_digest: %q", line)
+		}
 	}
 }
 

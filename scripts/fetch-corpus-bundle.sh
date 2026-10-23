@@ -187,7 +187,9 @@ sig_digest="$(jq -r '.signals.signals_digest' "$WORK/bundles.json")"
   die "could not download $SIGNALS from release $TAG, which its bundles.json lists"
 got_sig="$(sha256_of "$WORK/$SIGNALS")"
 [ "$got_sig" = "$want_sig" ] || die "$SIGNALS from $TAG hashes to $got_sig, but bundles.json's signals object says $want_sig"
-echo "==> Signals asset verified: $SIGNALS of $TAG (signals_digest $sig_digest, sha256 $got_sig)"
+echo "==> Signals asset verified: $SIGNALS of $TAG (sha256 $got_sig)"
+# Only the sha256 is checked here; the sidecar's signals_digest is printed as it claims it.
+echo "    bundles.json signals_digest (claimed, not checked by this script): $sig_digest"
 
 # accept_signals hands the verified signals to the scan step. Called on each exit that read a release,
 # last, so a run that fails after check S emits no signals path.

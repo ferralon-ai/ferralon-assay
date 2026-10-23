@@ -126,6 +126,10 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 package-lock v3 peer specs match", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("3", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, true},
 		{"S1 package-lock v2 root peer drift", map[string]string{"package.json": peerPkg("app", "^18.0.0"), "package-lock.json": peerLock("2", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, false},
 		{"S1 package-lock v2 peer specs match", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("2", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, true},
+		{"S1 package-lock v3 peer added after locking", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{
+  "": {"name":"app","dependencies":{"express":"^4.18.0"}},
+  "node_modules/express": {"version":"4.18.2"},
+  "node_modules/react": {"version":"17.0.2"}}}`}, false},
 		{"S1 pnpm peer the lock keys", map[string]string{"package.json": strings.TrimSuffix(exPkgJSON, "}") + `,"peerDependencies":{"left-pad":"^1.3.0"}}`, "pnpm-lock.yaml": exPnpmV9}, true},
 		{"S1 stale lock beside a covering one", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "yarn.lock": yarnStale}, false},
 

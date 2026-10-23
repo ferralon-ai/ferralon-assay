@@ -181,11 +181,16 @@ func (r *depRegion) importerAt(dir string) *depImporter {
 
 // workspaceMembers returns the root-relative directories under root holding a package.json that
 // patterns select (root itself excluded). A pattern may use "**" for any number of segments and a
-// leading "!" to exclude. ok is false when a directory cannot be read or a directory symlink is
-// met: the member it links may be selected, and its manifest is not walked.
+// leading "!" to exclude. ok is false when a directory cannot be read, a directory symlink is
+// met (the member it links may be selected, and its manifest is not walked), a manifest's name
+// differs from package.json only in case, or a pattern or match is one the lane can't read as
+// pnpm and yarn classic do (workspaceGlobReadable, workspaceSelects).
 func workspaceMembers(root string, patterns []string) (members []string, ok bool) {
 	if len(patterns) == 0 {
 		return nil, true
+	}
+	if slices.ContainsFunc(patterns, func(p string) bool { return !workspaceGlobReadable(p) }) {
+		return nil, false
 	}
 	ok = true
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -205,7 +210,7 @@ func workspaceMembers(root string, patterns []string) (members []string, ok bool
 				return filepath.SkipAll
 			}
 		}
-		if d.Name() != "package.json" {
+		if !strings.EqualFold(d.Name(), "package.json") {
 			return nil
 		}
 		rel, err := filepath.Rel(root, filepath.Dir(p))
@@ -214,7 +219,15 @@ func workspaceMembers(root string, patterns []string) (members []string, ok bool
 			return filepath.SkipAll
 		}
 		rel = filepath.ToSlash(rel)
-		if rel != "." && workspaceSelects(patterns, rel) {
+		if rel == "." {
+			return nil
+		}
+		in, decided := workspaceSelects(patterns, rel)
+		if !decided || in && d.Name() != "package.json" {
+			ok = false
+			return filepath.SkipAll
+		}
+		if in {
 			members = append(members, rel)
 		}
 		return nil
@@ -223,27 +236,55 @@ func workspaceMembers(root string, patterns []string) (members []string, ok bool
 	return members, ok
 }
 
-// workspaceSelects reports whether the workspace globs select the root-relative directory rel.
-func workspaceSelects(patterns []string, rel string) bool {
-	in := false
+// workspaceGlobReadable reports whether the lane reads the workspace pattern p as pnpm
+// (picomatch) and yarn classic (node-glob) do. Both expand braces and extglobs, read "[!a]" as a
+// negated class and POSIX classes inside brackets, and accept members outside the root ("../x"),
+// none of which globMatch models, so a pattern using any of them is refused rather than read
+// narrower.
+func workspaceGlobReadable(p string) bool {
+	p = strings.TrimPrefix(p, "!")
+	if p == "" || strings.ContainsAny(p, "{}()|\\[]") || strings.HasPrefix(p, "/") {
+		return false
+	}
+	return !slices.Contains(strings.Split(p, "/"), "..")
+}
+
+// workspaceSelects reports whether the workspace globs select the root-relative directory rel,
+// and whether that answer holds for pnpm and yarn classic on any filesystem. It does not hold
+// when matching rel ignoring case gives another answer (both tools match case-insensitively on
+// a case-insensitive filesystem), or when a wildcard matched a dot-named segment (neither
+// tool's wildcards match one).
+func workspaceSelects(patterns []string, rel string) (in, decided bool) {
+	segs := strings.Split(rel, "/")
+	folded := strings.Split(strings.ToLower(rel), "/")
 	for _, p := range patterns {
 		neg := strings.HasPrefix(p, "!")
 		p = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(p, "!"), "./"), "/")
-		if globMatch(strings.Split(p, "/"), strings.Split(rel, "/")) {
+		pat := strings.Split(p, "/")
+		exact := globMatch(pat, segs, false)
+		if exact != globMatch(strings.Split(strings.ToLower(p), "/"), folded, false) ||
+			exact != globMatch(pat, segs, true) {
+			return false, false
+		}
+		if exact {
 			in = !neg
 		}
 	}
-	return in
+	return in, true
 }
 
 // globMatch matches path segments against pattern segments; "**" matches any number of them.
-func globMatch(pat, segs []string) bool {
+// With noDot, a wildcard does not match a segment that starts with ".".
+func globMatch(pat, segs []string, noDot bool) bool {
 	if len(pat) == 0 {
 		return len(segs) == 0
 	}
 	if pat[0] == "**" {
 		for i := 0; i <= len(segs); i++ {
-			if globMatch(pat[1:], segs[i:]) {
+			if noDot && i > 0 && strings.HasPrefix(segs[i-1], ".") {
+				return false
+			}
+			if globMatch(pat[1:], segs[i:], noDot) {
 				return true
 			}
 		}
@@ -252,8 +293,11 @@ func globMatch(pat, segs []string) bool {
 	if len(segs) == 0 {
 		return false
 	}
+	if noDot && strings.HasPrefix(segs[0], ".") && !strings.HasPrefix(pat[0], ".") {
+		return false
+	}
 	ok, err := path.Match(pat[0], segs[0])
-	return err == nil && ok && globMatch(pat[1:], segs[1:])
+	return err == nil && ok && globMatch(pat[1:], segs[1:], noDot)
 }
 
 // readOptional reads the regular file at p. A file that is not there is (nil, true); one there

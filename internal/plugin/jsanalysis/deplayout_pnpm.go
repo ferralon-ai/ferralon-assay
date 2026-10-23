@@ -385,10 +385,11 @@ type pnpmConfig struct {
 // readPnpmConfig reads root's pnpm configuration. ok is false for any hook, setting or file
 // the lane does not model.
 func readPnpmConfig(root string) (*pnpmConfig, bool) {
-	for _, f := range []string{".pnpmfile.cjs", ".pnpmfile.mjs"} {
-		if _, err := os.Lstat(filepath.Join(root, f)); !absent(err) {
-			return nil, false
-		}
+	if found, err := entryFold(root, ".pnpmfile.cjs", ".pnpmfile.mjs"); found || err != nil {
+		return nil, false
+	}
+	if !exactCase(root, ".npmrc", "package.json", "pnpm-workspace.yaml") {
+		return nil, false
 	}
 	rc, ok := readOptional(filepath.Join(root, ".npmrc"))
 	if !ok {
@@ -499,14 +500,12 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 	return cfg, true
 }
 
-// pnpmAltManifestIn reports whether root, or a directory the workspace globs select, holds a
-// pnpmAltManifests file, or whether the walk fails. workspaceMembers finds members by
-// package.json, so a member with only a package.yaml would otherwise go unseen.
+// pnpmAltManifestIn reports whether root, or a directory the workspace globs may select, holds
+// a pnpmAltManifests file (in any case), or whether the walk fails. workspaceMembers finds
+// members by package.json, so a member with only a package.yaml would otherwise go unseen.
 func pnpmAltManifestIn(root string, globs []string) bool {
-	for _, f := range pnpmAltManifests {
-		if _, err := os.Lstat(filepath.Join(root, f)); !absent(err) {
-			return true
-		}
+	if found, err := entryFold(root, pnpmAltManifests...); found || err != nil {
+		return true
 	}
 	if len(globs) == 0 {
 		return false
@@ -522,14 +521,17 @@ func pnpmAltManifestIn(root string, globs []string) bool {
 			}
 			return nil
 		}
-		if !slices.Contains(pnpmAltManifests, d.Name()) {
+		if !slices.ContainsFunc(pnpmAltManifests, func(f string) bool { return strings.EqualFold(f, d.Name()) }) {
 			return nil
 		}
 		rel, err := filepath.Rel(root, filepath.Dir(p))
 		if err != nil {
 			return err
 		}
-		if rel = filepath.ToSlash(rel); rel != "." && workspaceSelects(globs, rel) {
+		if rel = filepath.ToSlash(rel); rel == "." {
+			return nil
+		}
+		if in, decided := workspaceSelects(globs, rel); in || !decided {
 			found = true
 			return filepath.SkipAll
 		}
@@ -633,7 +635,7 @@ func patchScoped(data []byte) bool {
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
 	touches := func(p string) bool {
 		base := path.Base(p)
-		return base == "package.json" || base == "binding.gyp" ||
+		return strings.EqualFold(base, "package.json") || strings.EqualFold(base, "binding.gyp") ||
 			strings.HasSuffix(strings.ToLower(p), ".node") || strings.HasPrefix(p, "/") ||
 			slices.Contains(strings.Split(p, "/"), "..")
 	}

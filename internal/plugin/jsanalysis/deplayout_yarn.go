@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -83,6 +84,9 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 		}
 	}
 
+	if !exactCase(root, "package.json", ".yarnrc") {
+		return nil, false
+	}
 	rootData, ok := readOptional(filepath.Join(root, "package.json"))
 	if !ok {
 		return nil, false
@@ -96,6 +100,11 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 	}
 	globs := parseWorkspaceGlobs(rootMan.Workspaces)
 	if len(rootMan.Workspaces) > 0 && globs == nil && strings.TrimSpace(string(rootMan.Workspaces)) != "[]" {
+		return nil, false
+	}
+	// yarn classic globs each pattern on its own and unions the results, so a "!" pattern
+	// excludes nothing there; read as an exclusion it would drop a member yarn installs.
+	if slices.ContainsFunc(globs, func(g string) bool { return strings.HasPrefix(g, "!") }) {
 		return nil, false
 	}
 	members, ok := workspaceMembers(root, globs)

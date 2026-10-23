@@ -1223,6 +1223,13 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		"intermediate_pnpm_key":            {"apps/web", apps(`{"name":"apps","private":true,"pnpm":{"neverBuiltDependencies":[]}}`)},
 		"root_npmrc_hoist":                 {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "registry=https://npm.acme.dev/\npublic-hoist-pattern[]=*\n"}},
 		"root_npmrc_unparseable":           {"web", map[string]string{"package.json": `{"name":"app","private":true}`, ".npmrc": "\"${HOIST}\"=true\n"}},
+		// A build may run on a case-insensitive filesystem, where the package manager finds
+		// these under their usual names.
+		"intermediate_binding_gyp_case":  {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/Binding.gyp": "{'targets':[]}\n"})},
+		"intermediate_package_yaml_case": {"apps/web", locked(map[string]string{"apps/Package.yaml": "name: apps\n"})},
+		"intermediate_pnpmfile_case":     {"apps/web", locked(map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.PNPMFILE.cjs": "module.exports = {}\n"})},
+		"intermediate_npmrc_case":        {"apps/web", locked(map[string]string{"apps/.NPMRC": "registry=https://npm.acme.dev/\n"})},
+		"intermediate_manifest_case":     {"apps/web", locked(map[string]string{"apps/Package.json": `{"name":"apps","private":true}`})},
 	} {
 		t.Run(name, func(t *testing.T) { withholds(t)(nested(t, tc.region, tc.files)) })
 	}
@@ -1312,12 +1319,13 @@ func TestSemantic_LayoutVeto(t *testing.T) {
 // does not mark, so it withholds run-wide like an explicit one.
 func TestSemantic_DepBindingGyp(t *testing.T) {
 	for _, mgr := range []string{"pnpm", "yarn"} {
-		for name, gyp := range map[string]bool{"binding_gyp": true, "control": false} {
+		for name, gypName := range map[string]string{"binding_gyp": "binding.gyp", "binding_gyp_case": "Binding.gyp", "control": ""} {
 			t.Run(mgr+"_"+name, func(t *testing.T) {
 				q := qPkg("1.0.0")
 				pFiles := map[string]string{"index.js": callsQ}
+				gyp := gypName != ""
 				if gyp {
-					pFiles["binding.gyp"] = "{'targets':[]}\n"
+					pFiles[gypName] = "{'targets':[]}\n"
 				}
 				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, pFiles)
 				lockName, lock := pnpmLockFile, pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}}, p, q)
@@ -1343,14 +1351,15 @@ func TestSemantic_DepBindingGyp(t *testing.T) {
 func TestSemantic_PnpmAltManifest(t *testing.T) {
 	for _, alt := range []string{"package.yaml", "package.json5"} {
 		for name, files := range map[string]map[string]string{
-			"root":   {alt: "name: app\n"},
-			"member": {"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - lib\n", "lib/" + alt: "name: lib\n"},
+			"root":        {alt: "name: app\n"},
+			"member":      {"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - lib\n", "lib/" + alt: "name: lib\n"},
+			"member_case": {"package.json": `{"name":"app","private":true}`, "pnpm-workspace.yaml": "packages:\n  - lib\n", "lib/P" + alt[1:]: "name: lib\n"},
 		} {
 			t.Run(alt+"_"+name, func(t *testing.T) {
 				q := qPkg("1.0.0")
 				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
 				importers := map[string]map[string]string{".": {"p": "1.0.0"}}
-				if name == "member" {
+				if name != "root" {
 					importers["lib"] = map[string]string{}
 				}
 				dir := semProgram(t, pnpmLockFile, pnpmLockText(t, "9.0", importers, p, q), files)
@@ -1360,5 +1369,176 @@ func TestSemantic_PnpmAltManifest(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSemantic_WorkspaceGlobs: pnpm and yarn classic expand braces and extglobs, read "[!b]" as
+// a negated class, accept members outside the root, and match case-insensitively on a
+// case-insensitive filesystem. A member glob the lane would read narrower withholds, as does a
+// wildcard match on a dot-named directory, which neither tool selects. yarn classic globs each
+// pattern alone, so a "!" pattern excludes nothing there and withholds too.
+func TestSemantic_WorkspaceGlobs(t *testing.T) {
+	type row struct {
+		globs  []string
+		member string
+	}
+	shared := map[string]row{
+		"braces":        {[]string{"packages/{a,b}"}, "packages/a"},
+		"extglob":       {[]string{"packages/@(a|z)"}, "packages/a"},
+		"extglob_plus":  {[]string{"packages/+(a)"}, "packages/a"},
+		"negated_class": {[]string{"packages/[!b]"}, "packages/a"},
+		"posix_class":   {[]string{"packages/[[:alpha:]]"}, "packages/a"},
+		"backslash":     {[]string{"packages\\a"}, "packages/a"},
+		"outside_root":  {[]string{"packages/*", "../shared"}, "packages/a"},
+		"case_differs":  {[]string{"Packages/*"}, "packages/a"},
+		"dot_directory": {[]string{"packages/*"}, "packages/.a"},
+		"manifest_case": {[]string{"packages/*"}, "packages/a"},
+	}
+	for _, mgr := range []string{"pnpm", "yarn"} {
+		rows := maps.Clone(shared)
+		if mgr == "yarn" {
+			rows["negation"] = row{[]string{"packages/*", "!packages/a"}, "packages/a"}
+		}
+		rows["control"] = row{[]string{"packages/*"}, "packages/a"}
+		for name, tc := range rows {
+			t.Run(mgr+"_"+name, func(t *testing.T) {
+				q := qPkg("1.0.0")
+				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+				manifest := "package.json"
+				if name == "manifest_case" {
+					manifest = "Package.json"
+				}
+				files := map[string]string{tc.member + "/" + manifest: `{"name":"a","version":"1.0.0"}`}
+				lockName, lock := yarnLockFile, yarnLockText(t, p, q)
+				if mgr == "pnpm" {
+					quoted := make([]string, len(tc.globs))
+					for i, g := range tc.globs {
+						quoted[i] = "  - '" + g + "'\n"
+					}
+					files["pnpm-workspace.yaml"] = "packages:\n" + strings.Join(quoted, "")
+					lockName, lock = pnpmLockFile, pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}, tc.member: {}}, p, q)
+				} else {
+					ws, _ := json.Marshal(tc.globs)
+					files["package.json"] = manifestWith("app", map[string]string{"p": "1.0.0"}, `,"private":true,"workspaces":`+string(ws))
+				}
+				dir := semProgram(t, lockName, lock, files)
+				cg := semRun(t, dir, semStore(t, p, q))
+				incomplete := buildDepLayout(context.Background(), dir).incomplete
+				if name == "control" {
+					if incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0") {
+						t.Errorf("a plain member glob resolves q@1.0.0 through the %s layout; got %+v", mgr, cg.Partiality)
+					}
+					return
+				}
+				if !incomplete || !runWide(cg) {
+					t.Errorf("%s workspace globs %q the lane can't read as the tool does withhold; got %+v", mgr, tc.globs, cg.Partiality)
+				}
+			})
+		}
+	}
+}
+
+// TestReadPnpmConfig_OwnGates pins the pnpm reader's own hook and case checks directly, without
+// the install veto in play.
+func TestReadPnpmConfig_OwnGates(t *testing.T) {
+	for name, tc := range map[string]struct {
+		files map[string]string
+		ok    bool
+	}{
+		"control":           {map[string]string{".npmrc": "registry=https://npm.acme.dev/\n"}, true},
+		"pnpmfile_cjs":      {map[string]string{".pnpmfile.cjs": "module.exports = {}\n"}, false},
+		"pnpmfile_mjs":      {map[string]string{".pnpmfile.mjs": "export default {}\n"}, false},
+		"npmrc_pnpmfile":    {map[string]string{".npmrc": "pnpmfile=hooks.cjs\n"}, false},
+		"npmrc_global":      {map[string]string{".npmrc": "global-pnpmfile=hooks.cjs\n"}, false},
+		"pnpmfile_case":     {map[string]string{".PNPMFILE.cjs": "module.exports = {}\n"}, false},
+		"npmrc_case":        {map[string]string{".NPMRC": "registry=https://npm.acme.dev/\n"}, false},
+		"package_yaml_case": {map[string]string{"Package.yaml": "name: app\n"}, false},
+		"workspace_case":    {map[string]string{"Pnpm-Workspace.yaml": "packages: []\n"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.files["package.json"] = `{"name":"app","private":true}`
+			if _, ok := readPnpmConfig(writeProgram(t, tc.files)); ok != tc.ok {
+				t.Errorf("readPnpmConfig ok = %v, want %v", ok, tc.ok)
+			}
+		})
+	}
+}
+
+// TestInertDir_OwnGates pins inertDir's own manifest, hook and case checks directly, without the
+// install veto in play.
+func TestInertDir_OwnGates(t *testing.T) {
+	for name, tc := range map[string]struct {
+		files map[string]string
+		inert bool
+	}{
+		"control":            {map[string]string{"apps/package.json": `{"name":"apps","private":true}`, "apps/.npmrc": "registry=https://npm.acme.dev/\n"}, true},
+		"malformed":          {map[string]string{"apps/package.json": `{"name":"apps",`}, false},
+		"pnpmfile":           {map[string]string{"apps/.pnpmfile.cjs": "module.exports = {}\n"}, false},
+		"pnpmfile_case":      {map[string]string{"apps/.PNPMFILE.cjs": "module.exports = {}\n"}, false},
+		"binding_gyp_case":   {map[string]string{"apps/Binding.gyp": "{'targets':[]}\n"}, false},
+		"package_json5_case": {map[string]string{"apps/Package.json5": "{name: 'apps'}\n"}, false},
+		"npmrc_case":         {map[string]string{"apps/.NPMRC": "registry=https://npm.acme.dev/\n"}, false},
+		"manifest_case":      {map[string]string{"apps/Package.json": `{"name":"apps","private":true}`}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := writeProgram(t, tc.files)
+			if got := inertDir(root, filepath.Join(root, "apps")); got != tc.inert {
+				t.Errorf("inertDir = %v, want %v", got, tc.inert)
+			}
+		})
+	}
+	t.Run("unreadable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a mode-0 file")
+		}
+		root := writeProgram(t, map[string]string{"apps/package.json": `{"name":"apps"}`})
+		m := filepath.Join(root, "apps", "package.json")
+		if err := os.Chmod(m, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(m, 0o644) })
+		if inertDir(root, filepath.Join(root, "apps")) {
+			t.Error("an unreadable manifest is not inert")
+		}
+	})
+}
+
+// TestManifestFacts_BindingGypCase: the implicit node-gyp install is found for a binding.gyp in
+// any case, and a patch touching one in any case is not scoped.
+func TestManifestFacts_BindingGypCase(t *testing.T) {
+	for _, f := range []string{"binding.gyp", "Binding.gyp", "BINDING.GYP"} {
+		if install, native := manifestFacts([]byte(`{"name":"p"}`), map[string]bool{f: true}); !install || !native {
+			t.Errorf("%s: install %v native %v, want both", f, install, native)
+		}
+		patch := "--- a/" + f + "\n+++ b/" + f + "\n@@ -1 +1 @@\n-x\n+y\n"
+		if patchScoped([]byte(patch)) {
+			t.Errorf("a patch touching %s is not scoped", f)
+		}
+	}
+	if install, _ := manifestFacts([]byte(`{"name":"p"}`), map[string]bool{"src/binding.gyp": true}); install {
+		t.Error("a nested binding.gyp triggers nothing")
+	}
+}
+
+// TestSemantic_YarnRootCase: a yarn classic root's .yarnrc or package.json named in another case
+// withholds; yarn reads it under its usual name on a case-insensitive filesystem.
+func TestSemantic_YarnRootCase(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"control":     {".yarnrc": "registry \"https://npm.acme.dev/\"\n"},
+		"yarnrc_case": {".YARNRC": "registry \"https://npm.acme.dev/\"\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := qPkg("1.0.0")
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			dir := semProgram(t, yarnLockFile, yarnLockText(t, p, q), files)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			if name == "control" && (incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("an allowlisted .yarnrc resolves q@1.0.0; got %+v", cg.Partiality)
+			}
+			if name != "control" && (!incomplete || !runWide(cg)) {
+				t.Errorf("a .yarnrc named in another case withholds; got %+v", cg.Partiality)
+			}
+		})
 	}
 }

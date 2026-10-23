@@ -244,14 +244,13 @@ func installHook(name string) bool {
 }
 
 // inertDir reports whether dir, a directory inside the build root buildDir, holds nothing that
-// installs into its node_modules: no installConfigFiles entry, a .npmrc that is absent or sets
-// only outerNpmrcKeys, and a package.json that is absent or readable, parseable and made only of
-// inertManifestKeys.
+// installs into its node_modules: no installConfigFiles entry in any case, a .npmrc that is
+// absent or sets only outerNpmrcKeys, and a package.json that is absent or readable, parseable
+// and made only of inertManifestKeys. A .npmrc or package.json named in another case is not
+// judged; it withholds.
 func inertDir(buildDir, dir string) bool {
-	for _, f := range installConfigFiles {
-		if _, err := os.Lstat(filepath.Join(dir, f)); !absent(err) {
-			return false
-		}
+	if found, err := entryFold(dir, installConfigFiles...); found || err != nil || !exactCase(dir, ".npmrc", "package.json") {
+		return false
 	}
 	rc := filepath.Join(dir, ".npmrc")
 	if _, err := os.Lstat(rc); !absent(err) && (err != nil || !npmrcSetsOnly(buildDir, rc, outerNpmrcKeys)) {
@@ -271,6 +270,38 @@ func inertDir(buildDir, dir string) bool {
 	}
 	for k, v := range m {
 		if !inertManifestKeys[k] || k == "scripts" && !inertScripts(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// entryFold reports whether dir holds an entry named one of names, ignoring case. A build may
+// run on a case-insensitive filesystem, where a package manager opening binding.gyp finds a
+// Binding.gyp.
+func entryFold(dir string, names ...string) (bool, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range ents {
+		if slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, e.Name()) }) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// exactCase reports whether dir can be listed and holds no entry whose name differs from one of
+// names only in case: a file the package manager reads on a case-insensitive filesystem that
+// the lane, reading by exact name, might not judge the same way.
+func exactCase(dir string, names ...string) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if slices.ContainsFunc(names, func(n string) bool { return n != e.Name() && strings.EqualFold(n, e.Name()) }) {
 			return false
 		}
 	}
@@ -805,14 +836,19 @@ var nativeLoaders = map[string]bool{
 }
 
 // manifestFacts reads the install-script and native-addon facts from a tarball manifest. npm
-// runs `node-gyp rebuild` for a package with a binding.gyp and no install or preinstall script.
+// runs `node-gyp rebuild` for a package with a binding.gyp and no install or preinstall script;
+// the name is matched in any case, since the install may extract onto a case-insensitive
+// filesystem.
 func manifestFacts(manifest []byte, files map[string]bool) (installScript, native bool) {
 	var m struct {
 		Scripts      map[string]string `json:"scripts"`
 		Dependencies map[string]string `json:"dependencies"`
 	}
 	_ = json.Unmarshal(manifest, &m)
-	gyp := files["binding.gyp"]
+	gyp := false
+	for f := range files {
+		gyp = gyp || strings.EqualFold(f, "binding.gyp")
+	}
 	for _, s := range []string{"preinstall", "install", "postinstall"} {
 		if strings.TrimSpace(m.Scripts[s]) != "" {
 			installScript = true

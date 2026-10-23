@@ -23,21 +23,23 @@ import (
 //	npm test|t|start                     every package.json script value, passes the same gate
 //	yarn run <name>, yarn test|start
 //
-// with only --production, --omit=dev and --ignore-scripts added, and with the package.json
+// with only --ignore-scripts and subset flags added (npm: --production and --omit, --include
+// or --only with a value from laneSubsetConfigs; yarn and pnpm: --production), and with the package.json
 // each binds to (the nearest at or above the command's directory, as npm finds it) and its
 // lock read here. Anything else that names a package manager withholds: a package argument,
 // another flag, a bare npm install, yarn or pnpm install (each re-locks), yarn install
 // --immutable (yarn 1 ignores it), npm exec, npx, pnpx, bunx, yarn dlx, pnpm run (pnpm
 // installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
 // names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
-// npm or yarn the build runs reads it. How a surface is read, and what binds a command to a
-// file, is lane-neutral, in scriptsurface.
+// npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
+// read, and what binds a command to a file, is lane-neutral, in scriptsurface.
 
 // scriptSpec is the JavaScript lane's part of the rule. It names no run wrapper: npm and yarn
 // run a package.json script, gated where it is written, not a command line.
 var scriptSpec = scriptsurface.Spec{
 	Token:       laneToken,
 	Env:         laneEnvRE,
+	EnvKeeps:    laneEnvKeeps,
 	Allowed:     laneAllowed,
 	ReadRegular: readRegular,
 	Absent:      absent,
@@ -47,6 +49,29 @@ var scriptSpec = scriptsurface.Spec{
 // (which Netlify passes to its own install) name that is not a $, ${ or attribute reference,
 // so is being set.
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS)`)
+
+// laneSubsetConfigs are the npm configs that only choose which of the packages a lock
+// records get installed (devDependencies, optionalDependencies, peers), never what a package
+// resolves to: exhaustive.go counts every locked package as present whatever its dev or
+// optional flag, so setting one installs nothing outside the lock read here. Each maps to the
+// values its flag form may take; nil takes none. The variable form (laneEnvKeeps) and the flag
+// form (laneNPMFlags) both read this set.
+var laneSubsetConfigs = map[string]map[string]bool{
+	"production": nil,
+	"omit":       {"dev": true, "optional": true, "peer": true},
+	"include":    {"dev": true, "optional": true, "peer": true},
+	"only":       {"prod": true, "production": true},
+}
+
+// laneEnvKeeps reports whether name, which laneEnvRE matched, is npm_config_<config> (any case)
+// for one of laneSubsetConfigs.
+func laneEnvKeeps(name string) bool {
+	if len(name) < len("npm_config_") || !strings.EqualFold(name[:len("npm_config_")], "npm_config_") {
+		return false
+	}
+	_, ok := laneSubsetConfigs[strings.ToLower(name[len("npm_config_"):])]
+	return ok
+}
 
 // laneToken reports whether word is a JavaScript package manager or package runner, an alias
 // or wrapper that runs one (yarnpkg, cnpm, ni and its nci, nlx, nu, na), or a tool
@@ -62,8 +87,44 @@ func laneToken(word string) bool {
 	return false
 }
 
-// laneFlags are the flags every allowed install may carry.
-var laneFlags = map[string]bool{"--production": true, "--omit=dev": true, "--ignore-scripts": true}
+// laneFlags are the flags an allowed yarn or pnpm install may carry.
+var laneFlags = map[string]bool{"--production": true, "--ignore-scripts": true}
+
+// laneNPMFlags reports whether args are only flags an allowed npm install may carry:
+// --ignore-scripts, and the flag form of each of laneSubsetConfigs, --<config> alone when it
+// takes no value, or --<config>=<value> or --<config> <value> with a value it takes.
+func laneNPMFlags(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--ignore-scripts" {
+			continue
+		}
+		flag, ok := strings.CutPrefix(args[i], "--")
+		if !ok {
+			return false
+		}
+		name, val, inline := strings.Cut(flag, "=")
+		vals, ok := laneSubsetConfigs[name]
+		switch {
+		case !ok:
+			return false
+		case vals == nil:
+			if inline {
+				return false
+			}
+			continue
+		case !inline:
+			if i+1 >= len(args) {
+				return false
+			}
+			i++
+			val = args[i]
+		}
+		if !vals[val] {
+			return false
+		}
+	}
+	return true
+}
 
 // laneAllowed reports whether a command holding a package-manager token, already free of
 // expansions and redirects, is one of the allowed forms and binds to files read here.
@@ -76,7 +137,7 @@ func laneAllowed(words []string, b scriptsurface.Binder) bool {
 	case "npm":
 		switch words[1] {
 		case "ci":
-			return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("package.json", "package-lock.json", "npm-shrinkwrap.json") != nil
+			return laneNPMFlags(words[2:]) && b.Nearest("package.json", "package-lock.json", "npm-shrinkwrap.json") != nil
 		case "run", "run-script":
 			return laneRunsScript(words, b)
 		case "test", "t", "start":

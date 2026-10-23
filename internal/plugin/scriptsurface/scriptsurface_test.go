@@ -566,3 +566,31 @@ func TestVeto_SampleHooks(t *testing.T) {
 		})
 	}
 }
+
+// A variable the lane's EnvKeeps keeps does not withhold, and names no token; every other
+// variable Env matches still does, beside a kept one or not. With no EnvKeeps, none is kept.
+func TestVeto_EnvKeeps(t *testing.T) {
+	keeps := testSpec
+	keeps.EnvKeeps = func(name string) bool { return name == "INST_ONLY" || name == "inst_only" }
+	tests := []struct {
+		name   string
+		spec   Spec
+		script string
+		want   bool // withheld
+	}{
+		{"kept variable", keeps, "export INST_ONLY=prod\ninst sync\n", false},
+		{"kept variable naming the token", keeps, "export inst_only=prod\ninst sync\n", false},
+		{"kept beside another", keeps, "export INST_ONLY=prod INST_INDEX=https://x\ninst sync\n", true},
+		{"another variable", keeps, "export INST_INDEX=https://x\ninst sync\n", true},
+		{"a name extending a kept one", keeps, "export INST_ONLY_X=1\ninst sync\n", true},
+		{"no EnvKeeps", testSpec, "export INST_ONLY=prod\ninst sync\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "install.sh": tt.script}
+			if got := withheld(writeTree(t, files), tt.spec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

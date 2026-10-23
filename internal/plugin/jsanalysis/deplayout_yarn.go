@@ -159,17 +159,18 @@ func httpTarball(resolved string) bool {
 }
 
 // yarnResolutionsOK accepts only resolutions whose effect the lock already shows: a bare or
-// "**/" package key pinned to one exact version that every block of that name has. Any other
-// key (a nested path, a range) changes resolution in a way the lane does not replay.
+// "**/" package key whose value every block of that name satisfies, as an exact pin or a range
+// rangeSatisfied decides. Any other key (a nested path) or value (a protocol, a range
+// rangeSatisfied cannot decide) changes resolution in a way the lane does not replay.
 func yarnResolutionsOK(res map[string]string, blocks []yarnBlock) bool {
 	for k, v := range res {
 		name := strings.TrimPrefix(k, "**/")
-		if !safeLoadName(name) || !exactVersion(v) {
+		if !safeLoadName(name) {
 			return false
 		}
 		for _, b := range blocks {
 			for _, d := range b.descriptors {
-				if n, _ := splitDescriptor(d); n == name && b.version != v {
+				if n, _ := splitDescriptor(d); n == name && !(exactVersion(v) && b.version == v) && !rangeSatisfied(b.version, v) {
 					return false
 				}
 			}

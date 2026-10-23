@@ -658,7 +658,8 @@ func TestSemantic_G12PnpmExcludeLinks(t *testing.T) {
 	}
 }
 
-// TestSemantic_G13YarnResolutions: only an exact pin the lock already shows is trusted.
+// TestSemantic_G13YarnResolutions: only a bare or "**/" key whose exact pin or decidable range
+// every block of the name satisfies is trusted.
 func TestSemantic_G13YarnResolutions(t *testing.T) {
 	for _, tc := range []struct {
 		name, res string
@@ -668,7 +669,14 @@ func TestSemantic_G13YarnResolutions(t *testing.T) {
 		{"glob_exact", `{"**/q":"1.0.0"}`, false},
 		{"unsatisfied", `{"q":"2.0.0"}`, true},
 		{"nested", `{"p/q":"1.0.0"}`, true},
-		{"range", `{"q":"^1.0.0"}`, true},
+		{"range", `{"q":"^1.0.0"}`, false},
+		{"glob_range", `{"**/q":">=1.0.0 <2.0.0"}`, false},
+		{"range_unsatisfied", `{"q":"^2.0.0"}`, true},
+		{"range_undecidable", `{"q":"1.x"}`, true},
+		{"range_or", `{"q":"^1.0.0 || ^2.0.0"}`, true},
+		{"protocol", `{"q":"npm:q@1.0.0"}`, true},
+		{"nested_range", `{"p/q":"^1.0.0"}`, true},
+		{"no_block", `{"r":"^9.0.0"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, q := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ}), qPkg("1.0.0")

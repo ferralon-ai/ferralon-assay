@@ -2775,6 +2775,9 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"a member named like one global on a local of another", "const self = { window: { a: trim } };\nmodule.exports = typeof self.window[process.argv[2]];"},
 		{"a TypeScript namespace import alias of a global name, used in the namespace", "namespace N { import self = Foo.bar; export const x = typeof self[process.argv[2]]; }"},
 		{"a for header's let of a global name, used in the loop body", "for (let self = { a: trim }; process.env.X;) { self[process.argv[2]]; }"},
+		{"an import of a global name after an underscore default import", "import _u, { self } from './util';\ntypeof self[process.argv[2]];"},
+		{"an import of a global name after an underscore named import", "import { _b, self } from './util';\ntypeof self[process.argv[2]];"},
+		{"an underscore-named import renamed to a global name", "import { _self as self } from './util';\ntypeof self[process.argv[2]];"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

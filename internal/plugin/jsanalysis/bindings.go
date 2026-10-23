@@ -134,7 +134,7 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 		mb.imports[b.Local] = b
 	}
 	frames := newThisFrames(clean)
-	globals := newGlobalScope(clean, frames)
+	globals := newGlobalScope(clean, src, frames)
 	ls := newLoaderScope(clean, globals)
 	reqNames, crNames := ls.req, ls.cr
 	maps.Copy(reqNames, extraReq)
@@ -251,7 +251,7 @@ func parseImportForm(clean, src []rune, pos int, mb *moduleBindings, add func(bi
 	if clean[p] == '.' { // import.meta
 		return pos
 	}
-	if clean[p] == '_' { // side-effect import 'x'
+	if clean[p] == '_' && isStrAt(src, p) { // side-effect import 'x', not a default import named _x
 		mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, p)})
 		return p + 1
 	}

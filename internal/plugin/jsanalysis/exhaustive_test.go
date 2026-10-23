@@ -237,6 +237,72 @@ func TestResolveVersions_ExhaustiveLegacyPeerOnlyWorkspace(t *testing.T) {
 	}
 }
 
+// ferralon-ai/tracker#506: an npm v2/v3 project's own peer covers only when the copy it resolves to
+// in the lock (the nearest <dir>/node_modules/<name> from the project up) satisfies its recorded
+// range. The root shape is the lock npm 11.14.1 writes with --legacy-peer-deps for debug 2.6.9
+// plus a root peer ms ^2.1.0: ms stays 2.0.0, and a plain npm install adds ms 2.1.3.
+func TestResolveVersions_ExhaustivePeerSatisfied(t *testing.T) {
+	const toolPkg = `{"name":"tool","version":"1.0.0","dependencies":{"debug":"2.6.9"},"peerDependencies":{"react":"^18.0.0"}}`
+	rootPkg := func(peer string) string {
+		return `{"name":"app","version":"1.0.0","workspaces":["tools"],"dependencies":{"debug":"2.6.9"},"peerDependencies":{` + peer + `}}`
+	}
+	// lock records the root (debug 2.6.9 and rootPeer) and the tools workspace (debug 2.6.9 and
+	// react ^18.0.0), plus the given install-path entries.
+	lock := func(rootPeer string, entries ...string) string {
+		return `{"name":"app","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{
+  "": {"name":"app","version":"1.0.0","workspaces":["tools"],"dependencies":{"debug":"2.6.9"},"peerDependencies":{` + rootPeer + `}},
+  "node_modules/debug": {"version":"2.6.9","dependencies":{"ms":"2.0.0"}},
+  "node_modules/tool": {"resolved":"tools","link":true},
+  "tools": {"name":"tool","version":"1.0.0","dependencies":{"debug":"2.6.9"},"peerDependencies":{"react":"^18.0.0"}},
+  ` + strings.Join(entries, ",\n  ") + `}}`
+	}
+	const (
+		ms200    = `"node_modules/ms": {"version":"2.0.0"}`
+		ms213    = `"node_modules/ms": {"version":"2.1.3"}`
+		react17  = `"node_modules/react": {"version":"17.0.2"}`
+		react18  = `"node_modules/react": {"version":"18.3.1"}`
+		msPeer   = `"ms":"^2.1.0"`
+		toolPeer = `"tool":"^1.0.0"`
+	)
+	tests := []struct {
+		name     string
+		rootPeer string
+		entries  []string
+		want     bool
+	}{
+		{"root peer the lock keeps below its range (--legacy-peer-deps)", msPeer, []string{ms200, react18}, false},
+		{"root peer satisfied", msPeer, []string{ms213, react18}, true},
+		{"workspace peer unsatisfied", msPeer, []string{ms213, react17}, false},
+		{"workspace peer satisfied by its own copy over the root's", msPeer,
+			[]string{ms213, react17, `"tools/node_modules/react": {"version":"18.3.1"}`}, true},
+		{"workspace peer shadowed by its own unsatisfying copy", msPeer,
+			[]string{ms213, react18, `"tools/node_modules/react": {"version":"17.0.2"}`}, false},
+		{"root peer with no copy it resolves to", msPeer,
+			[]string{`"node_modules/debug/node_modules/ms": {"version":"2.1.3"}`, react18}, false},
+		{"root peer range latest", `"ms":"latest"`, []string{ms213, react18}, false},
+		{"root peer git URL", `"ms":"github:vercel/ms"`, []string{ms213, react18}, false},
+		{"root peer on an aliased copy", msPeer, []string{`"node_modules/ms": {"name":"other","version":"2.1.3"}`, react18}, false},
+		{"root peer on a workspace link", msPeer + "," + toolPeer, []string{ms213, react18}, true},
+		{"root peer on a workspace link outside its range", msPeer + `,"tool":"^2.0.0"`, []string{ms213, react18}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{
+				"package.json":       rootPkg(tt.rootPeer),
+				"tools/package.json": toolPkg,
+				"package-lock.json":  lock(tt.rootPeer, tt.entries...),
+			}
+			r := resolveJS(t, writeLockTree(t, files), "absent-package")
+			if r.Found {
+				t.Fatalf("absent-package unexpectedly found")
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
 // B3: a script surface the version veto withholds on may install a package no lock or
 // manifest read here names, so it withholds Exhaustive too; a kept form installs only what a
 // read lock holds and does not.

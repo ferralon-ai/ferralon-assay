@@ -33,10 +33,11 @@ package jsanalysis
 //     cover. Peers are checked by
 //     name: a peer the lock does not install is still expected present at runtime (the host
 //     provides it), so its absence here proves nothing. npm v2/v3 also records each project's own
-//     peer specs, and npm re-resolves a peer whose spec drifted, so there a drifted peer
-//     withholds. A matching peer spec is no proof the locked copy satisfies it (a
-//     --legacy-peer-deps lock records a range it never installed), so a peer alone never makes
-//     a project recorded;
+//     peer specs and installs those peers, replacing a copy outside the range, so there a peer
+//     covers only when its recorded spec matches and the copy it resolves to in the lock (the
+//     nearest <dir>/node_modules/<name> from the project up) satisfies it (rangeSatisfied): a
+//     --legacy-peer-deps lock records a peer range it never installed a copy inside. A peer
+//     alone never makes a project recorded;
 //   - the coordinate is not the name of any package.json under the build dir: a lockfile does
 //     not list the project (or a workspace package) as its own dependency, so its absence from
 //     the lock proves nothing about a first-party advisory;
@@ -52,6 +53,7 @@ package jsanalysis
 import (
 	"encoding/json"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -179,8 +181,8 @@ func governingLocks(dir string, byDir map[string][]lockInfo) (string, []lockInfo
 
 // lockCovers reports whether one lockfile records the project at rel (relative to the lock's
 // directory) with every declared name, and the same spec for each name it installs from, an
-// npm v2/v3 lock's recorded peers included (for a v1 package-lock, a version at the root
-// satisfying it, for every declared field peers included).
+// npm v2/v3 lock's recorded peers included, each with a locked copy satisfying it (for a v1
+// package-lock, a version at the root satisfying it, for every declared field peers included).
 func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]string) bool {
 	for _, deps := range declared {
 		for n := range deps {
@@ -204,7 +206,7 @@ func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]
 		}
 		if l.kind == lockNPM {
 			for n, spec := range declared["peerDependencies"] {
-				if got, ok := l.peers[rel][n]; !ok || got != spec {
+				if got, ok := l.peers[rel][n]; !ok || got != spec || !peerSatisfied(l, rel, n, spec) {
 					return false
 				}
 			}
@@ -233,6 +235,26 @@ func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]
 			}
 		}
 		return true
+	}
+}
+
+// peerSatisfied reports whether the copy an npm v2/v3 project at rel resolves peer name to (the
+// nearest <dir>/node_modules/<name> the lock installs, from rel up to the lock's root) satisfies
+// spec. npm installs the project's own peers and replaces a copy outside the range, and a
+// --legacy-peer-deps lock records the range without installing a copy inside it. No copy, or a
+// version or range rangeSatisfied does not model, is not satisfied.
+func peerSatisfied(l lockInfo, rel, name, spec string) bool {
+	for dir := rel; ; dir = path.Dir(dir) {
+		at := "node_modules/" + name
+		if dir != "." {
+			at = dir + "/" + at
+		}
+		if version, ok := l.installed[at]; ok {
+			return rangeSatisfied(version, spec)
+		}
+		if dir == "." {
+			return false
+		}
 	}
 }
 

@@ -82,8 +82,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all    []plugin.ResolvedDependency
 		parsed = make(map[string]lockInfo, len(locks))
 	)
-	unread, scriptWithheld := unreadSurfaces(req.BuildDir, locks)
-	parseFailed := unread || !copiesRead
+	parseFailed := !copiesRead
 	lockFailed := false // a lock that does not parse; exhaustiveLockSet judges every other surface itself
 	for _, l := range locks {
 		info, ok := parseLockfile(l)
@@ -96,6 +95,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		parsed[l] = info
 		all = append(all, info.deps...)
 	}
+	unread, scriptWithheld := unreadSurfaces(req.BuildDir, parsed)
+	parseFailed = parseFailed || unread
 
 	part := plugin.Complete()
 	switch {
@@ -307,6 +308,10 @@ type lockInfo struct {
 	importers map[string]map[string]map[string]string
 	// descriptors is every "name@range" a yarn.lock entry header lists.
 	descriptors map[string]bool
+	// rootVersions maps each key of a v1 package-lock's top-level "dependencies" (the packages
+	// installed at the root's node_modules, every direct dependency among them) to the version
+	// string it records.
+	rootVersions map[string]string
 }
 
 const (
@@ -318,10 +323,11 @@ const (
 
 func newLockInfo(kind string) lockInfo {
 	return lockInfo{
-		kind:        kind,
-		names:       map[string]bool{},
-		importers:   map[string]map[string]map[string]string{},
-		descriptors: map[string]bool{},
+		kind:         kind,
+		names:        map[string]bool{},
+		importers:    map[string]map[string]map[string]string{},
+		descriptors:  map[string]bool{},
+		rootVersions: map[string]string{},
 	}
 }
 
@@ -456,6 +462,7 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 
 	info := newLockInfo(lockNPMv1)
 	for _, name := range slices.Sorted(maps.Keys(pl.Dependencies)) {
+		info.rootVersions[name] = pl.Dependencies[name].Version
 		collectV1(name, pl.Dependencies[name], &info)
 	}
 	return info, true

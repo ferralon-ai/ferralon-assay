@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,8 +44,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 
 		// Named installs, runners and package managers outside the allowed forms.
 		{"transitive: npm install left-pad", npm(map[string]string{"install.sh": "npm install left-pad\n"}), false, ""},
-		{"bare npm install", npm(map[string]string{"install.sh": "npm install\n"}), false, ""},
-		{"bare npm i", npm(map[string]string{"Makefile": "deps:\n\tnpm i\n"}), false, ""},
+		{"bare npm install, lock covers it", npm(map[string]string{"install.sh": "npm install\n"}), true, ""},
+		{"bare npm i, lock covers it", npm(map[string]string{"Makefile": "deps:\n\tnpm i\n"}), true, ""},
 		{"plain yarn", npm(map[string]string{"install.sh": "yarn\n"}), false, ""},
 		{"yarn install", npm(map[string]string{"install.sh": "yarn install\n"}), false, ""},
 		{"yarn install --immutable", npm(map[string]string{"install.sh": "yarn install --immutable\n"}), false, ""},
@@ -84,9 +85,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"hyphenated runner: npm-run-all", npm(map[string]string{"install.sh": "npm-run-all build\n"}), false, ""},
 
 		// package.json scripts, every value whatever its key.
-		{"script body npm install", npm(map[string]string{"package.json": pkg(`"setup":"npm install"`)}), false, ""},
+		{"script body npm install, lock covers it", npm(map[string]string{"package.json": pkg(`"setup":"npm install"`)}), true, ""},
 		{"prebuild hook runs yarn", npm(map[string]string{"package.json": pkg(`"prebuild":"yarn","build":"tsc"`)}), false, ""},
-		{"nested a to b to npm i", npm(map[string]string{"package.json": pkg(`"a":"npm run b","b":"npm i"`)}), false, ""},
+		{"nested a to b to npm i, lock covers it", npm(map[string]string{"package.json": pkg(`"a":"npm run b","b":"npm i"`)}), true, ""},
 		{"npm test with an installing pretest", npm(map[string]string{"package.json": pkg(`"pretest":"npm install mocha","test":"mocha"`), "install.sh": "npm test\n"}), false, ""},
 		{"postinstall", npm(map[string]string{"package.json": pkg(`"postinstall":"yarn add left-pad"`)}), false, ""},
 
@@ -243,6 +244,71 @@ func TestResolveVersions_ScriptForms(t *testing.T) {
 				}
 			}
 			r := resolveJS(t, dir, "express")
+			if !r.Found {
+				t.Fatalf("express not found: %+v", r.All)
+			}
+			if r.Match.Resolved != tt.want {
+				t.Fatalf("Resolved = %v, want %v (match %+v)", r.Match.Resolved, tt.want, r.Match)
+			}
+		})
+	}
+}
+
+// (c): a bare npm install keeps what its lock records exactly when that lock covers the
+// package.json it installs (lockCovers), so it binds only to the package.json in its package
+// root and the npm locks beside it.
+func TestResolveVersions_BareInstall(t *testing.T) {
+	const (
+		lockV1 = `{"name":"app","lockfileVersion":1,"dependencies":{"express":{"version":"4.19.2"}}}`
+		lockV3 = `{"name":"app","lockfileVersion":3,"packages":{` +
+			`"":{"name":"app","dependencies":{"express":"^4.17.1"}},"node_modules/express":{"version":"4.19.2"}}}`
+		front     = `{"name":"frontend","dependencies":{"react":"^16.13.1"}}`
+		frontLock = `{"name":"frontend","lockfileVersion":1,"dependencies":{"react":{"version":"16.14.0"}}}`
+	)
+	pkg := func(extra string) string {
+		return `{"name":"app","dependencies":{"express":"^4.17.1"},` + extra + `}`
+	}
+	scripts := func(s string) string { return pkg(`"scripts":{` + s + `}`) }
+	tree := func(rootPkg, rootLock string, extra map[string]string) map[string]string {
+		files := map[string]string{"package.json": rootPkg, "package-lock.json": rootLock, "frontend/package.json": front, "frontend/package-lock.json": frontLock}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"covered v1 lock", tree(scripts(`"build":"npm install"`), lockV1, nil), true},
+		{"covered v3 lock", tree(scripts(`"build":"npm install"`), lockV3, nil), true},
+		{"covered, npm i --omit=dev", tree(scripts(`"build":"npm i --omit=dev"`), lockV1, nil), true},
+		{"covered, after cd", tree(scripts(`"build":"cd frontend && npm install"`), lockV1, nil), true},
+		{"covered, kept assignment and --prefix", tree(scripts(`"heroku-postbuild":"NPM_CONFIG_PRODUCTION=false npm install --prefix frontend && npm run build --prefix frontend"`), lockV1,
+			map[string]string{"frontend/package.json": `{"name":"frontend","dependencies":{"react":"^16.13.1"},"scripts":{"build":"react-scripts build"}}`}), true},
+		{"uncovered v1 lock: version outside the range", tree(scripts(`"build":"npm install"`), strings.Replace(lockV1, "4.19.2", "5.0.0", 1), nil), false},
+		{"uncovered v3 lock: spec drift", tree(pkg(`"scripts":{"build":"npm install"}`), strings.Replace(lockV3, `"^4.17.1"`, `"^4.16.0"`, 1), nil), false},
+		{"uncovered, --prefix: frontend lock outside the range", tree(scripts(`"build":"npm install --prefix frontend"`), lockV1,
+			map[string]string{"frontend/package-lock.json": strings.Replace(frontLock, "16.14.0", "17.0.2", 1)}), false},
+		{"uncovered shrinkwrap beside a covering lock", tree(scripts(`"build":"npm install"`), lockV1,
+			map[string]string{"npm-shrinkwrap.json": strings.Replace(lockV1, "4.19.2", "5.0.0", 1)}), false},
+		{"no lock beside the package.json", tree(scripts(`"build":"npm install --prefix frontend"`), lockV1,
+			map[string]string{"frontend/package-lock.json": "", "frontend/yarn.lock": "# yarn lockfile v1\n\nreact@^16.13.1:\n  version \"16.14.0\"\n"}), false},
+		{"named package", tree(scripts(`"build":"npm install left-pad"`), lockV1, nil), false},
+		{"unknown flag", tree(scripts(`"build":"npm install --legacy-peer-deps"`), lockV1, nil), false},
+		{"workspaces root", tree(pkg(`"workspaces":["frontend"],"scripts":{"build":"npm install"}`), lockV1, nil), false},
+		{"workspace member under a workspaces root", tree(pkg(`"workspaces":["frontend"],"scripts":{"build":"npm install --prefix frontend"}`), lockV1, nil), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{}
+			for k, v := range tt.files {
+				if v != "" {
+					files[k] = v
+				}
+			}
+			r := resolveJS(t, writeLockTree(t, files), "express")
 			if !r.Found {
 				t.Fatalf("express not found: %+v", r.All)
 			}

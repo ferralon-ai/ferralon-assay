@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel/inteltest"
 )
 
 // attributionSignals is a signals 1.x fixture shaped like the corpus's real file, which keys records
@@ -72,7 +73,7 @@ func tableClaims() *intel.Claims {
 //   - an entry keyed by a CVE takes only the record under its own id — never a roll-up reached
 //     through an alias, which may be a sibling CVE's.
 func TestKEVAttributionFollowsListedCVE(t *testing.T) {
-	sig, err := intel.Parse(strings.NewReader(attributionSignals))
+	sig, err := intel.Parse(inteltest.Sealed(t, attributionSignals))
 	if err != nil {
 		t.Fatal(err)
 	}

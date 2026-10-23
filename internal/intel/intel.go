@@ -9,7 +9,13 @@
 // came from (as_of), and a KEV observation only with the catalog it was read from (catalog_version,
 // date_released); there is no file-wide "as of" date. This package keeps each stamp attached to its
 // value, and rejects a file that breaks that contract instead of loading part of it: a malformed
-// file is an error, never a silent degrade to fewer signals.
+// file is an error, never a silent degrade to fewer signals. Load and Parse also recompute the
+// file's signals_digest from its payload and refuse a file whose stated digest does not match, so
+// the digest a report names is one this scan verified, not one the file merely asserts. They also
+// refuse every key the digest cannot see: the digest hashes each object's exact keys, while the
+// loader matches keys to fields under case folding and keeps the last of a repeated key. So a case
+// variant of a known field ("Score" for "score"), two keys equal under case folding, and an exact
+// duplicate key are each an error, at any depth, and every value loaded is one the digest covered.
 //
 // It is ranking context only. Nothing that decides a verdict reads it (inv. 5).
 //
@@ -70,8 +76,8 @@ type KEV struct {
 type Signals struct {
 	// Version is the file's signals_version (1.x).
 	Version string
-	// Digest is the file's signals_digest, as the producer wrote it. It pins the payload; it is not
-	// recomputed here (the Action verifies the release asset's sha256 before the scan).
+	// Digest is the file's signals_digest, which pins the payload. Load and Parse set it only after
+	// recomputing it from the payload and finding the file's own value equal.
 	Digest string
 	// GeneratedAt is when the producer wrote the file. It is NOT the freshness of any value.
 	GeneratedAt string
@@ -89,23 +95,38 @@ var supportedVersion = regexp.MustCompile(`^1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$
 // digestPattern is the shape of a signals_digest.
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// Load reads and validates the signals file at path. Plain JSON and gzip-compressed JSON are both
-// accepted, told apart by content rather than by name.
+// Load reads and validates the signals file at path, and verifies its signals_digest: a file whose
+// stated digest is not the digest of its payload is refused, never loaded in part or in place of
+// another source. Plain JSON and gzip-compressed JSON are both accepted, told apart by content
+// rather than by name.
 func Load(path string) (*Signals, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("signals file: %w", err)
 	}
 	defer f.Close()
-	s, err := Parse(f)
+	s, err := parse(f, true)
 	if err != nil {
 		return nil, fmt.Errorf("signals file %s: %w", path, err)
 	}
 	return s, nil
 }
 
-// Parse reads and validates a signals document from r, which may be gzip-compressed.
+// Parse reads and validates a signals document from r, which may be gzip-compressed, and verifies
+// its signals_digest as Load does: a document whose stated digest is not the digest of its payload
+// is refused.
 func Parse(r io.Reader) (*Signals, error) {
+	return parse(r, true)
+}
+
+// parse is Parse. With verify false it checks everything but signals_digest, which only this
+// package's own tests of those other checks ask for; nothing outside the package can.
+//
+// The digest is taken over the records as the file holds them, and the values are loaded from the
+// same records, one record at a time: each is decoded once generically (the digest's view) and
+// once into wireRecord (the loader's), and a record whose keys the two would read differently is
+// refused (decodeChecked), so no value loads that the digest did not cover.
+func parse(r io.Reader, verify bool) (*Signals, error) {
 	br := bufio.NewReader(r)
 	if magic, _ := br.Peek(2); bytes.Equal(magic, []byte{0x1f, 0x8b}) {
 		gz, err := gzip.NewReader(br)
@@ -118,76 +139,97 @@ func Parse(r io.Reader) (*Signals, error) {
 		r = br
 	}
 
-	// Every top-level field is decoded raw first, so a document from another major version is
-	// refused for its version rather than for whatever shape the rest of it has.
-	var env struct {
-		SignalsVersion json.RawMessage `json:"signals_version"`
-		GeneratedAt    json.RawMessage `json:"generated_at"`
-		RecordCount    json.RawMessage `json:"record_count"`
-		SignalsDigest  json.RawMessage `json:"signals_digest"`
-		Records        json.RawMessage `json:"records"`
-	}
-	// Read to the end before decoding: that is what makes gzip verify its checksum, and Unmarshal
-	// (unlike a stream decoder) refuses anything after the document — a damaged file errors.
-	body, err := io.ReadAll(r)
+	// readEnvelope reads to the end of the stream, which is what makes gzip verify its checksum, and
+	// refuses anything after the document: a damaged file errors. Every top-level field is kept raw
+	// first, so a document from another major version is refused for its version rather than for
+	// whatever shape the rest of it has.
+	env, err := readEnvelope(json.NewDecoder(r))
 	if err != nil {
-		return nil, fmt.Errorf("read: %w", err)
-	}
-	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("not a signals document: %w", err)
 	}
 	var version string
-	if env.SignalsVersion == nil {
+	if env.signalsVersion != nil {
+		if err := json.Unmarshal(env.signalsVersion, &version); err != nil {
+			return nil, fmt.Errorf("signals_version is not a string: %w", err)
+		}
+		if !supportedVersion.MatchString(version) {
+			return nil, fmt.Errorf("unsupported signals_version %q: this scanner reads signals_version 1.x", version)
+		}
+	}
+	if env.keyErr != nil {
+		return nil, env.keyErr
+	}
+	if env.signalsVersion == nil {
 		return nil, fmt.Errorf("signals_version is missing")
-	}
-	if err := json.Unmarshal(env.SignalsVersion, &version); err != nil {
-		return nil, fmt.Errorf("signals_version is not a string: %w", err)
-	}
-	if !supportedVersion.MatchString(version) {
-		return nil, fmt.Errorf("unsupported signals_version %q: this scanner reads signals_version 1.x", version)
 	}
 
 	var (
 		generatedAt, digest string
 		count               int
-		records             []wireRecord
 	)
-	if env.GeneratedAt != nil {
-		if err := json.Unmarshal(env.GeneratedAt, &generatedAt); err != nil {
+	if env.generatedAt != nil {
+		if err := json.Unmarshal(env.generatedAt, &generatedAt); err != nil {
 			return nil, fmt.Errorf("generated_at: %w", err)
 		}
 	}
-	if err := json.Unmarshal(env.SignalsDigest, &digest); env.SignalsDigest == nil || err != nil || !digestPattern.MatchString(digest) {
-		return nil, fmt.Errorf("signals_digest %s is not a sha256 digest (sha256:<64 hex>)", orMissing(env.SignalsDigest))
+	if err := json.Unmarshal(env.signalsDigest, &digest); env.signalsDigest == nil || err != nil || !digestPattern.MatchString(digest) {
+		return nil, fmt.Errorf("signals_digest %s is not a sha256 digest (sha256:<64 hex>)", orMissing(env.signalsDigest))
 	}
-	if env.RecordCount == nil {
+	if env.recordCount == nil {
 		return nil, fmt.Errorf("record_count is missing")
 	}
-	if err := json.Unmarshal(env.RecordCount, &count); err != nil {
+	if err := json.Unmarshal(env.recordCount, &count); err != nil {
 		return nil, fmt.Errorf("record_count: %w", err)
 	}
-	if env.Records == nil || bytes.Equal(env.Records, []byte("null")) {
+	switch env.records {
+	case recordsMissing:
 		return nil, fmt.Errorf("records is missing")
+	case recordsNotArray:
+		return nil, fmt.Errorf("records is not an array")
 	}
-	if err := json.Unmarshal(env.Records, &records); err != nil {
-		return nil, fmt.Errorf("records: %w", err)
-	}
-	if count != len(records) {
-		return nil, fmt.Errorf("record_count is %d but the file holds %d records", count, len(records))
+	if count != len(env.recordValues) {
+		return nil, fmt.Errorf("record_count is %d but the file holds %d records", count, len(env.recordValues))
 	}
 
 	s := &Signals{
 		Version:     version,
 		Digest:      digest,
 		GeneratedAt: generatedAt,
-		records:     len(records),
+		records:     count,
 		epss:        make(map[string]EPSS),
 		kev:         make(map[string]KEV),
 	}
-	seen := make(map[string]struct{}, len(records))
-	for i, rec := range records {
+	var hash *payloadHash
+	if verify {
+		hash = newPayloadHash(count)
+	}
+	seen := make(map[string]struct{}, count)
+	for i, raw := range env.recordValues {
+		v, err := decodeChecked(raw, recordFields)
+		if err != nil {
+			return nil, fmt.Errorf("records[%d] (%s): %w", i, recordName(raw), err)
+		}
+		var rec wireRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return nil, fmt.Errorf("records[%d]: %w", i, err)
+		}
 		if err := s.add(rec, seen); err != nil {
 			return nil, fmt.Errorf("records[%d]: %w", i, err)
+		}
+		if hash != nil {
+			if err := hash.record(v); err != nil {
+				return nil, fmt.Errorf("records[%d]: canonicalize: %w", i, err)
+			}
+		}
+		env.recordValues[i] = nil // loaded and hashed: nothing reads it again
+	}
+	if hash != nil {
+		got, err := hash.sum(version)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize the signals payload: %w", err)
+		}
+		if got != digest {
+			return nil, fmt.Errorf("signals_digest mismatch: the file states %s but its payload hashes to %s; refusing it", shortDigest(digest), shortDigest(got))
 		}
 	}
 	return s, nil
@@ -265,6 +307,14 @@ func (s *Signals) add(rec wireRecord, seen map[string]struct{}) error {
 		s.kev[id] = v
 	}
 	return nil
+}
+
+// shortDigest is a digest's short form for a message: the algorithm and the first 12 hex digits.
+func shortDigest(d string) string {
+	if len(d) > len("sha256:")+12 {
+		return d[:len("sha256:")+12] + "…"
+	}
+	return d
 }
 
 // orMissing renders a raw JSON value for an error message, or "missing" when it is absent.
@@ -345,10 +395,10 @@ func (s *Signals) has(id string) bool {
 }
 
 // Claims indexes the advisories of one run by every identifier they name — each advisory's id and
-// each of its aliases — so that Attribute never takes the record of an alias some OTHER advisory also names. A
-// run's claims are its work set: every advisory the run was asked about, by its id and the aliases
-// its record lists, and every row its report holds, fresh or inherited. The zero value is empty and
-// ready to use; a nil *Claims names nothing.
+// each of its aliases — so that Attribute never takes the record of an alias some OTHER advisory
+// also names. A run's claims are its work set: every advisory the run was asked about, by its id
+// and the aliases its record lists, and every row its report holds, fresh or inherited. The zero
+// value is empty and ready to use; a nil *Claims names nothing.
 type Claims struct {
 	by map[string]map[string]struct{} // identifier → the ids of the advisories naming it
 }

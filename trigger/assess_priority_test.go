@@ -2,11 +2,11 @@ package trigger
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel/inteltest"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
@@ -17,7 +17,7 @@ import (
 // is KEV-listed with EPSS, and CVE-2024-55947 carries a stamped not-listed KEV observation.
 func prioritySignals(t *testing.T) *intel.Signals {
 	t.Helper()
-	s, err := intel.Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 3,
+	s, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 3,
 	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	  "records": [
 	    {"identifier": "CVE-2021-38561", "epss": {"score": 0.0123, "percentile": 0.456, "as_of": "2026-10-18"}},
@@ -66,7 +66,7 @@ func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
 // advisory's own record, and for a GHSA advisory attributed through its one CVE alias. A record with
 // no percentile stays unsourced at every step.
 func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
-	sig, err := intel.Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 3,
+	sig, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 3,
 	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	  "records": [
 	    {"identifier": "CVE-2026-50268", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
@@ -163,7 +163,7 @@ func TestPriorityForNoSignalIsNil(t *testing.T) {
 // KEV-listed CVE-2023-44487, and the file has no record of CVE-2023-39325's own. The CVE-keyed
 // advisory gets no priority from the GO roll-up, never its sibling's KEV listing.
 func TestPriorityForRefusesSiblingThroughGOAlias(t *testing.T) {
-	sig, err := intel.Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 2,
+	sig, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 2,
 	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	  "records": [
 	    {"identifier": "CVE-2023-44487", "epss": {"score": 0.99999, "percentile": 0.99997, "as_of": "2026-08-11"},

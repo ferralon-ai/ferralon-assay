@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,11 @@ import (
 	"time"
 )
 
-const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+// testDigest is validDoc's signals_digest, computed by the producer's rule (ferralon-ai/intel
+// corpus.CanonicalJSON over signals_version, record_count and records), so Load and Parse verify
+// it. The other documents here carry it too, and the tests that read them parse them with
+// parseUnverified.
+const testDigest = "sha256:0aaac15ef7792202e9932ea1c08d160eda5e3edfc997157759c9702518a99ec1"
 
 // validDoc is a hand-written signals 1.x document: an EPSS-only record, a listed KEV record with an
 // EPSS value, a stamped not-listed KEV record, and a GHSA-keyed record. Values are illustrative.
@@ -30,6 +35,12 @@ const validDoc = `{
     {"identifier": "GHSA-aaaa-bbbb-cccc", "epss": {"score": 0.2, "as_of": "2026-10-01"}}
   ]
 }`
+
+// parseUnverified parses a signals document as Parse does but leaves its signals_digest unchecked,
+// for a test of what else Parse checks or loads.
+func parseUnverified(r io.Reader) (*Signals, error) {
+	return parse(r, false)
+}
 
 func writeFixture(t *testing.T, name string, body []byte) string {
 	t.Helper()
@@ -176,7 +187,7 @@ const attributionDoc = `{"signals_version": "1.0.0", "record_count": 13, "signal
 // an alias for a CVE-keyed advisory; otherwise a CVE alias with a record that no other advisory of
 // the run names, and nothing when any two of its CVE aliases' records disagree — claimed or not.
 func TestAttribute(t *testing.T) {
-	s, err := Parse(strings.NewReader(attributionDoc))
+	s, err := Parse(strings.NewReader(sealed(t, attributionDoc)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +294,7 @@ func TestStaleEPSS(t *testing.T) {
 // TestEPSSPercentileZeroIsSourced: a sourced percentile of 0 (CVE-2026-50268's real record) loads as
 // sourced, told apart from a record that carries no percentile.
 func TestEPSSPercentileZeroIsSourced(t *testing.T) {
-	s, err := Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 2, "signals_digest": "` + testDigest + `",
+	s, err := parseUnverified(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 2, "signals_digest": "` + testDigest + `",
 	  "records": [
 	    {"identifier": "CVE-2026-50268", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
 	    {"identifier": "GHSA-pppp-qqqq-rrrr", "epss": {"score": 0.00047, "as_of": "2026-08-02"}}]}`))
@@ -304,7 +315,7 @@ func TestEPSSPercentileZeroIsSourced(t *testing.T) {
 func TestParseRejectsUnsupportedVersion(t *testing.T) {
 	for _, v := range []string{`"2.0.0"`, `"0.9.0"`, `"1"`, `"1.0"`, `"v1.0.0"`, `""`, `1`} {
 		doc := strings.Replace(validDoc, `"1.0.0"`, v, 1)
-		_, err := Parse(strings.NewReader(doc))
+		_, err := parseUnverified(strings.NewReader(doc))
 		if err == nil {
 			t.Errorf("signals_version %s loaded; want it rejected", v)
 			continue
@@ -314,14 +325,14 @@ func TestParseRejectsUnsupportedVersion(t *testing.T) {
 		}
 	}
 	// A 2.x document is refused for its version even when the rest of it has another shape.
-	_, err := Parse(strings.NewReader(`{"signals_version": "2.0.0", "records": {"CVE-1": {}}}`))
+	_, err := parseUnverified(strings.NewReader(`{"signals_version": "2.0.0", "records": {"CVE-1": {}}}`))
 	if err == nil || !strings.Contains(err.Error(), `unsupported signals_version "2.0.0"`) {
 		t.Errorf("2.x document: err = %v, want an unsupported-version error", err)
 	}
-	if _, err := Parse(strings.NewReader(`{"records": []}`)); err == nil || !strings.Contains(err.Error(), "signals_version is missing") {
+	if _, err := parseUnverified(strings.NewReader(`{"records": []}`)); err == nil || !strings.Contains(err.Error(), "signals_version is missing") {
 		t.Errorf("missing version: err = %v", err)
 	}
-	if _, err := Parse(strings.NewReader(strings.Replace(validDoc, `"1.0.0"`, `"1.4.2"`, 1))); err != nil {
+	if _, err := parseUnverified(strings.NewReader(strings.Replace(validDoc, `"1.0.0"`, `"1.4.2"`, 1))); err != nil {
 		t.Errorf("signals_version 1.4.2 must load: %v", err)
 	}
 }
@@ -359,7 +370,7 @@ func TestParseRejectsMalformed(t *testing.T) {
 		"kev listed wrong type": rec(`{"identifier": "CVE-1", "kev": {"listed": "yes", "catalog_version": "2026.10.01", "date_released": "2026-10-01T00:00:00Z"}}`),
 	}
 	for name, doc := range cases {
-		if s, err := Parse(strings.NewReader(doc)); err == nil {
+		if s, err := parseUnverified(strings.NewReader(doc)); err == nil {
 			t.Errorf("%s: loaded %d records; want an error", name, s.Records())
 		}
 	}

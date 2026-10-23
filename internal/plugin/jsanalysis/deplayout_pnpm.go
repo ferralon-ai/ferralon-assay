@@ -33,7 +33,9 @@ var pnpmManifestKeys = map[string]bool{
 }
 
 // pnpmWorkspaceKeys are the pnpm-workspace.yaml settings the lane accepts. Linker and hoist
-// settings are among them: the phantom rule holds under every one of them.
+// settings are among them: a phantom's candidates are every copy the region pins plus whatever
+// Node's walk finds above the region, which covers every hoist outcome. virtualStoreDir and
+// modulesDir are accepted only inside the region's node_modules (inRegionModules).
 var pnpmWorkspaceKeys = map[string]bool{
 	"packages": true, "catalog": true, "catalogs": true, "savePrefix": true, "updateNotifier": true,
 	"ignoreScripts": true, "minimumReleaseAge": true, "verifyDepsBeforeRun": true,
@@ -44,6 +46,19 @@ var pnpmWorkspaceKeys = map[string]bool{
 	"packageImportMethod": true, "dedupePeerDependents": true, "autoInstallPeers": true,
 	"resolvePeersFromWorkspaceRoot": true, "dedupeDirectDeps": true, "overrides": true,
 	"patchedDependencies": true,
+}
+
+// inRegionModules reports whether a virtualStoreDir or modulesDir setting keeps every directory
+// Node's walk passes, from a stored package up to the region root, inside the region's own
+// node_modules, which holds only copies the lock pins. A store elsewhere would put the walk
+// through directories the lane does not model.
+func inRegionModules(key, v string) bool {
+	v = strings.Trim(strings.TrimSpace(v), `"'`)
+	if key == "modulesDir" || key == "modules-dir" {
+		return v == "node_modules"
+	}
+	c := path.Clean(v)
+	return !strings.Contains(v, `\`) && !path.IsAbs(c) && strings.HasPrefix(c, "node_modules/")
 }
 
 // maxPatchBytes caps one patch file read.
@@ -380,8 +395,11 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		return nil, false
 	}
 	for _, line := range strings.Split(string(rc), "\n") {
-		k, _, _ := strings.Cut(strings.TrimSpace(line), "=")
+		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
 		if k = strings.TrimSpace(k); k == "pnpmfile" || k == "global-pnpmfile" {
+			return nil, false
+		}
+		if (k == "virtual-store-dir" || k == "modules-dir") && !inRegionModules(k, v) {
 			return nil, false
 		}
 	}
@@ -432,6 +450,9 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		}
 		for _, k := range y.keys {
 			if !pnpmWorkspaceKeys[k] {
+				return nil, false
+			}
+			if (k == "virtualStoreDir" || k == "modulesDir") && !inRegionModules(k, y.child(k).val) {
 				return nil, false
 			}
 		}
@@ -564,13 +585,14 @@ func exactVersion(v string) bool {
 
 // patchScoped reports whether a unified diff only edits existing files whose change the lane
 // can bound to the patched package: false for one that touches package.json, binding.gyp or a
-// compiled addon (install behaviour), creates, deletes, renames or copies a file, carries a
-// binary hunk, or does not parse.
+// compiled addon (install behaviour), names an absolute path, creates, deletes, renames or copies
+// a file, changes a file's mode, carries a binary hunk, or does not parse.
 func patchScoped(data []byte) bool {
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
 	touches := func(p string) bool {
 		base := path.Base(p)
-		return base == "package.json" || base == "binding.gyp" || strings.HasSuffix(p, ".node") ||
+		return base == "package.json" || base == "binding.gyp" ||
+			strings.HasSuffix(strings.ToLower(p), ".node") || strings.HasPrefix(p, "/") ||
 			slices.Contains(strings.Split(p, "/"), "..")
 	}
 	headerPath := func(s, side string) (string, bool) {
@@ -596,6 +618,7 @@ func patchScoped(data []byte) bool {
 			}
 		case strings.HasPrefix(line, "new file mode"), strings.HasPrefix(line, "deleted file mode"),
 			strings.HasPrefix(line, "rename "), strings.HasPrefix(line, "copy "),
+			strings.HasPrefix(line, "old mode"), strings.HasPrefix(line, "new mode"),
 			strings.HasPrefix(line, "GIT binary patch"), strings.HasPrefix(line, "Binary files"):
 			return false
 		case strings.HasPrefix(line, "--- "):

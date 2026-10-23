@@ -19,11 +19,16 @@ import (
 //  2. a load of a name the requirer's tarball bundles (node_modules/<name>/ inside it) resolves to
 //     nothing: the bundled copy is unread;
 //  3. a package loading its own name resolves to itself;
-//  4. any other (phantom) load resolves to the one copy the region pins, or, with several, to
-//     none of them: the load site's limit, bounded by the name, covers whichever copy runs.
+//  4. any other (phantom) load may find any copy the region pins (one pnpm or yarn hoisted) or,
+//     when none is hoisted where the requirer's walk passes, whatever Node's walk finds above the
+//     region's root. Its candidates are the union of both: one candidate resolves to it, several
+//     resolve to none, and the load site's limit targets every candidate.
 //
-// The phantom rule over-approximates every hoist setting: a load that pnpm or yarn did not in
-// fact make loadable gains an edge it would not have at run time, and never loses one.
+// The phantom rule over-approximates every hoist and linker setting: whatever copy the load runs
+// is a candidate, so a load either gains an edge or is bounded by a limit, and is never silently
+// resolved to the wrong copy. This rests on every directory the walk passes inside the region
+// holding only copies the lock pins, so a virtual store or modules directory outside the region's
+// node_modules leaves the layout incomplete.
 //
 // Placed entries carry synthetic install paths (<root>/node_modules/.pnpm/<key>/node_modules/
 // <name>, <root>/node_modules/.yarn-classic/<name>@<version>/node_modules/<name>). They are
@@ -130,36 +135,32 @@ func (l *depLayout) regionAt(dir string) *depRegion {
 	return best
 }
 
-// resolve answers a load of name from the build-relative directory dir inside r. found is false
-// only for a phantom load of a name r pins no copy of: Node's walk then continues above r.
-func (r *depRegion) resolve(dir, name string) (e *depEntry, found bool) {
+// resolve answers a load of name from the build-relative directory dir inside r. decided is true
+// when the lock fixes the answer: a declared edge, a name the requirer bundles (nil: the bundled
+// copy is unread) or the requirer's own name. Otherwise the load is a phantom and copies lists
+// every copy r pins of name. Whichever one pnpm or yarn made loadable, if any, is among them, but
+// with none hoisted Node's walk climbs out of r, so the caller adds what the walk finds above it.
+func (r *depRegion) resolve(dir, name string) (e *depEntry, copies []*depEntry, decided bool) {
 	if ip := installPathOf(dir + "/_"); ip != "" {
 		req := r.byPath[ip]
 		if req == nil {
-			return nil, true
+			return nil, nil, true
 		}
 		if t, ok := req.deps[name]; ok {
-			return t, true
+			return t, nil, true
 		}
 		if req.bundles[name] {
-			return nil, true
+			return nil, nil, true
 		}
 		if installedName(req.path) == name {
-			return req, true
+			return req, nil, true
 		}
 	} else if imp := r.importerAt(dir); imp != nil {
 		if t, ok := imp.deps[name]; ok {
-			return t, true
+			return t, nil, true
 		}
 	}
-	switch c := r.copies[name]; len(c) {
-	case 0:
-		return nil, false
-	case 1:
-		return c[0], true
-	default:
-		return nil, true
-	}
+	return nil, r.copies[name], false
 }
 
 // importerAt returns the importer whose directory is the longest prefix of dir.

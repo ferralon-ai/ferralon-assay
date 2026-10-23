@@ -315,14 +315,28 @@ func installedName(installPath string) string {
 	return name
 }
 
-// lookup resolves package name loaded from the build-relative directory fromDir. Outside a
-// semantic region it runs Node's node_modules walk: each ancestor not itself named node_modules
-// is probed for node_modules/<name>, up to the build root. Inside one the region answers from
-// the lock's edges; a phantom load of a name the region pins no copy of continues the walk above
-// the region's root. A load the region can only bound by several copies resolves to nothing.
+// lookup resolves package name loaded from the build-relative directory fromDir: the one copy
+// Node's walk can find, or nil when it finds none or the layout leaves several candidates.
 func (l *depLayout) lookup(fromDir, name string) *depEntry {
+	e, _ := l.walk(fromDir, name)
+	return e
+}
+
+// lookupCandidates returns the copies a load lookup leaves unresolved could run: empty when the
+// walk finds no copy at all.
+func (l *depLayout) lookupCandidates(fromDir, name string) []*depEntry {
+	_, c := l.walk(fromDir, name)
+	return c
+}
+
+// walk runs Node's node_modules walk for name from fromDir. Outside a semantic region each
+// ancestor not itself named node_modules is probed for node_modules/<name>, up to the build root.
+// Inside one the region answers a declared load from the lock's edges; a phantom's candidates are
+// the region's copies of name plus whatever the walk finds above the region's root. It returns the
+// single entry found, else nil and every candidate (none: no copy on the walk's path).
+func (l *depLayout) walk(fromDir, name string) (*depEntry, []*depEntry) {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
-		return nil
+		return nil, nil
 	}
 	dir := fromDir
 	if dir == "." {
@@ -336,22 +350,34 @@ func (l *depLayout) lookup(fromDir, name string) *depEntry {
 	}
 	for {
 		if r := l.regionAt(dir); r != nil && r.semantic {
-			if e, found := r.resolve(dir, name); found {
-				return e
+			e, copies, decided := r.resolve(dir, name)
+			if decided {
+				return e, nil
 			}
-			if r.prefix == "" {
-				return nil
+			cands := slices.Clone(copies)
+			if r.prefix != "" {
+				oe, outer := l.walk(parent(r.prefix), name)
+				if oe != nil {
+					outer = []*depEntry{oe}
+				}
+				for _, c := range outer {
+					if !slices.Contains(cands, c) {
+						cands = append(cands, c)
+					}
+				}
 			}
-			dir = parent(r.prefix)
-			continue
+			if len(cands) == 1 {
+				return cands[0], nil
+			}
+			return nil, cands
 		}
 		if path.Base(dir) != "node_modules" {
 			if e := l.byPath[path.Join(dir, "node_modules", name)]; e != nil {
-				return e
+				return e, nil
 			}
 		}
 		if dir == "" {
-			return nil
+			return nil, nil
 		}
 		dir = parent(dir)
 	}

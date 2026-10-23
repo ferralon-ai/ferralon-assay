@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -316,7 +317,12 @@ func TestSemantic_P3PnpmWorkspace(t *testing.T) {
 // pnpmRunWide asserts a pnpm fixture with the lock edited by edit and extra files withholds.
 func pnpmVariant(t *testing.T, edit func(string) string, files map[string]string) plugin.CallGraphResult {
 	t.Helper()
-	q := qPkg("1.0.0")
+	return pnpmVariantQ(t, qPkg("1.0.0"), edit, files)
+}
+
+// pnpmVariantQ is pnpmVariant with q's tarball as given.
+func pnpmVariantQ(t *testing.T, q *semPkg, edit func(string) string, files map[string]string) plugin.CallGraphResult {
+	t.Helper()
 	p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
 	lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}}, p, q)
 	if edit != nil {
@@ -535,7 +541,7 @@ const patchHead = "diff --git a/lib/x.js b/lib/x.js\nindex 1111111..2222222 1006
 // TestSemantic_G8PnpmPatched: a patch that edits existing code limits its package alone and
 // keeps its code unread; every trigger withholds.
 func TestSemantic_G8PnpmPatched(t *testing.T) {
-	patched := func(patch string, cfgKey string, lockKey string) plugin.CallGraphResult {
+	patchedQ := func(q *semPkg, patch string, cfgKey string, lockKey string) plugin.CallGraphResult {
 		edit := func(s string) string {
 			s = strings.Replace(s, "importers:", "patchedDependencies:\n  "+yq(lockKey)+":\n    hash: abc\n    path: patches/q.patch\n\nimporters:", 1)
 			return strings.Replace(s, "\n  'q@1.0.0': {}", "\n  'q@1.0.0(patch_hash=abc)': {}", 1)
@@ -546,10 +552,13 @@ func TestSemantic_G8PnpmPatched(t *testing.T) {
 		if patch != "" {
 			files["patches/q.patch"] = patch
 		}
-		return pnpmVariant(t, func(s string) string {
+		return pnpmVariantQ(t, q, func(s string) string {
 			s = edit(s)
 			return strings.Replace(s, "'q': '1.0.0'", "'q': '1.0.0(patch_hash=abc)'", 1)
 		}, files)
+	}
+	patched := func(patch string, cfgKey string, lockKey string) plugin.CallGraphResult {
+		return patchedQ(qPkg("1.0.0"), patch, cfgKey, lockKey)
 	}
 	cg := patched(patchHead, "q@1.0.0", "q@1.0.0")
 	if runWide(cg) || reaches(cg, "q", "1.0.0") || !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, makePURL("q", "1.0.0")) {
@@ -559,6 +568,9 @@ func TestSemantic_G8PnpmPatched(t *testing.T) {
 		"package_json":    {strings.ReplaceAll(patchHead, "lib/x.js", "package.json"), "q@1.0.0", "q@1.0.0"},
 		"binding_gyp":     {strings.ReplaceAll(patchHead, "lib/x.js", "binding.gyp"), "q@1.0.0", "q@1.0.0"},
 		"addon":           {strings.ReplaceAll(patchHead, "lib/x.js", "build/q.node"), "q@1.0.0", "q@1.0.0"},
+		"addon_upper":     {strings.ReplaceAll(patchHead, "lib/x.js", "build/q.NODE"), "q@1.0.0", "q@1.0.0"},
+		"mode_change":     {strings.Replace(patchHead, "index 1111111..2222222 100644\n", "old mode 100644\nnew mode 100755\nindex 1111111..2222222\n", 1), "q@1.0.0", "q@1.0.0"},
+		"absolute_path":   {"--- /lib/x.js\n+++ /lib/x.js\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n", "q@1.0.0", "q@1.0.0"},
 		"new_file":        {"diff --git a/lib/y.js b/lib/y.js\nnew file mode 100644\n--- /dev/null\n+++ b/lib/y.js\n@@ -0,0 +1 @@\n+x\n", "q@1.0.0", "q@1.0.0"},
 		"deleted_file":    {"diff --git a/lib/x.js b/lib/x.js\ndeleted file mode 100644\n--- a/lib/x.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n", "q@1.0.0", "q@1.0.0"},
 		"unparseable":     {"this is not a diff\n", "q@1.0.0", "q@1.0.0"},
@@ -572,6 +584,22 @@ func TestSemantic_G8PnpmPatched(t *testing.T) {
 			}
 		})
 	}
+	t.Run("patched_bundled", func(t *testing.T) {
+		q := sp("q", "1.0.0", nil, map[string]string{"index.js": qGo,
+			"node_modules/z/package.json": `{"name":"z","version":"1.0.0","scripts":{"postinstall":"x"}}`})
+		if cg := patchedQ(q, patchHead, "q@1.0.0", "q@1.0.0"); !runWide(cg) {
+			t.Errorf("a patched package's bundled install script still runs unseen; got %+v", cg.Partiality)
+		}
+	})
+	t.Run("patch_hash_without_config", func(t *testing.T) {
+		cg := pnpmVariant(t, func(s string) string {
+			s = strings.Replace(s, "\n  'q@1.0.0': {}", "\n  'q@1.0.0(patch_hash=abc)': {}", 1)
+			return strings.Replace(s, "'q': '1.0.0'", "'q': '1.0.0(patch_hash=abc)'", 1)
+		}, nil)
+		if !runWide(cg) {
+			t.Errorf("a patch_hash key no patchedDependencies accounts for withholds; got %+v", cg.Partiality)
+		}
+	})
 }
 
 // TestSemantic_G9PnpmConfigHazards: a pnpmfile, package extensions and overrides the lock does
@@ -773,6 +801,12 @@ func TestSemantic_G14YarnSha1Fragment(t *testing.T) {
 	if cg := semRun(t, semProgram(t, yarnLockFile, yarnLockText(t, p, q), nil), semStore(t, p, q)); reaches(cg, "q", "1.0.0") || !runWide(cg) {
 		t.Errorf("a git commit is not a digest; got %+v", cg.Partiality)
 	}
+	q = qPkg("1.0.0")
+	q.integrity = "-"
+	q.resolved = "https://registry.yarnpkg.com/q/-/q-1.0.0.tgz#" + strings.Repeat("g", 40)
+	if cg := semRun(t, semProgram(t, yarnLockFile, yarnLockText(t, p, q), nil), semStore(t, p, q)); reaches(cg, "q", "1.0.0") || !runWide(cg) {
+		t.Errorf("a non-hex fragment is not a digest; got %+v", cg.Partiality)
+	}
 }
 
 // TestSemantic_G15NoSRIUnreadable: entries without a registry integrity are placed but never
@@ -906,31 +940,162 @@ func TestSemantic_G17Regions(t *testing.T) {
 func TestSemantic_DecoyAtSyntheticPath(t *testing.T) {
 	dir, store := pqFixture(t, "9.0", qPkg("1.0.0"))
 	base := withDeps(t, dir, store)
-	decoy := filepath.Join(dir, "node_modules", ".pnpm", "q@1.0.0", "node_modules", "q")
-	if err := os.MkdirAll(decoy, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for f, body := range map[string]string{
-		"index.js":     "exports.go = function go(s) { return eval(s); };\nexports.other = function other() {};\n",
-		"package.json": `{"name":"q","version":"1.0.0","main":"index.js","scripts":{"postinstall":"x"}}`,
-	} {
-		if err := os.WriteFile(filepath.Join(decoy, f), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	plant(t, filepath.Join(dir, "node_modules", ".pnpm", "q@1.0.0", "node_modules", "q"))
 	same := func(label string) {
+		t.Helper()
 		cg := withDeps(t, dir, store)
 		if !slices.Equal(cg.Edges, base.Edges) || !slices.Equal(cg.Partiality.Reasons, base.Partiality.Reasons) || len(cg.Partiality.Scoped) != len(base.Partiality.Scoped) {
 			t.Errorf("%s: the decoy changed the result: %+v vs %+v", label, cg.Partiality, base.Partiality)
 		}
 	}
 	same("decoy")
+	plant(t, filepath.Join(dir, "node_modules", ".pnpm", "node_modules", "q"))
+	same("decoy in the hoisted store")
 	store0 := filepath.Join(dir, "node_modules", ".pnpm")
 	if err := os.Chmod(store0, 0); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(store0, 0o755) })
 	same("unreadable store directory")
+
+	t.Run("yarn_classic", func(t *testing.T) {
+		p, q := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ}), qPkg("1.0.0")
+		dir := semProgram(t, yarnLockFile, yarnLockText(t, p, q), nil)
+		store := semStore(t, p, q)
+		base := withDeps(t, dir, store)
+		plant(t, filepath.Join(dir, "node_modules", ".yarn-classic", "q@1.0.0", "node_modules", "q"))
+		if cg := withDeps(t, dir, store); !slices.Equal(cg.Edges, base.Edges) || !slices.Equal(cg.Partiality.Reasons, base.Partiality.Reasons) || len(cg.Partiality.Scoped) != len(base.Partiality.Scoped) {
+			t.Errorf("the decoy changed the result: %+v vs %+v", cg.Partiality, base.Partiality)
+		}
+	})
+}
+
+// plant writes a decoy package at dir: code that would withhold if read, and an install script.
+func plant(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for f, body := range map[string]string{
+		"index.js":     "exports.go = function go(s) { return eval(s); };\nexports.other = function other() {};\n",
+		"package.json": `{"name":"q","version":"1.0.0","main":"index.js","scripts":{"postinstall":"x"}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestSemantic_G18NestedPhantom: a phantom load in a nested region may find an in-region copy or,
+// when none is hoisted where the walk passes, climb out to a copy above the region. With both
+// present it resolves to neither, and the load's limit targets every candidate; with nothing above
+// it resolves to the in-region copy. A virtual store or modules directory outside the region's
+// node_modules puts the walk where the lane does not model, and withholds.
+func TestSemantic_G18NestedPhantom(t *testing.T) {
+	npmRoot := func(withQ bool) map[string]string {
+		if !withQ {
+			return map[string]string{"package.json": manifestWith("app", nil, ""), "package-lock.json": `{"name":"x","lockfileVersion":3,"requires":true,"packages":{"":{"name":"x"}}}`}
+		}
+		return map[string]string{
+			"package.json":      manifestWith("app", map[string]string{"q": "1.0.0"}, ""),
+			"package-lock.json": `{"name":"x","lockfileVersion":3,"requires":true,"packages":{"":{"name":"x","dependencies":{"q":"1.0.0"}},"node_modules/q":{"version":"1.0.0","resolved":"https://registry.npmjs.org/q/-/q-1.0.0.tgz","integrity":"` + sri(qPkg("1.0.0").build(t)) + `"}}}`,
+		}
+	}
+	webImp := map[string]string{"o": "1.0.0", "p": "1.0.0"}
+	pnpmWeb := func(withQ bool, extra map[string]string) (string, artifactcache.Store) {
+		o := sp("o", "1.0.0", map[string]string{"q": "2.0.0"}, nil)
+		p := sp("p", "1.0.0", nil, map[string]string{"index.js": callsQ})
+		q2 := qPkg("2.0.0")
+		files := npmRoot(withQ)
+		files["web/package.json"] = manifestWith("web", webImp, "")
+		files["web/index.js"] = runsP
+		files["web/"+pnpmLockFile] = pnpmLockText(t, "9.0", map[string]map[string]string{".": webImp}, o, p, q2)
+		files["web/.npmrc"] = "hoist=false\n"
+		maps.Copy(files, extra)
+		return writeProgram(t, files), semStore(t, o, p, q2, qPkg("1.0.0"))
+	}
+	entry := func(l *depLayout, name string) *depEntry {
+		for _, e := range l.entries() {
+			if e.name == name && e.path != "" && strings.HasPrefix(e.path, "web/") {
+				return e
+			}
+		}
+		t.Fatalf("no %s entry in web/", name)
+		return nil
+	}
+	versions := func(es []*depEntry) []string {
+		var out []string
+		for _, e := range es {
+			out = append(out, e.name+"@"+e.version)
+		}
+		sort.Strings(out)
+		return out
+	}
+	pp := makePURL("p", "1.0.0")
+	t.Run("pnpm_outer_copy", func(t *testing.T) {
+		dir, store := pnpmWeb(true, nil)
+		l := buildDepLayout(dir)
+		p := entry(l, "p")
+		if l.incomplete || l.lookup(p.path, "q") != nil || !slices.Equal(versions(l.lookupCandidates(p.path, "q")), []string{"q@1.0.0", "q@2.0.0"}) {
+			t.Fatalf("p's phantom q may run the root's q@1.0.0 or the region's q@2.0.0; got %v", versions(l.lookupCandidates(p.path, "q")))
+		}
+		if cg := semRun(t, dir, store); reaches(cg, "q", "2.0.0") || !hasScopedTo(cg.Partiality, pp, originPURL("q")) {
+			t.Errorf("no edge, a limit on p targeting q; got %+v", cg.Partiality)
+		}
+	})
+	t.Run("pnpm_no_outer_copy", func(t *testing.T) {
+		dir, store := pnpmWeb(false, nil)
+		l := buildDepLayout(dir)
+		if e := l.lookup(entry(l, "p").path, "q"); l.incomplete || e == nil || e.version != "2.0.0" {
+			t.Fatalf("with nothing above the region the phantom resolves to its one copy")
+		}
+		if cg := semRun(t, dir, store); !reaches(cg, "q", "2.0.0") {
+			t.Errorf("edge into q@2.0.0; got %+v", cg.Edges)
+		}
+	})
+	t.Run("yarn_outer_copy_alias", func(t *testing.T) {
+		o := sp("o", "1.0.0", map[string]string{"q": "npm:z@2.0.0"}, nil)
+		p := sp("p", "1.0.0", nil, map[string]string{"index.js": callsQ})
+		z := sp("z", "2.0.0", nil, map[string]string{"index.js": qGo})
+		z.descs = []string{"q@npm:z@2.0.0"}
+		files := npmRoot(true)
+		files["web/package.json"] = manifestWith("web", webImp, "")
+		files["web/index.js"] = runsP
+		files["web/"+yarnLockFile] = yarnLockText(t, o, p, z)
+		dir := writeProgram(t, files)
+		l := buildDepLayout(dir)
+		pe := entry(l, "p")
+		if l.incomplete || l.lookup(pe.path, "q") != nil || !slices.Equal(versions(l.lookupCandidates(pe.path, "q")), []string{"q@1.0.0", "z@2.0.0"}) {
+			t.Fatalf("p's phantom q may run the root's q or the region's z; got %v", versions(l.lookupCandidates(pe.path, "q")))
+		}
+		cg := semRun(t, dir, semStore(t, o, p, z, qPkg("1.0.0")))
+		limited := slices.ContainsFunc(cg.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+			return s.Package == pp && slices.Contains(s.Targets, originPURL("q")) && slices.Contains(s.Targets, originPURL("z"))
+		})
+		if reaches(cg, "z", "2.0.0") || !limited {
+			t.Errorf("no edge, a limit on p targeting q and z; got %+v", cg.Partiality)
+		}
+	})
+	for name, extra := range map[string]map[string]string{
+		"workspace_virtual_store_outside": {"web/pnpm-workspace.yaml": "virtualStoreDir: ../.pnpm-store\n"},
+		"workspace_virtual_store_abs":     {"web/pnpm-workspace.yaml": "virtualStoreDir: /var/pnpm\n"},
+		"workspace_modules_dir":           {"web/pnpm-workspace.yaml": "modulesDir: vendor\n"},
+		"npmrc_virtual_store_outside":     {"web/.npmrc": "virtual-store-dir=../.pnpm-store\n"},
+		"npmrc_modules_dir":               {"web/.npmrc": "modules-dir = vendor\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, store := pnpmWeb(false, extra)
+			if !buildDepLayout(dir).incomplete || !runWide(semRun(t, dir, store)) {
+				t.Errorf("a store outside the region's node_modules withholds")
+			}
+		})
+	}
+	t.Run("virtual_store_inside", func(t *testing.T) {
+		dir, _ := pnpmWeb(false, map[string]string{"web/pnpm-workspace.yaml": "virtualStoreDir: node_modules/.vs\nmodulesDir: node_modules\n"})
+		if buildDepLayout(dir).incomplete {
+			t.Errorf("a virtual store inside the region's node_modules reads")
+		}
+	})
 }
 
 func semKeys[V any](m map[string]V) []string {

@@ -353,18 +353,18 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		case p.pkg.native:
 			addScoped(plugin.PartialReasonUninspectablePackage, e.purl, e.purl)
 		}
-		if e.patched {
-			// The install rewrites this package's code; only its verified manifest facts hold.
-			addScoped(plugin.PartialReasonUninspectablePackage, e.purl, e.purl)
-			continue
-		}
 		if e.deps != nil {
 			// A pnpm or yarn classic package: a copy bundled in its tarball is not in the lock,
-			// and its install scripts run unseen.
+			// and its install scripts run unseen, patched or not.
 			e.bundles = bundledNames(p.pkg.files)
 			if len(e.bundles) > 0 {
 				dflags.uninspectable = true
 			}
+		}
+		if e.patched {
+			// The install rewrites this package's code; only its verified manifest facts hold.
+			addScoped(plugin.PartialReasonUninspectablePackage, e.purl, e.purl)
+			continue
 		}
 		d.pkgs[e.path] = p.pkg
 		for _, pr := range p.files {
@@ -543,7 +543,13 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 				e, mods := rs.depTargets(f.module, ls.spec, ls.viaRequire)
 				if e == nil {
 					name, _ := splitBareSpecifier(ls.spec)
-					flags.scoped = append(flags.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonUninspectablePackage, Package: pkg.entry.purl, Targets: []string{originPURL(name)}})
+					targets := []string{originPURL(name)}
+					for _, c := range d.layout.lookupCandidates(moduleDir(f.module), name) {
+						if t := originPURL(c.name); !slices.Contains(targets, t) {
+							targets = append(targets, t)
+						}
+					}
+					flags.scoped = append(flags.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonUninspectablePackage, Package: pkg.entry.purl, Targets: targets})
 					continue
 				}
 				if len(mods) == 0 && d.pkgs[e.path] != nil {

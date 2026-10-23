@@ -134,7 +134,7 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 		mb.imports[b.Local] = b
 	}
 	frames := newThisFrames(clean)
-	globals := newGlobalScope(clean, frames)
+	globals := newGlobalScope(clean, src, frames)
 	ls := newLoaderScope(clean, globals)
 	reqNames, crNames := ls.req, ls.cr
 	maps.Copy(reqNames, extraReq)

@@ -43,16 +43,33 @@
 // &, or inside an if, case or loop) creates nothing here, nor does one whose bin/activate is
 // already a file the build holds.
 //
+// A sample hook git writes into a hooks directory (pre-commit.sample in .git/hooks, a nested
+// repository's .git/hooks or a submodule's .git/modules/<name>/hooks) is git's template
+// content, and git never runs a hook under that name, so it withholds nothing while nothing
+// in the build may reach one. Any of these triggers makes every sample hook a surface again:
+// a surface's text naming .sample, hooks, dotglob or a .git directory, a glob over
+// dot-names, a directory change or prefix whose argument expands, the raw text of any other
+// in-tree file naming .sample, dotglob or a .git directory, or a symlink into a .git
+// directory. The gate reads three things: the script surfaces; symlink targets; and every
+// other regular file except those no build runner executes (binary files; by exact name,
+// docs, lockfiles and dot-named ignore files unless they start with "#!"; and inside .git
+// everything but the active hooks). The build is trusted, so a form written to evade them
+// is out of scope. A sample hook is not a script the walk reads, so sourcing one withholds.
+//
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
 // the install reads it, so it withholds too (Veto.Rebound).
 package scriptsurface
 
 import (
+	"bytes"
 	"encoding/json"
+	"maps"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -181,6 +198,15 @@ type Veto struct {
 	vetoed    map[string]bool
 	bound     map[string]bool // lowercased base names of files allowed commands bind to
 	mentioned map[string]bool // lowercased base names other commands take as arguments
+	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
+	triggered bool            // a surface's text may reach a sample hook (trigger)
+}
+
+// sampleRun is what the rule found in one sample hook, classified as any other surface but
+// apart from the rest of the build: why it withholds, and what its commands bind and mention.
+type sampleRun struct {
+	why              string
+	bound, mentioned map[string]bool
 }
 
 // New returns a Veto for the build rooted at root. read is the lane walk's own fullyRead:
@@ -218,32 +244,305 @@ func (v *Veto) Rebound() bool {
 	return false
 }
 
-// Withheld reports whether the rule withheld on any surface the walk classified, or a command
-// may rewrite a file an allowed command binds to: the build may install a package no manifest
-// or lock read here names. Call it after the walk.
-func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() }
+// Withheld reports whether the rule withheld on any surface the walk classified, a command
+// may rewrite a file an allowed command binds to, or a sample hook is live: the build may
+// install a package no manifest or lock read here names. Call it after the walk.
+func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.samplesLive() }
+
+// samplesLive reports whether, once something in the build may reach a sample hook, the
+// sample hooks read as surfaces withhold: one of them withholds on its own, or a command in
+// one names a file a command anywhere binds to.
+func (v *Veto) samplesLive() bool {
+	if len(v.samples) == 0 || !v.triggered && !v.treeReaches() {
+		return false
+	}
+	bound, mentioned := maps.Clone(v.bound), maps.Clone(v.mentioned)
+	for _, s := range v.samples {
+		if s.why != "" {
+			return true
+		}
+		maps.Copy(bound, s.bound)
+		maps.Copy(mentioned, s.mentioned)
+	}
+	for name := range bound {
+		if mentioned[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// The text triggers. Each is a natural way a command reaches a sample hook: naming one, its
+// hooks directory or a .git directory; a glob over dot-names, which can match .git; or a
+// directory change or prefix this cannot read, which can land in a hooks directory.
+var (
+	mentionRE = regexp.MustCompile(`\.sample|hooks|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
+	// sourceRE is the mention trigger for an in-tree file no surface parses. It leaves out
+	// hooks, which every React tree's src/hooks would match, and needs .sample to end a
+	// name, as a hook's does, so texture.sample( and ep.sample_params don't match.
+	sourceRE  = regexp.MustCompile(`\.sample(?:$|[^A-Za-z0-9_(])|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
+	dotGlobRE = regexp.MustCompile(`(?:^|[\s/"'=;&|()<>` + "`" + `])\.[^\s/"'=;&|()<>` + "`" + `]*[*?\[{]`)
+	dynDirRE  = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|-C|--prefix|--cwd)(?:\s+-{1,2}[A-Za-z]*)*(?:\s+|=)[^\s;&|)]*[$` + "`" + `]`)
+)
+
+// trigger notes whether a surface's raw text may reach a sample hook.
+func (v *Veto) trigger(text string) {
+	v.triggered = v.triggered || mentionRE.MatchString(text) || dotGlobRE.MatchString(text) || dynDirRE.MatchString(text)
+}
+
+// lockfiles are the package-manager lockfiles, which record resolved URLs and no commands.
+var lockfiles = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.json": true, "yarn.lock": true,
+	"pnpm-lock.yaml": true, "bun.lock": true}
+
+// docNames are the exact base names, compared case-insensitively, of docs that carry no
+// extension. LICENSE-MIT and the like are not among them and are read.
+var docNames = map[string]bool{"license": true, "licence": true, "copying": true, "changelog": true,
+	"authors": true, "notice": true}
+
+// inertName reports whether no build runner executes the file at path, judged by its exact
+// name: docs (a .md, .markdown, .rst or .adoc extension, or a docNames base name), a lockfile,
+// or an ignore file (a base name that starts with "." and ends in "ignore": .gitignore,
+// .npmignore, .dockerignore). No prefix or suffix of a script's name exempts it, and a file
+// whose head starts with "#!" is never inert, whatever its name. Plain text is read, since
+// CMakeLists.txt is a build script.
+func inertName(path string, head []byte) bool {
+	if bytes.HasPrefix(head, []byte("#!")) {
+		return false
+	}
+	lower := strings.ToLower(filepath.Base(path))
+	switch filepath.Ext(lower) {
+	case ".md", ".markdown", ".rst", ".adoc":
+		return true
+	}
+	return docNames[lower] || lockfiles[lower] ||
+		(strings.HasPrefix(lower, ".") && strings.HasSuffix(lower, "ignore"))
+}
+
+// binarySniff is how much of a file's start is searched for a NUL byte, which marks it binary.
+const binarySniff = 8 << 10
+
+// treeReaches reports whether the build outside the script surfaces may reach a sample hook:
+// an in-tree regular file that is not a surface, not binary and not inertName (judged on its
+// head, so a "#!" script is read whatever its name) whose text
+// sourceRE matches, or a symlink pointing into a .git directory, so a path that names neither
+// may reach a hooks directory. Inside a .git directory only active hooks are read. A file or
+// link that cannot be read counts.
+func (v *Veto) treeReaches() bool {
+	found := false
+	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
+		if err != nil {
+			return nil
+		}
+		// A .git file is a worktree's or submodule's gitdir pointer. Inside a .git directory
+		// only the active hooks run, so only regular files in a git hooks directory that are
+		// not sample hooks are read; the rest is git's metadata, which names .git in remote
+		// URLs, logs and info/exclude. A symlink named .git is still checked as a link.
+		if e.D.Name() == ".git" && !e.Symlink && !e.D.IsDir() {
+			return nil
+		}
+		if v.inGitDir(e.Path) {
+			if !e.D.Type().IsRegular() || !v.gitHooksFile(e.Path) || v.sampleHook(e.Path) {
+				return nil
+			}
+		}
+		if e.Escapes {
+			found = true
+			return filepath.SkipAll
+		}
+		if e.D.Type().IsRegular() {
+			head, err := buildtree.Head(e.Path)
+			if err != nil {
+				found = true
+				return filepath.SkipAll
+			}
+			if inertName(e.Path, head) {
+				return nil
+			}
+			if _, ok := surfaceOf(e.Path, head); ok {
+				return nil
+			}
+			data, err := v.spec.ReadRegular(e.Path)
+			if err != nil {
+				found = true
+				return filepath.SkipAll
+			}
+			if bytes.IndexByte(data[:min(len(data), binarySniff)], 0) < 0 && sourceRE.Match(data) {
+				found = true
+				return filepath.SkipAll
+			}
+			return nil
+		}
+		if !e.Symlink {
+			return nil
+		}
+		target, err := os.Readlink(e.Path)
+		if err != nil {
+			found = true
+			return filepath.SkipAll
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(e.Path), target)
+		}
+		for _, seg := range strings.Split(filepath.Clean(target), string(filepath.Separator)) {
+			if seg == ".git" {
+				found = true
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found
+}
+
+// sampleHook reports whether p is a sample hook: a name ending in .sample directly in a hooks
+// directory that is a repository's .git/hooks (the build root's or a nested one's) or a
+// submodule's .git/modules/<name>/hooks. Those are the only directories git itself fills
+// with samples, and git runs a hook only under its exact name, so never one ending in
+// .sample. Any other .sample file (.githooks/, tools/hooks/, a directory under hooks) stays a
+// surface, as do an empty name and any other suffix.
+func (v *Veto) sampleHook(p string) bool {
+	stem, ok := strings.CutSuffix(filepath.Base(p), ".sample")
+	return ok && stem != "" && v.gitHooksFile(p)
+}
+
+// gitHooksFile reports whether p sits directly in a .git/hooks directory (the build root's
+// or a nested repository's) or a submodule's .git/modules/<name>/hooks.
+func (v *Veto) gitHooksFile(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	n := len(parts)
+	if n < 3 || parts[n-2] != "hooks" {
+		return false
+	}
+	if parts[n-3] == ".git" {
+		return true
+	}
+	for i := 0; i+1 < n-3; i++ {
+		if parts[i] == ".git" && parts[i+1] == "modules" {
+			return true
+		}
+	}
+	return false
+}
+
+// inGitDir reports whether p lies inside a directory named .git.
+func (v *Veto) inGitDir(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	return slices.Contains(parts[:len(parts)-1], ".git")
+}
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
 // mention records the base names of a command's arguments, a redirect's or an option's
 // target included.
 func (v *Veto) mention(args []string) {
-	for _, a := range args {
-		a = strings.TrimLeft(a, "0123456789<>&")
-		if i := strings.LastIndexByte(a, '='); i >= 0 {
-			a = a[i+1:]
+	for _, w := range args {
+		w = trimShell(w)
+		if i := strings.LastIndexByte(w, '='); i >= 0 {
+			w = trimShell(w[i+1:])
 		}
-		if b := strings.ToLower(path.Base(filepath.ToSlash(a))); b != "" && b != "." && b != "/" {
-			v.mentioned[b] = true
+		for _, a := range braces(filepath.ToSlash(w), 0) {
+			if b := strings.ToLower(path.Base(a)); b != "" && b != "." && b != "/" {
+				v.mentioned[b] = true
+			}
 		}
 	}
 }
 
+// trimShell strips a leading redirect and shell punctuation from both ends of w: an opening
+// or closing bracket only when w does not close or open it, or parentheses wrapping the word.
+func trimShell(w string) string {
+	for {
+		t := strings.TrimLeft(w, "0123456789<>&")
+		t = strings.Trim(t, ";&|`\"'")
+		t = strings.TrimPrefix(t, "$(")
+		for _, p := range []string{"()", "{}"} {
+			o, c := p[:1], p[1:]
+			if strings.HasPrefix(t, o) && strings.Count(t, o) > strings.Count(t, c) {
+				t = t[1:]
+			}
+			if strings.HasSuffix(t, c) && strings.Count(t, c) > strings.Count(t, o) {
+				t = t[:len(t)-1]
+			}
+			if o == "(" && len(t) >= 2 && strings.HasPrefix(t, o) && strings.HasSuffix(t, c) && !strings.ContainsAny(t[1:len(t)-1], p) {
+				t = t[1 : len(t)-1]
+			}
+		}
+		if t == w {
+			return w
+		}
+		w = t
+	}
+}
+
+// maxBraces bounds the words one brace expression expands to; past it the expression is a glob.
+const maxBraces = 64
+
+// braces returns the words w's brace lists expand to, outermost first; a brace range, or a
+// list nested too deep or expanding past maxBraces, becomes *. Braces with no top-level comma stay as they are.
+func braces(w string, depth int) []string {
+	for i := 0; i < len(w); i++ {
+		if w[i] != '{' || (i > 0 && w[i-1] == '$') {
+			continue
+		}
+		level, commas, end := 0, []int{}, -1
+		for j := i; j < len(w) && end < 0; j++ {
+			switch w[j] {
+			case '{':
+				level++
+			case '}':
+				level--
+				if level == 0 {
+					end = j
+				}
+			case ',':
+				if level == 1 {
+					commas = append(commas, j)
+				}
+			}
+		}
+		if end < 0 {
+			return []string{w}
+		}
+		if strings.Contains(w[i:end], "..") {
+			return braces(w[:i]+"*"+w[end+1:], depth+1)
+		}
+		if len(commas) == 0 {
+			continue
+		}
+		var out []string
+		start := i + 1
+		for _, c := range append(commas, end) {
+			out = append(out, w[:i]+w[start:c]+w[end+1:])
+			start = c + 1
+		}
+		if depth > 8 {
+			return []string{w[:i] + "*" + w[end+1:]}
+		}
+		var all []string
+		for _, o := range out {
+			all = append(all, braces(o, depth+1)...)
+			if len(all) > maxBraces {
+				return []string{w[:i] + "*" + w[end+1:]}
+			}
+		}
+		return all
+	}
+	return []string{w}
+}
+
 // walkedSurface reports whether p is an in-tree script surface outside every directory the
-// walk skips.
+// walk skips, and not a sample hook.
 func (v *Veto) walkedSurface(p string) bool {
 	rel, err := filepath.Rel(v.root, p)
-	if err != nil || !v.inRoot(p) {
+	if err != nil || !v.inRoot(p) || v.sampleHook(p) {
 		return false
 	}
 	for _, part := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
@@ -265,11 +564,26 @@ func (v *Veto) inRoot(p string) bool {
 }
 
 // surface reports whether the file at path is a script surface the rule withholds on, and why.
+// A sample hook is classified apart and withholds nothing here (samplesLive).
 func (v *Veto) surface(path string, head []byte) (string, bool) {
 	s, ok := surfaceOf(path, head)
 	if !ok || head == nil {
 		return "", false
 	}
+	if !v.sampleHook(path) {
+		return v.classify(s, path, head, true)
+	}
+	bound, mentioned := v.bound, v.mentioned
+	v.bound, v.mentioned = map[string]bool{}, map[string]bool{}
+	why, _ := v.classify(s, path, head, false)
+	v.samples = append(v.samples, sampleRun{why: why, bound: v.bound, mentioned: v.mentioned})
+	v.bound, v.mentioned = bound, mentioned
+	return "", false
+}
+
+// classify applies the rule to a script surface of type s, and with scan notes whether its
+// text may reach a sample hook.
+func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (string, bool) {
 	if !v.spec.complete() {
 		return "script surface under an incomplete lane spec", true
 	}
@@ -285,25 +599,36 @@ func (v *Veto) surface(path string, head []byte) (string, bool) {
 		return "script surface sets an installer variable", true
 	}
 	var why string
+	units := []unit{{text: src}}
 	switch {
 	case s.kind == kindDockerfile:
 		why = v.dockerfile(path, src)
 	case s.kind == kindOpaque:
 		why = v.opaque(src)
 	case strings.EqualFold(filepath.Ext(path), ".json"):
-		if units, ok := jsonUnits(path, src); ok {
+		// A decodable JSON surface's text is its commands, so a dependency named like a
+		// trigger (eslint-plugin-react-hooks) is not one.
+		if u, ok := jsonUnits(path, src); ok {
+			units = u
 			why = v.host(s, kindShell, path, units)
 			break
 		}
-		why = v.host(s, kindData, path, []unit{{text: src}})
+		why = v.host(s, kindData, path, units)
 	case gitlabCI[strings.ToLower(filepath.Base(path))]:
-		units, w := v.gitlabIncludes(path, src, map[string]bool{path: true}, 0)
+		included, w := v.gitlabIncludes(path, src, map[string]bool{path: true}, 0)
 		if w != "" {
 			return w, true
 		}
-		why = v.host(s, s.kind, path, append([]unit{{text: src}}, units...))
+		units = append(units, included...)
+		why = v.host(s, s.kind, path, units)
 	default:
-		why = v.host(s, s.kind, path, []unit{{text: src}})
+		why = v.host(s, s.kind, path, units)
+	}
+	for _, u := range units {
+		if scan {
+			v.trigger(u.text)
+			v.trigger(strings.Join(u.exec, " "))
+		}
 	}
 	return why, why != ""
 }

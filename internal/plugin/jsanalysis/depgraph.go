@@ -317,7 +317,7 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		baseRoots = append(baseRoots, r)
 	}
 
-	layout := buildDepLayout(buildDir)
+	layout := buildDepLayout(ctx, buildDir)
 	bctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 

@@ -424,7 +424,7 @@ func TestSemantic_G4PnpmPeerVariants(t *testing.T) {
 	lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0(r@1.0.0)"}, "m": {"p": "1.0.0(r@2.0.0)"}}, pa, pb, r1, r2)
 	dir := writeProgram(t, map[string]string{pnpmLockFile: lock, "package.json": manifestWith("app", map[string]string{"p": "1"}, ""),
 		"pnpm-workspace.yaml": "packages:\n  - m\n", "m/package.json": manifestWith("m", map[string]string{"p": "1"}, ""), "index.js": guardIdle})
-	l := buildDepLayout(dir)
+	l := buildDepLayout(context.Background(), dir)
 	if l.incomplete {
 		t.Fatal("layout incomplete")
 	}
@@ -882,7 +882,7 @@ func TestSemantic_G17Regions(t *testing.T) {
 			"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, ""), "package-lock.json": npmLock("1.0.0"), "index.js": loadQ,
 			"web/package.json": manifestWith("web", map[string]string{"q": "2.0.0"}, ""), "web/" + pnpmLockFile: pnpmLockText(t, "9.0", map[string]map[string]string{".": {"q": "2.0.0"}}, q2), "web/index.js": loadQ,
 		})
-		l := buildDepLayout(dir)
+		l := buildDepLayout(context.Background(), dir)
 		if l.incomplete || l.lookup("", "q").version != "1.0.0" || l.lookup("web", "q").version != "2.0.0" || l.lookup("web/src", "q").version != "2.0.0" {
 			t.Errorf("longest prefix: root npm q 1, web pnpm q 2")
 		}
@@ -895,7 +895,7 @@ func TestSemantic_G17Regions(t *testing.T) {
 			"package.json": manifestWith("app", map[string]string{"q": "2.0.0"}, ""), pnpmLockFile: pnpmLockText(t, "9.0", map[string]map[string]string{".": {"q": "2.0.0"}}, q2),
 			"api/package.json": manifestWith("api", map[string]string{"q": "1.0.0"}, ""), "api/package-lock.json": npmLock("1.0.0"),
 		})
-		l := buildDepLayout(dir)
+		l := buildDepLayout(context.Background(), dir)
 		if l.incomplete || l.lookup("api", "q").version != "1.0.0" || l.lookup("", "q").version != "2.0.0" {
 			t.Errorf("longest prefix: api npm q 1, root pnpm q 2")
 		}
@@ -909,7 +909,7 @@ func TestSemantic_G17Regions(t *testing.T) {
 			pnpmLockFile:     pnpmLockText(t, "9.0", map[string]map[string]string{".": {}, "m": {"q": "2.0.0"}}, q2),
 			"m/package.json": manifestWith("m", map[string]string{"q": "1.0.0"}, ""), "m/package-lock.json": npmLock("1.0.0"),
 		})
-		if !buildDepLayout(dir).incomplete {
+		if !buildDepLayout(context.Background(), dir).incomplete {
 			t.Errorf("a member two locks claim is incomplete")
 		}
 	})
@@ -918,7 +918,7 @@ func TestSemantic_G17Regions(t *testing.T) {
 			"package.json": manifestWith("app", map[string]string{"q": "2.0.0"}, ""), pnpmLockFile: pnpmLockText(t, "9.0", map[string]map[string]string{".": {"q": "2.0.0"}}, q2),
 			"tools/package.json": manifestWith("tools", map[string]string{"q": "1.0.0"}, ""), "tools/package-lock.json": npmLock("1.0.0"),
 		})
-		l := buildDepLayout(dir)
+		l := buildDepLayout(context.Background(), dir)
 		if l.incomplete || l.lookup("tools", "q").version != "1.0.0" {
 			t.Errorf("an unlisted member with its own lock takes longest prefix")
 		}
@@ -928,7 +928,7 @@ func TestSemantic_G17Regions(t *testing.T) {
 			"package.json": manifestWith("app", map[string]string{"q": "2.0.0"}, ""), pnpmLockFile: pnpmLockText(t, "9.0", map[string]map[string]string{".": {"q": "2.0.0"}}, q2),
 			yarnLockFile: yarnLockText(t, q2),
 		})
-		if !buildDepLayout(dir).incomplete {
+		if !buildDepLayout(context.Background(), dir).incomplete {
 			t.Errorf("two dialects at one root is incomplete")
 		}
 	})
@@ -1035,7 +1035,7 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 	pp := makePURL("p", "1.0.0")
 	t.Run("pnpm_outer_copy", func(t *testing.T) {
 		dir, store := pnpmWeb(true, nil)
-		l := buildDepLayout(dir)
+		l := buildDepLayout(context.Background(), dir)
 		p := entry(l, "p")
 		if l.incomplete || l.lookup(p.path, "q") != nil || !slices.Equal(versions(l.lookupCandidates(p.path, "q")), []string{"q@1.0.0", "q@2.0.0"}) {
 			t.Fatalf("p's phantom q may run the root's q@1.0.0 or the region's q@2.0.0; got %v", versions(l.lookupCandidates(p.path, "q")))
@@ -1046,7 +1046,7 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 	})
 	t.Run("pnpm_no_outer_copy", func(t *testing.T) {
 		dir, store := pnpmWeb(false, nil)
-		l := buildDepLayout(dir)
+		l := buildDepLayout(context.Background(), dir)
 		if e := l.lookup(entry(l, "p").path, "q"); l.incomplete || e == nil || e.version != "2.0.0" {
 			t.Fatalf("with nothing above the region the phantom resolves to its one copy")
 		}
@@ -1064,7 +1064,7 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 		files["web/index.js"] = runsP
 		files["web/"+yarnLockFile] = yarnLockText(t, o, p, z)
 		dir := writeProgram(t, files)
-		l := buildDepLayout(dir)
+		l := buildDepLayout(context.Background(), dir)
 		pe := entry(l, "p")
 		if l.incomplete || l.lookup(pe.path, "q") != nil || !slices.Equal(versions(l.lookupCandidates(pe.path, "q")), []string{"q@1.0.0", "z@2.0.0"}) {
 			t.Fatalf("p's phantom q may run the root's q or the region's z; got %v", versions(l.lookupCandidates(pe.path, "q")))
@@ -1089,14 +1089,14 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir, store := pnpmWeb(false, extra)
-			if !buildDepLayout(dir).incomplete || !runWide(semRun(t, dir, store)) {
+			if !buildDepLayout(context.Background(), dir).incomplete || !runWide(semRun(t, dir, store)) {
 				t.Errorf("a store outside the region's node_modules withholds")
 			}
 		})
 	}
 	t.Run("virtual_store_inside", func(t *testing.T) {
 		dir, _ := pnpmWeb(false, map[string]string{"web/pnpm-workspace.yaml": "virtualStoreDir: node_modules/.vs\nmodulesDir: node_modules\n"})
-		if buildDepLayout(dir).incomplete {
+		if buildDepLayout(context.Background(), dir).incomplete {
 			t.Errorf("a virtual store inside the region's node_modules reads")
 		}
 	})
@@ -1158,7 +1158,7 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 	withholds := func(t *testing.T) func(string, artifactcache.Store) {
 		return func(dir string, store artifactcache.Store) {
 			t.Helper()
-			if cg := semRun(t, dir, store); !buildDepLayout(dir).incomplete || !runWide(cg) {
+			if cg := semRun(t, dir, store); !buildDepLayout(context.Background(), dir).incomplete || !runWide(cg) {
 				t.Errorf("an unaccounted directory above the region withholds; got %+v", cg.Partiality)
 			}
 		}
@@ -1166,7 +1166,7 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 	resolves := func(t *testing.T) func(string, artifactcache.Store) {
 		return func(dir string, store artifactcache.Store) {
 			t.Helper()
-			if cg := semRun(t, dir, store); buildDepLayout(dir).incomplete || !reaches(cg, "q", "2.0.0") {
+			if cg := semRun(t, dir, store); buildDepLayout(context.Background(), dir).incomplete || !reaches(cg, "q", "2.0.0") {
 				t.Errorf("nothing unaccounted above the region: resolves to q@2.0.0; got %+v", cg.Partiality)
 			}
 		}

@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -47,6 +48,33 @@ func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithh
 	}
 	scriptWithheld = veto.Withheld()
 	return unread || scriptWithheld, scriptWithheld
+}
+
+// installSurfaces is unreadSurfaces for the build at root, computed once per scan through the
+// run cache and shared by the versions op and the dependency layout. locks returns what
+// lockFiles(root) and parseLockfile read; it is called only when the cache holds no answer.
+func installSurfaces(ctx context.Context, root string, locks func() map[string]lockInfo) (unread, scriptWithheld bool) {
+	type answer struct{ Unread, ScriptWithheld bool }
+	b, err := runCached(ctx, "installsurfaces", []string{root}, func() ([]byte, error) {
+		var a answer
+		a.Unread, a.ScriptWithheld = unreadSurfaces(root, locks())
+		return json.Marshal(a)
+	})
+	var a answer
+	if err != nil || json.Unmarshal(b, &a) != nil {
+		return unreadSurfaces(root, locks())
+	}
+	return a.Unread, a.ScriptWithheld
+}
+
+// parsedLocks reads every lockfile lockFiles finds under root, keyed by path.
+func parsedLocks(root string) map[string]lockInfo {
+	locks := lockFiles(root)
+	parsed := make(map[string]lockInfo, len(locks))
+	for _, l := range locks {
+		parsed[l], _ = parseLockfile(l)
+	}
+	return parsed
 }
 
 // npmSurfaceNames are the lowercased manifests and lockfiles npm, yarn, pnpm, bun, deno and

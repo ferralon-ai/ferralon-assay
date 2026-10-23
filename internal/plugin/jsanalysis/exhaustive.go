@@ -32,7 +32,11 @@ package jsanalysis
 //     test for keeping a locked version; a range form rangeSatisfied does not model does not
 //     cover. Peers are checked by
 //     name: a peer the lock does not install is still expected present at runtime (the host
-//     provides it), so its absence here proves nothing;
+//     provides it), so its absence here proves nothing. npm v2/v3 also records each project's own
+//     peer specs, and npm re-resolves a peer whose spec drifted, so there a drifted peer
+//     withholds. A matching peer spec is no proof the locked copy satisfies it (a
+//     --legacy-peer-deps lock records a range it never installed), so a peer alone never makes
+//     a project recorded;
 //   - the coordinate is not the name of any package.json under the build dir: a lockfile does
 //     not list the project (or a workspace package) as its own dependency, so its absence from
 //     the lock proves nothing about a first-party advisory;
@@ -174,9 +178,9 @@ func governingLocks(dir string, byDir map[string][]lockInfo) (string, []lockInfo
 }
 
 // lockCovers reports whether one lockfile records the project at rel (relative to the lock's
-// directory) with every declared name, and the same spec for each name it installs from (for a
-// v1 package-lock, a version at the root satisfying it, for every declared field peers
-// included).
+// directory) with every declared name, and the same spec for each name it installs from, an
+// npm v2/v3 lock's recorded peers included (for a v1 package-lock, a version at the root
+// satisfying it, for every declared field peers included).
 func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]string) bool {
 	for _, deps := range declared {
 		for n := range deps {
@@ -194,6 +198,13 @@ func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]
 		for _, f := range rangedDependencyFields {
 			for n, spec := range declared[f] {
 				if !specRecorded(recorded, f, n, spec) {
+					return false
+				}
+			}
+		}
+		if l.kind == lockNPM {
+			for n, spec := range declared["peerDependencies"] {
+				if got, ok := l.peers[rel][n]; !ok || got != spec {
 					return false
 				}
 			}

@@ -155,8 +155,10 @@ func (a *Acquirer) Acquire(ctx context.Context, ref artifactcache.Ref, policy Po
 	if err != nil {
 		return AcquisitionRecord{}, err
 	}
+	presented := false
 	if c := creds.For(host); !c.IsEmpty() {
 		c.ApplyTo(req)
+		presented = true
 	}
 
 	client := *a.client
@@ -173,10 +175,15 @@ func (a *Acquirer) Acquire(ctx context.Context, ref artifactcache.Ref, policy Po
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// A registry with configured auth that refuses the request lacks a credential this
-		// run could present; that is not evidence the artifact is absent.
+		// A registry with configured auth that refuses the request is not evidence the
+		// artifact is absent: either the run had no credential to present, or the one it
+		// presented was refused.
 		if reg.AuthConfigured && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-			return AcquisitionRecord{}, &artifactcache.PolicyReason{PURL: ref.PURL, Host: host, Code: artifactcache.PolicyMissingCredential}
+			code := artifactcache.PolicyMissingCredential
+			if presented {
+				code = artifactcache.PolicyCredentialRejected
+			}
+			return AcquisitionRecord{}, &artifactcache.PolicyReason{PURL: ref.PURL, Host: host, Code: code}
 		}
 		// Not found / not served: nothing acquired — honest ErrDeclaredAbsent, never an
 		// empty success. (A 401 on a registry that requires auth is pre-empted by the

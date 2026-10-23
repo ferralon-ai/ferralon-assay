@@ -113,11 +113,22 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 		mans[dir] = m
 		siblings[m.Name] = true
 	}
+	// rewritable are the descriptors yarn may rewrite to a resolution's pattern: every lock edge
+	// and every workspace member's declared dependency. The root manifest's own are left as written.
+	var rewritable []string
+	for _, b := range blocks {
+		for _, n := range b.depOrder {
+			rewritable = append(rewritable, n+"@"+b.deps[n])
+		}
+	}
 	for _, dir := range append([]string{"."}, members...) {
 		m := mans[dir]
 		deps := map[string]*depEntry{}
 		for _, group := range []map[string]string{m.Dependencies, m.DevDependencies, m.OptionalDependencies} {
 			for n, rng := range group {
+				if dir != "." {
+					rewritable = append(rewritable, n+"@"+rng)
+				}
 				switch t := table[n+"@"+rng]; {
 				case t != nil:
 					deps[n] = t
@@ -129,7 +140,7 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 		}
 		r.addImporter(joinRel(prefix, dir), deps)
 	}
-	if !yarnResolutionsOK(rootMan.Resolutions, blocks) {
+	if !yarnResolutionsOK(rootMan.Resolutions, blocks, table, rewritable) {
 		return nil, false
 	}
 	if len(blocks) == 0 && manifestsDeclareDeps(root) {
@@ -158,21 +169,33 @@ func httpTarball(resolved string) bool {
 		strings.HasSuffix(u.Path, ".tgz")
 }
 
-// yarnResolutionsOK accepts only resolutions whose effect the lock already shows: a bare or
-// "**/" package key whose value every block of that name satisfies, as an exact pin or a range
-// rangeSatisfied decides. Any other key (a nested path) or value (a protocol, a range
-// rangeSatisfied cannot decide) changes resolution in a way the lane does not replay.
-func yarnResolutionsOK(res map[string]string, blocks []yarnBlock) bool {
+// yarnResolutionsOK accepts only resolutions whose effect the lock already shows. The key must be
+// a bare or "**/" package name, and every block of that name must satisfy the value, as an exact
+// pin or a range rangeSatisfied decides. yarn rewrites each rewritable descriptor of the name to
+// the one pattern name@value, so for a range every such descriptor must already map to that
+// pattern's block: two blocks that each satisfy the range still install as one. Any other key (a
+// nested path) or value (a protocol, a range rangeSatisfied cannot decide) changes resolution in a
+// way the lane does not replay.
+func yarnResolutionsOK(res map[string]string, blocks []yarnBlock, table map[string]*depEntry, rewritable []string) bool {
 	for k, v := range res {
 		name := strings.TrimPrefix(k, "**/")
 		if !safeLoadName(name) {
 			return false
 		}
+		exact := exactVersion(v)
 		for _, b := range blocks {
 			for _, d := range b.descriptors {
-				if n, _ := splitDescriptor(d); n == name && !(exactVersion(v) && b.version == v) && !rangeSatisfied(b.version, v) {
+				if n, _ := splitDescriptor(d); n == name && !(exact && b.version == v) && !rangeSatisfied(b.version, v) {
 					return false
 				}
+			}
+		}
+		if exact {
+			continue // every block of the name is v, so whichever block a rewrite lands on is the same
+		}
+		for _, d := range rewritable {
+			if n, _ := splitDescriptor(d); n == name && table[d] != table[name+"@"+v] {
+				return false
 			}
 		}
 	}

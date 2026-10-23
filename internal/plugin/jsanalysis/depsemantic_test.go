@@ -659,29 +659,83 @@ func TestSemantic_G12PnpmExcludeLinks(t *testing.T) {
 }
 
 // TestSemantic_G13YarnResolutions: only a bare or "**/" key whose exact pin or decidable range
-// every block of the name satisfies is trusted.
+// every block of the name satisfies is trusted. For a range, every rewritable descriptor of the
+// name must already share the block of the resolution's own pattern, which yarn writes onto it
+// (pat).
 func TestSemantic_G13YarnResolutions(t *testing.T) {
 	for _, tc := range []struct {
 		name, res string
+		pat       bool
 		withheld  bool
 	}{
-		{"bare_exact", `{"q":"1.0.0"}`, false},
-		{"glob_exact", `{"**/q":"1.0.0"}`, false},
-		{"unsatisfied", `{"q":"2.0.0"}`, true},
-		{"nested", `{"p/q":"1.0.0"}`, true},
-		{"range", `{"q":"^1.0.0"}`, false},
-		{"glob_range", `{"**/q":">=1.0.0 <2.0.0"}`, false},
-		{"range_unsatisfied", `{"q":"^2.0.0"}`, true},
-		{"range_undecidable", `{"q":"1.x"}`, true},
-		{"range_or", `{"q":"^1.0.0 || ^2.0.0"}`, true},
-		{"protocol", `{"q":"npm:q@1.0.0"}`, true},
-		{"nested_range", `{"p/q":"^1.0.0"}`, true},
-		{"no_block", `{"r":"^9.0.0"}`, false},
+		{"bare_exact", `{"q":"1.0.0"}`, false, false},
+		{"glob_exact", `{"**/q":"1.0.0"}`, false, false},
+		{"unsatisfied", `{"q":"2.0.0"}`, false, true},
+		{"nested", `{"p/q":"1.0.0"}`, false, true},
+		{"range", `{"q":"^1.0.0"}`, true, false},
+		{"range_pattern_unlocked", `{"q":"^1.0.0"}`, false, true},
+		{"glob_range", `{"**/q":">=1.0.0 <2.0.0"}`, true, false},
+		{"range_unsatisfied", `{"q":"^2.0.0"}`, true, true},
+		{"x_range", `{"q":"1.x"}`, true, false},
+		{"or_satisfied", `{"q":"^0.9.0 || ^1.0.0"}`, true, false},
+		{"or_unsatisfied", `{"q":"^0.9.0 || ^2.0.0"}`, true, true},
+		{"or_undecidable", `{"q":"^1.0.0 || latest"}`, true, true},
+		{"hyphen_satisfied", `{"q":"0.5.0 - 1.2"}`, true, false},
+		{"hyphen_unsatisfied", `{"q":"1.0.1 - 2.0.0"}`, true, true},
+		{"range_prerelease", `{"q":"^1.0.0-beta"}`, true, true},
+		{"protocol", `{"q":"npm:q@1.0.0"}`, false, true},
+		{"nested_range", `{"p/q":"^1.0.0"}`, true, true},
+		{"no_block", `{"r":"^9.0.0"}`, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, q := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ}), qPkg("1.0.0")
+			if tc.pat {
+				var res map[string]string
+				if err := json.Unmarshal([]byte(tc.res), &res); err != nil {
+					t.Fatal(err)
+				}
+				for _, v := range res {
+					q.descs = []string{"q@1.0.0", "q@" + v}
+				}
+			}
 			files := map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"resolutions":`+tc.res)}
 			cg := semRun(t, semProgram(t, yarnLockFile, yarnLockText(t, p, q), files), semStore(t, p, q))
+			if runWide(cg) != tc.withheld {
+				t.Errorf("run-wide = %v, want %v; got %+v", runWide(cg), tc.withheld, cg.Partiality)
+			}
+		})
+	}
+}
+
+// TestSemantic_G13YarnRangeOneBlock: yarn rewrites every transitive descriptor of a range
+// resolution's name to one pattern, so two blocks that each satisfy the range are a lock the
+// install does not reproduce, and withhold. The root manifest's own descriptor is not rewritten
+// and may keep a block of its own.
+func TestSemantic_G13YarnRangeOneBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rootQ    bool
+		withheld bool
+	}{
+		{"two_transitive_blocks", false, true},
+		{"root_descriptor_kept", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "^1.0.0"}, map[string]string{"index.js": callsQ})
+			q1, q2 := qPkg("1.0.0"), qPkg("1.5.0")
+			q1.descs = []string{"q@^1.0.0"}
+			q2.descs = []string{"q@^1.5.0"}
+			rootDeps := map[string]string{"p": "1.0.0"}
+			pkgs := []*semPkg{p, q1, q2}
+			if tc.rootQ {
+				rootDeps["q"] = "^1.5.0"
+			} else {
+				r := sp("r", "1.0.0", map[string]string{"q": "^1.5.0"}, nil)
+				rootDeps["r"] = "1.0.0"
+				pkgs = append(pkgs, r)
+			}
+			files := map[string]string{"package.json": manifestWith("app", rootDeps, `,"resolutions":{"q":"^1.0.0"}`)}
+			cg := semRun(t, semProgram(t, yarnLockFile, yarnLockText(t, pkgs...), files), semStore(t, pkgs...))
 			if runWide(cg) != tc.withheld {
 				t.Errorf("run-wide = %v, want %v; got %+v", runWide(cg), tc.withheld, cg.Partiality)
 			}

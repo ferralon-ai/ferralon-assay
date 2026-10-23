@@ -40,6 +40,19 @@ type callSite struct {
 	calleeEnclosing []string // enclosing class chain of a calleeFrame callee
 	chain           []string // every segment of the callee expression ("express","Router" in express.Router()); nil for a calleeFrame
 	headParam       paramRef // the enclosing function parameter the chain's head names; idx<0 when it names none
+	at              int      // rune index the call's names are read at: its callee, or for a parameter default its function's body
+	// opaque marks a call whose callee is not a name or a dotted chain (opaque.go): nothing to
+	// resolve, listed without Targets; written is that callee as the source spells it.
+	opaque  bool
+	written string
+	// unconnected marks a call that is resolved and listed, never an edge (callgraph.go): an
+	// optional call (name?.(args)), or a call the scan reads where it draws no edges, a parameter
+	// default or a class heritage clause (calls.go listSkipped).
+	unconnected bool
+	// rebound marks a call whose callee name, or the receiver its method is read from, may be
+	// bound to something else where the call runs (shadow.go), so the declarations the resolver
+	// reads do not bound it.
+	rebound bool
 }
 
 // paramRef names one positional parameter of a function frame: the frame (enclosing chain,
@@ -428,7 +441,8 @@ func parseFile(module, src string) parseResult {
 	res.decls = parseDecls(r)
 	// Binding extraction scans the cleaned runes for structure and reads specifier
 	// literals from the position-identical raw source (stripJS is length-preserving).
-	res.bindings = extractModuleBindings(r, raw)
+	var scope *globalScope
+	res.bindings, scope = extractBindingsScoped(r, raw, nil, nil)
 	res.bindings.addLoads(hiddenLoads(r, raw, hidden))
 	sort.SliceStable(res.bindings.prefixLoads, func(a, b int) bool {
 		return res.bindings.prefixLoads[a].pos < res.bindings.prefixLoads[b].pos
@@ -438,7 +452,8 @@ func parseFile(module, src string) parseResult {
 		probes[k] = pl.pos
 	}
 	var frames []frameRef
-	res.calls, res.ingresses, frames = parseCallsAndIngressesProbing(r, probes)
+	res.calls, res.ingresses, frames = parseCallsAndIngressesProbing(r, raw, probes)
+	markRebound(r, scope, res.bindings, res.calls)
 	for k := range res.bindings.prefixLoads {
 		res.bindings.prefixLoads[k].caller = frames[k]
 	}

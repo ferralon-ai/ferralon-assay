@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -95,9 +96,9 @@ func buildDepLayout(buildDir string) *depLayout {
 				l.berry = true
 				continue
 			}
-			l.addUnplaced(sel.path)
+			l.addUnplaced(sel.path, sel.root)
 		case "pnpm":
-			l.addUnplaced(sel.path)
+			l.addUnplaced(sel.path, sel.root)
 		case "npm":
 			var lock npmLock
 			if json.Unmarshal(data, &lock) != nil {
@@ -114,13 +115,21 @@ func buildDepLayout(buildDir string) *depLayout {
 	return l
 }
 
-// addUnplaced records every package the pnpm or yarn classic lock at lockPath pins.
-func (l *depLayout) addUnplaced(lockPath string) {
+// addUnplaced records every package the pnpm or yarn classic lock at lockPath pins. The
+// line-based readers decode an unrecognised file as zero entries, so a lock that pins nothing
+// while a manifest it governs declares a dependency is not read.
+func (l *depLayout) addUnplaced(lockPath, root string) {
 	info, ok := parseLockfile(lockPath)
-	if !ok || info.opaque {
+	if !ok || info.opaque || len(info.deps) == 0 && manifestsDeclareDeps(root) {
 		l.incomplete = true
 	}
-	for _, d := range info.deps {
+	l.addUnplacedDeps(info.deps)
+}
+
+// addUnplacedDeps records each pinned dependency as an unread entry; one the lock does not
+// identify by name and version leaves the layout incomplete.
+func (l *depLayout) addUnplacedDeps(deps []plugin.ResolvedDependency) {
+	for _, d := range deps {
 		if d.Coordinate == "" || d.Version == "" {
 			l.incomplete = true
 			continue
@@ -130,6 +139,36 @@ func (l *depLayout) addUnplaced(lockPath string) {
 			unreadable: true, scriptsUnknown: true,
 		})
 	}
+}
+
+// manifestsDeclareDeps reports whether any package.json at or under root, outside skipped
+// trees, declares a dependency. A manifest that cannot be read or decoded counts as declaring.
+func manifestsDeclareDeps(root string) bool {
+	declares := false
+	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			declares = true
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			if p != root && skipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "package.json" {
+			return nil
+		}
+		var m invManifest
+		data, err := readRegular(p)
+		if err != nil || json.Unmarshal(data, &m) != nil ||
+			len(m.Dependencies)+len(m.DevDependencies)+len(m.OptionalDependencies)+len(m.PeerDependencies) > 0 {
+			declares = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return declares || walkErr != nil
 }
 
 func hasOnlyReason(reasons []string, r string) bool {

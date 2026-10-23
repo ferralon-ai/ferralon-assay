@@ -55,6 +55,7 @@ package scriptsurface
 
 import (
 	"encoding/json"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -187,8 +188,16 @@ type Veto struct {
 	bound     map[string]bool // lowercased base names of files allowed commands bind to
 	mentioned map[string]bool // lowercased base names other commands take as arguments
 	ran       map[string]bool // lowercased base names other commands run as the program
-	globs     map[string]bool // lowercased words holding a glob character, as paths
+	globs     []glob          // words holding a glob character, each with where it ran
 	samples   map[string]bool // lowercased base names of the sample hooks surface passed over
+	sampleAt  []string        // lowercased slash-form paths of those sample hooks
+}
+
+// glob is a word some command takes that holds a glob character, with the directories the
+// command may run in; dirs is nil when that is not known.
+type glob struct {
+	pat  string
+	dirs []string
 }
 
 // New returns a Veto for the build rooted at root. read is the lane walk's own fullyRead:
@@ -196,7 +205,7 @@ type Veto struct {
 func New(root string, read func(string) bool, spec Spec) *Veto {
 	return &Veto{root: filepath.Clean(root), read: read, spec: spec, vetoed: map[string]bool{},
 		bound: map[string]bool{}, mentioned: map[string]bool{}, ran: map[string]bool{},
-		globs: map[string]bool{}, samples: map[string]bool{}}
+		samples: map[string]bool{}}
 }
 
 // Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on is
@@ -245,21 +254,101 @@ func (v *Veto) sampleNamed() bool {
 	return false
 }
 
-// globNames reports whether a glob some command takes names the sample hook name: its base
-// matches name, and it has no directory, a hooks directory or a directory that is itself a
-// glob. A glob into any other directory, such as dist/*, cannot reach a hooks directory.
+// globNames reports whether a glob some command takes names the sample hook name. From known
+// directories the glob, joined to each, names it when it matches the sample's path, ** matching
+// any number of segments; through a symlinked directory, when its last segment matches name.
+// Otherwise (the directory not known, the glob absolute or leaving the build) it names it when
+// its last segment matches name and its directory is empty, a hooks directory or itself a glob:
+// a glob into any other directory, such as dist/*, cannot reach a hooks directory. A malformed
+// pattern names every sample.
 func (v *Veto) globNames(name string) bool {
-	for g := range v.globs {
-		dir, base := path.Split(g)
-		dir = strings.TrimSuffix(dir, "/")
-		if dir != "" && path.Base(dir) != "hooks" && !strings.ContainsAny(dir, "*?[") {
-			continue
-		}
-		if ok, err := path.Match(base, name); ok || err != nil {
+	for _, g := range v.globs {
+		if v.globReaches(g, name) {
 			return true
 		}
 	}
 	return false
+}
+
+func (v *Veto) globReaches(g glob, name string) bool {
+	if len(g.dirs) > 0 && !path.IsAbs(g.pat) {
+		joined, ok, linked := []string(nil), true, false
+		for _, d := range g.dirs {
+			j := filepath.Join(d, filepath.FromSlash(g.pat))
+			if !v.inRoot(j) {
+				ok = false
+				break
+			}
+			linked = linked || v.linkedPrefix(j)
+			joined = append(joined, strings.ToLower(filepath.ToSlash(j)))
+		}
+		if ok && linked {
+			m, err := path.Match(strings.ToLower(path.Base(g.pat)), name)
+			return m || err != nil
+		}
+		if ok {
+			for _, j := range joined {
+				for _, s := range v.sampleAt {
+					if segMatch(strings.Split(j, "/"), strings.Split(s, "/")) {
+						return true
+					}
+				}
+			}
+			return false
+		}
+	}
+	p := strings.ToLower(path.Clean(g.pat))
+	dir, base := path.Split(p)
+	dir = strings.TrimSuffix(dir, "/")
+	if dir != "" && path.Base(dir) != "hooks" && !strings.ContainsAny(dir, globChars) {
+		return false
+	}
+	ok, err := path.Match(base, name)
+	return ok || err != nil
+}
+
+// linkedPrefix reports whether a directory between the build root and p's first segment
+// holding a glob character is a symlink, so the glob may reach a place its path does not name.
+func (v *Veto) linkedPrefix(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil {
+		return true
+	}
+	at := v.root
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		if strings.ContainsAny(seg, globChars) {
+			return false
+		}
+		at = filepath.Join(at, seg)
+		if fi, err := os.Lstat(at); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// globChars are the characters that make a word a glob.
+const globChars = "*?["
+
+// segMatch reports whether the glob segments pat match the path segments name, a ** segment
+// matching any number of them and a malformed segment matching any one.
+func segMatch(pat, name []string) bool {
+	if len(pat) == 0 {
+		return len(name) == 0
+	}
+	if pat[0] == "**" {
+		for i := 0; i <= len(name); i++ {
+			if segMatch(pat[1:], name[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(name) == 0 {
+		return false
+	}
+	ok, err := path.Match(pat[0], name[0])
+	return (ok || err != nil) && segMatch(pat[1:], name[1:])
 }
 
 // sampleHook reports whether p is a sample hook: a name ending in .sample directly in a hooks
@@ -294,25 +383,124 @@ func (v *Veto) sampleHook(p string) bool {
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
 // mention records the base names of a command's arguments, a redirect's or an option's
-// target included.
-func (v *Veto) mention(args []string) { v.note(v.mentioned, args) }
+// target included. cur is where the command runs, nil when that is not known.
+func (v *Veto) mention(args []string, cur cursor) { v.note(v.mentioned, args, cur) }
 
-// note records in names the lowercased base name of each word, past any redirect and up to the
-// last =, and in globs each such word holding a glob character.
-func (v *Veto) note(names map[string]bool, words []string) {
-	for _, a := range words {
-		a = strings.TrimLeft(a, "0123456789<>&")
-		if i := strings.LastIndexByte(a, '='); i >= 0 {
-			a = a[i+1:]
+// note records in names the lowercased base name of each word, past any redirect, the shell
+// punctuation around it and up to the last =, and in globs each such word holding a glob
+// character, with the directories cur may run in. A brace list names each word it expands to,
+// and a range is a glob; a word with a $ in a hooks directory is a glob, each segment holding
+// the $ standing for any name.
+func (v *Veto) note(names map[string]bool, words []string, cur cursor) {
+	var dirs []string
+	if c, ok := cur.(*hostCursor); ok && !c.unknown {
+		dirs = append([]string(nil), c.dirs...)
+	}
+	for _, w := range words {
+		w = trimShell(w)
+		if i := strings.LastIndexByte(w, '='); i >= 0 {
+			w = trimShell(w[i+1:])
 		}
-		a = strings.ToLower(filepath.ToSlash(a))
-		if b := path.Base(a); b != "" && b != "." && b != "/" {
-			names[b] = true
-		}
-		if strings.ContainsAny(a, "*?[") {
-			v.globs[path.Clean(a)] = true
+		for _, a := range braces(filepath.ToSlash(w), 0) {
+			if b := strings.ToLower(path.Base(a)); b != "" && b != "." && b != "/" {
+				names[b] = true
+			}
+			if d, _ := path.Split(a); strings.Contains(a, "$") && path.Base(strings.TrimSuffix(d, "/")) == "hooks" {
+				segs := strings.Split(a, "/")
+				for i, s := range segs {
+					if strings.Contains(s, "$") {
+						segs[i] = "*"
+					}
+				}
+				a = strings.Join(segs, "/")
+			}
+			if strings.ContainsAny(a, globChars) {
+				v.globs = append(v.globs, glob{pat: path.Clean(a), dirs: dirs})
+			}
 		}
 	}
+}
+
+// trimShell strips a leading redirect and shell punctuation from both ends of w: an opening
+// or closing bracket only when w does not close or open it, or parentheses wrapping the word.
+func trimShell(w string) string {
+	for {
+		t := strings.TrimLeft(w, "0123456789<>&")
+		t = strings.Trim(t, ";&|`\"'")
+		t = strings.TrimPrefix(t, "$(")
+		for _, p := range []string{"()", "{}"} {
+			o, c := p[:1], p[1:]
+			if strings.HasPrefix(t, o) && strings.Count(t, o) > strings.Count(t, c) {
+				t = t[1:]
+			}
+			if strings.HasSuffix(t, c) && strings.Count(t, c) > strings.Count(t, o) {
+				t = t[:len(t)-1]
+			}
+			if o == "(" && len(t) >= 2 && strings.HasPrefix(t, o) && strings.HasSuffix(t, c) && !strings.ContainsAny(t[1:len(t)-1], p) {
+				t = t[1 : len(t)-1]
+			}
+		}
+		if t == w {
+			return w
+		}
+		w = t
+	}
+}
+
+// maxBraces bounds the words one brace expression expands to; past it the expression is a glob.
+const maxBraces = 64
+
+// braces returns the words w's brace lists expand to, outermost first; a brace range, or a
+// list nested too deep or expanding past maxBraces, becomes *. Braces with no top-level comma stay as they are.
+func braces(w string, depth int) []string {
+	for i := 0; i < len(w); i++ {
+		if w[i] != '{' || (i > 0 && w[i-1] == '$') {
+			continue
+		}
+		level, commas, end := 0, []int{}, -1
+		for j := i; j < len(w) && end < 0; j++ {
+			switch w[j] {
+			case '{':
+				level++
+			case '}':
+				level--
+				if level == 0 {
+					end = j
+				}
+			case ',':
+				if level == 1 {
+					commas = append(commas, j)
+				}
+			}
+		}
+		if end < 0 {
+			return []string{w}
+		}
+		if strings.Contains(w[i:end], "..") {
+			return braces(w[:i]+"*"+w[end+1:], depth+1)
+		}
+		if len(commas) == 0 {
+			continue
+		}
+		var out []string
+		start := i + 1
+		for _, c := range append(commas, end) {
+			out = append(out, w[:i]+w[start:c]+w[end+1:])
+			start = c + 1
+		}
+		if depth > 8 {
+			return []string{w[:i] + "*" + w[end+1:]}
+		}
+		var all []string
+		for _, o := range out {
+			all = append(all, braces(o, depth+1)...)
+			if len(all) > maxBraces {
+				return []string{w[:i] + "*" + w[end+1:]}
+			}
+		}
+		return all
+	}
+	return []string{w}
 }
 
 // walkedSurface reports whether p is an in-tree script surface outside every directory the
@@ -348,6 +536,7 @@ func (v *Veto) surface(path string, head []byte) (string, bool) {
 	}
 	if v.sampleHook(path) {
 		v.samples[strings.ToLower(filepath.Base(path))] = true
+		v.sampleAt = append(v.sampleAt, strings.ToLower(filepath.ToSlash(path)))
 		return "", false
 	}
 	if !v.spec.complete() {
@@ -398,7 +587,7 @@ func (v *Veto) opaque(src string) string {
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
 		}
-		v.mention(strings.Fields(line))
+		v.mention(strings.Fields(line), nil)
 	}
 	return ""
 }
@@ -558,8 +747,8 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				if expandedInstallLine(line) {
 					return "install verb after an expansion that does not tokenise"
 				}
-				v.mention(strings.Fields(line))
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
+				v.mention(strings.Fields(line), cur)
 			}
 			for _, seg := range segs {
 				if why := v.command(seg, cur, 0); why != "" {
@@ -674,10 +863,10 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words[1:])
+		v.mention(words[1:], cur)
 		// The program itself is kept apart so a command word never reads as rewriting a file
 		// Rebound guards; it can still run a sample hook.
-		v.note(v.ran, words[:1])
+		v.note(v.ran, words[:1], cur)
 		cur.other()
 		return ""
 	}

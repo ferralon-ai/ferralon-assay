@@ -22,7 +22,6 @@ import (
 //	npm ci                               refuses a lock package.json has moved past
 //	npm install|i                        with no package argument, when the npm lock beside
 //	                                     the package.json it installs covers it (lockCovers)
-//	yarn [install] --frozen-lockfile     refuses a yarn.lock package.json has moved past
 //	pnpm install --frozen-lockfile       refuses a pnpm-lock.yaml package.json has moved past
 //	npm run|run-script <name>            runs a script and installs nothing; the script, like
 //	npm test|t|start                     every package.json script value, passes the same gate
@@ -30,7 +29,7 @@ import (
 //	concurrently "<cmd>" ...             runs each <cmd>, which passes the same gate
 //
 // with only --ignore-scripts and subset flags added (npm: --production and --omit, --include
-// or --only with a value from laneSubsetConfigs; yarn and pnpm: --production), and with the package.json
+// or --only with a value from laneSubsetConfigs; pnpm: --production), and with the package.json
 // each binds to (the nearest at or above the command's directory, as npm finds it) and its
 // lock read here. npm run, run-script, start and install may also carry one --prefix <dir>,
 // which binds them to <dir>/package.json alone, read here and a surface the walk checks
@@ -38,9 +37,9 @@ import (
 // beside it, never one above (laneLockPreserving). Any npm form may follow assignments to
 // laneSubsetConfigs variables. concurrently may carry only concurrentlyFlags. Anything else
 // that names a package manager withholds: a package argument, another flag, a bare npm
-// install its lock does not cover, yarn or pnpm install (each re-locks), yarn install
-// --immutable (yarn 1 ignores it), npm exec, npx, pnpx, bunx, yarn dlx, pnpm run (pnpm
-// installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
+// install its lock does not cover, pnpm install without --frozen-lockfile (it re-locks),
+// every yarn install, --frozen-lockfile included (see laneAllowed), npm exec, npx, pnpx,
+// bunx, yarn dlx, pnpm run (pnpm installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
 // names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
 // npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
 // read, and what binds a command to a file, is lane-neutral, in scriptsurface.
@@ -104,7 +103,7 @@ func laneToken(word string) bool {
 	return false
 }
 
-// laneFlags are the flags an allowed yarn or pnpm install may carry.
+// laneFlags are the flags an allowed pnpm install may carry.
 var laneFlags = map[string]bool{"--production": true, "--ignore-scripts": true}
 
 // laneNPMFlags reports whether args are only flags an allowed npm install may carry:
@@ -180,11 +179,12 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 		case "test", "start":
 			return len(words) == 2 && b.Nearest("package.json") != nil
 		}
-		args := words[1:]
-		if args[0] == "install" {
-			args = args[1:]
-		}
-		return scriptsurface.FlagsOnly(args, laneFlags, "--frozen-lockfile") && b.Nearest("package.json", "yarn.lock") != nil
+		// No yarn install is allowed, --frozen-lockfile included: yarn 1 does not hold a
+		// workspace to its lock under that flag. When a member adds a dependency or moves a
+		// range past the locked version, or a new member appears, yarn 1.22 exits 0, installs
+		// versions yarn.lock does not record and leaves the lock byte-identical. yarn 2+
+		// --immutable is not recognised by yarn 1, which ignores it.
+		return false
 	case "pnpm":
 		return words[1] == "install" && scriptsurface.FlagsOnly(words[2:], laneFlags, "--frozen-lockfile") &&
 			b.Nearest("package.json", "pnpm-lock.yaml") != nil

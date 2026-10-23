@@ -521,6 +521,17 @@ func TestVeto_SampleHooks(t *testing.T) {
 		{"dotglob loop", sampleRun("shopt -s dotglob\nfor f in */*/*; do sh \"$f\"; done\n"), true},
 		{"sample hook in a JSON exec form", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".devcontainer.json": `{"postCreateCommand":["sh",".git/hooks/pre-commit.sample"]}`}), true},
 		{"node build script and React hooks", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/build.js\n", "scripts/build.js": "require('fs').copyFileSync('a', 'b')\n", "src/hooks/useThing.ts": "export const useThing = () => 1\n", "src/index.ts": "import { useThing } from './hooks/useThing'\n"}), false},
+		{"Rakefile runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "rake setup\n", "Rakefile": "task :setup do\n  sh 'sh .git/hooks/pre-commit.sample'\nend\n"}), true},
+		{"rake task file runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "rake setup\n", "lib/tasks/setup.rake": "task :setup do\n  system('sh .git/hooks/pre-commit.sample')\nend\n"}), true},
+		{"python shebang script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "scripts/bootstrap\n", "scripts/bootstrap": "#!/usr/bin/env python3\nimport os\nos.system('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"jsx build script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/setup.jsx\n", "scripts/setup.jsx": "require('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"pyproject task runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "poe setup\n", "pyproject.toml": "[tool.poe.tasks]\nsetup = \"sh .git/hooks/pre-commit.sample\"\n"}), true},
+		{"node script with a dotglob loop", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/each.js\n", "scripts/each.js": "require('child_process').execSync('shopt -s dotglob; for f in */*/*; do sh \"$f\"; done', {shell: '/bin/bash'})\n"}), true},
+		{"README naming a git URL", tree(map[string]string{".git/hooks/pre-commit.sample": install, "README.md": "git clone https://github.com/a/b.git\n"}), false},
+		{".dockerignore naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".dockerignore": ".git\nnode_modules\n"}), false},
+		{"lockfile with a git URL", tree(map[string]string{".git/hooks/pre-commit.sample": install, "package-lock.json": `{"packages":{"node_modules/x":{"resolved":"git+https://github.com/a/x.git#abc"}}}`}), false},
+		{"git config with a remote URL", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".git/config": "[remote \"origin\"]\n\turl = https://github.com/a/b.git\n"}), false},
+		{"binary file naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, "assets/logo.png": "\x89PNG\x00\x00 .git/hooks\n"}), false},
 		{"dirless glob after cd into another directory", tree(map[string]string{".git/hooks/pre-commit.sample": install, "dist/a.txt": "x\n", "build.sh": "cd dist && zip -r ../out.zip *\n"}), false},
 	}
 	for _, tt := range tests {

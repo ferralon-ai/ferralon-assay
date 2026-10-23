@@ -1257,3 +1257,42 @@ func TestSemantic_G18OuterManifest(t *testing.T) {
 		}))
 	})
 }
+
+// TestSemantic_LayoutVeto: the install veto reaches the pnpm and yarn classic layout readers. A
+// script that may install a package no lock records leaves a read semantic layout incomplete, so
+// the call graph withholds run-wide; each control resolves through the same layout.
+func TestSemantic_LayoutVeto(t *testing.T) {
+	const postinstall = `,"scripts":{"postinstall":"npm install --no-save q@2.0.0"}`
+	ci := map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: npm install q@2.0.0\n")}
+	for _, mgr := range []string{"pnpm", "yarn"} {
+		for name, tc := range map[string]struct {
+			extra    string
+			files    map[string]string
+			withheld bool
+		}{
+			"ci_install":  {"", ci, true},
+			"postinstall": {postinstall, nil, true},
+			"control":     {"", nil, false},
+		} {
+			t.Run(mgr+"_"+name, func(t *testing.T) {
+				q := qPkg("1.0.0")
+				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+				lockName, lock := pnpmLockFile, pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}}, p, q)
+				if mgr == "yarn" {
+					lockName, lock = yarnLockFile, yarnLockText(t, p, q)
+				}
+				files := map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, tc.extra)}
+				maps.Copy(files, tc.files)
+				dir := semProgram(t, lockName, lock, files)
+				cg := semRun(t, dir, semStore(t, p, q))
+				incomplete := buildDepLayout(context.Background(), dir).incomplete
+				if tc.withheld && (!incomplete || !runWide(cg)) {
+					t.Errorf("a vetoed %s build withholds through the layout; incomplete=%v got %+v", mgr, incomplete, cg.Partiality)
+				}
+				if !tc.withheld && (incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+					t.Errorf("control resolves q@1.0.0 through the %s layout; incomplete=%v got %+v", mgr, incomplete, cg.Partiality)
+				}
+			})
+		}
+	}
+}

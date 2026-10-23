@@ -27,7 +27,10 @@ package jsanalysis
 //     dependencies, devDependencies, optionalDependencies or peerDependencies, and recorded the
 //     same spec for each non-peer one (npm v2/v3 project entries, yarn header descriptors, pnpm
 //     importer specifiers), so a non-frozen install would not re-resolve it. A v1 package-lock
-//     records no specs, so it never covers a package.json that declares one. Peers are checked by
+//     records no specs, so it covers only its own root project, and only when the version it
+//     installed for each non-peer name satisfies the declared range (rangeSatisfied), npm's own
+//     test for keeping a locked version; a range form rangeSatisfied does not model does not
+//     cover. Peers are checked by
 //     name: a peer the lock does not install is still expected present at runtime (the host
 //     provides it), so its absence here proves nothing. npm v2/v3 also records each project's own
 //     peer specs, and npm re-resolves a peer whose spec drifted, so there a drifted peer
@@ -175,7 +178,9 @@ func governingLocks(dir string, byDir map[string][]lockInfo) (string, []lockInfo
 }
 
 // lockCovers reports whether one lockfile records the project at rel (relative to the lock's
-// directory) with every declared name, and the same spec for each name it installs from.
+// directory) with every declared name, and the same spec for each name it installs from, an
+// npm v2/v3 lock's recorded peers included (for a v1 package-lock, a version at the root
+// satisfying it, for every declared field peers included).
 func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]string) bool {
 	for _, deps := range declared {
 		for n := range deps {
@@ -217,10 +222,14 @@ func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]
 			}
 		}
 		return true
-	default: // lockNPMv1 records no specs
-		for _, f := range rangedDependencyFields {
-			if len(declared[f]) > 0 {
-				return false
+	default: // lockNPMv1 records no specs, only the version installed for each root dependency
+		// A root peer is held to its range too: npm 7+ installs the root's own peers and
+		// replaces a locked copy outside the range.
+		for _, f := range lockedDependencyFields {
+			for n, spec := range declared[f] {
+				if rel != "." || !rangeSatisfied(l.rootVersions[n], spec) {
+					return false
+				}
 			}
 		}
 		return true

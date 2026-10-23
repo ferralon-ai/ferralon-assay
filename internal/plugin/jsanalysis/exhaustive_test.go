@@ -114,7 +114,16 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 package-lock spec drift", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": exLockV3}, false},
 		{"S1 yarn spec drift", map[string]string{"package.json": pkgJSONDrift, "yarn.lock": exYarnLock}, false},
 		{"S1 pnpm spec drift", map[string]string{"package.json": pkgJSONDrift, "pnpm-lock.yaml": exPnpmV9}, false},
-		{"S1 package-lock v1 records no specs", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, false},
+		// ferralon-ai/tracker#495: a v1 lock records no specs, so it covers its root project
+		// when each locked version satisfies the declared range, and nothing less.
+		{"#495 package-lock v1 whose versions satisfy every range", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, true},
+		{"#495 package-lock v1 version outside its range", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 against a range form not modelled", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"4.x"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 locking a prerelease", map[string]string{"package.json": exPkgJSON, "package-lock.json": strings.Replace(lockV1, "4.18.2", "4.19.0-rc.1", 1)}, false},
+		{"#495 package-lock v1 locking the name only nested", map[string]string{"package.json": exPkgJSON, "package-lock.json": `{"name":"app","lockfileVersion":1,"dependencies":{"left-pad":{"version":"1.3.0","dependencies":{"express":{"version":"4.18.2"}}}}}`}, false},
+		{"#495 package-lock v1 governing a nested project", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1, "tools/package.json": toolJSON}, false},
+		{"#495 package-lock v1 root peer outside its range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"left-pad":"^2.0.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 root peer inside its range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, true},
 		{"S1 nested project the lock does not record", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": toolJSON}, false},
 		{"S1 nested project the lock does not record, declaring only a peer it keys", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": `{"name":"tool","peerDependencies":{"express":"^4.18.0"}}`}, false},
 		{"S1 nested workspace the lock records", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV3Tools, "tools/package.json": toolJSON}, true},

@@ -461,22 +461,32 @@ func pctEscape(s string) string {
 
 // mapIntegrity maps an SRI integrity string ("sha512-<b64>") to the algorithm-prefixed form
 // ("sha512:<b64>"): the separator '-' becomes ':', the base64 payload is untouched (not
-// decoded). An empty or malformed value yields "".
+// decoded). When the value carries several space-separated hashes, the strongest one wins
+// (sha512 > sha384 > sha256 > sha1, as npm ranks them), so the digest that verifies a tarball
+// is never weaker than the lock offers. sha384 is ranked though artifactcache cannot verify
+// it, so a lock whose strongest hash is sha384 fails closed rather than falling back to a
+// weaker one. With no ranked algorithm, the first well-formed hash is kept. An empty or
+// malformed value yields "".
 func mapIntegrity(sri string) string {
-	sri = strings.TrimSpace(sri)
-	if sri == "" {
-		return ""
+	best, bestRank := "", -1
+	for _, h := range strings.Fields(sri) {
+		if q := strings.IndexByte(h, '?'); q >= 0 {
+			h = h[:q]
+		}
+		i := strings.IndexByte(h, '-')
+		if i <= 0 || i == len(h)-1 {
+			continue
+		}
+		rank := sriStrength[h[:i]]
+		if best == "" || rank > bestRank {
+			best, bestRank = h[:i]+":"+h[i+1:], rank
+		}
 	}
-	// A resolution may carry multiple space-separated hashes; take the first.
-	if sp := strings.IndexByte(sri, ' '); sp >= 0 {
-		sri = sri[:sp]
-	}
-	i := strings.IndexByte(sri, '-')
-	if i <= 0 || i == len(sri)-1 {
-		return ""
-	}
-	return sri[:i] + ":" + sri[i+1:]
+	return best
 }
+
+// sriStrength ranks SRI algorithms by strength; any other algorithm (md5 among them) ranks 0.
+var sriStrength = map[string]int{"sha1": 1, "sha256": 2, "sha384": 3, "sha512": 4}
 
 // artifactIdentity returns the selected artifact's filename. When the lockfile records a
 // tarball URL, its filename tail (minus any '#sha1' fragment) is used; otherwise the

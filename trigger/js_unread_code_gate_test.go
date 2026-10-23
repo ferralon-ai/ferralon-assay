@@ -443,6 +443,9 @@ func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 
 		// S11
 		{"Function reached through Reflect read from a function's this by a parameter key", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; const m = 'get'; function f(r) { return this[r][m](g, k)(process.argv[3])(); } f('Reflect');function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// U3-let
+		{"Function reached through Reflect indexed by a let a loop update rebinds", "const j = { parse: String };\nfunction g() {}\nconst k = process.argv[4]; for (let m = 'has'; m; m = m === 'has' ? 'get' : '') { if (m === 'get') Reflect[m](g, k)(process.argv[3])(); }function load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		{"binding alias", `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }

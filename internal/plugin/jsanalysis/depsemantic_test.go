@@ -938,6 +938,17 @@ func TestSemantic_G17Regions(t *testing.T) {
 // install leaves, is never read: a decoy file there changes nothing, and neither does making
 // the store directory unreadable.
 func TestSemantic_DecoyAtSyntheticPath(t *testing.T) {
+	t.Run("yarn_classic", func(t *testing.T) {
+		p, q := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ}), qPkg("1.0.0")
+		dir := semProgram(t, yarnLockFile, yarnLockText(t, p, q), nil)
+		store := semStore(t, p, q)
+		base := withDeps(t, dir, store)
+		plant(t, filepath.Join(dir, "node_modules", ".yarn-classic", "q@1.0.0", "node_modules", "q"))
+		if cg := withDeps(t, dir, store); !slices.Equal(cg.Edges, base.Edges) || !slices.Equal(cg.Partiality.Reasons, base.Partiality.Reasons) || len(cg.Partiality.Scoped) != len(base.Partiality.Scoped) {
+			t.Errorf("the decoy changed the result: %+v vs %+v", cg.Partiality, base.Partiality)
+		}
+	})
+
 	dir, store := pqFixture(t, "9.0", qPkg("1.0.0"))
 	base := withDeps(t, dir, store)
 	plant(t, filepath.Join(dir, "node_modules", ".pnpm", "q@1.0.0", "node_modules", "q"))
@@ -958,16 +969,6 @@ func TestSemantic_DecoyAtSyntheticPath(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(store0, 0o755) })
 	same("unreadable store directory")
 
-	t.Run("yarn_classic", func(t *testing.T) {
-		p, q := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ}), qPkg("1.0.0")
-		dir := semProgram(t, yarnLockFile, yarnLockText(t, p, q), nil)
-		store := semStore(t, p, q)
-		base := withDeps(t, dir, store)
-		plant(t, filepath.Join(dir, "node_modules", ".yarn-classic", "q@1.0.0", "node_modules", "q"))
-		if cg := withDeps(t, dir, store); !slices.Equal(cg.Edges, base.Edges) || !slices.Equal(cg.Partiality.Reasons, base.Partiality.Reasons) || len(cg.Partiality.Scoped) != len(base.Partiality.Scoped) {
-			t.Errorf("the decoy changed the result: %+v vs %+v", cg.Partiality, base.Partiality)
-		}
-	})
 }
 
 // plant writes a decoy package at dir: code that would withhold if read, and an install script.

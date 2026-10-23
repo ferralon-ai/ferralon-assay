@@ -78,7 +78,8 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
-// Spec is what a lane decides. Every field but EnvKeeps, RunWrapper and RunBinds is required.
+// Spec is what a lane decides. Every field but EnvKeeps, RunWrapper, RunBinds and Concurrent
+// is required.
 type Spec struct {
 	// Token reports whether a word names one of the lane's installers or package runners.
 	Token func(word string) bool
@@ -98,6 +99,10 @@ type Spec struct {
 	// RunBinds reports whether a run wrapper's argv is the command it runs, not a name it looks
 	// up somewhere this does not read. nil withholds every run wrapper.
 	RunBinds func(words []string, b Binder) bool
+	// Concurrent returns the commands a concurrent runner starts (concurrently "<cmd>" ...),
+	// each shell text checked as sh -c would run it, and whether words is one. A runner with no
+	// commands withholds, as does one this cannot read. nil means the lane has none.
+	Concurrent func(words []string) (cmds []string, ok bool)
 	// ReadRegular reads a whole regular file, and Absent reports whether a filesystem error
 	// means a path is not there: the lane's own, so every file this reads is read the lane's way.
 	ReadRegular func(path string) ([]byte, error)
@@ -943,6 +948,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if seg.expands || hasRedirect(words) {
 		return "install command with an expansion or redirect: " + strings.Join(words, " ")
 	}
+	if v.spec.Concurrent != nil {
+		if cmds, ok := v.spec.Concurrent(words); ok {
+			return v.concurrent(words, cmds, cur, depth)
+		}
+	}
 	if v.spec.RunWrapper != nil {
 		if argv, ok := v.spec.RunWrapper(words); ok {
 			if len(argv) == 0 || depth >= maxRunDepth || v.spec.RunBinds == nil || !v.spec.RunBinds(words, cur) {
@@ -953,6 +963,31 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	if !v.spec.Allowed(words, cur) {
 		return "install command: " + strings.Join(words, " ")
+	}
+	return ""
+}
+
+// concurrent applies the rule to the commands a concurrent runner starts, each in a shell of
+// its own from where the runner runs: shell text that does not split into whole commands
+// withholds, as does a runner with none or nested too deep.
+func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
+	why := "install command: " + strings.Join(words, " ")
+	// Each nested command is a strictly shorter string, so the depth bound here is defence in
+	// depth; a run wrapper's script body is not, and needs it.
+	if len(cmds) == 0 || depth >= maxRunDepth {
+		return why
+	}
+	for _, c := range cmds {
+		segs, ok, dangles := shellSegments(c)
+		if !ok || dangles || len(segs) == 0 {
+			return why
+		}
+		sh := cur.fork()
+		for _, seg := range segs {
+			if w := v.command(seg, sh, depth+1); w != "" {
+				return w
+			}
+		}
 	}
 	return ""
 }

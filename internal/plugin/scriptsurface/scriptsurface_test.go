@@ -594,3 +594,21 @@ func TestVeto_EnvKeeps(t *testing.T) {
 		})
 	}
 }
+
+// A symlinked package.json passes read when the lane's read follows the link, as a WalkDir walk
+// with a Stat-based read does, and passes walkedSurface; inside Prefixed only unlinked refuses
+// it.
+func TestPrefixed_SymlinkedPackageJSON(t *testing.T) {
+	root := writeTree(t, map[string]string{"frontend/package.json": `{"name":"web"}` + "\n"})
+	if err := os.Mkdir(filepath.Join(root, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "frontend", "package.json"), filepath.Join(root, "web", "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	v := New(root, func(string) bool { return true }, testSpec)
+	c := &hostCursor{v: v, dirs: []string{root}}
+	if got := c.Prefixed("web", "package.json"); got != nil {
+		t.Fatalf("Prefixed = %v, want nil", got)
+	}
+}

@@ -216,6 +216,100 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 	}
 }
 
+// npm run, run-script and start bind to <dir>/package.json alone under --prefix <dir>, any npm
+// form may follow assignments to subset-selection variables, and concurrently runs commands
+// that pass the same gate. Every variant outside those withholds.
+func TestResolveVersions_ScriptForms(t *testing.T) {
+	const (
+		lock = `{"name":"app","lockfileVersion":3,"packages":{` +
+			`"":{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"}},` +
+			`"node_modules/express":{"version":"4.19.2"}}}`
+		front = `{"name":"frontend","scripts":{"start":"react-scripts start","build":"react-scripts build"}}`
+	)
+	pkg := func(scripts string) string {
+		return `{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"},"scripts":{` + scripts + `}}`
+	}
+	tree := func(scripts string, extra map[string]string) map[string]string {
+		files := map[string]string{"package.json": pkg(scripts), "package-lock.json": lock, "frontend/package.json": front}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		links map[string]string // link → target, relative to the tree
+		want  bool
+	}{
+		// (a) a leading assignment to a subset-selection variable.
+		{"assignment: NPM_CONFIG_PRODUCTION=false npm ci", tree(`"heroku-postbuild":"NPM_CONFIG_PRODUCTION=false npm ci"`, nil), nil, true},
+		{"assignment: two kept, lowercase, then npm ci", tree(`"build":"npm_config_omit=dev NPM_CONFIG_INCLUDE=optional npm ci"`, nil), nil, true},
+		{"assignment: another variable", tree(`"build":"NODE_ENV=production npm ci"`, nil), nil, false},
+		{"assignment: kept after another", tree(`"build":"NODE_ENV=production NPM_CONFIG_OMIT=dev npm ci"`, nil), nil, false},
+		{"assignment: kept, then a named install", tree(`"build":"NPM_CONFIG_PRODUCTION=false npm install left-pad"`, nil), nil, false},
+		{"assignment: kept, then a non-npm runner", tree(`"build":"NPM_CONFIG_PRODUCTION=false npx thing"`, nil), nil, false},
+
+		// (b) --prefix <dir>.
+		{"prefix: npm start --prefix frontend", tree(`"client":"npm start --prefix frontend"`, nil), nil, true},
+		{"prefix: npm run build --prefix frontend", tree(`"build":"npm run build --prefix frontend"`, nil), nil, true},
+		{"prefix: npm run-script --prefix=frontend build", tree(`"build":"npm run-script --prefix=frontend build"`, nil), nil, true},
+		{"prefix: kept assignment then --prefix", tree(`"build":"NPM_CONFIG_PRODUCTION=false npm run build --prefix frontend"`, nil), nil, true},
+		{"prefix: ../x", tree(`"client":"npm start --prefix ../x"`, map[string]string{"../x/package.json": front}), nil, false},
+		{"prefix: .. inside the build", tree(`"client":"npm start --prefix frontend/../frontend"`, nil), nil, false},
+		{"prefix: symlinked dir", tree(`"client":"npm start --prefix web"`, nil), map[string]string{"web": "frontend"}, false},
+		{"prefix: symlinked package.json", tree(`"client":"npm start --prefix web"`, map[string]string{"web/x": ""}), map[string]string{"web/package.json": "../frontend/package.json"}, false},
+		{"prefix: package.json not read", tree(`"client":"npm start --prefix frontend"`, map[string]string{"frontend/package.json": "{not json"}), nil, false},
+		{"prefix: package.json in a directory the walk skips", tree(`"client":"npm start --prefix node_modules/web"`, map[string]string{"node_modules/web/package.json": front}), nil, false},
+		{"prefix: no package.json there", tree(`"client":"npm start --prefix backend"`, map[string]string{"backend/server.js": ""}), nil, false},
+		{"prefix: given twice", tree(`"client":"npm start --prefix frontend --prefix frontend"`, nil), nil, false},
+		{"prefix: no dir", tree(`"client":"npm start --prefix"`, nil), nil, false},
+		{"prefix: npm test is not a prefixed form", tree(`"t":"npm test --prefix frontend"`, nil), nil, false},
+		{"prefix: npm start with another argument", tree(`"client":"npm start --prefix frontend extra"`, nil), nil, false},
+		{"prefix: absolute dir", tree(`"build":"npm run build --prefix /frontend"`, nil), nil, false},
+		{"prefix: after a cd to an expansion", tree(`"build":"cd $X && npm run build --prefix frontend"`, nil), nil, false},
+		{"prefix: after a cd to no directory", tree(`"build":"cd nowhere && npm run build --prefix frontend"`, nil), nil, false},
+		{"prefix: package.json rewritten first", tree(`"build":"sed -i s/x/y/ frontend/package.json; npm run build --prefix frontend"`, nil), nil, false},
+		{"prefix: dir literally named with a glob character", tree(`"client":"npm start --prefix front*"`, map[string]string{"front*/package.json": front}), nil, false},
+		{"prefix: dir literally named with a brace", tree(`"client":"npm start --prefix fr{o,}ntend"`, map[string]string{"fr{o,}ntend/package.json": front}), nil, false},
+
+		// (d) concurrently.
+		{"concurrently: two npm runs", tree(`"dev":"concurrently \"npm run server\" \"npm run client\"","server":"node server","client":"npm start --prefix frontend"`, nil), nil, true},
+		{"concurrently: -k and a prefixed start", tree(`"dev":"concurrently -k \"npm run server\" \"npm start --prefix frontend\""`, nil), nil, true},
+		{"concurrently: each command runs in a shell of its own", tree(`"dev":"concurrently \"cd nowhere\" \"npm ci\""`, nil), nil, true},
+		{"concurrently: a cd in one command does not move the next", tree(`"dev":"concurrently \"cd frontend\" \"npm start --prefix frontend\""`, nil), nil, true},
+		{"concurrently: a named install", tree(`"dev":"concurrently \"npm run server\" \"npm install left-pad\""`, nil), nil, false},
+		{"concurrently: an unknown flag", tree(`"dev":"concurrently --passthrough-arguments \"npm run server\""`, nil), nil, false},
+		{"concurrently: a valued flag", tree(`"dev":"concurrently -n api,web \"npm run server\" \"npm run client\""`, nil), nil, false},
+		{"concurrently: an unterminated quote in a command", tree(`"dev":"concurrently \"npm run 'server\""`, nil), nil, false},
+		{"concurrently: a subshell in a command", tree(`"dev":"concurrently \"(npm run server)\""`, nil), nil, false},
+		{"concurrently: a command ending in &&", tree(`"dev":"concurrently \"npm run server &&\""`, nil), nil, false},
+		{"concurrently: npm: shorthand", tree(`"dev":"concurrently \"npm:watch-*\""`, nil), nil, false},
+		{"concurrently: a bare npm command", tree(`"dev":"concurrently -k npm"`, nil), nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeLockTree(t, tt.files)
+			for link, target := range tt.links {
+				p := filepath.Join(dir, link)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := resolveJS(t, dir, "express")
+			if !r.Found {
+				t.Fatalf("express not found: %+v", r.All)
+			}
+			if r.Match.Resolved != tt.want {
+				t.Fatalf("Resolved = %v, want %v (match %+v)", r.Match.Resolved, tt.want, r.Match)
+			}
+		})
+	}
+}
+
 // A symlink into .git lets a path naming neither reach a sample hook, so the hooks are surfaces.
 func TestResolveVersions_SampleHookThroughSymlink(t *testing.T) {
 	const lock = `{"name":"app","lockfileVersion":3,"packages":{` +

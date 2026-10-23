@@ -388,8 +388,17 @@ func buildCallGraph(buildDir string) (graphBuild, error) {
 				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}, provenance{Algo: algoLocal})
 				continue
 			}
+			if cs.opaque {
+				// A callee the lane does not track may be any value, so any escaped frame.
+				decline(plugin.PartialReasonDynamicDispatch)
+				unresolved = append(unresolved, plugin.UnresolvedCall{Caller: caller, Callee: cs.written, Arity: cs.calleeArity, Reason: plugin.PartialReasonDynamicDispatch})
+				continue
+			}
 			r := rs.resolveCallSite(f.module, cs)
-			if target, ok := r.edge(); ok {
+			// An unconnected call (an optional call, a parameter default, a heritage clause) is
+			// listed, never connected: the edges stay those of the plain calls, and its target is
+			// the bound of its entry instead.
+			if target, ok := r.edge(); ok && !cs.unconnected {
 				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 				continue
 			}
@@ -398,7 +407,7 @@ func buildCallGraph(buildDir string) (graphBuild, error) {
 				// An edge into a package-boundary node names the dependency member the call
 				// enters; it is not an inspection of the package, which stays uninspectable.
 				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
-				if !seen[e] {
+				if !seen[e] && !cs.unconnected {
 					seen[e] = true
 					edges = append(edges, e)
 					provByEdge[e] = prov
@@ -411,9 +420,13 @@ func buildCallGraph(buildDir string) (graphBuild, error) {
 			}
 			decline(reason)
 			// A package can call back any function value handed to it, so a call that enters a
-			// package is never bounded; a declined name lists what it can denote (pickFunc).
+			// package is never bounded; a declined name lists what it can denote (pickFunc), when
+			// the name provably denotes what the resolver read (boundable).
 			var targets []plugin.Symbol
-			if r.Kind != resolvePackage && !enters {
+			if r.Kind != resolvePackage && !enters && boundable(cs) {
+				if t, ok := r.edge(); ok {
+					targets = append(targets, sym(t))
+				}
 				for _, c := range r.Candidates {
 					targets = append(targets, sym(c))
 				}
@@ -477,6 +490,18 @@ func buildCallGraph(buildDir string) (graphBuild, error) {
 		declined: declined,
 		unlisted: flags.unlisted,
 	}, nil
+}
+
+// boundable reports whether a declined call's candidates bound it: the callee is a bare name
+// or a method of a plain receiver (recv.m), read where no other binding of that name can be in
+// force (shadow.go). A this-call may run a subclass override the resolver does not read; the
+// leaf of a longer chain (a.b.m), or of a chain read off another value (f().m, a?.m), is a
+// property of a value the resolver does not track, though it reads the leaf as a bare name.
+func boundable(cs callSite) bool {
+	if cs.receiverThis || cs.rebound || cs.chain == nil {
+		return false
+	}
+	return len(cs.chain) == 1 || len(cs.chain) == 2 && cs.receiver != ""
 }
 
 // calleeAsWritten renders a call site's callee as the source names it: its dotted chain

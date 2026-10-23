@@ -161,6 +161,24 @@ func TestCallGraph_CompletenessInvariant(t *testing.T) {
 		"eval "+plugin.PartialReasonEvaluatedCode)
 	inline("ambiguous name", map[string]string{"app.js": "function f(a) { return a; }\nfunction f(a, b) { return b; }\nfunction main() { return f(1, 2, 3); }\nmodule.exports = { main };\n"}, false,
 		"f "+plugin.PartialReasonDynamicDispatch)
+	// Calls whose callee is not a name or a chain (opaque.go): Eric's six forms on #208, then the
+	// other shapes the scanner meets.
+	dd := plugin.PartialReasonDynamicDispatch
+	sink := "function sink(x) { return x; }\n"
+	exp := "module.exports = { run };\n"
+	inline("call on a call", map[string]string{"app.js": sink + "function get() { return sink; }\nfunction run() { return get()(1); }\n" + exp}, false, "get() "+dd)
+	inline("computed member call", map[string]string{"app.js": sink + "const t = { s: sink };\nfunction run(k) { return t[k](1); }\n" + exp}, false, "t[k] "+dd)
+	inline("index call", map[string]string{"app.js": sink + "const hs = [sink];\nfunction run() { return hs[0](1); }\n" + exp}, false, "hs[0] "+dd)
+	inline("comma callee", map[string]string{"app.js": sink + "function run() { return (0, sink)(1); }\n" + exp}, false, "(0, sink) "+dd)
+	inline("optional call", map[string]string{"app.js": "function g(x) { return x; }\nfunction run() { return g?.(1); }\n" + exp}, false, "g "+dd)
+	inline("tagged template", map[string]string{"app.js": sink + "function run(v) { return sink`a${v}b`; }\n" + exp}, false, "sink "+dd)
+	inline("optional call on an index", map[string]string{"app.js": sink + "const t = { s: sink };\nfunction run(k) { return t[k]?.(1); }\n" + exp}, false, "t[k] "+dd)
+	inline("non-null call", map[string]string{"app.ts": sink + "export function run(f?: (x: number) => void) { return f!(1); }\n"}, false, "f "+dd)
+	inline("new without arguments", map[string]string{"app.js": "function C() { this.x = 1; }\nfunction run() { return new C; }\n" + exp}, false, "new C "+dd)
+	inline("super call", map[string]string{"app.js": "class A { constructor(x) { this.x = x; } }\nclass B extends A { constructor() { super(1); } }\nmodule.exports = { B };\n"}, false, "super "+dd)
+	inline("call in a parameter default", map[string]string{"app.js": sink + "function run(a = sink(1)) { return a; }\n" + exp}, false, "sink "+dd)
+	inline("call in a class heritage clause", map[string]string{"app.js": "function mix(B) { return B; }\nclass A {}\nclass C extends mix(A) {}\nmodule.exports = { C };\n"}, false, "mix "+dd)
+	inline("bare decorator", map[string]string{"app.ts": "function sealed(c: any) { return c; }\n@sealed\nexport class C {}\n"}, false, "@sealed "+dd)
 	rows = append(rows, row{name: "unreadable source", unlisted: true, dir: func(t *testing.T) string {
 		dir := writeProgram(t, map[string]string{"b.js": "module.exports = function b() {};\n"})
 		mkfifo(t, dir, "a.js")
@@ -182,11 +200,12 @@ func TestCallGraph_CompletenessInvariant(t *testing.T) {
 			if !b.unlisted && len(b.res.Unresolved) != b.declined {
 				t.Errorf("len(Unresolved)=%d, declined=%d, and unlisted_sites is not set", len(b.res.Unresolved), b.declined)
 			}
-			if rw.want == nil {
-				return
-			}
+			// Every row pins unlisted, a row with no listed entries too ("unreadable source").
 			if b.unlisted != rw.unlisted {
 				t.Errorf("unlisted = %v, want %v", b.unlisted, rw.unlisted)
+			}
+			if rw.want == nil {
+				return
 			}
 			got := map[string]bool{}
 			for _, u := range b.res.Unresolved {
@@ -294,6 +313,82 @@ module.exports = { main };
 			files:  map[string]string{"app.js": "class A { run() { return this.missing(1); } }\nmodule.exports = { A };\n"},
 			callee: "this.missing",
 		},
+		// Eric's blocker-1 repro on #208: the computed call is listed unbounded beside the
+		// bounded f, so run→sink is not refuted.
+		{
+			name:   "computed call beside a bounded name",
+			files:  map[string]string{"app.js": ericRepro1},
+			callee: "t[k]",
+		},
+		{
+			name:   "the bounded name beside a computed call",
+			files:  map[string]string{"app.js": ericRepro1},
+			callee: "f",
+			want:   []string{funcSCIP("app", nil, "f", 1), funcSCIP("app", nil, "f", 2)},
+		},
+		// Eric's blocker-2 repros: a local or a parameter rebinds the name, so the declarations
+		// the resolver reads do not bound the call.
+		{
+			name:   "a local const shadows the name",
+			files:  map[string]string{"app.js": "function sink(x) { return x; }\nfunction f() {}\nfunction run() { const f = sink; return f(1); }\nmodule.exports = { run };\n"},
+			callee: "f",
+		},
+		{
+			name:   "a parameter shadows the name",
+			files:  map[string]string{"app.js": "function sink(x) { return x; }\nfunction f() {}\nfunction run(f) { return f(1); }\nrun(sink);\nmodule.exports = { run };\n"},
+			callee: "f",
+		},
+		{
+			name:   "no shadow: the declaration still bounds the call",
+			files:  map[string]string{"app.js": "function sink(x) { return x; }\nfunction f() {}\nfunction run() { return f(1); }\nmodule.exports = { run };\n"},
+			callee: "f",
+			want:   []string{funcSCIP("app", nil, "f", 0)},
+		},
+		{
+			name:   "this-call a subclass overrides",
+			files:  map[string]string{"app.js": "class C {\n  m() { return 0; }\n  run() { return this.m(1); }\n}\nclass D extends C {\n  m(x) { return x; }\n}\nmodule.exports = { C, D };\n"},
+			callee: "this.m",
+		},
+		{
+			name:   "leaf of a longer chain",
+			files:  map[string]string{"app.js": "function c() {}\nfunction run(o) { return o.b.c(1, 2); }\nmodule.exports = { run };\n"},
+			callee: "o.b.c",
+		},
+		{
+			name: "leaf of a chain read off an import",
+			files: map[string]string{
+				"lib.js": "module.exports = { b: { c: function (x) { return x; } } };\n",
+				"app.js": "const lib = require('./lib');\nfunction c() {}\nfunction run() { return lib.b.c(1, 2); }\nmodule.exports = { run };\n",
+			},
+			callee: "lib.b.c",
+		},
+		{
+			name:   "leaf of a chain read off a call",
+			files:  map[string]string{"app.js": "function json() {}\nfunction run(res) { return res.status(404).json(1); }\nmodule.exports = { run };\n"},
+			callee: "json",
+		},
+		{
+			name:   "optional call bounded by its one declaration",
+			files:  map[string]string{"app.js": "function g(x) { return x; }\nfunction run() { return g?.(1); }\nmodule.exports = { run };\n"},
+			callee: "g",
+			want:   []string{funcSCIP("app", nil, "g", 1)},
+		},
+		{
+			name:   "call in a parameter default",
+			files:  map[string]string{"app.js": "function sink(x) { return x; }\nfunction run(a = sink(1)) { return a; }\nmodule.exports = { run };\n"},
+			callee: "sink",
+			want:   []string{funcSCIP("app", nil, "sink", 1)},
+		},
+		{
+			name:   "parameter default calling another parameter",
+			files:  map[string]string{"app.js": "function f() {}\nfunction run(f, a = f(1)) { return a; }\nmodule.exports = { run };\n"},
+			callee: "f",
+		},
+		{
+			name:   "optional call on a parameter",
+			files:  map[string]string{"app.js": "function g(x) { return x; }\nfunction run(g) { return g?.(1); }\nmodule.exports = { run };\n"},
+			callee: "g",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -320,6 +415,16 @@ module.exports = { main };
 		})
 	}
 }
+
+// ericRepro1 is Eric's blocker-1 repro on #208: f's two declarations bound one site, and t[k]
+// can run sink, which only the computed call reaches.
+const ericRepro1 = `function sink(x) { return x; }
+function f(a) {}
+function f(a, b) {}
+const t = { s: sink };
+function run(k) { f(); return t[k](1); }
+module.exports = { run };
+`
 
 // TestCallGraph_EscapedModuleInit: every module's top-level frame is escaped, since a load the
 // lane cannot see may run it.

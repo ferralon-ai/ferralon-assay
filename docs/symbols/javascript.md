@@ -201,10 +201,22 @@ reasons:
 
 - every call `resolveCallSite` declines, including a call into a package and a call the package
   boundary connects to a dependency member;
-- every module-level load the scan records per module rather than per call: an out-of-tree package
-  load, a relative specifier naming no in-tree source, a computed `require`/`import()`, a native
-  load (`dlopen`) and `eval`/`Function`. Each is one entry on the module's top-level frame
-  (`<module-init>`), with `Callee` naming the loader;
+- every call whose callee is not a name or a dotted chain (`opaque.go`): call-on-call (`get()(1)`),
+  a computed member or index (`t[k](1)`, `hs[0](1)`), a parenthesized or comma expression
+  (`(0, sink)(1)`), an optional call on one of those (`t[k]?.(1)`), a TypeScript non-null call
+  (`f!(1)`), a tagged template (`` sink`x` ``), a `new` with no argument list (`new C`), a
+  `super(…)` call and a bare decorator (`@sealed`). Each is unbounded, with `Callee` the callee's
+  source text. A function expression called in place (`(function () {…})()`) is not listed: its
+  body is read in the enclosing frame;
+- every call the scan reads but never connects, so the edges stay what they were: an optional call
+  on a name or chain (`g?.(1)`, bounded by what the name resolves to, since `escape.go` does not
+  count `g?.(` as an escape), a call in a parameter default (on the function's own frame), a call in
+  a class heritage clause (`class C extends mix(A)`), and a call after `import(` or `import.meta`
+  on the same line;
+- every module-level dynamic load: a computed `require`/`import()`, a native load (`dlopen`) and
+  `eval`/`Function`, one entry per module per kind; and every literal load of an out-of-tree
+  package or of a relative specifier naming no in-tree source, one entry per specifier. Each is on
+  the module's top-level frame (`<module-init>`), with `Callee` naming the loader;
 - every static-prefix load (`require('./locales/' + lang)`), on the frame that holds it. It keeps
   its edges to the in-tree modules the prefix names.
 
@@ -221,6 +233,22 @@ match (`pickFunc`). It then lists every declaration of that name, whatever its a
 not dispatch on arity. It is complete to the same standard as an edge. A receiver the lane does not
 track, a package call or a call entering a package omits it, and omitted means the site could reach
 anything.
+
+The candidates bound a site only when the name denotes what the resolver read (`boundable`,
+`shadow.go`):
+
+- the callee is a bare name, or a method of a plain receiver (`j.put()`). The leaf of a longer chain
+  (`o.b.c()`), or of a chain read off another value (`f().m()`, `a?.m()`), is a property of a value
+  the lane does not track, though the resolver reads the leaf as a bare name;
+- it is not a `this` call, which may run a subclass override;
+- the scan proves no other binding of the name (or of the receiver) can be in force where the call
+  runs. Any binding anywhere in the outermost block holding the call counts: a parameter
+  (destructured, defaulted, rest), a `let`/`const`/`var`, a function or class declaration, a
+  `catch` binding, a destructuring pattern, a named function expression. So do a top-level
+  assignment or non-function `let`/`const`/`var` beside the declaration, a `for`-`in`/`of` head or
+  destructuring assignment anywhere in the module, and any `with` statement.
+
+Any other declined site is unbounded.
 
 **`Escaped` is every frame a hidden call or load can land on.** It is #106's escape roots
 (`escape.go`):
@@ -241,6 +269,16 @@ including tegron's path-removing patch, because `module.exports = { fetchUrl }` 
 value. #106 counts that as an escape root, whether or not any in-tree module loads `./fetcher`. None
 of the declined sites is bounded, so the path-removing tree stays `graph_partial` under the narrowing
 rule, not path-dead.
+
+**What the list does not cover.** Code that runs with no call written at the site is in no entry,
+and `unlisted_sites` does not declare it:
+
+- a JSX element (`<Comp />`), whose component the JSX runtime calls later;
+- a getter or setter run by a property read or write, and the coercion, iteration and thenable
+  hooks (`toString`/`valueOf`, `Symbol.iterator`, `then`) and `Proxy` traps the language calls.
+
+Each target is escaped (a JSX tag, a class member, a function used as a value), but no entry in the
+frame holding the site reaches it.
 
 The contract is tested in `unresolved_test.go`. Its `TestMain` holds every call graph the package's
 tests build to the invariant: `len(Unresolved)` equals the declined-site count, `unlisted_sites`

@@ -521,8 +521,12 @@ type CallGraphResult struct {
 	Algorithm  string     `json:"algorithm"` // the algorithm actually used
 	Edges      []CallEdge `json:"edges"`
 	Roots      []Symbol   `json:"roots"` // entrypoint symbols (main, init, etc.)
-	// Unresolved lists, one entry per site, every call or load the lane declined to connect: the
-	// sites behind the result's dynamic_dispatch and relationship_unexpressed:* reasons. It is
+	// Unresolved lists every call or load the lane declined to connect, one entry per declined
+	// call site, except module-level dynamic loads (a computed import() or require(), a native
+	// load, evaluated code), which aggregate to one entry per module per kind, and a module's
+	// literal loads of an out-of-tree package or an unread module, one entry per specifier on the
+	// module's top-level frame: the sites behind the result's dynamic_dispatch and
+	// relationship_unexpressed:* reasons. It is
 	// complete unless Partiality carries PartialReasonUnlistedSites, which the lane sets if and
 	// only if a declined site is missing here. A reason no entry carries, tool_failure and
 	// unsupported_phase1 among them, is attributable to no listed site, so a reader treats it as
@@ -547,9 +551,14 @@ type UnresolvedCall struct {
 	// whichever frame of that module holds the load.
 	Caller Symbol `json:"caller"`
 	// Callee is the callee as written: "name" or its dotted chain "head.name". A load names its
-	// loader: "require", "import", "dlopen" (native code) or "eval" (code built at run time).
+	// loader: "require", "import", "dlopen" (native code) or "eval" (code built at run time). A
+	// callee that is neither a name nor a chain is its source text, whitespace collapsed and cut
+	// at 80 runes: "get()", "t[k]", "(0, f)", "tag" of a tagged template, "new C", "super",
+	// "@decorator".
 	Callee string `json:"callee"`
-	// Arity is the argument count at the site; a load counts its one specifier or source.
+	// Arity is the argument count at the site; a load counts its one specifier or source, a
+	// tagged template its strings and each substitution, and a bare decorator the one value it
+	// decorates.
 	Arity int `json:"arity"`
 	// Reason is the PartialReason* code this site contributed to Partiality.Reasons.
 	Reason string `json:"reason"`

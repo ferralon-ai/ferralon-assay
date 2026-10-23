@@ -158,9 +158,16 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"yarn not lock-strict: yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, false, ""},
 		{"yarn not lock-strict: yarn install --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn install --frozen-lockfile\n"}, false, ""},
 		{"yarn not lock-strict: yarn --frozen-lockfile --production", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile --production\n"}, false, ""},
-		{"yarn not lock-strict: workspace member, yarn --frozen-lockfile in CI", map[string]string{
+		{"yarn not lock-strict: workspace member adds a dependency missing from yarn.lock", map[string]string{
 			"package.json":             `{"name":"root","private":true,"workspaces":["packages/*"],"dependencies":{"express":"^4.18.0"}}`,
-			"packages/a/package.json":  `{"name":"a","version":"1.0.0","dependencies":{"express":"^4.18.0"}}`,
+			"packages/a/package.json":  `{"name":"a","version":"1.0.0","dependencies":{"express":"^4.18.0","absent-package":"^1.0.0"}}`,
+			"yarn.lock":                yarnLock,
+			".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: yarn --frozen-lockfile\n",
+		}, false, ""},
+		// yarn installs express 5 for the member; the 4.18.2 the lock records is a stale pin.
+		{"yarn not lock-strict: workspace member moves express past the locked 4.18.2", map[string]string{
+			"package.json":             `{"name":"root","private":true,"workspaces":["packages/*"],"dependencies":{"express":"^4.18.0"}}`,
+			"packages/a/package.json":  `{"name":"a","version":"1.0.0","dependencies":{"express":"^5.0.0"}}`,
 			"yarn.lock":                yarnLock,
 			".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: yarn --frozen-lockfile\n",
 		}, false, ""},

@@ -108,7 +108,9 @@ func buildDepLayout(buildDir string) *depLayout {
 		}
 		switch sel.dialect {
 		case "yarn":
-			if isYarnBerry(data) {
+			// Not isYarnBerry: yarn classic writes an npm: alias as "<alias>@npm:<name>@<range>", so only
+			// the berry metadata block decides. A lock with neither it nor the v1 header is incomplete.
+			if strings.Contains(string(data), "__metadata:") {
 				l.berry = true
 				continue
 			}
@@ -319,8 +321,14 @@ func installedName(installPath string) string {
 // the lock's edges; a phantom load of a name the region pins no copy of continues the walk above
 // the region's root. A load the region can only bound by several copies resolves to nothing.
 func (l *depLayout) lookup(fromDir, name string) *depEntry {
+	e, _ := l.find(fromDir, name)
+	return e
+}
+
+// find is lookup that also returns the copies a semantic region could only bound a load by.
+func (l *depLayout) find(fromDir, name string) (*depEntry, []*depEntry) {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
-		return nil
+		return nil, nil
 	}
 	dir := fromDir
 	if dir == "." {
@@ -334,22 +342,22 @@ func (l *depLayout) lookup(fromDir, name string) *depEntry {
 	}
 	for {
 		if r := l.regionAt(dir); r != nil && r.semantic {
-			if e, _, found := r.resolve(dir, name); found {
-				return e
+			if e, copies, found := r.resolve(dir, name); found {
+				return e, copies
 			}
 			if r.prefix == "" {
-				return nil
+				return nil, nil
 			}
 			dir = parent(r.prefix)
 			continue
 		}
 		if path.Base(dir) != "node_modules" {
 			if e := l.byPath[path.Join(dir, "node_modules", name)]; e != nil {
-				return e
+				return e, nil
 			}
 		}
 		if dir == "" {
-			return nil
+			return nil, nil
 		}
 		dir = parent(dir)
 	}

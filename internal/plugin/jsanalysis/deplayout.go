@@ -32,6 +32,9 @@ type depEntry struct {
 	// lockInstallScript is the lock's own hasInstallScript flag (npm v2/v3), which keeps an
 	// install script visible when the tarball is not read.
 	lockInstallScript bool
+	// scriptsUnknown marks an entry from a lock that does not record install scripts (npm v1,
+	// pnpm, yarn classic): unread, it may run one.
+	scriptsUnknown bool
 }
 
 // depLayout is the install tree the selected lockfiles describe, keyed by install path. Node's
@@ -42,6 +45,9 @@ type depLayout struct {
 	berry bool
 	// incomplete marks a lockfile that could not be read or selected.
 	incomplete bool
+	// unplaced are the packages pnpm and yarn classic locks pin. Their install layout is not
+	// modeled yet, so they are never read and Node's walk never finds them.
+	unplaced []*depEntry
 }
 
 // entries returns the layout's entries in install-path order.
@@ -54,7 +60,7 @@ func (l *depLayout) entries() []*depEntry {
 }
 
 // buildDepLayout reads every selected npm lockfile under buildDir into one layout. yarn classic
-// and pnpm locks contribute no entries; yarn berry marks the layout.
+// and pnpm locks contribute unplaced entries; yarn berry marks the layout.
 func buildDepLayout(buildDir string) *depLayout {
 	l := &depLayout{byPath: map[string]*depEntry{}}
 	roots, read := discoverProjectRoots(buildDir)
@@ -87,7 +93,11 @@ func buildDepLayout(buildDir string) *depLayout {
 		case "yarn":
 			if isYarnBerry(data) {
 				l.berry = true
+				continue
 			}
+			l.addUnplaced(sel.path)
+		case "pnpm":
+			l.addUnplaced(sel.path)
 		case "npm":
 			var lock npmLock
 			if json.Unmarshal(data, &lock) != nil {
@@ -102,6 +112,24 @@ func buildDepLayout(buildDir string) *depLayout {
 		}
 	}
 	return l
+}
+
+// addUnplaced records every package the pnpm or yarn classic lock at lockPath pins.
+func (l *depLayout) addUnplaced(lockPath string) {
+	info, ok := parseLockfile(lockPath)
+	if !ok || info.opaque {
+		l.incomplete = true
+	}
+	for _, d := range info.deps {
+		if d.Coordinate == "" || d.Version == "" {
+			l.incomplete = true
+			continue
+		}
+		l.unplaced = append(l.unplaced, &depEntry{
+			name: d.Coordinate, version: d.Version, purl: makePURL(d.Coordinate, d.Version),
+			unreadable: true, scriptsUnknown: true,
+		})
+	}
 }
 
 func hasOnlyReason(reasons []string, r string) bool {
@@ -162,6 +190,8 @@ func (l *depLayout) addNpmV1(prefix, parent string, deps map[string]npmLockDep) 
 			version: dep.Version,
 			purl:    makePURL(name, dep.Version),
 			digest:  mapIntegrity(dep.Integrity),
+			// A v1 lock does not record hasInstallScript.
+			scriptsUnknown: true,
 		}
 		e.unreadable = e.digest == "" || isGitResolved(dep.Resolved) || isGitResolved(dep.Version) ||
 			strings.HasPrefix(dep.Version, "npm:") || strings.HasPrefix(dep.Version, "file:") ||
@@ -237,8 +267,12 @@ type depPackage struct {
 }
 
 type depFile struct {
-	rel  string
-	data []byte
+	rel string
+	// module is the file's module id inside its package: the extension-stripped path for the
+	// file a stem resolves to, the full path for a sibling Node can also load (a dual
+	// package's .mjs beside its .js).
+	module string
+	data   []byte
 }
 
 // bytesHandle is an in-memory artifactcache.Handle: the bytes verified are the bytes parsed.
@@ -273,16 +307,22 @@ func readCapped(h artifactcache.Handle, limit int64) ([]byte, error) {
 	return io.ReadAll(io.NewSectionReader(h, 0, h.Size()))
 }
 
+// tarSlack is the tar framing (headers, padding, end blocks) admitted on top of
+// maxUnpackedBytes when the decompressed stream is counted.
+const tarSlack = (maxPackageFiles + 2) * 1024
+
 // unpackDepPackage lists the tarball's regular files, keeping source text, and reads the
-// manifest facts. Any entry path that could escape the package fails the whole package.
+// manifest facts. Any entry path that could escape the package, or that the tarball holds twice,
+// fails the whole package: extraction keeps the last copy of a duplicate, and which copy the
+// lane read would be a guess.
 func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(tgz))
 	if err != nil {
 		return nil, errPackageUnread
 	}
-	tr := tar.NewReader(zr)
+	tr := tar.NewReader(&cappedReader{ctx: ctx, r: zr, left: maxUnpackedBytes + tarSlack})
 	pkg := &depPackage{entry: e, files: map[string]bool{}}
-	byStem := map[string]depFile{}
+	byStem := map[string][]depFile{}
 	var manifest []byte
 	var unpacked int64
 	for {
@@ -294,6 +334,9 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 			break
 		}
 		if err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
 			return nil, errPackageUnread
 		}
 		rel, ok := packageRelative(hdr.Name)
@@ -303,7 +346,7 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		if !hdr.FileInfo().Mode().IsRegular() || rel == "" {
 			continue
 		}
-		if len(pkg.files) >= maxPackageFiles {
+		if pkg.files[rel] || len(pkg.files) >= maxPackageFiles {
 			return nil, errPackageUnread
 		}
 		pkg.files[rel] = true
@@ -330,10 +373,7 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 			continue
 		}
 		stem := stripJSExt(rel)
-		if prev, ok := byStem[stem]; ok && sourceRank(path.Ext(prev.rel)) <= sourceRank(path.Ext(rel)) {
-			continue
-		}
-		byStem[stem] = depFile{rel: rel, data: body}
+		byStem[stem] = append(byStem[stem], depFile{rel: rel, data: body})
 	}
 	if manifest == nil {
 		return nil, errPackageUnread
@@ -344,9 +384,49 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 	}
 	pkg.installScript, pkg.native = manifestFacts(manifest, pkg.files)
 	for _, stem := range slices.Sorted(maps.Keys(byStem)) {
-		pkg.sources = append(pkg.sources, byStem[stem])
+		pkg.sources = append(pkg.sources, stemSources(stem, byStem[stem])...)
 	}
 	return pkg, nil
+}
+
+// stemSources orders the files sharing one extension-stripped id by sourceRank. The first is
+// the module the stem resolves to; every other file Node itself can load (.js, .cjs, .mjs) is
+// kept as its own module under its full path, so a dual package's other half is parsed too.
+func stemSources(stem string, files []depFile) []depFile {
+	slices.SortFunc(files, func(a, b depFile) int {
+		return sourceRank(path.Ext(a.rel)) - sourceRank(path.Ext(b.rel))
+	})
+	out := []depFile{{rel: files[0].rel, module: stem, data: files[0].data}}
+	for _, f := range files[1:] {
+		switch path.Ext(f.rel) {
+		case ".js", ".cjs", ".mjs":
+			f.module = f.rel
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// cappedReader reads r until left bytes are spent, then fails; it checks ctx before each read.
+type cappedReader struct {
+	ctx  context.Context
+	r    io.Reader
+	left int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if c.left <= 0 {
+		return 0, errPackageUnread
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	return n, err
 }
 
 // packageRelative strips a tarball entry's top directory ("package/" in an npm tarball) and

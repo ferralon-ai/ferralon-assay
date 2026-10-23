@@ -2,9 +2,11 @@ package jsanalysis
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -904,6 +906,10 @@ type pkgManifest struct {
 	workspaces []string
 	exports    interface{}
 	imports    interface{}
+	// frontEntries are the module and browser field targets a bundler building for the
+	// browser may load in place of main: the module field, a string browser field, and every
+	// path an object browser field maps to.
+	frontEntries []string
 }
 
 type rawPkg struct {
@@ -913,6 +919,8 @@ type rawPkg struct {
 	Workspaces json.RawMessage `json:"workspaces"`
 	Exports    json.RawMessage `json:"exports"`
 	Imports    json.RawMessage `json:"imports"`
+	Module     string          `json:"module"`
+	Browser    json.RawMessage `json:"browser"`
 }
 
 func parsePkgManifest(data []byte) *pkgManifest {
@@ -921,6 +929,22 @@ func parsePkgManifest(data []byte) *pkgManifest {
 		return nil
 	}
 	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main}
+	if rp.Module != "" {
+		m.frontEntries = append(m.frontEntries, rp.Module)
+	}
+	if len(rp.Browser) > 0 {
+		var one string
+		var byPath map[string]any
+		if json.Unmarshal(rp.Browser, &one) == nil && one != "" {
+			m.frontEntries = append(m.frontEntries, one)
+		} else if json.Unmarshal(rp.Browser, &byPath) == nil {
+			for _, k := range slices.Sorted(maps.Keys(byPath)) {
+				if t, ok := byPath[k].(string); ok && isRelativeSpecifier(t) {
+					m.frontEntries = append(m.frontEntries, t)
+				}
+			}
+		}
+	}
 	if len(rp.Exports) > 0 {
 		_ = json.Unmarshal(rp.Exports, &m.exports)
 	}

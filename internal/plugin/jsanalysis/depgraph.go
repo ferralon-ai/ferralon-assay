@@ -9,7 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
@@ -100,12 +100,12 @@ func (rs *resolver) entryModules(pkg *depPackage, sub string, viaRequire bool) [
 	case pkg.manifest.exports != nil:
 		for _, t := range exportsTargets(pkg.manifest.exports, sub, loadConditions(viaRequire)) {
 			if isRelativeSpecifier(t) {
-				add(rs.moduleFromDirRelative(dir, t))
+				add(rs.depModuleAt(dir, t))
 			}
 		}
 	case sub == ".":
 		if pkg.manifest.main != "" {
-			add(rs.moduleFromDirRelative(dir, pkg.manifest.main))
+			add(rs.depModuleAt(dir, pkg.manifest.main))
 		}
 		if len(out) == 0 {
 			add(rs.matchModule(path.Join(dir, "index")))
@@ -114,6 +114,35 @@ func (rs *resolver) entryModules(pkg *depPackage, sub string, viaRequire bool) [
 		add(rs.matchModule(stripJSExt(path.Join(dir, sub))))
 	}
 	sort.Strings(out)
+	return out
+}
+
+// depModuleAt resolves a path a read package's manifest names: the file itself when it is parsed
+// as its own module (a dual package's .mjs beside its .js), else the module it resolves to.
+func (rs *resolver) depModuleAt(dir, rel string) string {
+	if exact := path.Join(dir, strings.TrimPrefix(rel, "./")); rs.prog.moduleSet[exact] && rs.prog.deps.owns(exact) {
+		return exact
+	}
+	return rs.moduleFromDirRelative(dir, rel)
+}
+
+// frontEntryModules selects the modules a bundler building for the browser may load for a bare
+// load of a read package itself: its module and browser field targets.
+func (rs *resolver) frontEntryModules(fromModule, spec string) []string {
+	name, sub := splitBareSpecifier(spec)
+	if sub != "." {
+		return nil
+	}
+	e := rs.prog.deps.layout.lookup(moduleDir(fromModule), name)
+	if e == nil || rs.prog.deps.pkgs[e.path] == nil {
+		return nil
+	}
+	var out []string
+	for _, t := range rs.prog.deps.pkgs[e.path].manifest.frontEntries {
+		if m := rs.depModuleAt(e.path, t); m != "" && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
 	return out
 }
 
@@ -165,34 +194,54 @@ type depParse struct {
 	files  []parseResult
 	err    error
 	budget bool // the read budget ran out before the package was read
+	capped bool // the run's parsed-source cap was reached before the package was parsed
 }
 
 // readDeps reads and parses every readable layout entry from store across GOMAXPROCS workers.
+// It returns when every entry is done or ctx ends, whichever is first: an entry not done by
+// then is marked budget, and a worker still parsing it runs on with its result dropped.
 func readDeps(ctx context.Context, store artifactcache.Store, entries []*depEntry) []depParse {
 	out := make([]depParse, len(entries))
-	work := make(chan int)
-	var wg sync.WaitGroup
+	type result struct {
+		i int
+		p depParse
+	}
+	work := make(chan int, len(entries))
+	pending := map[int]bool{}
+	for i, e := range entries {
+		if !e.unreadable {
+			work <- i
+			pending[i] = true
+		}
+	}
+	close(work)
+	results := make(chan result, len(entries))
+	var parsed atomic.Int64
 	for range max(1, runtime.GOMAXPROCS(0)) {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			for i := range work {
-				out[i] = readOneDep(ctx, store, entries[i])
+				results <- result{i, readOneDep(ctx, store, entries[i], &parsed)}
 			}
 		}()
 	}
-	for i, e := range entries {
-		if e.unreadable {
-			continue
+	for len(pending) > 0 {
+		select {
+		case r := <-results:
+			out[r.i] = r.p
+			delete(pending, r.i)
+		case <-ctx.Done():
+			for i := range pending {
+				out[i] = depParse{budget: true}
+			}
+			return out
 		}
-		work <- i
 	}
-	close(work)
-	wg.Wait()
 	return out
 }
 
-func readOneDep(ctx context.Context, store artifactcache.Store, e *depEntry) depParse {
+// readOneDep reads and parses one package. parsed counts the source bytes the run has parsed;
+// a package that would take it past depRunSourceCap is left unparsed, marked capped.
+func readOneDep(ctx context.Context, store artifactcache.Store, e *depEntry, parsed *atomic.Int64) depParse {
 	if ctx.Err() != nil {
 		return depParse{budget: true}
 	}
@@ -200,17 +249,20 @@ func readOneDep(ctx context.Context, store artifactcache.Store, e *depEntry) dep
 	if err != nil {
 		return depParse{err: err, budget: ctx.Err() != nil}
 	}
+	var size int64
+	for _, f := range pkg.sources {
+		size += int64(len(f.data))
+	}
+	if parsed.Add(size) > depRunSourceCap {
+		return depParse{capped: true}
+	}
 	files := make([]parseResult, 0, len(pkg.sources))
 	for _, f := range pkg.sources {
-		if ctx.Err() != nil {
+		pr, ok := parseDepSource(ctx, e.path+"/"+f.module, f)
+		if !ok {
 			return depParse{budget: true}
 		}
-		module := e.path + "/" + stripJSExt(f.rel)
-		if path.Ext(f.rel) == vueExtension {
-			files = append(files, parseVueSFC(module, string(f.data)))
-		} else {
-			files = append(files, parseFile(module, string(f.data)))
-		}
+		files = append(files, pr)
 	}
 	pkg.sources = nil
 	return depParse{pkg: pkg, files: files}
@@ -274,20 +326,25 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 	}
 	d := &depGraph{layout: layout, pkgs: map[string]*depPackage{}}
 	var depFiles []fileParse
+	// An unread package whose lock marks or may mark an install script withholds run-wide: the
+	// script runs at install whether or not anything loads the package.
+	unread := func(reason string, e *depEntry) {
+		addScoped(reason, e.purl, e.purl)
+		if e.lockInstallScript || e.scriptsUnknown {
+			dflags.uninspectable = true
+		}
+	}
+	for _, e := range layout.unplaced {
+		unread(plugin.PartialReasonUninspectablePackage, e)
+	}
 	for i, e := range entries {
 		p := parsed[i]
 		switch {
 		case e.unreadable || p.err != nil && !p.budget:
-			addScoped(plugin.PartialReasonUninspectablePackage, e.purl, e.purl)
-			if e.lockInstallScript {
-				dflags.uninspectable = true
-			}
+			unread(plugin.PartialReasonUninspectablePackage, e)
 			continue
-		case p.budget:
-			addScoped(plugin.PartialReasonToolFailure, e.purl, e.purl)
-			if e.lockInstallScript {
-				dflags.uninspectable = true
-			}
+		case p.budget || p.capped:
+			unread(plugin.PartialReasonToolFailure, e)
 			continue
 		}
 		d.pkgs[e.path] = p.pkg
@@ -374,6 +431,19 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 		return true
 	}
 
+	// A first-party module a stock Create React App builds for the browser also loads its
+	// packages' module and browser entries; once any does, so may every dependency load.
+	craDirs := map[string]bool{}
+	frontend, anyFrontend := func(module string) bool {
+		dir := path.Dir(module)
+		v, ok := craDirs[dir]
+		if !ok {
+			v = stockCRAPackage(prog.root, module)
+			craDirs[dir] = v
+		}
+		return v
+	}, false
+
 	for i, f := range firstParty {
 		if i%256 == 0 && ctx.Err() != nil {
 			return false
@@ -390,6 +460,10 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			}
 			_, mods := rs.depTargets(f.module, ls.spec, ls.viaRequire)
 			loadEdges(f, mods, loadAlgo(ls.viaRequire))
+			if frontend(f.module) {
+				anyFrontend = true
+				loadEdges(f, rs.frontEntryModules(f.module, ls.spec), loadAlgo(ls.viaRequire))
+			}
 		}
 		for _, cs := range f.calls {
 			if cs.calleeFrame {
@@ -459,7 +533,21 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 					flags.scoped = append(flags.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonUninspectablePackage, Package: pkg.entry.purl, Targets: []string{originPURL(name)}})
 					continue
 				}
+				if len(mods) == 0 && d.pkgs[e.path] != nil {
+					// A read package whose entry selects no parsed module: what the load runs
+					// is not read.
+					switch ext := path.Ext(ls.spec); {
+					case ext == ".json":
+					case stylesheetExtensions[ext]:
+						flags.stylesheet = true
+					default:
+						flags.unreadModule = true
+					}
+				}
 				loadEdges(f, mods, algo)
+				if anyFrontend {
+					loadEdges(f, rs.frontEntryModules(f.module, ls.spec), algo)
+				}
 			}
 		}
 		for _, cs := range f.calls {

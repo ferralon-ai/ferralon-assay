@@ -894,6 +894,18 @@ func (v *Veto) workingDirs(units []unit) ([]string, bool) {
 // maxRunDepth bounds how many run wrappers one command may nest.
 const maxRunDepth = 4
 
+// expandedRunsShell reports whether the arguments of a program that expands, which may be a
+// wrapper, may hand a shell a file or text: a shell, eval or source among them, or a . with a
+// word after it (a last . is a path).
+func expandedRunsShell(args []string) bool {
+	for i, w := range args {
+		if fieldRunsShell(w) && (w != "." || i+1 < len(args)) {
+			return true
+		}
+	}
+	return false
+}
+
 // command applies the rule to one simple command run from cur, and returns why it withholds,
 // or "" when it does not.
 func (v *Veto) command(seg segment, cur cursor, depth int) string {
@@ -906,6 +918,13 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			opened += blockDepth[w]
 		}
 		seg, keyword = leadRedirects(seg.drop(n)), true
+	}
+	if len(seg.words) > 1 && seg.words[0] == "coproc" {
+		// A coprocess runs in a subshell: nothing it does moves this shell.
+		if m := cur.venv(); m.open >= 0 {
+			m.open += opened
+		}
+		return v.command(seg.drop(1), cur.fork(), depth)
 	}
 	if n := sourceHead(seg.words); n > 0 {
 		seg = seg.drop(n)
@@ -971,6 +990,9 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	if expandedInstall(words) {
 		return "install verb after an expansion: " + strings.Join(words, " ")
+	}
+	if strings.ContainsAny(words[0], "$`") && expandedRunsShell(words[1:]) {
+		return "shell run behind a program that expands: " + strings.Join(words, " ")
 	}
 	if why, ok := v.shellRun(seg, cur, depth); ok {
 		if why != "" {

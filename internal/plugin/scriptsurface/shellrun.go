@@ -305,8 +305,8 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 			}
 			if shell || dir != nil {
 				// -s and -i run the command through the target user's shell, -i from its home,
-				// each word escaped; -D runs it from dir. Each is read as sh -c of the words
-				// quoted back.
+				// each word escaped as sudo escapes it; -D runs it from dir. Each is read as
+				// sh -c of that text.
 				rest := args[i:]
 				if shell && len(rest) == 0 && dir == nil {
 					return []string{"sh"}, false, true
@@ -314,27 +314,24 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 				if dir != nil && !shell && len(rest) == 0 {
 					return nil, false, false
 				}
-				quoted := make([]string, 0, len(rest)+2)
-				if dir != nil {
-					quoted = append(quoted, "cd", *dir, ";")
-				}
-				quoted = append(quoted, rest...)
 				var b strings.Builder
 				if login {
 					b.WriteString(`cd "$HOME"; `)
 				}
-				for k, w := range quoted {
-					if k > 0 {
-						b.WriteByte(' ')
-					}
-					if dir != nil && k == 2 {
-						b.WriteString(w) // the ; after cd
-						continue
-					}
-					b.WriteString(shellQuote(w))
+				switch {
+				case dir != nil && strings.ContainsAny(*dir, "$`"):
+					// An expansion the caller's shell made: a directory this does not know.
+					b.WriteString(`cd "` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(*dir) + `"; `)
+				case dir != nil:
+					// sudo itself changes to dir, so it is one literal word.
+					b.WriteString("cd '" + strings.ReplaceAll(*dir, "'", `'\''`) + "'; ")
 				}
 				if shell && len(rest) == 0 {
-					b.WriteString(" sh")
+					b.WriteString("sh")
+				}
+				// An empty word escapes to nothing, so it drops out as sudo drops it.
+				for _, w := range rest {
+					b.WriteString(" " + sudoEscape(w))
 				}
 				return []string{"sh", "-c", b.String()}, false, true
 			}
@@ -692,14 +689,15 @@ func runnerCommand(name string, args []string) (string, bool) {
 }
 
 // execFile applies the rule to a program run by its path: a text file in the build with no
-// #! line runs in a shell of its own (the shell runs what the kernel will not exec), so it is
-// classified as one; one with a #! line is a script surface read in its own right, and a
-// binary or a file not executable runs nothing of the build's. handled is false when p names
-// no file of the build.
+// #! line runs in a shell of its own (the shell runs what the kernel will not exec), and one
+// whose #! line names a shell runs in that shell, each from the caller's directory, so it is
+// classified as one; one with another #! line is a script surface read in its own right, and
+// a binary or a file not executable runs nothing of the build's. handled is false when p
+// names no file of the build.
 func (v *Veto) execFile(p string, cur cursor, depth int) (why string, handled bool) {
 	hosts, ok := cur.script(p)
 	if !ok {
-		if filepath.IsAbs(p) || strings.HasPrefix(p, "~") {
+		if filepath.IsAbs(p) {
 			return "", false
 		}
 		if fi, err := os.Stat(filepath.Join(v.root, p)); err == nil && fi.Mode().IsRegular() {
@@ -720,7 +718,8 @@ func (v *Veto) execFile(p string, cur cursor, depth int) (why string, handled bo
 		if err != nil {
 			return "runs a file this cannot read: " + p, true
 		}
-		if bytes.HasPrefix(data, []byte("#!")) || binary(data) {
+		// A #! line that names a shell runs the file as one from here, as does no #! line.
+		if bytes.HasPrefix(data, []byte("#!")) && !shellShebang(data) || binary(data) {
 			continue
 		}
 		return v.runFile(p, cur.fork(), depth+1, false), true
@@ -729,8 +728,8 @@ func (v *Veto) execFile(p string, cur cursor, depth int) (why string, handled bo
 }
 
 // shellExecs returns the lowercased base names of the files in the build a shell would run by
-// path: executable text with no #! line, or a symlink or a file this cannot read, which may be
-// one. It walks the tree once per Veto.
+// path: executable text with no #! line or a #! line naming a shell, or a symlink or a file
+// this cannot read, which may be one. It walks the tree once per Veto.
 func (v *Veto) shellExecs() map[string]bool {
 	if v.execs != nil {
 		return v.execs
@@ -751,7 +750,7 @@ func (v *Veto) shellExecs() map[string]bool {
 		}
 		// Head is nil for an empty file or one holding a NUL, neither of which a shell runs.
 		head, err := buildtree.Head(e.Path)
-		if err != nil || head != nil && !bytes.HasPrefix(head, []byte("#!")) && !binary(head) {
+		if err != nil || head != nil && (!bytes.HasPrefix(head, []byte("#!")) || shellShebang(head)) && !binary(head) {
 			v.execs[name] = true
 		}
 		return nil
@@ -907,8 +906,9 @@ func (v *Veto) runText(src string, cur cursor, depth int) string {
 }
 
 // shellLineRE finds, in a line that does not tokenise, a word that hands text to a shell:
-// a shell, eval or source anywhere, or . where a command starts.
-var shellLineRE = regexp.MustCompile(`(?:^|[\s;&|(` + "`" + `])(?:[\w./-]*/)?(?:sh|bash|dash|zsh|ksh|ash|mksh|eval|source)(?:$|[\s;&|)` + "`" + `])|(?:^|[;&|(]|then|do|else)\s*\.\s+\S`)
+// a shell, eval or source anywhere, or . where a command starts, which a case pattern's ) or
+// a reserved word may lead into.
+var shellLineRE = regexp.MustCompile(`(?:^|[\s;&|(` + "`" + `])(?:[\w./-]*/)?(?:sh|bash|dash|zsh|ksh|ash|mksh|eval|source)(?:$|[\s;&|)` + "`" + `])|(?:^|[;&|()!{]|\b(?:then|do|else|elif|if|while|until|time|coproc))\s*\.\s+\S`)
 
 // untokenised applies the rule to a line that does not tokenise: one naming a token, an
 // install verb after an expansion, or a shell run withholds, and the rest is mentioned.
@@ -924,7 +924,7 @@ func (v *Veto) untokenised(line string, cur cursor) string {
 	}
 	for _, f := range strings.Fields(line) {
 		f = trimShell(f)
-		if strings.Contains(f, "/") && !filepath.IsAbs(f) && !strings.HasPrefix(f, "~") && !strings.ContainsAny(f, "$`") && v.mayExec(path.Base(f)) {
+		if strings.Contains(f, "/") && !filepath.IsAbs(f) && !strings.ContainsAny(f, "$`") && v.mayExec(path.Base(f)) {
 			return "runs a file by its path in a line that does not tokenise: " + strings.TrimSpace(line)
 		}
 	}
@@ -1252,19 +1252,18 @@ func unquotedGlobWords(line string) []string {
 	return out
 }
 
-// shellQuote quotes a word so that shell text reads it back as the one word it is. Glob and
-// brace characters stay bare: the shell that gave the word expanded them already, and leaving
-// them to expand again names at least what it did.
-// A word that expands is double-quoted, so the text still reads it as one word whose value
-// this does not know.
-func shellQuote(w string) string {
-	switch {
-	case w == "":
-		return "''"
-	case strings.ContainsAny(w, "$`"):
-		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w) + `"`
-	case !strings.ContainsAny(w, " \t\n;&|<>()'\"\\#!"):
-		return w
+// sudoEscape escapes a word as sudo -s and -i do, a backslash before each byte but a letter,
+// digit, _, - or $, so that an expansion stays live in the shell it runs. Glob, brace and ~
+// characters stay bare as well: the shell that gave the word expanded them already, and
+// leaving them to expand again names at least what it did.
+func sudoEscape(w string) string {
+	var b strings.Builder
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte("_-$*?[]{}~", c) >= 0) {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(c)
 	}
-	return "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+	return b.String()
 }

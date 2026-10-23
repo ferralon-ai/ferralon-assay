@@ -134,7 +134,6 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"flag: npm ci --include=dev left-pad", npm(map[string]string{"package.json": pkg(`"b":"npm ci --include=dev left-pad"`)}), false, ""},
 		{"flag: npm ci --production=true", npm(map[string]string{"package.json": pkg(`"b":"npm ci --production=true"`)}), false, ""},
 		{"flag: yarn --frozen-lockfile --omit=dev", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile --omit=dev\n"}, false, ""},
-		{"flag: yarn --frozen-lockfile --production", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile --production\n"}, true, ""},
 		{"kept: NPM_CONFIG_PACKAGE_LOCK=false", npm(map[string]string{"install.sh": "export NPM_CONFIG_PACKAGE_LOCK=false\nnpm ci\n"}), false, ""},
 		{"kept: NPM_CONFIG_LEGACY_PEER_DEPS", npm(map[string]string{"install.sh": "export NPM_CONFIG_LEGACY_PEER_DEPS=true\nnpm ci\n"}), false, ""},
 		{"kept: NPM_CONFIG_FORCE", npm(map[string]string{"install.sh": "export NPM_CONFIG_FORCE=true\nnpm ci\n"}), false, ""},
@@ -152,6 +151,20 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"PowerShell pins express", npm(map[string]string{"deploy.ps1": "npm install express@4.18.2\n"}), false, ""},
 		{"batch pins express", npm(map[string]string{"setup.bat": "call npm install express@4.18.2\r\n"}), false, ""},
 		{"GitLab local include pins express", npm(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/build.yml\n", "ci/build.yml": "build:\n  script:\n    - npm ci && npm install express@4.18.2\n"}), false, ""},
+
+		// yarn 1 --frozen-lockfile is not held to the lock: in a workspace, a member that adds a
+		// dependency or moves a range, or a new member, installs versions yarn.lock does not
+		// record, exits 0 and leaves the lock unchanged. Every yarn install withholds.
+		{"yarn not lock-strict: yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, false, ""},
+		{"yarn not lock-strict: yarn install --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn install --frozen-lockfile\n"}, false, ""},
+		{"yarn not lock-strict: yarn --frozen-lockfile --production", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile --production\n"}, false, ""},
+		{"yarn not lock-strict: workspace member, yarn --frozen-lockfile in CI", map[string]string{
+			"package.json":             `{"name":"root","private":true,"workspaces":["packages/*"],"dependencies":{"express":"^4.18.0"}}`,
+			"packages/a/package.json":  `{"name":"a","version":"1.0.0","dependencies":{"express":"^4.18.0"}}`,
+			"yarn.lock":                yarnLock,
+			".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: yarn --frozen-lockfile\n",
+		}, false, ""},
+		{"control: pnpm install --frozen-lockfile keeps", map[string]string{"package.json": yarnPkg, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n\nimporters:\n  .:\n    dependencies:\n      express:\n        specifier: ^4.18.0\n        version: 4.18.2\n\npackages:\n  express@4.18.2:\n    resolution: {integrity: sha512-x}\n", "install.sh": "pnpm install --frozen-lockfile\n"}, true, ""},
 
 		// What an allowed form reads.
 		{"unreadable package.json", map[string]string{"package.json": "{not json", "package-lock.json": lock, "install.sh": "npm run build\n"}, false, ""},
@@ -176,7 +189,6 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"nvm.sh, nvm use, npm ci", npm(map[string]string{"install.sh": ". \"$NVM_DIR/nvm.sh\" && nvm use && npm ci\n"}), true, ""},
 		{"source ~/.nvm/nvm.sh in a CI run", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: source ~/.nvm/nvm.sh && npm ci\n"}), true, ""},
 		{"cargo env then npm ci", npm(map[string]string{"install.sh": ". \"$HOME/.cargo/env\"\nnpm ci\n"}), true, ""},
-		{"yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, true, ""},
 		{"git sample hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\n. git-sh-setup\n"}), true, ""},
 		{"sample hook run in a group", npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(`"x":"{ ./.git/hooks/pre-commit.sample; }"`)}), false, ""},
 		{"sample hook run in a command substitution", npm(map[string]string{".git/hooks/pre-commit.sample": sampleInstall, "package.json": pkg(`"x":"echo $(./.git/hooks/pre-commit.sample)"`)}), false, ""},

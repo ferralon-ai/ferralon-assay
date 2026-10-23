@@ -313,6 +313,9 @@ type IndexSymbolsRequest struct {
 type CallGraphRequest struct {
 	BuildDir  string `json:"build_dir"`
 	Algorithm string `json:"algorithm,omitempty"` // "vta" (default) | "rta" | "cha"
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // FindIngressesRequest carries the buildable module to scan for entry points.
@@ -330,6 +333,13 @@ type ResolveSymbolsRequest struct {
 	// a lane that resolves the inventory to choose which dependency versions to read resolves it
 	// under these. Nil means none were stated.
 	TargetEnv map[string]string `json:"target_env,omitempty"`
+	// Package is the advisory's package pinned to the version the build installs, as on
+	// ReachabilityRequest. A lane that tells installed copies apart resolves the advisory's
+	// symbols only on the copy at that version. Empty means unknown.
+	Package string `json:"package,omitempty"`
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // ResolveVersionsRequest carries the advisory's dependency coordinate whose declared
@@ -432,6 +442,9 @@ type ReachabilityRequest struct {
 	// configuration handed to the plugin, never read from the tree: nil means none were stated, and
 	// whatever they would have decided stays unresolved and is disclosed, not assumed.
 	TargetEnv map[string]string `json:"target_env,omitempty"`
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // --- result payloads ---
@@ -668,6 +681,9 @@ type DependencyProvenance struct {
 type ComputeTaintRequest struct {
 	BuildDir string   `json:"build_dir"`
 	Sinks    []string `json:"sinks,omitempty"` // resolved sink SCIP ids to trace toward
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // TaintResult is ComputeTaint's response: the source→sink graph paths found.

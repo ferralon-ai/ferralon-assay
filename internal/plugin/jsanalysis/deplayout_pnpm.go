@@ -3,7 +3,6 @@ package jsanalysis
 import (
 	"encoding/json"
 	"maps"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -483,7 +482,7 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		return nil, false
 	}
 	cfg.members = members
-	if pnpmAltManifestIn(root, globs) {
+	if pnpmAltManifestIn(root) {
 		return nil, false
 	}
 	for _, dir := range append([]string{"."}, members...) {
@@ -500,43 +499,10 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 	return cfg, true
 }
 
-// pnpmAltManifestIn reports whether root, or a directory the workspace globs may select, holds
-// a pnpmAltManifests file (in any case), or whether the walk fails. workspaceMembers finds
-// members by package.json, so a member with only a package.yaml would otherwise go unseen.
-func pnpmAltManifestIn(root string, globs []string) bool {
-	if found, err := entryFold(root, pnpmAltManifests...); found || err != nil {
-		return true
-	}
-	if len(globs) == 0 {
-		return false
-	}
-	found := false
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if p != root && (d.Name() == "node_modules" || d.Name() == ".git") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !slices.ContainsFunc(pnpmAltManifests, func(f string) bool { return strings.EqualFold(f, d.Name()) }) {
-			return nil
-		}
-		rel, err := filepath.Rel(root, filepath.Dir(p))
-		if err != nil {
-			return err
-		}
-		if rel = filepath.ToSlash(rel); rel == "." {
-			return nil
-		}
-		if in, decided := workspaceSelects(globs, rel); in || !decided {
-			found = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
+// pnpmAltManifestIn reports whether root holds a pnpmAltManifests file in any case, or cannot
+// be read. Members are held to the same by memberManifest.
+func pnpmAltManifestIn(root string) bool {
+	found, err := entryFold(root, pnpmAltManifests...)
 	return found || err != nil
 }
 

@@ -3,8 +3,8 @@ package jsanalysis
 import (
 	"encoding/json"
 	"net/url"
+	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -35,6 +35,11 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 		return nil, false
 	}
 	if !yarnrcOK(root) {
+		return nil, false
+	}
+	// yarn classic reads the root .npmrc too; hold it to the keys an inert directory may set.
+	rc := filepath.Join(root, ".npmrc")
+	if _, err := os.Lstat(rc); !absent(err) && (err != nil || !npmrcSetsOnly(root, rc, outerNpmrcKeys)) {
 		return nil, false
 	}
 	r := newDepRegion(prefix)
@@ -84,7 +89,7 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 		}
 	}
 
-	if !exactCase(root, "package.json", ".yarnrc") {
+	if !exactCase(root, "package.json", ".yarnrc", ".npmrc") {
 		return nil, false
 	}
 	rootData, ok := readOptional(filepath.Join(root, "package.json"))
@@ -100,11 +105,6 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 	}
 	globs := parseWorkspaceGlobs(rootMan.Workspaces)
 	if len(rootMan.Workspaces) > 0 && globs == nil && strings.TrimSpace(string(rootMan.Workspaces)) != "[]" {
-		return nil, false
-	}
-	// yarn classic globs each pattern on its own and unions the results, so a "!" pattern
-	// excludes nothing there; read as an exclusion it would drop a member yarn installs.
-	if slices.ContainsFunc(globs, func(g string) bool { return strings.HasPrefix(g, "!") }) {
 		return nil, false
 	}
 	members, ok := workspaceMembers(root, globs)

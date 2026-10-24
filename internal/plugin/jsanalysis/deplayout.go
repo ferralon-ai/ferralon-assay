@@ -665,9 +665,10 @@ func readCapped(h artifactcache.Handle, limit int64) ([]byte, error) {
 const tarSlack = (maxPackageFiles + 2) * 1024
 
 // unpackDepPackage lists the tarball's regular files, keeping source text, and reads the
-// manifest facts. Any entry path that could escape the package, or that the tarball holds twice,
-// fails the whole package: extraction keeps the last copy of a duplicate, and which copy the
-// lane read would be a guess.
+// manifest facts. Any entry path that could escape the package, or that the tarball holds twice
+// (also as two names differing only in case, one file on a case-insensitive filesystem), fails
+// the whole package: extraction keeps the last copy of a duplicate, and which copy the lane read
+// would be a guess.
 func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(tgz))
 	if err != nil {
@@ -675,6 +676,7 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 	}
 	tr := tar.NewReader(&cappedReader{ctx: ctx, r: zr, left: maxUnpackedBytes + tarSlack})
 	pkg := &depPackage{entry: e, files: map[string]bool{}}
+	folded := map[string]bool{}
 	byStem := map[string][]depFile{}
 	var manifest []byte
 	var unpacked int64
@@ -699,10 +701,11 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		if !hdr.FileInfo().Mode().IsRegular() || rel == "" {
 			continue
 		}
-		if pkg.files[rel] || len(pkg.files) >= maxPackageFiles {
+		if pkg.files[rel] || folded[strings.ToLower(rel)] || len(pkg.files) >= maxPackageFiles {
 			return nil, errPackageUnread
 		}
 		pkg.files[rel] = true
+		folded[strings.ToLower(rel)] = true
 		unpacked += hdr.Size
 		if unpacked > maxUnpackedBytes {
 			return nil, errPackageUnread

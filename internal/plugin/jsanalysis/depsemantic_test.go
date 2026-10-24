@@ -1,6 +1,7 @@
 package jsanalysis
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha1"
 	"encoding/json"
@@ -1372,43 +1373,55 @@ func TestSemantic_PnpmAltManifest(t *testing.T) {
 	}
 }
 
-// TestSemantic_WorkspaceGlobs: pnpm and yarn classic expand braces and extglobs, read "[!b]" as
-// a negated class, accept members outside the root, and match case-insensitively on a
-// case-insensitive filesystem. A member glob the lane would read narrower withholds, as does a
-// wildcard match on a dot-named directory, which neither tool selects. yarn classic globs each
-// pattern alone, so a "!" pattern excludes nothing there and withholds too.
+// TestSemantic_WorkspaceGlobs: the lane reads two workspace pattern shapes, a literal path and a
+// literal prefix with one trailing "/*". Every other shape withholds for pnpm and yarn classic,
+// one row per class, each a pattern the tool would read to select packages/a; so does a
+// selection the lane can't show equal to the tool's (a pattern path in another case, a
+// dot-named or node_modules/bower_components entry, a manifest in another case).
 func TestSemantic_WorkspaceGlobs(t *testing.T) {
 	type row struct {
-		globs  []string
-		member string
+		globs    []string
+		member   string
+		manifest string
+		extra    string
+		resolves bool
 	}
-	shared := map[string]row{
-		"braces":        {[]string{"packages/{a,b}"}, "packages/a"},
-		"extglob":       {[]string{"packages/@(a|z)"}, "packages/a"},
-		"extglob_plus":  {[]string{"packages/+(a)"}, "packages/a"},
-		"negated_class": {[]string{"packages/[!b]"}, "packages/a"},
-		"posix_class":   {[]string{"packages/[[:alpha:]]"}, "packages/a"},
-		"backslash":     {[]string{"packages\\a"}, "packages/a"},
-		"outside_root":  {[]string{"packages/*", "../shared"}, "packages/a"},
-		"case_differs":  {[]string{"Packages/*"}, "packages/a"},
-		"dot_directory": {[]string{"packages/*"}, "packages/.a"},
-		"manifest_case": {[]string{"packages/*"}, "packages/a"},
+	pkgA := func(globs ...string) row { return row{globs: globs, member: "packages/a"} }
+	rows := map[string]row{
+		"control_star":         {globs: []string{"packages/*"}, member: "packages/a", extra: "packages/docs/README.md", resolves: true},
+		"control_literal":      {globs: []string{"packages/a"}, member: "packages/a", resolves: true},
+		"negation":             pkgA("packages/*", "!packages/z"),
+		"globstar":             pkgA("packages/**"),
+		"star_affix":           pkgA("packages/a*"),
+		"inner_star":           pkgA("pack*/a"),
+		"braces":               pkgA("packages/{a,b}"),
+		"extglob":              pkgA("packages/@(a|z)"),
+		"bracket":              pkgA("packages/[a]"),
+		"backslash":            pkgA("packages\\a"),
+		"outside_root":         pkgA("packages/*", "../shared"),
+		"absolute":             pkgA("/packages/a"),
+		"dot_prefix":           pkgA("./packages/*"),
+		"dot_segment":          pkgA("packages/./a"),
+		"empty_segment":        pkgA("packages//a"),
+		"trailing_slash":       pkgA("packages/a/"),
+		"node_modules_segment": pkgA("packages/*", "node_modules/*"),
+		"case_differs":         pkgA("Packages/*"),
+		"literal_case":         pkgA("Packages/a"),
+		"dot_directory":        {globs: []string{"packages/*"}, member: "packages/.a"},
+		"manifest_case":        {globs: []string{"packages/*"}, member: "packages/a", manifest: "Package.json"},
+		"node_modules_entry":   {globs: []string{"packages/*"}, member: "packages/a", extra: "packages/node_modules/x/package.json"},
+		"bower_entry":          {globs: []string{"packages/*"}, member: "packages/a", extra: "packages/bower_components/x/package.json"},
 	}
 	for _, mgr := range []string{"pnpm", "yarn"} {
-		rows := maps.Clone(shared)
-		if mgr == "yarn" {
-			rows["negation"] = row{[]string{"packages/*", "!packages/a"}, "packages/a"}
-		}
-		rows["control"] = row{[]string{"packages/*"}, "packages/a"}
 		for name, tc := range rows {
 			t.Run(mgr+"_"+name, func(t *testing.T) {
 				q := qPkg("1.0.0")
 				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
-				manifest := "package.json"
-				if name == "manifest_case" {
-					manifest = "Package.json"
-				}
+				manifest := cmp.Or(tc.manifest, "package.json")
 				files := map[string]string{tc.member + "/" + manifest: `{"name":"a","version":"1.0.0"}`}
+				if tc.extra != "" {
+					files[tc.extra] = `{"name":"x","version":"1.0.0"}`
+				}
 				lockName, lock := yarnLockFile, yarnLockText(t, p, q)
 				if mgr == "pnpm" {
 					quoted := make([]string, len(tc.globs))
@@ -1424,14 +1437,14 @@ func TestSemantic_WorkspaceGlobs(t *testing.T) {
 				dir := semProgram(t, lockName, lock, files)
 				cg := semRun(t, dir, semStore(t, p, q))
 				incomplete := buildDepLayout(context.Background(), dir).incomplete
-				if name == "control" {
+				if tc.resolves {
 					if incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0") {
-						t.Errorf("a plain member glob resolves q@1.0.0 through the %s layout; got %+v", mgr, cg.Partiality)
+						t.Errorf("%s workspace globs %q resolve q@1.0.0; got %+v", mgr, tc.globs, cg.Partiality)
 					}
 					return
 				}
 				if !incomplete || !runWide(cg) {
-					t.Errorf("%s workspace globs %q the lane can't read as the tool does withhold; got %+v", mgr, tc.globs, cg.Partiality)
+					t.Errorf("%s workspace globs %q the lane can't show it reads as the tool does withhold; got %+v", mgr, tc.globs, cg.Partiality)
 				}
 			})
 		}
@@ -1534,26 +1547,43 @@ func TestPatchScoped_FileNameCase(t *testing.T) {
 	}
 }
 
-// TestWorkspaceMembers_OwnGates pins the member walk's own checks directly: a selection the
-// lane can't decide (case, dot segment) and a selected member manifest named in another case
-// withhold; a case-variant manifest outside every glob is ignored, as the tools ignore it.
-func TestWorkspaceMembers_OwnGates(t *testing.T) {
+// TestWorkspaceMembers pins the member resolver directly: what each shape selects, and each
+// member rule that withholds without the rest of the layout in play.
+func TestWorkspaceMembers(t *testing.T) {
+	manifest := `{"name":"a"}`
 	for name, tc := range map[string]struct {
-		globs []string
-		file  string
-		want  []string
-		ok    bool
+		globs   []string
+		files   map[string]string
+		symlink [2]string // link name, target, both root-relative
+		want    []string
+		ok      bool
 	}{
-		"control":             {[]string{"packages/*"}, "packages/a/package.json", []string{"packages/a"}, true},
-		"case_differs":        {[]string{"Packages/*"}, "packages/a/package.json", nil, false},
-		"dot_directory":       {[]string{"packages/*"}, "packages/.a/package.json", nil, false},
-		"dot_under_globstar":  {[]string{"packages/**"}, "packages/.a/b/package.json", nil, false},
-		"manifest_case":       {[]string{"packages/*"}, "packages/a/Package.json", nil, false},
-		"manifest_case_unsel": {[]string{"packages/*"}, "other/a/Package.json", nil, true},
-		"braces":              {[]string{"packages/{a,b}"}, "packages/a/package.json", nil, false},
+		"star":                {globs: []string{"packages/*"}, files: map[string]string{"packages/a/package.json": manifest, "packages/b/index.js": "", "packages/README.md": ""}, want: []string{"packages/a"}, ok: true},
+		"literal":             {globs: []string{"packages/a"}, files: map[string]string{"packages/a/package.json": manifest, "packages/b/package.json": manifest}, want: []string{"packages/a"}, ok: true},
+		"overlap":             {globs: []string{"packages/*", "packages/a"}, files: map[string]string{"packages/a/package.json": manifest}, want: []string{"packages/a"}, ok: true},
+		"absent_prefix":       {globs: []string{"libs/*"}, files: map[string]string{"packages/a/package.json": manifest}, ok: true},
+		"prefix_is_file":      {globs: []string{"libs/*"}, files: map[string]string{"libs": ""}, ok: true},
+		"dot_dir_no_manifest": {globs: []string{"packages/*"}, files: map[string]string{"packages/.cache/x": "", "packages/a/package.json": manifest}, want: []string{"packages/a"}, ok: true},
+		"dot_dir_manifest":    {globs: []string{"packages/*"}, files: map[string]string{"packages/.a/package.json": manifest}},
+		"prefix_case":         {globs: []string{"packages/*"}, files: map[string]string{"Packages/a/package.json": manifest}},
+		"manifest_case":       {globs: []string{"packages/*"}, files: map[string]string{"packages/a/PACKAGE.JSON": manifest}},
+		"manifest_not_file":   {globs: []string{"packages/*"}, files: map[string]string{"packages/a/package.json/x": ""}},
+		"alt_manifest":        {globs: []string{"packages/*"}, files: map[string]string{"packages/a/package.yaml": "name: a\n"}},
+		"alt_manifest_case":   {globs: []string{"packages/a"}, files: map[string]string{"packages/a/Package.json5": "{}"}},
+		"node_modules_entry":  {globs: []string{"packages/*"}, files: map[string]string{"packages/node_modules/x/index.js": ""}},
+		"bower_entry":         {globs: []string{"packages/*"}, files: map[string]string{"packages/Bower_Components/x/index.js": ""}},
+		"symlink_member":      {globs: []string{"packages/*"}, files: map[string]string{"real/package.json": manifest, "packages/a/package.json": manifest}, symlink: [2]string{"packages/b", "real"}},
+		"symlink_prefix":      {globs: []string{"packages/*"}, files: map[string]string{"real/a/package.json": manifest}, symlink: [2]string{"packages", "real"}},
+		"symlink_manifest":    {globs: []string{"packages/a"}, files: map[string]string{"real.json": manifest, "packages/a/index.js": ""}, symlink: [2]string{"packages/a/package.json", "real.json"}},
+		"refused_shape":       {globs: []string{"packages/a", "packages/**"}, files: map[string]string{"packages/a/package.json": manifest}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			dir := writeProgram(t, map[string]string{tc.file: `{"name":"a"}`})
+			dir := writeProgram(t, tc.files)
+			if tc.symlink[0] != "" {
+				if err := os.Symlink(filepath.Join(dir, tc.symlink[1]), filepath.Join(dir, tc.symlink[0])); err != nil {
+					t.Fatal(err)
+				}
+			}
 			got, ok := workspaceMembers(dir, tc.globs)
 			if ok != tc.ok || !slices.Equal(got, tc.want) {
 				t.Errorf("workspaceMembers = %v, %v; want %v, %v", got, ok, tc.want, tc.ok)
@@ -1562,34 +1592,17 @@ func TestWorkspaceMembers_OwnGates(t *testing.T) {
 	}
 }
 
-// TestPnpmAltManifestIn_Undecided: an alternate manifest in a directory whose selection the lane
-// can't decide counts as found, even with no package.json beside it for the member walk to see.
-func TestPnpmAltManifestIn_Undecided(t *testing.T) {
-	for name, tc := range map[string]struct {
-		globs []string
-		file  string
-		want  bool
-	}{
-		"control":       {[]string{"packages/*"}, "packages/a/package.json", false},
-		"selected":      {[]string{"packages/*"}, "packages/a/package.yaml", true},
-		"unselected":    {[]string{"packages/*"}, "other/a/package.yaml", false},
-		"dot_directory": {[]string{"packages/*"}, "packages/.a/package.yaml", true},
-		"case_differs":  {[]string{"Packages/*"}, "packages/a/package.json5", true},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := pnpmAltManifestIn(writeProgram(t, map[string]string{tc.file: "name: a\n"}), tc.globs); got != tc.want {
-				t.Errorf("pnpmAltManifestIn = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestSemantic_YarnRootCase: a yarn classic root's .yarnrc or package.json named in another case
-// withholds; yarn reads it under its usual name on a case-insensitive filesystem.
+// TestSemantic_YarnRootCase: a yarn classic root's .yarnrc, .npmrc or package.json named in
+// another case withholds (yarn reads it under its usual name on a case-insensitive
+// filesystem), as does a root .npmrc key outside outerNpmrcKeys.
 func TestSemantic_YarnRootCase(t *testing.T) {
 	for name, files := range map[string]map[string]string{
-		"control":     {".yarnrc": "registry \"https://npm.acme.dev/\"\n"},
-		"yarnrc_case": {".YARNRC": "registry \"https://npm.acme.dev/\"\n"},
+		"control":        {".yarnrc": "registry \"https://npm.acme.dev/\"\n"},
+		"npmrc_control":  {".npmrc": "registry=https://npm.acme.dev/\n//npm.acme.dev/:_authToken=${NPM_TOKEN}\n"},
+		"yarnrc_case":    {".YARNRC": "registry \"https://npm.acme.dev/\"\n"},
+		"npmrc_case":     {".NPMRC": "registry=https://npm.acme.dev/\n"},
+		"npmrc_unknown":  {".npmrc": "ignore-scripts=false\n"},
+		"npmrc_hoisting": {".npmrc": "legacy-peer-deps=true\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := qPkg("1.0.0")
@@ -1597,11 +1610,12 @@ func TestSemantic_YarnRootCase(t *testing.T) {
 			dir := semProgram(t, yarnLockFile, yarnLockText(t, p, q), files)
 			cg := semRun(t, dir, semStore(t, p, q))
 			incomplete := buildDepLayout(context.Background(), dir).incomplete
-			if name == "control" && (incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
-				t.Errorf("an allowlisted .yarnrc resolves q@1.0.0; got %+v", cg.Partiality)
+			control := strings.HasSuffix(name, "control")
+			if control && (incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("an allowlisted .yarnrc or .npmrc resolves q@1.0.0; got %+v", cg.Partiality)
 			}
-			if name != "control" && (!incomplete || !runWide(cg)) {
-				t.Errorf("a .yarnrc named in another case withholds; got %+v", cg.Partiality)
+			if !control && (!incomplete || !runWide(cg)) {
+				t.Errorf("a root config named in another case, or an .npmrc key off the allowlist, withholds; got %+v", cg.Partiality)
 			}
 		})
 	}

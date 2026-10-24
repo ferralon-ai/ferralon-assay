@@ -165,12 +165,15 @@ func yamlKey(t string) (key, rest string, err error) {
 		if end < 0 {
 			return "", "", errYAMLSubset
 		}
-		key = t[1:end]
 		after := t[end+1:]
 		if !strings.HasPrefix(after, ":") || len(after) > 1 && after[1] != ' ' {
 			return "", "", errYAMLSubset
 		}
-		return yamlUnescape(t[0], key), after[1:], nil
+		key, ok := yamlUnescape(t[0], t[1:end])
+		if !ok {
+			return "", "", errYAMLSubset
+		}
+		return key, after[1:], nil
 	}
 	if strings.ContainsAny(t[:1], "&*!|>{[?") {
 		return "", "", errYAMLSubset
@@ -206,7 +209,11 @@ func yamlValue(s string) (string, error) {
 		if after := strings.TrimSpace(s[end+1:]); after != "" && !strings.HasPrefix(after, "#") {
 			return "", errYAMLSubset
 		}
-		return yamlUnescape(s[0], s[1:end]), nil
+		v, ok := yamlUnescape(s[0], s[1:end])
+		if !ok {
+			return "", errYAMLSubset
+		}
+		return v, nil
 	case '|', '>', '&', '*', '!', '%', '@', '`':
 		return "", errYAMLSubset
 	}
@@ -242,13 +249,61 @@ func yamlQuoteEnd(s string) int {
 	return -1
 }
 
-// yamlUnescape undoes the quoting of a quoted scalar's body. A double-quoted escape other than
-// \" and \\ is kept verbatim: no name or version the lane reads carries one.
-func yamlUnescape(q byte, s string) string {
+// yamlUnescape undoes the quoting of a quoted scalar's body. A double-quoted body holding any
+// escape other than \" and \\ is outside the subset, so ok is false: the lane decodes no other,
+// and a name or version kept verbatim would not be the one pnpm installs.
+func yamlUnescape(q byte, s string) (_ string, ok bool) {
 	if q == '\'' {
-		return strings.ReplaceAll(s, "''", "'")
+		return strings.ReplaceAll(s, "''", "'"), true
 	}
-	return strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			continue
+		}
+		if i+1 == len(s) || s[i+1] != '"' && s[i+1] != '\\' {
+			return "", false
+		}
+		i++
+	}
+	return strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(s), true
+}
+
+// yamlRawQuoted reports whether s holds quoting that a reader which only strips quotes would
+// misread: a backslash in a scalar with a double quote, or a doubled single quote inside a
+// single-quoted one. A YAML loader decodes both where such a reader keeps the text verbatim.
+func yamlRawQuoted(s string) bool {
+	s = strings.TrimSpace(s)
+	if n := len(s); n >= 2 && s[0] == '\'' && s[n-1] == '\'' {
+		s = s[1 : n-1]
+	}
+	return strings.Contains(s, "''") || strings.Contains(s, `"`) && strings.Contains(s, `\`)
+}
+
+// quoteGuard records whether a lexical lock reader met such quoting in a scalar it reads; the
+// reader then withholds the lock.
+type quoteGuard struct{ raw bool }
+
+// check flags s when yamlRawQuoted holds for it.
+func (g *quoteGuard) check(s string) {
+	if yamlRawQuoted(s) {
+		g.raw = true
+	}
+}
+
+// trim strips the quotes at either end of s.
+func (g *quoteGuard) trim(s string) string {
+	g.check(s)
+	return strings.Trim(s, `"'`)
+}
+
+// unquote strips one layer of matching quotes from s.
+func (g *quoteGuard) unquote(s string) string {
+	g.check(s)
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0] {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 // yamlHasKey reports whether a sequence item is itself a mapping entry.

@@ -59,7 +59,10 @@ type yarnBlock struct {
 }
 
 func yarnClassicParse(sel selectedLock, data []byte, manifests []manifestFile) ([]plugin.DependencyNode, []plugin.DependencyEdge, plugin.Partiality) {
-	blocks := parseYarnClassic(data)
+	blocks, ok := parseYarnClassic(data)
+	if !ok {
+		return nil, nil, plugin.Partial(plugin.PartialReasonToolFailure)
+	}
 	part := plugin.Complete()
 
 	// descriptor table: "name@range" → resolved version (closed in-file lookup, no network).
@@ -173,9 +176,9 @@ func yarnClassicParse(sel selectedLock, data []byte, manifests []manifestFile) (
 }
 
 // parseYarnClassic lexically parses a Yarn Classic v1 yarn.lock into blocks.
-func parseYarnClassic(data []byte) []yarnBlock {
+func parseYarnClassic(data []byte) (blocks []yarnBlock, ok bool) {
+	var g quoteGuard
 	lines := strings.Split(string(data), "\n")
-	var blocks []yarnBlock
 	var cur *yarnBlock
 	subblock := "" // "deps" while inside dependencies:/optionalDependencies:
 
@@ -196,7 +199,7 @@ func parseYarnClassic(data []byte) []yarnBlock {
 			header := strings.TrimSuffix(trimmed, ":")
 			b := yarnBlock{deps: make(map[string]string)}
 			for _, d := range strings.Split(header, ",") {
-				d = strings.Trim(strings.TrimSpace(d), "\"'")
+				d = g.trim(strings.TrimSpace(d))
 				if d != "" {
 					b.descriptors = append(b.descriptors, d)
 				}
@@ -212,15 +215,16 @@ func parseYarnClassic(data []byte) []yarnBlock {
 		if ind == 2 {
 			switch {
 			case strings.HasPrefix(trimmed, "version"):
-				if v, ok := yarnVersionField(trimmed); ok {
+				if v, ok := yarnVersionField(trimmed, &g); ok {
 					cur.version = v
 				}
 				subblock = ""
 			case strings.HasPrefix(trimmed, "resolved"):
-				cur.resolved = yarnQuotedValue(trimmed[len("resolved"):])
+				cur.resolved = yarnQuotedValue(trimmed[len("resolved"):], &g)
 				subblock = ""
 			case strings.HasPrefix(trimmed, "integrity"):
 				cur.integrity = strings.TrimSpace(trimmed[len("integrity"):])
+				g.check(cur.integrity)
 				subblock = ""
 			case trimmed == "dependencies:" || trimmed == "optionalDependencies:":
 				subblock = "deps"
@@ -230,7 +234,7 @@ func parseYarnClassic(data []byte) []yarnBlock {
 			continue
 		}
 		if ind >= 4 && subblock == "deps" {
-			name, rng := yarnDepEntry(trimmed)
+			name, rng := yarnDepEntry(trimmed, &g)
 			if name != "" {
 				if _, dup := cur.deps[name]; !dup {
 					cur.depOrder = append(cur.depOrder, name)
@@ -240,7 +244,7 @@ func parseYarnClassic(data []byte) []yarnBlock {
 		}
 	}
 	flush()
-	return blocks
+	return blocks, !g.raw
 }
 
 // yarnDescriptorName extracts the package name from a "name@range" descriptor, preserving a
@@ -265,20 +269,20 @@ func yarnDescriptorName(desc string) string {
 }
 
 // yarnDepEntry parses a Yarn Classic dependency line `name "range"` (name optionally quoted).
-func yarnDepEntry(trimmed string) (name, rng string) {
+func yarnDepEntry(trimmed string, g *quoteGuard) (name, rng string) {
 	// name is up to the first whitespace; the range is the quoted remainder.
 	i := strings.IndexAny(trimmed, " \t")
 	if i < 0 {
-		return strings.Trim(trimmed, "\"'"), ""
+		return g.trim(trimmed), ""
 	}
-	name = strings.Trim(strings.TrimSpace(trimmed[:i]), "\"'")
-	rng = yarnQuotedValue(trimmed[i:])
+	name = g.trim(strings.TrimSpace(trimmed[:i]))
+	rng = yarnQuotedValue(trimmed[i:], g)
 	return name, rng
 }
 
 // yarnQuotedValue trims whitespace and a single layer of quotes from a value.
-func yarnQuotedValue(s string) string {
-	return strings.Trim(strings.TrimSpace(s), "\"'")
+func yarnQuotedValue(s string, g *quoteGuard) string {
+	return g.trim(strings.TrimSpace(s))
 }
 
 // --- Yarn Berry v2+ (verified against fixture F1) ----------------------------
@@ -290,7 +294,10 @@ func yarnQuotedValue(s string) string {
 // resolution "…@workspace:…") are the project itself, not registry dependencies, so they seed
 // membership/peer resolution but are not emitted as dependency nodes. No package manager is run.
 func yarnBerryParse(sel selectedLock, data []byte, manifests []manifestFile) ([]plugin.DependencyNode, []plugin.DependencyEdge, plugin.Partiality) {
-	blocks := parseYarnBerry(data)
+	blocks, ok := parseYarnBerry(data)
+	if !ok {
+		return nil, nil, plugin.Partial(plugin.PartialReasonToolFailure)
+	}
 	part := plugin.Complete()
 
 	// Pass 1: descriptor → resolved version (closed in-file lookup, no network).
@@ -447,9 +454,9 @@ type yarnBerryBlock struct {
 // parseYarnBerry lexically parses a Berry yarn.lock (YAML-ish): comma-separated descriptor
 // headers, then version / resolution / checksum / linkType scalars and the dependencies +
 // peerDependencies maps. Verified against F1 (Yarn 4.18.0, __metadata version 10).
-func parseYarnBerry(data []byte) []yarnBerryBlock {
+func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
+	var g quoteGuard
 	lines := strings.Split(string(data), "\n")
-	var blocks []yarnBerryBlock
 	var cur *yarnBerryBlock
 	subblock := "" // "deps" | "peers" | ""
 	flush := func() {
@@ -474,7 +481,7 @@ func parseYarnBerry(data []byte) []yarnBerryBlock {
 			}
 			b := yarnBerryBlock{deps: make(map[string]string), peers: make(map[string]string)}
 			for _, d := range strings.Split(header, ",") {
-				d = strings.Trim(strings.TrimSpace(d), "\"'")
+				d = g.trim(strings.TrimSpace(d))
 				if d != "" {
 					b.descriptors = append(b.descriptors, d)
 				}
@@ -491,16 +498,16 @@ func parseYarnBerry(data []byte) []yarnBerryBlock {
 			k, v := splitFirstColon(trimmed)
 			switch strings.TrimSpace(k) {
 			case "version":
-				cur.version = unquoteYAML(strings.TrimSpace(v))
+				cur.version = g.unquote(strings.TrimSpace(v))
 				subblock = ""
 			case "resolution":
-				cur.resolution = unquoteYAML(strings.TrimSpace(v))
+				cur.resolution = g.unquote(strings.TrimSpace(v))
 				subblock = ""
 			case "checksum":
-				cur.integrity = unquoteYAML(strings.TrimSpace(v))
+				cur.integrity = g.unquote(strings.TrimSpace(v))
 				subblock = ""
 			case "linkType":
-				cur.linkType = unquoteYAML(strings.TrimSpace(v))
+				cur.linkType = g.unquote(strings.TrimSpace(v))
 				subblock = ""
 			case "dependencies":
 				subblock = "deps"
@@ -515,27 +522,27 @@ func parseYarnBerry(data []byte) []yarnBerryBlock {
 			switch subblock {
 			case "deps":
 				k, v := splitFirstColon(trimmed)
-				name := unquoteYAML(strings.TrimSpace(k))
+				name := g.unquote(strings.TrimSpace(k))
 				if name != "" {
 					if _, dup := cur.deps[name]; !dup {
 						cur.depOrder = append(cur.depOrder, name)
 					}
-					cur.deps[name] = unquoteYAML(strings.TrimSpace(v))
+					cur.deps[name] = g.unquote(strings.TrimSpace(v))
 				}
 			case "peers":
 				k, v := splitFirstColon(trimmed)
-				name := unquoteYAML(strings.TrimSpace(k))
+				name := g.unquote(strings.TrimSpace(k))
 				if name != "" {
 					if _, dup := cur.peers[name]; !dup {
 						cur.peerOrder = append(cur.peerOrder, name)
 					}
-					cur.peers[name] = unquoteYAML(strings.TrimSpace(v))
+					cur.peers[name] = g.unquote(strings.TrimSpace(v))
 				}
 			}
 		}
 	}
 	flush()
-	return blocks
+	return blocks, !g.raw
 }
 
 // berryDescriptorName recovers the plain package name from a Berry descriptor

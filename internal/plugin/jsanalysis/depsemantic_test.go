@@ -1405,6 +1405,7 @@ func TestSemantic_WorkspaceGlobs(t *testing.T) {
 		"empty_segment":        pkgA("packages//a"),
 		"trailing_slash":       pkgA("packages/a/"),
 		"node_modules_segment": pkgA("packages/*", "node_modules/*"),
+		"bower_segment":        pkgA("packages/*", "bower_components/*"),
 		"case_differs":         pkgA("Packages/*"),
 		"literal_case":         pkgA("Packages/a"),
 		"dot_directory":        {globs: []string{"packages/*"}, member: "packages/.a"},

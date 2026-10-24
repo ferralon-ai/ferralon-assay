@@ -233,6 +233,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"wget --output-document=", tree(map[string]string{"install.sh": "wget --output-document=inst.lock https://example.com/x\ninst sync\n"}), true, ""},
 		{"wget --output-document", tree(map[string]string{"install.sh": "wget --output-document inst.lock https://example.com/x\ninst sync\n"}), true, ""},
 		{"curl cluster ending in o, an unbound file next", tree(map[string]string{"install.sh": "curl -fsSLo other.txt https://example.com/x\ninst sync\n"}), false, ""},
+		{"wget log glued into a cluster", tree(map[string]string{"install.sh": "wget -qoinst.lock https://example.com/x\ninst sync\n"}), true, ""},
+		{"a long option is not a flag cluster", tree(map[string]string{"install.sh": "curl --compressed --foo-oinst.lock https://example.com/x\ninst sync\n"}), false, ""},
 		{"curl -o to an unbound file", tree(map[string]string{"install.sh": "curl -fsSL https://example.com/x -o other.txt\ninst sync\n"}), false, ""},
 		{"curl -O keeps the remote name, which is unbound", tree(map[string]string{"install.sh": "curl -O https://example.com/x\ninst sync\n"}), false, ""},
 		{"curl glued output to an unbound file", tree(map[string]string{"install.sh": "curl -fsSLoother.txt https://example.com/x\ninst sync\n"}), false, ""},

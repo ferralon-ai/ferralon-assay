@@ -845,36 +845,27 @@ var npmrcRegistryKeys = map[string]bool{
 func npmrcHooks(root, file string) bool { return !npmrcSetsOnly(root, file, npmrcPlainKeys) }
 
 // npmrcSetsOnly reports whether the .npmrc at file can be read and sets nothing but keys in
-// plain, a scoped registry (@scope:registry) or npmrcRegistryKeys. Lines end at \n or \r, a
-// line starting with '#' or ';' is a comment, and a line with no key sets nothing. A key loses
-// one pair of enclosing quotes, as npm's ini parser removes them, and is then compared
-// case-insensitively, with _ as -. A key npm may rewrite (a quote, escape, ${…} substitution,
-// '#' or ';' left in it, or any non-ASCII character such as a byte-order mark) is refused,
-// whatever it spells.
+// plain, a scoped registry (@scope:registry) or npmrcRegistryKeys. The file is read as ini reads
+// it (parseNpmrc), and a key is then compared case-insensitively, with _ as -. A file ini would
+// read differently from the lane, and a key with a non-ASCII character, is refused whatever it
+// spells.
 func npmrcSetsOnly(root, file string, plain map[string]bool) bool {
 	data, ok := readInRoot(root, file, maxStyleManifest)
 	if !ok {
 		return false
 	}
-	for _, line := range strings.FieldsFunc(string(data), func(r rune) bool { return r == '\n' || r == '\r' }) {
-		key, _, _ := strings.Cut(line, "=")
-		if t := strings.TrimLeft(key, " \t"); strings.HasPrefix(t, "#") || strings.HasPrefix(t, ";") {
-			continue
-		}
-		if strings.ContainsFunc(key, func(r rune) bool { return r > unicode.MaxASCII }) {
+	entries, ok := parseNpmrc(data)
+	if !ok {
+		return false
+	}
+	for _, e := range entries {
+		if strings.ContainsFunc(e.key, func(r rune) bool { return r > unicode.MaxASCII }) {
 			return false
 		}
-		key = strings.TrimSpace(key)
-		if len(key) >= 2 && (key[0] == '"' || key[0] == '\'') && key[len(key)-1] == key[0] {
-			key = key[1 : len(key)-1]
-		}
-		if key == "" {
+		if e.key == "" {
 			continue
 		}
-		if strings.ContainsAny(key, "\"'\\$#;") {
-			return false
-		}
-		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
+		key := strings.ReplaceAll(strings.ToLower(e.key), "_", "-")
 		if strings.HasPrefix(key, "//") {
 			if !npmrcRegistryKeys[key[strings.LastIndexByte(key, ':')+1:]] {
 				return false

@@ -135,7 +135,7 @@ func npmrcKeyIndirect(head []byte) bool {
 		if !bytes.Contains(key, []byte("${")) && bytes.IndexByte(key, '\\') < 0 {
 			continue
 		}
-		if bytes.HasPrefix(key, []byte("//")) || key[0] == '@' {
+		if npmrcKeyCarved(string(key)) {
 			continue
 		}
 		return true

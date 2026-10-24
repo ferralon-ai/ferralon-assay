@@ -467,13 +467,24 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 	if !ok {
 		return nil, false
 	}
-	for _, line := range strings.Split(string(rc), "\n") {
-		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
-		if k = strings.TrimSpace(k); k == "pnpmfile" || k == "global-pnpmfile" {
+	entries, ok := parseNpmrc(rc)
+	if !ok {
+		return nil, false
+	}
+	for _, e := range entries {
+		// pnpm 10 folds a workspace project's .npmrc keys (npmrcFold); fold every key.
+		switch npmrcFold(e.key) {
+		case "pnpmfile", "globalpnpmfile":
 			return nil, false
-		}
-		if (k == "virtual-store-dir" || k == "modules-dir") && !inRegionModules(k, v) {
-			return nil, false
+		case "virtualstoredir", "modulesdir":
+			name := "virtual-store-dir"
+			if npmrcFold(e.key) == "modulesdir" {
+				name = "modules-dir"
+			}
+			// A quote left in the value is part of the path to pnpm, which inRegionModules would trim.
+			if e.opaque || e.array || strings.ContainsAny(e.val, `"'`) || !inRegionModules(name, e.val) {
+				return nil, false
+			}
 		}
 	}
 	cfg := &pnpmConfig{overrides: map[string]string{}, patches: map[string]string{}, manifests: map[string]*invManifest{}, extras: map[string]*pnpmManifestExtra{}}

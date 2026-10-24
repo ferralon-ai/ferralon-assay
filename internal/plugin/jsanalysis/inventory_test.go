@@ -718,6 +718,9 @@ func TestInventory_QuotedEscapes(t *testing.T) {
 		{name: "pnpm_snapshot_dep_next_line", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  q@1.0.0:\n    dependencies:\n      z:\n        1.0.0"), withheld: true},
 		{name: "pnpm_control_empty_section", file: "pnpm-lock.yaml", lock: edit(pnpm, "importers:\n\n  .:\n    dependencies:\n      q:\n        specifier: 1.0.0\n        version: 1.0.0\n\npackages:\n\n  q@1.0.0:\n    resolution: {integrity: sha512-AAAA}\n\nsnapshots:\n\n  q@1.0.0: {}\n", "importers:\n\n  .:\n    dependencies:\n      q:\n        specifier: 1.0.0\n        version: 1.0.0\n\npackages: {}\n\nsnapshots:\n\n  q@1.0.0: {}\n")},
 		{name: "pnpm_control_peer_suffix", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  q@1.0.0: {}\n  z@2.0.0(q@1.0.0): {}")},
+		{name: "pnpm_version_quoted_outside_grammar", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: \"1.0.0{x}\""), withheld: true},
+		{name: "classic_version_quoted_outside_grammar", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version \"1.0.0{x}\""), withheld: true},
+		{name: "berry_version_quoted_outside_grammar", file: "yarn.lock", lock: edit(berry, "  version: 1.0.0", "  version: \"1.0.0{x}\""), withheld: true},
 		{name: "pnpm_version_plain_quote", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: 1.0.0\"x"), withheld: true},
 		{name: "pnpm_control_quoted_colon_key", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  q@1.0.0: {}\n  'z@file:': {}")},
 

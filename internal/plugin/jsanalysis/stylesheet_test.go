@@ -568,6 +568,8 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			".npmrc": "'\"node-options\"'=--require ./css-hook.js\n"}, unresolved: true},
 		{name: "an .npmrc setting node-options under a key with a substitution", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			".npmrc": "node-options${NOPE?}=--require ./css-hook.js\n"}, unresolved: true},
+		{name: "an .npmrc key whose Kelvin sign lowercases to a plain key", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			".npmrc": "package-loc\u212A=false\n"}, unresolved: true},
 		{name: "an .npmrc setting node-options under a single-quoted key inside double quotes", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			".npmrc": "\"'node-options'\"=--require ./css-hook.js\n"}, unresolved: true},
 		{name: "an .npmrc setting node-options under a key with a comment after a hash", spec: "./index.css", files: map[string]string{"src/index.css": css,

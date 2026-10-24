@@ -1193,6 +1193,79 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 			}
 		})
 	}
+	// pnpm reads a project .npmrc with ini, which resolves every spelling below to the same
+	// setting as the plain key.
+	for _, key := range []string{"virtual-store-dir", "modules-dir", "pnpmfile", "global-pnpmfile"} {
+		for spelling, line := range map[string]string{
+			"dq_key":           `"` + key + `"=../x`,
+			"sq_key":           `'` + key + `'=../x`,
+			"array_key":        key + `[]=../x`,
+			"dq_array_key":     `"` + key + `[]"=../x`,
+			"bom":              "\ufeff" + key + "=../x",
+			"bom_dq_key":       "\ufeff\"" + key + "\"=../x",
+			"dq_value":         key + `="../x"`,
+			"sq_value":         key + `='../x'`,
+			"cr_separated":     "a=b\r" + key + "=../x",
+			"cr_only":          key + "=../x\r",
+			"crlf":             "a=b\r\n" + key + "=../x\r\n",
+			"cr_only_lines":    "a=b\rc=d\r" + key + "=../x\rz=1\r",
+			"padded":           "  " + key + "  =  ../x",
+			"nbsp_padded":      "\u00a0" + key + "\u00a0=../x",
+			"comment_in_key":   key + " ; c = ../x",
+			"escaped_key":      `"\u00` + fmt.Sprintf("%x", key[0]) + key[1:] + `"=../x`,
+			"quoted_in_value":  key + `="'node_modules'"`,
+			"unterminated_val": key + `="../x`,
+		} {
+			t.Run("npmrc_"+key+"_"+spelling, func(t *testing.T) {
+				dir, store := pnpmWeb(false, map[string]string{"web/.npmrc": line + "\n"})
+				if !buildDepLayout(context.Background(), dir).incomplete || !runWide(semRun(t, dir, store)) {
+					t.Errorf("%q sets %s outside the region and withholds", line, key)
+				}
+				if _, ok := readPnpmConfig(filepath.Join(dir, "web")); ok {
+					t.Errorf("%q: readPnpmConfig reads a config that sets %s", line, key)
+				}
+			})
+		}
+	}
+	// A line ini cannot read the way the lane would withholds, whatever key it names.
+	for name, line := range map[string]string{
+		"key_not_json":    `"bad\q"=1`,
+		"key_env":         `${K}=1`,
+		"key_backslash":   `a\b=1`,
+		"value_not_text":  `fetch-retries='1'`,
+		"value_not_json":  `fetch-timeout="a\q"`,
+		"array_in_region": `virtual-store-dir[]=node_modules/.vs`,
+	} {
+		t.Run("npmrc_unreadable_"+name, func(t *testing.T) {
+			dir, store := pnpmWeb(false, map[string]string{"web/.npmrc": line + "\n"})
+			if _, ok := readPnpmConfig(filepath.Join(dir, "web")); ok {
+				t.Errorf("%q: readPnpmConfig reads a line ini reads differently", line)
+			}
+			if !buildDepLayout(context.Background(), dir).incomplete || !runWide(semRun(t, dir, store)) {
+				t.Errorf("%q is not read as ini reads it and withholds", line)
+			}
+		})
+	}
+	for name, rc := range map[string]string{
+		"plain_in_region":     "virtual-store-dir=node_modules/.vs\nmodules-dir=node_modules\n",
+		"quoted_in_region":    "\"virtual-store-dir\"=node_modules/.vs\n'modules-dir'=\"node_modules\"\n",
+		"auth_token_env":      "//registry.example.test/:_authToken=${X}\n",
+		"comment_line":        "; virtual-store-dir=../x\n# modules-dir=../x\n  ; modules-dir=../x\n",
+		"comment_after_value": "modules-dir=node_modules ; ../x\n",
+		"other_key_after_bom": "\ufeffregistry=https://registry.example.test/\n",
+		"cr_only_in_region":   "registry=https://registry.example.test/\rvirtual-store-dir=node_modules/.vs\r",
+		"crlf_in_region":      "registry=https://registry.example.test/\r\nmodules-dir=node_modules\r\n",
+		"unterminated_key":    "\"registry=https://registry.example.test/\n",
+		"bom_comment_line":    "\ufeff; modules-dir=../x\n",
+		"nel_is_not_space":    "\u0085modules-dir=../x\n",
+	} {
+		t.Run("npmrc_control_"+name, func(t *testing.T) {
+			dir, _ := pnpmWeb(false, map[string]string{"web/.npmrc": rc})
+			if buildDepLayout(context.Background(), dir).incomplete {
+				t.Errorf("%q sets nothing outside the region and reads", rc)
+			}
+		})
+	}
 	t.Run("virtual_store_inside", func(t *testing.T) {
 		dir, _ := pnpmWeb(false, map[string]string{"web/pnpm-workspace.yaml": "virtualStoreDir: node_modules/.vs\nmodulesDir: node_modules\n"})
 		if buildDepLayout(context.Background(), dir).incomplete {
@@ -1846,6 +1919,69 @@ func TestSemantic_YarnRootCase(t *testing.T) {
 			}
 			if !control && (!incomplete || !runWide(cg)) {
 				t.Errorf("a root config named in another case, an .npmrc key off the allowlist, or a yarn.json withholds; got %+v", cg.Partiality)
+			}
+		})
+	}
+}
+
+// TestNpmrcIni pins parseNpmrc to what ini's decode and unsafe return, as pnpm 10's own reader
+// does for the same bytes.
+func TestNpmrcIni(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		want     []npmrcEntry
+		ok       bool
+	}{
+		{"plain", "a=b", []npmrcEntry{{key: "a", val: "b", hasVal: true}}, true},
+		{"cr_and_crlf_lines", "a=1\rb=2\r\nc=3\n", []npmrcEntry{{key: "a", val: "1", hasVal: true}, {key: "b", val: "2", hasVal: true}, {key: "c", val: "3", hasVal: true}}, true},
+		{"first_equals_splits", "a=b=c", []npmrcEntry{{key: "a", val: "b=c", hasVal: true}}, true},
+		{"no_value", "a", []npmrcEntry{{key: "a"}}, true},
+		{"no_key_line_ignored", "=b\n", nil, true},
+		{"escaped_semicolon_kept", `a=x\;y`, []npmrcEntry{{key: "a", val: "x;y", hasVal: true}}, true},
+		{"escaped_hash_kept", `a=x\#y`, []npmrcEntry{{key: "a", val: "x#y", hasVal: true}}, true},
+		{"escaped_backslash_kept", `a=x\\y`, []npmrcEntry{{key: "a", val: `x\y`, hasVal: true}}, true},
+		{"other_escape_keeps_backslash", `a=x\ny`, []npmrcEntry{{key: "a", val: `x\ny`, hasVal: true}}, true},
+		{"trailing_backslash_kept", `a=x\`, []npmrcEntry{{key: "a", val: `x\`, hasVal: true}}, true},
+		{"unescaped_semicolon_cuts", "a=x ; y", []npmrcEntry{{key: "a", val: "x", hasVal: true}}, true},
+		{"quoted_value_keeps_semicolon", `a="x;y"`, []npmrcEntry{{key: "a", val: "x;y", hasVal: true}}, true},
+		{"single_quoted_value", `a='x y'`, []npmrcEntry{{key: "a", val: "x y", hasVal: true}}, true},
+		{"single_quoted_json_string", `a='"x"'`, []npmrcEntry{{key: "a", val: "x", hasVal: true}}, true},
+		{"single_quoted_number", `a='1'`, nil, false},
+		{"double_quoted_not_json", `a="x\q"`, nil, false},
+		{"lone_quote_key", `"=b`, nil, false},
+		{"quote_not_closed_is_text", `"a=b`, []npmrcEntry{{key: `"a`, val: "b", hasVal: true}}, true},
+		{"array_key", "a[]=b", []npmrcEntry{{key: "a", val: "b", hasVal: true, array: true}}, true},
+		{"bare_brackets_not_array", "[]=b", []npmrcEntry{{key: "[]", val: "b", hasVal: true}}, true},
+		{"escaped_key_decoded", `"\u0061"=b`, []npmrcEntry{{key: "a", val: "b", hasVal: true}}, true},
+		{"env_key", "${A}=b", nil, false},
+		{"backslash_key", `a\b=c`, nil, false},
+		{"comment_lines", "; a=1\n  # b=2\n\ufeff; c=3\n", nil, true},
+		{"bom_trimmed", "\ufeffa=b", []npmrcEntry{{key: "a", val: "b", hasVal: true}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseNpmrc([]byte(tc.in))
+			if ok != tc.ok || ok && !slices.Equal(got, tc.want) {
+				t.Errorf("parseNpmrc(%q) = %+v, %v; want %+v, %v", tc.in, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+	// A quoted key can spell a rewrite setting in an escape, which the raw bytes never hold.
+	for name, tc := range map[string]struct {
+		in   string
+		want bool
+	}{
+		"escaped_pnpmfile":  {"\"pnpm\\u0066ile\"=x\n", true},
+		"unparsable":        {"\"bad\\q\"=x\n", true},
+		"plain_registry":    {"registry=x\n", false},
+		"word_in_value":     {"registry=pnpmfile\n", false},
+		"comment_not_a_key": {"; pnpmfile=x\n", false},
+	} {
+		t.Run("names_"+name, func(t *testing.T) {
+			if got := npmrcNamesAny([]byte(tc.in), rewriteConfigWords); got != tc.want {
+				t.Errorf("npmrcNamesAny(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+			if _, ok := jsCandidate(".npmrc", []byte(tc.in)); ok != (tc.want || strings.Contains(tc.in, "pnpmfile")) {
+				t.Errorf("jsCandidate(.npmrc, %q) = %v", tc.in, ok)
 			}
 		})
 	}

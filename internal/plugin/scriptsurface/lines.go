@@ -110,14 +110,12 @@ func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 			}
 			s = strings.TrimSpace(s[len(m[0]):])
 		}
+		// A flow mapping is left to shellSegments, which does not tokenise a leading {.
 		switch {
-		case s == "", strings.HasPrefix(s, "|"), strings.HasPrefix(s, ">"):
+		case s == "", blockHeaderRE.MatchString(s):
 			return nil, true, false
-		case strings.HasPrefix(s, "{"):
-			return nil, false, false
 		case strings.HasPrefix(s, "["):
-			segs, ok = execForm(strings.TrimSuffix(s, ","))
-			return segs, ok, false
+			return flowSegments(s)
 		case strings.HasPrefix(s, `"`), strings.HasPrefix(s, "'"):
 			val, ok := quotedValue(s)
 			if !ok {
@@ -127,6 +125,24 @@ func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 		}
 	}
 	return shellSegments(s)
+}
+
+// flowSegments reads a data value that is a flow sequence as one shell command per item, as a
+// GitLab script list runs it. A sequence holding a mapping, or an item that does not tokenise,
+// does not tokenise. A JSON surface's exec-form arrays are units of their own, read as argv.
+func flowSegments(s string) (segs []segment, ok, dangles bool) {
+	items, seq, _ := flowItems(s) // seq is false for one that does not decode
+	if !seq {
+		return nil, false, false
+	}
+	for _, it := range items {
+		is, ok, _ := shellSegments(it)
+		if !ok {
+			return nil, false, false
+		}
+		segs = append(segs, is...)
+	}
+	return segs, true, false
 }
 
 // seqItem returns s without the "- " marks of the YAML sequences it is an item of: GitLab

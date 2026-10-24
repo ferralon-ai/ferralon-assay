@@ -14,11 +14,24 @@
 // The package decides no installer itself. A lane passes a Spec: the words that name its
 // installers, the variables they read, and the few command forms it allows, each binding the
 // manifest and lock it installs. A command that names a token anywhere in its words withholds
-// unless it carries no $ or backtick and no redirect and the lane's Allowed accepts it; a run
+// unless it carries no redirect and the lane's Allowed accepts it; a run
 // wrapper the lane does not name, a surface that sets one of the lane's variables, and a line
 // that names a token and does not tokenise withhold too. A variable the lane's EnvKeeps names
 // only selects among the packages a lock read here records, so setting it does not. A Spec
 // missing any required decision withholds on every surface it recognises.
+//
+// The rule for expansions: a line a surface runs that holds anything the shell or make expands
+// withholds that surface. That is a $ in any form ($X, ${X}, $(...), $$, make's $(X)) or a
+// backtick anywhere on the line, quoted or not; and outside quotes, a ~ starting a word, a
+// brace list ({a,b}, {a..b}), and a glob in a line whose words this cannot place, or naming a
+// program, or given to a wrapper this cannot read or a runner (xargs, find -exec and the
+// like). No placement of a $ or backtick is attempted. It applies to every line of a shell
+// file and of the text a command hands a shell, to a Makefile's lines, to a data surface's
+// values, decoded, and to a Dockerfile's RUN, CMD and ENTRYPOINT. Comments, table headers,
+// YAML block headers and the values of dataKeys are not run. The one exemption is make's own
+// $(MAKE) or ${MAKE} as a whole word in a recipe of a Makefile that neither assigns MAKE nor
+// includes a file that does, in a build where no make file assigns MAKE; an assignment with
+// != withholds, since make runs its value as shell text.
 //
 // Binding follows the directory a command runs in. On the host it starts at the surface's
 // directory (shell scripts, Makefiles, Procfiles, package.json, tox.ini, noxfile.py) or the
@@ -47,8 +60,7 @@
 // since; the RUN still changes the stage as any other command does.
 //
 // A . or source of a file the walk does not read is still allowed when it only sets PATH: a
-// version-manager init script named exactly as pathOnlyScripts lists it, or a literal
-// <dir>/bin/activate whose <dir> names the same one place as the virtual environment the
+// literal <dir>/bin/activate whose <dir> names the same one place as the virtual environment the
 // command before it, directory changes aside, created. That command must be in the same
 // cursor: the same shell text on the host, the same shell unit of a GitHub workflow (a step's
 // run:) or GitLab pipeline (a job's before_script then script), the same line of any other
@@ -61,8 +73,7 @@
 // content, and git never runs a hook under that name, so it withholds nothing while nothing
 // in the build may reach one. Any of these triggers makes every sample hook a surface again:
 // a surface's text naming .sample, hooks, dotglob or a .git directory, a glob over
-// dot-names, a directory change or prefix whose argument expands, the raw text of any other
-// in-tree file naming .sample, dotglob or a .git directory, or a symlink into a .git
+// dot-names, the raw text of any other in-tree file naming .sample, dotglob or a .git directory, or a symlink into a .git
 // directory. The gate reads three things: the script surfaces; symlink targets; and every
 // other regular file except those no build runner executes (binary files; by exact name,
 // docs, lockfiles and dot-named ignore files unless they start with "#!"; and inside .git
@@ -72,9 +83,8 @@
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
 // the install reads it, so it withholds too (Veto.Rebound). A glob the shell expands, or find
-// matching names by a pattern, names every bound file its base matches; a write to a path
-// that expands (a redirect, or a writer's operand, holding a $ or backtick, the runner's own
-// output files aside) or through find or xargs with no name pattern names every bound file.
+// matching names by a pattern, names every bound file its base matches; a write through find
+// or xargs with no name pattern names every bound file.
 package scriptsurface
 
 import (
@@ -230,6 +240,8 @@ type Veto struct {
 	lineShell bool            // the command is on a line of shell text whose next lines are read too
 	running   []string        // the files a shell run or . is reading, innermost last
 	execs     map[string]bool // shellExecs, once walked
+	makeSet   bool            // a make file the walk classified assigns MAKE
+	makeUsed  bool            // a recipe's $(MAKE) was read as make (makeRefs)
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
@@ -268,9 +280,12 @@ func (v *Veto) FullyRead(path string) bool {
 func (v *Veto) Rebound() bool { return rebinds(v.bound, v.mentioned) }
 
 // Withheld reports whether the rule withheld on any surface the walk classified, a command
-// may rewrite a file an allowed command binds to, or a sample hook is live: the build may
-// install a package no manifest or lock read here names. Call it after the walk.
-func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.samplesLive() }
+// may rewrite a file an allowed command binds to, a sample hook is live, or a recipe's $(MAKE)
+// was read as make while a make file assigns MAKE: the build may install a package no manifest
+// or lock read here names. Call it after the walk.
+func (v *Veto) Withheld() bool {
+	return len(v.vetoed) > 0 || v.Rebound() || v.samplesLive() || v.makeSet && v.makeUsed
+}
 
 // samplesLive reports whether, once something in the build may reach a sample hook, the
 // sample hooks read as surfaces withhold: one of them withholds on its own, or a command in
@@ -291,8 +306,8 @@ func (v *Veto) samplesLive() bool {
 }
 
 // The text triggers. Each is a natural way a command reaches a sample hook: naming one, its
-// hooks directory or a .git directory; a glob over dot-names, which can match .git; or a
-// directory change or prefix this cannot read, which can land in a hooks directory.
+// hooks directory or a .git directory; or a glob over dot-names, which can match .git. A
+// directory change whose argument expands withholds under the rule for expansions.
 var (
 	mentionRE = regexp.MustCompile(`\.sample|hooks|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
 	// sourceRE is the mention trigger for an in-tree file no surface parses. It leaves out
@@ -300,12 +315,11 @@ var (
 	// name, as a hook's does, so texture.sample( and ep.sample_params don't match.
 	sourceRE  = regexp.MustCompile(`\.sample(?:$|[^A-Za-z0-9_(])|dotglob|\.git(?:$|[^A-Za-z0-9_])`)
 	dotGlobRE = regexp.MustCompile(`(?:^|[\s/"'=;&|()<>` + "`" + `])\.[^\s/"'=;&|()<>` + "`" + `]*[*?\[{]`)
-	dynDirRE  = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|-C|--prefix|--cwd)(?:\s+-{1,2}[A-Za-z]*)*(?:\s+|=)[^\s;&|)]*[$` + "`" + `]`)
 )
 
 // trigger notes whether a surface's raw text may reach a sample hook.
 func (v *Veto) trigger(text string) {
-	v.triggered = v.triggered || mentionRE.MatchString(text) || dotGlobRE.MatchString(text) || dynDirRE.MatchString(text)
+	v.triggered = v.triggered || mentionRE.MatchString(text) || dotGlobRE.MatchString(text)
 }
 
 // lockfiles are the package-manager lockfiles, which record resolved URLs and no commands.
@@ -663,15 +677,15 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 	return why, why != ""
 }
 
-// opaque applies the rule to a surface this does not parse: any line naming a token, or an
-// install verb after an expansion, withholds.
+// opaque applies the rule to a surface this does not parse: any line naming a token, or
+// holding a $ or backtick, withholds.
 func (v *Veto) opaque(src string) string {
 	for _, line := range strings.Split(src, "\n") {
 		if v.hasToken(line) {
 			return "install command in a surface this does not parse"
 		}
-		if expandedInstallLine(line) {
-			return "install verb after an expansion in a surface this does not parse"
+		if strings.ContainsAny(line, "$`") {
+			return "a $ or backtick in a surface this does not parse"
 		}
 		v.mention(strings.Fields(line))
 	}
@@ -770,7 +784,13 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		base, unknown = append(base, dirs...), !ok
 	}
 	included := yaml && gitlabIncluded(path, units)
+	makeOK := kind == kindMakefile && v.makeOK(path)
 	for _, u := range units {
+		if kind == kindMakefile && makeAssignRE.MatchString(u.text) {
+			// Another make file may include this one, so $(MAKE) read as make anywhere in the
+			// build no longer is (Withheld).
+			v.makeSet = true
+		}
 		carry := &hostCursor{v: v, dirs: append([]string(nil), base...), unknown: unknown}
 		if u.bad {
 			if v.hasToken(u.text) {
@@ -779,6 +799,9 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			continue
 		}
 		if u.exec != nil {
+			if hasExpansion(u.exec) {
+				return "a $ or backtick, which expands to what this does not read: " + strings.Join(u.exec, " ")
+			}
 			if why := v.command(segment{words: u.exec, expands: hasExpansion(u.exec), exec: true}, carry, 0); why != "" {
 				return why
 			}
@@ -815,6 +838,17 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
+			if makeOK && strings.HasPrefix(line, "\t") {
+				if r := makeRefs(line); r != line {
+					line, v.makeUsed = r, true
+				}
+			}
+			if kind == kindMakefile && !strings.HasPrefix(line, "\t") && shellAssignRE.MatchString(line) {
+				return "a make != assignment, which runs shell text this does not read: " + strings.TrimSpace(line)
+			}
+			if why := lineExpands(lineKind, line); why != "" {
+				return why + ": " + strings.TrimSpace(line)
+			}
 			segs, ok, dangles := commandSegments(lineKind, line)
 			if cur.mark.dangle && len(segs) > 0 {
 				segs[0].guarded = true
@@ -827,7 +861,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.
 				cur.mark.made, cur.wd = "", ""
-				if why := v.untokenisedAs(line, cur, lineKind == kindData); why != "" {
+				if why := v.untokenisedAs(line, cur, lineKind); why != "" {
 					return why
 				}
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
@@ -893,69 +927,6 @@ func (v *Veto) workingDirs(units []unit) ([]string, bool) {
 
 // maxRunDepth bounds how many run wrappers one command may nest.
 const maxRunDepth = 4
-
-// unnamedProgram reports why a command, given as its words with redirects dropped, runs a
-// program this cannot name, or "" when it names it. The program a word that expands runs,
-// once expanded, is not known: it may be a shell, a wrapper, or nothing, leaving its first
-// argument to run. So the command withholds when, past the assignments and wrappers ahead of
-// it, the program word expands; when a wrapper this cannot read is followed by a word that
-// expands; and when a runner, which runs a command from its arguments, is given a word that
-// expands (find only past its -exec). make's own variable names make, whose recipes are read
-// here.
-func unnamedProgram(all []string) string {
-	expands := expandingWord
-	if len(all) == 0 {
-		return ""
-	}
-	prog, inert, ok := unwrap(all)
-	if !ok {
-		if slices.ContainsFunc(all[1:], expands) {
-			return "word that expands behind a wrapper this cannot read"
-		}
-		return ""
-	}
-	if inert || len(prog) == 0 {
-		return ""
-	}
-	if expands(prog[0]) && !makeVarRE.MatchString(prog[0]) {
-		return "runs a program this cannot name"
-	}
-	name, _ := CommandName(prog[0])
-	if !runners[name] {
-		return ""
-	}
-	args := prog[1:]
-	if name == "find" {
-		i := slices.IndexFunc(args, func(a string) bool { return a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir" })
-		if i < 0 {
-			return ""
-		}
-		args = args[i:]
-	}
-	if slices.ContainsFunc(args, expands) {
-		return "runs a command this cannot name through " + name
-	}
-	return ""
-}
-
-// expandingWord reports whether the shell may expand w into another word: a parameter, a
-// command substitution, a glob, or a brace expansion. [ and [[ hold no ], so they are
-// commands, and a brace with no list in it is a word.
-func expandingWord(w string) bool {
-	if strings.ContainsAny(w, "$`*?") {
-		return true
-	}
-	if i := strings.IndexByte(w, '['); i >= 0 && strings.Contains(w[i:], "]") {
-		return true
-	}
-	if i := strings.IndexByte(w, '{'); i >= 0 {
-		if j := strings.IndexByte(w[i:], '}'); j > 0 {
-			in := w[i+1 : i+j]
-			return strings.Contains(in, ",") || strings.Contains(in, "..")
-		}
-	}
-	return false
-}
 
 // command applies the rule to one simple command run from cur, and returns why it withholds,
 // or "" when it does not.
@@ -1031,7 +1002,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		if pathOnly(seg, cur, made) {
 			return ""
 		}
-		if seg.expands || len(words) < 2 {
+		if len(words) < 2 {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}
 		if why := v.runFile(words[1], cur, depth+1, true); why != "" {
@@ -1039,13 +1010,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		}
 		return ""
 	}
-	if expandedInstall(words) {
-		return "install verb after an expansion: " + strings.Join(words, " ")
-	}
-	if all, _ := redirects(seg); len(all) > 0 {
-		if why := unnamedProgram(all); why != "" {
-			return why + ": " + strings.Join(words, " ")
-		}
+	if why := globProgram(seg); why != "" {
+		return why + ": " + strings.Join(words, " ")
 	}
 	if why, ok := v.shellRun(seg, cur, depth); ok {
 		if why != "" {
@@ -1064,8 +1030,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		cur.other()
 		return ""
 	}
-	if seg.expands || hasRedirect(words) {
-		return "install command with an expansion or redirect: " + strings.Join(words, " ")
+	if hasRedirect(words) {
+		return "install command with a redirect: " + strings.Join(words, " ")
 	}
 	if v.spec.Concurrent != nil {
 		if cmds, ok := v.spec.Concurrent(words); ok {
@@ -1114,27 +1080,15 @@ func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 	return ""
 }
 
-// pathOnlyScripts are the version-manager init scripts, as written after . or source, that
-// only set PATH and functions when sourced and install nothing.
-var pathOnlyScripts = map[string]bool{
-	"$NVM_DIR/nvm.sh": true, "$HOME/.nvm/nvm.sh": true, "~/.nvm/nvm.sh": true,
-	"$HOME/.cargo/env": true, "~/.cargo/env": true,
-}
-
-// pathOnly reports whether a . or source of a file the walk does not read only sets PATH: one
-// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate of the virtual
-// environment that made, the previous command but for directory changes, created at the same
-// place.
+// pathOnly reports whether a . or source of a file the walk does not read only sets PATH: a
+// literal <dir>/bin/activate of the virtual environment that made, the previous command but
+// for directory changes, created at the same place.
 func pathOnly(seg segment, cur cursor, made string) bool {
 	if len(seg.words) != 2 {
 		return false
 	}
-	op := seg.words[1]
-	if pathOnlyScripts[op] {
-		return seg.expands == strings.Contains(op, "$")
-	}
-	dir, ok := strings.CutSuffix(op, "/bin/activate")
-	if seg.expands || !ok {
+	dir, ok := strings.CutSuffix(seg.words[1], "/bin/activate")
+	if !ok {
 		return false
 	}
 	key, ok := cur.at(dir)
@@ -1161,7 +1115,7 @@ func venvMade(seg segment, cur cursor) string {
 	head, ok := CommandName(words[0])
 	var args []string
 	switch {
-	case seg.expands || !ok || seg.guarded || seg.background || cur.venv().open != 0:
+	case !ok || seg.guarded || seg.background || cur.venv().open != 0:
 		return ""
 	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
 		args = words[3:]
@@ -1194,42 +1148,6 @@ func venvMade(seg segment, cur cursor) string {
 		return ""
 	}
 	return key
-}
-
-// installVerbs are the subcommands with which a package manager installs or re-locks.
-var installVerbs = map[string]bool{
-	"install": true, "i": true, "add": true, "sync": true, "ci": true, "update": true,
-	"upgrade": true, "up": true, "dlx": true,
-}
-
-// expandedInstall reports whether a word that expands is followed by an install verb: a
-// package manager named by a variable set outside the tree ($PM add x), which names no token.
-// make's own variable is left out: the target it runs is a recipe read here.
-func expandedInstall(words []string) bool {
-	for i := 0; i+1 < len(words); i++ {
-		if strings.ContainsAny(words[i], "$`") && installVerbs[words[i+1]] && !makeVarRE.MatchString(words[i]) {
-			return true
-		}
-	}
-	return false
-}
-
-var (
-	makeVarRE = regexp.MustCompile(`^\$+(?:\(MAKE\)|\{MAKE\}|MAKE)$`)
-	// expandedInstallRE finds the same in a line that does not tokenise, such as a make
-	// recipe calling $(PIP); its group is the expansion.
-	expandedInstallRE = regexp.MustCompile(`(?:^|[\s;&|(])(\$+(?:\([^()\s]*\)|\{[^{}\s]*\}|[A-Za-z_][A-Za-z0-9_]*)|` +
-		"`[^`]*`" + `)\S*\s+(?:install|i|add|sync|ci|update|upgrade|up|dlx)\b`)
-)
-
-// expandedInstallLine is expandedInstall for a line that does not tokenise.
-func expandedInstallLine(line string) bool {
-	for _, m := range expandedInstallRE.FindAllStringSubmatch(line, -1) {
-		if !makeVarRE.MatchString(m[1]) {
-			return true
-		}
-	}
-	return false
 }
 
 func hasRedirect(words []string) bool {

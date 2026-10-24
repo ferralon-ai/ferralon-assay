@@ -21,14 +21,14 @@ const maxRunBytes = 1 << 20
 // Marks a command leaves in Veto.mentioned beside the base names it names, so that a sample
 // hook's are kept apart with the rest of its classification. globKey prefixes the lowercased
 // base of a glob the shell expands, which names every bound file it matches; dynKey marks a
-// write to a path that expands, which may name any bound file.
+// write through find or xargs that names no file, which may write any bound file.
 const (
 	globKey = "\x01g:"
 	dynKey  = "\x01dyn"
 )
 
 // rebinds reports whether a command names, as an argument, a file an allowed command binds
-// to: by exact base name, by a glob over base names, or by a write to a path that expands.
+// to: by exact base name, by a glob over base names, or by a write that names no file (dynKey).
 func rebinds(bound, mentioned map[string]bool) bool {
 	if len(bound) == 0 {
 		return false
@@ -199,7 +199,7 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 					i++
 				case a == "-S" || a == "--split-string" || strings.HasPrefix(a, "-S") || strings.HasPrefix(a, "--split-string="):
 					// -S splits its string into the words that follow, which this reads only
-					// when nothing in it is quoted, escaped or expanded.
+					// when nothing in it is quoted or escaped.
 					str, rest := strings.TrimPrefix(strings.TrimPrefix(a, "--split-string="), "-S"), args[i+1:]
 					if a == "-S" || a == "--split-string" {
 						if len(rest) == 0 {
@@ -207,7 +207,7 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 						}
 						str, rest = rest[0], rest[1:]
 					}
-					if strings.ContainsAny(str, "'\"\\$`") {
+					if strings.ContainsAny(str, "'\"\\") {
 						return nil, false, false
 					}
 					args = append(append(append([]string{}, args[:i]...), strings.Fields(str)...), rest...)
@@ -316,13 +316,9 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 				}
 				var b strings.Builder
 				if login {
-					b.WriteString(`cd "$HOME"; `)
+					b.WriteString(homeCD)
 				}
-				switch {
-				case dir != nil && strings.ContainsAny(*dir, "$`"):
-					// An expansion the caller's shell made: a directory this does not know.
-					b.WriteString(`cd "` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(*dir) + `"; `)
-				case dir != nil:
+				if dir != nil {
 					// sudo itself changes to dir, so it is one literal word.
 					b.WriteString("cd '" + strings.ReplaceAll(*dir, "'", `'\''`) + "'; ")
 				}
@@ -421,9 +417,6 @@ func (v *Veto) shellRun(seg segment, cur cursor, depth int) (why string, handled
 	name, _ := CommandName(args[0])
 	switch text, k := commandLine(name, args[1:]); k {
 	case lineText:
-		if strings.Contains(text, "$(") || strings.Contains(text, "`") {
-			return "shell runs a command substitution: " + strings.Join(seg.words, " "), true
-		}
 		return v.runText(text, cur.fork(), depth+1), true
 	case lineStdin, lineUnread:
 		return "shell runs what this cannot read: " + strings.Join(seg.words, " "), true
@@ -433,7 +426,7 @@ func (v *Veto) shellRun(seg segment, cur cursor, depth int) (why string, handled
 			return "shell run from a command this does not follow: " + strings.Join(seg.words, " "), true
 		}
 		if c, ok := runnerCommand(name, args[1:]); ok {
-			if strings.Contains(c, "{}") || strings.ContainsAny(c, "$`") {
+			if strings.Contains(c, "{}") {
 				return "runs files this cannot name: " + strings.Join(seg.words, " "), true
 			}
 			if strings.Contains(c, "/") {
@@ -443,20 +436,13 @@ func (v *Veto) shellRun(seg segment, cur cursor, depth int) (why string, handled
 			}
 		}
 	}
-	if strings.Contains(args[0], "/") && !strings.ContainsAny(args[0], "$`") {
+	if strings.Contains(args[0], "/") {
 		if why, ok := v.execFile(args[0], cur, depth); ok {
 			return why, true
 		}
 	}
 	if name == "eval" {
-		text := strings.Join(args[1:], " ")
-		if f, ok := catSubst(text); ok {
-			return v.runFile(f, cur, depth+1, true), true
-		}
-		if seg.expands {
-			return "eval of text that expands: " + strings.Join(seg.words, " "), true
-		}
-		return v.runText(text, cur, depth+1), true
+		return v.runText(strings.Join(args[1:], " "), cur, depth+1), true
 	}
 	if !shells[name] {
 		return "", false
@@ -518,9 +504,6 @@ opts:
 		if i >= len(args) {
 			return why, true
 		}
-		if strings.Contains(operand, "$(") || strings.Contains(operand, "`") {
-			return "shell runs a command substitution: " + strings.Join(seg.words, " "), true
-		}
 		return v.runText(operand, cur.fork(), depth+1), true
 	case operand != "" && !stdin:
 		return v.runFile(operand, cur.fork(), depth+1, false), true
@@ -539,9 +522,6 @@ opts:
 			}
 			return "", true // its body is the lines that follow, read as shell lines
 		case "<<<":
-			if strings.Contains(r.target, "$(") || strings.Contains(r.target, "`") {
-				return "shell runs a command substitution: " + strings.Join(seg.words, " "), true
-			}
 			return v.runText(r.target, cur.fork(), depth+1), true
 		case "<>", "<&":
 			return why, true
@@ -567,6 +547,10 @@ func lineRunsShell(w string) bool {
 // fieldRunsShell reports whether a field of a command line, its quotes and separators aside,
 // runs a shell.
 func fieldRunsShell(f string) bool { return runsShell(f) || runsShell(trimShell(f)) }
+
+// homeCD leads the text a login shell runs: it starts in the user's home, a directory this does
+// not know, as cd - leaves it (the text holds no expansion, which would withhold it).
+const homeCD = "cd -; "
 
 // The kinds of command a command-line runner (su, runuser, sg, script) is given.
 const (
@@ -650,7 +634,7 @@ func commandLine(name string, args []string) (string, int) {
 	}
 	switch {
 	case have && login:
-		return `cd "$HOME"; ` + text, lineText
+		return homeCD + text, lineText
 	case have:
 		return text, lineText
 	case name == "script":
@@ -796,21 +780,10 @@ func catFile(words []string) (string, bool) {
 	if !ok || inert || len(args) != 2 {
 		return "", false
 	}
-	if name, _ := CommandName(args[0]); name != "cat" || strings.HasPrefix(args[1], "-") || hasExpansion(args[1:]) {
+	if name, _ := CommandName(args[0]); name != "cat" || strings.HasPrefix(args[1], "-") {
 		return "", false
 	}
 	return args[1], true
-}
-
-var catSubstRE = regexp.MustCompile(`^\$\(\s*cat\s+([^\s$` + "`" + `()<>;&|'"\\-][^\s$` + "`" + `()<>;&|'"\\]*)\s*\)$`)
-
-// catSubst returns the file of eval text that is exactly $(cat <file>).
-func catSubst(text string) (string, bool) {
-	m := catSubstRE.FindStringSubmatch(strings.TrimSpace(text))
-	if m == nil {
-		return "", false
-	}
-	return m[1], true
 }
 
 // runFile applies the rule to the file at p, from cur, run by a shell (a fork of the caller's
@@ -881,6 +854,9 @@ func (v *Veto) runText(src string, cur cursor, depth int) string {
 	prev := v.lineShell
 	v.lineShell = true
 	defer func() { v.lineShell = prev }()
+	if why := textExpands(src); why != "" {
+		return why
+	}
 	mark := cur.venv()
 	for _, line := range lines {
 		segs, ok, dangles := commandSegments(kindShell, line)
@@ -911,274 +887,47 @@ func (v *Veto) runText(src string, cur cursor, depth int) string {
 
 // shellLineRE finds, in a line that does not tokenise, a word that hands text to a shell: a
 // shell, eval or source anywhere. sourceLineRE finds a . where a command starts, which a case
-// pattern's ) or a reserved word may lead into; it is matched with each ) that closes a $(
-// blanked, since that one ends a substitution rather than a pattern.
+// pattern's ) or a reserved word may lead into.
 var (
 	shellLineRE  = regexp.MustCompile(`(?:^|[\s;&|(` + "`" + `])(?:[\w./-]*/)?(?:sh|bash|dash|zsh|ksh|ash|mksh|eval|source)(?:$|[\s;&|)` + "`" + `])`)
 	sourceLineRE = regexp.MustCompile(`(?:^|[;&|()!{]|\b(?:then|do|else|elif|if|while|until|time|coproc))\s*\.\s+\S`)
 )
 
-// blankSubstClose returns line with each ) that closes a $( replaced by a blank: that one ends a
-// substitution, so what follows it continues the word or command the $( is in. A $( where a
-// command starts is a program this cannot name, which unnamedLine withholds on its own.
-func blankSubstClose(line string) string {
-	b := []byte(line)
-	var open []bool // for each ( still open, whether its ) is blanked
-	for i, c := range b {
-		switch c {
-		case '(':
-			open = append(open, i > 0 && b[i-1] == '$')
-		case ')':
-			if n := len(open); n > 0 {
-				if open[n-1] {
-					b[i] = ' '
-				}
-				open = open[:n-1]
-			}
-		}
-	}
-	return string(b)
-}
-
-// redirectRE matches the operator of a redirect at the start of a word.
-var redirectRE = regexp.MustCompile(`^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>&|>>|>\||<|>)`)
-
-// keywordAtRE finds a reserved word a command may follow, as a word of its own.
-var keywordAtRE = regexp.MustCompile(`(?:^|[\s;&|()!{` + "`" + `])(?:then|do|else|elif|if|while|until|time|coproc)\s`)
-
-// unnamedLine is unnamedProgram for a line that does not tokenise. A command may start at the
-// start of the line, after a leading key, after any ; & | ( ) ! { or backtick, quoted or not,
-// a ) that closes a $( not at a command start aside, and after a reserved word; each such
-// start is read as words up to the next ; & | or ), quotes kept together, and judged as a
-// command. Where the quotes do not pair up, the words cannot be placed, so any expansion
-// withholds.
-func unnamedLine(line string) string {
-	if unpairedQuotes(line) {
-		if strings.ContainsAny(line, "$`") {
-			return "an expansion where commands cannot be placed"
-		}
-		return ""
-	}
-	b := blankSubstClose(line)
-	starts := []int{0}
-	if item := seqItem(b); item != b {
-		starts = append(starts, len(b)-len(item))
-	}
-	if m := keyRE.FindStringIndex(seqItem(b)); m != nil {
-		starts = append(starts, m[1]+len(b)-len(seqItem(b)))
-	}
-	for i := 0; i < len(b); i++ {
-		if strings.IndexByte(";&|()!{`", b[i]) >= 0 {
-			starts = append(starts, i+1)
-		}
-	}
-	for _, m := range keywordAtRE.FindAllStringIndex(b, -1) {
-		starts = append(starts, m[1])
-	}
-	for _, st := range starts {
-		if why := unnamedProgram(lineWords(line[st:])); why != "" {
-			return why
-		}
-	}
-	return ""
-}
-
-// substEnd returns the index just past the ) that closes the ( at open, or len(s).
-func substEnd(s string, open int) int {
-	depth := 0
-	for i := open; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			if depth--; depth == 0 {
-				return i + 1
-			}
-		}
-	}
-	return len(s)
-}
-
-// unpairedQuotes reports whether a quote in line opens and never closes.
-func unpairedQuotes(line string) bool {
-	var q byte
-	for i := 0; i < len(line); i++ {
-		switch c := line[i]; {
-		case q == 0 && c == '\\':
-			i++
-		case q == 0 && (c == '\'' || c == '"'):
-			q = c
-		case q == '"' && c == '\\':
-			i++
-		case c == q:
-			q = 0
-		}
-	}
-	return q != 0
-}
-
-// lineWords splits text into the words of the command it starts with: blank-separated, a
-// quoted run kept in its word with its quotes, up to the first unquoted ; & | or ), and with
-// redirects and their targets dropped.
-func lineWords(text string) []string {
-	var words []string
-	var w strings.Builder
-	var q byte
-	end := func() {
-		if w.Len() > 0 {
-			words = append(words, w.String())
-			w.Reset()
-		}
-	}
-scan:
-	for i := 0; i < len(text); i++ {
-		c := text[i]
-		switch {
-		case q == 0 && (c == ' ' || c == '\t'):
-			end()
-		case q == 0 && strings.IndexByte(";&|)", c) >= 0 && !(c == '&' && strings.HasSuffix(w.String(), ">")):
-			break scan
-		case q == 0 && c == '\\' && i+1 < len(text):
-			w.WriteByte(c)
-			i++
-			w.WriteByte(text[i])
-		case q != '\'' && c == '$' && i+1 < len(text) && text[i+1] == '(':
-			// A substitution is part of the word it is in, whatever it holds.
-			n := substEnd(text, i+1)
-			w.WriteString(text[i:n])
-			i = n - 1
-		case q == 0 && (c == '\'' || c == '"'):
-			q = c
-			w.WriteByte(c)
-		case q != 0 && c == q:
-			q = 0
-			w.WriteByte(c)
-		default:
-			w.WriteByte(c)
-		}
-	}
-	end()
-	var out []string
-	for i := 0; i < len(words); i++ {
-		if m := redirectRE.FindString(words[i]); m != "" {
-			if m == words[i] {
-				i++ // the target is the next word
-			}
-			continue
-		}
-		out = append(out, strings.Trim(words[i], `"'`))
-	}
-	return out
-}
-
-// untokenised applies the rule to a line that does not tokenise: one naming a token, an
-// install verb after an expansion, or a shell run withholds, and the rest is mentioned.
+// untokenised applies the rule to a line of shell text that does not tokenise.
 func (v *Veto) untokenised(line string, cur cursor) string {
-	return v.untokenisedAs(line, cur, false)
+	return v.untokenisedAs(line, cur, kindShell)
 }
 
-// sectionRE matches a TOML or INI table header, which names a section and runs no program. A
-// YAML list item ("- [x]") is not one: GitLab flattens a nested script list into commands.
-var sectionRE = regexp.MustCompile(`^\[\[?[A-Za-z0-9_.:\- ]+\]\]?$`)
-
-// flowValue reports whether a data line's value is a YAML flow collection that is not JSON: a
-// GitLab script item may be one, and its items are commands.
-func flowValue(t string) bool {
-	t = seqItem(t)
-	if m := keyRE.FindStringIndex(t); m != nil {
-		t = t[m[1]:]
-	}
-	return strings.HasPrefix(t, "[") || strings.HasPrefix(t, "{")
-}
-
-// untokenisedAs is untokenised for a line of a data file, where a table header is not a
-// command whose program is a glob.
-func (v *Veto) untokenisedAs(line string, cur cursor, data bool) string {
+// untokenisedAs applies the rule to a line, split as kind, that does not tokenise: one naming a
+// token, handing text to a shell, or holding a glob (whose words this cannot place), or a path
+// to a file of the build a shell would run, withholds; the rest is mentioned.
+func (v *Veto) untokenisedAs(line string, cur cursor, kind string) string {
 	if v.hasToken(line) {
 		return "install command that does not tokenise"
 	}
-	if expandedInstallLine(line) {
-		return "install verb after an expansion that does not tokenise"
-	}
-	if t := strings.TrimSpace(line); shellLineRE.MatchString(t) || sourceLineRE.MatchString(blankSubstClose(t)) {
+	if t := strings.TrimSpace(line); shellLineRE.MatchString(t) || sourceLineRE.MatchString(t) {
 		return "shell run that does not tokenise: " + strings.TrimSpace(line)
 	}
-	if t := strings.TrimSpace(line); data && flowValue(t) && strings.ContainsAny(t, "$`") {
-		return "an expansion in a YAML flow collection, where commands cannot be placed: " + t
-	}
-	if t := strings.TrimSpace(line); !data || !sectionRE.MatchString(t) {
-		if why := unnamedLine(t); why != "" {
-			return why + " in a line that does not tokenise: " + t
+	if t, runs, flow := runValue(kind, line); runs {
+		texts := []string{t}
+		if items, _, ok := flowItems(t); flow && ok {
+			texts = items
+		}
+		for _, t := range texts {
+			if why := expansion(t, true); why != "" {
+				return why + ": " + strings.TrimSpace(line)
+			}
 		}
 	}
 	for _, f := range strings.Fields(line) {
 		f = trimShell(f)
-		if strings.Contains(f, "/") && !filepath.IsAbs(f) && !strings.ContainsAny(f, "$`") && v.mayExec(path.Base(f)) {
+		if strings.Contains(f, "/") && !filepath.IsAbs(f) && v.mayExec(path.Base(f)) {
 			return "runs a file by its path in a line that does not tokenise: " + strings.TrimSpace(line)
 		}
 	}
 	v.mention(strings.Fields(line))
 	v.globs(unquotedGlobWords(line), carriesRE.MatchString(line), cur)
-	if dynLine(line) {
-		v.mentioned[dynKey] = true
-	}
 	return ""
-}
-
-// dynLine reports whether a line that does not tokenise redirects to a path that expands, or
-// hands a writer an operand that does: the line read as blank-separated words, quotes removed,
-// split at ;, & and |.
-func dynLine(line string) bool {
-	for _, part := range strings.FieldsFunc(line, func(r rune) bool { return r == ';' || r == '&' || r == '|' }) {
-		words := strings.Fields(part)
-		for i, w := range words {
-			words[i] = strings.Trim(w, `"'`)
-		}
-		var args []string
-		for i := 0; i < len(words); i++ {
-			w := words[i]
-			j := strings.IndexByte(w, '>')
-			if j < 0 || strings.Trim(w[:j], "0123456789") != "" {
-				args = append(args, w)
-				continue
-			}
-			t := strings.Trim(strings.TrimLeft(w[j:], ">|"), `"'`)
-			if t == "" && i+1 < len(words) {
-				i++
-				t = words[i]
-			}
-			if dynTargets([]string{t}) {
-				return true
-			}
-		}
-		if args, _, ok := unwrap(args); ok {
-			if ops, ok := writeOperands(args); ok && dynTargets(ops) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// runnerVars are the files a CI runner gives a step to write to, which no install reads.
-var runnerVars = []string{"$GITHUB_OUTPUT", "$GITHUB_ENV", "$GITHUB_PATH", "$GITHUB_STEP_SUMMARY", "$GITHUB_STATE",
-	"${GITHUB_OUTPUT}", "${GITHUB_ENV}", "${GITHUB_PATH}", "${GITHUB_STEP_SUMMARY}", "${GITHUB_STATE}"}
-
-// runnerFile reports whether a write target is one of runnerVars, or under the runner's
-// temporary directory.
-func runnerFile(t string) bool {
-	return slices.Contains(runnerVars, t) || strings.HasPrefix(t, "$RUNNER_TEMP/") || strings.HasPrefix(t, "${RUNNER_TEMP}/")
-}
-
-// dynTargets reports whether a write target expands to a path this cannot name: one holding a
-// $ or backtick that is not a runner file.
-func dynTargets(ts []string) bool {
-	for _, t := range ts {
-		if strings.ContainsAny(t, "$`") && !runnerFile(t) {
-			return true
-		}
-	}
-	return false
 }
 
 // writers are the programs that write to a file named among their operands.
@@ -1295,10 +1044,9 @@ func writeOperands(words []string) ([]string, bool) {
 	return ops, true
 }
 
-// writes notes how a command that is not an install writes files this cannot name: a redirect
-// to a path that expands, a writer given an operand that expands, xargs feeding a writer, and
-// find -exec running one (each a write to any bound file, dynKey), or find matching names by
-// a pattern (a glob over them).
+// writes notes how a command that is not an install writes files this cannot name: xargs
+// feeding a writer, and find -exec running one (each a write to any bound file, dynKey), or
+// find matching names by a pattern (a glob over them). A redirect's target is mentioned.
 func (v *Veto) writes(seg segment) string {
 	args, rs := redirects(seg)
 	for _, r := range rs {
@@ -1306,16 +1054,10 @@ func (v *Veto) writes(seg segment) string {
 			continue
 		}
 		v.mention([]string{r.target})
-		if dynTargets([]string{r.target}) {
-			v.mentioned[dynKey] = true
-		}
 	}
 	args, _, ok := unwrap(args)
 	if !ok || len(args) == 0 {
 		return ""
-	}
-	if ops, ok := writeOperands(args); ok && dynTargets(ops) {
-		v.mentioned[dynKey] = true
 	}
 	name, _ := CommandName(args[0])
 	switch name {

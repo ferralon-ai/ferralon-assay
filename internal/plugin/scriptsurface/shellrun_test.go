@@ -1,6 +1,7 @@
 package scriptsurface
 
 import (
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -13,8 +14,7 @@ import (
 )
 
 // A file a shell runs, or . or source reads in place, is classified as the shell runs it; and a
-// write this cannot name (a glob, a path that expands, a glued redirect) names every bound file
-// it may reach.
+// write this cannot name (a glob, a glued redirect) names every bound file it may reach.
 // In a row's files, content starting linkTo makes the path a symlink to the rest, and content
 // starting executable is written with its execute bits set, and content starting unreadable
 // with only its execute bits set.
@@ -78,7 +78,7 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"wget to standard output", run("inst sync\nwget -qO- https://x/y\n", benign), false, ""},
 		{"curl to a named file", run("inst sync\ncurl -fsSL https://x/y -o out.tgz\n", benign), false, ""},
 		{"sed -ie is in place with suffix e", run("inst sync\nsed -ie s/a/b/ \"$F\"\n", benign), true, ""},
-		{"sed -e is not in place", run("inst sync\nsed -e s/a/b/ \"$F\"\n", benign), false, ""},
+		{"the rule withholds: sed -e is not in place", run("inst sync\nsed -e s/a/b/ \"$F\"\n", benign), true, ""},
 		{"perl -pie is in place with suffix e", run("inst sync\nperl -pie 's/a/b/' \"$F\"\n", benign), true, ""},
 		{"env -S splits a shell run", run("env -S 'sh scripts/setup'\n", installs), true, ""},
 		{"env -S splits a shell run that does not install", run("inst sync\nenv -S 'sh scripts/setup'\n", benign), false, ""},
@@ -115,9 +115,9 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"script with no command records a shell", run("inst sync\nscript -q out.log\n", benign), true, ""},
 		{"sg runs its command line", run("inst sync\nsg app 'sh scripts/setup'\n", benign), false, ""},
 		{"sudo -s with no command reads standard input", run("inst sync\nsudo -s\n", benign), true, ""},
-		{"sed -i with a suffix holding e takes the script next", run("inst sync\nsed -i.before \"$EXPR\" notes.txt\n", benign), false, ""},
+		{"the rule withholds: sed -i with a suffix holding e takes the script next", run("inst sync\nsed -i.before \"$EXPR\" notes.txt\n", benign), true, ""},
 		{"an install with &> to a log", run("inst sync &>build.log\n", benign), true, ""},
-		{"perl -i with a suffix holding e", run("inst sync\nperl -i.pre -pe \"s/$V/x/\" notes.txt\n", benign), false, ""},
+		{"the rule withholds: perl -i with a suffix holding e", run("inst sync\nperl -i.pre -pe \"s/$V/x/\" notes.txt\n", benign), true, ""},
 		{"env -S with a quoted shell", run("inst sync\nenv -S \"'sh' scripts/setup\"\n", benign), true, ""},
 		{"a cd with &> moves the shell", tree(map[string]string{"install.sh": "inst sync\ncd app &>/dev/null\nsh setup\n", "app/setup": installs, "setup": benign}), true, ""},
 		// r3: sudo argv and -D, keywords, an exec after a lost directory, a nested cd.
@@ -207,7 +207,7 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"a program that expands given a . not last", run("inst sync\n$DOCKER build . -t x\n", benign), true, ""},
 		{"a program that expands given a . operand", run("inst sync\n$FIND . -name x\n", benign), true, ""},
 		{"a program that expands given a . and a flag", run("inst sync\n$ESLINT . --ext .ts\n", benign), true, ""},
-		{"a ) closing a substitution before a . in a line that does not tokenise", run("inst sync\ndocker build -t x:$(git rev-parse HEAD) . -f D\n", benign), false, ""},
+		{"the rule withholds: a ) closing a substitution before a . in a line that does not tokenise", run("inst sync\ndocker build -t x:$(git rev-parse HEAD) . -f D\n", benign), true, ""},
 		// r6.
 		{"a file handed to a program that expands", run("inst sync\n$SH scripts/setup\n", benign), true, ""},
 		{"a file handed to a quoted program that expands", run("inst sync\n\"$SH\" scripts/setup\n", benign), true, ""},
@@ -286,10 +286,10 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"a leading redirect with its target apart ahead of a program that expands in a subshell", run("inst sync\n( 2> out $SH scripts/setup )\n", benign), true, ""},
 		{"a brace with no list in a program name", run("inst sync\ntool{x} build\n", benign), false, ""},
 		{"make's own variable names make", tree(map[string]string{"Makefile": "all:\n\tinst sync\n\t$(MAKE) -C sub\n\t${MAKE} build\n"}), false, ""},
-		{"a test command and literal programs with operands that expand", run("inst sync\n[ -f \"$F\" ] && grep $A $B\n[[ -n $X ]] && echo \"$X\"\n", benign), false, ""},
-		{"find without -exec given operands that expand", run("inst sync\nfind $DIR -name '*.pyc' -delete\n", benign), false, ""},
+		{"the rule withholds: a test command and literal programs with operands that expand", run("inst sync\n[ -f \"$F\" ] && grep $A $B\n[[ -n $X ]] && echo \"$X\"\n", benign), true, ""},
+		{"the rule withholds: find without -exec given operands that expand", run("inst sync\nfind $DIR -name '*.pyc' -delete\n", benign), true, ""},
 		{"xargs runs a literal program given a glob it does not run", run("inst sync\nls | xargs -n1 echo\n", benign), false, ""},
-		{"literal programs with expansions in a line that does not tokenise", run("inst sync\nX=$(git rev-parse HEAD) && docker build -t \"x:${X}\" .\n", benign), false, ""},
+		{"the rule withholds: literal programs with expansions in a line that does not tokenise", run("inst sync\nX=$(git rev-parse HEAD) && docker build -t \"x:${X}\" .\n", benign), true, ""},
 		{"a file run by its path in a subshell", tree(map[string]string{"install.sh": "inst sync\n( cd app && ./setup )\n", "app/setup": executable + benign}), true, ""},
 		{"sourced from several directories, a cd in a file it sources loses the caller's directory", tree(map[string]string{
 			".github/workflows/ci.yml": steps("- run: inst sync\n      - run: . ./lib; sh ./y\n        working-directory: app\n"),
@@ -297,6 +297,115 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"sourced from several directories, a file it sources that does not cd", tree(map[string]string{
 			".github/workflows/ci.yml": steps("- run: inst sync\n      - run: . ./lib; sh ./y\n        working-directory: app\n"),
 			"lib":                      ". ./x\n", "app/lib": ". ./x\n", "x": benign, "app/x": benign, "y": benign, "app/y": benign, "sub/y": installs, "app/sub/y": installs}), false, ""},
+		// r8: a line a build runs that holds an expansion withholds.
+		{"B1 $MAKE in a shell file", run("inst sync\n$MAKE scripts/setup\n", installs), true, ""},
+		{"B1 ${MAKE} in a shell file", run("inst sync\n${MAKE} scripts/setup\n", installs), true, ""},
+		{"B1 MAKE assigned in a shell file", run("inst sync\nMAKE=sh; $MAKE scripts/setup\n", installs), true, ""},
+		{"B1 $MAKE in a package.json script", tree(map[string]string{"package.json": `{"scripts":{"build":"$MAKE scripts/setup"}}`, "scripts/setup": installs}), true, ""},
+		{"B1 $$MAKE in a recipe", tree(map[string]string{"Makefile": "all:\n\t$$MAKE scripts/setup\n", "scripts/setup": executable + installs}), true, ""},
+		{"B1 $$(MAKE) in a recipe", tree(map[string]string{"Makefile": "all:\n\t$$(MAKE) scripts/setup\n", "scripts/setup": executable + installs}), true, ""},
+		{"B1 $(MAKE) after MAKE :=", tree(map[string]string{"Makefile": "MAKE := sh\nall:\n\t$(MAKE) scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after MAKE =", tree(map[string]string{"Makefile": "MAKE = sh\nall:\n\t$(MAKE) scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after override MAKE =", tree(map[string]string{"Makefile": "override MAKE = sh\nall:\n\t$(MAKE) scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after a target-specific MAKE", tree(map[string]string{"Makefile": "all: MAKE=sh\nall:\n\t$(MAKE) scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after MAKE ?=", tree(map[string]string{"Makefile": "MAKE ?= sh\nall:\n\t${MAKE} scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after define MAKE", tree(map[string]string{"Makefile": "define MAKE\nsh\nendef\nall:\n\t$(MAKE) scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after an include that assigns MAKE", tree(map[string]string{"Makefile": "include mk/vars.inc\nall:\n\t$(MAKE) scripts/setup\n", "mk/vars.inc": "MAKE = sh\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after a nested include that assigns MAKE", tree(map[string]string{"Makefile": "-include a.inc\nall:\n\t$(MAKE) scripts/setup\n", "a.inc": "sinclude b.inc\n", "b.inc": "MAKE = sh\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) in a make file another make file assigning MAKE includes", tree(map[string]string{"Makefile": "MAKE = sh\ninclude rules.mk\n", "rules.mk": "all:\n\t$(MAKE) scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B1 $(MAKE) after an include that expands", tree(map[string]string{"Makefile": "include $(X).inc\nall:\n\t$(MAKE) build\n"}), true, ""},
+		{"B1 $(MAKE) after an include of a glob", tree(map[string]string{"Makefile": "include *.inc\nall:\n\t$(MAKE) build\n", "a.inc": "X = 1\n"}), true, ""},
+		{"B1 $(MAKE) after an include from an absolute path", tree(map[string]string{"Makefile": "include /etc/x.inc\nall:\n\t$(MAKE) build\n"}), true, ""},
+		{"B1 $(MAKE) after an include outside the root", tree(map[string]string{"app/Makefile": "include ../x.inc\nall:\n\t$(MAKE) build\n", "x.inc": "X = 1\n"}), true, "app"},
+		{"B1 $(MAKE) after an include this cannot read", tree(map[string]string{"Makefile": "include x.inc\nall:\n\t$(MAKE) build\n", "x.inc": unreadable + "X = 1\n"}), true, ""},
+		{"B1 $(MAKE) after an include of a link", tree(map[string]string{"Makefile": "include x.inc\nall:\n\t$(MAKE) build\n", "x.inc": linkTo + "y.inc", "y.inc": "X = 1\n"}), true, ""},
+		{"B1 $(MAKE) after an include missing", tree(map[string]string{"Makefile": "-include x.inc\nall:\n\t$(MAKE) build\n"}), true, ""},
+		{"B1 $(MAKE) after includes nested too deep", tree(map[string]string{"Makefile": "include i0.inc\nall:\n\t$(MAKE) build\n",
+			"i0.inc": "include i1.inc\n", "i1.inc": "include i2.inc\n", "i2.inc": "include i3.inc\n", "i3.inc": "include i4.inc\n",
+			"i4.inc": "include i5.inc\n", "i5.inc": "include i6.inc\n", "i6.inc": "include i7.inc\n", "i7.inc": "include i8.inc\n", "i8.inc": "include i9.inc\n", "i9.inc": "X = 1\n"}), true, ""},
+		{"B1 $(MAKE) after includes that do not assign MAKE", tree(map[string]string{"Makefile": "include a.inc b.inc # shared\nall:\n\t$(MAKE) build\n", "a.inc": "include b.inc\n", "b.inc": "include a.inc\nX = 1\n"}), false, ""},
+		{"B1 $(MAKE) outside a recipe", tree(map[string]string{"Makefile": "X = $(MAKE)\nall:\n\tinst sync\n"}), true, ""},
+		{"B1 $(MAKE) joined to a word", tree(map[string]string{"Makefile": "all:\n\t$(MAKE)x build\n"}), true, ""},
+		{"B1 $(MAKE) twice across one operator", tree(map[string]string{"Makefile": "all:\n\t$(MAKE);$(MAKE) build\n"}), false, ""},
+		{"B1 $(MAKE) in a justfile", tree(map[string]string{"justfile": "all:\n\t$(MAKE) build\n"}), true, ""},
+		{"B2 a glob program where quotes do not pair", run("inst sync\n/bin/s? scripts/setup \"a\nb\"\n", installs), true, ""},
+		{"B2 a bracket glob program where quotes do not pair", run("inst sync\n/bin/[s]h scripts/setup \"a\nb\"\n", installs), true, ""},
+		{"B2 a brace list where quotes do not pair", run("inst sync\n{/bin/sh,scripts/setup} \"a\nb\"\n", installs), true, ""},
+		{"B3 a recipe mark and blank ahead of a program that expands", tree(map[string]string{"Makefile": "all:\n\t@ $(SH) scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"B4 builtin ahead of a program that expands", run("inst sync\nbuiltin $X scripts/setup\n", installs), true, ""},
+		{"B5 a make shell function in an assignment", tree(map[string]string{"Makefile": "X := $(shell $(SH) scripts/setup)\nall:\n\tinst sync\n", "scripts/setup": installs}), true, ""},
+		{"B5 a make shell function in a recipe", tree(map[string]string{"Makefile": "all:\n\techo $(shell sh scripts/setup)\n", "scripts/setup": installs}), true, ""},
+		{"B5 a make shell function in braces", tree(map[string]string{"Makefile": "X := ${shell sh scripts/setup}\nall:\n\tinst sync\n", "scripts/setup": installs}), true, ""},
+		{"B5 a make != assignment", tree(map[string]string{"Makefile": "X != sh scripts/setup\nall:\n\tinst sync\n", "scripts/setup": installs}), true, ""},
+		{"B5 a test for inequality in a recipe", tree(map[string]string{"Makefile": "all:\n\t[ a != b ] && inst sync\n"}), false, ""},
+		{"B6 a substitution in a word", run("inst sync\necho \"$(sh scripts/setup)\"\n", installs), true, ""},
+		{"B6 backticks in a word", tree(map[string]string{"install.sh": "inst sync\necho `scripts/setup`\n", "scripts/setup": executable + installs}), true, ""},
+		{"B7 a program under the home directory", run("inst sync\n~/sh scripts/setup\n", installs), true, ""},
+		{"B7 a program under a user's home directory", run("inst sync\n~x/sh scripts/setup\n", installs), true, ""},
+		{"B7 a ~ after an assignment", run("inst sync\nPATH=~/bin sh scripts/setup\n", benign), true, ""},
+		{"B7 a ~ quoted", run("inst sync\necho '~/x' \"~\"\n", benign), false, ""},
+		{"B7 a ~ inside a word", run("inst sync\necho a~b\n", benign), false, ""},
+		{"B7 a ~ in text a shell runs", run("inst sync\nsh -c '~/sh scripts/setup'\n", installs), true, ""},
+		{"B8 a GitLab flow list of quoted commands", tree(map[string]string{".gitlab-ci.yml": "b:\n  script: [\"echo hi\", \"sh scripts/setup\"]\n", "scripts/setup": installs}), true, ""},
+		{"B8 a GitLab flow list of quoted commands as an item", tree(map[string]string{".gitlab-ci.yml": "b:\n  script:\n    - inst sync\n    - [\"echo hi\", \"sh scripts/setup\"]\n", "scripts/setup": installs}), true, ""},
+		{"B8 a GitLab flow list with a plain item that expands", tree(map[string]string{".gitlab-ci.yml": "b:\n  script: [true, $SH scripts/setup]\n", "scripts/setup": installs}), true, ""},
+		{"B8 a flow list holding a mapping", tree(map[string]string{".gitlab-ci.yml": "b:\n  script: [{x: sh scripts/setup}]\n", "scripts/setup": installs}), true, ""},
+		{"B8 a flow list that spans lines", tree(map[string]string{".gitlab-ci.yml": "b:\n  script: [inst sync,\n    ~/sh scripts/setup]\n", "scripts/setup": installs}), true, ""},
+		{"B8 the opening line of a flow list that spans lines", tree(map[string]string{".gitlab-ci.yml": "b:\n  script: [~/sh scripts/setup,\n    inst sync]\n", "scripts/setup": installs}), true, ""},
+		{"B8 a flow list of commands that do not install", tree(map[string]string{".gitlab-ci.yml": "b:\n  script:\n    - inst sync\n    - [\"echo hi\", \"echo ok\"]\n"}), false, ""},
+		{"a Procfile value behind a redirect", tree(map[string]string{"Procfile": "web: >/dev/null inst add x\n"}), true, ""},
+		{"a Procfile value starting with a pipe", tree(map[string]string{"Procfile": "web: | inst add x\n"}), true, ""},
+		{"a brace sequence", run("inst sync\n{a..b} scripts/setup\n", installs), true, ""},
+		{"a brace list nested", run("inst sync\necho {a,{b,c}}\n", benign), true, ""},
+		{"a brace with a list only nested", run("inst sync\necho x{a{b,c}}y\n", benign), true, ""},
+		{"a brace closing past a quote", run("inst sync\necho {a,\"}\"}\n", benign), true, ""},
+		{"braces with no list", run("inst sync\necho {} '{a,b}' {a}\n", benign), false, ""},
+		{"a program a glob names", run("inst sync\n/bin/s? scripts/setup\n", installs), true, ""},
+		{"a glob behind a wrapper this cannot read", run("inst sync\nenv -x /bin/s* scripts/setup\n", installs), true, ""},
+		{"a quoted glob behind a wrapper this cannot read", run("inst sync\nenv -x echo '*'\n", benign), false, ""},
+		{"xargs given a glob", run("inst sync\nls | xargs /bin/s?\n", benign), true, ""},
+		{"find -exec given a glob", run("inst sync\nfind . -name x -exec /bin/s? {} +\n", benign), true, ""},
+		{"find given a glob before -exec", run("inst sync\nfind . -name '*.pyc' -name x* -exec rm {} +\n", benign), false, ""},
+		{"a glob in a line that does not tokenise", run("inst sync\n/bin/s? scripts/setup )\n", installs), true, ""},
+		{"a bracket that does not close in a line that does not tokenise", run("inst sync\necho [x )\n", benign), false, ""},
+		{"a Dockerfile RUN that expands", tree(map[string]string{"Dockerfile": docker + "RUN inst sync && $SH scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"a Dockerfile RUN flag ahead of a command that expands", tree(map[string]string{"Dockerfile": docker + "RUN --network=none ~/sh scripts/setup\n", "scripts/setup": installs}), true, ""},
+		{"a Dockerfile heredoc that expands", tree(map[string]string{"Dockerfile": docker + "RUN <<EOF\ninst sync\n$SH scripts/setup\nEOF\n", "scripts/setup": installs}), true, ""},
+		{"a Dockerfile ENV that expands is not a run line", tree(map[string]string{"Dockerfile": docker + "ENV P=$HOME/bin\nRUN inst sync\n"}), false, ""},
+		{"an exec form that expands", tree(map[string]string{".devcontainer.json": `{"postCreateCommand": ["$SH", "scripts/setup"]}`, "scripts/setup": installs}), true, ""},
+		{"a YAML comment line that expands", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync\n      # $X\n")}), false, ""},
+		{"the rule withholds: a trailing comment that expands", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync # ${{ x }}\n")}), true, ""},
+		{"a JSON comment that expands", tree(map[string]string{".devcontainer.json": "{\n  // $X\n  \"postCreateCommand\": \"inst sync\"\n}\n"}), false, ""},
+		{"a key a build never runs that expands", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync\n        name: ${{ matrix.x }}\n")}), false, ""},
+		{"the rule withholds: an env value that expands", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync\n        env:\n          X: ${{ secrets.X }}\n")}), true, ""},
+		{"a YAML block header", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          inst sync\n")}), false, ""},
+		{"a quoted data value that expands", tree(map[string]string{"package.json": `{"scripts":{"build":"inst run \"$X\""}}`}), true, ""},
+		{"a section header with a brace list", tree(map[string]string{"tox.ini": "[testenv:py{38,39}]\ncommands = pytest\n"}), false, ""},
+		{"a PowerShell line that expands", tree(map[string]string{"install.ps1": "inst sync\nWrite-Host $x\n"}), true, ""},
+		{"a login shell runs from the home directory", run("inst sync\nsudo -i sh scripts/setup\n", installs), true, ""},
+		{"braces with a list after a blank", run("inst sync\necho {a b,c}\n", benign), false, ""},
+		{"a brace list holding a nested pair", run("inst sync\necho {a{b}c,d}\n", benign), true, ""},
+		{"a bracket that closes past a blank in a line that does not tokenise", run("inst sync\necho [x ] )\n", benign), false, ""},
+		{"a shell line starting // that expands", run("inst sync\n//x $X\n", benign), true, ""},
+		{"a recipe mark ahead of a ~", tree(map[string]string{"Makefile": "all:\n\t@~/sh scripts/setup\n\tinst sync\n", "scripts/setup": installs}), true, ""},
+		{"a YAML block header with a comment that expands", tree(map[string]string{".github/workflows/ci.yml": steps("- run: | # $X\n          inst sync\n")}), false, ""},
+		{"a quoted data value holding a ~", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync\n      - run: \"echo ~\"\n")}), true, ""},
+		{"a flow list holding a mapping with a glob", tree(map[string]string{".gitlab-ci.yml": "b:\n  script:\n    - inst sync\n    - [{x: echo q*}]\n"}), true, ""},
+		{"a flow mapping holding a glob", tree(map[string]string{".gitlab-ci.yml": "b:\n  script:\n    - inst sync\n    - {x: echo q*}\n"}), true, ""},
+		{"a flow list item that does not tokenise", tree(map[string]string{".gitlab-ci.yml": "b:\n  script:\n    - inst sync\n    - [\"echo hi\", \"echo * )\"]\n"}), true, ""},
+		{"a JSON array a build runs as an argv", tree(map[string]string{".devcontainer.json": "{\n  \"postCreateCommand\": [\"sh\", \"setup\"]\n}\n", "setup": installs}), true, ""},
+		{"define MAKE", tree(map[string]string{"Makefile": "define MAKE\nmk\nendef\nall:\n\t$(MAKE) build\n"}), true, ""},
+		{"an include in a recipe is a command", tree(map[string]string{"Makefile": "all:\n\tinclude gone.mk\nb:\n\t$(MAKE) build\n"}), false, ""},
+		{"a nested include that expands", tree(map[string]string{"Makefile": "include a.inc\nall:\n\t$(MAKE) build\n", "a.inc": "include $(Y)b.inc\n", "$(Y)b.inc": "X = 1\n", "b.inc": "MAKE = mk\n"}), true, ""},
+		{"an include glob", tree(map[string]string{"Makefile": "include *.inc\nall:\n\t$(MAKE) build\n", "*.inc": "X = 1\n", "b.inc": "MAKE = mk\n"}), true, ""},
+		{"an absolute include", tree(map[string]string{"Makefile": "include /sub/x.mk\nall:\n\t$(MAKE) build\n", "sub/x.mk": "X = 1\n"}), true, ""},
+		{"$(MAKE) in a shell file", run("inst sync\n\t$(MAKE) build\n", benign), true, ""},
+		{"MAKE assigned and not used", tree(map[string]string{"Makefile": "MAKE = mk\nall:\n\tinst sync\n"}), false, ""},
+		{"!= in a recipe", tree(map[string]string{"Makefile": "all:\n\tx!=y\n\tinst sync\n"}), false, ""},
+		{"a Dockerfile heredoc fed to another program that expands", tree(map[string]string{"Dockerfile": docker + "RUN inst sync\nRUN python3 <<EOF\nprint(\"$HOME\")\nEOF\n"}), true, ""},
+		{"an exec form naming a program with a glob character", tree(map[string]string{"Dockerfile": docker + "RUN inst sync\nCMD [\"/bin/s?\", \"x\"]\n"}), false, ""},
+		{"xargs reading a redirect glob", run("inst sync\nxargs rm < *.list\n", benign), false, ""},
+		{"find given a glob and no -exec", run("inst sync\nfind . -name x*\n", benign), false, ""},
 		// Hazard gates.
 		{"shell runs a file through a symlinked directory", tree(map[string]string{"install.sh": "sh scripts/setup\ninst sync\n", "real/setup": benign, "scripts": linkTo + "real"}), true, ""},
 		{"Dockerfile runs a COPY'd file through a symlinked directory", tree(map[string]string{"Dockerfile": docker + "COPY scripts/setup ./\nRUN inst sync\nRUN sh /app/setup\n", "real/setup": benign, "scripts": linkTo + "real"}), true, ""},
@@ -392,7 +501,7 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"writer given a path that expands", run("inst sync\nsed -i s/a/b/ \"$F\"\n", benign), true, ""},
 		{"redirect to a path that expands", run("inst sync\necho x > \"$OUT\"\n", benign), true, ""},
 		{"redirect to a path that expands, in a line that does not tokenise", run("inst sync\n(echo x) > \"$OUT\"\n", benign), true, ""},
-		{"writer given a path that expands, nothing bound", run("sed -i s/a/b/ \"$F\"\necho x > \"$OUT\"\n", benign), false, ""},
+		{"the rule withholds: writer given a path that expands, nothing bound", run("sed -i s/a/b/ \"$F\"\necho x > \"$OUT\"\n", benign), true, ""},
 		{"writer given a path that expands in a sample hook, nothing reaching it", tree(map[string]string{"install.sh": "inst sync\n", ".git/hooks/commit-msg.sample": "#!/bin/sh\nperl -i.bak -pe 's/x/y/' \"$1\"\n"}), false, ""},
 
 		// Commands that write nothing a bound file could be.
@@ -403,10 +512,10 @@ func TestVeto_ShellRunsAndWrites(t *testing.T) {
 		{"test bracket", run("inst sync\n[ -f x ] && echo y\n", benign), false, ""},
 		{"redirect to /dev/null", run("inst sync\necho x > /dev/null\n", benign), false, ""},
 		{"descriptor duplicated into a pipe", run("inst sync\nmake 2>&1 | tee build.log\n", benign), false, ""},
-		{"append to the runner's output file", run("inst sync\necho x=1 >> $GITHUB_OUTPUT\n", benign), false, ""},
-		{"append to the runner's output file in a line that does not tokenise", run("inst sync\necho \"v=$(date)\" >> \"$GITHUB_OUTPUT\"\n", benign), false, ""},
-		{"tee to the runner's environment file", run("inst sync\necho A=1 | tee -a \"$GITHUB_ENV\"\n", benign), false, ""},
-		{"redirect to the runner's environment file", run("inst sync\necho A=1 >> \"$GITHUB_ENV\"\n", benign), false, ""},
+		{"the rule withholds: append to the runner's output file", run("inst sync\necho x=1 >> $GITHUB_OUTPUT\n", benign), true, ""},
+		{"the rule withholds: append to the runner's output file in a line that does not tokenise", run("inst sync\necho \"v=$(date)\" >> \"$GITHUB_OUTPUT\"\n", benign), true, ""},
+		{"the rule withholds: tee to the runner's environment file", run("inst sync\necho A=1 | tee -a \"$GITHUB_ENV\"\n", benign), true, ""},
+		{"the rule withholds: redirect to the runner's environment file", run("inst sync\necho A=1 >> \"$GITHUB_ENV\"\n", benign), true, ""},
 		{"Dockerfile clears the image root", tree(map[string]string{"Dockerfile": docker + "RUN inst sync && rm -rf /*\n"}), true, ""},
 		{"Dockerfile glob under a directory a COPY fills", tree(map[string]string{"Dockerfile": docker + "COPY . /src/\nRUN inst sync && rm -f /src/sub/*.lock\n"}), true, ""},
 		{"Dockerfile clears an absolute directory no COPY reaches", tree(map[string]string{"Dockerfile": docker + "RUN inst sync && rm -rf /var/lib/apt/lists/*\n"}), false, ""},
@@ -521,5 +630,25 @@ func TestShellSegments_Redirects(t *testing.T) {
 		if !ok || len(segs) != 1 || !slices.Equal(segs[0].words, tt.words) || !slices.Equal(segs[0].redir, tt.redir) {
 			t.Errorf("shellSegments(%q) = %+v, %v", tt.in, segs, ok)
 		}
+	}
+}
+
+// An include this cannot read leaves MAKE unknown, though the file is there and regular.
+func TestVeto_MakeIncludeUnread(t *testing.T) {
+	dir := writeTree(t, map[string]string{"Makefile": "include a.inc\nall:\n\t$(MAKE) build\n", "a.inc": "X = 1\n"})
+	spec := testSpec
+	spec.ReadRegular = func(p string) ([]byte, error) {
+		if filepath.Base(p) == "a.inc" {
+			return nil, fs.ErrPermission
+		}
+		return os.ReadFile(p)
+	}
+	v := New(dir, testRead(dir), spec)
+	if v.makeOK(filepath.Join(dir, "Makefile")) {
+		t.Fatal("makeOK = true, want false")
+	}
+	spec.ReadRegular = os.ReadFile
+	if v := New(dir, testRead(dir), spec); !v.makeOK(filepath.Join(dir, "Makefile")) {
+		t.Fatal("makeOK = false with the include read, want true")
 	}
 }

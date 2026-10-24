@@ -416,6 +416,12 @@ func (v *Veto) dockerfile(file, src string) string {
 			if v.hasToken(body) {
 				return "install command in a heredoc"
 			}
+			if instr == "RUN" {
+				// A RUN's heredoc expands as the shell reads it, whatever it feeds.
+				if why := textExpands(body); why != "" {
+					return why
+				}
+			}
 			script := rest
 			for strings.HasPrefix(script, "--") {
 				_, script, _ = strings.Cut(script, " ")
@@ -462,6 +468,9 @@ func (v *Veto) dockerfile(file, src string) string {
 			for instr == "RUN" && strings.HasPrefix(rest, "--") {
 				_, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
+			}
+			if why := expansion(rest, false); why != "" {
+				return why + ": " + line
 			}
 			var segs []segment
 			ok := true

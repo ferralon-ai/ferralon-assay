@@ -103,8 +103,29 @@ var npmDocExts = map[string]bool{
 }
 
 // npmRewriteWords are the settings through which .npmrc, .yarnrc* and pnpm-workspace.yaml add
-// or swap packages at install time.
-var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile"}
+// or swap packages, or move where packages are stored, at install time. pnpm 10 reads
+// global-virtual-store from .npmrc, and only in that exact case; the camelCase form is the
+// pnpm-workspace.yaml key.
+var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile",
+	"global-virtual-store", "GlobalVirtualStore"}
+
+// npmrcKeyIndirect reports whether an .npmrc line spells its key through an expansion or an
+// escape, as "${K}=true" with K in the environment or "enable-global-\u0076irtual-store"=true
+// do. pnpm 10 resolves both before it matches the key, so no word in npmRewriteWords can match
+// the text. The value side is exempt: "_authToken=${TOKEN}" and Windows paths are common there.
+func npmrcKeyIndirect(head []byte) bool {
+	for _, line := range bytes.Split(head, []byte("\n")) {
+		line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("\xef\xbb\xbf")))
+		if len(line) == 0 || line[0] == ';' || line[0] == '#' {
+			continue
+		}
+		key, _, _ := bytes.Cut(line, []byte("="))
+		if bytes.Contains(key, []byte("${")) || bytes.IndexByte(key, '\\') >= 0 {
+			return true
+		}
+	}
+	return false
+}
 
 // npmInstallSurface reports whether the file at path, with its buildtree.Head (nil when binary,
 // empty or not a regular file, and then judged through buildtree.NULHeadMatch), names or holds
@@ -127,6 +148,9 @@ func npmSurface(path string, head []byte) (string, bool) {
 			if bytes.Contains(head, []byte(w)) {
 				return "install rewrite config", true
 			}
+		}
+		if strings.HasPrefix(lower, ".npmrc") && npmrcKeyIndirect(head) {
+			return "install rewrite config", true
 		}
 		return "", false
 	}

@@ -41,7 +41,10 @@ func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 // a backtick anywhere. guarded marks one that follows &&, ||, | or &, which may not run, or not
 // before what follows it; and marks one that follows &&, which runs only if the command before
 // it did; background marks one a lone & ends, which may not have finished when what follows runs.
-// end is the operator that ends it (&&, ||, |, & or ;), or "" at the end of the text.
+// end is the operator that ends it (&&, ||, |, & or ;), or "" at the end of the text. globbed
+// marks, word by word, a glob character outside quotes, which the shell expands, and redir an
+// unquoted redirect operator starting the word; from is the words of the command piped into
+// this one; exec marks an exec-form command, which no shell reads.
 type segment struct {
 	words      []string
 	expands    bool
@@ -49,6 +52,10 @@ type segment struct {
 	and        bool
 	background bool
 	end        string
+	globbed    []bool
+	redir      []bool
+	from       []string
+	exec       bool
 }
 
 // dataKeys are keys whose values a build never runs as a command.
@@ -96,21 +103,19 @@ func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 	case kindMakefile:
 		s = strings.TrimSpace(strings.TrimLeft(s, "@-+"))
 	case kindData:
-		s = strings.TrimSpace(strings.TrimPrefix(s, "- "))
+		s = seqItem(s)
 		if m := keyRE.FindStringSubmatch(s); m != nil {
 			if dataKeys[strings.ToLower(strings.Trim(m[1], `"'`))] {
 				return nil, true, false
 			}
 			s = strings.TrimSpace(s[len(m[0]):])
 		}
+		// A flow mapping is left to shellSegments, which does not tokenise a leading {.
 		switch {
-		case s == "", strings.HasPrefix(s, "|"), strings.HasPrefix(s, ">"):
+		case s == "", blockHeaderRE.MatchString(s):
 			return nil, true, false
-		case strings.HasPrefix(s, "{"):
-			return nil, false, false
 		case strings.HasPrefix(s, "["):
-			segs, ok = execForm(strings.TrimSuffix(s, ","))
-			return segs, ok, false
+			return flowSegments(s)
 		case strings.HasPrefix(s, `"`), strings.HasPrefix(s, "'"):
 			val, ok := quotedValue(s)
 			if !ok {
@@ -122,6 +127,33 @@ func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 	return shellSegments(s)
 }
 
+// flowSegments reads a data value that is a flow sequence as one shell command per item, as a
+// GitLab script list runs it. A sequence holding a mapping, or an item that does not tokenise,
+// does not tokenise. A JSON surface's exec-form arrays are units of their own, read as argv.
+func flowSegments(s string) (segs []segment, ok, dangles bool) {
+	items, seq, _ := flowItems(s) // seq is false for one that does not decode
+	if !seq {
+		return nil, false, false
+	}
+	for _, it := range items {
+		is, ok, _ := shellSegments(it)
+		if !ok {
+			return nil, false, false
+		}
+		segs = append(segs, is...)
+	}
+	return segs, true, false
+}
+
+// seqItem returns s without the "- " marks of the YAML sequences it is an item of: GitLab
+// flattens a nested script list ("- - cmd") into its commands.
+func seqItem(s string) string {
+	for strings.HasPrefix(s, "- ") {
+		s = strings.TrimSpace(s[2:])
+	}
+	return s
+}
+
 // execForm reads a JSON array of strings (a Dockerfile exec form, a devcontainer
 // command) as one command.
 func execForm(s string) ([]segment, bool) {
@@ -129,7 +161,7 @@ func execForm(s string) ([]segment, bool) {
 	if json.Unmarshal([]byte(s), &words) != nil {
 		return nil, false
 	}
-	return []segment{{words: words, expands: hasExpansion(words)}}, true
+	return []segment{{words: words, expands: hasExpansion(words), exec: true}}, true
 }
 
 // quotedValue decodes a leading double-quoted (JSON) or single-quoted (YAML) value,
@@ -188,12 +220,16 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 		cur    segment
 		word   strings.Builder
 		inWord bool
+		glob   bool
+		redir  bool
 	)
 	endWord := func() {
 		if inWord {
 			cur.words = append(cur.words, word.String())
+			cur.globbed = append(cur.globbed, glob)
+			cur.redir = append(cur.redir, redir)
 			word.Reset()
-			inWord = false
+			inWord, glob, redir = false, false, false
 		}
 	}
 	endSeg := func() {
@@ -248,8 +284,33 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 		case c == '#' && !inWord:
 			endSeg()
 			return segs, true, dangling(s[:i])
+		case c == '{' && !inWord && strings.HasPrefix(s[i:], "{}") && (i+2 == len(s) || strings.IndexByte(" \t;&|", s[i+2]) >= 0):
+			// find's {} is a word, not a group.
+			word.WriteString("{}")
+			i++
+			inWord = true
 		case c == '(' || c == ')' || (c == '{' || c == '}') && !inWord:
 			return nil, false, false
+		case c == '<' || c == '>':
+			// A redirect starts a word of its own, an fd number or &> aside, as the shell
+			// reads x>f.
+			if inWord && strings.Trim(word.String(), "0123456789<>&") != "" {
+				endWord()
+			}
+			redir = redir || !inWord || strings.Trim(word.String(), "0123456789<>&") == ""
+			word.WriteByte(c)
+			inWord = true
+		case c == '&' && inWord && strings.HasSuffix(word.String(), ">") || c == '&' && inWord && strings.HasSuffix(word.String(), "<"):
+			// >&2 and 2>&1 duplicate a descriptor; they end nothing.
+			word.WriteByte(c)
+		case c == '&' && i+1 < len(s) && s[i+1] == '>' && (i == 0 || s[i-1] != '&'):
+			// &> and &>> redirect both outputs; they end nothing.
+			endWord()
+			word.WriteByte(c)
+			inWord = true
+		case c == '|' && inWord && strings.HasSuffix(word.String(), ">") && redir:
+			// >| writes past noclobber; it ends nothing.
+			word.WriteByte(c)
 		case c == ';' || c == '&' || c == '|':
 			cur.background = c == '&' && (i == 0 || !strings.ContainsRune("&|>", rune(s[i-1]))) && (i+1 == len(s) || !strings.ContainsRune("&>", rune(s[i+1])))
 			cur.end = string(c)
@@ -262,9 +323,15 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 		default:
 			word.WriteByte(c)
 			inWord = true
+			glob = glob || c == '*' || c == '?' || c == '['
 		}
 	}
 	endSeg()
+	for i := 1; i < len(segs); i++ {
+		if segs[i-1].end == "|" {
+			segs[i].from = segs[i-1].words
+		}
+	}
 	return segs, true, dangling(s)
 }
 

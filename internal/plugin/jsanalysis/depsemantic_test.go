@@ -161,6 +161,42 @@ func pnpmLockText(t *testing.T, ver string, importers map[string]map[string]stri
 	return b.String()
 }
 
+// pnpmImporterDep is one importer entry pnpmLockImporters writes: the field pnpm records it in,
+// the specifier copied from the manifest and the version it resolves to.
+type pnpmImporterDep struct{ field, name, spec, version string }
+
+// pnpmLockImporters is a 9.0 pnpmLockText with each importer's entries given in full, for
+// fixtures whose specifier differs from the resolved version or whose entries sit outside
+// dependencies.
+func pnpmLockImporters(t *testing.T, importers map[string][]pnpmImporterDep, pkgs ...*semPkg) string {
+	t.Helper()
+	_, rest, _ := strings.Cut(pnpmLockText(t, "9.0", nil, pkgs...), "packages:\n\n")
+	var b strings.Builder
+	b.WriteString("lockfileVersion: '9.0'\n\nimporters:\n\n")
+	for _, dir := range semKeys(importers) {
+		if len(importers[dir]) == 0 {
+			fmt.Fprintf(&b, "  %s: {}\n\n", yq(dir))
+			continue
+		}
+		fmt.Fprintf(&b, "  %s:\n", yq(dir))
+		for _, field := range []string{"dependencies", "devDependencies", "optionalDependencies"} {
+			head := false
+			for _, d := range importers[dir] {
+				if d.field != field {
+					continue
+				}
+				if !head {
+					fmt.Fprintf(&b, "    %s:\n", field)
+					head = true
+				}
+				fmt.Fprintf(&b, "      %s:\n        specifier: %s\n        version: %s\n", yq(d.name), yq(d.spec), yq(d.version))
+			}
+		}
+		b.WriteString("\n")
+	}
+	return b.String() + "packages:\n\n" + rest
+}
+
 // yarnLockText writes a yarn classic lock pinning pkgs.
 func yarnLockText(t *testing.T, pkgs ...*semPkg) string {
 	t.Helper()
@@ -294,9 +330,9 @@ func TestSemantic_P2PlainYarnClassic(t *testing.T) {
 // settings. The member's own importer resolves its dependency.
 func TestSemantic_P3PnpmWorkspace(t *testing.T) {
 	p := sp("p", "1.0.0", nil, nil)
-	lock := pnpmLockText(t, "9.0", map[string]map[string]string{
-		".":            {"lib": "link:packages/lib"},
-		"packages/lib": {"p": "1.0.0"},
+	lock := pnpmLockImporters(t, map[string][]pnpmImporterDep{
+		".":            {{"dependencies", "lib", "workspace:*", "link:packages/lib"}},
+		"packages/lib": {{"dependencies", "p", "1.0.0", "1.0.0"}},
 	}, p)
 	lock = strings.Replace(lock, "importers:", "settings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:", 1)
 	dir := semProgram(t, pnpmLockFile, lock, map[string]string{
@@ -422,7 +458,10 @@ func TestSemantic_G4PnpmPeerVariants(t *testing.T) {
 	pa.key = "p@1.0.0(r@1.0.0)"
 	pb := sp("p", "1.0.0", map[string]string{"r": "2.0.0"}, nil)
 	pb.key = "p@1.0.0(r@2.0.0)"
-	lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0(r@1.0.0)"}, "m": {"p": "1.0.0(r@2.0.0)"}}, pa, pb, r1, r2)
+	lock := pnpmLockImporters(t, map[string][]pnpmImporterDep{
+		".": {{"dependencies", "p", "1", "1.0.0(r@1.0.0)"}},
+		"m": {{"dependencies", "p", "1", "1.0.0(r@2.0.0)"}},
+	}, pa, pb, r1, r2)
 	dir := writeProgram(t, map[string]string{pnpmLockFile: lock, "package.json": manifestWith("app", map[string]string{"p": "1"}, ""),
 		"pnpm-workspace.yaml": "packages:\n  - m\n", "m/package.json": manifestWith("m", map[string]string{"p": "1"}, ""), "index.js": guardIdle})
 	l := buildDepLayout(context.Background(), dir)

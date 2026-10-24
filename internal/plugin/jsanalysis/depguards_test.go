@@ -204,7 +204,8 @@ func TestDepGuards_RunSourceCap(t *testing.T) {
 	}
 }
 
-// TestDepGuards_TarballShape: a tarball holding an entry twice (N7), or a top-level entry outside
+// TestDepGuards_TarballShape: a tarball holding an entry twice (N7), also as two names differing
+// only in case (one file on a case-insensitive filesystem), or a top-level entry outside
 // package/ past the unpacked-size cap (F2), leaves the package unread with a scoped limit.
 func TestDepGuards_TarballShape(t *testing.T) {
 	const run = "exports.run = function run() {};\n"
@@ -216,6 +217,16 @@ func TestDepGuards_TarballShape(t *testing.T) {
 			{name: "package/package.json", body: guardDepMain},
 			{name: "package/index.js", body: run},
 			{name: "package/index.js", body: "exports.run = function run() { other(); };\n"},
+		}},
+		{"case_colliding_manifest", []tgzEntry{
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/PACKAGE.JSON", body: guardDepMain},
+			{name: "package/index.js", body: run},
+		}},
+		{"case_colliding_source", []tgzEntry{
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/index.js", body: run},
+			{name: "package/Index.js", body: "exports.run = function run() { other(); };\n"},
 		}},
 		{"top_level_entry_past_unpacked_cap", []tgzEntry{
 			{name: "package/package.json", body: guardDepMain},

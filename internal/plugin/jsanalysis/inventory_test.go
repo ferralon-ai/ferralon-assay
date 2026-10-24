@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -665,5 +666,99 @@ func writeJSON(t *testing.T, path string, v any) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestInventory_QuotedEscapes reads pnpm, yarn classic and yarn berry locks whose quoted scalars
+// carry a double-quoted escape or a doubled single quote. The readers only strip quotes, so
+// they would keep the escape's text as the name or version (pkg:npm/q@\x31.0.0); the lock is
+// withheld whole as tool_failure instead. Controls keep quoting the readers do handle and an
+// escape in a comment, and must stay complete.
+func TestInventory_QuotedEscapes(t *testing.T) {
+	const pnpm = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      q:\n        specifier: 1.0.0\n        version: 1.0.0\n\n" +
+		"packages:\n\n  q@1.0.0:\n    resolution: {integrity: sha512-AAAA}\n\nsnapshots:\n\n  q@1.0.0: {}\n"
+	const classic = "# yarn lockfile v1\n\n\nq@1.0.0:\n  version \"1.0.0\"\n  resolved \"https://registry.yarnpkg.com/q/-/q-1.0.0.tgz#abc\"\n  integrity sha512-AAAA\n"
+	const berry = "__metadata:\n  version: 8\n  cacheKey: 10\n\n\"q@npm:1.0.0\":\n  version: 1.0.0\n  resolution: \"q@npm:1.0.0\"\n  checksum: abc\n  languageName: node\n  linkType: hard\n\n" +
+		"\"app@workspace:.\":\n  version: 0.0.0-use.local\n  resolution: \"app@workspace:.\"\n  dependencies:\n    q: \"npm:1.0.0\"\n  languageName: unknown\n  linkType: soft\n"
+	edit := func(lock, old, repl string) string {
+		if !strings.Contains(lock, old) {
+			t.Fatalf("lock has no %q:\n%s", old, lock)
+		}
+		return strings.ReplaceAll(lock, old, repl)
+	}
+	for _, tc := range []struct {
+		name, file, lock string
+		withheld         bool
+	}{
+		{name: "pnpm_control", file: "pnpm-lock.yaml", lock: pnpm},
+		{name: "pnpm_control_quoted_key", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0:\n    res", "\n  \"q@1.0.0\":\n    res")},
+		{name: "pnpm_control_comment", file: "pnpm-lock.yaml", lock: edit(pnpm, "packages:\n", "packages: # \"\\x31\"\n")},
+		{name: "pnpm_snapshot_key", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  \"q@\\x31.0.0\": {}"), withheld: true},
+		{name: "pnpm_packages_key", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0:\n    res", "\n  \"q@\\x31.0.0\":\n    res"), withheld: true},
+		{name: "pnpm_importer_version", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: \"\\x31.0.0\""), withheld: true},
+		{name: "pnpm_importer_name", file: "pnpm-lock.yaml", lock: edit(pnpm, "      q:\n", "      \"\\x71\":\n"), withheld: true},
+		{name: "pnpm_doubled_single_quote", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  'q@1.0.0''': {}"), withheld: true},
+		{name: "pnpm_integrity", file: "pnpm-lock.yaml", lock: edit(pnpm, "{integrity: sha512-", "{integrity: \"sha512-\\x41"), withheld: true},
+
+		{name: "pnpm_control_comments", file: "pnpm-lock.yaml", lock: edit(edit(pnpm, "packages:\n\n", "packages: # c\n\n  # c\n"), "snapshots:\n", "\n# c\nsnapshots:\n")},
+		{name: "pnpm_snapshots_flow", file: "pnpm-lock.yaml", lock: edit(pnpm, "snapshots:\n\n  q@1.0.0: {}\n", "snapshots: {q@1.0.0: {}}\n"), withheld: true},
+		{name: "pnpm_packages_flow", file: "pnpm-lock.yaml", lock: edit(pnpm, "packages:\n\n  q@1.0.0:\n    resolution: {integrity: sha512-AAAA}\n", "packages: {q@1.0.0: {resolution: {integrity: sha512-AAAA}}}\n"), withheld: true},
+		{name: "pnpm_flow_key", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  {q@1.0.0: {}}"), withheld: true},
+		{name: "pnpm_quoted_section", file: "pnpm-lock.yaml", lock: edit(pnpm, "\nsnapshots:\n", "\n\"snapshots\":\n"), withheld: true},
+		{name: "pnpm_stray_line", file: "pnpm-lock.yaml", lock: pnpm + "stray\n", withheld: true},
+		{name: "pnpm_version_comment_quoted", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: \"1.0.0\" # 2.0.0"), withheld: true},
+		{name: "pnpm_version_comment_plain", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: 1.0.0 # 2.0.0"), withheld: true},
+		{name: "pnpm_version_unclosed", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: \"1.0.0"), withheld: true},
+		{name: "pnpm_version_plain_quote", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: 1.0.0\"x"), withheld: true},
+		{name: "pnpm_control_quoted_colon_key", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  q@1.0.0: {}\n  'z@file:': {}")},
+
+		{name: "classic_control", file: "yarn.lock", lock: classic},
+		{name: "classic_control_comments", file: "yarn.lock", lock: "# c\n\n\n" + edit(classic, "  resolved", "  # c\n\n  resolved")},
+		{name: "classic_version_comment", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version \"1.0.0\" # 2.0.0"), withheld: true},
+		{name: "classic_version_unclosed", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version \"1.0.0"), withheld: true},
+		{name: "classic_version_plain_quote", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version 1.0.0\"x"), withheld: true},
+		{name: "classic_header_comment", file: "yarn.lock", lock: edit(classic, "\nq@1.0.0:", "\nq@1.0.0: # c"), withheld: true},
+		{name: "classic_stray_line", file: "yarn.lock", lock: classic + "stray\n", withheld: true},
+		{name: "classic_flow_key", file: "yarn.lock", lock: edit(classic, "  integrity", "  {a: b}\n  integrity"), withheld: true},
+		{name: "classic_control_quoted_header", file: "yarn.lock", lock: edit(classic, "\nq@1.0.0:", "\n\"q@1.0.0\":")},
+		{name: "classic_control_comment", file: "yarn.lock", lock: edit(classic, "\n\nq@", "\n# \"\\x31\"\nq@")},
+		{name: "classic_version", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version \"\\x31.0.0\""), withheld: true},
+		{name: "classic_header", file: "yarn.lock", lock: edit(classic, "\nq@1.0.0:", "\n\"q@\\x31.0.0\":"), withheld: true},
+		{name: "classic_resolved", file: "yarn.lock", lock: edit(classic, "q-1.0.0.tgz#abc", "q-\\x31.0.0.tgz#abc"), withheld: true},
+		{name: "classic_integrity", file: "yarn.lock", lock: edit(classic, "integrity sha512-AAAA", "integrity \"sha512-\\x41AAA\""), withheld: true},
+
+		{name: "berry_control", file: "yarn.lock", lock: berry},
+		{name: "berry_control_comments", file: "yarn.lock", lock: "# c\n\n" + edit(berry, "  checksum", "  # c\n\n  checksum")},
+		{name: "berry_control_multi_descriptor", file: "yarn.lock", lock: edit(berry, "\"q@npm:1.0.0\":", "\"q@npm:1.0.0, q@npm:^1.0.0\":")},
+		{name: "berry_version_comment_quoted", file: "yarn.lock", lock: edit(berry, "  version: 1.0.0", "  version: \"1.0.0\" # 2.0.0"), withheld: true},
+		{name: "berry_version_comment_plain", file: "yarn.lock", lock: edit(berry, "  version: 1.0.0", "  version: 1.0.0 # 2.0.0"), withheld: true},
+		{name: "berry_version_unclosed", file: "yarn.lock", lock: edit(berry, "  version: 1.0.0", "  version: \"1.0.0"), withheld: true},
+		{name: "berry_header_comment", file: "yarn.lock", lock: edit(berry, "\n\"q@npm:1.0.0\":", "\n\"q@npm:1.0.0\": # c"), withheld: true},
+		{name: "berry_flow_key", file: "yarn.lock", lock: edit(berry, "  checksum", "  {a: b}\n  checksum"), withheld: true},
+		{name: "berry_stray_line", file: "yarn.lock", lock: berry + "stray\n", withheld: true},
+		{name: "berry_control_comment", file: "yarn.lock", lock: "# \"\\x31\"\n" + berry},
+		{name: "berry_version", file: "yarn.lock", lock: edit(berry, "  version: 1.0.0", "  version: \"\\x31.0.0\""), withheld: true},
+		{name: "berry_header", file: "yarn.lock", lock: edit(berry, "\n\"q@npm:1.0.0\":", "\n\"q@npm:\\x31.0.0\":"), withheld: true},
+		{name: "berry_resolution", file: "yarn.lock", lock: edit(berry, "resolution: \"q@npm:1.0.0\"", "resolution: \"q@npm:\\x31.0.0\""), withheld: true},
+		{name: "berry_dependency", file: "yarn.lock", lock: edit(berry, "q: \"npm:1.0.0\"", "q: \"npm:\\x31.0.0\""), withheld: true},
+		{name: "berry_checksum", file: "yarn.lock", lock: edit(berry, "checksum: abc", "checksum: \"\\x61bc\""), withheld: true},
+		{name: "berry_doubled_single_quote", file: "yarn.lock", lock: edit(berry, "q: \"npm:1.0.0\"", "q: 'npm:1.0.0'''"), withheld: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{
+				"package.json": `{"name":"app","version":"1.0.0","dependencies":{"q":"1.0.0"}}`,
+				tc.file:        tc.lock,
+			})
+			inv := resolveDir(t, dir)
+			if !tc.withheld {
+				if len(inv.Partiality.Reasons) != 0 || !hasNode(inv, "pkg:npm/q@1.0.0") {
+					t.Errorf("control must read q@1.0.0 completely; partiality %+v nodes %d", inv.Partiality, len(inv.Nodes))
+				}
+				return
+			}
+			if len(inv.Nodes) != 0 || !slices.Contains(inv.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("want no nodes and tool_failure; got partiality %+v, %d nodes", inv.Partiality, len(inv.Nodes))
+			}
+		})
 	}
 }

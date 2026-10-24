@@ -231,7 +231,7 @@ func (p *pnpmLock) entries() bool {
 		res := m.child("resolution")
 		if res != nil && len(res.kids) == 0 && strings.HasPrefix(res.val, "{") {
 			e.digest = mapIntegrity(extractIntegrity(res.val))
-			e.unreadable = e.digest == "" || strings.Contains(res.val, "type: git") ||
+			e.unreadable = e.digest == "" || yamlRawQuoted(res.val) || strings.Contains(res.val, "type: git") ||
 				strings.Contains(res.val, "type: directory") || strings.Contains(res.val, "commit:")
 		} else {
 			e.unreadable = true

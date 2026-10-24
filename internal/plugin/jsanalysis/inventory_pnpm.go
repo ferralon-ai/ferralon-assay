@@ -28,6 +28,7 @@ type pnpmLockData struct {
 	pkgOrder  []string
 	snapOrder []string
 	impOrder  []string
+	raw       bool // a scalar the reader reads holds quoting it would keep undecoded
 }
 
 type pnpmPkg struct {
@@ -56,6 +57,9 @@ func (pnpmAdapter) Parse(sel selectedLock, manifests []manifestFile) ([]plugin.D
 		return nil, nil, plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 	lock := parsePnpmLockData(data)
+	if lock.raw {
+		return nil, nil, plugin.Partial(plugin.PartialReasonToolFailure)
+	}
 	part := plugin.Complete()
 
 	nodesByID := make(map[string]*plugin.DependencyNode)
@@ -255,6 +259,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 		snapshots: make(map[string]*pnpmSnap),
 		importers: make(map[string]*pnpmImporter),
 	}
+	var g quoteGuard
 	lines := strings.Split(string(data), "\n")
 
 	section := ""
@@ -274,6 +279,11 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			continue
 		}
 		ind := indentWidth(line)
+		if ind == 0 {
+			g.pnpmTop(trimmed)
+		} else {
+			g.line(trimmed)
+		}
 
 		if ind == 0 {
 			switch {
@@ -296,7 +306,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			switch {
 			case ind == 2:
 				k, _ := splitFirstColon(trimmed)
-				curMember = unquoteYAML(strings.TrimSpace(k))
+				curMember = g.scalar(strings.TrimSpace(k))
 				imp := &pnpmImporter{}
 				d.importers[curMember] = imp
 				d.impOrder = append(d.impOrder, curMember)
@@ -317,13 +327,13 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 				pendingDep = ""
 			case ind == 6:
 				k, _ := splitFirstColon(trimmed)
-				pendingDep = unquoteYAML(strings.TrimSpace(k))
+				pendingDep = g.scalar(strings.TrimSpace(k))
 			case ind == 8 && curImp != nil && impBlock != "" && pendingDep != "":
 				k, v := splitFirstColon(trimmed)
 				if strings.TrimSpace(k) == "version" {
 					curImp.deps = append(curImp.deps, pnpmDirect{
 						name:    pendingDep,
-						version: unquoteYAML(strings.TrimSpace(v)),
+						version: g.scalar(strings.TrimSpace(v)),
 						target:  impBlock,
 					})
 				}
@@ -333,7 +343,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			switch {
 			case ind == 2:
 				k, _ := splitFirstColon(trimmed)
-				curKey = unquoteYAML(strings.TrimSpace(k))
+				curKey = g.scalar(strings.TrimSpace(k))
 				p := &pnpmPkg{}
 				d.packages[curKey] = p
 				d.pkgOrder = append(d.pkgOrder, curKey)
@@ -343,6 +353,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 				switch strings.TrimSpace(k) {
 				case "resolution":
 					curPkg.integrity = extractIntegrity(trimmed)
+					g.check(curPkg.integrity)
 				case "os", "cpu", "libc":
 					curPkg.hasPlatform = true
 				}
@@ -352,7 +363,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			switch {
 			case ind == 2:
 				k, _ := splitFirstColon(trimmed)
-				curKey = unquoteYAML(strings.TrimSpace(k))
+				curKey = g.scalar(strings.TrimSpace(k))
 				s := &pnpmSnap{deps: make(map[string]string)}
 				d.snapshots[curKey] = s
 				d.snapOrder = append(d.snapOrder, curKey)
@@ -368,8 +379,8 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 				}
 			case ind == 6 && curSnap != nil && snapBlock == "deps":
 				k, v := splitFirstColon(trimmed)
-				name := unquoteYAML(strings.TrimSpace(k))
-				spec := unquoteYAML(strings.TrimSpace(v))
+				name := g.scalar(strings.TrimSpace(k))
+				spec := g.scalar(strings.TrimSpace(v))
 				if name != "" && spec != "" {
 					if _, dup := curSnap.deps[name]; !dup {
 						curSnap.depKeys = append(curSnap.depKeys, name)
@@ -379,27 +390,22 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			}
 		}
 	}
+	d.raw = g.raw
 	return d
 }
 
-// splitFirstColon splits on the first ':' into key and the remainder (value). When no ':' is
+// splitFirstColon splits on the first ':' (after a closing quote, for a quoted key) into key and the remainder (value). When no ':' is
 // present the whole string is the key and value is "".
 func splitFirstColon(s string) (key, val string) {
+	if s != "" && (s[0] == '"' || s[0] == '\'') {
+		if end := yamlQuoteEnd(s); end >= 0 && strings.HasPrefix(s[end+1:], ":") {
+			return s[:end+1], s[end+2:]
+		}
+	}
 	if i := strings.IndexByte(s, ':'); i >= 0 {
 		return s[:i], s[i+1:]
 	}
 	return s, ""
-}
-
-// unquoteYAML strips a single layer of matching single/double quotes.
-func unquoteYAML(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 2 {
-		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
-			return s[1 : len(s)-1]
-		}
-	}
-	return s
 }
 
 // extractIntegrity pulls the integrity SRI out of a `resolution: {integrity: sha512-…, …}`

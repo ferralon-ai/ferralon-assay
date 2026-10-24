@@ -541,6 +541,7 @@ func collectV1(key string, dep packageLockDep, info *lockInfo) {
 // is normalized.
 func parseYarnLock(data []byte) (lockInfo, bool) {
 	info := newLockInfo(lockYarn)
+	var g quoteGuard
 	var (
 		real      []string
 		haveEntry bool
@@ -560,13 +561,17 @@ func parseYarnLock(data []byte) (lockInfo, bool) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		if startsWithSpace(line) {
+			g.line(trimmed)
+		} else {
+			g.yarnTop(trimmed)
+		}
 		// A header line starts at column 0 (no leading whitespace) and ends with ':'.
 		if !startsWithSpace(line) && strings.HasSuffix(trimmed, ":") {
 			flush()
 			real, version, haveEntry = nil, "", false
 			seen := map[string]bool{}
-			for _, d := range strings.Split(strings.TrimSuffix(trimmed, ":"), ",") {
-				d = strings.Trim(strings.TrimSpace(d), "\"'")
+			for _, d := range g.descriptors(strings.TrimSuffix(trimmed, ":")) {
 				name, rng := splitDescriptor(d)
 				// __metadata and other yarn metadata blocks (leading "__") are not packages.
 				if name == "" || strings.HasPrefix(name, "__") {
@@ -591,12 +596,12 @@ func parseYarnLock(data []byte) (lockInfo, bool) {
 			continue
 		}
 		// Indented field line: look for the version field of the current entry.
-		if v, ok := yarnVersionField(trimmed); ok {
+		if v, ok := yarnVersionField(trimmed, &g); ok {
 			version = v
 		}
 	}
 	flush()
-	return info, true
+	return info, !g.raw
 }
 
 // splitDescriptor splits a yarn descriptor "name@range" at the '@' that ends the name; a scoped
@@ -651,7 +656,7 @@ func yarnIdentity(name, rng string) (string, bool) {
 // yarnVersionField recognizes both yarn dialects' version field: classic
 // `version "1.2.3"` and berry `version: 1.2.3` (value optionally quoted). It returns the
 // bare version string.
-func yarnVersionField(trimmed string) (string, bool) {
+func yarnVersionField(trimmed string, g *quoteGuard) (string, bool) {
 	var rest string
 	switch {
 	case strings.HasPrefix(trimmed, "version:"):
@@ -661,7 +666,7 @@ func yarnVersionField(trimmed string) (string, bool) {
 	default:
 		return "", false
 	}
-	rest = strings.Trim(rest, "\"'")
+	rest = g.scalar(rest)
 	if rest == "" {
 		return "", false
 	}
@@ -691,6 +696,7 @@ func yarnVersionField(trimmed string) (string, bool) {
 // "specifier:" fields.
 func parsePnpmLock(data []byte) (lockInfo, bool) {
 	info := newLockInfo(lockPnpm)
+	var g quoteGuard
 
 	var (
 		block                    string // current column-0 key
@@ -733,8 +739,13 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 		}
 		ind := indentWidth(line)
 		if ind == 0 {
+			g.pnpmTop(trimmed)
+		} else {
+			g.line(trimmed)
+		}
+		if ind == 0 {
 			flush()
-			block, _ = yamlField(trimmed)
+			block, _ = yamlField(trimmed, &g)
 			project, section, dep = "", "", ""
 			switch block {
 			case "specifiers", "dependencies", "devDependencies", "optionalDependencies":
@@ -746,18 +757,21 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 		case "packages":
 			// A package entry key is indented two spaces and ends with ':'; its fields sit
 			// deeper (resolution:, engines:, name:, version:, ...).
+			if ind == 2 && !strings.HasSuffix(trimmed, ":") && !strings.HasSuffix(trimmed, ": {}") {
+				g.raw = true
+			}
 			if ind == 2 && strings.HasSuffix(trimmed, ":") {
 				flush()
-				entryKey = strings.Trim(strings.TrimSuffix(trimmed, ":"), "\"'")
+				entryKey = g.scalar(strings.TrimSuffix(trimmed, ":"))
 				entryName, ver, haveEntry = "", "", true
 				continue
 			}
 			if haveEntry && ind == 4 {
-				switch k, v := yamlField(trimmed); k {
+				switch k, v := yamlField(trimmed, &g); k {
 				case "name":
-					entryName = v
+					entryName = g.scalar(v)
 				case "version":
-					ver = v
+					ver = g.scalar(v)
 				case "bundledDependencies", "bundleDependencies":
 					info.opaque = true
 				}
@@ -765,12 +779,12 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 			continue
 		case "importers":
 			if ind == 2 {
-				project, _ = yamlField(trimmed)
+				project, _ = yamlField(trimmed, &g)
 				section, dep = "", ""
 				continue
 			}
 			if ind == 4 {
-				section, _ = yamlField(trimmed)
+				section, _ = yamlField(trimmed, &g)
 				sectionIndent, dep = 4, ""
 				continue
 			}
@@ -778,32 +792,32 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 		if project == "" || section == "" {
 			continue
 		}
-		k, v := yamlField(trimmed)
+		k, v := yamlField(trimmed, &g)
 		switch {
 		case ind == sectionIndent+2 && section == "specifiers":
-			info.record(project, "", k, v)
+			info.record(project, "", k, g.scalar(v))
 		case ind == sectionIndent+2:
 			dep = k
 			info.names[normalizeNPMCoordinate(k)] = true
 		case ind == sectionIndent+4 && dep != "" && k == "specifier":
-			info.record(project, section, dep, v)
+			info.record(project, section, dep, g.scalar(v))
 		}
 	}
 	flush()
-	return info, true
+	return info, !g.raw
 }
 
 // yamlField splits a lexical YAML mapping line "key: value" (or "key:") into its unquoted key
-// and value.
-func yamlField(trimmed string) (key, value string) {
+// and its value as written, which a reader that uses it unquotes through g.
+func yamlField(trimmed string, g *quoteGuard) (key, value string) {
 	if strings.HasSuffix(trimmed, ":") {
-		return strings.Trim(strings.TrimSuffix(trimmed, ":"), "\"'"), ""
+		return g.scalar(strings.TrimSuffix(trimmed, ":")), ""
 	}
 	i := strings.Index(trimmed, ": ")
 	if i < 0 {
-		return strings.Trim(trimmed, "\"'"), ""
+		return g.scalar(trimmed), ""
 	}
-	return strings.Trim(trimmed[:i], "\"'"), strings.Trim(strings.TrimSpace(trimmed[i+2:]), "\"'")
+	return g.scalar(trimmed[:i]), strings.TrimSpace(trimmed[i+2:])
 }
 
 // pnpmDescriptor splits a pnpm package descriptor key into (name, version). It accepts

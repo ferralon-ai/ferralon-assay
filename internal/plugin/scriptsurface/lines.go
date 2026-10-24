@@ -284,8 +284,8 @@ type yamlLine struct {
 }
 
 // blockHeaderRE matches a block scalar indicator: | or >, then an indentation or chomping
-// indicator in either order, then at most a comment.
-var blockHeaderRE = regexp.MustCompile(`^([|>])([1-9]?[+-]?|[+-]?[1-9]?)\s*(?:#.*)?$`)
+// indicator in either order, then at most a comment, which YAML sets off with whitespace.
+var blockHeaderRE = regexp.MustCompile(`^([|>])([1-9]?[+-]?|[+-]?[1-9]?)(?:\s+#.*)?\s*$`)
 
 // foldYAML joins what YAML folds before a command is read. A folded block (>, >-, >+) becomes
 // its folded lines, each a command, under a key whose value a build may run; a plain or quoted

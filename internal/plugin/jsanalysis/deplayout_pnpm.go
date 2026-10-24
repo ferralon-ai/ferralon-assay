@@ -492,7 +492,11 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			if len(n.kids) > 0 || n.val != "" && n.val != "[]" || n.val == "" && len(n.items) == 0 {
 				return nil, false // a null packages errors on pnpm 8 and 9 and is root-only on 10+
 			}
-			globs = n.items
+			// pnpm always takes the region root as a project, so an entry that is exactly "."
+			// selects nothing more on any version and is dropped. Every other dot form still
+			// goes to workspaceMembers and withholds. yarn classic links the root into its own
+			// node_modules for a ".", so readYarnClassic keeps withholding it.
+			globs = slices.DeleteFunc(slices.Clone(n.items), func(g string) bool { return g == "." })
 		}
 	}
 	if len(manOverrides) > 0 && len(wsOverrides) > 0 || len(manPatches) > 0 && len(wsPatches) > 0 {

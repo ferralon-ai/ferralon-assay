@@ -1552,6 +1552,65 @@ func TestSemantic_WorkspaceGlobs(t *testing.T) {
 	}
 }
 
+// TestSemantic_PnpmDotMember: a pnpm packages entry that is exactly "." names the root, which
+// pnpm always takes, so it adds no member and the rest of the list reads as before. Every other
+// dot form withholds, as does "." in yarn classic workspaces (yarn links the root into its own
+// node_modules). Each tree holds tools/b, unselected, declaring a dependency the lock installs
+// nothing for, so a member set read too wide withholds rather than passes; the same trap on a
+// selected member (dot_plus_star_unlocked_member) shows the member set reaches that check.
+func TestSemantic_PnpmDotMember(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ws       string
+		members  []string
+		resolves bool
+	}{
+		"control_dot_root_only":         {ws: "packages:\n  - '.'\n", members: []string{}, resolves: true},
+		"control_dot_plus_star":         {ws: "packages:\n  - .\n  - 'packages/*'\n", members: []string{"packages/a"}, resolves: true},
+		"control_star_plus_dot":         {ws: "packages:\n  - 'packages/*'\n  - '.'\n", members: []string{"packages/a"}, resolves: true},
+		"dot_plus_star_unlocked_member": {ws: "packages:\n  - .\n  - 'packages/*'\n"},
+		"dotdot":                        {ws: "packages:\n  - '..'\n"},
+		"dot_slash":                     {ws: "packages:\n  - './'\n"},
+		"dot_slash_dot":                 {ws: "packages:\n  - './.'\n"},
+		"member_dot":                    {ws: "packages:\n  - 'packages/.'\n"},
+		"dot_star":                      {ws: "packages:\n  - './*'\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			importers := map[string]map[string]string{".": {"p": "1.0.0"}}
+			if slices.Contains(tc.members, "packages/a") {
+				importers["packages/a"] = map[string]string{"q": "1.0.0"}
+			}
+			lock := pnpmLockText(t, "9.0", importers, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"tools/b/package.json":    manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			if tc.resolves && (!ok || !slices.Equal(cfg.members, tc.members) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("%q places the region with members %v; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, tc.members, ok, cfg, incomplete, cg.Partiality)
+			}
+			if !tc.resolves && (!incomplete || !runWide(cg)) {
+				t.Errorf("%q withholds; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
+			}
+		})
+	}
+	t.Run("yarn_dot", func(t *testing.T) {
+		p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+		q := qPkg("1.0.0")
+		dir := semProgram(t, yarnLockFile, yarnLockText(t, p, q), map[string]string{
+			"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"private":true,"workspaces":["."]`),
+		})
+		cg := semRun(t, dir, semStore(t, p, q))
+		if incomplete := buildDepLayout(context.Background(), dir).incomplete; !incomplete || !runWide(cg) {
+			t.Errorf("yarn classic workspaces [\".\"] withholds; incomplete=%v got %+v", incomplete, cg.Partiality)
+		}
+	})
+}
+
 // TestReadPnpmConfig_OwnGates pins the pnpm reader's own hook and case checks directly, without
 // the install veto in play.
 func TestReadPnpmConfig_OwnGates(t *testing.T) {

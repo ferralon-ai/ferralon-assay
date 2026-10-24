@@ -279,8 +279,9 @@ func yamlRawQuoted(s string) bool {
 	return strings.Contains(s, "''") || strings.Contains(s, `"`) && strings.Contains(s, `\`)
 }
 
-// quoteGuard records whether a lexical lock reader met such quoting in a scalar it reads; the
-// reader then withholds the lock.
+// quoteGuard records whether a lexical lock reader met a scalar or a line structure it would
+// misread (such quoting, an unclosed or trailing-text quote, a comment, a flow or explicit key,
+// a stray column-0 line); the reader then withholds the lock.
 type quoteGuard struct{ raw bool }
 
 // check flags s when yamlRawQuoted holds for it.
@@ -290,20 +291,71 @@ func (g *quoteGuard) check(s string) {
 	}
 }
 
-// trim strips the quotes at either end of s.
-func (g *quoteGuard) trim(s string) string {
-	g.check(s)
-	return strings.Trim(s, `"'`)
-}
-
-// unquote strips one layer of matching quotes from s.
-func (g *quoteGuard) unquote(s string) string {
-	g.check(s)
+// scalar returns the plain or quoted scalar s as a lexical reader takes it, and flags the lock
+// when that is not what a YAML loader reads: an opening quote with no close, text after the
+// closing quote (a comment included), a quote or a " #" comment inside a plain scalar. A reader
+// that stripped such a scalar's quotes would keep the stray text as part of a name or version.
+func (g *quoteGuard) scalar(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0] {
-		return s[1 : len(s)-1]
+	g.check(s)
+	if s == "" {
+		return s
+	}
+	if q := s[0]; q == '"' || q == '\'' {
+		end := yamlQuoteEnd(s)
+		if end < 0 || strings.TrimSpace(s[end+1:]) != "" {
+			g.raw = true
+			return s
+		}
+		return s[1:end]
+	}
+	if strings.ContainsAny(s, `"'`) || strings.Contains(s, " #") {
+		g.raw = true
 	}
 	return s
+}
+
+// yamlKeyStart reports whether s opens with a character that starts a flow collection, an
+// explicit key, an anchor, an alias, a tag or a block scalar instead of a plain or quoted key.
+func yamlKeyStart(s string) bool {
+	return s != "" && strings.IndexByte("{[?&*!|>", s[0]) >= 0
+}
+
+// line flags a lexical reader's non-comment line that opens with such a character: the reader
+// cannot tell which key, if any, it names.
+func (g *quoteGuard) line(trimmed string) {
+	if yamlKeyStart(trimmed) {
+		g.raw = true
+	}
+}
+
+// pnpmTop flags a column-0 line of a pnpm lock that is not a plain "key:" the readers model:
+// a quoted or flow key, a line without a colon, or a section (importers, packages, snapshots)
+// that carries a value after its colon other than an empty flow map or a comment.
+func (g *quoteGuard) pnpmTop(trimmed string) {
+	if strings.HasPrefix(trimmed, "---") {
+		return
+	}
+	key, val, ok := strings.Cut(trimmed, ":")
+	if !ok || yamlKeyStart(trimmed) || strings.ContainsAny(key[:1], `"'`) {
+		g.raw = true
+		return
+	}
+	switch key {
+	case "importers", "packages", "snapshots":
+		if val = strings.TrimSpace(val); val != "" && val != "{}" && !strings.HasPrefix(val, "#") {
+			g.raw = true
+		}
+	}
+}
+
+// yarnTop flags a column-0 line of a yarn lock that is not an entry header ending in ':'. A
+// header with a trailing comment is one, because the reader would take its fields for the
+// previous entry's.
+func (g *quoteGuard) yarnTop(trimmed string) {
+	if !strings.HasSuffix(trimmed, ":") || yamlKeyStart(trimmed) {
+		g.raw = true
+	}
 }
 
 // yamlHasKey reports whether a sequence item is itself a mapping entry.
@@ -320,4 +372,33 @@ func (n *ynode) str() string {
 		return ""
 	}
 	return n.val
+}
+
+// descriptors splits a yarn header into its descriptors. Classic quotes each descriptor
+// separately and berry quotes the whole comma-joined list, so a comma inside a quote is
+// kept in the fragment and split after the quotes are stripped.
+func (g *quoteGuard) descriptors(header string) []string {
+	var out []string
+	for rest := strings.TrimSpace(header); rest != ""; {
+		end := strings.IndexByte(rest, ',')
+		if q := rest[0]; q == '"' || q == '\'' {
+			if e := yamlQuoteEnd(rest); e >= 0 {
+				end = strings.IndexByte(rest[e:], ',')
+				if end >= 0 {
+					end += e
+				}
+			}
+		}
+		frag, next := rest, ""
+		if end >= 0 {
+			frag, next = rest[:end], strings.TrimSpace(rest[end+1:])
+		}
+		rest = next
+		for _, d := range strings.Split(g.scalar(frag), ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
 }

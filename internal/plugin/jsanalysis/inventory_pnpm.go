@@ -279,6 +279,11 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			continue
 		}
 		ind := indentWidth(line)
+		if ind == 0 {
+			g.pnpmTop(trimmed)
+		} else {
+			g.line(trimmed)
+		}
 
 		if ind == 0 {
 			switch {
@@ -301,7 +306,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			switch {
 			case ind == 2:
 				k, _ := splitFirstColon(trimmed)
-				curMember = g.unquote(strings.TrimSpace(k))
+				curMember = g.scalar(strings.TrimSpace(k))
 				imp := &pnpmImporter{}
 				d.importers[curMember] = imp
 				d.impOrder = append(d.impOrder, curMember)
@@ -322,13 +327,13 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 				pendingDep = ""
 			case ind == 6:
 				k, _ := splitFirstColon(trimmed)
-				pendingDep = g.unquote(strings.TrimSpace(k))
+				pendingDep = g.scalar(strings.TrimSpace(k))
 			case ind == 8 && curImp != nil && impBlock != "" && pendingDep != "":
 				k, v := splitFirstColon(trimmed)
 				if strings.TrimSpace(k) == "version" {
 					curImp.deps = append(curImp.deps, pnpmDirect{
 						name:    pendingDep,
-						version: g.unquote(strings.TrimSpace(v)),
+						version: g.scalar(strings.TrimSpace(v)),
 						target:  impBlock,
 					})
 				}
@@ -338,7 +343,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			switch {
 			case ind == 2:
 				k, _ := splitFirstColon(trimmed)
-				curKey = g.unquote(strings.TrimSpace(k))
+				curKey = g.scalar(strings.TrimSpace(k))
 				p := &pnpmPkg{}
 				d.packages[curKey] = p
 				d.pkgOrder = append(d.pkgOrder, curKey)
@@ -358,7 +363,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			switch {
 			case ind == 2:
 				k, _ := splitFirstColon(trimmed)
-				curKey = g.unquote(strings.TrimSpace(k))
+				curKey = g.scalar(strings.TrimSpace(k))
 				s := &pnpmSnap{deps: make(map[string]string)}
 				d.snapshots[curKey] = s
 				d.snapOrder = append(d.snapOrder, curKey)
@@ -374,8 +379,8 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 				}
 			case ind == 6 && curSnap != nil && snapBlock == "deps":
 				k, v := splitFirstColon(trimmed)
-				name := g.unquote(strings.TrimSpace(k))
-				spec := g.unquote(strings.TrimSpace(v))
+				name := g.scalar(strings.TrimSpace(k))
+				spec := g.scalar(strings.TrimSpace(v))
 				if name != "" && spec != "" {
 					if _, dup := curSnap.deps[name]; !dup {
 						curSnap.depKeys = append(curSnap.depKeys, name)
@@ -389,9 +394,14 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 	return d
 }
 
-// splitFirstColon splits on the first ':' into key and the remainder (value). When no ':' is
+// splitFirstColon splits on the first ':' (after a closing quote, for a quoted key) into key and the remainder (value). When no ':' is
 // present the whole string is the key and value is "".
 func splitFirstColon(s string) (key, val string) {
+	if s != "" && (s[0] == '"' || s[0] == '\'') {
+		if end := yamlQuoteEnd(s); end >= 0 && strings.HasPrefix(s[end+1:], ":") {
+			return s[:end+1], s[end+2:]
+		}
+	}
 	if i := strings.IndexByte(s, ':'); i >= 0 {
 		return s[:i], s[i+1:]
 	}

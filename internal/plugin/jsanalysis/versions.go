@@ -561,13 +561,17 @@ func parseYarnLock(data []byte) (lockInfo, bool) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		if startsWithSpace(line) {
+			g.line(trimmed)
+		} else {
+			g.yarnTop(trimmed)
+		}
 		// A header line starts at column 0 (no leading whitespace) and ends with ':'.
 		if !startsWithSpace(line) && strings.HasSuffix(trimmed, ":") {
 			flush()
 			real, version, haveEntry = nil, "", false
 			seen := map[string]bool{}
-			for _, d := range strings.Split(strings.TrimSuffix(trimmed, ":"), ",") {
-				d = g.trim(strings.TrimSpace(d))
+			for _, d := range g.descriptors(strings.TrimSuffix(trimmed, ":")) {
 				name, rng := splitDescriptor(d)
 				// __metadata and other yarn metadata blocks (leading "__") are not packages.
 				if name == "" || strings.HasPrefix(name, "__") {
@@ -662,7 +666,7 @@ func yarnVersionField(trimmed string, g *quoteGuard) (string, bool) {
 	default:
 		return "", false
 	}
-	rest = g.trim(rest)
+	rest = g.scalar(rest)
 	if rest == "" {
 		return "", false
 	}
@@ -735,6 +739,11 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 		}
 		ind := indentWidth(line)
 		if ind == 0 {
+			g.pnpmTop(trimmed)
+		} else {
+			g.line(trimmed)
+		}
+		if ind == 0 {
 			flush()
 			block, _ = yamlField(trimmed, &g)
 			project, section, dep = "", "", ""
@@ -748,18 +757,21 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 		case "packages":
 			// A package entry key is indented two spaces and ends with ':'; its fields sit
 			// deeper (resolution:, engines:, name:, version:, ...).
+			if ind == 2 && !strings.HasSuffix(trimmed, ":") && !strings.HasSuffix(trimmed, ": {}") {
+				g.raw = true
+			}
 			if ind == 2 && strings.HasSuffix(trimmed, ":") {
 				flush()
-				entryKey = g.trim(strings.TrimSuffix(trimmed, ":"))
+				entryKey = g.scalar(strings.TrimSuffix(trimmed, ":"))
 				entryName, ver, haveEntry = "", "", true
 				continue
 			}
 			if haveEntry && ind == 4 {
 				switch k, v := yamlField(trimmed, &g); k {
 				case "name":
-					entryName = g.trim(v)
+					entryName = g.scalar(v)
 				case "version":
-					ver = g.trim(v)
+					ver = g.scalar(v)
 				case "bundledDependencies", "bundleDependencies":
 					info.opaque = true
 				}
@@ -783,12 +795,12 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 		k, v := yamlField(trimmed, &g)
 		switch {
 		case ind == sectionIndent+2 && section == "specifiers":
-			info.record(project, "", k, g.trim(v))
+			info.record(project, "", k, g.scalar(v))
 		case ind == sectionIndent+2:
 			dep = k
 			info.names[normalizeNPMCoordinate(k)] = true
 		case ind == sectionIndent+4 && dep != "" && k == "specifier":
-			info.record(project, section, dep, g.trim(v))
+			info.record(project, section, dep, g.scalar(v))
 		}
 	}
 	flush()
@@ -799,13 +811,13 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 // and its value as written, which a reader that uses it unquotes through g.
 func yamlField(trimmed string, g *quoteGuard) (key, value string) {
 	if strings.HasSuffix(trimmed, ":") {
-		return g.trim(strings.TrimSuffix(trimmed, ":")), ""
+		return g.scalar(strings.TrimSuffix(trimmed, ":")), ""
 	}
 	i := strings.Index(trimmed, ": ")
 	if i < 0 {
-		return g.trim(trimmed), ""
+		return g.scalar(trimmed), ""
 	}
-	return g.trim(trimmed[:i]), strings.TrimSpace(trimmed[i+2:])
+	return g.scalar(trimmed[:i]), strings.TrimSpace(trimmed[i+2:])
 }
 
 // pnpmDescriptor splits a pnpm package descriptor key into (name, version). It accepts

@@ -2498,6 +2498,9 @@ func TestSemantic_PnpmQuotedEscapes(t *testing.T) {
 	}{
 		"control_unchanged":        {edit: esc("", ""), placed: true},
 		"control_double_quoted":    {edit: esc("\n  'q@1.0.0':", "\n  \"q@1.0.0\":"), placed: true},
+		"control_trailing_comment": {edit: esc("version: '1.0.0'", "version: '1.0.0' # c"), placed: true},
+		"snapshots_value_guard":    {edit: esc("\nsnapshots:\n", "\nsnapshots: {x: {}}\n")},
+		"flow_key_guard":           {edit: esc("\n  'q@1.0.0': {}", "\n  {'q@1.0.0': {}}")},
 		"control_unread_modelled":  {edit: esc("    resolution:", "    deprecated: \"say \\\"hi\\\" \\\\ bye\"\n    resolution:"), placed: true},
 		"key_ref_hex":              {edit: qKeyRef(`\x31`)},
 		"key_ref_unicode":          {edit: qKeyRef(`\u0031`)},
@@ -2547,12 +2550,18 @@ func TestSemantic_YarnClassicQuotedEscapes(t *testing.T) {
 		edit   func(string) string
 		placed bool
 	}{
-		"control_unchanged": {edit: esc("", ""), placed: true},
-		"control_comment":   {edit: esc("# yarn lockfile v1", "# yarn lockfile v1 \"\\x31\""), placed: true},
-		"version":           {edit: esc("  version \"1.0.0\"", "  version \"\\x31.0.0\"")},
-		"header_guard":      {edit: esc("\"q@1.0.0\":", "\"q@\\x31.0.0\":")},
-		"resolved":          {edit: esc("q-1.0.0.tgz", "q-\\x31.0.0.tgz")},
-		"integrity":         {edit: esc("  integrity ", "  integrity \"\\x73\" ")},
+		"control_unchanged":    {edit: esc("", ""), placed: true},
+		"control_comment":      {edit: esc("# yarn lockfile v1", "# yarn lockfile v1 \"\\x31\""), placed: true},
+		"control_comments":     {edit: esc("  resolved", "  # c\n\n  resolved"), placed: true},
+		"header_comment_guard": {edit: esc("\"q@1.0.0\":", "\"q@1.0.0\": # c")},
+		"version_comment":      {edit: esc("  version \"1.0.0\"", "  version \"1.0.0\" # 2.0.0")},
+		"version_unclosed":     {edit: esc("  version \"1.0.0\"", "  version \"1.0.0")},
+		"stray_line":           {edit: func(s string) string { return s + "stray\n" }},
+		"flow_key":             {edit: esc("  resolved", "  {a: b}\n  resolved")},
+		"version":              {edit: esc("  version \"1.0.0\"", "  version \"\\x31.0.0\"")},
+		"header_guard":         {edit: esc("\"q@1.0.0\":", "\"q@\\x31.0.0\":")},
+		"resolved":             {edit: esc("q-1.0.0.tgz", "q-\\x31.0.0.tgz")},
+		"integrity":            {edit: esc("  integrity ", "  integrity \"\\x73\" ")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})

@@ -194,15 +194,17 @@ func parseYarnClassic(data []byte) (blocks []yarnBlock, ok bool) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		if startsWithSpace(line) {
+			g.line(trimmed)
+		} else {
+			g.yarnTop(trimmed)
+		}
 		if !startsWithSpace(line) && strings.HasSuffix(trimmed, ":") {
 			flush()
 			header := strings.TrimSuffix(trimmed, ":")
 			b := yarnBlock{deps: make(map[string]string)}
-			for _, d := range strings.Split(header, ",") {
-				d = g.trim(strings.TrimSpace(d))
-				if d != "" {
-					b.descriptors = append(b.descriptors, d)
-				}
+			for _, d := range g.descriptors(header) {
+				b.descriptors = append(b.descriptors, d)
 			}
 			cur = &b
 			subblock = ""
@@ -273,16 +275,16 @@ func yarnDepEntry(trimmed string, g *quoteGuard) (name, rng string) {
 	// name is up to the first whitespace; the range is the quoted remainder.
 	i := strings.IndexAny(trimmed, " \t")
 	if i < 0 {
-		return g.trim(trimmed), ""
+		return g.scalar(trimmed), ""
 	}
-	name = g.trim(strings.TrimSpace(trimmed[:i]))
+	name = g.scalar(strings.TrimSpace(trimmed[:i]))
 	rng = yarnQuotedValue(trimmed[i:], g)
 	return name, rng
 }
 
 // yarnQuotedValue trims whitespace and a single layer of quotes from a value.
 func yarnQuotedValue(s string, g *quoteGuard) string {
-	return g.trim(strings.TrimSpace(s))
+	return g.scalar(strings.TrimSpace(s))
 }
 
 // --- Yarn Berry v2+ (verified against fixture F1) ----------------------------
@@ -471,6 +473,11 @@ func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		if startsWithSpace(line) {
+			g.line(trimmed)
+		} else {
+			g.yarnTop(trimmed)
+		}
 		if !startsWithSpace(line) && strings.HasSuffix(trimmed, ":") {
 			flush()
 			header := strings.TrimSuffix(trimmed, ":")
@@ -480,11 +487,8 @@ func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
 				continue
 			}
 			b := yarnBerryBlock{deps: make(map[string]string), peers: make(map[string]string)}
-			for _, d := range strings.Split(header, ",") {
-				d = g.trim(strings.TrimSpace(d))
-				if d != "" {
-					b.descriptors = append(b.descriptors, d)
-				}
+			for _, d := range g.descriptors(header) {
+				b.descriptors = append(b.descriptors, d)
 			}
 			cur = &b
 			subblock = ""
@@ -498,16 +502,16 @@ func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
 			k, v := splitFirstColon(trimmed)
 			switch strings.TrimSpace(k) {
 			case "version":
-				cur.version = g.unquote(strings.TrimSpace(v))
+				cur.version = g.scalar(strings.TrimSpace(v))
 				subblock = ""
 			case "resolution":
-				cur.resolution = g.unquote(strings.TrimSpace(v))
+				cur.resolution = g.scalar(strings.TrimSpace(v))
 				subblock = ""
 			case "checksum":
-				cur.integrity = g.unquote(strings.TrimSpace(v))
+				cur.integrity = g.scalar(strings.TrimSpace(v))
 				subblock = ""
 			case "linkType":
-				cur.linkType = g.unquote(strings.TrimSpace(v))
+				cur.linkType = g.scalar(strings.TrimSpace(v))
 				subblock = ""
 			case "dependencies":
 				subblock = "deps"
@@ -522,21 +526,21 @@ func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
 			switch subblock {
 			case "deps":
 				k, v := splitFirstColon(trimmed)
-				name := g.unquote(strings.TrimSpace(k))
+				name := g.scalar(strings.TrimSpace(k))
 				if name != "" {
 					if _, dup := cur.deps[name]; !dup {
 						cur.depOrder = append(cur.depOrder, name)
 					}
-					cur.deps[name] = g.unquote(strings.TrimSpace(v))
+					cur.deps[name] = g.scalar(strings.TrimSpace(v))
 				}
 			case "peers":
 				k, v := splitFirstColon(trimmed)
-				name := g.unquote(strings.TrimSpace(k))
+				name := g.scalar(strings.TrimSpace(k))
 				if name != "" {
 					if _, dup := cur.peers[name]; !dup {
 						cur.peerOrder = append(cur.peerOrder, name)
 					}
-					cur.peers[name] = g.unquote(strings.TrimSpace(v))
+					cur.peers[name] = g.scalar(strings.TrimSpace(v))
 				}
 			}
 		}

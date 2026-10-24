@@ -104,7 +104,7 @@ func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 			s = strings.TrimSpace(s[len(m[0]):])
 		}
 		switch {
-		case s == "", strings.HasPrefix(s, "|"), strings.HasPrefix(s, ">"):
+		case s == "", blockHeaderRE.MatchString(s):
 			return nil, true, false
 		case strings.HasPrefix(s, "{"):
 			return nil, false, false

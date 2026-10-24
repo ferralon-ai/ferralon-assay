@@ -1520,6 +1520,70 @@ func TestManifestFacts_BindingGypCase(t *testing.T) {
 	}
 }
 
+// TestPatchScoped_FileNameCase: a patch touching package.json or binding.gyp under another case
+// is unscoped; pnpm applies it to the file the install reads on a case-insensitive filesystem.
+func TestPatchScoped_FileNameCase(t *testing.T) {
+	for _, f := range []string{"package.json", "Package.json", "PACKAGE.JSON", "lib/Package.json", "Binding.gyp"} {
+		patch := "--- a/" + f + "\n+++ b/" + f + "\n@@ -1 +1 @@\n-x\n+y\n"
+		if patchScoped([]byte(patch)) {
+			t.Errorf("a patch touching %s is not scoped", f)
+		}
+	}
+	if !patchScoped([]byte("--- a/index.js\n+++ b/index.js\n@@ -1 +1 @@\n-x\n+y\n")) {
+		t.Error("a patch touching only index.js is scoped")
+	}
+}
+
+// TestWorkspaceMembers_OwnGates pins the member walk's own checks directly: a selection the
+// lane can't decide (case, dot segment) and a selected member manifest named in another case
+// withhold; a case-variant manifest outside every glob is ignored, as the tools ignore it.
+func TestWorkspaceMembers_OwnGates(t *testing.T) {
+	for name, tc := range map[string]struct {
+		globs []string
+		file  string
+		want  []string
+		ok    bool
+	}{
+		"control":             {[]string{"packages/*"}, "packages/a/package.json", []string{"packages/a"}, true},
+		"case_differs":        {[]string{"Packages/*"}, "packages/a/package.json", nil, false},
+		"dot_directory":       {[]string{"packages/*"}, "packages/.a/package.json", nil, false},
+		"dot_under_globstar":  {[]string{"packages/**"}, "packages/.a/b/package.json", nil, false},
+		"manifest_case":       {[]string{"packages/*"}, "packages/a/Package.json", nil, false},
+		"manifest_case_unsel": {[]string{"packages/*"}, "other/a/Package.json", nil, true},
+		"braces":              {[]string{"packages/{a,b}"}, "packages/a/package.json", nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeProgram(t, map[string]string{tc.file: `{"name":"a"}`})
+			got, ok := workspaceMembers(dir, tc.globs)
+			if ok != tc.ok || !slices.Equal(got, tc.want) {
+				t.Errorf("workspaceMembers = %v, %v; want %v, %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestPnpmAltManifestIn_Undecided: an alternate manifest in a directory whose selection the lane
+// can't decide counts as found, even with no package.json beside it for the member walk to see.
+func TestPnpmAltManifestIn_Undecided(t *testing.T) {
+	for name, tc := range map[string]struct {
+		globs []string
+		file  string
+		want  bool
+	}{
+		"control":       {[]string{"packages/*"}, "packages/a/package.json", false},
+		"selected":      {[]string{"packages/*"}, "packages/a/package.yaml", true},
+		"unselected":    {[]string{"packages/*"}, "other/a/package.yaml", false},
+		"dot_directory": {[]string{"packages/*"}, "packages/.a/package.yaml", true},
+		"case_differs":  {[]string{"Packages/*"}, "packages/a/package.json5", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := pnpmAltManifestIn(writeProgram(t, map[string]string{tc.file: "name: a\n"}), tc.globs); got != tc.want {
+				t.Errorf("pnpmAltManifestIn = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSemantic_YarnRootCase: a yarn classic root's .yarnrc or package.json named in another case
 // withholds; yarn reads it under its usual name on a case-insensitive filesystem.
 func TestSemantic_YarnRootCase(t *testing.T) {

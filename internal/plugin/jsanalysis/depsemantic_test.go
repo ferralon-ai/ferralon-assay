@@ -1406,6 +1406,7 @@ func TestSemantic_WorkspaceGlobs(t *testing.T) {
 		"trailing_slash":       pkgA("packages/a/"),
 		"node_modules_segment": pkgA("packages/*", "node_modules/*"),
 		"bower_segment":        pkgA("packages/*", "bower_components/*"),
+		"question":             pkgA("packages/?"),
 		"case_differs":         pkgA("Packages/*"),
 		"literal_case":         pkgA("Packages/a"),
 		"dot_directory":        {globs: []string{"packages/*"}, member: "packages/.a"},
@@ -1556,6 +1557,7 @@ func TestWorkspaceMembers(t *testing.T) {
 		globs   []string
 		files   map[string]string
 		symlink [2]string // link name, target, both root-relative
+		deny    string    // root-relative directory made unreadable
 		want    []string
 		ok      bool
 	}{
@@ -1577,6 +1579,9 @@ func TestWorkspaceMembers(t *testing.T) {
 		"symlink_prefix":      {globs: []string{"packages/*"}, files: map[string]string{"real/a/package.json": manifest}, symlink: [2]string{"packages", "real"}},
 		"symlink_manifest":    {globs: []string{"packages/a"}, files: map[string]string{"real.json": manifest, "packages/a/index.js": ""}, symlink: [2]string{"packages/a/package.json", "real.json"}},
 		"refused_shape":       {globs: []string{"packages/a", "packages/**"}, files: map[string]string{"packages/a/package.json": manifest}},
+		"unreadable_prefix":   {globs: []string{"packages/*"}, files: map[string]string{"packages/a/package.json": manifest}, deny: "packages"},
+		"unreadable_segment":  {globs: []string{"packages/a"}, files: map[string]string{"packages/a/package.json": manifest}, deny: "packages"},
+		"unreadable_member":   {globs: []string{"packages/*"}, files: map[string]string{"packages/a/package.json": manifest}, deny: "packages/a"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeProgram(t, tc.files)
@@ -1584,6 +1589,9 @@ func TestWorkspaceMembers(t *testing.T) {
 				if err := os.Symlink(filepath.Join(dir, tc.symlink[1]), filepath.Join(dir, tc.symlink[0])); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if tc.deny != "" {
+				deny(t, filepath.Join(dir, tc.deny))
 			}
 			got, ok := workspaceMembers(dir, tc.globs)
 			if ok != tc.ok || !slices.Equal(got, tc.want) {

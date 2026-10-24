@@ -462,12 +462,32 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
-// mentionFields records the base names of fields this could not split into a command, and
-// the file a download among them may write: fields split on blanks only, so any field naming
-// curl or wget has every later field read as its argument. That over-reads, which withholds.
-func (v *Veto) mentionFields(fields []string) {
-	v.mention(fields)
-	v.mention(gluedOutputs(fields))
+// mentionFields records the base names of a line this could not split into commands. It
+// splits the line on blanks and on shell punctuation, so a command opened by ( or $( or
+// joined by ; or && is not hidden in the word before its arguments, and reads each field as
+// an argument.
+func (v *Veto) mentionFields(line string) {
+	v.mentionArgs(strings.FieldsFunc(line, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(";&|()`<>", r)
+	}))
+}
+
+// mentionArgs records the base names of a command's arguments, and for each short-option
+// cluster (one dash, then a non-dash) the text after every character from the second on: a
+// value glued to its flag (-fsSLoFILE, -OutFile:FILE) names a file no word names on its own.
+// The command and its flags are not looked up, so any program's glued value is read. That
+// over-mentions, which withholds only when a suffix is a bound file's name.
+func (v *Veto) mentionArgs(args []string) {
+	v.mention(args)
+	for _, a := range args {
+		t := trimShell(a)
+		if len(t) < 2 || t[0] != '-' || t[1] == '-' {
+			continue
+		}
+		for i := 2; i < len(t); i++ {
+			v.mention([]string{t[i:]})
+		}
+	}
 }
 
 // mention records the base names of a command's arguments, a redirect's or an option's
@@ -484,38 +504,6 @@ func (v *Veto) mention(args []string) {
 			}
 		}
 	}
-}
-
-// gluedOutputs returns the text glued after an output flag in a curl or wget flag cluster
-// (-fsSLoFILE, -qOFILE), which no word names on its own; a command is a word whose base name
-// is curl or wget, quotes aside. A cluster is not parsed: every o
-// (and O for wget) in it is taken as the flag, so a letter that is really part of another
-// flag's value (-dxoFILE) names a file too. That over-reads, and over-reading withholds. A
-// long option (--output=FILE) is read by mention, and a separate argument is a word.
-func gluedOutputs(words []string) []string {
-	var out []string
-	for i, w := range words {
-		flags := ""
-		switch path.Base(strings.Trim(w, "\"'")) {
-		case "curl":
-			flags = "o"
-		case "wget":
-			flags = "oO"
-		default:
-			continue
-		}
-		for _, a := range words[i+1:] {
-			if len(a) < 3 || a[0] != '-' || a[1] == '-' {
-				continue
-			}
-			for j := 1; j < len(a)-1; j++ {
-				if strings.IndexByte(flags, a[j]) >= 0 {
-					out = append(out, a[j+1:])
-				}
-			}
-		}
-	}
-	return out
 }
 
 // trimShell strips a leading redirect and shell punctuation from both ends of w: an opening
@@ -705,7 +693,7 @@ func (v *Veto) opaque(src string) string {
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
 		}
-		v.mentionFields(strings.Fields(line))
+		v.mentionFields(line)
 	}
 	return ""
 }
@@ -865,7 +853,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				if expandedInstallLine(line) {
 					return "install verb after an expansion that does not tokenise"
 				}
-				v.mentionFields(strings.Fields(line))
+				v.mentionFields(line)
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {
@@ -981,8 +969,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words[1:])
-		v.mention(gluedOutputs(words))
+		v.mentionArgs(words[1:])
 		cur.other()
 		return ""
 	}

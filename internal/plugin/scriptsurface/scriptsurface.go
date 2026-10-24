@@ -462,6 +462,14 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
+// mentionFields records the base names of fields this could not split into a command, and
+// the file a download among them may write: fields split on blanks only, so any field naming
+// curl or wget has every later field read as its argument. That over-reads, which withholds.
+func (v *Veto) mentionFields(fields []string) {
+	v.mention(fields)
+	v.mention(gluedOutputs(fields))
+}
+
 // mention records the base names of a command's arguments, a redirect's or an option's
 // target included.
 func (v *Veto) mention(args []string) {
@@ -479,16 +487,16 @@ func (v *Veto) mention(args []string) {
 }
 
 // gluedOutputs returns the text glued after an output flag in a curl or wget flag cluster
-// (-fsSLoFILE, -qOFILE), which no word names on its own. A cluster is not parsed: every o
+// (-fsSLoFILE, -qOFILE), which no word names on its own; a command is a word whose base name
+// is curl or wget, quotes aside. A cluster is not parsed: every o
 // (and O for wget) in it is taken as the flag, so a letter that is really part of another
 // flag's value (-dxoFILE) names a file too. That over-reads, and over-reading withholds. A
 // long option (--output=FILE) is read by mention, and a separate argument is a word.
 func gluedOutputs(words []string) []string {
 	var out []string
 	for i, w := range words {
-		name, _ := CommandName(w)
 		flags := ""
-		switch name {
+		switch path.Base(strings.Trim(w, "\"'")) {
 		case "curl":
 			flags = "o"
 		case "wget":
@@ -697,7 +705,7 @@ func (v *Veto) opaque(src string) string {
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
 		}
-		v.mention(strings.Fields(line))
+		v.mentionFields(strings.Fields(line))
 	}
 	return ""
 }
@@ -857,7 +865,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				if expandedInstallLine(line) {
 					return "install verb after an expansion that does not tokenise"
 				}
-				v.mention(strings.Fields(line))
+				v.mentionFields(strings.Fields(line))
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {

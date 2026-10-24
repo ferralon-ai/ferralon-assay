@@ -39,12 +39,23 @@ var pnpmWorkspaceKeys = map[string]bool{
 	"packages": true, "catalog": true, "catalogs": true, "savePrefix": true, "updateNotifier": true,
 	"ignoreScripts": true, "minimumReleaseAge": true, "verifyDepsBeforeRun": true,
 	"onlyBuiltDependencies": true, "ignoredBuiltDependencies": true, "neverBuiltDependencies": true,
+	// allowBuilds (pnpm 10 and later) only decides which dependency scripts run, or refuses the
+	// install; it never changes the layout. Its values are not read, which is sound only because
+	// the lane already treats every script as one that runs: a pnpm entry left unread is
+	// scriptsUnknown and a read one with an install script is installScript, and either
+	// withholds run-wide (callGraphWithDeps). A value that stops a script only narrows that.
+	"allowBuilds":     true,
 	"strictDepBuilds": true, "nodeLinker": true, "hoist": true, "hoistPattern": true,
 	"publicHoistPattern": true, "shamefullyHoist": true, "hoistWorkspacePackages": true,
 	"virtualStoreDir": true, "virtualStoreDirMaxLength": true, "modulesDir": true,
 	"packageImportMethod": true, "dedupePeerDependents": true, "autoInstallPeers": true,
 	"resolvePeersFromWorkspaceRoot": true, "dedupeDirectDeps": true, "overrides": true,
 	"patchedDependencies": true,
+
+	// blockExoticSubdeps (pnpm 10 and later) makes pnpm refuse an install that would resolve a
+	// dependency's dependency from git or a URL; it never changes the layout pnpm installs. Only
+	// the literal true or false is accepted.
+	"blockExoticSubdeps": true,
 }
 
 // inRegionModules reports whether a virtualStoreDir or modulesDir setting keeps every directory
@@ -437,7 +448,11 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 	var wsOverrides, wsPatches map[string]string
 	var globs []string
 	if ws != nil {
-		docs := splitYAMLDocs(string(ws))
+		var body string
+		if body, ok = pnpmWorkspaceBody(string(ws)); !ok {
+			return nil, false
+		}
+		docs := splitYAMLDocs(body)
 		if len(docs) > 1 {
 			return nil, false
 		}
@@ -460,8 +475,14 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			if (k == "virtualStoreDir" || k == "modulesDir") && !inRegionModules(k, y.child(k).val) {
 				return nil, false
 			}
+			if v := y.child(k).val; k == "blockExoticSubdeps" && v != "true" && v != "false" {
+				return nil, false
+			}
 		}
 		if wsOverrides, ok = y.child("overrides").scalars(); !ok {
+			return nil, false
+		}
+		if _, ok = y.child("allowBuilds").scalars(); !ok {
 			return nil, false
 		}
 		if wsPatches, ok = y.child("patchedDependencies").scalars(); !ok {
@@ -471,7 +492,11 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			if len(n.kids) > 0 || n.val != "" && n.val != "[]" || n.val == "" && len(n.items) == 0 {
 				return nil, false // a null packages errors on pnpm 8 and 9 and is root-only on 10+
 			}
-			globs = n.items
+			// pnpm always takes the region root as a project, so an entry that is exactly "."
+			// selects nothing more on any version and is dropped. Every other dot form still
+			// goes to workspaceMembers and withholds. yarn classic links the root into its own
+			// node_modules for a ".", so readYarnClassic keeps withholding it.
+			globs = slices.DeleteFunc(slices.Clone(n.items), func(g string) bool { return g == "." })
 		}
 	}
 	if len(manOverrides) > 0 && len(wsOverrides) > 0 || len(manPatches) > 0 && len(wsPatches) > 0 {
@@ -502,6 +527,35 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		cfg.manifests[dir] = m
 	}
 	return cfg, true
+}
+
+// pnpmWorkspaceBody returns the one document of a pnpm-workspace.yaml stream. pnpm loads the
+// file as a single document: a block of blank and comment lines ahead of one "---" is not a
+// document, while content before the marker, a second marker or a trailing one is an error on
+// every version. ok is false for any marker but one line exactly "---" whose preceding lines are
+// all spaces and an optional comment free of tabs, CRs and BOMs. What is left still has to hold
+// keys: a prefix with nothing after the marker is not read as a file with no keys.
+// splitYAMLDocs stays as it is; the lock reader needs its two-document split.
+func pnpmWorkspaceBody(s string) (string, bool) {
+	lines := strings.Split(s, "\n")
+	sep := -1
+	for i, l := range lines {
+		if t := strings.TrimRight(l, " \t\r"); t == "---" || strings.HasPrefix(t, "--- ") {
+			if sep >= 0 || l != "---" {
+				return "", false
+			}
+			sep = i
+		}
+	}
+	if sep < 0 {
+		return s, true
+	}
+	for _, l := range lines[:sep] {
+		if t := strings.TrimLeft(l, " "); t != "" && (t[0] != '#' || strings.ContainsAny(t, "\t\r\uFEFF")) {
+			return "", false
+		}
+	}
+	return strings.Join(lines[sep+1:], "\n"), true
 }
 
 // pnpmAltManifestIn reports whether root holds a pnpmAltManifests file in any case, or cannot

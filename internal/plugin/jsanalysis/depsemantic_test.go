@@ -634,6 +634,62 @@ func TestSemantic_G9PnpmConfigHazards(t *testing.T) {
 	}
 }
 
+// TestSemantic_PnpmAllowBuilds: an allowBuilds block mapping of scalars in pnpm-workspace.yaml
+// is accepted with its values unread, and a value that stops a script never stops the script
+// from withholding. Any other shape, and allowBuilds in package.json, withholds. Each tree holds
+// packages/b, unlisted, declaring a dependency the lock installs nothing for.
+func TestSemantic_PnpmAllowBuilds(t *testing.T) {
+	const pkgs = "packages:\n  - packages/a\n"
+	const postinstall = `{"name":"q","version":"1.0.0","main":"index.js","scripts":{"postinstall":"x"}}`
+	for name, tc := range map[string]struct {
+		ws       string
+		manifest string
+		qScript  bool
+		placed   bool
+	}{
+		"control_mixed":         {ws: pkgs + "allowBuilds:\n  esbuild: true\n  '@scarf/scarf': false\n", placed: true},
+		"script_without_key":    {ws: pkgs, qScript: true},
+		"false_still_escalates": {ws: pkgs + "allowBuilds:\n  q: false\n", qScript: true},
+		"list":                  {ws: pkgs + "allowBuilds:\n  - esbuild\n"},
+		"nested":                {ws: pkgs + "allowBuilds:\n  esbuild:\n    x: 1\n"},
+		"flow_map":              {ws: pkgs + "allowBuilds: {esbuild: true}\n"},
+		"scalar":                {ws: pkgs + "allowBuilds: true\n"},
+		"manifest_allow_builds": {ws: pkgs, manifest: `,"pnpm":{"allowBuilds":{"esbuild":true}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			if tc.qScript {
+				q.files["package.json"] = postinstall
+			}
+			lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}, "packages/a": {"q": "1.0.0"}}, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"package.json":            manifestWith("app", map[string]string{"p": "1.0.0"}, tc.manifest),
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"packages/b/package.json": manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			switch {
+			case tc.placed:
+				if !ok || !slices.Equal(cfg.members, []string{"packages/a"}) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0") {
+					t.Errorf("%q places the region with members [packages/a]; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, ok, cfg, incomplete, cg.Partiality)
+				}
+			case tc.qScript:
+				if !ok || incomplete || !runWide(cg) || !reaches(cg, "q", "1.0.0") {
+					t.Errorf("%q places the region and q's install script withholds run-wide; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
+				}
+			default:
+				if ok || !incomplete || !runWide(cg) {
+					t.Errorf("%q with manifest %q withholds; ok=%v incomplete=%v got %+v", tc.ws, tc.manifest, ok, incomplete, cg.Partiality)
+				}
+			}
+		})
+	}
+}
+
 // TestSemantic_G10PnpmRequiresBuildAbsent: a lock that records no requiresBuild leaves an
 // unread package run-wide.
 func TestSemantic_G10PnpmRequiresBuildAbsent(t *testing.T) {
@@ -674,6 +730,48 @@ func TestSemantic_G11UnknownOrUnreadableConfig(t *testing.T) {
 	}
 	if cg := semRun(t, semProgram(t, yarnLockFile, yarnLockText(t, p, q), map[string]string{".yarnrc": "registry \"https://r.example\"\n"}), semStore(t, p, q)); runWide(cg) {
 		t.Errorf("control: an accepted .yarnrc key reads; got %+v", cg.Partiality)
+	}
+}
+
+// TestSemantic_PnpmBlockExoticSubdeps: blockExoticSubdeps set to true or false, plain or quoted,
+// places the region with the members it lists; any other value withholds. Each tree holds
+// packages/b, unlisted, declaring a dependency the lock installs nothing for.
+func TestSemantic_PnpmBlockExoticSubdeps(t *testing.T) {
+	const pkgs = "packages:\n  - packages/a\n"
+	for name, tc := range map[string]struct {
+		ws     string
+		placed bool
+	}{
+		"control_true":   {pkgs + "blockExoticSubdeps: true\n", true},
+		"control_false":  {pkgs + "blockExoticSubdeps: false\n", true},
+		"control_quoted": {pkgs + "blockExoticSubdeps: 'false'\n", true},
+		"yes":            {pkgs + "blockExoticSubdeps: yes\n", false},
+		"capitalized":    {pkgs + "blockExoticSubdeps: True\n", false},
+		"one":            {pkgs + "blockExoticSubdeps: 1\n", false},
+		"list":           {pkgs + "blockExoticSubdeps:\n  - true\n", false},
+		"flow_list":      {pkgs + "blockExoticSubdeps: [true]\n", false},
+		"mapping":        {pkgs + "blockExoticSubdeps:\n  x: true\n", false},
+		"empty":          {pkgs + "blockExoticSubdeps:\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}, "packages/a": {"q": "1.0.0"}}, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"packages/b/package.json": manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			if tc.placed && (!ok || !slices.Equal(cfg.members, []string{"packages/a"}) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("%q places the region with members [packages/a]; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, ok, cfg, incomplete, cg.Partiality)
+			}
+			if !tc.placed && (ok || !incomplete || !runWide(cg)) {
+				t.Errorf("%q withholds; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
+			}
+		})
 	}
 }
 
@@ -1454,6 +1552,65 @@ func TestSemantic_WorkspaceGlobs(t *testing.T) {
 	}
 }
 
+// TestSemantic_PnpmDotMember: a pnpm packages entry that is exactly "." names the root, which
+// pnpm always takes, so it adds no member and the rest of the list reads as before. Every other
+// dot form withholds, as does "." in yarn classic workspaces (yarn links the root into its own
+// node_modules). Each tree holds tools/b, unselected, declaring a dependency the lock installs
+// nothing for, so a member set read too wide withholds rather than passes; the same trap on a
+// selected member (dot_plus_star_unlocked_member) shows the member set reaches that check.
+func TestSemantic_PnpmDotMember(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ws       string
+		members  []string
+		resolves bool
+	}{
+		"control_dot_root_only":         {ws: "packages:\n  - '.'\n", members: []string{}, resolves: true},
+		"control_dot_plus_star":         {ws: "packages:\n  - .\n  - 'packages/*'\n", members: []string{"packages/a"}, resolves: true},
+		"control_star_plus_dot":         {ws: "packages:\n  - 'packages/*'\n  - '.'\n", members: []string{"packages/a"}, resolves: true},
+		"dot_plus_star_unlocked_member": {ws: "packages:\n  - .\n  - 'packages/*'\n"},
+		"dotdot":                        {ws: "packages:\n  - '..'\n"},
+		"dot_slash":                     {ws: "packages:\n  - './'\n"},
+		"dot_slash_dot":                 {ws: "packages:\n  - './.'\n"},
+		"member_dot":                    {ws: "packages:\n  - 'packages/.'\n"},
+		"dot_star":                      {ws: "packages:\n  - './*'\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			importers := map[string]map[string]string{".": {"p": "1.0.0"}}
+			if slices.Contains(tc.members, "packages/a") {
+				importers["packages/a"] = map[string]string{"q": "1.0.0"}
+			}
+			lock := pnpmLockText(t, "9.0", importers, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"tools/b/package.json":    manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			if tc.resolves && (!ok || !slices.Equal(cfg.members, tc.members) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("%q places the region with members %v; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, tc.members, ok, cfg, incomplete, cg.Partiality)
+			}
+			if !tc.resolves && (!incomplete || !runWide(cg)) {
+				t.Errorf("%q withholds; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
+			}
+		})
+	}
+	t.Run("yarn_dot", func(t *testing.T) {
+		p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+		q := qPkg("1.0.0")
+		dir := semProgram(t, yarnLockFile, yarnLockText(t, p, q), map[string]string{
+			"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"private":true,"workspaces":["."]`),
+		})
+		cg := semRun(t, dir, semStore(t, p, q))
+		if incomplete := buildDepLayout(context.Background(), dir).incomplete; !incomplete || !runWide(cg) {
+			t.Errorf("yarn classic workspaces [\".\"] withholds; incomplete=%v got %+v", incomplete, cg.Partiality)
+		}
+	})
+}
+
 // TestReadPnpmConfig_OwnGates pins the pnpm reader's own hook and case checks directly, without
 // the install veto in play.
 func TestReadPnpmConfig_OwnGates(t *testing.T) {
@@ -1480,6 +1637,59 @@ func TestReadPnpmConfig_OwnGates(t *testing.T) {
 			tc.files["package.json"] = `{"name":"app","private":true}`
 			if _, ok := readPnpmConfig(writeProgram(t, tc.files)); ok != tc.ok {
 				t.Errorf("readPnpmConfig ok = %v, want %v", ok, tc.ok)
+			}
+		})
+	}
+}
+
+// TestSemantic_PnpmWorkspaceLeadingComment: pnpm reads a pnpm-workspace.yaml whose one document
+// follows a comment-only block and a single "---" as that document, so the region is placed with
+// the members it lists. Content or "..." before the marker, a second or trailing marker, and a
+// prefix with no document after it are errors or root-only in pnpm, and withhold; so do the
+// shapes pnpm reads but the lane holds strict (a directive, a BOM, CRLF, a tab, anything after
+// the marker on its line). Each tree holds packages/b, unlisted, declaring a dependency the lock
+// installs nothing for, so a member set read too wide withholds rather than passes.
+func TestSemantic_PnpmWorkspaceLeadingComment(t *testing.T) {
+	const b = "packages:\n  - packages/a\n"
+	for name, tc := range map[string]struct {
+		ws     string
+		placed bool
+	}{
+		"control_lead_comment":          {"# c\n---\n" + b, true},
+		"control_lead_comment_multi":    {"# c\n\n# d\n---\n" + b + "\n# trailing\n", true},
+		"control_lead_comment_indented": {"  # indented c\n---\n" + b, true},
+		"control_sep_only":              {"---\n" + b, true},
+		"control_lead_blank":            {"\n\n---\n" + b, true},
+		"lead_empty_doc":                {"# c\n---\n", false},
+		"lead_key_before_sep":           {"x: 1\n---\n" + b, false},
+		"lead_doc_end_in_prefix":        {"# c\n...\n---\n" + b, false},
+		"lead_two_seps":                 {"# c\n---\n---\n" + b, false},
+		"lead_trailing_sep":             {"# c\n---\n" + b + "---\n", false},
+		"trailing_sep_no_lead":          {b + "---\n", false},
+		"lead_yaml_directive":           {"%YAML 1.2\n---\n" + b, false},
+		"lead_bom":                      {"\uFEFF# c\n---\n" + b, false},
+		"lead_crlf":                     {strings.ReplaceAll("# c\n---\n"+b, "\n", "\r\n"), false},
+		"lead_tab_comment":              {"# c\t\n---\n" + b, false},
+		"lead_sep_comment":              {"# c\n--- # t\n" + b, false},
+		"lead_sep_trailing_space":       {"# c\n---  \n" + b, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}, "packages/a": {"q": "1.0.0"}}, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"packages/b/package.json": manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			if tc.placed && (!ok || !slices.Equal(cfg.members, []string{"packages/a"}) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("%q places the region with members [packages/a]; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, ok, cfg, incomplete, cg.Partiality)
+			}
+			if !tc.placed && (ok || !incomplete || !runWide(cg)) {
+				t.Errorf("%q withholds; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
 			}
 		})
 	}

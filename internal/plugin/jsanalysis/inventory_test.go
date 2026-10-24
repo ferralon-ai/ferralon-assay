@@ -727,6 +727,7 @@ func TestInventory_QuotedEscapes(t *testing.T) {
 		{name: "classic_version_unclosed", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version \"1.0.0"), withheld: true},
 		{name: "classic_version_plain_hash", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version 1.0.0#2.0.0"), withheld: true},
 		{name: "classic_version_plain_digit", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version 1.0.0"), withheld: true},
+		{name: "classic_version_plain_bool", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version true1"), withheld: true},
 		{name: "classic_version_empty", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version"), withheld: true},
 		{name: "classic_header_anchor", file: "yarn.lock", lock: edit(classic, "\nq@1.0.0:", "\n&a q@1.0.0:"), withheld: true},
 		{name: "classic_version_plain_quote", file: "yarn.lock", lock: edit(classic, "version \"1.0.0\"", "version 1.0.0\"x"), withheld: true},

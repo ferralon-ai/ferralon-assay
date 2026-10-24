@@ -103,8 +103,45 @@ var npmDocExts = map[string]bool{
 }
 
 // npmRewriteWords are the settings through which .npmrc, .yarnrc* and pnpm-workspace.yaml add
-// or swap packages at install time.
-var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile"}
+// or swap packages, or move where packages are stored, at install time. pnpm 10 reads
+// global-virtual-store from .npmrc, and only in that exact case; the camelCase form is the
+// pnpm-workspace.yaml key.
+var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile",
+	"global-virtual-store", "GlobalVirtualStore"}
+
+// npmrcKeyIndirect reports whether an .npmrc line spells its key through an expansion or an
+// escape, as "${K}=true" with K in the environment or "enable-global-\u0076irtual-store"=true
+// do. pnpm 10 resolves both before it matches the key, so no word in npmRewriteWords can match
+// the text. Lines split on \r and \n alike, as pnpm's ini decoder does (/[\r\n]+/); a lone CR
+// separates lines. The value side is exempt: "_authToken=${TOKEN}" and Windows paths are common
+// there.
+//
+// A key whose raw text, after the BOM and surrounding space, begins with "//" (a registry's
+// credentials, //${HOST}/:_authToken) or "@" (a scoped registry, @${SCOPE}:registry) is exempt
+// too. pnpm cuts the line at the first "=" and only then expands ${...} in the key; unquoting
+// applies only to a key that starts with a quote, so the resolved key keeps its first
+// characters, and no pnpm 10 or 11 setting name starts with "/" or "@" (checked against both
+// binaries and their ini decoders: //${K}=v and @${K}=v with K naming a layout setting leave
+// enable-global-virtual-store, virtual-store-dir, node-linker and store-dir unset). The rule is
+// literal: a quoted "//${X}", a lone "/${X}" and a key that merely contains "//" later still
+// withhold.
+func npmrcKeyIndirect(head []byte) bool {
+	for _, line := range bytes.FieldsFunc(head, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("\xef\xbb\xbf")))
+		if len(line) == 0 || line[0] == ';' || line[0] == '#' {
+			continue
+		}
+		key, _, _ := bytes.Cut(line, []byte("="))
+		if !bytes.Contains(key, []byte("${")) && bytes.IndexByte(key, '\\') < 0 {
+			continue
+		}
+		if bytes.HasPrefix(key, []byte("//")) || key[0] == '@' {
+			continue
+		}
+		return true
+	}
+	return false
+}
 
 // npmInstallSurface reports whether the file at path, with its buildtree.Head (nil when binary,
 // empty or not a regular file, and then judged through buildtree.NULHeadMatch), names or holds
@@ -127,6 +164,9 @@ func npmSurface(path string, head []byte) (string, bool) {
 			if bytes.Contains(head, []byte(w)) {
 				return "install rewrite config", true
 			}
+		}
+		if strings.HasPrefix(lower, ".npmrc") && npmrcKeyIndirect(head) {
+			return "install rewrite config", true
 		}
 		return "", false
 	}

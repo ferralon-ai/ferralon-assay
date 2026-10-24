@@ -541,7 +541,8 @@ func collectV1(key string, dep packageLockDep, info *lockInfo) {
 // is normalized.
 func parseYarnLock(data []byte) (lockInfo, bool) {
 	info := newLockInfo(lockYarn)
-	var g quoteGuard
+	// Berry always writes a __metadata block; classic never does.
+	g := quoteGuard{classic: !strings.HasPrefix(string(data), "__metadata:") && !strings.Contains(string(data), "\n__metadata:")}
 	var (
 		real      []string
 		haveEntry bool
@@ -663,10 +664,15 @@ func yarnVersionField(trimmed string, g *quoteGuard) (string, bool) {
 		rest = strings.TrimSpace(trimmed[len("version:"):])
 	case strings.HasPrefix(trimmed, "version "):
 		rest = strings.TrimSpace(trimmed[len("version "):])
+	case trimmed == "version":
 	default:
 		return "", false
 	}
-	rest = g.scalar(rest)
+	if strings.HasPrefix(trimmed, "version:") {
+		rest = g.required(rest)
+	} else {
+		rest = g.classicRequired(rest)
+	}
 	if rest == "" {
 		return "", false
 	}
@@ -769,9 +775,9 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 			if haveEntry && ind == 4 {
 				switch k, v := yamlField(trimmed, &g); k {
 				case "name":
-					entryName = g.scalar(v)
+					entryName = g.required(v)
 				case "version":
-					ver = g.scalar(v)
+					ver = g.required(v)
 				case "bundledDependencies", "bundleDependencies":
 					info.opaque = true
 				}
@@ -795,12 +801,12 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 		k, v := yamlField(trimmed, &g)
 		switch {
 		case ind == sectionIndent+2 && section == "specifiers":
-			info.record(project, "", k, g.scalar(v))
+			info.record(project, "", k, g.required(v))
 		case ind == sectionIndent+2:
 			dep = k
 			info.names[normalizeNPMCoordinate(k)] = true
 		case ind == sectionIndent+4 && dep != "" && k == "specifier":
-			info.record(project, section, dep, g.scalar(v))
+			info.record(project, section, dep, g.required(v))
 		}
 	}
 	flush()

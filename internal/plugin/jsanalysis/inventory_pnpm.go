@@ -333,7 +333,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 				if strings.TrimSpace(k) == "version" {
 					curImp.deps = append(curImp.deps, pnpmDirect{
 						name:    pendingDep,
-						version: g.scalar(strings.TrimSpace(v)),
+						version: g.required(v),
 						target:  impBlock,
 					})
 				}
@@ -380,7 +380,7 @@ func parsePnpmLockData(data []byte) pnpmLockData {
 			case ind == 6 && curSnap != nil && snapBlock == "deps":
 				k, v := splitFirstColon(trimmed)
 				name := g.scalar(strings.TrimSpace(k))
-				spec := g.scalar(strings.TrimSpace(v))
+				spec := g.required(v)
 				if name != "" && spec != "" {
 					if _, dup := curSnap.deps[name]; !dup {
 						curSnap.depKeys = append(curSnap.depKeys, name)

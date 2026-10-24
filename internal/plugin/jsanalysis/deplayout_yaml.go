@@ -282,7 +282,11 @@ func yamlRawQuoted(s string) bool {
 // quoteGuard records whether a lexical lock reader met a scalar or a line structure it would
 // misread (such quoting, an unclosed or trailing-text quote, a comment, a flow or explicit key,
 // a stray column-0 line); the reader then withholds the lock.
-type quoteGuard struct{ raw bool }
+type quoteGuard struct {
+	raw bool
+	// classic selects yarn classic's grammar for header descriptors.
+	classic bool
+}
 
 // check flags s when yamlRawQuoted holds for it.
 func (g *quoteGuard) check(s string) {
@@ -292,9 +296,16 @@ func (g *quoteGuard) check(s string) {
 }
 
 // scalar returns the plain or quoted scalar s as a lexical reader takes it, and flags the lock
-// when that is not what a YAML loader reads: an opening quote with no close, text after the
-// closing quote (a comment included), a quote or a " #" comment inside a plain scalar. A reader
-// that stripped such a scalar's quotes would keep the stray text as part of a name or version.
+// unless s is inside the closed grammar the lexical readers model. Anything outside it is
+// withheld, not deny-listed shape by shape:
+//
+//   - a quoted scalar closes on its line with only whitespace after it (no comment), and its
+//     body holds only grammarChars;
+//   - a plain scalar holds only grammarChars, opens with a plain-start byte (so never an alias,
+//     anchor, tag, block-scalar or flow indicator), has no whitespace-led '#', no tab, no ": "
+//     and no trailing ':'.
+//
+// An empty scalar is returned as "" and the caller decides whether the field is required.
 func (g *quoteGuard) scalar(s string) string {
 	s = strings.TrimSpace(s)
 	g.check(s)
@@ -303,16 +314,89 @@ func (g *quoteGuard) scalar(s string) string {
 	}
 	if q := s[0]; q == '"' || q == '\'' {
 		end := yamlQuoteEnd(s)
-		if end < 0 || strings.TrimSpace(s[end+1:]) != "" {
+		if end < 0 || strings.TrimSpace(s[end+1:]) != "" || !grammarBody(s[1:end]) {
 			g.raw = true
 			return s
 		}
 		return s[1:end]
 	}
-	if strings.ContainsAny(s, `"'`) || strings.Contains(s, " #") {
+	if !plainScalarOK(s) {
 		g.raw = true
 	}
 	return s
+}
+
+// required is scalar for a field the reader needs on its key's line: an empty or absent value
+// (the value on the next line, or nothing) withholds.
+func (g *quoteGuard) required(s string) string {
+	if strings.TrimSpace(s) == "" {
+		g.raw = true
+		return ""
+	}
+	return g.scalar(s)
+}
+
+// grammarChars is every byte a name, version, specifier, resolution or key may hold in the
+// locks pnpm and yarn write: npm-name characters, semver and range operators, a peer suffix
+// "(peer@x)", protocol prefixes (link: file: workspace: npm: git+https:), a URL or a git
+// "#commit" and the base64 of an integrity. A space is allowed inside a range ("^1 || ^2").
+// Widen it only for a character a real lock needs.
+const grammarChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" +
+	"._~^+=<>|*/@:()#,%&?!$- "
+
+// grammarBody reports whether every byte of a quoted body is in grammarChars.
+func grammarBody(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(grammarChars, s[i]) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// plainScalarOK reports whether an unquoted scalar is one YAML string a quote-stripping reader
+// reads the same way a loader does.
+func plainScalarOK(s string) bool {
+	switch c := s[0]; {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+	case strings.IndexByte("._~^+=</($", c) >= 0:
+	case c == '-' && len(s) > 1 && s[1] != ' ':
+	default:
+		return false
+	}
+	if !grammarBody(s) || strings.Contains(s, " #") || strings.Contains(s, ": ") || strings.HasSuffix(s, ":") {
+		return false
+	}
+	return true
+}
+
+// classicScalar is scalar for a yarn classic value or key. Classic writes a string unquoted
+// only when it starts with a letter and holds none of ':', whitespace, '\\', '"', ',', '[' or
+// ']' (shouldWrapKey in yarn's src/lockfile/stringify.js), and its tokenizer reads such a
+// string as one token. Any other unquoted value, a digit-led "7.0.0#1.0.0" included, is
+// withheld, and so is '#' since the tokenizer treats it as a comment opener.
+func (g *quoteGuard) classicScalar(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s[0] == '"' || s[0] == '\'' {
+		return g.scalar(s)
+	}
+	g.check(s)
+	c := s[0]
+	if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') || !grammarBody(s) ||
+		strings.ContainsAny(s, ": \t\\\",[]#") ||
+		strings.HasPrefix(s, "true") || strings.HasPrefix(s, "false") {
+		g.raw = true
+	}
+	return s
+}
+
+// classicRequired is classicScalar for a field that must carry a value on its line.
+func (g *quoteGuard) classicRequired(s string) string {
+	if strings.TrimSpace(s) == "" {
+		g.raw = true
+		return ""
+	}
+	return g.classicScalar(s)
 }
 
 // yamlKeyStart reports whether s opens with a character that starts a flow collection, an
@@ -351,9 +435,10 @@ func (g *quoteGuard) pnpmTop(trimmed string) {
 
 // yarnTop flags a column-0 line of a yarn lock that is not an entry header ending in ':'. A
 // header with a trailing comment is one, because the reader would take its fields for the
-// previous entry's.
+// previous entry's. A header that opens with an indicator (an anchor, say) fails the
+// descriptor grammar instead.
 func (g *quoteGuard) yarnTop(trimmed string) {
-	if !strings.HasSuffix(trimmed, ":") || yamlKeyStart(trimmed) {
+	if !strings.HasSuffix(trimmed, ":") {
 		g.raw = true
 	}
 }
@@ -394,7 +479,11 @@ func (g *quoteGuard) descriptors(header string) []string {
 			frag, next = rest[:end], strings.TrimSpace(rest[end+1:])
 		}
 		rest = next
-		for _, d := range strings.Split(g.scalar(frag), ",") {
+		scalar := g.scalar
+		if g.classic {
+			scalar = g.classicScalar
+		}
+		for _, d := range strings.Split(scalar(frag), ",") {
 			if d = strings.TrimSpace(d); d != "" {
 				out = append(out, d)
 			}

@@ -177,7 +177,7 @@ func yarnClassicParse(sel selectedLock, data []byte, manifests []manifestFile) (
 
 // parseYarnClassic lexically parses a Yarn Classic v1 yarn.lock into blocks.
 func parseYarnClassic(data []byte) (blocks []yarnBlock, ok bool) {
-	var g quoteGuard
+	g := quoteGuard{classic: true}
 	lines := strings.Split(string(data), "\n")
 	var cur *yarnBlock
 	subblock := "" // "deps" while inside dependencies:/optionalDependencies:
@@ -222,11 +222,10 @@ func parseYarnClassic(data []byte) (blocks []yarnBlock, ok bool) {
 				}
 				subblock = ""
 			case strings.HasPrefix(trimmed, "resolved"):
-				cur.resolved = yarnQuotedValue(trimmed[len("resolved"):], &g)
+				cur.resolved = g.classicRequired(trimmed[len("resolved"):])
 				subblock = ""
 			case strings.HasPrefix(trimmed, "integrity"):
-				cur.integrity = strings.TrimSpace(trimmed[len("integrity"):])
-				g.check(cur.integrity)
+				cur.integrity = g.classicRequired(trimmed[len("integrity"):])
 				subblock = ""
 			case trimmed == "dependencies:" || trimmed == "optionalDependencies:":
 				subblock = "deps"
@@ -275,16 +274,12 @@ func yarnDepEntry(trimmed string, g *quoteGuard) (name, rng string) {
 	// name is up to the first whitespace; the range is the quoted remainder.
 	i := strings.IndexAny(trimmed, " \t")
 	if i < 0 {
-		return g.scalar(trimmed), ""
+		g.raw = true
+		return g.classicScalar(trimmed), ""
 	}
-	name = g.scalar(strings.TrimSpace(trimmed[:i]))
-	rng = yarnQuotedValue(trimmed[i:], g)
+	name = g.classicScalar(trimmed[:i])
+	rng = g.classicRequired(trimmed[i:])
 	return name, rng
-}
-
-// yarnQuotedValue trims whitespace and a single layer of quotes from a value.
-func yarnQuotedValue(s string, g *quoteGuard) string {
-	return g.scalar(strings.TrimSpace(s))
 }
 
 // --- Yarn Berry v2+ (verified against fixture F1) ----------------------------
@@ -502,10 +497,10 @@ func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
 			k, v := splitFirstColon(trimmed)
 			switch strings.TrimSpace(k) {
 			case "version":
-				cur.version = g.scalar(strings.TrimSpace(v))
+				cur.version = g.required(v)
 				subblock = ""
 			case "resolution":
-				cur.resolution = g.scalar(strings.TrimSpace(v))
+				cur.resolution = g.required(v)
 				subblock = ""
 			case "checksum":
 				cur.integrity = g.scalar(strings.TrimSpace(v))
@@ -531,7 +526,7 @@ func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
 					if _, dup := cur.deps[name]; !dup {
 						cur.depOrder = append(cur.depOrder, name)
 					}
-					cur.deps[name] = g.scalar(strings.TrimSpace(v))
+					cur.deps[name] = g.required(v)
 				}
 			case "peers":
 				k, v := splitFirstColon(trimmed)
@@ -540,7 +535,7 @@ func parseYarnBerry(data []byte) (blocks []yarnBerryBlock, ok bool) {
 					if _, dup := cur.peers[name]; !dup {
 						cur.peerOrder = append(cur.peerOrder, name)
 					}
-					cur.peers[name] = g.scalar(strings.TrimSpace(v))
+					cur.peers[name] = g.required(v)
 				}
 			}
 		}

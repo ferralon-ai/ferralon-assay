@@ -475,7 +475,7 @@ func TestResolveVersions_RealPackageIdentity(t *testing.T) {
 	}{
 		{"B1 package-lock v1 alias", "absent-package", map[string]string{"package.json": aliasJSON, "package-lock.json": `{"lockfileVersion":1,"dependencies":{"foo":{"version":"npm:absent-package@2.2.1"}}}`}, "2.2.1"},
 		{"B1 package-lock v1 transitive alias", "absent-package", map[string]string{"package.json": `{"name":"app"}`, "package-lock.json": `{"lockfileVersion":1,"dependencies":{"express":{"version":"4.18.2","dependencies":{"bar":{"version":"npm:absent-package@2.2.1"}}}}}`}, "2.2.1"},
-		{"B1 classic yarn alias", "absent-package", map[string]string{"package.json": aliasJSON, "yarn.lock": "# yarn lockfile v1\n\nfoo@npm:absent-package@^2.2.1:\n  version \"2.2.1\"\n"}, "2.2.1"},
+		{"B1 classic yarn alias", "absent-package", map[string]string{"package.json": aliasJSON, "yarn.lock": "# yarn lockfile v1\n\n\"foo@npm:absent-package@^2.2.1\":\n  version \"2.2.1\"\n"}, "2.2.1"},
 		{"B1 classic yarn alias in a later descriptor", "absent-package", map[string]string{"package.json": aliasJSON, "yarn.lock": "# yarn lockfile v1\n\n\"bar@^1.0.0\", \"foo@npm:absent-package@^2.2.1\":\n  version \"2.2.1\"\n"}, "2.2.1"},
 		{"B1 berry alias", "absent-package", map[string]string{"package.json": aliasJSON, "yarn.lock": berryLock}, "2.2.1"},
 		{"B5 pnpm git entry named by its name field", "absent-package", map[string]string{"package.json": `{"name":"app"}`, "pnpm-lock.yaml": pnpmGit}, "2.2.1"},

@@ -437,7 +437,11 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 	var wsOverrides, wsPatches map[string]string
 	var globs []string
 	if ws != nil {
-		docs := splitYAMLDocs(string(ws))
+		var body string
+		if body, ok = pnpmWorkspaceBody(string(ws)); !ok {
+			return nil, false
+		}
+		docs := splitYAMLDocs(body)
 		if len(docs) > 1 {
 			return nil, false
 		}
@@ -502,6 +506,35 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		cfg.manifests[dir] = m
 	}
 	return cfg, true
+}
+
+// pnpmWorkspaceBody returns the one document of a pnpm-workspace.yaml stream. pnpm loads the
+// file as a single document: a block of blank and comment lines ahead of one "---" is not a
+// document, while content before the marker, a second marker or a trailing one is an error on
+// every version. ok is false for any marker but one line exactly "---" whose preceding lines are
+// all spaces and an optional comment free of tabs, CRs and BOMs. What is left still has to hold
+// keys: a prefix with nothing after the marker is not read as a file with no keys.
+// splitYAMLDocs stays as it is; the lock reader needs its two-document split.
+func pnpmWorkspaceBody(s string) (string, bool) {
+	lines := strings.Split(s, "\n")
+	sep := -1
+	for i, l := range lines {
+		if t := strings.TrimRight(l, " \t\r"); t == "---" || strings.HasPrefix(t, "--- ") {
+			if sep >= 0 || l != "---" {
+				return "", false
+			}
+			sep = i
+		}
+	}
+	if sep < 0 {
+		return s, true
+	}
+	for _, l := range lines[:sep] {
+		if t := strings.TrimLeft(l, " "); t != "" && (t[0] != '#' || strings.ContainsAny(t, "\t\r\uFEFF")) {
+			return "", false
+		}
+	}
+	return strings.Join(lines[sep+1:], "\n"), true
 }
 
 // pnpmAltManifestIn reports whether root holds a pnpmAltManifests file in any case, or cannot

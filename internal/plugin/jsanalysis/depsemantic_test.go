@@ -1485,6 +1485,59 @@ func TestReadPnpmConfig_OwnGates(t *testing.T) {
 	}
 }
 
+// TestSemantic_PnpmWorkspaceLeadingComment: pnpm reads a pnpm-workspace.yaml whose one document
+// follows a comment-only block and a single "---" as that document, so the region is placed with
+// the members it lists. Content or "..." before the marker, a second or trailing marker, and a
+// prefix with no document after it are errors or root-only in pnpm, and withhold; so do the
+// shapes pnpm reads but the lane holds strict (a directive, a BOM, CRLF, a tab, anything after
+// the marker on its line). Each tree holds packages/b, unlisted, declaring a dependency the lock
+// installs nothing for, so a member set read too wide withholds rather than passes.
+func TestSemantic_PnpmWorkspaceLeadingComment(t *testing.T) {
+	const b = "packages:\n  - packages/a\n"
+	for name, tc := range map[string]struct {
+		ws     string
+		placed bool
+	}{
+		"control_lead_comment":          {"# c\n---\n" + b, true},
+		"control_lead_comment_multi":    {"# c\n\n# d\n---\n" + b + "\n# trailing\n", true},
+		"control_lead_comment_indented": {"  # indented c\n---\n" + b, true},
+		"control_sep_only":              {"---\n" + b, true},
+		"control_lead_blank":            {"\n\n---\n" + b, true},
+		"lead_empty_doc":                {"# c\n---\n", false},
+		"lead_key_before_sep":           {"x: 1\n---\n" + b, false},
+		"lead_doc_end_in_prefix":        {"# c\n...\n---\n" + b, false},
+		"lead_two_seps":                 {"# c\n---\n---\n" + b, false},
+		"lead_trailing_sep":             {"# c\n---\n" + b + "---\n", false},
+		"trailing_sep_no_lead":          {b + "---\n", false},
+		"lead_yaml_directive":           {"%YAML 1.2\n---\n" + b, false},
+		"lead_bom":                      {"\uFEFF# c\n---\n" + b, false},
+		"lead_crlf":                     {strings.ReplaceAll("# c\n---\n"+b, "\n", "\r\n"), false},
+		"lead_tab_comment":              {"# c\t\n---\n" + b, false},
+		"lead_sep_comment":              {"# c\n--- # t\n" + b, false},
+		"lead_sep_trailing_space":       {"# c\n---  \n" + b, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}, "packages/a": {"q": "1.0.0"}}, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"packages/b/package.json": manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			if tc.placed && (!ok || !slices.Equal(cfg.members, []string{"packages/a"}) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("%q places the region with members [packages/a]; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, ok, cfg, incomplete, cg.Partiality)
+			}
+			if !tc.placed && (ok || !incomplete || !runWide(cg)) {
+				t.Errorf("%q withholds; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
+			}
+		})
+	}
+}
+
 // TestInertDir_OwnGates pins inertDir's own manifest, hook and case checks directly, without the
 // install veto in play.
 func TestInertDir_OwnGates(t *testing.T) {

@@ -1650,6 +1650,118 @@ func TestSemantic_PnpmDotMember(t *testing.T) {
 	})
 }
 
+// TestSemantic_PnpmImporterCoversDeclared: a pnpm region is read only when each declaring
+// manifest's importer records every name it declares, with its specifier, in the field pnpm
+// installs it from. In every row p depends on q@1.0.0, so the lock pins q@1.0.0 for p; a manifest
+// that declares q@2.0.0 against an importer that omits it is one pnpm re-resolves on any install
+// that is not frozen, and the lane would otherwise place q at the copy pinned for p. Each shape
+// runs for a root-only project and for a workspace member.
+func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
+	type dep = pnpmImporterDep
+	pOnly := []dep{{"dependencies", "p", "1.0.0", "1.0.0"}}
+	for name, tc := range map[string]struct {
+		manifest string // the fields of the declaring package.json after name and version
+		imp      []dep
+		idle     bool                // the declaring project loads nothing
+		edit     func(string) string // applied to the lock text
+		placed   bool
+		reachesQ bool
+	}{
+		"control_exact": {
+			manifest: `"dependencies":{"p":"^1.0.0"},"devDependencies":{"q":"1.0.0"},"optionalDependencies":{"o":"~1.0.0"}`,
+			imp:      []dep{{"dependencies", "p", "^1.0.0", "1.0.0"}, {"devDependencies", "q", "1.0.0", "1.0.0"}, {"optionalDependencies", "o", "~1.0.0", "1.0.0"}},
+			placed:   true, reachesQ: true,
+		},
+		"control_no_deps": {manifest: `"description":"no dependencies"`, idle: true, placed: true},
+		"control_dependencies_over_dev": {
+			manifest: `"dependencies":{"p":"1.0.0","q":"1.0.0"},"devDependencies":{"q":"2.0.0"}`,
+			imp:      append(slices.Clone(pOnly), dep{"dependencies", "q", "1.0.0", "1.0.0"}),
+			placed:   true, reachesQ: true,
+		},
+		"control_optional_over_dependencies": {
+			manifest: `"dependencies":{"p":"1.0.0","q":"2.0.0"},"optionalDependencies":{"q":"1.0.0"}`,
+			imp:      append(slices.Clone(pOnly), dep{"optionalDependencies", "q", "1.0.0", "1.0.0"}),
+			placed:   true, reachesQ: true,
+		},
+		"control_peer_also_dev": {
+			manifest: `"dependencies":{"p":"1.0.0"},"devDependencies":{"q":"1.0.0"},"peerDependencies":{"q":"^1.0.0"}`,
+			imp:      append(slices.Clone(pOnly), dep{"devDependencies", "q", "1.0.0", "1.0.0"}),
+			placed:   true, reachesQ: true,
+		},
+		"missing_dependency":         {manifest: `"dependencies":{"p":"1.0.0","q":"2.0.0"}`, imp: pOnly},
+		"missing_devDependency":      {manifest: `"dependencies":{"p":"1.0.0"},"devDependencies":{"q":"2.0.0"}`, imp: pOnly},
+		"missing_optionalDependency": {manifest: `"dependencies":{"p":"1.0.0"},"optionalDependencies":{"q":"2.0.0"}`, imp: pOnly},
+		"missing_only_dependency":    {manifest: `"devDependencies":{"q":"2.0.0"}`},
+		"specifier_mismatch":         {manifest: `"dependencies":{"p":"^1.0.0"}`, imp: pOnly},
+		"field_mismatch": {
+			manifest: `"dependencies":{"p":"1.0.0"},"devDependencies":{"q":"1.0.0"}`,
+			imp:      append(slices.Clone(pOnly), dep{"dependencies", "q", "1.0.0", "1.0.0"}),
+		},
+		"specifier_absent": {
+			manifest: `"dependencies":{"p":""}`, imp: []dep{{"dependencies", "p", "", "1.0.0"}},
+			edit: func(s string) string { return strings.Replace(s, "        specifier: ''\n", "", 1) },
+		},
+		"bare_peer": {manifest: `"dependencies":{"p":"1.0.0"},"peerDependencies":{"q":"^2.0.0"}`, imp: pOnly},
+	} {
+		for _, member := range []string{"", "packages/m"} {
+			t.Run(name+"/"+cmp.Or(member, "root"), func(t *testing.T) {
+				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+				q, o := qPkg("1.0.0"), sp("o", "1.0.0", nil, nil)
+				code := "require('q').go();\nrequire('p').run();\n"
+				if tc.idle {
+					code = ""
+				}
+				declaring := `{"name":"app","version":"1.0.0",` + tc.manifest + `}`
+				importers := map[string][]dep{".": tc.imp}
+				files := map[string]string{"package.json": declaring, "index.js": code}
+				if member != "" {
+					importers = map[string][]dep{".": nil, member: tc.imp}
+					files = map[string]string{
+						"pnpm-workspace.yaml":    "packages:\n  - 'packages/*'\n",
+						"package.json":           `{"name":"root","version":"1.0.0","private":true}`,
+						"index.js":               "",
+						member + "/package.json": declaring,
+						member + "/index.js":     code,
+					}
+				}
+				lock := pnpmLockImporters(t, importers, p, q, o)
+				if tc.edit != nil {
+					if lock = tc.edit(lock); strings.Contains(lock, "specifier: ''") {
+						t.Fatal("edit left the specifier in place")
+					}
+				}
+				dir := semProgram(t, pnpmLockFile, lock, files)
+				cg := semRun(t, dir, semStore(t, p, q, o))
+				incomplete := buildDepLayout(context.Background(), dir).incomplete
+				if tc.placed && (incomplete || runWide(cg) || tc.reachesQ != reaches(cg, "q", "1.0.0")) {
+					t.Errorf("places the region; incomplete=%v reaches q@1.0.0=%v got %+v", incomplete, reaches(cg, "q", "1.0.0"), cg.Partiality)
+				}
+				if !tc.placed && (!incomplete || !runWide(cg)) {
+					t.Errorf("withholds; incomplete=%v reaches q@1.0.0=%v got %+v", incomplete, reaches(cg, "q", "1.0.0"), cg.Partiality)
+				}
+			})
+		}
+	}
+}
+
+// TestSemantic_PnpmImporterCovers54: a 5.4 lock keeps its specifiers apart from the resolved
+// entries, so a declared name the lock specifies but never resolves is missing from the importer.
+func TestSemantic_PnpmImporterCovers54(t *testing.T) {
+	p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+	q := qPkg("1.0.0")
+	lock := pnpmLockText(t, "5.4", map[string]map[string]string{".": {"p": "1.0.0"}}, p, q)
+	if lock = strings.Replace(lock, "specifiers:\n", "specifiers:\n  q: '1.0.0'\n", 1); !strings.Contains(lock, "  q: '1.0.0'\n") {
+		t.Fatal("specifier not added")
+	}
+	dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+		"package.json": manifestWith("app", map[string]string{"p": "1.0.0", "q": "1.0.0"}, ""),
+	})
+	cg := semRun(t, dir, semStore(t, p, q))
+	if !buildDepLayout(context.Background(), dir).incomplete || !runWide(cg) {
+		t.Errorf("q is specified but never resolved; the region must withhold, got %+v", cg.Partiality)
+	}
+}
+
 // TestReadPnpmConfig_OwnGates pins the pnpm reader's own hook and case checks directly, without
 // the install veto in play.
 func TestReadPnpmConfig_OwnGates(t *testing.T) {

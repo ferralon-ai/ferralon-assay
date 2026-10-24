@@ -83,6 +83,9 @@ type pnpmLock struct {
 	byKey   map[string]*depEntry
 	keys    []string
 	links   map[string]*depEntry
+	// specs holds each importer's recorded specifiers by build-relative directory, then field
+	// ("" for a 5.4 importer's specifiers map), then name: the shape specRecorded reads.
+	specs map[string]map[string]map[string]string
 }
 
 // addPnpm places the packages of the pnpm lock data at root (build-relative prefix) in a new
@@ -121,6 +124,7 @@ func readPnpm(prefix, root string, data []byte) (*depRegion, bool) {
 		region: newDepRegion(prefix), root: root, doc: doc,
 		version: doc.child("lockfileVersion").str(),
 		byKey:   map[string]*depEntry{}, links: map[string]*depEntry{},
+		specs: map[string]map[string]map[string]string{},
 	}
 	switch p.version {
 	case "5.4", "6.0", "9.0":
@@ -360,7 +364,12 @@ func (p *pnpmLock) importers() bool {
 		if _, _, ok := imp.mapping(); !ok {
 			return false
 		}
-		deps := map[string]*depEntry{}
+		deps, specs := map[string]*depEntry{}, map[string]map[string]string{}
+		if p.version == "5.4" {
+			if s, ok := imp.child("specifiers").scalars(); ok {
+				specs[""] = s
+			}
+		}
 		for _, g := range []string{"dependencies", "devDependencies", "optionalDependencies"} {
 			kids, keys, ok := imp.child(g).mapping()
 			if !ok {
@@ -370,6 +379,12 @@ func (p *pnpmLock) importers() bool {
 				v := kids[name].val
 				if p.version != "5.4" {
 					v = kids[name].child("version").str()
+					if s := kids[name].child("specifier"); s != nil {
+						if specs[g] == nil {
+							specs[g] = map[string]string{}
+						}
+						specs[g][name] = s.val
+					}
 				}
 				t, ok := p.target(name, v)
 				if !ok {
@@ -378,6 +393,7 @@ func (p *pnpmLock) importers() bool {
 				deps[name] = t
 			}
 		}
+		p.specs[joinRel(p.region.prefix, dir)] = specs
 		p.region.addImporter(joinRel(p.region.prefix, dir), deps)
 	}
 	return true
@@ -614,15 +630,65 @@ func (p *pnpmLock) checkConfig(cfg *pnpmConfig) bool {
 		return len(m.Dependencies)+len(m.DevDependencies)+len(m.OptionalDependencies) > 0
 	}
 	for dir, m := range cfg.manifests {
+		if barePeer(m) {
+			return false
+		}
 		if !declared(m) {
 			continue
 		}
 		at := joinRel(p.region.prefix, dir)
-		if imp := p.region.importerAt(at); imp == nil || imp.dir != at || len(imp.deps) == 0 {
+		if imp := p.region.importerAt(at); imp == nil || imp.dir != at || !importerCovers(imp, p.specs[at], m) {
 			return false
 		}
 	}
 	return true
+}
+
+// importerCovers reports whether imp records every dependency m declares, with m's specifier, in
+// the field pnpm installs it from. Otherwise the lock disagrees with the manifest: a frozen
+// install refuses, and any other install re-resolves the missing name, which the lane would place
+// at whatever copy the lock pins for someone else. pnpm takes a name declared in several fields
+// from optionalDependencies, then dependencies, then devDependencies, and records it only there.
+// The specifier comparison is the one lockCovers holds the versions op to.
+func importerCovers(imp *depImporter, specs map[string]map[string]string, m *invManifest) bool {
+	seen := map[string]bool{}
+	for _, f := range []struct {
+		field string
+		deps  map[string]string
+	}{
+		{"optionalDependencies", m.OptionalDependencies},
+		{"dependencies", m.Dependencies},
+		{"devDependencies", m.DevDependencies},
+	} {
+		for name, spec := range f.deps {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			if imp.deps[name] == nil || !specRecorded(specs, f.field, name, spec) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// barePeer reports whether m declares a peer dependency it does not also declare in a field
+// pnpm installs from. pnpm 8 and later install such a peer by default (auto-install-peers) and
+// pnpm 7 does not; the lane does not model which applies, so the configuration is not read.
+func barePeer(m *invManifest) bool {
+	for name := range m.PeerDependencies {
+		if _, ok := m.Dependencies[name]; ok {
+			continue
+		}
+		if _, ok := m.DevDependencies[name]; ok {
+			continue
+		}
+		if _, ok := m.OptionalDependencies[name]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // readPatch reads a patch file the configuration names, relative to the region root.

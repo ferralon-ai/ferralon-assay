@@ -285,7 +285,8 @@ func exactPath(root, rel string) (present, ok bool) {
 
 // memberManifest reports whether dir holds a regular file named exactly package.json. ok is
 // false when dir cannot be read, or holds a package.json that is not a regular file, a name
-// differing from package.json only in case, or a pnpmAltManifests file in any case.
+// differing from package.json only in case, or a pnpmAltManifests file or yarn.json (yarn
+// classic reads a member from either of its manifests) in any case.
 func memberManifest(dir string) (has, ok bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -298,7 +299,7 @@ func memberManifest(dir string) (has, ok bool) {
 				return false, false
 			}
 			has = true
-		case strings.EqualFold(n, "package.json"),
+		case strings.EqualFold(n, "package.json"), strings.EqualFold(n, "yarn.json"),
 			slices.ContainsFunc(pnpmAltManifests, func(f string) bool { return strings.EqualFold(f, n) }):
 			return false, false
 		}

@@ -92,6 +92,10 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 	if !exactCase(root, "package.json", ".yarnrc", ".npmrc") {
 		return nil, false
 	}
+	// yarn classic merges a root yarn.json into the root manifest; the lane doesn't read it.
+	if found, err := entryFold(root, "yarn.json"); found || err != nil {
+		return nil, false
+	}
 	rootData, ok := readOptional(filepath.Join(root, "package.json"))
 	if !ok {
 		return nil, false

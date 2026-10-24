@@ -1411,6 +1411,7 @@ func TestSemantic_WorkspaceGlobs(t *testing.T) {
 		"literal_case":         pkgA("Packages/a"),
 		"dot_directory":        {globs: []string{"packages/*"}, member: "packages/.a"},
 		"manifest_case":        {globs: []string{"packages/*"}, member: "packages/a", manifest: "Package.json"},
+		"yarn_json_member":     {globs: []string{"packages/*"}, member: "packages/a", manifest: "yarn.json"},
 		"node_modules_entry":   {globs: []string{"packages/*"}, member: "packages/a", extra: "packages/node_modules/x/package.json"},
 		"bower_entry":          {globs: []string{"packages/*"}, member: "packages/a", extra: "packages/bower_components/x/package.json"},
 	}
@@ -1469,6 +1470,11 @@ func TestReadPnpmConfig_OwnGates(t *testing.T) {
 		"npmrc_case":        {map[string]string{".NPMRC": "registry=https://npm.acme.dev/\n"}, false},
 		"package_yaml_case": {map[string]string{"Package.yaml": "name: app\n"}, false},
 		"workspace_case":    {map[string]string{"Pnpm-Workspace.yaml": "packages: []\n"}, false},
+		"workspace_list":    {map[string]string{"pnpm-workspace.yaml": "packages: []\n"}, true},
+		"workspace_blank":   {map[string]string{"pnpm-workspace.yaml": "\n"}, false},
+		"workspace_empty":   {map[string]string{"pnpm-workspace.yaml": ""}, false},
+		"workspace_comment": {map[string]string{"pnpm-workspace.yaml": "# members are listed below\n"}, false},
+		"workspace_null":    {map[string]string{"pnpm-workspace.yaml": "packages:\n"}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tc.files["package.json"] = `{"name":"app","private":true}`
@@ -1573,6 +1579,8 @@ func TestWorkspaceMembers(t *testing.T) {
 		"manifest_not_file":   {globs: []string{"packages/*"}, files: map[string]string{"packages/a/package.json/x": ""}},
 		"alt_manifest":        {globs: []string{"packages/*"}, files: map[string]string{"packages/a/package.yaml": "name: a\n"}},
 		"alt_manifest_case":   {globs: []string{"packages/a"}, files: map[string]string{"packages/a/Package.json5": "{}"}},
+		"yarn_json":           {globs: []string{"packages/*"}, files: map[string]string{"packages/a/yarn.json": manifest}},
+		"yarn_json_beside":    {globs: []string{"packages/a"}, files: map[string]string{"packages/a/package.json": manifest, "packages/a/Yarn.json": manifest}},
 		"node_modules_entry":  {globs: []string{"packages/*"}, files: map[string]string{"packages/node_modules/x/index.js": ""}},
 		"bower_entry":         {globs: []string{"packages/*"}, files: map[string]string{"packages/Bower_Components/x/index.js": ""}},
 		"symlink_member":      {globs: []string{"packages/*"}, files: map[string]string{"real/package.json": manifest, "packages/a/package.json": manifest}, symlink: [2]string{"packages/b", "real"}},
@@ -1603,7 +1611,8 @@ func TestWorkspaceMembers(t *testing.T) {
 
 // TestSemantic_YarnRootCase: a yarn classic root's .yarnrc, .npmrc or package.json named in
 // another case withholds (yarn reads it under its usual name on a case-insensitive
-// filesystem), as does a root .npmrc key outside outerNpmrcKeys.
+// filesystem), as does a root .npmrc key outside outerNpmrcKeys, and a root yarn.json in any
+// case (yarn merges it into the root manifest; the lane doesn't read it).
 func TestSemantic_YarnRootCase(t *testing.T) {
 	for name, files := range map[string]map[string]string{
 		"control":        {".yarnrc": "registry \"https://npm.acme.dev/\"\n"},
@@ -1612,6 +1621,8 @@ func TestSemantic_YarnRootCase(t *testing.T) {
 		"npmrc_case":     {".NPMRC": "registry=https://npm.acme.dev/\n"},
 		"npmrc_unknown":  {".npmrc": "ignore-scripts=false\n"},
 		"npmrc_hoisting": {".npmrc": "legacy-peer-deps=true\n"},
+		"yarn_json":      {"yarn.json": `{"name":"app"}`},
+		"yarn_json_case": {"Yarn.json": `{"name":"app"}`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := qPkg("1.0.0")
@@ -1624,7 +1635,7 @@ func TestSemantic_YarnRootCase(t *testing.T) {
 				t.Errorf("an allowlisted .yarnrc or .npmrc resolves q@1.0.0; got %+v", cg.Partiality)
 			}
 			if !control && (!incomplete || !runWide(cg)) {
-				t.Errorf("a root config named in another case, or an .npmrc key off the allowlist, withholds; got %+v", cg.Partiality)
+				t.Errorf("a root config named in another case, an .npmrc key off the allowlist, or a yarn.json withholds; got %+v", cg.Partiality)
 			}
 		})
 	}

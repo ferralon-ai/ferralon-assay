@@ -448,6 +448,11 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 				return nil, false
 			}
 		}
+		// pnpm 8 and 9 read a workspace file with no keys as absent and take every package in
+		// the tree as a member; pnpm 10 and later take the root alone.
+		if len(y.keys) == 0 {
+			return nil, false
+		}
 		for _, k := range y.keys {
 			if !pnpmWorkspaceKeys[k] {
 				return nil, false
@@ -463,8 +468,8 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			return nil, false
 		}
 		if n := y.child("packages"); n != nil {
-			if len(n.kids) > 0 || n.val != "" && n.val != "[]" {
-				return nil, false
+			if len(n.kids) > 0 || n.val != "" && n.val != "[]" || n.val == "" && len(n.items) == 0 {
+				return nil, false // a null packages errors on pnpm 8 and 9 and is root-only on 10+
 			}
 			globs = n.items
 		}

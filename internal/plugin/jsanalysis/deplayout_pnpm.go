@@ -39,6 +39,12 @@ var pnpmWorkspaceKeys = map[string]bool{
 	"packages": true, "catalog": true, "catalogs": true, "savePrefix": true, "updateNotifier": true,
 	"ignoreScripts": true, "minimumReleaseAge": true, "verifyDepsBeforeRun": true,
 	"onlyBuiltDependencies": true, "ignoredBuiltDependencies": true, "neverBuiltDependencies": true,
+	// allowBuilds (pnpm 10 and later) only decides which dependency scripts run, or refuses the
+	// install; it never changes the layout. Its values are not read, which is sound only because
+	// the lane already treats every script as one that runs: a pnpm entry left unread is
+	// scriptsUnknown and a read one with an install script is installScript, and either
+	// withholds run-wide (callGraphWithDeps). A value that stops a script only narrows that.
+	"allowBuilds":     true,
 	"strictDepBuilds": true, "nodeLinker": true, "hoist": true, "hoistPattern": true,
 	"publicHoistPattern": true, "shamefullyHoist": true, "hoistWorkspacePackages": true,
 	"virtualStoreDir": true, "virtualStoreDirMaxLength": true, "modulesDir": true,
@@ -466,6 +472,9 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			}
 		}
 		if wsOverrides, ok = y.child("overrides").scalars(); !ok {
+			return nil, false
+		}
+		if _, ok = y.child("allowBuilds").scalars(); !ok {
 			return nil, false
 		}
 		if wsPatches, ok = y.child("patchedDependencies").scalars(); !ok {

@@ -634,6 +634,62 @@ func TestSemantic_G9PnpmConfigHazards(t *testing.T) {
 	}
 }
 
+// TestSemantic_PnpmAllowBuilds: an allowBuilds block mapping of scalars in pnpm-workspace.yaml
+// is accepted with its values unread, and a value that stops a script never stops the script
+// from withholding. Any other shape, and allowBuilds in package.json, withholds. Each tree holds
+// packages/b, unlisted, declaring a dependency the lock installs nothing for.
+func TestSemantic_PnpmAllowBuilds(t *testing.T) {
+	const pkgs = "packages:\n  - packages/a\n"
+	const postinstall = `{"name":"q","version":"1.0.0","main":"index.js","scripts":{"postinstall":"x"}}`
+	for name, tc := range map[string]struct {
+		ws       string
+		manifest string
+		qScript  bool
+		placed   bool
+	}{
+		"control_mixed":         {ws: pkgs + "allowBuilds:\n  esbuild: true\n  '@scarf/scarf': false\n", placed: true},
+		"script_without_key":    {ws: pkgs, qScript: true},
+		"false_still_escalates": {ws: pkgs + "allowBuilds:\n  q: false\n", qScript: true},
+		"list":                  {ws: pkgs + "allowBuilds:\n  - esbuild\n"},
+		"nested":                {ws: pkgs + "allowBuilds:\n  esbuild:\n    x: 1\n"},
+		"flow_map":              {ws: pkgs + "allowBuilds: {esbuild: true}\n"},
+		"scalar":                {ws: pkgs + "allowBuilds: true\n"},
+		"manifest_allow_builds": {ws: pkgs, manifest: `,"pnpm":{"allowBuilds":{"esbuild":true}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			if tc.qScript {
+				q.files["package.json"] = postinstall
+			}
+			lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}, "packages/a": {"q": "1.0.0"}}, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"package.json":            manifestWith("app", map[string]string{"p": "1.0.0"}, tc.manifest),
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"packages/b/package.json": manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			switch {
+			case tc.placed:
+				if !ok || !slices.Equal(cfg.members, []string{"packages/a"}) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0") {
+					t.Errorf("%q places the region with members [packages/a]; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, ok, cfg, incomplete, cg.Partiality)
+				}
+			case tc.qScript:
+				if !ok || incomplete || !runWide(cg) || !reaches(cg, "q", "1.0.0") {
+					t.Errorf("%q places the region and q's install script withholds run-wide; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
+				}
+			default:
+				if ok || !incomplete || !runWide(cg) {
+					t.Errorf("%q with manifest %q withholds; ok=%v incomplete=%v got %+v", tc.ws, tc.manifest, ok, incomplete, cg.Partiality)
+				}
+			}
+		})
+	}
+}
+
 // TestSemantic_G10PnpmRequiresBuildAbsent: a lock that records no requiresBuild leaves an
 // unread package run-wide.
 func TestSemantic_G10PnpmRequiresBuildAbsent(t *testing.T) {

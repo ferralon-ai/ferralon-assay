@@ -733,6 +733,48 @@ func TestSemantic_G11UnknownOrUnreadableConfig(t *testing.T) {
 	}
 }
 
+// TestSemantic_PnpmBlockExoticSubdeps: blockExoticSubdeps set to true or false, plain or quoted,
+// places the region with the members it lists; any other value withholds. Each tree holds
+// packages/b, unlisted, declaring a dependency the lock installs nothing for.
+func TestSemantic_PnpmBlockExoticSubdeps(t *testing.T) {
+	const pkgs = "packages:\n  - packages/a\n"
+	for name, tc := range map[string]struct {
+		ws     string
+		placed bool
+	}{
+		"control_true":   {pkgs + "blockExoticSubdeps: true\n", true},
+		"control_false":  {pkgs + "blockExoticSubdeps: false\n", true},
+		"control_quoted": {pkgs + "blockExoticSubdeps: 'false'\n", true},
+		"yes":            {pkgs + "blockExoticSubdeps: yes\n", false},
+		"capitalized":    {pkgs + "blockExoticSubdeps: True\n", false},
+		"one":            {pkgs + "blockExoticSubdeps: 1\n", false},
+		"list":           {pkgs + "blockExoticSubdeps:\n  - true\n", false},
+		"flow_list":      {pkgs + "blockExoticSubdeps: [true]\n", false},
+		"mapping":        {pkgs + "blockExoticSubdeps:\n  x: true\n", false},
+		"empty":          {pkgs + "blockExoticSubdeps:\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}, "packages/a": {"q": "1.0.0"}}, p, q)
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"pnpm-workspace.yaml":     tc.ws,
+				"packages/a/package.json": manifestWith("a", map[string]string{"q": "1.0.0"}, ""),
+				"packages/b/package.json": manifestWith("b", map[string]string{"absent-package": "1.0.0"}, ""),
+			})
+			cfg, ok := readPnpmConfig(dir)
+			cg := semRun(t, dir, semStore(t, p, q))
+			incomplete := buildDepLayout(context.Background(), dir).incomplete
+			if tc.placed && (!ok || !slices.Equal(cfg.members, []string{"packages/a"}) || incomplete || runWide(cg) || !reaches(cg, "q", "1.0.0")) {
+				t.Errorf("%q places the region with members [packages/a]; ok=%v cfg=%+v incomplete=%v got %+v", tc.ws, ok, cfg, incomplete, cg.Partiality)
+			}
+			if !tc.placed && (ok || !incomplete || !runWide(cg)) {
+				t.Errorf("%q withholds; ok=%v incomplete=%v got %+v", tc.ws, ok, incomplete, cg.Partiality)
+			}
+		})
+	}
+}
+
 // TestSemantic_G12PnpmExcludeLinks: a lock that leaves links out withholds.
 func TestSemantic_G12PnpmExcludeLinks(t *testing.T) {
 	cg := pnpmVariant(t, func(s string) string {

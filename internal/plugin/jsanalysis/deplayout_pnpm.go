@@ -51,6 +51,11 @@ var pnpmWorkspaceKeys = map[string]bool{
 	"packageImportMethod": true, "dedupePeerDependents": true, "autoInstallPeers": true,
 	"resolvePeersFromWorkspaceRoot": true, "dedupeDirectDeps": true, "overrides": true,
 	"patchedDependencies": true,
+
+	// blockExoticSubdeps (pnpm 10 and later) makes pnpm refuse an install that would resolve a
+	// dependency's dependency from git or a URL; it never changes the layout pnpm installs. Only
+	// the literal true or false is accepted.
+	"blockExoticSubdeps": true,
 }
 
 // inRegionModules reports whether a virtualStoreDir or modulesDir setting keeps every directory
@@ -468,6 +473,9 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 				return nil, false
 			}
 			if (k == "virtualStoreDir" || k == "modulesDir") && !inRegionModules(k, y.child(k).val) {
+				return nil, false
+			}
+			if v := y.child(k).val; k == "blockExoticSubdeps" && v != "true" && v != "false" {
 				return nil, false
 			}
 		}

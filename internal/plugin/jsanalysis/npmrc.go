@@ -12,6 +12,7 @@ type npmrcEntry struct {
 	val    string
 	hasVal bool // false for a line with no "="; ini reads the value as true
 	array  bool // the key ended in "[]"; ini collects the values into an array
+	opaque bool // the value is not one the lane can read as text (a quoted non-string, a bad JSON string); val is the raw text
 }
 
 // parseNpmrc reads data the way npm's ini package does (decode and unsafe in ini/lib/ini.js; pnpm
@@ -21,9 +22,11 @@ type npmrcEntry struct {
 // "[section]" header is read as an ordinary line, so its settings are still returned although
 // ini files them under the section; the caller can only withhold more.
 //
-// ok is false when a key or value is one the lane cannot read the way ini would: a quoted string
-// that is not a JSON string, a key that keeps "${" (environment substitution) or "\" after
-// unsafe, and a value that unsafe turns into something other than text.
+// ok is false when a key is one the lane cannot read the way ini would: a quoted string that is
+// not a JSON string, or a key that keeps "${" (environment substitution) or "\" after unsafe,
+// unless npmrcKeyCarved exempts it. A value unsafe turns into something other than text sets
+// opaque on its entry instead: a value decode cannot change the key, so the caller withholds
+// only when the key is one it models.
 func parseNpmrc(data []byte) ([]npmrcEntry, bool) {
 	var out []npmrcEntry
 	for _, line := range strings.FieldsFunc(string(data), func(r rune) bool { return r == '\n' || r == '\r' }) {
@@ -42,17 +45,43 @@ func parseNpmrc(data []byte) ([]npmrcEntry, bool) {
 		if len(key) > 2 && strings.HasSuffix(key, "[]") {
 			e.key, e.array = key[:len(key)-2], true
 		}
-		if strings.Contains(e.key, "${") || strings.Contains(e.key, `\`) {
+		if (strings.Contains(e.key, "${") || strings.Contains(e.key, `\`)) && !npmrcKeyCarved(rawKey) {
 			return nil, false
 		}
 		if hasVal {
 			if e.val, ok = iniUnsafe(rawVal); !ok {
-				return nil, false
+				e.opaque = true
+				e.val = strings.TrimFunc(rawVal, isJSSpace)
 			}
 		}
 		out = append(out, e)
 	}
 	return out, true
+}
+
+// npmrcKeyCarved reports whether a raw .npmrc key, after the BOM and surrounding space, begins
+// with "//" (a registry's credentials, //${HOST}/:_authToken) or "@" (a scoped registry,
+// @${SCOPE}:registry). pnpm expands ${...} in a key only after it cuts the line at the first "="
+// and unquotes only a key that starts with a quote, so the resolved key keeps its first
+// characters, and no pnpm 10 or 11 setting name starts with "/" or "@". The rule is literal: a
+// quoted "//${X}" is not carved. Both parseNpmrc and npmrcKeyIndirect use it.
+func npmrcKeyCarved(rawKey string) bool {
+	k := strings.TrimFunc(rawKey, isJSSpace)
+	return strings.HasPrefix(k, "//") || strings.HasPrefix(k, "@")
+}
+
+// npmrcFold is the key fold pnpm 10 applies to a workspace project's .npmrc (readLocalConfig runs
+// camelcase-keys over it): the key lowercases and "-", "_", "." and space are one separator, so
+// virtualStoreDir, VIRTUAL_STORE_DIR, "virtual store dir" and "-virtual-store-dir" all name
+// virtual-store-dir. Folding every key, whether or not it sits in a workspace member, only
+// over-approximates.
+func npmrcFold(key string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '-' || r == '_' || r == '.' || r == ' ' {
+			return -1
+		}
+		return r
+	}, strings.ToLower(key))
 }
 
 // iniUnsafe is ini's unsafe: trim, then either unquote a quoted string through JSON.parse or

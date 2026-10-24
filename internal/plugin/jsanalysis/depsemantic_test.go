@@ -1332,13 +1332,50 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 			})
 		}
 	}
+	// pnpm 10 runs a workspace project's .npmrc through camelcase-keys: the key lowercases and
+	// "-", "_", "." and space are one separator. Checked against pnpm 10.34.8 with
+	// shared-workspace-lockfile=false in a workspace whose member has its own .npmrc.
+	for _, spelled := range map[string][]string{
+		"virtual-store-dir": {"virtualStoreDir", "VIRTUAL_STORE_DIR", "virtual.store.dir", "virtual store dir", "-virtual-store-dir", "Virtual-Store-Dir"},
+		"modules-dir":       {"modulesDir", "modules_dir", "MODULES-DIR", "modules.dir", "modules dir", "-modules-dir"},
+		"pnpmfile":          {"PNPMFILE", "Pnpmfile", "-pnpmfile"},
+		"global-pnpmfile":   {"globalPnpmfile", "GLOBAL_PNPMFILE", "global.pnpmfile", "global pnpmfile"},
+	} {
+		for _, k := range spelled {
+			t.Run("npmrc_folded_"+k, func(t *testing.T) {
+				dir, store := pnpmWeb(false, map[string]string{"web/.npmrc": k + "=../x\n"})
+				if !buildDepLayout(context.Background(), dir).incomplete || !runWide(semRun(t, dir, store)) {
+					t.Errorf("%q folds to a setting outside the region and withholds", k)
+				}
+				if _, ok := readPnpmConfig(filepath.Join(dir, "web")); ok {
+					t.Errorf("%q: readPnpmConfig reads a config pnpm folds to a moved layout", k)
+				}
+			})
+		}
+	}
+	// A modelled key whose value ini turns into something other than text withholds; the same
+	// value on an unmodelled key does not touch the layout.
+	for name, line := range map[string]string{
+		"virtual_store_sq_number": `virtual-store-dir='5'`,
+		"modules_dir_sq_array":    `modules-dir='["x"]'`,
+		"folded_virtual_store":    `virtualStoreDir='5'`,
+		"modules_dir_bad_json":    `modules-dir="a\q"`,
+	} {
+		t.Run("npmrc_opaque_"+name, func(t *testing.T) {
+			dir, store := pnpmWeb(false, map[string]string{"web/.npmrc": line + "\n"})
+			if _, ok := readPnpmConfig(filepath.Join(dir, "web")); ok {
+				t.Errorf("%q: readPnpmConfig reads a modelled key it cannot decode", line)
+			}
+			if !buildDepLayout(context.Background(), dir).incomplete || !runWide(semRun(t, dir, store)) {
+				t.Errorf("%q withholds", line)
+			}
+		})
+	}
 	// A line ini cannot read the way the lane would withholds, whatever key it names.
 	for name, line := range map[string]string{
 		"key_not_json":    `"bad\q"=1`,
 		"key_env":         `${K}=1`,
 		"key_backslash":   `a\b=1`,
-		"value_not_text":  `fetch-retries='1'`,
-		"value_not_json":  `fetch-timeout="a\q"`,
 		"array_in_region": `virtual-store-dir[]=node_modules/.vs`,
 	} {
 		t.Run("npmrc_unreadable_"+name, func(t *testing.T) {
@@ -1363,6 +1400,12 @@ func TestSemantic_G18NestedPhantom(t *testing.T) {
 		"unterminated_key":    "\"registry=https://registry.example.test/\n",
 		"bom_comment_line":    "\ufeff; modules-dir=../x\n",
 		"nel_is_not_space":    "\u0085modules-dir=../x\n",
+		"value_not_text":      "fetch-retries='1'\n",
+		"value_not_json":      "fetch-timeout=\"a\\q\"\n",
+		"strict_ssl_quoted":   "strict-ssl='false'\n",
+		"fetch_retries_sq":    "fetch-retries='5'\n",
+		"cafile_windows_path": "cafile=\"C:\\certs\\ca.pem\"\n",
+		"carve_registry_key":  "//${REG}/:_authToken=${T}\n@${S}:registry=https://r/\n",
 	} {
 		t.Run("npmrc_control_"+name, func(t *testing.T) {
 			dir, _ := pnpmWeb(false, map[string]string{"web/.npmrc": rc})
@@ -2031,6 +2074,17 @@ func TestSemantic_YarnRootCase(t *testing.T) {
 
 // TestNpmrcIni pins parseNpmrc to what ini's decode and unsafe return, as pnpm 10's own reader
 // does for the same bytes.
+func TestNpmrcFold(t *testing.T) {
+	for in, want := range map[string]string{
+		"virtualStoreDir": "virtualstoredir", "VIRTUAL_STORE_DIR": "virtualstoredir", "virtual.store.dir": "virtualstoredir",
+		"virtual store dir": "virtualstoredir", "-virtual-store-dir": "virtualstoredir", "MODULES-DIR": "modulesdir", "registry": "registry",
+	} {
+		if got := npmrcFold(in); got != want {
+			t.Errorf("npmrcFold(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNpmrcIni(t *testing.T) {
 	for _, tc := range []struct {
 		name, in string
@@ -2051,8 +2105,12 @@ func TestNpmrcIni(t *testing.T) {
 		{"quoted_value_keeps_semicolon", `a="x;y"`, []npmrcEntry{{key: "a", val: "x;y", hasVal: true}}, true},
 		{"single_quoted_value", `a='x y'`, []npmrcEntry{{key: "a", val: "x y", hasVal: true}}, true},
 		{"single_quoted_json_string", `a='"x"'`, []npmrcEntry{{key: "a", val: "x", hasVal: true}}, true},
-		{"single_quoted_number", `a='1'`, nil, false},
-		{"double_quoted_not_json", `a="x\q"`, nil, false},
+		{"single_quoted_number", `a='1'`, []npmrcEntry{{key: "a", val: "'1'", hasVal: true, opaque: true}}, true},
+		{"double_quoted_not_json", `a="x\q"`, []npmrcEntry{{key: "a", val: `"x\q"`, hasVal: true, opaque: true}}, true},
+		{"carved_registry_key", `//${H}/:_authToken=${T}`, []npmrcEntry{{key: "//${H}/:_authToken", val: "${T}", hasVal: true}}, true},
+		{"carved_scope_key", `@${S}:registry=x`, []npmrcEntry{{key: "@${S}:registry", val: "x", hasVal: true}}, true},
+		{"quoted_carve_not_exempt", `"//${H}/:_authToken"=x`, nil, false},
+		{"lone_slash_not_exempt", `/${H}=x`, nil, false},
 		{"lone_quote_key", `"=b`, nil, false},
 		{"quote_not_closed_is_text", `"a=b`, []npmrcEntry{{key: `"a`, val: "b", hasVal: true}}, true},
 		{"array_key", "a[]=b", []npmrcEntry{{key: "a", val: "b", hasVal: true, array: true}}, true},
@@ -2087,6 +2145,43 @@ func TestNpmrcIni(t *testing.T) {
 			}
 			if _, ok := jsCandidate(".npmrc", []byte(tc.in)); ok != (tc.want || strings.Contains(tc.in, "pnpmfile")) {
 				t.Errorf("jsCandidate(.npmrc, %q) = %v", tc.in, ok)
+			}
+		})
+	}
+}
+
+// TestSemantic_PnpmAncestorConfig: with shared-workspace-lockfile=false pnpm builds a member
+// lock's install options from the workspace root's .npmrc and pnpm-workspace.yaml before it
+// overlays the member's own .npmrc (pnpm 10.34.8: a root virtual-store-dir=../vsx put member
+// packages/a's store at packages/vsx). readPnpmConfig reads only the region root, so an ancestor
+// that is not inert (inertDir) has to withhold the region.
+func TestSemantic_PnpmAncestorConfig(t *testing.T) {
+	o := sp("o", "1.0.0", nil, map[string]string{"index.js": qGo})
+	imp := map[string]string{"o": "1.0.0"}
+	for name, tc := range map[string]struct {
+		extra      map[string]string
+		incomplete bool
+	}{
+		"root_npmrc_virtual_store":   {map[string]string{".npmrc": "virtual-store-dir=../vsx\nshared-workspace-lockfile=false\n", "pnpm-workspace.yaml": "packages:\n  - packages/*\n"}, true},
+		"root_npmrc_folded_key":      {map[string]string{".npmrc": "virtualStoreDir=../vsx\nshared-workspace-lockfile=false\n", "pnpm-workspace.yaml": "packages:\n  - packages/*\n"}, true},
+		"root_workspace_yaml_store":  {map[string]string{"pnpm-workspace.yaml": "packages:\n  - packages/*\nvirtualStoreDir: ../vsx\nsharedWorkspaceLockfile: false\n"}, true},
+		"root_workspace_yaml_only":   {map[string]string{"pnpm-workspace.yaml": "packages:\n  - packages/*\n"}, true},
+		"root_npmrc_registry_only":   {map[string]string{".npmrc": "registry=https://registry.example.test/\n//${H}/:_authToken=${T}\n"}, false},
+		"root_npmrc_value_opaque":    {map[string]string{".npmrc": "strict-ssl='false'\n"}, false},
+		"root_npmrc_nonregistry_key": {map[string]string{".npmrc": "node-linker=hoisted\n"}, true},
+		"no_root_config":             {nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{
+				"package.json":               `{"name":"r","version":"1.0.0"}`,
+				"packages/a/package.json":    manifestWith("a", imp, ""),
+				"packages/a/index.js":        `require("o");`,
+				"packages/a/" + pnpmLockFile: pnpmLockText(t, "9.0", map[string]map[string]string{".": imp}, o),
+			}
+			maps.Copy(files, tc.extra)
+			dir := writeProgram(t, files)
+			if got := buildDepLayout(context.Background(), dir).incomplete; got != tc.incomplete {
+				t.Errorf("incomplete = %v, want %v", got, tc.incomplete)
 			}
 		})
 	}

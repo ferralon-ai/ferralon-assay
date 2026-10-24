@@ -410,12 +410,17 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		return nil, false
 	}
 	for _, e := range entries {
-		switch e.key {
-		case "pnpmfile", "global-pnpmfile":
+		// pnpm 10 folds a workspace project's .npmrc keys (npmrcFold); fold every key.
+		switch npmrcFold(e.key) {
+		case "pnpmfile", "globalpnpmfile":
 			return nil, false
-		case "virtual-store-dir", "modules-dir":
+		case "virtualstoredir", "modulesdir":
+			name := "virtual-store-dir"
+			if npmrcFold(e.key) == "modulesdir" {
+				name = "modules-dir"
+			}
 			// A quote left in the value is part of the path to pnpm, which inRegionModules would trim.
-			if e.array || strings.ContainsAny(e.val, `"'`) || !inRegionModules(e.key, e.val) {
+			if e.opaque || e.array || strings.ContainsAny(e.val, `"'`) || !inRegionModules(name, e.val) {
 				return nil, false
 			}
 		}

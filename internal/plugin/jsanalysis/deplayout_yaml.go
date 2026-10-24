@@ -18,12 +18,13 @@ type ynode struct {
 var errYAMLSubset = errors.New("jsanalysis: yaml outside the subset pnpm writes")
 
 // mapping returns n's entries as a mapping: its block entries, or none for an empty flow map or
-// an absent node. ok is false for a scalar, a sequence or a non-empty flow map.
+// an absent node. ok is false for a scalar, a quoted one included, a sequence or a non-empty flow
+// map.
 func (n *ynode) mapping() (map[string]*ynode, []string, bool) {
 	switch {
 	case n == nil:
 		return nil, nil, true
-	case len(n.items) > 0:
+	case len(n.items) > 0 || n.quoted:
 		return nil, nil, false
 	case n.val == "" || n.val == "{}":
 		return n.kids, n.keys, true

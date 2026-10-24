@@ -5,6 +5,7 @@ import (
 	"maps"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -390,11 +391,16 @@ func (p *pnpmLock) importers() bool {
 			meta: imp.child("dependenciesMeta"), publishDir: imp.child("publishDirectory"),
 		}
 		if p.version == "5.4" {
-			s, ok := imp.child("specifiers").scalars()
+			kids, keys, ok := imp.child("specifiers").mapping()
 			if !ok {
 				return false
 			}
-			maps.Copy(rec.specifiers, s)
+			for _, name := range keys {
+				if !yamlPlainString(kids[name]) {
+					return false
+				}
+				rec.specifiers[name] = kids[name].val
+			}
 		}
 		deps := map[string]*depEntry{}
 		for _, g := range pnpmDepFields {
@@ -411,6 +417,9 @@ func (p *pnpmLock) importers() bool {
 				if p.version != "5.4" {
 					v = kids[name].child("version").str()
 					if s := kids[name].child("specifier"); s != nil {
+						if !yamlPlainString(s) {
+							return false // pnpm reads it as a number, boolean or null, which equals no specifier
+						}
 						rec.specifiers[name] = s.val
 					}
 				}
@@ -796,7 +805,7 @@ func pnpmPublishDirEqual(lock *ynode, publishConfig json.RawMessage) bool {
 // not read.
 func pnpmMetaEqual(lock *ynode, manifest json.RawMessage) bool {
 	got := map[string]string{}
-	if lock != nil && !(lock.val == "" && len(lock.kids) == 0) {
+	if lock != nil {
 		kids, keys, ok := lock.mapping()
 		if !ok {
 			return false
@@ -858,6 +867,27 @@ func yamlString(n *ynode) bool {
 	}
 	c := v[0]
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c == '/' || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../")
+}
+
+// yamlTypedPlain matches the plain scalars a YAML 1.2 core loader (or a 1.1 one) reads as an
+// integer or a float.
+var yamlTypedPlain = regexp.MustCompile(`^(?:[-+]?(?:[0-9][0-9_]*(?:\.[0-9_]*)?|\.[0-9_]+)(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)|0x[0-9a-fA-F_]+|0o?[0-7_]+|0b[01_]+)$`)
+
+// yamlPlainString reports whether n is a scalar a YAML loader reads as a string: quoted, or plain
+// text that is not null, a boolean or a number. pnpm quotes any specifier that would read
+// otherwise, so only a hand-written lock fails.
+func yamlPlainString(n *ynode) bool {
+	if len(n.kids) > 0 || len(n.items) > 0 {
+		return false
+	}
+	if n.quoted {
+		return true
+	}
+	switch strings.ToLower(n.val) {
+	case "", "null", "~", "true", "false", "yes", "no", "on", "off", "y", "n":
+		return false
+	}
+	return !strings.ContainsAny(n.val[:1], "{[") && !yamlTypedPlain.MatchString(n.val)
 }
 
 // barePeer reports whether m declares a peer dependency it does not also declare in a field

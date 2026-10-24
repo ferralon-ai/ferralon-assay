@@ -1832,6 +1832,10 @@ func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 			manifest: `"dependencies":{"p":"1.0.0"}`, imp: append(slices.Clone(pOnly), dep{"dependencies", "q", "1.0.0", "1.0.0"}),
 			rootManifest: `"dependencies":{"q":"2.0.0"}`, rootImp: []dep{{"dependencies", "q", "2.0.0", "2.0.0"}},
 		},
+		"extra_name_no_specifier": {
+			manifest: `"dependencies":{"p":"1.0.0"}`, imp: append(slices.Clone(pOnly), dep{"dependencies", "q", "QSPEC", "2.0.0"}),
+			edit: func(s, _ string) string { return strings.Replace(s, "        specifier: 'QSPEC'\n", "", 1) },
+		},
 		"extra_name_no_deps": {manifest: `"description":"no dependencies"`, idle: true, imp: []dep{{"dependencies", "q", "1.0.0", "1.0.0"}}},
 		"duplicate_field": {
 			manifest: `"dependencies":{"p":"1.0.0","q":"1.0.0"}`,
@@ -1853,6 +1857,23 @@ func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 			manifest: `"dependencies":{"p":"1.0.0","q":""},"optionalDependencies":{"q":""}`,
 			imp:      append(slices.Clone(pOnly), dep{"optionalDependencies", "q", "", "1.0.0"}),
 		},
+		"duplicate_field_empty_specifiers": {
+			manifest: `"dependencies":{"p":"1.0.0","q":""},"optionalDependencies":{"q":""}`,
+			imp:      append(slices.Clone(pOnly), dep{"optionalDependencies", "q", "", "1.0.0"}, dep{"dependencies", "q", "", "2.0.0"}),
+		},
+		"specifier_yaml_float": {
+			manifest: `"dependencies":{"p":"1.0"}`, imp: []dep{{"dependencies", "p", "1.0", "1.0.0"}},
+			edit: func(s, _ string) string { return strings.Replace(s, "specifier: '1.0'", "specifier: 1.0", 1) },
+		},
+		"control_specifier_quoted_number": {
+			manifest: `"dependencies":{"p":"1.0"}`, imp: []dep{{"dependencies", "p", "1.0", "1.0.0"}},
+			placed: true, reachesQ: true,
+		},
+		"control_specifier_plain_string": {
+			manifest: `"dependencies":{"p":"^1.0.0"}`, imp: []dep{{"dependencies", "p", "^1.0.0", "1.0.0"}},
+			edit:   func(s, _ string) string { return strings.Replace(s, "specifier: '^1.0.0'", "specifier: ^1.0.0", 1) },
+			placed: true, reachesQ: true,
+		},
 		"injected_mismatch": {manifest: `"dependencies":{"p":"1.0.0"},"dependenciesMeta":{"p":{"injected":true}}`, imp: pOnly},
 		"injected_quoted": {
 			manifest: `"dependencies":{"p":"1.0.0"},"dependenciesMeta":{"p":{"injected":true}}`, imp: pOnly,
@@ -1863,6 +1884,19 @@ func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 			edit:   pnpmImporterLines("    dependenciesMeta:\n      p:\n        injected: true\n"),
 			placed: true, reachesQ: true,
 		},
+		"meta_quoted_empty": {
+			manifest: `"dependencies":{"p":"1.0.0"}`, imp: pOnly,
+			edit: pnpmImporterLines("    dependenciesMeta: ''\n"),
+		},
+		"meta_entry_quoted_map": {
+			manifest: `"dependencies":{"p":"1.0.0"},"dependenciesMeta":{"p":{}}`, imp: pOnly,
+			edit: pnpmImporterLines("    dependenciesMeta:\n      p: '{}'\n"),
+		},
+		"control_meta_empty": {
+			manifest: `"dependencies":{"p":"1.0.0"}`, imp: pOnly,
+			edit:   pnpmImporterLines("    dependenciesMeta: {}\n"),
+			placed: true, reachesQ: true,
+		},
 		"unknown_importer_key": {manifest: `"dependencies":{"p":"1.0.0"}`, imp: pOnly, edit: pnpmImporterLines("    futureField: x\n")},
 		"publish_directory_mismatch": {
 			manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"dist"}`, imp: pOnly,
@@ -1871,6 +1905,15 @@ func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 		"publish_directory_yaml_null": {
 			manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"null"}`, imp: pOnly,
 			edit: pnpmImporterLines("    publishDirectory: null\n"),
+		},
+		"publish_directory_yaml_bool": {
+			manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"true"}`, imp: pOnly,
+			edit: pnpmImporterLines("    publishDirectory: true\n"),
+		},
+		"control_publish_directory_quoted": {
+			manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"1.0"}`, imp: pOnly,
+			edit:   pnpmImporterLines("    publishDirectory: '1.0'\n"),
+			placed: true, reachesQ: true,
 		},
 		"publish_directory_unrecorded": {manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"dist"}`, imp: pOnly},
 		"control_publish_directory": {
@@ -1964,6 +2007,56 @@ func TestSemantic_PnpmImporterCovers54(t *testing.T) {
 	cg := semRun(t, dir, semStore(t, p, q))
 	if !buildDepLayout(context.Background(), dir).incomplete || !runWide(cg) {
 		t.Errorf("q is specified but never resolved; the region must withhold, got %+v", cg.Partiality)
+	}
+}
+
+// TestSemantic_PnpmSpecifierTyped54: a 5.4 specifier pnpm reads as a number is no specifier to
+// it, so the importer differs from the manifest; the quoted spelling is the control.
+func TestSemantic_PnpmSpecifierTyped54(t *testing.T) {
+	for name, tc := range map[string]struct {
+		spelling string
+		placed   bool
+	}{
+		"plain_float":    {"  p: 1.0\n", false},
+		"control_quoted": {"  p: '1.0'\n", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			lock := pnpmLockText(t, "5.4", map[string]map[string]string{".": {"p": "1.0.0"}}, p, q)
+			if lock = strings.Replace(lock, "specifiers:\n  'p': '1.0.0'\n", "specifiers:\n"+tc.spelling, 1); !strings.Contains(lock, tc.spelling) {
+				t.Fatal("specifier not rewritten")
+			}
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"package.json": manifestWith("app", map[string]string{"p": "1.0"}, ""),
+				"index.js":     "require('p').run();\n",
+			})
+			cg := semRun(t, dir, semStore(t, p, q))
+			if incomplete := buildDepLayout(context.Background(), dir).incomplete; incomplete == tc.placed || runWide(cg) == tc.placed {
+				t.Errorf("placed = %v, want %v; got %+v", !incomplete, tc.placed, cg.Partiality)
+			}
+		})
+	}
+}
+
+// TestYAMLPlainString pins which specifier scalars pnpm reads back as the string written.
+func TestYAMLPlainString(t *testing.T) {
+	for _, tc := range []struct {
+		val    string
+		quoted bool
+		want   bool
+	}{
+		{"^4.18.0", false, true}, {"1.0.0", false, true}, {"latest", false, true}, {"workspace:*", false, true},
+		{"1.0", true, true}, {"", true, true}, {"true", true, true},
+		{"1.0", false, false}, {"1", false, false}, {"-1", false, false}, {"1e3", false, false},
+		{".5", false, false}, {".inf", false, false}, {"-.Inf", false, false}, {".nan", false, false},
+		{"0x1F", false, false}, {"0o17", false, false}, {"017", false, false}, {"0b101", false, false},
+		{"true", false, false}, {"False", false, false}, {"yes", false, false}, {"null", false, false},
+		{"~", false, false}, {"", false, false}, {"{}", false, false}, {"[]", false, false},
+	} {
+		if got := yamlPlainString(&ynode{val: tc.val, quoted: tc.quoted}); got != tc.want {
+			t.Errorf("yamlPlainString(%q, quoted=%v) = %v, want %v", tc.val, tc.quoted, got, tc.want)
+		}
 	}
 }
 

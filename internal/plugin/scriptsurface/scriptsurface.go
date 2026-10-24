@@ -230,6 +230,7 @@ type Veto struct {
 	lineShell bool            // the command is on a line of shell text whose next lines are read too
 	running   []string        // the files a shell run or . is reading, innermost last
 	execs     map[string]bool // shellExecs, once walked
+	files     map[string]bool // the lowercased base names of every build file, from the same walk
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
@@ -896,20 +897,31 @@ const maxRunDepth = 4
 
 // expandedRunsShell reports whether the arguments of a program that expands, which may be a
 // wrapper or nothing at all, may hand a shell a file or text: a shell named anywhere among
-// them, or eval, source, or a . with a file after it, where the wrapped command starts. Those three are builtins, so
-// no program a wrapper runs can be one further along.
+// them, or eval, source, or a . given a file, where the wrapped command starts (after command
+// or builtin and their options). Those three are builtins, so no program a wrapper runs can be
+// one further along.
 func expandedRunsShell(args []string) bool {
 	if len(args) > 0 && (args[0] == "command" || args[0] == "builtin") {
 		args = args[1:]
+		for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			args = args[1:]
+		}
 	}
 	if len(args) > 0 {
-		switch w := trimShell(args[0]); w {
+		switch trimShell(args[0]) {
 		case "eval", "source":
 			return true
 		case ".":
-			// The program may expand to nothing, leaving a . that sources the word after it; a
-			// word that is a flag is an operand to the program instead.
-			if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+			// bash and dash refuse a . given an option other than --, and bash's -p takes a
+			// path ahead of the file; any other word after the . is the file it sources.
+			rest := args[1:]
+			if len(rest) > 0 && rest[0] == "--" {
+				rest = rest[1:]
+				if len(rest) > 0 {
+					return true
+				}
+			}
+			if len(rest) > 0 && (!strings.HasPrefix(rest[0], "-") || rest[0] == "-p") {
 				return true
 			}
 		}
@@ -919,6 +931,18 @@ func expandedRunsShell(args []string) bool {
 		b, _ := CommandName(trimShell(w))
 		return shells[a] || shells[b]
 	})
+}
+
+// expandedRunsFile returns an argument of a program that expands, which may be a shell, that
+// may name a file of the build: a literal word that may name a file the build holds from where
+// the command runs, and whose name a build file has.
+func (v *Veto) expandedRunsFile(args []string, cur cursor) (string, bool) {
+	for _, a := range args {
+		if a != "" && !strings.ContainsAny(a, "$`") && cur.present(a) && v.buildFileNamed(path.Base(a)) {
+			return a, true
+		}
+	}
+	return "", false
 }
 
 // command applies the rule to one simple command run from cur, and returns why it withholds,
@@ -1008,8 +1032,19 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	if all, _ := redirects(seg); len(all) > 0 {
 		// Seen through the assignments and wrappers ahead of it, as the program a shell runs is.
-		if prog, _, ok := unwrap(all); ok && len(prog) > 0 && strings.ContainsAny(prog[0], "$`") && expandedRunsShell(prog[1:]) {
-			return "shell run behind a program that expands: " + strings.Join(words, " ")
+		if prog, _, ok := unwrap(all); ok && len(prog) > 0 && strings.ContainsAny(prog[0], "$`") {
+			if expandedRunsShell(prog[1:]) {
+				return "shell run behind a program that expands: " + strings.Join(words, " ")
+			}
+			// The program may be a shell. $SHELL and $BASH are one, and are followed as sh.
+			if !shellVarRE.MatchString(prog[0]) {
+				if slices.ContainsFunc(prog[1:], func(w string) bool { return strings.ContainsAny(w, " \t\n") && lineRunsShell(w) }) {
+					return "shell text behind a program that expands: " + strings.Join(words, " ")
+				}
+				if f, ok := v.expandedRunsFile(prog[1:], cur); ok {
+					return "runs a file behind a program that expands: " + f + " in " + strings.Join(words, " ")
+				}
+			}
 		}
 	}
 	if why, ok := v.shellRun(seg, cur, depth); ok {

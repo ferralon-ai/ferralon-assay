@@ -740,12 +740,13 @@ func (v *Veto) shellExecs() map[string]bool {
 	if v.execs != nil {
 		return v.execs
 	}
-	v.execs = map[string]bool{}
+	v.execs, v.files = map[string]bool{}, map[string]bool{}
 	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
 		if err != nil || e.D == nil || e.D.IsDir() || v.inGitDir(e.Path) {
 			return nil
 		}
 		name := strings.ToLower(e.D.Name())
+		v.files[name] = true
 		if e.Symlink {
 			v.execs[name] = true
 			return nil
@@ -764,20 +765,30 @@ func (v *Veto) shellExecs() map[string]bool {
 	return v.execs
 }
 
-// mayExec reports whether base, a file name that may be a glob, names a file of the build a
-// shell would run by path; a pattern this cannot match may name any.
-func (v *Veto) mayExec(base string) bool {
-	base = strings.ToLower(base)
-	execs := v.shellExecs()
+// buildFileNamed reports whether base, a file name that may be a glob, names any file of the
+// build; a pattern this cannot match may name any.
+func (v *Veto) buildFileNamed(base string) bool {
+	v.shellExecs()
+	return nameIn(strings.ToLower(base), v.files)
+}
+
+// nameIn reports whether base, lowercased and possibly a glob, matches a name in names.
+func nameIn(base string, names map[string]bool) bool {
 	if !strings.ContainsAny(base, "*?[\\") {
-		return execs[base]
+		return names[base]
 	}
-	for name := range execs {
+	for name := range names {
 		if ok, err := path.Match(base, name); ok || err != nil {
 			return true
 		}
 	}
 	return false
+}
+
+// mayExec reports whether base, a file name that may be a glob, names a file of the build a
+// shell would run by path; a pattern this cannot match may name any.
+func (v *Veto) mayExec(base string) bool {
+	return nameIn(strings.ToLower(base), v.shellExecs())
 }
 
 // binary reports whether a file's head is an executable format the kernel runs itself, or
@@ -920,14 +931,16 @@ var (
 	sourceLineRE = regexp.MustCompile(`(?:^|[;&|()!{]|\b(?:then|do|else|elif|if|while|until|time|coproc))\s*\.\s+\S`)
 )
 
-// blankSubstClose returns line with each ) that closes a $( replaced by a blank.
+// blankSubstClose returns line with each ) that closes a $( replaced by a blank, unless the $(
+// stands where a command starts: that one may expand to nothing and leave what follows it to
+// start the command.
 func blankSubstClose(line string) string {
 	b := []byte(line)
-	var open []bool // for each ( still open, whether it began a $(
+	var open []bool // for each ( still open, whether its ) is blanked
 	for i, c := range b {
 		switch c {
 		case '(':
-			open = append(open, i > 0 && b[i-1] == '$')
+			open = append(open, i > 0 && b[i-1] == '$' && !atCommandStart(line[:i-1]))
 		case ')':
 			if n := len(open); n > 0 {
 				if open[n-1] {
@@ -939,6 +952,20 @@ func blankSubstClose(line string) string {
 	}
 	return string(b)
 }
+
+// atCommandStart reports whether a word following before starts a command: before ends, blanks
+// aside, at the start of the line, at an operator or ( ! {, or at a reserved word.
+func atCommandStart(before string) bool {
+	t := strings.TrimRight(before, " \t")
+	if t == "" || strings.ContainsRune(";&|(!{", rune(t[len(t)-1])) {
+		return true
+	}
+	f := strings.Fields(t)
+	return keywordStart[f[len(f)-1]]
+}
+
+// keywordStart are the reserved words a command may follow.
+var keywordStart = map[string]bool{"then": true, "do": true, "else": true, "elif": true, "if": true, "while": true, "until": true, "time": true, "coproc": true}
 
 // untokenised applies the rule to a line that does not tokenise: one naming a token, an
 // install verb after an expansion, or a shell run withholds, and the rest is mentioned.

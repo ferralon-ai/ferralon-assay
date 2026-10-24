@@ -247,9 +247,6 @@ func (p *pnpmLock) noMemberShadow(cfg *pnpmConfig) bool {
 	for _, rec := range p.imps {
 		for _, fields := range rec.fields {
 			for name, v := range fields {
-				if strings.HasPrefix(v, "link:") {
-					continue
-				}
 				v, _, _ = strings.Cut(v, "(")
 				for _, m := range cfg.manifests {
 					ver := m.Version

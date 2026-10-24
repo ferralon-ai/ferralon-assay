@@ -52,6 +52,13 @@ func TestPnpmNonFrozenManifestKeys(t *testing.T) {
 			"package.json": man(`,"pnpm":{"ignoredOptionalDependencies":["fsevents"]}`), "pnpm-lock.yaml": lock("ignoredOptionalDependencies:\n  - fsevents\n\n")}, true},
 		"ignored_optional_lock_only": {map[string]string{
 			"package.json": man(""), "pnpm-lock.yaml": lock("ignoredOptionalDependencies:\n  - fsevents\n\n")}, true},
+		// The lock does not record the setting: pnpm 10 re-resolves to apply it.
+		"overrides_manifest_unrecorded": {map[string]string{
+			"package.json": man(`,"pnpm":{"overrides":{"q":"2.0.0"}}`), "pnpm-lock.yaml": lock("")}, true},
+		"patched_manifest_unrecorded": {map[string]string{
+			"package.json": man(`,"pnpm":{"patchedDependencies":{"q@2.0.0":"patches/q.patch"}}`), "patches/q.patch": patch, "pnpm-lock.yaml": lock("")}, true},
+		"ignored_optional_manifest_unrecorded": {map[string]string{
+			"package.json": man(`,"pnpm":{"ignoredOptionalDependencies":["fsevents"]}`), "pnpm-lock.yaml": lock("")}, true},
 		// Controls: the workspace file is read by both versions; empty values set nothing.
 		"control_patched_workspace": {map[string]string{
 			"package.json": man(""), "pnpm-workspace.yaml": "patchedDependencies:\n  q@2.0.0: patches/q.patch\n", "patches/q.patch": patch, "pnpm-lock.yaml": patchedLock}, false},
@@ -194,6 +201,21 @@ func TestPnpmNonFrozenLocalDirectory(t *testing.T) {
 		f["pnpm-lock.yaml"] = strings.ReplaceAll(f["pnpm-lock.yaml"], "libs/x", "../x")
 		if !nonFrozenWithheld(t, f) {
 			t.Error("a directory outside the root must withhold")
+		}
+	})
+	t.Run("peer_dependency_in_lock_only", func(t *testing.T) {
+		f := tree(`{"name":"x","version":"1.0.0","dependencies":{"q":"1.0.0"}}`)
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "    version: 1.0.0\n\nsnapshots", "    version: 1.0.0\n    peerDependencies:\n      p: '1'\n\nsnapshots", 1)
+		if !nonFrozenWithheld(t, f) {
+			t.Error("a peer dependency the lock records but the manifest lacks must withhold")
+		}
+	})
+	t.Run("control_locked_version_with_peer_suffix", func(t *testing.T) {
+		f := tree(`{"name":"x","version":"1.0.0","dependencies":{"q":"1.0.0"}}`)
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "      q: 1.0.0", "      q: 1.0.0(r@1.0.0)", 1)
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "\n  q@1.0.0: {}", "\n  q@1.0.0(r@1.0.0): {}", 1)
+		if nonFrozenWithheld(t, f) {
+			t.Error("a locked version's peer suffix is not part of the version compared with the specifier")
 		}
 	})
 	t.Run("control_link_specifier_skipped", func(t *testing.T) {

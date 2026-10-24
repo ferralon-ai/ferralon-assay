@@ -671,6 +671,26 @@ func TestSemantic_PnpmGlobalVirtualStore(t *testing.T) {
 		// of the setting appears in the text.
 		{"hole-key-expansion", map[string]string{"web/.npmrc": "${GVS_KEY}=true\n" + sibling}, true},
 		{"hole-key-escape", map[string]string{"web/.npmrc": "\"enable-global-\\u0076irtual-store\"=true\n" + sibling}, true},
+		// pnpm splits lines on [\r\n]+, so a lone CR separates keys; the first = is in the registry
+		// line, which hides the later key from a split on \n alone.
+		{"hole-cr-only", map[string]string{"web/.npmrc": "registry=https://r/\r\"enable-global-virtual-store\"=true\rstore-dir=../tools/.pnpm-store\r"}, true},
+		{"hole-cr-only-expansion", map[string]string{"web/.npmrc": "registry=https://r/\r${GVS_KEY}=true\r"}, true},
+		{"hole-crlf", map[string]string{"web/.npmrc": "registry=https://r/\r\n${GVS_KEY}=true\r\n"}, true},
+		{"hole-cr-escape-after-crlf", map[string]string{"web/.npmrc": "registry=https://r/\r\n//host/:_authToken=${T}\r\"enable-global-\\u0076irtual-store\"=true\n"}, true},
+		{"ctl-cr-only", map[string]string{"web/.npmrc": "registry=https://r/\r" + sibling}, false},
+		// An indirect key whose raw text starts with // (registry credentials) or @ (a scoped
+		// registry) cannot resolve to a setting name: no pnpm 10 or 11 setting starts with / or @.
+		{"ctl-carve-registry-key", map[string]string{"web/.npmrc": "//${REG}/:_authToken=${T}\n" + sibling}, false},
+		{"ctl-carve-scope-key", map[string]string{"web/.npmrc": "@${S}:registry=https://r/\n" + sibling}, false},
+		{"ctl-carve-spaced", map[string]string{"web/.npmrc": "  //${REG}/:_authToken=${T}\n" + sibling}, false},
+		{"ctl-carve-escape-in-scope", map[string]string{"web/.npmrc": "@sc\\u006fpe:registry=https://r/\n" + sibling}, false},
+		// The carve-out is literal; each of these still withholds.
+		{"hole-carve-quoted", map[string]string{"web/.npmrc": "\"//${X}\"=true\n" + sibling}, true},
+		{"hole-carve-single-slash", map[string]string{"web/.npmrc": "/${GVS_KEY}=true\n" + sibling}, true},
+		{"hole-carve-late", map[string]string{"web/.npmrc": "${GVS_KEY}//=true\n" + sibling}, true},
+		{"hole-carve-after-carved-line", map[string]string{"web/.npmrc": "//${REG}/:_authToken=${T}\n${GVS_KEY}=true\n" + sibling}, true},
+		{"hole-carve-bom-lone-var", map[string]string{"web/.npmrc": "\xef\xbb\xbf${GVS_KEY}=true\n" + sibling}, true},
+
 		// A member directory's .npmrc: the region-root check never reads it.
 		{"hole-member-dir", map[string]string{"web/pnpm-workspace.yaml": "packages:\n  - packages/a\n", "web/packages/a/package.json": `{"name":"a","version":"1.0.0"}`,
 			"web/packages/a/.npmrc": "enable-global-virtual-store=true\n"}, true},

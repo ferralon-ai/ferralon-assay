@@ -61,10 +61,11 @@ func scriptSpec(root string, locks map[string]lockInfo) scriptsurface.Spec {
 	}
 }
 
-// laneEnvRE matches an npm_config_* (any case), YARN_*, or NPM_FLAGS/PNPM_FLAGS/BUN_FLAGS
-// (which Netlify passes to its own install) name that is not a $, ${ or attribute reference,
-// so is being set.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS)`)
+// laneEnvRE matches an npm_config_* or pnpm_config_* (any case), YARN_*, or
+// NPM_FLAGS/PNPM_FLAGS/BUN_FLAGS (which Netlify passes to its own install) name that is not a $,
+// ${ or attribute reference, so is being set. pnpm 11 reads PNPM_CONFIG_* in either case and an
+// explicit value survives CI, so it can move the store or the layout.
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:p?npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS)`)
 
 // laneSubsetConfigs are the npm configs that only choose which of the packages a lock
 // records get installed (devDependencies, optionalDependencies, peers), never what a package
@@ -80,7 +81,10 @@ var laneSubsetConfigs = map[string]map[string]bool{
 }
 
 // laneEnvKeeps reports whether name, which laneEnvRE matched, is npm_config_<config> (any case)
-// for one of laneSubsetConfigs.
+// for one of laneSubsetConfigs. A pnpm_config_ name is never kept, on purpose: the lane has not
+// established that pnpm 11 gives pnpm_config_production, _omit, _include or _only the subset-only
+// meaning npm gives them, so every pnpm_config_ name withholds. The prefix check below fails for
+// "pnpm_config_", which is what keeps it from being parsed as npm_config_.
 func laneEnvKeeps(name string) bool {
 	if len(name) < len("npm_config_") || !strings.EqualFold(name[:len("npm_config_")], "npm_config_") {
 		return false

@@ -138,6 +138,13 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"kept: NPM_CONFIG_LEGACY_PEER_DEPS", npm(map[string]string{"install.sh": "export NPM_CONFIG_LEGACY_PEER_DEPS=true\nnpm ci\n"}), false, ""},
 		{"kept: NPM_CONFIG_FORCE", npm(map[string]string{"install.sh": "export NPM_CONFIG_FORCE=true\nnpm ci\n"}), false, ""},
 		{"kept: npm_config_registry by Dockerfile ENV beside a subset config", npm(map[string]string{"Dockerfile": "FROM node:20\nENV npm_config_omit=dev npm_config_registry=https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
+		// pnpm 11 reads PNPM_CONFIG_* in either case, even under CI; none is a kept subset config.
+		{"PNPM_CONFIG exported in install.sh", npm(map[string]string{"install.sh": "export PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=true PNPM_CONFIG_STORE_DIR=../tools/.pnpm-store\nnpm ci\n"}), false, ""},
+		{"pnpm_config lower-case exported", npm(map[string]string{"install.sh": "export pnpm_config_enable_global_virtual_store=true\nnpm ci\n"}), false, ""},
+		{"PNPM_CONFIG in a workflow env", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE: true\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
+		{"pnpm_config mixed case exported", npm(map[string]string{"install.sh": "export Pnpm_Config_Enable_Global_Virtual_Store=true\nnpm ci\n"}), false, ""},
+		{"pnpm_config_omit is not a kept subset config", npm(map[string]string{"install.sh": "export pnpm_config_omit=dev\nnpm ci\n"}), false, ""},
+		{"PNPM_CONFIG_PRODUCTION is not a kept subset config", npm(map[string]string{"install.sh": "export PNPM_CONFIG_PRODUCTION=false\nnpm ci\n"}), false, ""},
 		{"kept: unknown NPM_CONFIG_ name", npm(map[string]string{"install.sh": "export NPM_CONFIG_SOMETHING_NEW=1\nnpm ci\n"}), false, ""},
 		{"kept: a name that starts with a subset config", npm(map[string]string{"install.sh": "export NPM_CONFIG_OMIT_LOCKFILE_REGISTRY_RESOLVED=true\nnpm ci\n"}), false, ""},
 		{"kept: YARN_PRODUCTION", npm(map[string]string{"install.sh": "export YARN_PRODUCTION=true\nnpm ci\n"}), false, ""},

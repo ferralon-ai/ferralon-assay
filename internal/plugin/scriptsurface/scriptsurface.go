@@ -478,6 +478,38 @@ func (v *Veto) mention(args []string) {
 	}
 }
 
+// gluedOutputs returns the text glued after an output flag in a curl or wget flag cluster
+// (-fsSLoFILE, -qOFILE), which no word names on its own. A cluster is not parsed: every o
+// (and O for wget) in it is taken as the flag, so a letter that is really part of another
+// flag's value (-dxoFILE) names a file too. That over-reads, and over-reading withholds. A
+// long option (--output=FILE) is read by mention, and a separate argument is a word.
+func gluedOutputs(words []string) []string {
+	var out []string
+	for i, w := range words {
+		name, _ := CommandName(w)
+		flags := ""
+		switch name {
+		case "curl":
+			flags = "o"
+		case "wget":
+			flags = "oO"
+		default:
+			continue
+		}
+		for _, a := range words[i+1:] {
+			if len(a) < 3 || a[0] != '-' || a[1] == '-' {
+				continue
+			}
+			for j := 1; j < len(a)-1; j++ {
+				if strings.IndexByte(flags, a[j]) >= 0 {
+					out = append(out, a[j+1:])
+				}
+			}
+		}
+	}
+	return out
+}
+
 // trimShell strips a leading redirect and shell punctuation from both ends of w: an opening
 // or closing bracket only when w does not close or open it, or parentheses wrapping the word.
 func trimShell(w string) string {
@@ -942,6 +974,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	if !v.segmentHasToken(words) {
 		v.mention(words[1:])
+		v.mention(gluedOutputs(words))
 		cur.other()
 		return ""
 	}

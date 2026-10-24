@@ -369,7 +369,7 @@ func (v *Veto) dockerfile(file, src string) string {
 			if v.hasToken(body) {
 				return "install command in a heredoc"
 			}
-			v.mentionFields(body)
+			v.mentionLine(body)
 			st.taintAll()
 			continue
 		}
@@ -415,7 +415,7 @@ func (v *Veto) dockerfile(file, src string) string {
 				if hasTok {
 					return "install command that does not tokenise"
 				}
-				v.mentionFields(rest)
+				v.mentionLine(rest)
 				if instr == "RUN" {
 					st.taintAll()
 				}

@@ -209,6 +209,7 @@ type Veto struct {
 	vetoed    map[string]bool
 	bound     map[string]bool // lowercased base names of files allowed commands bind to
 	mentioned map[string]bool // lowercased base names other commands take as arguments
+	raw       []string        // the lowercased text of those arguments, and of any line this could not split
 	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
 	triggered bool            // a surface's text may reach a sample hook (trigger)
 }
@@ -218,6 +219,7 @@ type Veto struct {
 type sampleRun struct {
 	why              string
 	bound, mentioned map[string]bool
+	raw              []string
 }
 
 // New returns a Veto for the build rooted at root. read is the lane walk's own fullyRead:
@@ -248,7 +250,20 @@ func (v *Veto) FullyRead(path string) bool {
 // allowed command binds to, so may rewrite it first. Call it after the walk.
 func (v *Veto) Rebound() bool {
 	for name := range v.bound {
-		if v.mentioned[name] {
+		if v.mentioned[name] || textNames(v.raw, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// textNames reports whether name occurs in any of the texts. A command may write a file by a
+// spelling no one parse of its arguments recovers (a glued flag value, a Windows /X:value, a
+// brace list, a remote spec host:file), so every occurrence of a bound name counts. That
+// reads a name inside a longer word too, which costs precision and never soundness.
+func textNames(texts []string, name string) bool {
+	for _, t := range texts {
+		if strings.Contains(t, name) {
 			return true
 		}
 	}
@@ -267,16 +282,17 @@ func (v *Veto) samplesLive() bool {
 	if len(v.samples) == 0 || !v.triggered && !v.treeReaches() {
 		return false
 	}
-	bound, mentioned := maps.Clone(v.bound), maps.Clone(v.mentioned)
+	bound, mentioned, raw := maps.Clone(v.bound), maps.Clone(v.mentioned), slices.Clone(v.raw)
 	for _, s := range v.samples {
 		if s.why != "" {
 			return true
 		}
 		maps.Copy(bound, s.bound)
 		maps.Copy(mentioned, s.mentioned)
+		raw = append(raw, s.raw...)
 	}
 	for name := range bound {
-		if mentioned[name] {
+		if mentioned[name] || textNames(raw, name) {
 			return true
 		}
 	}
@@ -462,38 +478,32 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
-// mentionFields records the base names of a line this could not split into commands. It
-// splits the line on blanks and on shell punctuation, so a command opened by ( or $( or
-// joined by ; or && is not hidden in the word before its arguments, and reads each field as
-// an argument.
-func (v *Veto) mentionFields(line string) {
-	v.mentionArgs(strings.FieldsFunc(line, func(r rune) bool {
-		return unicode.IsSpace(r) || strings.ContainsRune(";&|()`<>", r)
-	}))
+// mentionLine records a line this could not split into commands: its blank-split fields as
+// arguments, and its whole text, lowercased.
+func (v *Veto) mentionLine(line string) {
+	v.mention(strings.Fields(line))
+	v.record(line)
 }
 
-// mentionArgs records the base names of a command's arguments, and for each short-option
-// cluster (one dash, then a non-dash) the text after every character from the second on: a
-// value glued to its flag (-fsSLoFILE, -OutFile:FILE) names a file no word names on its own.
-// The command and its flags are not looked up, so any program's glued value is read. That
-// over-mentions, which withholds only when a suffix is a bound file's name.
-func (v *Veto) mentionArgs(args []string) {
-	v.mention(args)
-	for _, a := range args {
-		t := trimShell(a)
-		if len(t) < 2 || t[0] != '-' || t[1] == '-' {
-			continue
-		}
-		for i := 2; i < len(t); i++ {
-			v.mention([]string{t[i:]})
-		}
+// unquote removes every quote character and backslash, so a name the shell would join from
+// pieces (ins"t.lock", 'inst'.lock, inst\.lock) is whole.
+var unquote = strings.NewReplacer("'", "", "\"", "", "`", "", "\\", "")
+
+// record keeps the lowercased text of an argument or line, as written and with its quotes and
+// backslashes removed, for textNames.
+func (v *Veto) record(text string) {
+	t := strings.ToLower(text)
+	v.raw = append(v.raw, t)
+	if u := unquote.Replace(t); u != t {
+		v.raw = append(v.raw, u)
 	}
 }
 
 // mention records the base names of a command's arguments, a redirect's or an option's
-// target included.
+// target included, and each argument's text for textNames.
 func (v *Veto) mention(args []string) {
 	for _, w := range args {
+		v.record(w)
 		w = trimShell(w)
 		if i := strings.LastIndexByte(w, '='); i >= 0 {
 			w = trimShell(w[i+1:])
@@ -623,11 +633,11 @@ func (v *Veto) surface(path string, head []byte) (string, bool) {
 	if !v.sampleHook(path) {
 		return v.classify(s, path, head, true)
 	}
-	bound, mentioned := v.bound, v.mentioned
-	v.bound, v.mentioned = map[string]bool{}, map[string]bool{}
+	bound, mentioned, raw := v.bound, v.mentioned, v.raw
+	v.bound, v.mentioned, v.raw = map[string]bool{}, map[string]bool{}, nil
 	why, _ := v.classify(s, path, head, false)
-	v.samples = append(v.samples, sampleRun{why: why, bound: v.bound, mentioned: v.mentioned})
-	v.bound, v.mentioned = bound, mentioned
+	v.samples = append(v.samples, sampleRun{why: why, bound: v.bound, mentioned: v.mentioned, raw: v.raw})
+	v.bound, v.mentioned, v.raw = bound, mentioned, raw
 	return "", false
 }
 
@@ -693,7 +703,7 @@ func (v *Veto) opaque(src string) string {
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
 		}
-		v.mentionFields(line)
+		v.mentionLine(line)
 	}
 	return ""
 }
@@ -853,7 +863,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				if expandedInstallLine(line) {
 					return "install verb after an expansion that does not tokenise"
 				}
-				v.mentionFields(line)
+				v.mentionLine(line)
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {
@@ -969,7 +979,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mentionArgs(words[1:])
+		v.mention(words[1:])
 		cur.other()
 		return ""
 	}

@@ -672,10 +672,16 @@ func TestSemantic_G9PnpmConfigHazards(t *testing.T) {
 		edit  func(string) string
 		files map[string]string
 	}{
-		"pnpmfile_cjs":        {nil, map[string]string{".pnpmfile.cjs": "module.exports = {}\n"}},
-		"pnpmfile_mjs":        {nil, map[string]string{".pnpmfile.mjs": "export default {}\n"}},
-		"npmrc_pnpmfile":      {nil, map[string]string{".npmrc": "pnpmfile=hooks.cjs\n"}},
-		"npmrc_global":        {nil, map[string]string{".npmrc": "global-pnpmfile = /etc/hooks.cjs\n"}},
+		"pnpmfile_cjs":   {nil, map[string]string{".pnpmfile.cjs": "module.exports = {}\n"}},
+		"pnpmfile_mjs":   {nil, map[string]string{".pnpmfile.mjs": "export default {}\n"}},
+		"npmrc_pnpmfile": {nil, map[string]string{".npmrc": "pnpmfile=hooks.cjs\n"}},
+		"npmrc_global":   {nil, map[string]string{".npmrc": "global-pnpmfile = /etc/hooks.cjs\n"}},
+		// pnpm 10 moves every package into the global virtual store; see
+		// TestSemantic_PnpmGlobalVirtualStore. =false withholds too: the lane does not model
+		// which values pnpm reads as off.
+		"npmrc_gvs":           {nil, map[string]string{".npmrc": "enable-global-virtual-store=true\n"}},
+		"npmrc_gvs_quoted":    {nil, map[string]string{".npmrc": "\"enable-global-virtual-store\"=true\n"}},
+		"npmrc_gvs_false":     {nil, map[string]string{".npmrc": "enable-global-virtual-store=false\n"}},
 		"package_extensions":  {nil, map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"pnpm":{"packageExtensions":{"q":{"dependencies":{"x":"1"}}}}`)}},
 		"resolutions_field":   {nil, map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"resolutions":{"q":"1.0.0"}`)}},
 		"overrides_manifest":  {nil, map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"pnpm":{"overrides":{"q":"1.0.0"}}`)}},
@@ -685,6 +691,105 @@ func TestSemantic_G9PnpmConfigHazards(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if cg := pnpmVariant(t, tc.edit, tc.files); !runWide(cg) {
 				t.Errorf("must withhold; got %+v", cg.Partiality)
+			}
+		})
+	}
+}
+
+// TestSemantic_PnpmGlobalVirtualStore: pnpm 10 honours enable-global-virtual-store from .npmrc
+// outside CI and moves every package to <store>/links/..., so the phantom walk climbs the store's
+// ancestors and never reaches the region's hoist dir. With store-dir inside the checkout beside an
+// npm region, p's undeclared require("q") resolves into that region's copy, an edge the layout
+// does not model. Any .npmrc in the build that spells the setting withholds the layout, whatever
+// its value. Each tree is web/, a pnpm region, beside tools/, an npm region pinning q@2.0.0.
+func TestSemantic_PnpmGlobalVirtualStore(t *testing.T) {
+	const (
+		webLock = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      o:\n        specifier: 1.0.0\n        version: 1.0.0\n" +
+			"      p:\n        specifier: 1.0.0\n        version: 1.0.0\n  packages/a: {}\n\npackages:\n\n" +
+			"  o@1.0.0:\n    resolution: {integrity: sha512-AAAA}\n\n  p@1.0.0:\n    resolution: {integrity: sha512-BBBB}\n\n" +
+			"  q@1.0.0:\n    resolution: {integrity: sha512-CCCC}\n\nsnapshots:\n\n  o@1.0.0:\n    dependencies:\n      q: 1.0.0\n\n  p@1.0.0: {}\n\n  q@1.0.0: {}\n"
+		toolsLock = `{"name":"tools","lockfileVersion":3,"requires":true,"packages":{"":{"name":"tools","version":"1.0.0","dependencies":{"q":"2.0.0"}},` +
+			`"node_modules/q":{"version":"2.0.0","resolved":"https://registry.npmjs.org/q/-/q-2.0.0.tgz","integrity":"sha512-DDDD"}}}`
+		sibling = "store-dir=../tools/.pnpm-store\n"
+	)
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		// withheld is whether the layout is incomplete.
+		withheld bool
+	}{
+		// The killing rows: the setting is on and the store sits beside tools/.
+		{"hole", map[string]string{"web/.npmrc": "enable-global-virtual-store=true\n" + sibling}, true},
+		{"hole-quoted", map[string]string{"web/.npmrc": "\"enable-global-virtual-store\"=true\n" + sibling}, true},
+		{"hole-bracket", map[string]string{"web/.npmrc": "enable-global-virtual-store[]=true\n" + sibling}, true},
+		{"hole-bom", map[string]string{"web/.npmrc": "\xef\xbb\xbfenable-global-virtual-store=true\n" + sibling}, true},
+		// pnpm 10 expands ${K} and unescapes a quoted key before it matches the name, so no word
+		// of the setting appears in the text.
+		{"hole-key-expansion", map[string]string{"web/.npmrc": "${GVS_KEY}=true\n" + sibling}, true},
+		{"hole-key-escape", map[string]string{"web/.npmrc": "\"enable-global-\\u0076irtual-store\"=true\n" + sibling}, true},
+		// pnpm splits lines on [\r\n]+, so a lone CR separates keys; the first = is in the registry
+		// line, which hides the later key from a split on \n alone.
+		{"hole-cr-only", map[string]string{"web/.npmrc": "registry=https://r/\r\"enable-global-virtual-store\"=true\rstore-dir=../tools/.pnpm-store\r"}, true},
+		{"hole-cr-only-expansion", map[string]string{"web/.npmrc": "registry=https://r/\r${GVS_KEY}=true\r"}, true},
+		{"hole-crlf", map[string]string{"web/.npmrc": "registry=https://r/\r\n${GVS_KEY}=true\r\n"}, true},
+		{"hole-cr-escape-after-crlf", map[string]string{"web/.npmrc": "registry=https://r/\r\n//host/:_authToken=${T}\r\"enable-global-\\u0076irtual-store\"=true\n"}, true},
+		{"ctl-cr-only", map[string]string{"web/.npmrc": "registry=https://r/\r" + sibling}, false},
+		// An indirect key whose raw text starts with // (registry credentials) or @ (a scoped
+		// registry) cannot resolve to a setting name: no pnpm 10 or 11 setting starts with / or @.
+		{"ctl-carve-registry-key", map[string]string{"web/.npmrc": "//${REG}/:_authToken=${T}\n" + sibling}, false},
+		{"ctl-carve-scope-key", map[string]string{"web/.npmrc": "@${S}:registry=https://r/\n" + sibling}, false},
+		{"ctl-carve-spaced", map[string]string{"web/.npmrc": "  //${REG}/:_authToken=${T}\n" + sibling}, false},
+		{"ctl-carve-escape-in-scope", map[string]string{"web/.npmrc": "@sc\\u006fpe:registry=https://r/\n" + sibling}, false},
+		// The carve-out is literal; each of these still withholds.
+		{"hole-carve-quoted", map[string]string{"web/.npmrc": "\"//${X}\"=true\n" + sibling}, true},
+		{"hole-carve-single-slash", map[string]string{"web/.npmrc": "/${GVS_KEY}=true\n" + sibling}, true},
+		{"hole-carve-late", map[string]string{"web/.npmrc": "${GVS_KEY}//=true\n" + sibling}, true},
+		{"hole-carve-after-carved-line", map[string]string{"web/.npmrc": "//${REG}/:_authToken=${T}\n${GVS_KEY}=true\n" + sibling}, true},
+		{"hole-carve-bom-lone-var", map[string]string{"web/.npmrc": "\xef\xbb\xbf${GVS_KEY}=true\n" + sibling}, true},
+
+		// A member directory's .npmrc: the region-root check never reads it.
+		{"hole-member-dir", map[string]string{"web/pnpm-workspace.yaml": "packages:\n  - packages/a\n", "web/packages/a/package.json": `{"name":"a","version":"1.0.0"}`,
+			"web/packages/a/.npmrc": "enable-global-virtual-store=true\n"}, true},
+		// An ancestor's .npmrc already withholds on main: inertDir admits an outer directory's
+		// .npmrc only for outerNpmrcKeys. A guard against that allowlist growing the key.
+		{"ancestor-npmrc", map[string]string{".npmrc": "enable-global-virtual-store=true\n"}, true},
+		{"sibling-dir-npmrc", map[string]string{"other/.npmrc": "enable-global-virtual-store=true\n"}, true},
+
+		// Over-withholds, kept on purpose. ctl-false: pnpm treats only the literal false as off
+		// (a duplicate key, a [section] or CI change that too), and the lane does not model that.
+		// ctl-outstore: with the store outside the checkout the runtime only loses the edge, which
+		// costs precision, but the lane cannot tell where store-dir points.
+		{"ctl-false", map[string]string{"web/.npmrc": "enable-global-virtual-store=false\n"}, true},
+		{"ctl-outstore", map[string]string{"web/.npmrc": "enable-global-virtual-store=true\n"}, true},
+
+		// Controls that stay complete: the same store-dir without the setting, no .npmrc, and
+		// ${...} and backslashes in values, which the key check leaves alone.
+		{"ctl-nogvs", map[string]string{"web/.npmrc": sibling}, false},
+		{"ctl-no-npmrc", nil, false},
+		{"ctl-value-expansion", map[string]string{"web/.npmrc": "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\ncache=C:\\npm\n" + sibling}, false},
+
+		// Already withheld on main: the workspace-file route is gated by pnpmWorkspaceKeys, which
+		// holds neither enableGlobalVirtualStore nor storeDir. A guard against the allowlist
+		// growing them.
+		{"ws-region-root", map[string]string{"web/pnpm-workspace.yaml": "enableGlobalVirtualStore: true\nstoreDir: ../tools/.pnpm-store\n"}, true},
+		// A pnpm-workspace.yaml outside the region root is not read by that allowlist; the word
+		// GlobalVirtualStore withholds it (ws-ancestor already withholds on main through inertDir).
+		{"ws-ancestor", map[string]string{"pnpm-workspace.yaml": "enableGlobalVirtualStore: true\n"}, true},
+		{"ws-sibling-dir", map[string]string{"other/pnpm-workspace.yaml": "enableGlobalVirtualStore: true\n"}, true},
+		{"ws-member-dir", map[string]string{"web/pnpm-workspace.yaml": "packages:\n  - packages/a\n", "web/packages/a/package.json": `{"name":"a","version":"1.0.0"}`,
+			"web/packages/a/pnpm-workspace.yaml": "enableGlobalVirtualStore: true\n"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{
+				"web/package.json":        `{"name":"web","version":"1.0.0","private":true,"dependencies":{"p":"1.0.0","o":"1.0.0"}}`,
+				"web/pnpm-lock.yaml":      webLock,
+				"tools/package.json":      `{"name":"tools","version":"1.0.0","private":true,"dependencies":{"q":"2.0.0"}}`,
+				"tools/package-lock.json": toolsLock,
+			}
+			maps.Copy(files, tc.files)
+			l := buildDepLayout(context.Background(), writeProgram(t, files))
+			if l.incomplete != tc.withheld {
+				t.Errorf("layout incomplete = %v, want %v", l.incomplete, tc.withheld)
 			}
 		})
 	}

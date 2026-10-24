@@ -478,18 +478,11 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
-// mentionLine records a line this could not split into commands: its blank-split fields as
-// arguments, and its whole text, lowercased.
-func (v *Veto) mentionLine(line string) {
-	v.mention(strings.Fields(line))
-	v.record(line)
-}
-
 // unquote removes every quote character and backslash, so a name the shell would join from
 // pieces (ins"t.lock", 'inst'.lock, inst\.lock) is whole.
 var unquote = strings.NewReplacer("'", "", "\"", "", "`", "", "\\", "")
 
-// record keeps the lowercased text of an argument or line, as written and with its quotes and
+// record keeps the lowercased text of an argument, as written and with its quotes and
 // backslashes removed, for textNames.
 func (v *Veto) record(text string) {
 	t := strings.ToLower(text)
@@ -703,7 +696,7 @@ func (v *Veto) opaque(src string) string {
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
 		}
-		v.mentionLine(line)
+		v.mention(strings.Fields(line))
 	}
 	return ""
 }
@@ -863,7 +856,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				if expandedInstallLine(line) {
 					return "install verb after an expansion that does not tokenise"
 				}
-				v.mentionLine(line)
+				v.mention(strings.Fields(line))
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {

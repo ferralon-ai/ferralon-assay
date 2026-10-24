@@ -114,6 +114,9 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 package-lock spec drift", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": exLockV3}, false},
 		{"S1 yarn spec drift", map[string]string{"package.json": pkgJSONDrift, "yarn.lock": exYarnLock}, false},
 		{"S1 pnpm spec drift", map[string]string{"package.json": pkgJSONDrift, "pnpm-lock.yaml": exPnpmV9}, false},
+		// pnpm installs a name declared in two fields from the stronger (optional, then
+		// dependencies, then dev) and records it there alone.
+		{"S1 pnpm name also declared dev", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"devDependencies":{"left-pad":"^1.3.0","express":"^4.17.0"}}`, "pnpm-lock.yaml": exPnpmV9}, true},
 		// ferralon-ai/tracker#495: a v1 lock records no specs, so it covers its root project
 		// when each locked version satisfies the declared range, and nothing less.
 		{"#495 package-lock v1 whose versions satisfy every range", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, true},

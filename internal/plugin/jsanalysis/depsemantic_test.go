@@ -197,6 +197,23 @@ func pnpmLockImporters(t *testing.T, importers map[string][]pnpmImporterDep, pkg
 	return b.String() + "packages:\n\n" + rest
 }
 
+// semJoin returns fields as further members of a JSON object, or nothing.
+func semJoin(fields string) string {
+	if fields == "" {
+		return ""
+	}
+	return "," + fields
+}
+
+// pnpmImporterLines returns a lock edit adding lines at the head of importer dir's entry, as
+// pnpmLockImporters writes it.
+func pnpmImporterLines(lines string) func(lock, dir string) string {
+	return func(lock, dir string) string {
+		head := "  " + yq(dir) + ":\n"
+		return strings.Replace(lock, head, head+lines, 1)
+	}
+}
+
 // yarnLockText writes a yarn classic lock pinning pkgs.
 func yarnLockText(t *testing.T, pkgs ...*semPkg) string {
 	t.Helper()
@@ -1650,22 +1667,27 @@ func TestSemantic_PnpmDotMember(t *testing.T) {
 	})
 }
 
-// TestSemantic_PnpmImporterCoversDeclared: a pnpm region is read only when each declaring
-// manifest's importer records every name it declares, with its specifier, in the field pnpm
-// installs it from. In every row p depends on q@1.0.0, so the lock pins q@1.0.0 for p; a manifest
-// that declares q@2.0.0 against an importer that omits it is one pnpm re-resolves on any install
-// that is not frozen, and the lane would otherwise place q at the copy pinned for p. Each shape
-// runs for a root-only project and for a workspace member.
+// TestSemantic_PnpmImporterCoversDeclared: a pnpm region is read only when every importer is one
+// pnpm's satisfiesPackageManifest takes as up to date with its manifest: the same names in each
+// field after pnpm's precedence, the same specifiers, dependenciesMeta and publishDirectory, no
+// key the lane does not compare, and each locked version inside its range. In every row p
+// depends on q@1.0.0, so the lock pins q@1.0.0 for p; an importer that disagrees with its
+// manifest is one pnpm re-resolves on any install that is not frozen, and the lane would
+// otherwise place q at a copy the build does not install. Each shape runs for a root-only project
+// and for a workspace member; rootManifest and rootImp replace the root's in the member run.
 func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 	type dep = pnpmImporterDep
 	pOnly := []dep{{"dependencies", "p", "1.0.0", "1.0.0"}}
 	for name, tc := range map[string]struct {
 		manifest string // the fields of the declaring package.json after name and version
 		imp      []dep
-		idle     bool                // the declaring project loads nothing
-		edit     func(string) string // applied to the lock text
-		placed   bool
-		reachesQ bool
+		idle     bool                          // the declaring project loads nothing
+		edit     func(lock, dir string) string // applied to the lock text; dir is the importer's
+		// rootManifest and rootImp are the workspace root's fields and importer in the member run.
+		rootManifest string
+		rootImp      []dep
+		placed       bool
+		reachesQ     bool
 	}{
 		"control_exact": {
 			manifest: `"dependencies":{"p":"^1.0.0"},"devDependencies":{"q":"1.0.0"},"optionalDependencies":{"o":"~1.0.0"}`,
@@ -1699,14 +1721,65 @@ func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 		},
 		"specifier_absent": {
 			manifest: `"dependencies":{"p":""}`, imp: []dep{{"dependencies", "p", "", "1.0.0"}},
-			edit: func(s string) string { return strings.Replace(s, "        specifier: ''\n", "", 1) },
+			edit: func(s, _ string) string { return strings.Replace(s, "        specifier: ''\n", "", 1) },
 		},
-		"bare_peer": {manifest: `"dependencies":{"p":"1.0.0"},"peerDependencies":{"q":"^2.0.0"}`, imp: pOnly},
+		"extra_name": {
+			manifest: `"dependencies":{"p":"1.0.0"}`, imp: append(slices.Clone(pOnly), dep{"dependencies", "q", "1.0.0", "1.0.0"}),
+			rootManifest: `"dependencies":{"q":"2.0.0"}`, rootImp: []dep{{"dependencies", "q", "2.0.0", "2.0.0"}},
+		},
+		"extra_name_no_deps": {manifest: `"description":"no dependencies"`, idle: true, imp: []dep{{"dependencies", "q", "1.0.0", "1.0.0"}}},
+		"duplicate_field": {
+			manifest: `"dependencies":{"p":"1.0.0","q":"1.0.0"}`,
+			imp:      append(slices.Clone(pOnly), dep{"dependencies", "q", "1.0.0", "1.0.0"}, dep{"devDependencies", "q", "2.0.0", "2.0.0"}),
+		},
+		"duplicate_field_same_spec": {
+			manifest: `"dependencies":{"p":"1.0.0","q":"1.0.0"}`,
+			imp:      append(slices.Clone(pOnly), dep{"dependencies", "q", "1.0.0", "1.0.0"}, dep{"devDependencies", "q", "1.0.0", "1.0.0"}),
+		},
+		"fields_swapped": {
+			manifest: `"dependencies":{"p":"1.0.0"},"devDependencies":{"q":"1.0.0"}`,
+			imp:      []dep{{"dependencies", "q", "1.0.0", "1.0.0"}, {"devDependencies", "p", "1.0.0", "1.0.0"}},
+		},
+		"empty_dependency_claims_nothing": {
+			manifest: `"dependencies":{"p":"1.0.0","q":""},"devDependencies":{"q":"1.0.0"}`,
+			imp:      append(slices.Clone(pOnly), dep{"dependencies", "q", "", "1.0.0"}),
+		},
+		"empty_specifier_claims_nothing": {
+			manifest: `"dependencies":{"p":"1.0.0","q":""},"optionalDependencies":{"q":""}`,
+			imp:      append(slices.Clone(pOnly), dep{"optionalDependencies", "q", "", "1.0.0"}),
+		},
+		"injected_mismatch": {manifest: `"dependencies":{"p":"1.0.0"},"dependenciesMeta":{"p":{"injected":true}}`, imp: pOnly},
+		"injected_quoted": {
+			manifest: `"dependencies":{"p":"1.0.0"},"dependenciesMeta":{"p":{"injected":true}}`, imp: pOnly,
+			edit: pnpmImporterLines("    dependenciesMeta:\n      p:\n        injected: 'true'\n"),
+		},
+		"control_injected_equal": {
+			manifest: `"dependencies":{"p":"1.0.0"},"dependenciesMeta":{"p":{"injected":true}}`, imp: pOnly,
+			edit:   pnpmImporterLines("    dependenciesMeta:\n      p:\n        injected: true\n"),
+			placed: true, reachesQ: true,
+		},
+		"unknown_importer_key": {manifest: `"dependencies":{"p":"1.0.0"}`, imp: pOnly, edit: pnpmImporterLines("    futureField: x\n")},
+		"publish_directory_mismatch": {
+			manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"dist"}`, imp: pOnly,
+			edit: pnpmImporterLines("    publishDirectory: lib\n"),
+		},
+		"publish_directory_yaml_null": {
+			manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"null"}`, imp: pOnly,
+			edit: pnpmImporterLines("    publishDirectory: null\n"),
+		},
+		"publish_directory_unrecorded": {manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"dist"}`, imp: pOnly},
+		"control_publish_directory": {
+			manifest: `"dependencies":{"p":"1.0.0"},"publishConfig":{"directory":"dist"}`, imp: pOnly,
+			edit:   pnpmImporterLines("    publishDirectory: dist\n"),
+			placed: true, reachesQ: true,
+		},
+		"version_outside_range": {manifest: `"dependencies":{"p":"^2.0.0"}`, imp: []dep{{"dependencies", "p", "^2.0.0", "1.0.0"}}},
+		"bare_peer":             {manifest: `"dependencies":{"p":"1.0.0"},"peerDependencies":{"q":"^2.0.0"}`, imp: pOnly},
 	} {
 		for _, member := range []string{"", "packages/m"} {
 			t.Run(name+"/"+cmp.Or(member, "root"), func(t *testing.T) {
 				p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
-				q, o := qPkg("1.0.0"), sp("o", "1.0.0", nil, nil)
+				q, q2, o := qPkg("1.0.0"), qPkg("2.0.0"), sp("o", "1.0.0", nil, nil)
 				code := "require('q').go();\nrequire('p').run();\n"
 				if tc.idle {
 					code = ""
@@ -1715,23 +1788,29 @@ func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 				importers := map[string][]dep{".": tc.imp}
 				files := map[string]string{"package.json": declaring, "index.js": code}
 				if member != "" {
-					importers = map[string][]dep{".": nil, member: tc.imp}
+					importers = map[string][]dep{".": tc.rootImp, member: tc.imp}
 					files = map[string]string{
 						"pnpm-workspace.yaml":    "packages:\n  - 'packages/*'\n",
-						"package.json":           `{"name":"root","version":"1.0.0","private":true}`,
+						"package.json":           `{"name":"root","version":"1.0.0","private":true` + semJoin(tc.rootManifest) + `}`,
 						"index.js":               "",
 						member + "/package.json": declaring,
 						member + "/index.js":     code,
 					}
 				}
-				lock := pnpmLockImporters(t, importers, p, q, o)
+				pkgs := []*semPkg{p, q, o}
+				if slices.ContainsFunc(slices.Concat(importers["."], importers[member]), func(d dep) bool { return d.version == "2.0.0" }) {
+					pkgs = append(pkgs, q2) // a lock pinning q@2.0.0 records it, so the reader can place the importer
+				}
+				lock := pnpmLockImporters(t, importers, pkgs...)
 				if tc.edit != nil {
-					if lock = tc.edit(lock); strings.Contains(lock, "specifier: ''") {
-						t.Fatal("edit left the specifier in place")
+					edited := tc.edit(lock, cmp.Or(member, "."))
+					if edited == lock {
+						t.Fatal("edit changed nothing")
 					}
+					lock = edited
 				}
 				dir := semProgram(t, pnpmLockFile, lock, files)
-				cg := semRun(t, dir, semStore(t, p, q, o))
+				cg := semRun(t, dir, semStore(t, pkgs...))
 				incomplete := buildDepLayout(context.Background(), dir).incomplete
 				if tc.placed && (incomplete || runWide(cg) || tc.reachesQ != reaches(cg, "q", "1.0.0")) {
 					t.Errorf("places the region; incomplete=%v reaches q@1.0.0=%v got %+v", incomplete, reaches(cg, "q", "1.0.0"), cg.Partiality)
@@ -1740,6 +1819,27 @@ func TestSemantic_PnpmImporterCoversDeclared(t *testing.T) {
 					t.Errorf("withholds; incomplete=%v reaches q@1.0.0=%v got %+v", incomplete, reaches(cg, "q", "1.0.0"), cg.Partiality)
 				}
 			})
+		}
+	}
+}
+
+// TestPnpmVersionInRange: pnpm 10 and 11 reject an importer whose locked release version falls
+// outside its semver-range specifier. A version equal to its specifier, a prerelease included,
+// satisfies it; a form the lane does not model withholds.
+func TestPnpmVersionInRange(t *testing.T) {
+	for _, tc := range []struct {
+		version, spec string
+		want          bool
+	}{
+		{"1.2.0", "^1.0.0", true},
+		{"2.0.0", "^1.0.0", false},
+		{"0.1.0-rc2(supports-color@10.2.2)", "0.1.0-rc2", true},
+		{"0.1.0-rc3", "0.1.0-rc2", false},
+		{"link:../x", "workspace:*", true},
+		{"1.0.0", "latest", false},
+	} {
+		if got := pnpmVersionInRange(tc.version, tc.spec); got != tc.want {
+			t.Errorf("pnpmVersionInRange(%q, %q) = %v, want %v", tc.version, tc.spec, got, tc.want)
 		}
 	}
 }

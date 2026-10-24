@@ -8,21 +8,23 @@ import (
 // ynode is one node of the YAML subset pnpm writes: a scalar (val), a block mapping (kids, in
 // keys order) or a block sequence of scalars (items). A flow collection stays raw text in val.
 type ynode struct {
-	val   string
-	kids  map[string]*ynode
-	keys  []string
-	items []string
+	val    string
+	quoted bool // val was written as a quoted scalar, so it is a string whatever it spells
+	kids   map[string]*ynode
+	keys   []string
+	items  []string
 }
 
 var errYAMLSubset = errors.New("jsanalysis: yaml outside the subset pnpm writes")
 
 // mapping returns n's entries as a mapping: its block entries, or none for an empty flow map or
-// an absent node. ok is false for a scalar, a sequence or a non-empty flow map.
+// an absent node. ok is false for a scalar, a quoted one included, a sequence or a non-empty flow
+// map.
 func (n *ynode) mapping() (map[string]*ynode, []string, bool) {
 	switch {
 	case n == nil:
 		return nil, nil, true
-	case len(n.items) > 0:
+	case len(n.items) > 0 || n.quoted:
 		return nil, nil, false
 	case n.val == "" || n.val == "{}":
 		return n.kids, n.keys, true
@@ -145,7 +147,8 @@ func parseYAMLSubset(doc string) (*ynode, error) {
 		if _, dup := top.n.kids[key]; dup {
 			return nil, errYAMLSubset
 		}
-		c := &ynode{val: v}
+		r := strings.TrimSpace(rest)
+		c := &ynode{val: v, quoted: r != "" && (r[0] == '"' || r[0] == '\'')}
 		top.n.kids[key] = c
 		top.n.keys = append(top.n.keys, key)
 		if v == "" {

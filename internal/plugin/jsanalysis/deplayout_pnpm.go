@@ -5,6 +5,7 @@ import (
 	"maps"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -83,6 +84,22 @@ type pnpmLock struct {
 	byKey   map[string]*depEntry
 	keys    []string
 	links   map[string]*depEntry
+	imps    map[string]*pnpmLockImporter // by build-relative directory
+}
+
+// pnpmLockImporter is one importer as pnpm's lock-against-manifest check reads it.
+type pnpmLockImporter struct {
+	fields     map[string]map[string]string // field, then name, then the version as locked
+	specifiers map[string]string            // name to specifier, every field together
+	meta       *ynode                       // dependenciesMeta
+	publishDir *ynode                       // publishDirectory
+}
+
+// pnpmImporterKeys are the importer keys of the lock versions the lane reads (a 5.4 importer
+// also keeps specifiers). Any other key records something the lane does not compare.
+var pnpmImporterKeys = map[string]bool{
+	"dependencies": true, "devDependencies": true, "optionalDependencies": true,
+	"dependenciesMeta": true, "publishDirectory": true,
 }
 
 // addPnpm places the packages of the pnpm lock data at root (build-relative prefix) in a new
@@ -121,6 +138,7 @@ func readPnpm(prefix, root string, data []byte) (*depRegion, bool) {
 		region: newDepRegion(prefix), root: root, doc: doc,
 		version: doc.child("lockfileVersion").str(),
 		byKey:   map[string]*depEntry{}, links: map[string]*depEntry{},
+		imps: map[string]*pnpmLockImporter{},
 	}
 	switch p.version {
 	case "5.4", "6.0", "9.0":
@@ -357,27 +375,63 @@ func (p *pnpmLock) importers() bool {
 		if dir != "." && (path.IsAbs(dir) || slices.Contains(strings.Split(dir, "/"), "..") || strings.Contains(dir, `\`)) {
 			return false
 		}
-		if _, _, ok := imp.mapping(); !ok {
+		_, keys, ok := imp.mapping()
+		if !ok {
 			return false
 		}
-		deps := map[string]*depEntry{}
-		for _, g := range []string{"dependencies", "devDependencies", "optionalDependencies"} {
-			kids, keys, ok := imp.child(g).mapping()
+		if imp != p.doc {
+			for _, k := range keys {
+				if !pnpmImporterKeys[k] && (k != "specifiers" || p.version != "5.4") {
+					return false
+				}
+			}
+		}
+		rec := &pnpmLockImporter{
+			fields: map[string]map[string]string{}, specifiers: map[string]string{},
+			meta: imp.child("dependenciesMeta"), publishDir: imp.child("publishDirectory"),
+		}
+		if p.version == "5.4" {
+			kids, keys, ok := imp.child("specifiers").mapping()
 			if !ok {
 				return false
 			}
 			for _, name := range keys {
+				if !yamlPlainString(kids[name]) {
+					return false
+				}
+				rec.specifiers[name] = kids[name].val
+			}
+		}
+		deps := map[string]*depEntry{}
+		for _, g := range pnpmDepFields {
+			kids, keys, ok := imp.child(g).mapping()
+			if !ok {
+				return false
+			}
+			rec.fields[g] = map[string]string{}
+			for _, name := range keys {
+				if deps[name] != nil {
+					return false // pnpm records a name in one field only
+				}
 				v := kids[name].val
 				if p.version != "5.4" {
 					v = kids[name].child("version").str()
+					if s := kids[name].child("specifier"); s != nil {
+						if !yamlPlainString(s) {
+							return false // pnpm reads it as a number, boolean or null, which equals no specifier
+						}
+						rec.specifiers[name] = s.val
+					}
 				}
 				t, ok := p.target(name, v)
 				if !ok {
 					return false
 				}
+				rec.fields[g][name] = v
 				deps[name] = t
 			}
 		}
+		p.imps[joinRel(p.region.prefix, dir)] = rec
 		p.region.addImporter(joinRel(p.region.prefix, dir), deps)
 	}
 	return true
@@ -390,6 +444,14 @@ type pnpmConfig struct {
 	patches   map[string]string
 	members   []string
 	manifests map[string]*invManifest
+	extras    map[string]*pnpmManifestExtra
+}
+
+// pnpmManifestExtra holds the package.json keys pnpm compares with an importer beyond the
+// dependency fields.
+type pnpmManifestExtra struct {
+	DependenciesMeta json.RawMessage `json:"dependenciesMeta"`
+	PublishConfig    json.RawMessage `json:"publishConfig"`
 }
 
 // readPnpmConfig reads root's pnpm configuration. ok is false for any hook, setting or file
@@ -414,7 +476,7 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			return nil, false
 		}
 	}
-	cfg := &pnpmConfig{overrides: map[string]string{}, patches: map[string]string{}, manifests: map[string]*invManifest{}}
+	cfg := &pnpmConfig{overrides: map[string]string{}, patches: map[string]string{}, manifests: map[string]*invManifest{}, extras: map[string]*pnpmManifestExtra{}}
 
 	var data []byte
 	var man struct {
@@ -520,11 +582,11 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 		if !ok {
 			return nil, false
 		}
-		m := &invManifest{}
-		if data != nil && json.Unmarshal(data, m) != nil {
+		m, x := &invManifest{}, &pnpmManifestExtra{}
+		if data != nil && (json.Unmarshal(data, m) != nil || json.Unmarshal(data, x) != nil) {
 			return nil, false
 		}
-		cfg.manifests[dir] = m
+		cfg.manifests[dir], cfg.extras[dir] = m, x
 	}
 	return cfg, true
 }
@@ -610,19 +672,240 @@ func (p *pnpmLock) checkConfig(cfg *pnpmConfig) bool {
 		}
 	}
 
-	declared := func(m *invManifest) bool {
-		return len(m.Dependencies)+len(m.DevDependencies)+len(m.OptionalDependencies) > 0
-	}
 	for dir, m := range cfg.manifests {
-		if !declared(m) {
-			continue
+		if barePeer(m) {
+			return false
 		}
 		at := joinRel(p.region.prefix, dir)
-		if imp := p.region.importerAt(at); imp == nil || imp.dir != at || len(imp.deps) == 0 {
+		if imp := p.region.importerAt(at); imp == nil || imp.dir != at || !p.imps[at].satisfies(m, cfg.extras[dir]) {
 			return false
 		}
 	}
 	return true
+}
+
+// pnpmDepFields are the fields pnpm installs from, in the order it takes a name declared in
+// several: optionalDependencies, then dependencies, then devDependencies.
+var pnpmDepFields = []string{"optionalDependencies", "dependencies", "devDependencies"}
+
+// pnpmInstallFields returns the names and specifiers pnpm records under each field for a manifest
+// declaring optional, deps and dev. A name declared in several fields is recorded only in the
+// first of pnpmDepFields whose specifier is non-empty: pnpm tests the earlier fields by the
+// specifier's truthiness, so an empty one does not claim the name.
+func pnpmInstallFields(optional, deps, dev map[string]string) map[string]map[string]string {
+	out := map[string]map[string]string{"optionalDependencies": {}, "dependencies": {}, "devDependencies": {}}
+	maps.Copy(out["optionalDependencies"], optional)
+	for n, spec := range deps {
+		if optional[n] == "" {
+			out["dependencies"][n] = spec
+		}
+	}
+	for n, spec := range dev {
+		if optional[n] == "" && deps[n] == "" {
+			out["devDependencies"][n] = spec
+		}
+	}
+	return out
+}
+
+// satisfies reports whether pnpm takes r as up to date with the manifest m (and x): the check
+// satisfiesPackageManifest in pnpm's lockfile/lockfile-utils (pnpm 8) and lockfile/verification
+// (pnpm 9 to 11), at its strictest across those versions. Otherwise a frozen install refuses,
+// and any other install re-resolves from the manifest, so what the lock pins is not what the
+// build installs. Each clause is pnpm's:
+//
+//   - the specifiers, every field together, equal the manifest's (dev, then dependencies, then
+//     optional overriding), compared exactly (pnpm 11 also equates spellings of one git URL);
+//   - publishDirectory equals publishConfig.directory, both absent or the same string;
+//   - dependenciesMeta is equal, absent reading as empty;
+//   - each field holds exactly the names pnpmInstallFields assigns it (pnpm also compares each
+//     with its specifier, which the flat comparison already decides; it counts them, and with
+//     excludeLinksFromLockfile also accepts the count of non-linked entries; the lane does not);
+//   - each locked release version satisfies its specifier where the specifier is a semver range
+//     (pnpm 10 and 11).
+//
+// pnpm compares a peer only under auto-install-peers; barePeer withholds those manifests first.
+func (r *pnpmLockImporter) satisfies(m *invManifest, x *pnpmManifestExtra) bool {
+	if r == nil || x == nil {
+		return false
+	}
+	all := maps.Clone(m.DevDependencies)
+	if all == nil {
+		all = map[string]string{}
+	}
+	maps.Copy(all, m.Dependencies)
+	maps.Copy(all, m.OptionalDependencies)
+	if !maps.Equal(r.specifiers, all) {
+		return false
+	}
+	if !pnpmPublishDirEqual(r.publishDir, x.PublishConfig) {
+		return false
+	}
+	if !pnpmMetaEqual(r.meta, x.DependenciesMeta) {
+		return false
+	}
+	fields := pnpmInstallFields(m.OptionalDependencies, m.Dependencies, m.DevDependencies)
+	for _, f := range pnpmDepFields {
+		if len(r.fields[f]) != len(fields[f]) {
+			return false
+		}
+		for name, spec := range fields[f] {
+			v, ok := r.fields[f][name]
+			if !ok || !pnpmVersionInRange(v, spec) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// pnpmVersionInRange applies pnpm's broken-resolution clause: a locked version that is a semver
+// release must satisfy a specifier that is a semver range. A version carrying a peer suffix is
+// compared without it. A version or specifier with ':', '/' or '@' (link:, file:, workspace:,
+// npm:, git, an alias) is no semver, so pnpm skips it. A version equal to its specifier satisfies
+// it, a prerelease included. rangeSatisfied fails closed on any other form it does not model, a
+// dist-tag included, which pnpm would skip.
+func pnpmVersionInRange(version, spec string) bool {
+	version, _, _ = strings.Cut(version, "(")
+	if version == spec || strings.ContainsAny(version, ":/@") || strings.ContainsAny(spec, ":/") {
+		return true
+	}
+	return rangeSatisfied(version, spec)
+}
+
+// pnpmPublishDirEqual compares an importer's publishDirectory with a manifest's publishConfig.
+// Either side present must be a string; pnpm compares with !==, so null and absent differ.
+func pnpmPublishDirEqual(lock *ynode, publishConfig json.RawMessage) bool {
+	var lockDir *string
+	if lock != nil {
+		if !yamlString(lock) {
+			return false
+		}
+		lockDir = &lock.val
+	}
+	var manDir *string
+	if len(publishConfig) > 0 && string(publishConfig) != "null" {
+		var pc map[string]json.RawMessage
+		if json.Unmarshal(publishConfig, &pc) != nil || pc == nil {
+			return false
+		}
+		if d, ok := pc["directory"]; ok {
+			var s string
+			if json.Unmarshal(d, &s) != nil || string(d) == "null" {
+				return false
+			}
+			manDir = &s
+		}
+	}
+	return lockDir == nil && manDir == nil || lockDir != nil && manDir != nil && *lockDir == *manDir
+}
+
+// pnpmMetaEqual compares an importer's dependenciesMeta with a manifest's, each read as name to
+// injected ("true", "false", or "" for an empty object). Any other shape, or another key, is
+// not read.
+func pnpmMetaEqual(lock *ynode, manifest json.RawMessage) bool {
+	got := map[string]string{}
+	if lock != nil {
+		kids, keys, ok := lock.mapping()
+		if !ok {
+			return false
+		}
+		for _, name := range keys {
+			c := kids[name]
+			ck, ckeys, ok := c.mapping()
+			if !ok || len(ckeys) == 0 && c.val != "{}" || len(ckeys) > 1 {
+				return false
+			}
+			got[name] = ""
+			if len(ckeys) == 1 {
+				v := ck[ckeys[0]]
+				if ckeys[0] != "injected" || v.quoted || len(v.kids) > 0 || v.val != "true" && v.val != "false" {
+					return false
+				}
+				got[name] = v.val
+			}
+		}
+	}
+	want := map[string]string{}
+	if len(manifest) > 0 && string(manifest) != "null" {
+		var m map[string]map[string]json.RawMessage
+		if json.Unmarshal(manifest, &m) != nil {
+			return false
+		}
+		for name, o := range m {
+			if o == nil || len(o) > 1 {
+				return false
+			}
+			want[name] = ""
+			for k, v := range o {
+				if k != "injected" || string(v) != "true" && string(v) != "false" {
+					return false
+				}
+				want[name] = string(v)
+			}
+		}
+	}
+	return maps.Equal(got, want)
+}
+
+// yamlString reports whether n is a string scalar to a YAML loader: quoted, or plain text that
+// no schema reads as null, a boolean or a number. It fails closed on plain text it is unsure of.
+func yamlString(n *ynode) bool {
+	if len(n.kids) > 0 || len(n.items) > 0 {
+		return false
+	}
+	if n.quoted {
+		return true
+	}
+	v := n.val
+	if v == "" || strings.ContainsAny(v[:1], "{[") {
+		return false
+	}
+	switch strings.ToLower(v) {
+	case "null", "~", "true", "false", "yes", "no", "on", "off", "y", "n":
+		return false
+	}
+	c := v[0]
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c == '/' || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../")
+}
+
+// yamlTypedPlain matches the plain scalars a YAML 1.2 core loader (or a 1.1 one) reads as an
+// integer or a float.
+var yamlTypedPlain = regexp.MustCompile(`^(?:[-+]?(?:[0-9][0-9_]*(?:\.[0-9_]*)?|\.[0-9_]+)(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)|0x[0-9a-fA-F_]+|0o?[0-7_]+|0b[01_]+)$`)
+
+// yamlPlainString reports whether n is a scalar a YAML loader reads as a string: quoted, or plain
+// text that is not null, a boolean or a number. pnpm quotes any specifier that would read
+// otherwise, so only a hand-written lock fails.
+func yamlPlainString(n *ynode) bool {
+	if len(n.kids) > 0 || len(n.items) > 0 {
+		return false
+	}
+	if n.quoted {
+		return true
+	}
+	switch strings.ToLower(n.val) {
+	case "", "null", "~", "true", "false", "yes", "no", "on", "off", "y", "n":
+		return false
+	}
+	return !strings.ContainsAny(n.val[:1], "{[") && !yamlTypedPlain.MatchString(n.val)
+}
+
+// barePeer reports whether m declares a peer dependency it does not also declare in a field
+// pnpm installs from. pnpm 8 and later install such a peer by default (auto-install-peers) and
+// pnpm 7 does not; the lane does not model which applies, so the configuration is not read.
+func barePeer(m *invManifest) bool {
+	for name := range m.PeerDependencies {
+		if _, ok := m.Dependencies[name]; ok {
+			continue
+		}
+		if _, ok := m.DevDependencies[name]; ok {
+			continue
+		}
+		if _, ok := m.OptionalDependencies[name]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // readPatch reads a patch file the configuration names, relative to the region root.

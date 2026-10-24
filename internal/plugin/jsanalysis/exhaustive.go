@@ -197,8 +197,13 @@ func lockCovers(l lockInfo, lockDir, rel string, declared map[string]map[string]
 		if !ok {
 			return false
 		}
+		fields := declared
+		if l.kind == lockPnpm {
+			// pnpm installs a name from one field only, so it records it there alone.
+			fields = pnpmInstallFields(declared["optionalDependencies"], declared["dependencies"], declared["devDependencies"])
+		}
 		for _, f := range rangedDependencyFields {
-			for n, spec := range declared[f] {
+			for n, spec := range fields[f] {
 				if !specRecorded(recorded, f, n, spec) {
 					return false
 				}

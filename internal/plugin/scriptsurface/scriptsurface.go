@@ -827,7 +827,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.
 				cur.mark.made, cur.wd = "", ""
-				if why := v.untokenised(line, cur); why != "" {
+				if why := v.untokenisedAs(line, cur, lineKind == kindData); why != "" {
 					return why
 				}
 				cur.unknown = cur.unknown || cdRE.MatchString(line)

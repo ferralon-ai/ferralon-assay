@@ -961,8 +961,11 @@ func unnamedLine(line string) string {
 	}
 	b := blankSubstClose(line)
 	starts := []int{0}
-	if m := keyRE.FindStringIndex(strings.TrimPrefix(b, "- ")); m != nil {
-		starts = append(starts, m[1]+len(b)-len(strings.TrimPrefix(b, "- ")))
+	if item := seqItem(b); item != b {
+		starts = append(starts, len(b)-len(item))
+	}
+	if m := keyRE.FindStringIndex(seqItem(b)); m != nil {
+		starts = append(starts, m[1]+len(b)-len(seqItem(b)))
 	}
 	for i := 0; i < len(b); i++ {
 		if strings.IndexByte(";&|()!{`", b[i]) >= 0 {
@@ -1071,6 +1074,26 @@ scan:
 // untokenised applies the rule to a line that does not tokenise: one naming a token, an
 // install verb after an expansion, or a shell run withholds, and the rest is mentioned.
 func (v *Veto) untokenised(line string, cur cursor) string {
+	return v.untokenisedAs(line, cur, false)
+}
+
+// sectionRE matches a TOML or INI table header, which names a section and runs no program. A
+// YAML list item ("- [x]") is not one: GitLab flattens a nested script list into commands.
+var sectionRE = regexp.MustCompile(`^\[\[?[A-Za-z0-9_.:\- ]+\]\]?$`)
+
+// flowValue reports whether a data line's value is a YAML flow collection that is not JSON: a
+// GitLab script item may be one, and its items are commands.
+func flowValue(t string) bool {
+	t = seqItem(t)
+	if m := keyRE.FindStringIndex(t); m != nil {
+		t = t[m[1]:]
+	}
+	return strings.HasPrefix(t, "[") || strings.HasPrefix(t, "{")
+}
+
+// untokenisedAs is untokenised for a line of a data file, where a table header is not a
+// command whose program is a glob.
+func (v *Veto) untokenisedAs(line string, cur cursor, data bool) string {
 	if v.hasToken(line) {
 		return "install command that does not tokenise"
 	}
@@ -1080,8 +1103,13 @@ func (v *Veto) untokenised(line string, cur cursor) string {
 	if t := strings.TrimSpace(line); shellLineRE.MatchString(t) || sourceLineRE.MatchString(blankSubstClose(t)) {
 		return "shell run that does not tokenise: " + strings.TrimSpace(line)
 	}
-	if why := unnamedLine(strings.TrimSpace(line)); why != "" {
-		return why + " in a line that does not tokenise: " + strings.TrimSpace(line)
+	if t := strings.TrimSpace(line); data && flowValue(t) && strings.ContainsAny(t, "$`") {
+		return "an expansion in a YAML flow collection, where commands cannot be placed: " + t
+	}
+	if t := strings.TrimSpace(line); !data || !sectionRE.MatchString(t) {
+		if why := unnamedLine(t); why != "" {
+			return why + " in a line that does not tokenise: " + t
+		}
 	}
 	for _, f := range strings.Fields(line) {
 		f = trimShell(f)

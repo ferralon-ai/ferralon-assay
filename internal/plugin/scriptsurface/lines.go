@@ -103,7 +103,7 @@ func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 	case kindMakefile:
 		s = strings.TrimSpace(strings.TrimLeft(s, "@-+"))
 	case kindData:
-		s = strings.TrimSpace(strings.TrimPrefix(s, "- "))
+		s = seqItem(s)
 		if m := keyRE.FindStringSubmatch(s); m != nil {
 			if dataKeys[strings.ToLower(strings.Trim(m[1], `"'`))] {
 				return nil, true, false
@@ -127,6 +127,15 @@ func commandSegments(kind, line string) (segs []segment, ok, dangles bool) {
 		}
 	}
 	return shellSegments(s)
+}
+
+// seqItem returns s without the "- " marks of the YAML sequences it is an item of: GitLab
+// flattens a nested script list ("- - cmd") into its commands.
+func seqItem(s string) string {
+	for strings.HasPrefix(s, "- ") {
+		s = strings.TrimSpace(s[2:])
+	}
+	return s
 }
 
 // execForm reads a JSON array of strings (a Dockerfile exec form, a devcontainer

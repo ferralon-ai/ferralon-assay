@@ -371,6 +371,9 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 	return nil, true, true
 }
 
+// shellVarRE matches a program word that is the variable naming the shell: $SHELL or $BASH.
+var shellVarRE = regexp.MustCompile(`^"?\$(?:SHELL|BASH|\{SHELL\}|\{BASH\})"?$`)
+
 var assignRE = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\+?=`)
 
 // runners are programs that run a command named in their arguments, or one built from what
@@ -418,6 +421,9 @@ func (v *Veto) shellRun(seg segment, cur cursor, depth int) (why string, handled
 		return "", false
 	}
 	name, _ := CommandName(args[0])
+	if shellVarRE.MatchString(args[0]) {
+		name = "sh"
+	}
 	switch text, k := commandLine(name, args[1:]); k {
 	case lineText:
 		if strings.Contains(text, "$(") || strings.Contains(text, "`") {
@@ -905,10 +911,34 @@ func (v *Veto) runText(src string, cur cursor, depth int) string {
 	return ""
 }
 
-// shellLineRE finds, in a line that does not tokenise, a word that hands text to a shell:
-// a shell, eval or source anywhere, or . where a command starts, which a case pattern's ) or
-// a reserved word may lead into.
-var shellLineRE = regexp.MustCompile(`(?:^|[\s;&|(` + "`" + `])(?:[\w./-]*/)?(?:sh|bash|dash|zsh|ksh|ash|mksh|eval|source)(?:$|[\s;&|)` + "`" + `])|(?:^|[;&|()!{]|\b(?:then|do|else|elif|if|while|until|time|coproc))\s*\.\s+\S`)
+// shellLineRE finds, in a line that does not tokenise, a word that hands text to a shell: a
+// shell, eval or source anywhere. sourceLineRE finds a . where a command starts, which a case
+// pattern's ) or a reserved word may lead into; it is matched with each ) that closes a $(
+// blanked, since that one ends a substitution rather than a pattern.
+var (
+	shellLineRE  = regexp.MustCompile(`(?:^|[\s;&|(` + "`" + `])(?:[\w./-]*/)?(?:sh|bash|dash|zsh|ksh|ash|mksh|eval|source)(?:$|[\s;&|)` + "`" + `])`)
+	sourceLineRE = regexp.MustCompile(`(?:^|[;&|()!{]|\b(?:then|do|else|elif|if|while|until|time|coproc))\s*\.\s+\S`)
+)
+
+// blankSubstClose returns line with each ) that closes a $( replaced by a blank.
+func blankSubstClose(line string) string {
+	b := []byte(line)
+	var open []bool // for each ( still open, whether it began a $(
+	for i, c := range b {
+		switch c {
+		case '(':
+			open = append(open, i > 0 && b[i-1] == '$')
+		case ')':
+			if n := len(open); n > 0 {
+				if open[n-1] {
+					b[i] = ' '
+				}
+				open = open[:n-1]
+			}
+		}
+	}
+	return string(b)
+}
 
 // untokenised applies the rule to a line that does not tokenise: one naming a token, an
 // install verb after an expansion, or a shell run withholds, and the rest is mentioned.
@@ -919,7 +949,7 @@ func (v *Veto) untokenised(line string, cur cursor) string {
 	if expandedInstallLine(line) {
 		return "install verb after an expansion that does not tokenise"
 	}
-	if shellLineRE.MatchString(strings.TrimSpace(line)) {
+	if t := strings.TrimSpace(line); shellLineRE.MatchString(t) || sourceLineRE.MatchString(blankSubstClose(t)) {
 		return "shell run that does not tokenise: " + strings.TrimSpace(line)
 	}
 	for _, f := range strings.Fields(line) {

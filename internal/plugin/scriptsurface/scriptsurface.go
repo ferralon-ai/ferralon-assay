@@ -895,15 +895,30 @@ func (v *Veto) workingDirs(units []unit) ([]string, bool) {
 const maxRunDepth = 4
 
 // expandedRunsShell reports whether the arguments of a program that expands, which may be a
-// wrapper, may hand a shell a file or text: a shell, eval or source among them, or a . with a
-// word after it (a last . is a path).
+// wrapper or nothing at all, may hand a shell a file or text: a shell named anywhere among
+// them, or eval, source, or a . with a file after it, where the wrapped command starts. Those three are builtins, so
+// no program a wrapper runs can be one further along.
 func expandedRunsShell(args []string) bool {
-	for i, w := range args {
-		if fieldRunsShell(w) && (w != "." || i+1 < len(args)) {
+	if len(args) > 0 && (args[0] == "command" || args[0] == "builtin") {
+		args = args[1:]
+	}
+	if len(args) > 0 {
+		switch w := trimShell(args[0]); w {
+		case "eval", "source":
 			return true
+		case ".":
+			// The program may expand to nothing, leaving a . that sources the word after it; a
+			// word that is a flag is an operand to the program instead.
+			if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+				return true
+			}
 		}
 	}
-	return false
+	return slices.ContainsFunc(args, func(w string) bool {
+		a, _ := CommandName(w)
+		b, _ := CommandName(trimShell(w))
+		return shells[a] || shells[b]
+	})
 }
 
 // command applies the rule to one simple command run from cur, and returns why it withholds,
@@ -991,8 +1006,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if expandedInstall(words) {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
-	if strings.ContainsAny(words[0], "$`") && expandedRunsShell(words[1:]) {
-		return "shell run behind a program that expands: " + strings.Join(words, " ")
+	if all, _ := redirects(seg); len(all) > 0 {
+		// Seen through the assignments and wrappers ahead of it, as the program a shell runs is.
+		if prog, _, ok := unwrap(all); ok && len(prog) > 0 && strings.ContainsAny(prog[0], "$`") && expandedRunsShell(prog[1:]) {
+			return "shell run behind a program that expands: " + strings.Join(words, " ")
+		}
 	}
 	if why, ok := v.shellRun(seg, cur, depth); ok {
 		if why != "" {

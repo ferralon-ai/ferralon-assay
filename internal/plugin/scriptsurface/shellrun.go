@@ -371,9 +371,6 @@ func unwrap(args []string) (rest []string, inert, ok bool) {
 	return nil, true, true
 }
 
-// shellVarRE matches a program word that is the variable naming the shell: $SHELL or $BASH.
-var shellVarRE = regexp.MustCompile(`^"?\$(?:SHELL|BASH|\{SHELL\}|\{BASH\})"?$`)
-
 var assignRE = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\+?=`)
 
 // runners are programs that run a command named in their arguments, or one built from what
@@ -381,7 +378,8 @@ var assignRE = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\+?=`)
 var runners = map[string]bool{
 	"xargs": true, "parallel": true, "watch": true, "flock": true, "chroot": true, "setsid": true,
 	"stdbuf": true, "ionice": true, "taskset": true, "runuser": true, "doas": true, "fakeroot": true,
-	"su": true, "script": true, "unbuffer": true, "sg": true, "find": true,
+	"su": true, "script": true, "unbuffer": true, "sg": true, "find": true, "chrt": true,
+	"strace": true, "ltrace": true, "xvfb-run": true, "unshare": true, "nsenter": true,
 }
 
 // runsShell reports whether a word names a shell, eval, or . or source.
@@ -421,9 +419,6 @@ func (v *Veto) shellRun(seg segment, cur cursor, depth int) (why string, handled
 		return "", false
 	}
 	name, _ := CommandName(args[0])
-	if shellVarRE.MatchString(args[0]) {
-		name = "sh"
-	}
 	switch text, k := commandLine(name, args[1:]); k {
 	case lineText:
 		if strings.Contains(text, "$(") || strings.Contains(text, "`") {
@@ -740,13 +735,12 @@ func (v *Veto) shellExecs() map[string]bool {
 	if v.execs != nil {
 		return v.execs
 	}
-	v.execs, v.files = map[string]bool{}, map[string]bool{}
+	v.execs = map[string]bool{}
 	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
 		if err != nil || e.D == nil || e.D.IsDir() || v.inGitDir(e.Path) {
 			return nil
 		}
 		name := strings.ToLower(e.D.Name())
-		v.files[name] = true
 		if e.Symlink {
 			v.execs[name] = true
 			return nil
@@ -763,13 +757,6 @@ func (v *Veto) shellExecs() map[string]bool {
 		return nil
 	})
 	return v.execs
-}
-
-// buildFileNamed reports whether base, a file name that may be a glob, names any file of the
-// build; a pattern this cannot match may name any.
-func (v *Veto) buildFileNamed(base string) bool {
-	v.shellExecs()
-	return nameIn(strings.ToLower(base), v.files)
 }
 
 // nameIn reports whether base, lowercased and possibly a glob, matches a name in names.
@@ -931,16 +918,16 @@ var (
 	sourceLineRE = regexp.MustCompile(`(?:^|[;&|()!{]|\b(?:then|do|else|elif|if|while|until|time|coproc))\s*\.\s+\S`)
 )
 
-// blankSubstClose returns line with each ) that closes a $( replaced by a blank, unless the $(
-// stands where a command starts: that one may expand to nothing and leave what follows it to
-// start the command.
+// blankSubstClose returns line with each ) that closes a $( replaced by a blank: that one ends a
+// substitution, so what follows it continues the word or command the $( is in. A $( where a
+// command starts is a program this cannot name, which unnamedLine withholds on its own.
 func blankSubstClose(line string) string {
 	b := []byte(line)
 	var open []bool // for each ( still open, whether its ) is blanked
 	for i, c := range b {
 		switch c {
 		case '(':
-			open = append(open, i > 0 && b[i-1] == '$' && !atCommandStart(line[:i-1]))
+			open = append(open, i > 0 && b[i-1] == '$')
 		case ')':
 			if n := len(open); n > 0 {
 				if open[n-1] {
@@ -953,19 +940,133 @@ func blankSubstClose(line string) string {
 	return string(b)
 }
 
-// atCommandStart reports whether a word following before starts a command: before ends, blanks
-// aside, at the start of the line, at an operator or ( ! {, or at a reserved word.
-func atCommandStart(before string) bool {
-	t := strings.TrimRight(before, " \t")
-	if t == "" || strings.ContainsRune(";&|(!{", rune(t[len(t)-1])) {
-		return true
+// redirectRE matches the operator of a redirect at the start of a word.
+var redirectRE = regexp.MustCompile(`^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>&|>>|>\||<|>)`)
+
+// keywordAtRE finds a reserved word a command may follow, as a word of its own.
+var keywordAtRE = regexp.MustCompile(`(?:^|[\s;&|()!{` + "`" + `])(?:then|do|else|elif|if|while|until|time|coproc)\s`)
+
+// unnamedLine is unnamedProgram for a line that does not tokenise. A command may start at the
+// start of the line, after a leading key, after any ; & | ( ) ! { or backtick, quoted or not,
+// a ) that closes a $( not at a command start aside, and after a reserved word; each such
+// start is read as words up to the next ; & | or ), quotes kept together, and judged as a
+// command. Where the quotes do not pair up, the words cannot be placed, so any expansion
+// withholds.
+func unnamedLine(line string) string {
+	if unpairedQuotes(line) {
+		if strings.ContainsAny(line, "$`") {
+			return "an expansion where commands cannot be placed"
+		}
+		return ""
 	}
-	f := strings.Fields(t)
-	return keywordStart[f[len(f)-1]]
+	b := blankSubstClose(line)
+	starts := []int{0}
+	if m := keyRE.FindStringIndex(strings.TrimPrefix(b, "- ")); m != nil {
+		starts = append(starts, m[1]+len(b)-len(strings.TrimPrefix(b, "- ")))
+	}
+	for i := 0; i < len(b); i++ {
+		if strings.IndexByte(";&|()!{`", b[i]) >= 0 {
+			starts = append(starts, i+1)
+		}
+	}
+	for _, m := range keywordAtRE.FindAllStringIndex(b, -1) {
+		starts = append(starts, m[1])
+	}
+	for _, st := range starts {
+		if why := unnamedProgram(lineWords(line[st:])); why != "" {
+			return why
+		}
+	}
+	return ""
 }
 
-// keywordStart are the reserved words a command may follow.
-var keywordStart = map[string]bool{"then": true, "do": true, "else": true, "elif": true, "if": true, "while": true, "until": true, "time": true, "coproc": true}
+// substEnd returns the index just past the ) that closes the ( at open, or len(s).
+func substEnd(s string, open int) int {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(s)
+}
+
+// unpairedQuotes reports whether a quote in line opens and never closes.
+func unpairedQuotes(line string) bool {
+	var q byte
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case q == 0 && c == '\\':
+			i++
+		case q == 0 && (c == '\'' || c == '"'):
+			q = c
+		case q == '"' && c == '\\':
+			i++
+		case c == q:
+			q = 0
+		}
+	}
+	return q != 0
+}
+
+// lineWords splits text into the words of the command it starts with: blank-separated, a
+// quoted run kept in its word with its quotes, up to the first unquoted ; & | or ), and with
+// redirects and their targets dropped.
+func lineWords(text string) []string {
+	var words []string
+	var w strings.Builder
+	var q byte
+	end := func() {
+		if w.Len() > 0 {
+			words = append(words, w.String())
+			w.Reset()
+		}
+	}
+scan:
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case q == 0 && (c == ' ' || c == '\t'):
+			end()
+		case q == 0 && strings.IndexByte(";&|)", c) >= 0 && !(c == '&' && strings.HasSuffix(w.String(), ">")):
+			break scan
+		case q == 0 && c == '\\' && i+1 < len(text):
+			w.WriteByte(c)
+			i++
+			w.WriteByte(text[i])
+		case q != '\'' && c == '$' && i+1 < len(text) && text[i+1] == '(':
+			// A substitution is part of the word it is in, whatever it holds.
+			n := substEnd(text, i+1)
+			w.WriteString(text[i:n])
+			i = n - 1
+		case q == 0 && (c == '\'' || c == '"'):
+			q = c
+			w.WriteByte(c)
+		case q != 0 && c == q:
+			q = 0
+			w.WriteByte(c)
+		default:
+			w.WriteByte(c)
+		}
+	}
+	end()
+	var out []string
+	for i := 0; i < len(words); i++ {
+		if m := redirectRE.FindString(words[i]); m != "" {
+			if m == words[i] {
+				i++ // the target is the next word
+			}
+			continue
+		}
+		out = append(out, strings.Trim(words[i], `"'`))
+	}
+	return out
+}
 
 // untokenised applies the rule to a line that does not tokenise: one naming a token, an
 // install verb after an expansion, or a shell run withholds, and the rest is mentioned.
@@ -978,6 +1079,9 @@ func (v *Veto) untokenised(line string, cur cursor) string {
 	}
 	if t := strings.TrimSpace(line); shellLineRE.MatchString(t) || sourceLineRE.MatchString(blankSubstClose(t)) {
 		return "shell run that does not tokenise: " + strings.TrimSpace(line)
+	}
+	if why := unnamedLine(strings.TrimSpace(line)); why != "" {
+		return why + " in a line that does not tokenise: " + strings.TrimSpace(line)
 	}
 	for _, f := range strings.Fields(line) {
 		f = trimShell(f)

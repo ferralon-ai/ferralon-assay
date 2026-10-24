@@ -745,9 +745,6 @@ func (v *Veto) shellExecs() map[string]bool {
 
 // nameIn reports whether base, lowercased and possibly a glob, matches a name in names.
 func nameIn(base string, names map[string]bool) bool {
-	if !strings.ContainsAny(base, "*?[\\") {
-		return names[base]
-	}
 	for name := range names {
 		if ok, err := path.Match(base, name); ok || err != nil {
 			return true
@@ -934,119 +931,47 @@ func (v *Veto) untokenisedAs(line string, cur cursor, kind string) string {
 var writers = map[string]bool{"sed": true, "perl": true, "mv": true, "cp": true, "tee": true, "install": true,
 	"ln": true, "rsync": true, "truncate": true, "patch": true, "dd": true, "curl": true, "wget": true}
 
-// writeOperands returns the operands through which a writer command writes a file, and
-// whether words is one.
-func writeOperands(words []string) ([]string, bool) {
+// writer reports whether words run a program that writes a file named among its operands.
+func writer(words []string) bool {
 	if len(words) == 0 {
-		return nil, false
+		return false
 	}
 	name, _ := CommandName(words[0])
-	if !writers[name] {
-		return nil, false
+	return writers[name]
+}
+
+// gluedOutputs returns the files curl or wget writes that no word names on its own: an output
+// file glued into a cluster after its flag (-fsSLoout); wget's -o writes a log, as -O writes the
+// download. A long option is read the same way, which at worst names a file nothing writes.
+// Every other operand a writer writes is a word of the command, mentioned as one.
+func gluedOutputs(args []string) []string {
+	if len(args) == 0 {
+		return nil
 	}
-	args := words[1:]
-	switch name {
-	case "sed", "perl":
-		inPlace, script := false, true // the script is the first operand unless -e or -f gives it
-		var ops []string
-		for i := 0; i < len(args); i++ {
-			a := args[i]
-			switch {
-			case a == "--in-place" || strings.HasPrefix(a, "--in-place="):
-				inPlace = true
-			case a == "--expression" || a == "--file" || name == "perl" && (a == "-E" || a == "-M"):
-				i++
-				script = false
-			case strings.HasPrefix(a, "--"):
-			case strings.HasPrefix(a, "-") && name == "sed":
-				// A cluster ends at i (its suffix follows) or at e, f or l (their argument
-				// follows, here or in the next word): -ie is in place with suffix e.
-			cluster:
-				for j := 1; j < len(a); j++ {
-					switch a[j] {
-					case 'i':
-						inPlace = true
-						break cluster
-					case 'e', 'f':
-						if j+1 == len(a) {
-							i++
-						}
-						script = false
-						break cluster
-					case 'l':
-						if j+1 == len(a) {
-							i++
-						}
-						break cluster
-					}
-				}
-			case strings.HasPrefix(a, "-"):
-				// A perl cluster ends at a switch taking a value, and -i takes the rest as
-				// its suffix (-pie is -p -i with suffix e); -e takes the code next.
-				f := a[1:]
-				if k := strings.IndexAny(f, "MIdDxlC0V"); k >= 0 {
-					f = f[:k]
-				}
-				if k := strings.IndexByte(f, 'i'); k >= 0 {
-					inPlace, f = true, f[:k]
-				}
-				if strings.ContainsAny(f, "eE") {
-					i++
-					script = false
-				}
-			case script:
-				script = false
-			default:
-				ops = append(ops, a)
-			}
-		}
-		if !inPlace {
-			return nil, true
-		}
-		return ops, true
-	case "curl", "wget":
-		// The output file follows its flag, in the same word in a cluster (-fsSLo"$F") or
-		// as the next word; wget's -o writes a log, as -O writes the download.
-		outs := "o"
-		if name == "wget" {
-			outs = "oO"
-		}
-		var ops []string
-		for i := 0; i < len(args); i++ {
-			switch a := args[i]; {
-			case a == "--output" || a == "--output-document" || a == "--output-file" || a == "--append-output":
-				if i+1 < len(args) {
-					ops = append(ops, args[i+1])
-				}
-				i++
-			case strings.HasPrefix(a, "--output=") || strings.HasPrefix(a, "--output-document=") || strings.HasPrefix(a, "--output-file=") || strings.HasPrefix(a, "--append-output="):
-				_, t, _ := strings.Cut(a, "=")
-				ops = append(ops, t)
-			case len(a) > 1 && a[0] == '-' && a[1] != '-':
-				if j := strings.IndexAny(a[1:], outs); j >= 0 {
-					if t := a[j+2:]; t != "" {
-						ops = append(ops, t)
-					} else if i+1 < len(args) {
-						i++
-						ops = append(ops, args[i])
-					}
-				}
-			}
-		}
-		return ops, true
+	outs := ""
+	switch name, _ := CommandName(args[0]); name {
+	case "curl":
+		outs = "o"
+	case "wget":
+		outs = "oO"
+	default:
+		return nil
 	}
 	var ops []string
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			ops = append(ops, a)
+	for _, a := range args[1:] {
+		if len(a) > 2 && a[0] == '-' {
+			if j := strings.IndexAny(a[1:], outs); j >= 0 && j+2 < len(a) {
+				ops = append(ops, a[j+2:])
+			}
 		}
 	}
-	return ops, true
+	return ops
 }
 
 // writes notes how a command that is not an install writes files this cannot name: xargs
 // feeding a writer, and find -exec running one (each a write to any bound file, dynKey), or
-// find matching names by a pattern (a glob over them). A redirect's target is mentioned.
+// find matching names by a pattern (a glob over them). A redirect's target, and an output
+// file glued into a download's flags, are mentioned.
 func (v *Veto) writes(seg segment) string {
 	args, rs := redirects(seg)
 	for _, r := range rs {
@@ -1059,11 +984,12 @@ func (v *Veto) writes(seg segment) string {
 	if !ok || len(args) == 0 {
 		return ""
 	}
+	v.mention(gluedOutputs(args))
 	name, _ := CommandName(args[0])
 	switch name {
 	case "xargs":
 		for i := 1; i < len(args); i++ {
-			if _, ok := writeOperands(args[i:]); ok {
+			if writer(args[i:]) {
 				v.mentioned[dynKey] = true
 			}
 		}
@@ -1077,7 +1003,7 @@ func (v *Veto) writes(seg segment) string {
 					named = true
 				}
 			case "-exec", "-execdir", "-ok", "-okdir":
-				if _, ok := writeOperands(args[i+1:]); ok && !named {
+				if writer(args[i+1:]) && !named {
 					v.mentioned[dynKey] = true
 				}
 			case "-delete":
@@ -1098,10 +1024,8 @@ var carriesRE = regexp.MustCompile(`(?:^|[\s;&|(])(?:cp|mv|rsync|install|ln)\s`)
 
 // carries reports whether a command, past its wrappers, is a carrier.
 func carries(words []string) bool {
-	args, _, ok := unwrap(words)
-	if !ok {
-		return true
-	}
+	// A glob behind a wrapper this cannot read withholds in globProgram, before this is asked.
+	args, _, _ := unwrap(words)
 	if len(args) == 0 {
 		return false
 	}

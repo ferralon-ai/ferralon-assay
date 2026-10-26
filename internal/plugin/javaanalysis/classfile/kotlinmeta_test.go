@@ -267,7 +267,7 @@ func TestKotlinInline(t *testing.T) {
 		wantErr: true,
 	}, {
 		name:    "malformed annotation element fails closed",
-		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 2, Version: kmv, malformed: "d1"}),
+		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 2, Version: kmv, unreadable: "malformed element d1"}),
 		owner:   "p/B",
 		wantErr: true,
 	}, {
@@ -610,4 +610,44 @@ func TestParseClass_KotlinMetadata(t *testing.T) {
 
 func withVersion(m *KotlinMetadata, v []int) *KotlinMetadata { m.Version = v; return m }
 
-func withMalformed(m *KotlinMetadata, elem string) *KotlinMetadata { m.malformed = elem; return m }
+func withMalformed(m *KotlinMetadata, elem string) *KotlinMetadata {
+	m.unreadable = "malformed element " + elem
+	return m
+}
+
+// A multi-release JAR's override is merged into its base class; the merged class answers
+// with the base's metadata only when the override carries the same.
+func TestReleaseMerge_KotlinMetadata(t *testing.T) {
+	plain := func() *KotlinMetadata { return meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "g") }
+	inline := func() *KotlinMetadata { return meta(2, plainRecords(1), pl(3, fn(inlineFlags, 0)), "g") }
+	tests := []struct {
+		name       string
+		base, over *KotlinMetadata
+		wantInline bool
+		wantErr    bool
+	}{
+		{name: "identical metadata: the base answers", base: plain(), over: plain()},
+		{name: "identical inline metadata: inline", base: inline(), over: inline(), wantInline: true},
+		{name: "base not inline, override inline: withheld", base: plain(), over: inline(), wantErr: true},
+		{name: "override without metadata: withheld", base: plain(), wantErr: true},
+		{name: "base without metadata: withheld", over: inline(), wantErr: true},
+		{name: "neither carries metadata: not Kotlin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const name = "p/BKt"
+			all := []Class{{Name: name, Super: "java/lang/Object", KotlinMetadata: tt.base}}
+			m := NewReleaseMerge(all)
+			if err := m.Merge(VersionedClass{Release: 11, Entry: "META-INF/versions/11/p/BKt.class", Class: Class{Name: name, Super: "java/lang/Object", KotlinMetadata: tt.over}}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := KotlinInline(MethodRef{Owner: name, Name: "g"}, m.Lookup)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tt.wantErr)
+			}
+			if got != tt.wantInline {
+				t.Fatalf("inline = %v, want %v", got, tt.wantInline)
+			}
+		})
+	}
+}

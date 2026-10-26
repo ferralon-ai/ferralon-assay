@@ -3,6 +3,7 @@ package classfile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -29,9 +30,9 @@ type KotlinMetadata struct {
 	Data1, Data2 []string
 	// Extra is xi, the extra flags.
 	Extra int
-	// malformed names the element whose value had the wrong shape. A metadata with a
-	// malformed element answers nothing.
-	malformed string
+	// unreadable says why the metadata cannot stand for the class: an element whose value
+	// had the wrong shape, or versioned bodies whose metadata differ. It then answers nothing.
+	unreadable string
 }
 
 const kotlinMetadataType = "Lkotlin/Metadata;"
@@ -111,12 +112,12 @@ func parseKotlinMetadata(cp constPool, body []byte) *KotlinMetadata {
 			default:
 				ok = true
 			}
-			if !ok && km.malformed == "" {
-				km.malformed = name
+			if !ok && km.unreadable == "" {
+				km.unreadable = "malformed element " + name
 			}
 		}
 		if br.err != nil {
-			km.malformed = "annotation"
+			km.unreadable = "truncated annotation"
 		}
 		return km
 	}
@@ -273,15 +274,32 @@ func deferredMetadata(class func(name string) (*Class, bool), name string, kind 
 	return m, nil
 }
 
+// mergeKotlinMetadata is the metadata of a class merged from two versioned bodies: base's
+// when the two carry the same metadata (or none), else metadata that answers nothing.
+func mergeKotlinMetadata(base, over *KotlinMetadata) *KotlinMetadata {
+	if sameKotlinMetadata(base, over) {
+		return base
+	}
+	return &KotlinMetadata{unreadable: "versioned class bodies carry different metadata"}
+}
+
+func sameKotlinMetadata(a, b *KotlinMetadata) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Kind == b.Kind && a.Extra == b.Extra && a.unreadable == b.unreadable &&
+		slices.Equal(a.Version, b.Version) && slices.Equal(a.Data1, b.Data1) && slices.Equal(a.Data2, b.Data2)
+}
+
 // kotlinMaxMajor is the highest metadata major version whose layout the decoder reads. A
 // later major may move the fields or flag bits it relies on, so that metadata answers nothing.
 const kotlinMaxMajor = 2
 
-// readable reports why m cannot be decoded: a malformed element, or a metadata version
-// (mv) that is absent or outside the layouts the decoder knows.
+// readable reports why m cannot be decoded: it is unreadable, or its metadata version
+// (mv) is absent or outside the layouts the decoder knows.
 func (m *KotlinMetadata) readable() error {
-	if m.malformed != "" {
-		return fmt.Errorf("malformed element %s", m.malformed)
+	if m.unreadable != "" {
+		return errors.New(m.unreadable)
 	}
 	if len(m.Version) == 0 {
 		return errors.New("no metadata version")

@@ -28,6 +28,10 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 	plain := func(files map[string]string) *depPkg {
 		m := map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js"}`, "index.js": "exports.run = function run() {};\n"}
 		for k, v := range files {
+			if v == "" {
+				delete(m, k) // an empty file stands for one the package does not ship
+				continue
+			}
 			m[k] = v
 		}
 		return &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: m}
@@ -41,6 +45,7 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 	const depInit = "scip-typescript npm dep 1.0.0 index/`<module-init>`()."
 	const depRun = "scip-typescript npm dep 1.0.0 index/run()."
 	const appInit = "scip-typescript npm . . index/`<module-init>`()."
+	const craManifest = `{"name":"web","version":"0.1.0","private":true,"dependencies":{"react-scripts":"5.0.1","dep":"1.0.0"},"scripts":{"build":"react-scripts build"}}`
 
 	for _, tc := range []struct {
 		name     string
@@ -88,6 +93,89 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 				"package.json": `{"name":"dep","version":"1.0.0","exports":{".":"./index.js","./data.json":"./data.json"}}`,
 				"data.json":    "{}",
 			})),
+		},
+		{
+			name: "read_optional_call",
+			run:  fixture("const { run } = require('dep');\nrun?.();\n", plain(nil)),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				// An unconnected call stays listed, as in first-party code, though its target is read.
+				if len(cg.Unresolved) != 1 || cg.Unresolved[0].Callee != "run" || cg.Unresolved[0].Reason != plugin.PartialReasonDynamicDispatch {
+					t.Errorf("run?.() stays listed as dynamic dispatch; got %+v", cg.Unresolved)
+				}
+			},
+		},
+		{
+			name:     "builtin_named_package",
+			run:      fixture("const ev = require('events');\nev.once();\n", &depPkg{path: "node_modules/events", name: "events", version: "3.3.0", files: map[string]string{"package.json": `{"name":"events","version":"3.3.0","main":"events.js"}`, "events.js": "exports.once = function once() {};\n"}}),
+			withheld: true,
+		},
+		{
+			// Node ignores tsconfig paths and loads node_modules/dep, but the first-party graph
+			// bound the alias's target, so the load's code is not what the graph read.
+			name: "paths_alias_shadowed",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{
+					"index.ts":                  namespaced,
+					"src/dep.ts":                "export function run() {}\n",
+					"tsconfig.json":             `{"compilerOptions":{"baseUrl":".","paths":{"dep":["src/dep"]}}}`,
+					"node_modules/dep/index.js": "exports.run = function run() {};\n",
+				}, plain(nil))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			withheld: true,
+		},
+		{
+			// A workspace member shadowed by an installed package of the same name: the graph
+			// bound the member, Node loads the installed package.
+			name: "workspace_member_shadowed",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{
+					"package.json":              `{"name":"app","version":"1.0.0","workspaces":["packages/*"]}`,
+					"index.js":                  namespaced,
+					"packages/dep/package.json": `{"name":"dep","version":"2.0.0"}`,
+					"packages/dep/index.js":     "exports.run = function run() {};\n",
+					"node_modules/dep/index.js": "exports.run = function run() {};\n",
+				}, plain(nil))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			withheld: true,
+		},
+		{
+			// A Create React App build also bundles the module entry, which this load would run.
+			name: "cra_front_entry_not_read",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"package.json": craManifest, "src/index.js": namespaced},
+					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm/gone.js"}`}))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			withheld: true,
+		},
+		{
+			name: "cra_subpath_with_front_entry",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"package.json": craManifest, "src/index.js": "require('dep/lib');\n"},
+					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm.js"}`, "esm.js": "export function run() {}\n", "lib.js": "module.exports = 1;\n"}))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			withheld: true,
+		},
+		{
+			name: "cra_front_entry_read",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"package.json": craManifest, "src/index.js": "require('dep');\n"},
+					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm.js"}`, "esm.js": "export function run() {}\n"}))
+				return withDeps(t, f.dir, f.memStore())
+			},
+		},
+		{
+			name:     "exports_target_not_relative",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","exports":{".":"index.js"}}`})),
+			withheld: true,
+		},
+		{
+			name:     "no_main_no_index",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0"}`, "index.js": "", "lib.js": "exports.run = function run() {};\n"})),
+			withheld: true,
 		},
 		{
 			name: "sri_mismatch",
@@ -209,6 +297,21 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 				tc.check(t, cg)
 			}
 		})
+	}
+}
+
+// TestDepGraph_ReadLoadBoundaryCall: a call on a value a read package returned enters the
+// package at a boundary its read code does not resolve, so it keeps the run-wide limit while
+// the load itself is covered.
+func TestDepGraph_ReadLoadBoundaryCall(t *testing.T) {
+	p := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"dep","version":"1.0.0","main":"index.js"}`,
+		"index.js":     "module.exports = function make() { return { listen() {} }; };\n",
+	}}
+	f := newDepFixture(t, map[string]string{"index.js": "const make = require('dep');\nconst app = make();\napp.listen();\n"}, p)
+	cg := withDeps(t, f.dir, f.memStore())
+	if !runWide(cg) || loadListed(cg) {
+		t.Errorf("want run-wide kept and the load not listed; partiality %+v unresolved %+v", cg.Partiality, cg.Unresolved)
 	}
 }
 

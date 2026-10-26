@@ -162,6 +162,11 @@ func TestReachability_LinkagePreconditions(t *testing.T) {
 			want: true,
 		},
 		{
+			name:  "a first-party lambda of an interface the class output lacks",
+			setup: func(t *testing.T, dir string) { writeLambdaImpl(t, dir, linkedHandler) },
+			want:  true,
+		},
+		{
 			name: "no named launch entry",
 			setup: func(t *testing.T, dir string) {
 				if err := os.Remove(filepath.Join(dir, "src", "main", "resources", "META-INF", "MANIFEST.MF")); err != nil {
@@ -185,5 +190,74 @@ func TestReachability_LinkagePreconditions(t *testing.T) {
 				t.Errorf("Searched = %v, want %v (partiality %+v)", got, !tt.want, res.Partiality)
 			}
 		})
+	}
+}
+
+const (
+	lmfMetafactoryDesc = "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;"
+	linkedImpl         = "com/example/Impl"
+	linkedHandler      = "com/example/Handler"
+)
+
+// lambdaOf encodes an invokedynamic site, through LambdaMetafactory.metafactory, producing a
+// lambda of iface whose run()V is impl (a static ()V method of owner), and returns the code
+// and the BootstrapMethods attribute body the site names (entry 0).
+func (b *kclassBuilder) lambdaOf(iface, owner, impl string) (code, bootstrap []byte) {
+	lmf := b.add("mh:lmf", append([]byte{15, 6}, be2(b.methodref("java/lang/invoke/LambdaMetafactory", "metafactory", lmfMetafactoryDesc))...))
+	sam := b.add("mt:()V", append([]byte{16}, be2(b.utf8("()V"))...))
+	handle := b.add("mh:"+owner+"."+impl, append([]byte{15, 6}, be2(b.methodref(owner, impl, "()V"))...))
+	indy := b.add("indy:run", append(append([]byte{18}, be2(0)...), be2(b.nameType("run", "()L"+iface+";"))...))
+	bootstrap = be2(1)
+	bootstrap = append(bootstrap, be2(lmf)...)
+	bootstrap = append(bootstrap, be2(3)...)
+	for _, a := range []uint16{sam, handle, sam} {
+		bootstrap = append(bootstrap, be2(a)...)
+	}
+	return append([]byte{0xBA}, append(be2(indy), 0, 0, 0x57)...), bootstrap
+}
+
+// buildWithBootstrap is build plus a BootstrapMethods class attribute; the class carries no
+// annotations, so build's class attribute table is empty.
+func (b *kclassBuilder) buildWithBootstrap(this, super string, bootstrap []byte) []byte {
+	name := b.utf8("BootstrapMethods")
+	raw := b.build(this, super)
+	out := append([]byte{}, raw[:len(raw)-2]...)
+	out = append(out, be2(1)...)
+	out = append(out, be2(name)...)
+	out = append(out, be4(uint32(len(bootstrap)))...)
+	return append(out, bootstrap...)
+}
+
+// writeLambdaImpl writes first-party Impl, whose static make()V creates a lambda of iface
+// running Impl.lambda$0, which calls the jackson sink.
+func writeLambdaImpl(t *testing.T, dir, iface string) {
+	t.Helper()
+	b := newKClassBuilder()
+	code, bootstrap := b.lambdaOf(iface, linkedImpl, "lambda$0")
+	b.addMethod("make", "()V", append(code, opReturn))
+	b.addMethod("lambda$0", "()V", append(callsReadValue(b), opReturn))
+	writeClassFixture(t, dir, linkedImpl, b.buildWithBootstrap(linkedImpl, "java/lang/Object", bootstrap))
+}
+
+// TestReachability_LinkedKeepsLambdaOfMissingInterface: Impl creates a lambda of
+// com/example/Handler, which the class output lacks (a partial or stale build directory), and
+// nothing the search sees calls Impl.make. The run is otherwise linked; were it linked, the
+// lambda would be taken for an object no run creates and the sink Searched, though the full
+// build's Handler may be a subtype of Svc whose run the lambda answers.
+func TestReachability_LinkedKeepsLambdaOfMissingInterface(t *testing.T) {
+	dir := gradleJacksonBuild(t, "")
+	svc := newKClassBuilder()
+	svc.addMethod("<init>", "()V", []byte{opReturn})
+	svc.addMethod("run", "()V", []byte{opReturn})
+	writeClassFixture(t, dir, linkedSvc, svc.build(linkedSvc, "java/lang/Object"))
+	writeLambdaImpl(t, dir, linkedHandler)
+	writeMain(t, dir, func(b *kclassBuilder) []byte { return b.invokeVirtual(linkedSvc, "run", "()V") })
+
+	res := reachWith(t, dir, linkedGraph(t, dir, nil), readValueSink)
+	if len(res.Paths) != 1 || contains(res.Searched, readValueSink) {
+		t.Fatalf("paths %+v, Searched %v; want the path through Impl's lambda", res.Paths, res.Searched)
+	}
+	if got := res.Paths[0].Trace[1].DisplayName; got != "Impl.lambda$0()V" {
+		t.Errorf("path runs through %s, want Impl.lambda$0()V", got)
 	}
 }

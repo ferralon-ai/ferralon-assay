@@ -223,9 +223,13 @@ reasons:
 `relationship_unexpressed:unlisted_sites` (`plugin.PartialReasonUnlistedSites`) is set **if and only
 if** a declined site is missing from the list. The lane sets it for the body of evaluated code, which
 it never reads, for a source file it could not read, and for the run-wide prototype judgment that
-turns a literal-receiver computed read into `evaluated_code`. It also sets it when dependency code
-is read into the graph, or a dependency limit withholds run-wide: `Unresolved` and `Escaped` list
-first-party code only. Without it, the list is complete. A
+turns a literal-receiver computed read into `evaluated_code`. `Unresolved` and `Escaped` list
+first-party code only, so with dependency code read into the graph it also sets it when dependency
+code declines a site (a call it cannot connect, including one that reaches only a package-boundary
+node), when a first-party site is declined beside dependency code (the site may land on a dependency
+frame `Escaped` omits), and when a dependency limit withholds run-wide. Dependency code that declines
+nothing, read beside first-party code that declines nothing, hides no site. Without it, the list is
+complete. A
 reason no entry carries (`tool_failure`, `unsupported_phase1`) is not attributable to a listed site.
 Scoped limits (the stylesheet loader runtime) are not sites; they keep their own package `Targets`.
 

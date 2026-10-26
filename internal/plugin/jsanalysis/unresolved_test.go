@@ -583,8 +583,15 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 	// code that declines nothing.
 	other := &depPkg{path: "node_modules/other", name: "other", version: "1.0.0", files: map[string]string{
 		"package.json": `{"name":"other","version":"1.0.0"}`,
-		"index.js":     "exports.a = { b: function b() {} };\nexports.K = class K { m() {} };\n",
+		"index.js":     "exports.f = function f() {};\nexports.a = { b: function b() {} };\nexports.K = class K { m() {} };\n",
 	}}
+	connected := newDepFixture(t, map[string]string{"index.js": guardIdle}, &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"dep","version":"1.0.0"}`,
+		"index.js":     "const { f } = require('other');\nexports.run = function run() { f(); };\n",
+	}}, other)
+	if cg := withDeps(t, connected.dir, connected.memStore()); !cg.Partiality.Complete {
+		t.Errorf("control: a dependency call connected into a read package, yet partial: %+v", cg.Partiality)
+	}
 	for _, tc := range []struct {
 		name, src string
 		extra     map[string]string
@@ -594,11 +601,12 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 		{name: "boundary member", src: "const o = require('other');\nfunction go() { o.a.b(); }\nexports.run = go;\n", pkgs: []*depPkg{other}},
 		{name: "boundary constructor", src: "const o = require('other');\nfunction go() { new o.K().m(); }\nexports.run = go;\n", pkgs: []*depPkg{other}},
 		{name: "dynamic import", src: "exports.run = function run(x) { return import(x); };\n"},
-		{name: "computed require", src: "exports.run = function run(v) { return require(v); };\n"},
-		{name: "evaluated", src: "exports.run = function run(s) { return eval(s); };\n"},
+		{name: "computed require", src: "const x = require(name);\nexports.run = function run() {};\n"},
+		{name: "evaluated", src: "const g = globalThis[k];\nexports.run = function run() {};\n"},
+		{name: "unread module", src: "require('./x.node');\nexports.run = function run() {};\n"},
 		{name: "stylesheet", src: "require('./a.css');\nexports.run = function run() {};\n", extra: map[string]string{"a.css": "a {}\n"}},
 		{name: "skipped construct", src: "exports.run = function run() {};\n", refuse: true},
-		{name: "unread package", src: "const m = require('missing');\nexports.run = function run() { m(); };\n"},
+		{name: "unread package", src: "require('missing');\nexports.run = function run() {};\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.refuse {

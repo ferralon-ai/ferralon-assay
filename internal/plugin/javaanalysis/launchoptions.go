@@ -190,9 +190,10 @@ func (s *launchScan) link(realRoot, path, rel string, walked map[string]bool) {
 // build's local repositories: <repo>/<group path>/<artifact>/<version>/<file>, the file named
 // <artifact>-<version> followed by '.' or '-' (a classifier, an extension, a checksum, a
 // .lastUpdated marker), or for a -SNAPSHOT version <artifact>-<base>- and a timestamp digit.
-// Maven reads such a file only as that artifact, never as the project's configuration; a launch
-// that runs one names it on a surface outside the repository, and the walk reads that surface.
-// Anything else under a repository, such as a launch script or a project file beside the
+// These are the files the scan does not read when the repository lies outside the checkout, so
+// leaving them out gives an in-checkout repository the same coverage; a parent POM or BOM among
+// them is no more read than it is there. A launch that runs one of them names it on a surface
+// outside the repository, and the walk reads that surface. Anything else under a repository, such as a launch script or a project file beside the
 // artifacts, is scanned.
 func (s *launchScan) repoArtifact(path string) bool {
 	for _, repo := range s.repos {

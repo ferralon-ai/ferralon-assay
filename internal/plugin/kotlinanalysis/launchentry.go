@@ -25,10 +25,10 @@ import (
 // This is an allow-list. The named forms are a Gradle start script's main class; a literal
 // mainClass = / mainClass.set(...) / mainClassName = or 'Main-Class' / 'Start-Class' attribute
 // in the root build.gradle(.kts); the main the Spring Boot Gradle plugin resolved
-// (build/resolvedMainClassName); a literal <mainClass>, <start-class>, <Main-Class> or
-// <Start-Class> in the root pom.xml; and a Main-Class (or Spring Boot's JarLauncher/WarLauncher
-// with a Start-Class) in a manifest the project ships or built (src/main/resources, a class
-// root, a JAR under build/libs/ or target/). Each named class must be first-party and declare
+// (build/resolvedMainClassName), read only when nothing blocks bootMain; a literal <mainClass>,
+// <start-class>, <Main-Class> or <Start-Class> in the root pom.xml; and a Main-Class (or Spring
+// Boot's JarLauncher/WarLauncher with a Start-Class) in a manifest the project ships or built
+// (src/main/resources, a class root, a JAR under build/libs/ or target/). Each named class must be first-party and declare
 // main(String[]). With none named, a build applying the Spring Boot Gradle or Maven plugin
 // launches the main that plugin finds itself (bootMain). Every other shape withholds Searched
 // with a named reason:
@@ -133,6 +133,8 @@ type entryReader struct {
 
 	bootPlugin  bool // the build applies the Spring Boot Gradle or Maven plugin
 	bootBlocked bool // the build may hand the Boot plugin a main bootMain does not see
+
+	gradleBootPlugin bool // the root build script applies the Spring Boot Gradle plugin
 }
 
 // launchEntryReasons returns the reasons the build's launch shape withholds Searched, sorted;
@@ -145,6 +147,7 @@ func launchEntryReasons(buildDir string, prog *program, deps *depClosure, all []
 	}
 	r.gradleBoot(buildDir)
 	r.maven(filepath.Join(buildDir, "pom.xml"))
+	r.resolvedMain(buildDir)
 	r.startScripts(buildDir)
 	r.manifestFile(filepath.Join(buildDir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
 	for _, rel := range firstPartyClassRoots {

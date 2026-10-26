@@ -78,12 +78,28 @@ func TestReachability_BootMain(t *testing.T) {
 			c.addMethod("main", mainStringsDesc, []byte{opReturn})
 			writeClassFixture(t, dir, "com/example/App$Companion", c.build("com/example/App$Companion", "java/lang/Object"))
 		}, true, ""},
-		{"resolvedMainClassName names the facade: searched", kotlinOnlyPluginsBlk, func(t *testing.T, dir string) {
+		{"resolvedMainClassName names the facade beside a second main: searched", bootPluginsBlock, func(t *testing.T, dir string) {
 			writeFileAt(t, filepath.Join(dir, "build"), "resolvedMainClassName", "com.example.AppKt")
+			writeFacade(t, dir, kotlinMainRoot, "com/example/ToolKt")
 		}, true, ""},
 		{"settings applying only foojay: searched", bootPluginsBlock, func(t *testing.T, dir string) {
 			writeBuildFile(t, dir, "settings.gradle.kts", "plugins {\n    id(\"org.gradle.toolchains.foojay-resolver-convention\") version \"0.8.0\"\n}\nrootProject.name = \"app\"\n")
 		}, true, ""},
+		{"settings declaring repositories only: searched", bootPluginsBlock, func(t *testing.T, dir string) {
+			writeBuildFile(t, dir, "settings.gradle.kts", `pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = uri("https://repo.example.com/maven") }
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { mavenCentral() }
+}
+rootProject.name = "app"
+`)
+		}, true, ""},
+		{"buildscript classpath of the Boot and Kotlin plugins: searched", "buildscript {\n    ext.kotlinVersion = '2.0.21'\n    repositories { mavenCentral() }\n    dependencies {\n        classpath 'org.springframework.boot:spring-boot-gradle-plugin:3.3.5'\n        classpath \"org.jetbrains.kotlin:kotlin-gradle-plugin:${kotlinVersion}\"\n    }\n}\napply plugin: 'org.springframework.boot'\napply plugin: 'org.jetbrains.kotlin.jvm'\n", nil, true, ""},
 
 		// no Boot plugin
 		{"Kotlin JVM plugin only", kotlinOnlyPluginsBlk, nil, false, reasonLaunchEntryUnnamed},
@@ -111,6 +127,27 @@ func TestReachability_BootMain(t *testing.T) {
 		{"source sets reconfigured", bootPluginsBlock + "sourceSets { main { kotlin.srcDir(\"gen\") } }\n", nil, false, reasonLaunchEntryUnnamed},
 		{"settings hook configures every project", bootPluginsBlock, func(t *testing.T, dir string) {
 			writeBuildFile(t, dir, "settings.gradle.kts", "gradle.allprojects { }\n")
+		}, false, reasonLaunchEntryUnnamed},
+		{"settings task-graph hook sets bootJar's main", bootPluginsBlock, func(t *testing.T, dir string) {
+			writeBuildFile(t, dir, "settings.gradle.kts", "rootProject.name = \"app\"\ngradle.taskGraph.whenReady { allTasks.filterIsInstance<BootJar>().forEach { it.mainClass.set(\"io.ktor.server.netty.EngineMain\") } }\n")
+		}, false, reasonLaunchEntryUnnamed},
+		{"settings project evaluation listener", bootPluginsBlock, func(t *testing.T, dir string) {
+			writeBuildFile(t, dir, "settings.gradle.kts", "gradle.addProjectEvaluationListener(Hook())\n")
+		}, false, reasonLaunchEntryUnnamed},
+		{"settings plugin resolution strategy", bootPluginsBlock, func(t *testing.T, dir string) {
+			writeBuildFile(t, dir, "settings.gradle.kts", "pluginManagement {\n    resolutionStrategy { eachPlugin { useModule(\"com.example:boot-fork:1\") } }\n}\n")
+		}, false, reasonLaunchEntryUnnamed},
+		{"buildSrc helper called from the root script", bootPluginsBlock + "configureLaunch()\n", func(t *testing.T, dir string) {
+			writeFileAt(t, filepath.Join(dir, "buildSrc", "src", "main", "kotlin"), "Launch.kt",
+				"fun org.gradle.api.Project.configureLaunch() { tasks.named(\"bootJar\") { } }\n")
+		}, false, reasonLaunchEntryUnnamed},
+		{"buildscript classpath of another plugin", bootPluginsBlock + "buildscript {\n    dependencies { classpath(\"com.example:launch-helpers:1.0\") }\n}\n", nil, false, reasonLaunchEntryUnnamed},
+		{"non-default import", "import com.example.gradle.configureLaunch\n" + bootPluginsBlock, nil, false, reasonLaunchEntryUnnamed},
+		{"resolvedMainClassName beside an unlisted plugin", bootPluginsBlock + "plugins { id(\"com.example.conventions\") }\n", func(t *testing.T, dir string) {
+			writeFileAt(t, filepath.Join(dir, "build"), "resolvedMainClassName", "com.example.AppKt")
+		}, false, reasonLaunchEntryUnnamed},
+		{"resolvedMainClassName without the Boot plugin", kotlinOnlyPluginsBlk, func(t *testing.T, dir string) {
+			writeFileAt(t, filepath.Join(dir, "build"), "resolvedMainClassName", "com.example.AppKt")
 		}, false, reasonLaunchEntryUnnamed},
 		{"settings plugin outside the list", bootPluginsBlock, func(t *testing.T, dir string) {
 			writeBuildFile(t, dir, "settings.gradle.kts", "plugins { id(\"com.example.settings\") }\n")
@@ -173,6 +210,34 @@ func TestLaunchEntryReasons_GradleBootUnread(t *testing.T) {
 	}
 }
 
+// TestLaunchEntryReasons_GradleBootSettings reads settings scripts alone: one that includes a
+// build is already withheld as a multi-project build before the launch entry matters.
+func TestLaunchEntryReasons_GradleBootSettings(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings string
+		blocked  bool
+	}{
+		{"name and repositories", "rootProject.name = 'app'\ndependencyResolutionManagement { repositories { mavenCentral() } }\n", false},
+		{"includeBuild supplying plugins", "pluginManagement {\n    includeBuild(\"build-logic\")\n}\n", true},
+		{"include", "include(\"app\")\n", true},
+		{"interpolated repository URL", "pluginManagement { repositories { maven { url = uri(\"${repoUrl}\") } } }\n", true},
+		{"settings hook", "gradle.beforeProject { }\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeBuildFile(t, dir, "build.gradle.kts", bootPluginsBlock)
+			writeBuildFile(t, dir, "settings.gradle.kts", tt.settings)
+			r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}}
+			r.gradleBoot(dir)
+			if !r.bootPlugin || r.bootBlocked != tt.blocked {
+				t.Errorf("bootPlugin, bootBlocked = %v, %v; want true, %v", r.bootPlugin, r.bootBlocked, tt.blocked)
+			}
+		})
+	}
+}
+
 // TestLaunchEntryReasons_MavenBoot reads a Kotlin Maven build's POM through the Java lane's
 // Boot plugin reader: the end-to-end path needs a Maven build graph the fixtures do not build.
 func TestLaunchEntryReasons_MavenBoot(t *testing.T) {
@@ -226,6 +291,7 @@ func TestScriptPlugins(t *testing.T) {
 	}{
 		{"kts ids and kotlin()", bootPluginsBlock, []string{"org.springframework.boot", "io.spring.dependency-management", "org.jetbrains.kotlin.jvm", "org.jetbrains.kotlin.plugin.spring"}, true},
 		{"groovy apply plugin", "apply plugin: 'org.springframework.boot'\n", []string{"org.springframework.boot"}, true},
+		{"consecutive apply plugin lines", "apply plugin: 'org.springframework.boot'\napply plugin: 'org.jetbrains.kotlin.jvm'\n", []string{"org.springframework.boot", "org.jetbrains.kotlin.jvm"}, true},
 		{"commented-out plugin", "plugins {\n    // id(\"com.example.x\")\n    java\n}\n", []string{"java"}, true},
 		{"interpolated version", "plugins { id(\"org.springframework.boot\") version \"$bootVersion\" }\n", nil, false},
 		{"pluginManager.apply", "pluginManager.apply(\"com.example.x\")\n", nil, false},

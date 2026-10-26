@@ -239,17 +239,27 @@ inputs:
       ASSAY_DEPENDENCY_CODE. 'fetch' downloads each locked package from the registry the
       repository's .npmrc names and reads it only once its bytes match the lockfile's integrity
       hash; 'offline' reads only a cache already on the runner; 'off' reads none. Empty (default)
-      leaves the choice to the scanner release's own default. Unless this is 'off', the cache lives
-      under the runner's temp directory and is restored and saved with actions/cache, keyed on the
-      repository's lockfiles. If the fetch fails, the scan reports what it would with 'off' and names
+      leaves the choice to the scanner release's own default. Fetched packages land under the
+      runner's temp directory, which is emptied after the job; persist-dependency-cache decides
+      whether they persist between runs. If the fetch fails, the scan reports what it would with 'off' and names
       the cause on the Report. The scanned branch's .npmrc chooses which registry host receives
       NODE_AUTH_TOKEN/NPM_TOKEN, as with npm ci; don't export them on pull-request jobs, or set
-      'off'. The cache holds every fetched tarball, private packages included, and any workflow run
-      that may restore it can read them (on a public repository, fork pull-request workflows can
-      restore default-branch caches). VERSION REQUIREMENT: a scanner release that reads
-      ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
+      'off'. VERSION REQUIREMENT: a scanner release that reads ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
     required: false
     default: ""
+  persist-dependency-cache:
+    description: >-
+      Whether fetched npm packages persist between runs in the GitHub Actions cache, keyed on the
+      repository's lockfiles. 'auto' (default) caches only when the event says the repository is
+      private or internal; a public repository, or an event whose payload carries no repository
+      (schedule), gets no cache. 'always' caches on any repository; 'never' never does. The cache
+      holds every fetched tarball, private packages included, and any workflow run allowed to
+      restore it can read them; on a public repository that includes pull-request workflows from
+      forks, which can restore default-branch caches, so 'always' on a public repository exposes
+      private packages to them. With no cache, each run fetches every package again, and 'offline'
+      reads nothing.
+    required: false
+    default: "auto"
   issue:
     description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
     required: false
@@ -659,11 +669,34 @@ runs:
         fi
         echo "==> Advisory corpus checked out at $DEST ($CORPUS_REPO@$CORPUS_REF)"
 
+    - name: Check the dependency cache input
+      shell: bash
+      env:
+        PERSIST_DEPENDENCY_CACHE: ${{ inputs.persist-dependency-cache }}
+      run: |
+        case "$PERSIST_DEPENDENCY_CACHE" in
+          auto|always|never) ;;
+          *)
+            echo "::error::ferralon-assay: persist-dependency-cache '$PERSIST_DEPENDENCY_CACHE' is not one of auto, always, never." >&2
+            exit 1
+            ;;
+        esac
+
     - name: Restore the dependency code cache
       # Keyed on every lockfile the scanner reads, so the same locks restore the same verified
       # tarballs; restore-keys reuses an earlier cache after a lock changes, and the scanner
-      # re-verifies every file it reads against the lock either way.
-      if: inputs.dependency-code != 'off' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') != ''
+      # re-verifies every file it reads against the lock either way. 'auto' caches only when the
+      # event payload says the repository is private or internal: repository.private is a
+      # required field of every payload that carries a repository, and a payload without one
+      # (schedule) reads as null, so it gets no cache.
+      if: >-
+        inputs.dependency-code != 'off' &&
+        (inputs.persist-dependency-cache == 'always' ||
+          (inputs.persist-dependency-cache == 'auto' &&
+            (github.event.repository.private == true ||
+              github.event.repository.visibility == 'private' ||
+              github.event.repository.visibility == 'internal'))) &&
+        hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') != ''
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/ferralon-assay-deps

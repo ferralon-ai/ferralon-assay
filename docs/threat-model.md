@@ -48,12 +48,16 @@ a private repository's "send secrets to workflows from fork pull requests" setti
 in the job env). The control is `dependency-code: off`, or not exporting
 `NODE_AUTH_TOKEN`, `NPM_TOKEN` or the named variables on jobs that scan pull requests.
 
-Unless `dependency-code` is `off`, the Action keeps the fetched tarballs in the GitHub Actions cache,
-keyed on the runner OS and the repository's lockfiles. That includes packages fetched from a private
-registry with a token. Any workflow run allowed to restore that cache can read them: a run restores
-caches from its own branch, its pull request's base branch and the default branch, and on a public
-repository that includes pull-request workflows from forks. Use `dependency-code: off` where private
-packages must not land in the cache.
+The fetched tarballs land in the runner's temp directory, which is emptied after the job. Whether
+they also persist in the GitHub Actions cache, keyed on the runner OS and the repository's lockfiles,
+is the Action's `persist-dependency-cache` input. A cached tarball can be one fetched from a private registry
+with a token, and any workflow run allowed to restore the cache can read it: a run restores caches
+from its own branch, its pull request's base branch and the default branch, and on a public
+repository that includes pull-request workflows from forks. So the default, `auto`, caches only when
+the event payload marks the repository private or internal (`github.event.repository.private`, or
+`visibility` of `private` or `internal`). A public repository, or an event whose payload carries no
+repository (`schedule`), gets no cache and fetches every run. `always` caches regardless and, on a
+public repository, exposes cached private packages to fork pull requests; `never` never caches.
 
 What all of these carry is dependency metadata — module paths, versions, package coordinates — never
 source, and never analysis results.

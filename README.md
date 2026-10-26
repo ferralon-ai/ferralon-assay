@@ -80,14 +80,16 @@ GitHub issues a read-only token whatever you declare, and every write surface sk
 job summary still lands.
 
 A JavaScript scan reads its dependencies' code by default: it fetches each package the lockfile
-pins and reads it only once it matches the lockfile's integrity hash. The Action keeps those
-packages in a cache keyed on your lockfiles, so an unchanged lock fetches nothing. Set
-`dependency-code: off` to skip the fetch, or `offline` to read only a cache already on the runner.
+pins and reads it only once it matches the lockfile's integrity hash. On a private or internal
+repository the Action keeps those packages in a cache keyed on your lockfiles, so an unchanged lock
+fetches nothing; on a public repository it keeps no cache and fetches them on every run, unless
+you set `persist-dependency-cache: always`. Set `dependency-code: off` to skip the fetch, or
+`offline` to read only a cache already on the runner.
 If the fetch fails (an unreachable registry, a missing token, a timeout), the scan reports what it
 would with `off` and the Report says why, under `dependency_code` and a
 `tool_failure:dependency_code_unavailable` note. Before a pull-request job exports a registry
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
-receives it, and private packages land in the Actions cache.
+receives it, and what the cache exposes.
 
 **`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
@@ -366,11 +368,12 @@ only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-
 is presented only to the host it is bound to. Fetch is the default, and the scanned branch's
 `.npmrc` chooses that host, exactly as with `npm ci`: a branch that rewrites its `.npmrc` sends any
 of those tokens the job exports to the host it names. To keep tokens out of a scan, set
-`dependency-code: off`, or don't export `NODE_AUTH_TOKEN`/`NPM_TOKEN` on pull-request jobs. The
-Action saves the fetched tarballs, private packages included, to the GitHub Actions cache, where
-any workflow run that may restore it can read them; on a public repository that includes
-pull-request workflows from forks, which can restore default-branch caches. `dependency-code: off`
-skips the cache too. What any of this carries is dependency metadata — module paths,
+`dependency-code: off`, or don't export `NODE_AUTH_TOKEN`/`NPM_TOKEN` on pull-request jobs. On a
+private or internal repository the Action saves the fetched tarballs, private packages included, to
+the GitHub Actions cache, where any workflow run allowed to restore it can read them. On a public
+repository it saves nothing by default, because pull-request workflows from forks can restore
+default-branch caches there; `persist-dependency-cache: always` turns the cache on anyway and
+exposes those tarballs to them. What any of this carries is dependency metadata — module paths,
 versions, package coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 
@@ -380,7 +383,7 @@ Nothing in this repository opens pull requests against yours, and no automation 
 `uses: ferralon-ai/ferralon-assay@…` ref on your workflow line. That ref is yours to move — or to let
 float. Open [`action.yml`](action.yml): the composite action's steps fetch the
 scanner (verifying its checksum only if you pinned one), fetch the advisory corpus, restore the
-dependency code cache, and run the scan.
+dependency code cache (on a private repository, by default), and run the scan.
 None of them write to a workflow file or open anything against your repository.
 
 Whether you pin the ref or track a moving one, the scanner is fetched from the release named by

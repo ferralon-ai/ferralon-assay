@@ -13,7 +13,7 @@ the repository without running it.
 
 Point it at a **Go, Java, Kotlin, JavaScript, Python or .NET** repository and every one gets a full scan
 and a `Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory
-names — and the [Language support](docs/language-support.md) fit matrix shows at a glance how far the
+names — and the [language capability matrix](docs/capabilities/README.md) shows at a glance how far the
 analysis reaches in each.
 
 ## Quickstart — GitHub Action
@@ -283,7 +283,7 @@ declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
 onto vulnerable symbols, builds a call graph, and computes reachability, then reports what it found.
 What each of the six languages resolves today is laid out in
-[Language support](docs/language-support.md).
+[language capability matrix](docs/capabilities/README.md).
 
 It stops at reachability — there is no execution of the target codebase, no exploit synthesis, and no
 live confirmation step, and it neither generates nor validates patches. It produces the evidence those
@@ -308,8 +308,8 @@ your build, not just present in your dependency tree. Go gets the deepest analys
 reachability into the code an advisory names. Java and Kotlin reach into dependency JARs, .NET into
 restored NuGet assemblies, and Python and JavaScript trace first-party calls to the dependency
 boundary; all of them resolve dependency versions and disqualify advisories your pinned version is
-provably outside. [Language
-support](docs/language-support.md) has the per-language specifics.
+provably outside. [language capability
+matrix](docs/capabilities/README.md) has the per-language specifics.
 
 **Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not execute the
 scanned codebase or synthesize an exploit; a `reachable_candidate`

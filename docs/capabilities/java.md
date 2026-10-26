@@ -1,12 +1,12 @@
 # Java capabilities
 
-Every feature in every capability group for Java, with its status and the caveats that bound it. The [overview](README.md) explains the groups, statuses and stages.
+Every feature in every capability group for Java, with its status and the caveats that bound it. The [overview](README.md) explains the groups and statuses.
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 3 / 🟨 3 / 🟥 2 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 3 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 5 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 5 / 🟥 3 | 🟩 3 / 🟨 3 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 1 |
+| C / P / L | 🟩 3 / 🟨 3 / 🟥 2 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 3 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 5 / 🟥 3 | 🟩 3 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 0 / 🟥 1 |
 
-🟩 Complete or N/A, 🟨 Partial, 🟥 Planned.
+🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
 ## 1. Dependency inventory
 
@@ -46,7 +46,7 @@ The graph is what the repo's own build resolved, under a stated JDK and profile 
 | Private registries / credentials | Partial | [JAVA-GRAPH-PRECONDITION](#java-graph-precondition) (typed `credentials` failure, no fallback) |
 | Gradle detached configs, unknown task types, unknown Maven plugin goals | Partial | [JAVA-INSTALL-UNLISTED](#java-install-unlisted) (withholds Complete) |
 | Vendored/checked-in archives | Complete | positively detected, withholds Complete |
-| Real-tool end-to-end | Partial | real-tool tests are not part of the default CI run |
+| Real-tool end-to-end | Partial | run against the real Maven and Gradle only when the tools are configured |
 
 ## 4. Call graph
 
@@ -59,7 +59,7 @@ Two graphs. First-party source gets a lexical declaration parser; compiled outpu
 | First-party bytecode from build output (trusted only if covering the sources and newer) | Complete | else `first_party_bytecode_absent` |
 | Dependency bytecode from graph JARs (digest recheck, multi-release) | Complete |  |
 | CHA engine with JDK platform tables, lambdas, `<clinit>` and init closure, hidden-seed bounding in linked mode | Complete | [JAVA-CHA-IMPRECISION](#java-cha-imprecision) (precision, not soundness) |
-| RTA, JDK receiver model | Planned | not in this release; design only |
+| RTA, JDK receiver model | Planned |  |
 | Dependency symbol resolution inside the dependency's own JAR | Complete |  |
 
 ## 5. Reachability clearing
@@ -72,15 +72,15 @@ Two graphs. First-party source gets a lexical declaration parser; compiled outpu
 | Hazards block the clear (sound abstention to Undetermined) | Complete |  |
 | Launch-entry licence (allowlist of entry forms, Spring Boot via `bootMain`) | Partial | [JAVA-LAUNCH-ENTRY-UNLICENSED](#java-launch-entry-unlicensed) |
 | Multi-module builds | Partial | [JAVA-MULTI-MODULE-NO-SEARCH](#java-multi-module-no-search) |
-| Trigger grounds, arm A (Searched + vetted symbol set) | Partial | [JAVA-VETTED-SYMBOLS](#java-vetted-symbols) |
-| Trigger grounds, arm B (`ReachabilityResult.Refutation`) | N/A | Java sets none; arm A is the only route |
+| Clear grounds from a completed search with a vetted symbol set | Partial | [JAVA-VETTED-SYMBOLS](#java-vetted-symbols) |
+| Clear grounds from a refutation result | N/A | the Java lane does not produce one; the search-based ground is the only route |
 | Lexical-only path | Complete | a sink is never listed Searched on this path (by construction) |
 | Reachable-candidate paths (first-party to sink) | Complete |  |
-| Free-tier sound JVM verdicts | Planned |  |
+| `not_exploitable` verdicts for JVM framework applications in the free tier | Planned |  |
 
 ## 6. Framework & dynamic-dispatch modeling
 
-First-party Spring structure is modeled on the lexical side to add edges and partiality. On the bytecode side every framework channel (reflection, invokedynamic, generated proxies, ServiceLoader, JNDI, provider re-entry) is a hazard, so a framework app is sound but not yet clearable. Nothing modeled here can license a clear.
+First-party Spring structure is modeled on the lexical side to add edges and partiality. On the bytecode side every framework channel (reflection, invokedynamic, generated proxies, ServiceLoader, JNDI, provider re-entry) is a hazard, so a framework application is searched but receives no clear yet. Nothing modeled here can license a clear.
 
 | Feature | Status | Caveats |
 |---|---|---|
@@ -89,23 +89,23 @@ First-party Spring structure is modeled on the lexical side to add edges and par
 | AOP proxy overlay (`@Async`, `@Transactional`, `@Aspect` add partiality) | Partial | [JAVA-DI-LEXICAL-ONLY](#java-di-lexical-only) |
 | SpEL / placeholder presence | Partial | [JAVA-DI-LEXICAL-ONLY](#java-di-lexical-only) |
 | Reflection, invokedynamic, native, class-loading hazards | Complete | [JAVA-FRAMEWORK-HAZARD](#java-framework-hazard) (run-wide for framework apps) |
-| Spring core contracts (lifecycle, events, scheduling roots/dispatchers) | Planned | not in this release; queued |
+| Spring core contracts (lifecycle, events, scheduling roots/dispatchers) | Planned |  |
 | Spring DI at bytecode level | Planned |  |
 | Launch-config class names, CONSTANT_Dynamic | Planned |  |
 | Annotation values: Java first-party from source (values blanked), Kotlin/deps from bytecode | Partial | [JAVA-ANNOTATION-VALUES-SOURCE](#java-annotation-values-source) |
 
 ## 7. Hazard bounding
 
-Hazards are scoped per search: the first hazard on the frontier sets `HazardOnFrontier` and the kinds met are recorded per result (sink_not_loaded, ingress_not_found, native, invokedynamic, reflection, unloaded_dependency, reentry, unknown_receiver, other). The measured picture is that a Spring Boot application does not yet receive a clear, and the cause is hazard breadth on the frontier, not an unsound or missing model.
+Hazards are scoped per search: the first hazard on the frontier sets `HazardOnFrontier` and the kinds met are recorded per result (sink_not_loaded, ingress_not_found, native, invokedynamic, reflection, unloaded_dependency, reentry, unknown_receiver, other). In a Spring Boot application the frontier meets hazards, so the verdict is undetermined. The cause is hazard breadth on the frontier, not an unsound or missing model.
 
 | Feature | Status | Caveats |
 |---|---|---|
 | Per-search hazard kinds reported (diagnosable) | Complete |  |
-| Signature-bound provider roots (rule 1) | Complete |  |
-| Link-bound loadability (rule 2) | Partial | [JAVA-HAZARD-BREADTH](#java-hazard-breadth) (any duplicate class disables rule 2 run-wide) |
+| Signature-bound provider roots | Complete |  |
+| Link-bound loadability | Partial | [JAVA-HAZARD-BREADTH](#java-hazard-breadth) (any duplicate class disables link-bound loadability run-wide) |
 | CHA hidden-seed bounding in linked mode | Partial | [JAVA-HAZARD-BREADTH](#java-hazard-breadth) |
 | Multi-release merge for linking | Complete |  |
-| JDK callback / receiver model | Planned | not in this release; JDK unknown receivers remain a hazard |
+| JDK callback / receiver model | Planned | JDK unknown receivers remain a hazard |
 | Typical-project outcome | Partial | [JAVA-HAZARD-BREADTH](#java-hazard-breadth), [JAVA-FRAMEWORK-HAZARD](#java-framework-hazard) |
 
 ## 8. Runtime confirmation
@@ -116,7 +116,7 @@ The Java lane hands candidate paths and resolved sink coordinates to the paid ti
 |---|---|---|
 | GenerateHarness | N/A | architectural: the JVM is proved by microVM execution, not a generated seed |
 | Candidate path and symbol handoff to Prove | Complete |  |
-| Runtime tracer oracle | Planned | not in this release |
+| Runtime tracer oracle | Planned |  |
 
 ## Caveats
 

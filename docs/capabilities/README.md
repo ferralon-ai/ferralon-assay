@@ -17,26 +17,24 @@ Ferralon Assay analyzes Go, Java, Kotlin, JavaScript/TypeScript, Python and .NET
 
 **Status values.** `Complete`: the feature works for its stated scope. `Partial`: it works, with named caveats. `Planned`: it is not built yet. `N/A`: it does not apply to the language's architecture.
 
-**Stage.** A group is *reached* when its defining capability works and no caveat on it applies to every project in the ecosystem. A language's stage is the highest N for which groups 1 through N are all reached. Group 7 is reached when a typical project in the ecosystem receives `not_exploitable` verdicts, measured on a published reference set.
-
-**Readiness threshold: stage 7.** At stage 7 a typical project gets the full verdict set from Assay alone: disqualifications, reachable candidates, and `not_exploitable` clears. Group 8 is the handoff to runtime proof and is not part of the threshold.
+Go's call graph is built from whole-build SSA that spans first-party and dependency source, and 6 of its 7 call-graph features are Complete (group 4). Each language page lists the same detail for its own lane.
 
 ## Matrix
 
-| Language | Stage | 1 Inventory | 2 Versions | 3 Build graph | 4 Call graph | 5 Clearing | 6 Frameworks | 7 Hazard bounding | 8 Runtime handoff |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| [Go](go.md) | 6 | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 1 |
-| [Java](java.md) | 6 | 🟩 3 / 🟨 3 / 🟥 2 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 3 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 5 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 5 / 🟥 3 | 🟩 3 / 🟨 3 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 1 |
-| [Kotlin](kotlin.md) | 6 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 0 / 🟥 0 | 🟩 4 / 🟨 1 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 6 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 0 |
-| [JavaScript / TypeScript](javascript.md) | 3 | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 6 / 🟥 1 | 🟩 5 / 🟨 6 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 2 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 3 / 🟥 1 |
-| [Python](python.md) | 4 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 6 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 0 / 🟥 0 |
-| [.NET](dotnet.md) | 4 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 4 / 🟥 2 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 3 |
+| Language | 1 Inventory | 2 Versions | 3 Build graph | 4 Call graph | 5 Clearing | 6 Frameworks | 7 Hazard bounding | 8 Runtime handoff |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| [Go](go.md) | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 0 / 🟥 1 |
+| [Java](java.md) | 🟩 3 / 🟨 3 / 🟥 2 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 3 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 5 / 🟥 3 | 🟩 3 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 0 / 🟥 1 |
+| [Kotlin](kotlin.md) | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 0 / 🟥 0 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 6 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 0 |
+| [JavaScript / TypeScript](javascript.md) | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 6 / 🟥 1 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 2 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 |
+| [Python](python.md) | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 1 | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 0 |
+| [.NET](dotnet.md) | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 1 / 🟨 4 / 🟥 2 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 1 / 🟥 3 |
 
-Each cell reads `C / P / L`, counted from the language page's feature table for that group: 🟩 C = Complete plus N/A (N/A counts as complete), 🟨 P = Partial, 🟥 L = Planned.
+Each cell reads `C / P / L`, counted from the language page's feature table for that group: 🟩 C = Complete, 🟨 P = Partial, 🟥 L = Planned. Features marked N/A do not apply to the language and are not counted.
 
 ### Binding caveats
 
-A binding caveat withholds `not_exploitable` across the whole run when a project triggers it. † marks a caveat that applies to every project in the ecosystem today; it sets the language's stage.
+A binding caveat withholds `not_exploitable` across the whole run when a project triggers it. † marks a caveat that applies to every project in the ecosystem today.
 
 | Language | Binding caveats |
 |---|---|

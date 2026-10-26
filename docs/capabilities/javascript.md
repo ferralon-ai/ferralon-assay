@@ -1,12 +1,12 @@
 # JavaScript / TypeScript capabilities
 
-Every feature in every capability group for JavaScript / TypeScript, with its status and the caveats that bound it. The [overview](README.md) explains the groups, statuses and stages.
+Every feature in every capability group for JavaScript / TypeScript, with its status and the caveats that bound it. The [overview](README.md) explains the groups and statuses.
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 6 / 🟥 1 | 🟩 5 / 🟨 6 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 2 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 3 / 🟥 1 |
+| C / P / L | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 6 / 🟥 1 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 2 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 |
 
-🟩 Complete or N/A, 🟨 Partial, 🟥 Planned.
+🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
 ## 1. Dependency inventory
 
@@ -66,8 +66,8 @@ The call graph is a source-lexical graph over first-party TS/JS: an import-scope
 | Dependency-code edges (lock-pinned tarballs) | Partial | [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off), [JS-UNINSPECTABLE-RUNWIDE](#js-uninspectable-runwide) |
 | Out-of-tree package loads recorded | Partial | [JS-UNINSPECTABLE-RUNWIDE](#js-uninspectable-runwide) |
 | TypeScript handling | Partial | [JS-TS-NO-TYPE-RESOLUTION](#js-ts-no-type-resolution) |
-| Graph semantics | Partial | [JS-NO-TYPES](#js-no-types) |
-| Ingestion form | N/A |  |
+| Type-aware call resolution | Partial | [JS-NO-TYPES](#js-no-types) |
+| Bytecode ingestion | N/A | JS is analyzed from source |
 
 ## 5. Reachability clearing
 
@@ -76,8 +76,8 @@ Reachability here answers "can an entry point reach the vulnerable symbol". The 
 | Feature | Status | Caveats |
 |---|---|---|
 | Reachable-candidate path (ingress to sink) | Complete |  |
-| `not_exploitable` grounds, arm A (searched + vetted symbol set) | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
-| `not_exploitable` grounds, arm B (`package_not_loaded` / `analyzer_symbol_not_reached`) | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
+| `not_exploitable` from a completed search with a vetted symbol set | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
+| `not_exploitable` from `package_not_loaded` / `analyzer_symbol_not_reached` | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
 | Unread-code programs return undetermined/analysis_did_not_run | Complete |  |
 | Empty package never refutes | Complete |  |
 
@@ -97,7 +97,7 @@ Entry points are recognised from Express, Koa, Node `http`, Next default handler
 
 ## 7. Hazard bounding
 
-Hazards are reported as partiality reasons. The question is how wide they bite. In JS, the dominant reasons are did-not-run and run-wide, so a typical project does not receive a clear today.
+Hazards are reported as partiality reasons. The question is how wide they bite. In JS, the dominant reasons are did-not-run and run-wide, so they withhold `not_exploitable` for the whole run.
 
 | Feature | Status | Caveats |
 |---|---|---|
@@ -136,13 +136,13 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 
 **Trigger.** Always.
 
-**Effect.** `Reachability` yields no `Searched`/`Refutation`, so `trigger` can never reach arm A or B; JS returns reachable_candidate or undetermined only.
+**Effect.** The reachability result sets neither `Searched` nor `Refutation`, so neither clearing ground can apply; JS returns `reachable_candidate` or `undetermined` only.
 
 ### JS-LOADTIME-CODEGEN
 
 **Trigger.** Express + body-parser/depd/bluebird/mongoose/morgan dependency trees that run `eval`/`new Function` at load.
 
-**Effect.** Run-wide dynamic-code limit even with dependency code read; scope gate moves 0 advisories.
+**Effect.** Run-wide dynamic-code limit even with dependency code read.
 
 ### JS-EXHAUSTIVE-WITHHOLD
 
@@ -196,7 +196,7 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 
 **Trigger.** Advisory range string containing U+0085.
 
-**Effect.** Confident "not affected".
+**Effect.** Range whitespace is split on ASCII whitespace only, so U+0085 is not treated as a separator.
 
 ### JS-YARN-LOCK-SPELLING
 
@@ -248,9 +248,13 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 
 ### JS-HARNESS-SKELETON
 
+**Trigger.** Any JS harness generation.
+
 **Effect.** The generated harness is a structural skeleton with a placeholder for input.
 
 ### JS-TAINT-PATH-ONLY
+
+**Trigger.** Any taint query.
 
 **Effect.** Taint is call-path presence from ingress to sink, never value flow.
 
@@ -258,28 +262,40 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 
 **Trigger.** NestJS/Fastify/Hapi/Angular.
 
-**Effect.** Ingress not recognised, so no reachable paths found (not unsound by itself because verdict is never not_exploitable).
+**Effect.** Ingress is not recognised, so no reachable paths are found for those frameworks.
 
 ### JS-V1-LOCK-NO-SPEC
+
+**Trigger.** An npm lockfile v1.
 
 **Effect.** A v1 lock records no specs.
 
 ### JS-LOCK-STALENESS
 
+**Trigger.** A lock that no longer satisfies the manifests.
+
 **Effect.** A stale lock still pins versions.
 
 ### JS-YARN-BERRY-WITHHELD
+
+**Trigger.** A yarn berry project.
 
 **Effect.** Yarn berry dependency code is withheld by design.
 
 ### JS-MANIFEST-UNPUBLISHED
 
+**Trigger.** Any JS scan.
+
 **Effect.** The JavaScript lane does not publish a capability manifest.
 
 ### JS-NO-TYPES
 
+**Trigger.** Code whose call targets depend on types.
+
 **Effect.** There is no type resolution.
 
 ### JS-SCOPE-ONLY-FOR-SOME
+
+**Trigger.** Any limit other than stylesheets and some dependency-code reasons.
 
 **Effect.** Scoped limits exist only for stylesheets and some dependency-code reasons.

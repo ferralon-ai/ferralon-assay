@@ -1,12 +1,12 @@
 # .NET capabilities
 
-Every feature in every capability group for .NET, with its status and the caveats that bound it. The [overview](README.md) explains the groups, statuses and stages.
+Every feature in every capability group for .NET, with its status and the caveats that bound it. The [overview](README.md) explains the groups and statuses.
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 4 / 🟥 2 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 3 |
+| C / P / L | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 1 / 🟨 4 / 🟥 2 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 1 / 🟥 3 |
 
-🟩 Complete or N/A, 🟨 Partial, 🟥 Planned.
+🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
 ## 1. Dependency inventory
 
@@ -28,7 +28,7 @@ A dependency's installed version is resolved only from evidence that pins it: re
 |---|---|---|
 | Installed-version resolution (exact pin / lockfile / packages.config / trusted restore output) | Complete |  |
 | NuGet range matching and advisory disqualification | Complete |  |
-| Restore-output trust check (`AssetsTrusted`, stale/untrusted output rejected) | Complete |  |
+| Restore-output trust check (stale or untrusted output rejected) | Complete |  |
 | Floating / range / plain `Version="x"` (a minimum, not a pin) with no restore output or lockfile | Partial | [DOTNET-UNPINNED-VERSION](#dotnet-unpinned-version) |
 | Unmodeled build inputs withhold (`Directory.Build.rsp`, `*.user`, `project.json`, `packages.*.lock.json`, unevaluated conditions) | Partial | [DOTNET-BUILD-INPUT-UNMODELED](#dotnet-build-input-unmodeled) |
 | Resolver reports a version while unread copies exist (catalogs, force, profiles, Directory.Build.props) | Planned |  |
@@ -70,10 +70,9 @@ Two tiers. The IL tier reads the compiled first-party assembly and its NuGet dep
 | IL reachability emits a path for a reachable sink | Complete |  |
 | IL `Searched` -> `not_exploitable` (Main-rooted, hazard-free search) | Partial | [DOTNET-IL-FRAMEWORK-HAZARD](#dotnet-il-framework-hazard), [DOTNET-IL-NO-MAIN](#dotnet-il-no-main), [DOTNET-IL-REQUIRES-BUILD-OUTPUT](#dotnet-il-requires-build-output), [DOTNET-MULTI-PROJECT](#dotnet-multi-project), [DOTNET-DEP-ARTIFACT-MISS](#dotnet-dep-artifact-miss) |
 | Degrade to lexical on IL failure with `tool_failure` (never a clear) | Complete |  |
-| Trigger grounds (G1 version, G2 vetted symbols + Searched; did-not-run blocks) | Complete |  |
+| Clear grounds (resolved version, vetted symbols and a Searched sink; any did-not-run reason blocks) | Complete |  |
 | Lexical fallback paths for first-party sinks (candidate only) | Complete |  |
 | IL search rooted at recognized ingresses (controllers, handlers) | Planned |  |
-| Every verdict backed by positive grounds | Planned |  |
 
 ## 6. Framework & dynamic-dispatch modeling
 
@@ -95,7 +94,7 @@ Dependency-artifact misses are attributed to the advisories whose search they af
 
 | Feature | Status | Caveats |
 |---|---|---|
-| Dependency misses scoped to affected advisories (`ScopedReason`) | Partial | [DOTNET-DEP-ARTIFACT-MISS](#dotnet-dep-artifact-miss) |
+| Dependency misses scoped to affected advisories | Partial | [DOTNET-DEP-ARTIFACT-MISS](#dotnet-dep-artifact-miss) |
 | Framework/BCL boundary: out-of-set callee bodies | Partial | [DOTNET-IL-FRAMEWORK-HAZARD](#dotnet-il-framework-hazard) |
 | Trusted-framework-boundary relaxation (so a typical app can receive a clear) | Planned |  |
 | Typical project receives a clear | Partial | [DOTNET-IL-FRAMEWORK-HAZARD](#dotnet-il-framework-hazard) |
@@ -107,7 +106,7 @@ The .NET lane does not generate harnesses; confirmation rides the corpus repro-r
 | Feature | Status | Caveats |
 |---|---|---|
 | `generate_harness` | N/A |  |
-| Tegron PoNE sink-scheme mapping for .NET | Planned |  |
+| Sink-scheme mapping for the paid tier's proof of non-exploitability | Planned |  |
 | Patch-synthesis locator for .NET | Planned |  |
 | Published capability manifest | Planned |  |
 | Built-in advisory floor (3 public advisories) is a default floor, not coverage | Partial | [DOTNET-FLOOR-NOT-COVERAGE](#dotnet-floor-not-coverage) |
@@ -142,7 +141,7 @@ The .NET lane does not generate harnesses; confirmation rides the corpus repro-r
 
 **Trigger.** A NuGet dependency dll that is missing, unreadable, a reference-assembly stub, RID-unknown/ambiguous, or framework-supplied.
 
-**Effect.** Declared miss, attributed to the affected advisories (ScopedReason) and also run-wide; blocks the clear.
+**Effect.** Declared miss, attributed to the affected advisories and also run-wide; blocks the clear.
 
 ### DOTNET-ABSENT-CLOSED-BUILD-ONLY
 
@@ -202,7 +201,7 @@ The .NET lane does not generate harnesses; confirmation rides the corpus repro-r
 
 **Trigger.** SCIP symbols use a local placeholder coordinate (`scip-dotnet nuget . . Ns/Type#Method(arity).`).
 
-**Effect.** Symbol matching against external symbol sources depends on a pending re-spell.
+**Effect.** Symbol matching against external symbol sources does not apply.
 
 ### DOTNET-FLOOR-NOT-COVERAGE
 

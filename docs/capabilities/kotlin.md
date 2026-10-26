@@ -1,12 +1,12 @@
 # Kotlin capabilities
 
-Every feature in every capability group for Kotlin, with its status and the caveats that bound it. The [overview](README.md) explains the groups, statuses and stages.
+Every feature in every capability group for Kotlin, with its status and the caveats that bound it. The [overview](README.md) explains the groups and statuses.
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 0 / 🟥 0 | 🟩 4 / 🟨 1 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 6 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 0 |
+| C / P / L | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 0 / 🟥 0 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 6 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 0 |
 
-🟩 Complete or N/A, 🟨 Partial, 🟥 Planned.
+🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
 ## 1. Dependency inventory
 
@@ -15,7 +15,7 @@ Kotlin takes its dependency inventory from the build graph that Maven or Gradle 
 | Feature | Status | Caveats |
 |---|---|---|
 | Inventory from the build-tool-resolved graph (Maven + Gradle) | Complete | [KOTLIN-BUILD-GRAPH-ABSENT](#kotlin-build-graph-absent) |
-| Gradle lockfiles / start-script classpath as inventory source | N/A | the graph supersedes them; no file reads remain |
+| Gradle lockfiles / start-script classpath as inventory source | N/A | the build graph is the inventory source |
 | Multi-module / composite builds | Partial | [KOTLIN-MULTI-PROJECT](#kotlin-multi-project) |
 | Build of the other tool beside the graph's | Partial | [KOTLIN-BUILD-GRAPH-ABSENT](#kotlin-build-graph-absent) |
 | SBOM emission | Planned |  |
@@ -42,7 +42,6 @@ The host runs the repository's own Maven or Gradle to produce an `assay.buildgra
 | Runtime JDK from the graph | Complete |  |
 | Launch options / agents withheld | Complete |  |
 | Scopes (test, kapt, ksp excluded), private registries, vendoring | Partial | [KOTLIN-BUILD-GRAPH-ABSENT](#kotlin-build-graph-absent) |
-| delete the static build model | Planned |  |
 
 ## 4. Call graph
 
@@ -51,7 +50,7 @@ The call graph is built from bytecode with class-hierarchy analysis (CHA) over t
 | Feature | Status | Caveats |
 |---|---|---|
 | First-party bytecode ingestion (Gradle/Maven/IDE layouts) | Partial | [KOTLIN-BUILD-OUTPUT-LAYOUT](#kotlin-build-output-layout) |
-| Dependency JAR ingestion (CHA over closure) | Complete |  |
+| Dependency JAR ingestion (CHA over closure) | Complete | [KOTLIN-JAR-UNREADABLE](#kotlin-jar-unreadable) |
 | Symbol identity incl. Kotlin facades, `$default`, `access$` | Complete |  |
 | Advisory symbol resolution against the graph's dependency JAR | Partial | [KOTLIN-SYMBOL-NAME-FORM](#kotlin-symbol-name-form) |
 | Spring DI edges (unique resolution only) | Complete |  |
@@ -92,13 +91,13 @@ Ingress is recognized from bytecode annotations through the shared registry: Spr
 
 ## 7. Hazard bounding
 
-Engine hazards (reflection, unresolved invokedynamic, native, unloaded dependency, re-entry, unknown receiver) are scoped to the reachable frontier, so a hazard in code the search cannot reach from the root does not block a clear. Build-shape reasons (multi-project, launch entry, graph absent, other-tool build, launch options) are run-wide. The Kotlin clear rate has not been measured on a reference set.
+Engine hazards (reflection, unresolved invokedynamic, native, unloaded dependency, re-entry, unknown receiver) are scoped to the reachable frontier, so a hazard in code the search cannot reach from the root does not block a clear. Build-shape reasons (multi-project, launch entry, graph absent, other-tool build, launch options) are run-wide.
 
 | Feature | Status | Caveats |
 |---|---|---|
 | Frontier-scoped engine hazards | Complete |  |
 | Scoped dependency-closure reasons (`Targets`) | Complete |  |
-| Typical-project clear rate | Planned | unmeasured |
+| A typical project receives a clear | Planned |  |
 | Calls into classes absent from the linked classpath raise `unloaded_dependency` | Partial | [KOTLIN-UNLOADED-DEP](#kotlin-unloaded-dep) |
 
 ## 8. Runtime confirmation
@@ -121,7 +120,7 @@ The Kotlin lane produces the build manifest and symbol evidence the paid tier co
 
 ### KOTLIN-LAUNCH-ENTRY
 
-**Trigger.** No literal `mainClass`/`mainClassName`/`Main-Class`/`start-class` the interim check accepts: Spring Boot `main` with no configured mainClass, Ktor `EngineMain`, WAR packaging, container-callback class, unnamed launcher. The check still reads `build.gradle(.kts)`, `pom.xml`, start scripts and manifests (not the build graph).
+**Trigger.** No literal `mainClass`/`mainClassName`/`Main-Class`/`start-class` : Spring Boot `main` with no configured mainClass, Ktor `EngineMain`, WAR packaging, container-callback class, unnamed launcher.
 
 **Effect.** `relationship_unexpressed:{launch_entry_unnamed|launch_entry_unmapped|war_packaging|container_callback}`; run-wide withhold of Searched (reachable verdicts unaffected).
 
@@ -135,7 +134,7 @@ The Kotlin lane produces the build manifest and symbol evidence the paid tier co
 
 **Trigger.** A reachable method contains an `invokedynamic` site the engine does not resolve, or reflection. Resolved: `LambdaMetafactory.metafactory/altMetafactory` (Kotlin 2.x indy lambdas, SAM conversions) and `StringConcatFactory.makeConcat/makeConcatWithConstants` (string templates at jvmTarget >= 9). Still hazards: any other bootstrap or a site without a bootstrap entry, reflection, and string-concat arguments whose `toString` cannot be resolved: an `Object`/`Any`-typed or JDK-collection-typed template argument is an out-of-classpath receiver, so Undetermined.
 
-**Effect.** Depreach hazard (frontier-scoped) makes the search Undetermined with `reachability_undetermined`, plus `dynamic_dispatch`/`reflection` reasons.
+**Effect.** A frontier-scoped hazard makes the search Undetermined with `reachability_undetermined`, plus `dynamic_dispatch`/`reflection` reasons.
 
 ### KOTLIN-CALLGRAPH-OP-INDY
 

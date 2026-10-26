@@ -1,12 +1,12 @@
 # Python capabilities
 
-Every feature in every capability group for Python, with its status and the caveats that bound it. The [overview](README.md) explains the groups, statuses and stages.
+Every feature in every capability group for Python, with its status and the caveats that bound it. The [overview](README.md) explains the groups and statuses.
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 6 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 0 / 🟥 0 |
+| C / P / L | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 1 | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 0 |
 
-🟩 Complete or N/A, 🟨 Partial, 🟥 Planned.
+🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
 ## 1. Dependency inventory
 
@@ -86,14 +86,14 @@ Entry points are recognised for the three common Python web frameworks by decora
 
 | Feature | Status | Caveats |
 |---|---|---|
-| Flask / FastAPI / Starlette route decorators as ingress (route/get/post/put/delete/patch/options/head/trace/websocket/api_route) | Partial | [PYTHON-INGRESS-LEAF-MATCH](#python-ingress-leaf-match), [PYTHON-INGRESS-FRAMEWORKS](#python-ingress-frameworks) |
+| Flask / FastAPI route decorators as ingress (route/get/post/put/delete/patch/options/head/trace/websocket/api_route) | Partial | [PYTHON-INGRESS-LEAF-MATCH](#python-ingress-leaf-match), [PYTHON-INGRESS-FRAMEWORKS](#python-ingress-frameworks) |
 | Django URLconf, Celery tasks, raw WSGI/ASGI callables as ingress | Planned | [PYTHON-INGRESS-FRAMEWORKS](#python-ingress-frameworks) |
 | getattr / eval / exec / decorator rewriting / monkeypatching | Partial | [PYTHON-DYNAMIC-DISPATCH](#python-dynamic-dispatch) |
 | Dependency-injection / middleware modeling | Planned | [PYTHON-DYNAMIC-DISPATCH](#python-dynamic-dispatch) |
 
 ## 7. Hazard bounding
 
-Hazards are reported per call-graph run as machine-readable partiality reasons. The standing `dynamic_dispatch` is classified as an inherent limit and does not block a verdict; unrecognised reasons such as `tool_failure` and `dynamic_import_specifier` do.
+Hazards are reported per call-graph run as machine-readable partiality reasons. The standing `dynamic_dispatch` is classified as an inherent limit and does not block a verdict; unrecognised reasons such as `tool_failure` and `relationship_unexpressed:dynamic_import` do.
 
 | Feature | Status | Caveats |
 |---|---|---|
@@ -190,7 +190,7 @@ The lane hands the paid tier a call-graph path and the sink's package coordinate
 
 **Trigger.** Non-literal `importlib` / `__import__` / entry_points / walk_packages call.
 
-**Effect.** `dynamic_import_specifier` added; unrecognised by the classifier, so it makes the run `analysis_did_not_run`.
+**Effect.** `relationship_unexpressed:dynamic_import` added; unrecognised by the classifier, so it makes the run `analysis_did_not_run`.
 
 ### PYTHON-SYMBOL-IDENTITY-NAME-ARITY
 

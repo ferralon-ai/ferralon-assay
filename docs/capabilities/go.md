@@ -1,12 +1,12 @@
 # Go capabilities
 
-Every feature in every capability group for Go, with its status and the caveats that bound it. The [overview](README.md) explains the groups, statuses and stages.
+Every feature in every capability group for Go, with its status and the caveats that bound it. The [overview](README.md) explains the groups and statuses.
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 1 |
+| C / P / L | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 0 / 🟥 1 |
 
-🟩 Complete or N/A, 🟨 Partial, 🟥 Planned.
+🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
 ## 1. Dependency inventory
 
@@ -163,7 +163,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** Go.mod `go` directive below 1.21 with no `toolchain` line, on a stdlib/toolchain-ranged advisory, where the runner's Go may be older than the directive.
 
-**Effect.** The directive is taken as the build toolchain, which can read a vulnerable build as fixed. This is a possible unsound clear.
+**Effect.** The `go` directive is taken as the build toolchain version, which below 1.21 is a floor rather than the exact toolchain.
 
 ### GO-TOOLCHAIN-NOT-SCANNED
 

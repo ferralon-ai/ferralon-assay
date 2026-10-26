@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -41,7 +42,7 @@ func kotlinD1(payload []byte) string {
 	return b.String()
 }
 
-// kotlinUrlFetcher is UrlFetcher with a concrete fetch and @kotlin.Metadata(k = 1, d1, d2).
+// kotlinUrlFetcher is UrlFetcher with a concrete fetch and @kotlin.Metadata(k = 1, mv = {2, 2, 0}, d1, d2).
 // emitClassX ends with an empty class attributes table; the metadata replaces it, its
 // constants interned before the class is emitted.
 func kotlinUrlFetcher(d1 []byte) []byte {
@@ -50,10 +51,17 @@ func kotlinUrlFetcher(d1 []byte) []byte {
 	var anno bytes.Buffer
 	anno.Write(be2(1))
 	anno.Write(be2(b.utf8("Lkotlin/Metadata;")))
-	anno.Write(be2(3))
+	anno.Write(be2(4))
 	anno.Write(be2(b.utf8("k")))
 	anno.WriteByte('I')
 	anno.Write(be2(b.add("int:1", append([]byte{3}, be4(1)...))))
+	anno.Write(be2(b.utf8("mv")))
+	anno.WriteByte('[')
+	anno.Write(be2(3))
+	for _, v := range []uint32{2, 2, 0} {
+		anno.WriteByte('I')
+		anno.Write(be2(b.add(fmt.Sprintf("int:%d", v), append([]byte{3}, be4(v)...))))
+	}
 	for _, arr := range []struct {
 		name string
 		vals []string

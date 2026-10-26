@@ -113,12 +113,15 @@ func splitUnits(units []uint16, n int) []string {
 func mutf8(s string) string { return encodeMUTF8(utf16.Encode([]rune(s))) }
 
 func meta(kind int, records [][]byte, msg []byte, d2 ...string) *KotlinMetadata {
-	m := &KotlinMetadata{Kind: kind, Data1: d1UTF8(d1Payload(records, msg))}
+	m := &KotlinMetadata{Kind: kind, Version: kmv, Data1: d1UTF8(d1Payload(records, msg))}
 	for _, s := range d2 {
 		m.Data2 = append(m.Data2, mutf8(s))
 	}
 	return m
 }
+
+// kmv is the metadata version kotlinc 2.2 writes.
+var kmv = []int{2, 2, 0}
 
 const (
 	inlineFlags = 6 | kotlinFunctionInline
@@ -157,6 +160,28 @@ func TestKotlinInline(t *testing.T) {
 		owner:   "p/BKt",
 		methods: map[string]bool{"g": true, "g$default": true, "h": false, "absent": false},
 	}, {
+		name:    "metadata without a version fails closed",
+		cs:      classes{}.add("p/BKt", withVersion(meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "g"), nil)),
+		owner:   "p/BKt",
+		wantErr: true,
+	}, {
+		name:    "metadata of a later major version fails closed",
+		cs:      classes{}.add("p/BKt", withVersion(meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "g"), []int{3, 0, 0})),
+		owner:   "p/BKt",
+		wantErr: true,
+	}, {
+		name:    "an earlier major version is read",
+		cs:      classes{}.add("p/BKt", withVersion(meta(2, plainRecords(1), pl(3, fn(inlineFlags, 0)), "g"), []int{1, 9, 0})),
+		owner:   "p/BKt",
+		methods: map[string]bool{"g": true},
+	}, {
+		name: "multifile facade with a part of a later version fails closed",
+		cs: classes{}.
+			add("p/BKt", &KotlinMetadata{Kind: 4, Version: kmv, Data1: []string{"p/BKt__X"}}).
+			add("p/BKt__X", withVersion(meta(5, plainRecords(1), pl(3, fn(plainFlags, 0)), "g"), []int{3, 0, 0})),
+		owner:   "p/BKt",
+		wantErr: true,
+	}, {
 		name:    "absent flags are kotlinc's default, not inline",
 		cs:      classes{}.add("p/BKt", meta(2, plainRecords(1), pl(3, pv(2, 0)), "g")),
 		owner:   "p/BKt",
@@ -179,7 +204,7 @@ func TestKotlinInline(t *testing.T) {
 	}, {
 		name: "multifile facade (k=4) unions its parts",
 		cs: classes{}.
-			add("p/BKt", &KotlinMetadata{Kind: 4, Data1: []string{"p/BKt__X", "p/BKt__Y"}}).
+			add("p/BKt", &KotlinMetadata{Kind: 4, Version: kmv, Data1: []string{"p/BKt__X", "p/BKt__Y"}}).
 			add("p/BKt__X", meta(5, plainRecords(1), pl(3, fn(inlineFlags, 0)), "g")).
 			add("p/BKt__Y", meta(5, plainRecords(1), pl(3, fn(inlineFlags, 0)), "k")),
 		owner:   "p/BKt",
@@ -187,14 +212,14 @@ func TestKotlinInline(t *testing.T) {
 	}, {
 		name: "multifile facade with a part not loaded fails closed",
 		cs: classes{}.
-			add("p/BKt", &KotlinMetadata{Kind: 4, Data1: []string{"p/BKt__X", "p/BKt__Y"}}).
+			add("p/BKt", &KotlinMetadata{Kind: 4, Version: kmv, Data1: []string{"p/BKt__X", "p/BKt__Y"}}).
 			add("p/BKt__X", meta(5, plainRecords(1), pl(3, fn(plainFlags, 0)), "g")),
 		owner:   "p/BKt",
 		wantErr: true,
 	}, {
 		name: "multifile facade with a part of the wrong kind fails closed",
 		cs: classes{}.
-			add("p/BKt", &KotlinMetadata{Kind: 4, Data1: []string{"p/BKt__X"}}).
+			add("p/BKt", &KotlinMetadata{Kind: 4, Version: kmv, Data1: []string{"p/BKt__X"}}).
 			add("p/BKt__X", meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "g")),
 		owner:   "p/BKt",
 		wantErr: true,
@@ -213,28 +238,28 @@ func TestKotlinInline(t *testing.T) {
 	}, {
 		name: "DefaultImpls answers from its interface",
 		cs: classes{}.
-			add("p/I$DefaultImpls", &KotlinMetadata{Kind: 3}).
+			add("p/I$DefaultImpls", &KotlinMetadata{Kind: 3, Version: kmv}).
 			add("p/I", meta(1, plainRecords(1), pl(9, fn(inlineFlags, 0)), "g")),
 		owner:   "p/I$DefaultImpls",
 		methods: map[string]bool{"g": true},
 	}, {
 		name:    "other synthetic classes declare nothing",
-		cs:      classes{}.add("p/B$f$1", &KotlinMetadata{Kind: 3}),
+		cs:      classes{}.add("p/B$f$1", &KotlinMetadata{Kind: 3, Version: kmv}),
 		owner:   "p/B$f$1",
 		methods: map[string]bool{"invoke": false},
 	}, {
 		name:    "unknown kind fails closed",
-		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 6}),
+		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 6, Version: kmv}),
 		owner:   "p/B",
 		wantErr: true,
 	}, {
 		name:    "malformed annotation element fails closed",
-		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 2, malformed: "d1"}),
+		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 2, Version: kmv, malformed: "d1"}),
 		owner:   "p/B",
 		wantErr: true,
 	}, {
 		name:    "truncated protobuf fails closed",
-		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 2, Data1: d1UTF8(d1Payload(plainRecords(1), pl(3, fn(inlineFlags, 0)))[:6]), Data2: []string{"g"}}),
+		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 2, Version: kmv, Data1: d1UTF8(d1Payload(plainRecords(1), pl(3, fn(inlineFlags, 0)))[:6]), Data2: []string{"g"}}),
 		owner:   "p/B",
 		wantErr: true,
 	}, {
@@ -411,7 +436,7 @@ func TestKotlinDecodeBytesModes(t *testing.T) {
 			if !reflect.DeepEqual(got, payload) {
 				t.Fatalf("decoded %x, want %x", got, payload)
 			}
-			cs := classes{}.add("p/BKt", &KotlinMetadata{Kind: 2, Data1: d1, Data2: []string{"g", "h"}})
+			cs := classes{}.add("p/BKt", &KotlinMetadata{Kind: 2, Version: kmv, Data1: d1, Data2: []string{"g", "h"}})
 			if in, err := KotlinInline(MethodRef{Owner: "p/BKt", Name: "g"}, cs.lookup); err != nil || !in {
 				t.Fatalf("g inline = %v, %v", in, err)
 			}
@@ -451,7 +476,7 @@ func TestKotlinMetadataNeverPanics(t *testing.T) {
 			d1 = d1Packed(payload, true)
 		}
 		for _, k := range []int{1, 2, 5} {
-			cs := classes{}.add("p/B", &KotlinMetadata{Kind: k, Data1: d1, Data2: []string{"g", "x"}})
+			cs := classes{}.add("p/B", &KotlinMetadata{Kind: k, Version: kmv, Data1: d1, Data2: []string{"g", "x"}})
 			_, _ = KotlinInline(MethodRef{Owner: "p/B", Name: "g"}, cs.lookup)
 		}
 	}
@@ -549,3 +574,5 @@ func TestParseClass_KotlinMetadata(t *testing.T) {
 		}
 	})
 }
+
+func withVersion(m *KotlinMetadata, v []int) *KotlinMetadata { m.Version = v; return m }

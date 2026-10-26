@@ -183,8 +183,8 @@ func KotlinInlineWithheld(ref MethodRef, class func(name string) (*Class, bool))
 // kotlinInlineNames returns the JVM names of the methods c's metadata declares inline.
 func kotlinInlineNames(c *Class, class func(name string) (*Class, bool)) (map[string]bool, error) {
 	m := c.KotlinMetadata
-	if m.malformed != "" {
-		return nil, fmt.Errorf("malformed element %s", m.malformed)
+	if err := m.readable(); err != nil {
+		return nil, err
 	}
 	switch m.Kind {
 	case 1, 2, 5:
@@ -253,10 +253,32 @@ func deferredMetadata(class func(name string) (*Class, bool), name string, kind 
 		return nil, fmt.Errorf("class %s is not loaded", name)
 	}
 	m := c.KotlinMetadata
-	if m == nil || m.malformed != "" || m.Kind != kind {
-		return nil, fmt.Errorf("class %s has no readable kind-%d metadata", name, kind)
+	if m == nil || m.Kind != kind {
+		return nil, fmt.Errorf("class %s has no kind-%d metadata", name, kind)
+	}
+	if err := m.readable(); err != nil {
+		return nil, fmt.Errorf("class %s: %w", name, err)
 	}
 	return m, nil
+}
+
+// kotlinMaxMajor is the highest metadata major version whose layout the decoder reads. A
+// later major may move the fields or flag bits it relies on, so that metadata answers nothing.
+const kotlinMaxMajor = 2
+
+// readable reports why m cannot be decoded: a malformed element, or a metadata version
+// (mv) that is absent or outside the layouts the decoder knows.
+func (m *KotlinMetadata) readable() error {
+	if m.malformed != "" {
+		return fmt.Errorf("malformed element %s", m.malformed)
+	}
+	if len(m.Version) == 0 {
+		return errors.New("no metadata version")
+	}
+	if major := m.Version[0]; major < 1 || major > kotlinMaxMajor {
+		return fmt.Errorf("metadata version %v is not supported", m.Version)
+	}
+	return nil
 }
 
 // Flag bits (kotlinc Flags): a function's IS_INLINE and a property accessor's

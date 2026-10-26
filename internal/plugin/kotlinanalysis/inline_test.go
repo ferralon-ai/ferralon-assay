@@ -1,6 +1,7 @@
 package kotlinanalysis
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -45,11 +46,15 @@ var (
 	plainFunctionD1  = []byte{0x02, 0x0A, 0x00, 0x1A, 0x04, 0x48, 0x06, 0x10, 0x00}
 )
 
-// addKotlinMetadata attaches @kotlin.Metadata(k = kind, d1 = d1, d2 = d2).
+// addKotlinMetadata attaches @kotlin.Metadata(k = kind, mv = {2, 2, 0}, d1 = d1, d2 = d2).
 func (b *kclassBuilder) addKotlinMetadata(kind int32, d1, d2 []string) {
-	out := append(be2(b.utf8("Lkotlin/Metadata;")), be2(3)...)
+	out := append(be2(b.utf8("Lkotlin/Metadata;")), be2(4)...)
 	k := b.add("int:k", append([]byte{cpIntegerTag}, be4(uint32(kind))...))
 	out = append(append(append(out, be2(b.utf8("k"))...), 'I'), be2(k)...)
+	out = append(append(append(out, be2(b.utf8("mv"))...), '['), be2(3)...)
+	for _, v := range []uint32{2, 2, 0} {
+		out = append(append(out, 'I'), be2(b.add(fmt.Sprintf("int:mv%d", v), append([]byte{cpIntegerTag}, be4(v)...)))...)
+	}
 	for _, arr := range []struct {
 		name string
 		vals []string

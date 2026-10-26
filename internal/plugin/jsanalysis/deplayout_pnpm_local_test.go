@@ -59,6 +59,8 @@ func TestPnpmNonFrozenManifestKeys(t *testing.T) {
 			"package.json": man(`,"pnpm":{"patchedDependencies":{"q@2.0.0":"patches/q.patch"}}`), "patches/q.patch": patch, "pnpm-lock.yaml": lock("")}, true},
 		"ignored_optional_manifest_unrecorded": {map[string]string{
 			"package.json": man(`,"pnpm":{"ignoredOptionalDependencies":["fsevents"]}`), "pnpm-lock.yaml": lock("")}, true},
+		"ignored_optional_lock_flow": {map[string]string{
+			"package.json": man(""), "pnpm-lock.yaml": lock("ignoredOptionalDependencies: [fsevents]\n\n")}, true},
 		// Controls: the workspace file is read by both versions; empty values set nothing.
 		"control_patched_workspace": {map[string]string{
 			"package.json": man(""), "pnpm-workspace.yaml": "patchedDependencies:\n  q@2.0.0: patches/q.patch\n", "patches/q.patch": patch, "pnpm-lock.yaml": patchedLock}, false},
@@ -118,6 +120,16 @@ func TestPnpmNonFrozenLocalTarball(t *testing.T) {
 	}
 	block := func(integrity string) string { return "\n      integrity: " + integrity + "\n      tarball: " + spec }
 	swapped, same := "tarball bytes after a swap", locked
+	// pnpm 10 writes a bracketed path as a single-quoted flow value.
+	const bracket = "file:vendor/x[1].tgz"
+	quoted := func(integrity string) string { return "{integrity: " + integrity + ", tarball: '" + bracket + "'}" }
+	bracketTree := func(bytes string) map[string]string {
+		return map[string]string{
+			"package.json":    rootManifest(`{"x":"` + bracket + `"}`),
+			"pnpm-lock.yaml":  localLock(bracket, quoted(sriOf(locked)), ": {}"),
+			"vendor/x[1].tgz": bytes,
+		}
+	}
 	for name, tc := range map[string]struct {
 		files    map[string]string
 		withheld bool
@@ -129,6 +141,13 @@ func TestPnpmNonFrozenLocalTarball(t *testing.T) {
 		"control_unchanged":    {tree(&same, res(sriOf(locked))), false},
 		"control_block_form":   {tree(&same, block(sriOf(locked))), false},
 		"control_http_tarball": {registryHostedTarball(), false},
+		// A quoted flow value is unquoted and hashed; a swap is seen, an unchanged file is read.
+		"quoted_flow_swapped":           {bracketTree(swapped), true},
+		"control_quoted_flow_unchanged": {bracketTree(locked), false},
+		"double_quoted_flow_swapped": {func() map[string]string {
+			f := tree(&swapped, "{integrity: "+sriOf(locked)+", tarball: \""+spec+"\"}")
+			return f
+		}(), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := nonFrozenWithheld(t, tc.files); got != tc.withheld {
@@ -136,6 +155,17 @@ func TestPnpmNonFrozenLocalTarball(t *testing.T) {
 			}
 		})
 	}
+	t.Run("absolute_path", func(t *testing.T) {
+		const abs = "file:/vendor/x.tgz"
+		f := map[string]string{
+			"package.json":   rootManifest(`{"x":"` + abs + `"}`),
+			"pnpm-lock.yaml": localLock(abs, "{integrity: "+sriOf(locked)+", tarball: "+abs+"}", ": {}"),
+			"vendor/x.tgz":   locked,
+		}
+		if !nonFrozenWithheld(t, f) {
+			t.Error("an absolute path names a file outside the root, whatever sits at the same path under it")
+		}
+	})
 	t.Run("outside_root", func(t *testing.T) {
 		f := tree(&same, res(sriOf(locked)))
 		f["pnpm-lock.yaml"] = strings.ReplaceAll(f["pnpm-lock.yaml"], "vendor/x.tgz", "../x.tgz")
@@ -203,6 +233,16 @@ func TestPnpmNonFrozenLocalDirectory(t *testing.T) {
 			t.Error("a directory outside the root must withhold")
 		}
 	})
+	t.Run("suffixed_key_dependency_moved", func(t *testing.T) {
+		l := localLock(spec, "{directory: libs/x, type: directory}", ":\n    dependencies:\n      q: 1.0.0")
+		l = strings.Replace(l, "        version: "+spec+"\n", "        version: "+spec+"(q@1.0.0)\n", 1)
+		l = strings.Replace(l, "\n  x@"+spec+":\n    dependencies", "\n  x@"+spec+"(q@1.0.0):\n    dependencies", 1)
+		f := tree(`{"name":"x","version":"1.0.0","dependencies":{"q":"2.0.0"}}`)
+		f["pnpm-lock.yaml"] = l
+		if !nonFrozenWithheld(t, f) {
+			t.Error("a peer-suffixed directory key still names a directory whose dependency moved")
+		}
+	})
 	t.Run("peer_dependency_in_lock_only", func(t *testing.T) {
 		f := tree(`{"name":"x","version":"1.0.0","dependencies":{"q":"1.0.0"}}`)
 		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "    version: 1.0.0\n\nsnapshots", "    version: 1.0.0\n    peerDependencies:\n      p: '1'\n\nsnapshots", 1)
@@ -210,6 +250,7 @@ func TestPnpmNonFrozenLocalDirectory(t *testing.T) {
 			t.Error("a peer dependency the lock records but the manifest lacks must withhold")
 		}
 	})
+	// Deliberate deviation from pnpm (see localDirectoryHolds): the suffix is cut before the compare.
 	t.Run("control_locked_version_with_peer_suffix", func(t *testing.T) {
 		f := tree(`{"name":"x","version":"1.0.0","dependencies":{"q":"1.0.0"}}`)
 		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "      q: 1.0.0", "      q: 1.0.0(r@1.0.0)", 1)
@@ -261,6 +302,41 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 			}
 		})
 	}
+	// Link half of linkedPackagesAreUpToDate: the lock links packages/t for a ^1.0.0 specifier.
+	linked := func(spec, memberVersion string) map[string]string {
+		return map[string]string{
+			"package.json":              `{"name":"root","private":true}`,
+			"pnpm-workspace.yaml":       "packages:\n  - 'packages/*'\n",
+			"packages/app/package.json": `{"name":"app","version":"1.0.0","dependencies":{"t":"` + spec + `"}}`,
+			"packages/t/package.json":   `{"name":"t","version":"` + memberVersion + `"}`,
+			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n\n  packages/app:\n    dependencies:\n      t:\n        specifier: " + spec +
+				"\n        version: link:../t\n\n  packages/t: {}\n",
+		}
+	}
+	for name, tc := range map[string]struct {
+		files    map[string]string
+		withheld bool
+	}{
+		"link_member_bumped_past_range": {linked("^1.0.0", "2.0.0"), true},
+		"link_member_below_range":       {linked("^1.0.0", "0.9.0"), true},
+		"control_link_member_in_range":  {linked("^1.0.0", "1.4.0"), false},
+		"control_link_caret_only":       {linked("^", "2.0.0"), false},
+		"control_link_dist_tag":         {linked("latest", "2.0.0"), false},
+		"control_link_workspace_range":  {linked("workspace:^1.0.0", "1.4.0"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := nonFrozenWithheld(t, tc.files); got != tc.withheld {
+				t.Errorf("withheld = %v, want %v", got, tc.withheld)
+			}
+		})
+	}
+	t.Run("link_member_missing", func(t *testing.T) {
+		f := linked("^1.0.0", "1.4.0")
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "link:../t", "link:../gone", 1)
+		if !nonFrozenWithheld(t, f) {
+			t.Error("a linked dependency whose member cannot be read must withhold")
+		}
+	})
 	t.Run("control_workspace_protocol", func(t *testing.T) {
 		f := tree("q", "1.0.0")
 		maps.Copy(f, map[string]string{

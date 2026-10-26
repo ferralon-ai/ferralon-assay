@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -63,7 +64,8 @@ type localResolution struct {
 }
 
 // readLocalResolution reads res, a resolution mapping written in block or flow form. ok is false
-// for a local source the lane cannot read exactly: a quoted value, or a flow map it cannot split.
+// for a local source the lane cannot read exactly: a block value that is quoted or nested, or a
+// flow map it cannot split into plain and single-quoted scalars.
 func readLocalResolution(res *ynode) (r localResolution, ok bool) {
 	if res == nil {
 		return r, true
@@ -82,15 +84,18 @@ func readLocalResolution(res *ynode) (r localResolution, ok bool) {
 		}
 		body, closed := strings.CutPrefix(strings.TrimSpace(res.val), "{")
 		body, closed2 := strings.CutSuffix(body, "}")
-		if !closed || !closed2 || strings.ContainsAny(body, "\"'{}[]") {
+		if !closed || !closed2 {
 			return r, false
 		}
-		for _, part := range strings.Split(body, ",") {
+		for _, part := range strings.Split(body, ", ") {
 			k, v, found := strings.Cut(part, ": ")
 			if !found {
 				return r, false
 			}
-			v = strings.TrimSpace(v)
+			v, ok := flowScalar(strings.TrimSpace(v))
+			if !ok || strings.ContainsAny(k, "\"'{}[]") {
+				return r, false
+			}
 			switch strings.TrimSpace(k) {
 			case "tarball":
 				tarball = v
@@ -110,6 +115,23 @@ func readLocalResolution(res *ynode) (r localResolution, ok bool) {
 		r.kind, r.rel = "tarball", strings.TrimPrefix(tarball, "file:")
 	}
 	return r, true
+}
+
+// flowScalar reads one value of a flow mapping: a plain scalar, or a single-quoted one whose
+// only escape is a doubled quote. Anything else (double quotes, flow collections, anchors, tags,
+// comments, block indicators) is not read, and neither is a value a ", " split may have cut.
+func flowScalar(v string) (string, bool) {
+	if inner, ok := strings.CutPrefix(v, "'"); ok {
+		inner, ok = strings.CutSuffix(inner, "'")
+		if !ok || strings.Contains(strings.ReplaceAll(inner, "''", ""), "'") {
+			return "", false
+		}
+		return strings.ReplaceAll(inner, "''", "'"), true
+	}
+	if v == "" || strings.ContainsAny(v, "\"'{}[]#") || strings.ContainsAny(v[:1], "&*!|>%@`") {
+		return "", false
+	}
+	return v, true
 }
 
 // localPath resolves rel (relative to the lock's directory) under the region root. A path the
@@ -225,6 +247,10 @@ func (p *pnpmLock) localDirectoryHolds(rel string, meta, snap *ynode) bool {
 			if strings.HasPrefix(spec, "file:") || strings.HasPrefix(spec, "link:") || strings.HasPrefix(spec, "workspace:") {
 				continue
 			}
+			// Deliberate deviation from pnpm: its semver.satisfies reads a peer-suffixed locked
+			// value as no version and re-resolves. The lane compares the bare version, so a
+			// suffixed lock is read where pnpm re-resolves; a re-resolve with nothing else changed
+			// should reproduce the lock (not run on a binary).
 			locked, _, _ = strings.Cut(locked, "(")
 			if strings.HasPrefix(spec, "npm:") || locked != spec && !rangeSatisfied(locked, spec) {
 				return false
@@ -234,19 +260,37 @@ func (p *pnpmLock) localDirectoryHolds(rel string, meta, snap *ynode) bool {
 	return true
 }
 
-// noMemberShadow mirrors linkedPackagesAreUpToDate for a registry-locked dependency. With
-// link-workspace-packages on, a workspace member with the dependency's name and exactly its
-// locked version makes pnpm see a link where the lock holds a registry copy, so it re-resolves
-// and links the member: the lane would analyse the registry bytes while pnpm installs the
-// member's source. The setting is not read here. pnpm 10 takes it from .npmrc, pnpm 11 from
-// pnpm-workspace.yaml (which the lane withholds), pnpm 8 defaults it on, and a command-line flag or
-// environment variable sets it where the tree cannot show it; so a matching member withholds
-// whatever the files say. pnpm also requires the member's version to satisfy the specifier, which
-// holds for a lock that passed the importer's version-in-range check, so it is not retested.
+// noMemberShadow mirrors linkedPackagesAreUpToDate (pnpm 10.34.8 and 11.20.0), which compares
+// what the lock links with what the workspace members now offer. The link-workspace-packages
+// setting is not read: pnpm 10 takes it from .npmrc, pnpm 11 from pnpm-workspace.yaml, pnpm 8
+// defaults it on, and a command-line flag or environment variable sets it where the tree cannot
+// show it. Both halves therefore withhold whatever the files say.
+//
+//   - Registry half: with the setting on, a workspace member with the dependency's name and
+//     exactly its locked version makes pnpm see a link where the lock holds a registry copy
+//     (isLinked false, the member satisfies the range), so it re-resolves and links the member:
+//     the lane would analyse the registry bytes while pnpm installs the member's source. pnpm
+//     also requires the member's version to satisfy the specifier, which holds for a lock that
+//     passed the importer's version-in-range check, so it is not retested.
+//   - Link half: a dependency locked as link: whose specifier is a semver range is re-resolved
+//     to the registry when the member it links no longer satisfies that range (isLinked true,
+//     localPackageSatisfiesRange false). pnpm skips link:, file: and workspace: specifiers, a
+//     dist-tag, and the ranges "*", "^" and "~". The member is looked up among the workspace
+//     manifests; one that is missing cannot be read here, so it withholds.
 func (p *pnpmLock) noMemberShadow(cfg *pnpmConfig) bool {
-	for _, rec := range p.imps {
+	for key, rec := range p.imps {
+		dir := strings.TrimPrefix(strings.TrimPrefix(key, p.region.prefix), "/")
+		if dir == "" {
+			dir = "."
+		}
 		for _, fields := range rec.fields {
 			for name, v := range fields {
+				if target, linked := strings.CutPrefix(v, "link:"); linked {
+					if !p.linkHolds(cfg, rec.specifiers[name], path.Join(dir, target)) {
+						return false
+					}
+					continue
+				}
 				v, _, _ = strings.Cut(v, "(")
 				for _, m := range cfg.manifests {
 					ver := m.Version
@@ -262,3 +306,21 @@ func (p *pnpmLock) noMemberShadow(cfg *pnpmConfig) bool {
 	}
 	return true
 }
+
+// linkHolds reports whether the member at memberDir still satisfies spec, the specifier of a
+// dependency the lock links.
+func (p *pnpmLock) linkHolds(cfg *pnpmConfig, spec, memberDir string) bool {
+	switch {
+	case spec == "*", spec == "^", spec == "~",
+		strings.HasPrefix(spec, "link:"), strings.HasPrefix(spec, "file:"), strings.HasPrefix(spec, "workspace:"):
+		return true
+	case npmTagSpec.MatchString(spec):
+		return true
+	}
+	m := cfg.manifests[memberDir]
+	return m != nil && rangeSatisfied(m.Version, spec)
+}
+
+// npmTagSpec matches a dist-tag specifier. A name beginning with v or x could be a range
+// (v1, x), so it is not taken for a tag.
+var npmTagSpec = regexp.MustCompile(`^[A-UWYZa-uwyz][A-Za-z0-9._-]*$`)

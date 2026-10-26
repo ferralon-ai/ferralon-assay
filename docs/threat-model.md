@@ -42,9 +42,10 @@ is the default; `-dependency-code=off` or `offline` (`ASSAY_DEPENDENCY_CODE`, th
 `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token is presented only to the
 host the `.npmrc` binds it to. The scanned branch's `.npmrc` chooses that host, as it does for
 `npm ci`: whoever can change the `.npmrc` on a scanned branch can direct any of those tokens the job
-exports to a host they control. Pull-request workflows from forks get no secrets, so the exposure is
-to same-repository authors and to workflows that export a token to fork code (`pull_request_target`,
-or a token placed in the job env). The control is `dependency-code: off`, or not exporting
+exports to a host they control. Pull-request workflows from forks get no secrets by default, so the exposure is
+to same-repository authors and to workflows that hand a token to fork code (`pull_request_target`,
+a private repository's "send secrets to workflows from fork pull requests" setting, or a token placed
+in the job env). The control is `dependency-code: off`, or not exporting
 `NODE_AUTH_TOKEN`, `NPM_TOKEN` or the named variables on jobs that scan pull requests.
 
 Unless `dependency-code` is `off`, the Action keeps the fetched tarballs in the GitHub Actions cache,

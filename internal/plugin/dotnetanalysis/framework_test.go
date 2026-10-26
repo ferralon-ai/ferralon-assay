@@ -714,6 +714,10 @@ func TestFramework_Searched(t *testing.T) {
 		{name: "a JSON value of a primitive", app: appCall(func(a *fwApp) uint32 {
 			return a.fwRef("System.Text.Json.Nodes", "JsonValue", "Create", []byte{0x00, 0x01, 0x1C, 0x08})
 		}), wantSearched: true},
+		{name: "a JSON array of a generic type", app: appPayload(payloadOpts{}, func(a *fwApp, p uint32) []byte {
+			return atPayload(a, a.refIn("System.Text.Json", "System.Text.Json.Nodes", "JsonArray", "Add", []byte{0x30, 0x01, 0x01, 0x01, 0x1E, 0x00}), p) // instance void Add<T>(!!0)
+		}), reason: plugin.PartialReasonReflection, wantReason: true},
+
 		// Property accessors of an instantiated type are re-entry roots: the framework reads
 		// the properties of objects it is handed by reflection, whichever member does it.
 		{name: "a diagnostic payload's getter is a re-entry root", app: appPayload(payloadOpts{}, diagnosticWrite),

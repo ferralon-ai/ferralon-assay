@@ -751,8 +751,12 @@ var fwHazardMembers = map[nameKey]bool{
 
 // nameHazard reports the hazards a member name alone does not settle: a cryptography
 // factory's Create(string), which builds whatever CryptoConfig resolves the name to, and
-// the generic members that reflect over their type argument (EventSource.Write<T> reads
-// T's properties, JsonValue.Create<T> serializes T later).
+// generic members that build a reflection model of their type argument. A generic
+// System.Text.Json.Nodes member (JsonValue.Create<T>, JsonArray.Add<T>, GetValue<T>)
+// resolves T's contract through the default serializer, which constructs any converter T
+// names by attribute; EventSource.Write<T> builds TraceLogging type information over T.
+// Property reads alone are covered by the accessor re-entry roots; these construct or
+// walk more than that.
 func nameHazard(owner, name string, sig MethodSignature, generic bool) bool {
 	if name == "Create" && strings.HasPrefix(owner, "System.Security.Cryptography.") &&
 		!strings.Contains(owner[len("System.Security.Cryptography."):], ".") &&
@@ -760,8 +764,10 @@ func nameHazard(owner, name string, sig MethodSignature, generic bool) bool {
 		return true
 	}
 	if generic {
-		switch (nameKey{owner, name}) {
-		case nameKey{"System.Diagnostics.Tracing.EventSource", "Write"}, nameKey{"System.Text.Json.Nodes.JsonValue", "Create"}:
+		if strings.HasPrefix(owner, "System.Text.Json.Nodes.") {
+			return true
+		}
+		if owner == "System.Diagnostics.Tracing.EventSource" && name == "Write" {
 			return true
 		}
 	}

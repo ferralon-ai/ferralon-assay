@@ -86,6 +86,11 @@ func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...jav
 	mains := mainMethodRefs(prog.classes)
 	mains = append(mains, companionInitRoots(all, mains)...)
 	frameworks := frameworkIngressRefs(prog.classes)
+	// A class whose supertype the run's classpath lacks cannot link: only when that classpath
+	// is the loaded one (every runtime JAR listed and read, no run-wide closure reason, every
+	// first-party class read from the one traced project), the build's own, which a licensed
+	// launch runs on (a named first-party main, no other entry shape).
+	engine.SetLinked(deps.listed && len(deps.reasons) == 0 && !prog.loadFailed && !multiProject && len(entryReasons) == 0 && len(mains) > 0)
 
 	var paths []plugin.ReachPath
 	var searched []string

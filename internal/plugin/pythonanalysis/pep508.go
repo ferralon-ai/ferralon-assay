@@ -218,10 +218,7 @@ func declaredDependency(spec, source string) (plugin.ResolvedDependency, bool) {
 	if !ok {
 		return plugin.ResolvedDependency{}, false
 	}
-	version, resolved := "", false
-	if r.URL == "" {
-		version, resolved = specifierPin(r.Specifier)
-	}
+	version, resolved := specifierPin(r.Specifier)
 	d := pyResolved(r.Name, version, resolved, source)
 	if !d.Resolved {
 		d.Constraint = r.Specifier

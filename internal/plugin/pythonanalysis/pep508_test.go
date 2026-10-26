@@ -29,3 +29,25 @@ func TestParenthesizedSpecifierName(t *testing.T) {
 		})
 	}
 }
+
+// specifierPin resolves only an exact first-clause "==X": an arbitrary-equality "===", a
+// prefix match, a range, and an empty specifier all leave the version unresolved.
+func TestSpecifierPin(t *testing.T) {
+	for _, tt := range []struct {
+		specifier, version string
+		resolved           bool
+	}{
+		{"==2.8.0", "2.8.0", true},
+		{"==2.8.0,<3", "2.8.0", true},
+		{"===2.8.0", "", false},
+		{"==2.*", "", false},
+		{">=2", "", false},
+		{"<3,==2.8.0", "", false},
+		{"==", "", false},
+		{"", "", false},
+	} {
+		if v, ok := specifierPin(tt.specifier); v != tt.version || ok != tt.resolved {
+			t.Errorf("specifierPin(%q) = %q, %v; want %q, %v", tt.specifier, v, ok, tt.version, tt.resolved)
+		}
+	}
+}

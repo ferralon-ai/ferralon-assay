@@ -94,7 +94,7 @@ func TestReachability_BindsToTheBuiltTargetFramework(t *testing.T) {
 			t.Setenv("NUGET_PACKAGES", t.TempDir())
 			pkgRoot := t.TempDir()
 			files := map[string][]byte{
-				"App.csproj":              []byte("<Project></Project>"),
+				"App.csproj":              restoredProject,
 				"obj/project.assets.json": twoTargetAssets(pkgRoot),
 			}
 			for k, v := range c.dlls {
@@ -129,7 +129,7 @@ func TestReachability_BindsToTheBuiltTargetFramework(t *testing.T) {
 func TestReachability_MultipleProjectsUnsupported(t *testing.T) {
 	for _, extra := range []string{"", "Web/Web.csproj"} {
 		files := map[string][]byte{
-			"App.csproj":              []byte("<Project></Project>"),
+			"App.csproj":              restoredProject,
 			"bin/App.dll":             appCalling(nil, false, true),
 			"bin/Dep.dll":             depWithBoomOverloads(false),
 			"obj/project.assets.json": depAssetsJSON("Dep/1.0.0"),
@@ -269,7 +269,7 @@ func TestReachability_RuntimeSpecificAssets(t *testing.T) {
 				`"runtime":{"lib/net8.0/Newtonsoft.Json.dll":{}}}}},` +
 				`"libraries":{` + newtonsoftLib + `},"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
 			files := map[string][]byte{
-				"App.csproj":              []byte("<Project></Project>"),
+				"App.csproj":              restoredProject,
 				"obj/project.assets.json": []byte(assets),
 			}
 			for k, v := range c.files {

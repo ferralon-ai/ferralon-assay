@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -22,8 +23,8 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "" {
-			t.Errorf("version = %q, want empty", v)
+		if v.Version != "" {
+			t.Errorf("version = %q, want empty", v.Version)
 		}
 		if len(flags) != 1 || flags[0] != plugin.PartialReasonNoManifest {
 			t.Fatalf("flags = %v, want [%s]", flags, plugin.PartialReasonNoManifest)
@@ -52,8 +53,8 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "" {
-			t.Errorf("version = %q, want empty", v)
+		if v.Version != "" {
+			t.Errorf("version = %q, want empty", v.Version)
 		}
 		if len(flags) != 0 {
 			t.Fatalf("an honest absence must disclose nothing, got %v", flags)
@@ -67,8 +68,8 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "v0.3.6" {
-			t.Errorf("version = %q, want v0.3.6", v)
+		if v.Version != "v0.3.6" {
+			t.Errorf("version = %q, want v0.3.6", v.Version)
 		}
 		if len(flags) != 0 {
 			t.Fatalf("a resolved version must disclose nothing, got %v", flags)
@@ -152,5 +153,55 @@ func TestExposureFootprint_HarvestsReachabilityPartialityWithZeroPaths(t *testin
 	}
 	if fp.ReachablePathCount != 0 {
 		t.Errorf("ReachablePathCount = %d, want 0", fp.ReachablePathCount)
+	}
+}
+
+// Scoped limits reach the footprint from every axis that carries them, Targets intact, and stay
+// out of the run-wide flags.
+func TestExposureFootprint_HarvestsScopedPartiality(t *testing.T) {
+	assessments := assessment.NewMemStore()
+	store := artifact.NewMemStore()
+	a, err := assessments.Create(assessment.Request{Vulnerability: assessment.VulnRef{ID: "GO-2021-0113"}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	put := func(typ artifact.Type, v any) {
+		t.Helper()
+		payload, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := store.Put(&artifact.Artifact{AssessmentID: a.ID, Type: typ, ProducedBy: "test", Payload: payload}); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	scoped := func(reason, pkg string) plugin.Partiality {
+		return plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: reason, Package: pkg, Path: "p", Targets: []string{"", pkg}}}}
+	}
+	put(artifact.TypeIngressMap, plugin.IngressResult{Partiality: scoped(plugin.PartialReasonToolFailure, "pkg:npm/a")})
+	put(artifact.TypeReachability, map[string]any{"reachability": plugin.ReachabilityResult{Partiality: scoped(plugin.PartialReasonCgo, "pkg:golang/b")}})
+	put(artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{Partiality: scoped(plugin.PartialReasonReflection, "pkg:maven/c/d")})
+
+	if err := (exposureFootprintStage{}).Run(context.Background(), a, store); err != nil {
+		t.Fatalf("exposureFootprintStage.Run: %v", err)
+	}
+	arts, err := store.Query(a.ID, artifact.TypeExposureFootprint)
+	if err != nil || len(arts) == 0 {
+		t.Fatalf("Query footprint: %v (%d artifacts)", err, len(arts))
+	}
+	var fp artifact.ExposureFootprintPayload
+	if err := json.Unmarshal(arts[0].Payload, &fp); err != nil {
+		t.Fatalf("unmarshal footprint: %v", err)
+	}
+	want := []artifact.ScopedPartialityFlag{
+		{Reason: plugin.PartialReasonToolFailure, Package: "pkg:npm/a", Path: "p", Targets: []string{"", "pkg:npm/a"}},
+		{Reason: plugin.PartialReasonCgo, Package: "pkg:golang/b", Path: "p", Targets: []string{"", "pkg:golang/b"}},
+		{Reason: plugin.PartialReasonReflection, Package: "pkg:maven/c/d", Path: "p", Targets: []string{"", "pkg:maven/c/d"}},
+	}
+	if !reflect.DeepEqual(fp.ScopedPartiality, want) {
+		t.Fatalf("ScopedPartiality = %+v, want %+v", fp.ScopedPartiality, want)
+	}
+	if len(fp.PartialityFlags) != 0 {
+		t.Errorf("PartialityFlags = %v, want scoped limits kept out of the run-wide flags", fp.PartialityFlags)
 	}
 }

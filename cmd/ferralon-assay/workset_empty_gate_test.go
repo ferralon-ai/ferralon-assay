@@ -42,7 +42,7 @@ func treeFor(t *testing.T, language string, canaries bool) *acquired {
 	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", file, err)
 	}
-	acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", canaries)
+	acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", canaries, graphRequest{mode: buildGraphOff})
 	if err != nil {
 		t.Fatalf("acquireTarget(%s, canaries=%v): %v", language, canaries, err)
 	}
@@ -290,11 +290,8 @@ type mavenInventoryPlugin struct {
 }
 
 func (mavenInventoryPlugin) ResolveDependencyVersions(context.Context, plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
-	return plugin.DependencyVersionResult{
-		All: []plugin.ResolvedDependency{
-			{Coordinate: "com.example.lib:widget", Version: "1.0.0", Resolved: true},
-		},
-	}, nil
+	widget := plugin.ResolvedDependency{Coordinate: "com.example.lib:widget", Version: "1.0.0", Resolved: true}
+	return plugin.DependencyVersionResult{Found: true, Match: widget, All: []plugin.ResolvedDependency{widget}}, nil
 }
 
 // stubOSV installs an http.DefaultTransport that answers OSV.dev's querybatch with the given

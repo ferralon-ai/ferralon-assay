@@ -60,6 +60,7 @@ type program struct {
 // fileParse pairs a parsed file with its package (needed to qualify call-site
 // callers/callees into SCIP ids).
 type fileParse struct {
+	path      string // source file path under the build dir
 	pkg       string
 	decls     []decl
 	calls     []callSite
@@ -112,7 +113,7 @@ func loadProgram(buildDir string) (*program, error) {
 		if pr.skipped {
 			prog.skipped = true
 		}
-		fp := fileParse{pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses}
+		fp := fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses}
 		prog.files = append(prog.files, fp)
 		for _, d := range pr.decls {
 			if d.kind != kindMethod {
@@ -231,7 +232,7 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option)
 	// augmentation. A resolution failure is swallowed here exactly as before — the
 	// depreach completeness account surfaces unopened dependencies through reachability
 	// partiality, never a fabricated edge (inv.5).
-	dg, _ := buildDependencyGraph(ctx, req.BuildDir)
+	dg, _ := buildDependencyGraph(req.BuildDir, opts...)
 
 	// H2 seam (edge-seam.md §5): resolve the unresolved interface-dispatch call sites
 	// through the DI bean model and fold the resolved interface→impl edges into the

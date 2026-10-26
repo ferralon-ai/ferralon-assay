@@ -152,7 +152,7 @@ func TestRun_OutOfRange_TrustGatedAtStage(t *testing.T) {
 				adv["trust_tier"] = tc.tier
 			}
 			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, adv)
-			putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"resolved_version": "v0.3.7"})
+			putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"resolved_version": "v0.3.7", "resolved_versions": []string{"v0.3.7"}, "versions_complete": true})
 
 			res := runDisqual(t, store, caseID)
 			if res.Disqualified != tc.wantDisq {

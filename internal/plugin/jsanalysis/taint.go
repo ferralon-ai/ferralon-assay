@@ -29,7 +29,7 @@ const taintPrecisionNote = "lexical call-graph path-presence only: ingress→sin
 // unresolved lexical callees) is also folded in, and a sink with no path from any ingress
 // declares no_known_ingress (NEVER "safe"). A load failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir, DependencyCache: req.DependencyCache})
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}
@@ -40,6 +40,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 
 	adj := buildAdjacency(cg.Edges)
 	sources := entrySymbols(ing.Ingresses, cg.Roots)
+	ingressSources := entrySymbols(ing.Ingresses, nil)
 
 	reasons := map[string]bool{}
 	for _, r := range cg.Partiality.Reasons {
@@ -52,7 +53,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	var paths []plugin.ReachPath
 	for _, s := range req.Sinks {
 		sink := sym(s)
-		trace := shortestPath(adj, sources, sink)
+		trace, ingress := ingressFirstPath(adj, ingressSources, sources, sink)
 		if trace == nil {
 			// A sink with no source path is UNKNOWN, never "safe" (inv.5).
 			reasons[plugin.PartialReasonNoIngress] = true
@@ -60,7 +61,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 		}
 		paths = append(paths, plugin.ReachPath{
 			Sink:    sink,
-			Ingress: trace[0],
+			Ingress: ingress,
 			Trace:   trace,
 		})
 	}

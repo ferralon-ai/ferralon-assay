@@ -6,7 +6,7 @@
 // This is the only VEX projector this module ships. The Service-tier projector
 // over a single verdict.PoE lives service-side; it shares the OpenVEX document
 // shapes declared in vex.go but not this file. The OSS tool never produces a
-// PoE: it produces a Report carrying only the four deterministic verdicts
+// PoE: it produces a Report carrying only the five deterministic verdicts
 // invariant 5 permits the runner to emit. This projector maps FROM
 // report.Verdict, never from verdict.PoE.
 //
@@ -180,14 +180,15 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 }
 
 // reportProductID derives the OpenVEX product identifier for a finding. It prefers
-// the package PURL, then falls back to ecosystem coordinates, then to the subject.
+// the package PURL, then falls back to ecosystem coordinates, then to the subject. An
+// unresolved pin is left out of the coordinates: the product ID would otherwise assert it.
 func reportProductID(pkg *report.Package, subj report.Subject) string {
 	if pkg != nil {
 		if pkg.PURL != "" {
 			return pkg.PURL
 		}
 		if pkg.Name != "" {
-			if pkg.Version != "" {
+			if pkg.Version != "" && !pkg.PinUnresolved() {
 				return fmt.Sprintf("%s@%s", pkg.Name, pkg.Version)
 			}
 			return pkg.Name

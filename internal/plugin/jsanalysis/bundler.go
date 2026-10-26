@@ -2,7 +2,6 @@ package jsanalysis
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -187,9 +186,14 @@ func readBundlerConfigs(dir string) ([]bundlerConfig, plugin.Partiality) {
 
 	for _, c := range bundlerCandidates {
 		full := filepath.Join(dir, c.name)
-		data, err := os.ReadFile(full)
-		if err != nil {
+		data, err := readRegular(full)
+		if absent(err) {
 			continue // not present
+		}
+		if err != nil {
+			complete = false
+			reasonSet[plugin.PartialReasonToolFailure] = true
+			continue
 		}
 		cfg, ok := readOne(c, c.name, data)
 		if !ok {

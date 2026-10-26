@@ -42,12 +42,18 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	}
 	fp := build.fp
 	var (
-		deps    []assembly.DepRef
-		locator *assembly.AssetsLocator
-		graph   *assetsGraph
-		rt      runtimeTarget
+		deps      []assembly.DepRef
+		locator   *assembly.AssetsLocator
+		graph     *assetsGraph
+		rt        runtimeTarget
+		untrusted bool
 	)
 	if build.assets != nil {
+		// The restore output must be what restoring this project as it stands produces, by
+		// the same predicate the version resolver applies; otherwise the dependency bytes it
+		// locates may not be the ones the build runs against.
+		trusted, _ := AssetsTrusted(req.BuildDir, build.assetsPath)
+		untrusted = !trusted
 		if loc, parsed := assembly.ParseAssetsLocator(build.assets); parsed {
 			locator = loc
 		}
@@ -85,6 +91,9 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	}
 	for _, m := range set.Misses {
 		reasons[missReason(m.Reason)] = true
+	}
+	if untrusted {
+		reasons[partialReasonRestoreUntrusted] = true
 	}
 	var paths []plugin.ReachPath
 	var searched []string
@@ -161,7 +170,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		searched = append(searched, scip)
 	}
 
-	if len(build.reasons) > 0 {
+	if len(build.reasons) > 0 || untrusted {
 		// Another project or entry assembly went untraced, or the dependency bytes may not
 		// be the ones this build runs against: nothing was searched for the whole program.
 		searched = nil

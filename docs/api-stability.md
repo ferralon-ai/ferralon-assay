@@ -16,16 +16,11 @@ ours — a compatibility promise on a type we neither own nor version. That is a
 so the exported surface is audited to keep it from happening.
 
 The watched modules are `golang.org/x/tools`, `golang.org/x/vuln`, `golang.org/x/mod`, and
-`go.opentelemetry.io/otel`, including all sub-paths. Together with `github.com/google/uuid` they are
-this module's only non-stdlib dependencies.
+`go.opentelemetry.io/otel`, including all sub-paths.
 
 **Today the importable packages expose zero third-party types.**
 
-The audit found two, both in `plugin/goanalysis` — `LoadResult.Packages` and `LoadProgram`, each
-leaking `golang.org/x/tools/go/packages.Package`. Neither had an importer outside its own package,
-so instead of documenting them as accepted exceptions we removed them: the package now lives under
-`internal/`, where it is not part of the public API at all. There are no remaining exceptions and
-therefore no exception list.
+There are no exceptions and therefore no exception list.
 
 Two cases are worth calling out because they look like they should leak and do not:
 
@@ -52,14 +47,24 @@ about to depend on:
 
 ```sh
 cd ferralon-assay
-for p in artifact assessment checkout corpus hostmatch pipeline plugin projection report \
-         resultsink resultsink/github statestore telemetry trigger verdict vulnclass; do
+for p in artifact artifactcache artifactcache/acquire assessment buildgraph capability checkout \
+         corpus hostmatch pipeline plugin projection report resultsink resultsink/github signals \
+         statestore telemetry trigger verdict vulnclass; do
   GOWORK=off go doc -all ./$p
 done | grep -nE '(x/tools|x/vuln|x/mod|go\.opentelemetry\.io|packages|otel|metric|attribute|sdkmetric|sdktrace|modfile|semver|ssa)\.[A-Z]'
 ```
 
 It is a text match, so it reports prose inside doc comments as well as real declarations. At the
 time of writing the only hits are prose. Any hit that is an actual declaration is a regression.
+
+## `signals` is the public face of an internal package
+
+`signals` lets a caller outside this module load an EPSS/KEV signals file and hand it to a
+`trigger.Run*` request. Its types are defined in `signals`, not aliased to the internal loader's
+(`internal/intel`), so its surface is only what it names on purpose: `Load`, `Parse`, `Feed` and
+`Request`; the `Signals` methods `EPSS`, `KEV`, `Records`, `StaleEPSS` and `Digest`; and the `EPSS`
+and `KEV` value structs. A caller sets a request's signals with `signals.Feed`, never by assigning
+the request's `Signals` field, whose type is the internal one.
 
 ## Exported mutable process-wide state
 

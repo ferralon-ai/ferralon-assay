@@ -17,7 +17,8 @@ package jsanalysis
 
 import (
 	"encoding/json"
-	"os"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -38,6 +39,7 @@ type npmLockPkg struct {
 	Resolved             string            `json:"resolved"`
 	Integrity            string            `json:"integrity"`
 	Link                 bool              `json:"link"`
+	HasInstallScript     bool              `json:"hasInstallScript"`
 	Dependencies         map[string]string `json:"dependencies"`
 	DevDependencies      map[string]string `json:"devDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
@@ -54,7 +56,7 @@ type npmLockDep struct {
 }
 
 func (npmAdapter) Parse(sel selectedLock, manifests []manifestFile) ([]plugin.DependencyNode, []plugin.DependencyEdge, plugin.Partiality) {
-	data, err := os.ReadFile(sel.path)
+	data, err := readRegular(sel.path)
 	if err != nil {
 		return nil, nil, plugin.Partial(plugin.PartialReasonToolFailure)
 	}
@@ -109,7 +111,10 @@ func npmParseV2V3(sel selectedLock, lock npmLock, rootMan invManifest, rootManPa
 	// Identical-closure duplicates keep the bare PURL and collapse via dedupByID (invariant (ii)).
 	needSuffix := npmDistinctClosureSuffixes(lock.Packages)
 
-	for path, pkg := range lock.Packages {
+	// Sorted walk: same-ID nodes merge fill-when-empty, so map order would otherwise reach the
+	// merged node's provenance/artifact fields.
+	for _, path := range slices.Sorted(maps.Keys(lock.Packages)) {
+		pkg := lock.Packages[path]
 		if path == "" {
 			continue // the root project itself, not a dependency node
 		}
@@ -294,15 +299,15 @@ func npmParseV1(sel selectedLock, lock npmLock, rootMan invManifest, rootManPath
 		}
 		node.Artifact = plugin.DependencyArtifact{Identity: artifactIdentity(dep.Resolved, name, dep.Version), Digest: mapIntegrity(dep.Integrity)}
 		addNode(node)
-		for childName, child := range dep.Dependencies {
-			if childID := walk(childName, child); childID != "" {
+		for _, childName := range slices.Sorted(maps.Keys(dep.Dependencies)) {
+			if childID := walk(childName, dep.Dependencies[childName]); childID != "" {
 				edges = append(edges, plugin.DependencyEdge{Parent: purl, Child: childID})
 			}
 		}
 		return purl
 	}
-	for name, dep := range lock.Dependencies {
-		id := walk(name, dep)
+	for _, name := range slices.Sorted(maps.Keys(lock.Dependencies)) {
+		id := walk(name, lock.Dependencies[name])
 		if _, direct := directNameSet(rootMan)[name]; direct && id != "" {
 			nodesByID[id].Direct = true
 			nodesByID[id].Membership.Project = rootMan.Name
@@ -367,7 +372,8 @@ func npmNameOrEmpty(node *plugin.DependencyNode) string {
 func npmAliasesAbsent(lock npmLock, rootMan invManifest, sel selectedLock, rootManPath string, addNode func(plugin.DependencyNode) *plugin.DependencyNode, edges *[]plugin.DependencyEdge, rootID string) plugin.Partiality {
 	part := plugin.Complete()
 	for _, dm := range depMapsFor(rootMan) {
-		for seg, rng := range dm.deps {
+		for _, seg := range slices.Sorted(maps.Keys(dm.deps)) {
+			rng := dm.deps[seg]
 			if !strings.HasPrefix(rng, "npm:") {
 				continue
 			}

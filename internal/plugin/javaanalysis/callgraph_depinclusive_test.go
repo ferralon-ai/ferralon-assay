@@ -32,13 +32,13 @@ func withFirstPartySource(t *testing.T, build, rel, src string) {
 // empty-graph arm reads to tell a searched-negative (not_exploitable) apart from an
 // analysis that never ran (undetermined).
 func TestCallGraph_DependencyInclusive_HasOpenedJarEdges(t *testing.T) {
-	build := buildNetkitFixture(t, false) // pom declares netkit + cached netkit-1.0.0.jar
+	build := buildNetkitFixture(t, false) // the graph names netkit-1.0.0.jar
 	withFirstPartySource(t, build, "src/com/acme/app/App.java", `package com.acme.app;
 public final class App {
     public static void main(String[] args) { System.out.println("ready"); }
 }`)
 
-	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: build})
+	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: build}, netkitGraph(t, build))
 	if err != nil {
 		t.Fatalf("CallGraph: %v", err)
 	}
@@ -75,14 +75,14 @@ public final class App {
 // undetermined; the opened dependency is what turns the empty path set into a
 // searched-negative.
 func TestReachability_FirstPartyDeadSink_WithOpenedDependency(t *testing.T) {
-	build := buildNetkitFixture(t, false) // pom declares netkit + cached netkit-1.0.0.jar
+	build := buildNetkitFixture(t, false) // the graph names netkit-1.0.0.jar
 	withFirstPartySource(t, build, "src/com/acme/app/App.java", `package com.acme.app;
 public final class App {
     public static void main(String[] args) { System.out.println("ready"); }
     public static int fetch(String target) { return target.length(); }
 }`)
 
-	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: build})
+	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: build}, netkitGraph(t, build))
 	if err != nil {
 		t.Fatalf("CallGraph: %v", err)
 	}
@@ -91,7 +91,7 @@ public final class App {
 	}
 
 	sink := methodSCIP("com.acme.app", []string{"App"}, "fetch", 1)
-	reach, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: build, Symbols: []string{sink}})
+	reach, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: build, Symbols: []string{sink}}, netkitGraph(t, build))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}

@@ -15,6 +15,10 @@ import (
 type RegistryConfig struct {
 	BaseURL     string
 	RequireAuth bool
+	// AuthConfigured marks a registry the configuration names an auth key for, whether or not
+	// it presents a credential. A 401 or 403 from it is a missing credential, never an absent
+	// artifact.
+	AuthConfigured bool
 }
 
 // RegistryBackend maps an inventory coordinate to a fetch URL using the ecosystem's layout.

@@ -2,9 +2,11 @@ package classfile
 
 import (
 	"archive/zip"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +23,17 @@ type JarResult struct {
 	// META-INF/spring/*.AutoConfiguration.imports for auto-config bean-existence).
 	// nil when no resource predicate was supplied — the .class parse is unaffected.
 	Resources map[string][]byte
+	// Versioned holds the classes under META-INF/versions/<N>/ (N >= 9), which a JDK at
+	// release N or later loads in place of the base entry of the same name. Filled only by
+	// LoadJarBytesReleases; a versioned entry that fails to parse goes into Failed.
+	Versioned []VersionedClass
+}
+
+// VersionedClass is one class from a multi-release JAR's META-INF/versions/<Release>/ tree.
+type VersionedClass struct {
+	Release int
+	Entry   string
+	Class   Class
 }
 
 // LoadJar opens a JAR (a zip of .class files) and parses every application class in
@@ -46,12 +59,44 @@ func LoadJarWithResources(path string, wantResource func(name string) bool) (Jar
 	return loadZip(&zr.Reader, wantResource)
 }
 
+// LoadJarBytes is LoadJar over a JAR already read into memory, so a caller that checked those
+// bytes parses exactly them.
+func LoadJarBytes(data []byte) (JarResult, error) {
+	return loadJarBytes(data, false)
+}
+
+// LoadJarBytesReleases is LoadJarBytes that also parses the multi-release version entries
+// into JarResult.Versioned, for a caller that has to account for every body a JDK may run.
+func LoadJarBytesReleases(data []byte) (JarResult, error) {
+	return loadJarBytes(data, true)
+}
+
+func loadJarBytes(data []byte, releases bool) (JarResult, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return JarResult{}, fmt.Errorf("classfile: open jar: %w", err)
+	}
+	return loadZipReleases(zr, nil, releases)
+}
+
 // loadZip parses classes from an already-open zip.Reader — the shared core of
 // LoadJar and the in-memory path used by tests. When wantResource is non-nil, a
 // non-.class entry it selects is read into res.Resources; .class handling is unchanged.
 func loadZip(zr *zip.Reader, wantResource func(name string) bool) (JarResult, error) {
+	return loadZipReleases(zr, wantResource, false)
+}
+
+// loadZipReleases is loadZip that, when releases is set, also parses the multi-release
+// version entries into res.Versioned.
+func loadZipReleases(zr *zip.Reader, wantResource func(name string) bool, releases bool) (JarResult, error) {
 	var res JarResult
 	for _, f := range zr.File {
+		if release, ok := versionedClassEntry(f.Name); ok {
+			if releases {
+				loadVersioned(&res, f, release)
+			}
+			continue
+		}
 		if !isApplicationClass(f.Name) {
 			if wantResource != nil && wantResource(f.Name) {
 				data, err := readZipEntry(f)
@@ -87,10 +132,44 @@ func loadZip(zr *zip.Reader, wantResource func(name string) bool) (JarResult, er
 	return res, nil
 }
 
-// isApplicationClass reports whether a zip entry is a class we analyze. It excludes
-// META-INF/ (signatures, and multi-release version overrides under
-// META-INF/versions/N/ — selecting the right release is a documented precision
-// refinement, not a core-soundness concern) and module-info.class (no methods).
+func loadVersioned(res *JarResult, f *zip.File, release int) {
+	data, err := readZipEntry(f)
+	if err != nil {
+		res.Failed = append(res.Failed, fmt.Sprintf("%s: read: %v", f.Name, err))
+		return
+	}
+	c, err := ParseClass(data)
+	if err != nil {
+		if !errors.Is(err, ErrBadMagic) {
+			res.Failed = append(res.Failed, fmt.Sprintf("%s: parse: %v", f.Name, err))
+		}
+		return
+	}
+	res.Versioned = append(res.Versioned, VersionedClass{Release: release, Entry: f.Name, Class: c})
+}
+
+// versionedClassEntry reports whether a zip entry is a class under META-INF/versions/<N>/
+// that a JDK at release N or later loads (N >= 9; the JDK ignores lower releases), and N.
+// module-info.class declares no methods and is not one.
+func versionedClassEntry(name string) (release int, ok bool) {
+	rest, found := strings.CutPrefix(name, "META-INF/versions/")
+	if !found || !strings.HasSuffix(rest, ".class") {
+		return 0, false
+	}
+	num, path, found := strings.Cut(rest, "/")
+	if !found || path == "module-info.class" || strings.HasSuffix(path, "/module-info.class") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(num)
+	if err != nil || n < 9 || strconv.Itoa(n) != num {
+		return 0, false
+	}
+	return n, true
+}
+
+// isApplicationClass reports whether a zip entry is a base class we analyze. It excludes
+// META-INF/ (signatures, and the multi-release version entries, which
+// LoadJarBytesReleases reads separately) and module-info.class (no methods).
 func isApplicationClass(name string) bool {
 	if !strings.HasSuffix(name, ".class") {
 		return false

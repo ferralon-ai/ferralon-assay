@@ -5,7 +5,7 @@
   ],
   "UpperExclusive": "",
   "FixedVersion": "",
-  "VersionScheme": "",
+  "VersionScheme": "go-toolchain",
   "Coordinate": "",
   "PURL": "pkg:golang/stdlib",
   "Symbols": [
@@ -14,7 +14,20 @@
   "GuardSymbols": null,
   "CWEs": null,
   "Summary": "",
-  "AffectedRanges": null,
+  "AffectedRanges": [
+    {
+      "Introduced": "",
+      "Fixed": "go1.16.10",
+      "LastAffected": "",
+      "FixedVersion": "go1.16.10"
+    },
+    {
+      "Introduced": "go1.17.0",
+      "Fixed": "go1.17.3",
+      "LastAffected": "",
+      "FixedVersion": "go1.17.3"
+    }
+  ],
   "Provenance": {
     "Source": "",
     "InputDigest": "",

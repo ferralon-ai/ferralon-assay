@@ -11,6 +11,7 @@
 // (PutArtifact, InventoryBuildDir, HarnessArtifact, DisqualResult + reason constants, AdvisoryTable,
 // AdvisoryFacts) because the Prove stages build on the same artifact contracts. They are neutral
 // plumbing, not proof.
+
 package pipeline
 
 import (
@@ -20,6 +21,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -28,12 +30,13 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
 )
 
 // AssessConfig holds the free-stage seams an AssessStages caller may inject. It is the OSS half of
-// the former stageConfig; the Prove options (model/sandbox/dispatch/recall/fuzz/critic) live in the
+// the stage configuration; the Prove options (model/sandbox/dispatch/recall/fuzz/critic) live in the
 // Service prove package, which builds its own stages and appends them after AssessStages.
 type AssessConfig struct {
 	Plugin   plugin.LanguagePlugin
@@ -53,6 +56,9 @@ type AssessConfig struct {
 	// the plugin when disqualification_discovery already settled the advisory. Off by default. See
 	// WithSkipDisqualifiedAnalysis.
 	SkipDisqualifiedAnalysis bool
+	// DependencyAcquisition fills the dependency cache for a JS build. nil leaves the stage out.
+	// See WithDependencyAcquisition.
+	DependencyAcquisition *dependencyAcquirer
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -77,6 +83,19 @@ func WithCheckout(co checkout.Checkout) AssessOption {
 // default path is byte-identical to today.
 func WithAdvisorySource(src AdvisorySource) AssessOption {
 	return func(c *AssessConfig) { c.Source = src }
+}
+
+// AdvisorySourceOf returns the AdvisorySource a run assessed with opts reads advisory facts through:
+// the one WithAdvisorySource injected, else the process-wide default — the source S1 reads.
+func AdvisorySourceOf(opts ...AssessOption) AdvisorySource {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.Source != nil {
+		return cfg.Source
+	}
+	return defaultAdvisorySource()
 }
 
 // WithSubjectToolchain injects the two candidate EXACT sources of the subject's Go toolchain that
@@ -137,15 +156,20 @@ func AssessStages(opts ...AssessOption) []Stage {
 	for _, o := range opts {
 		o(cfg)
 	}
-	return []Stage{
+	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
 		maliciousPresence{},
 		disqualificationDiscovery{},
-		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
-		exposureFootprintStage{},
 	}
+	if cfg.DependencyAcquisition != nil {
+		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
+	}
+	return append(stages,
+		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
+		exposureFootprintStage{},
+	)
 }
 
 // SBOMStages returns ONLY the SBOM-producing stages — S1 advisory_intake + S2
@@ -248,11 +272,11 @@ type AdvisoryFacts struct {
 	Symbols []string
 	// SymbolProvenance is the corpus's RECORD-SCOPED derivation tag for Symbols — a single scalar
 	// per record naming how the whole set was obtained (open set: "osv-declared" | "curated" |
-	// "diff-lexed"; "reasoning" reserved). STORE-ONLY (A2): it is decoded and carried, but NO
-	// consumer reads it — it feeds no admission, reachability, or refute path this cycle. Absent →
-	// "" → UNKNOWN derivation, which is NOT low-confidence and NOT untrusted: a symbol with no
-	// provenance tag resolves and is walked exactly as one with it (honest-absent, inv.5). A future
-	// provenance-as-confidence consumer is a separate (B) change, gated on review. Carries no verdict.
+	// "cna-declared" | "diff-lexed"; "reasoning" reserved). It feeds no admission or reachability
+	// path: a symbol resolves and is walked the same under every tag, and absent → "" → UNKNOWN
+	// derivation. Two consumers read it: the candidate's SymbolConfidence label, and the
+	// not_exploitable grounds, where only an osv-declared or curated set (or an untagged set the
+	// built-in table answered, BuiltIn) may ground on the listed symbols' absence. Carries no verdict.
 	//
 	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
 	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are this module's own
@@ -261,6 +285,11 @@ type AdvisoryFacts struct {
 	// noise, and the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does not apply to a tag
 	// the floor never populates. When the published feed carries it, a non-empty value round-trips.
 	SymbolProvenance string `json:",omitempty"`
+	// TargetConditionalSymbols are the Symbols that some build target of the package does not
+	// compile (an async entry on a framework target without async, an XmlNode entry on one without
+	// System.Xml). Absence of any other symbol never refutes. One of these may be absent only from a
+	// package the lane read in full; every other symbol must still resolve and be searched.
+	TargetConditionalSymbols []string `json:",omitempty"`
 	// GuardSymbols are advisory-declared mitigation functions (e.g. a path/symlink
 	// validator) whose PRESENCE on the resolved ingress→sink path is reported as
 	// candidate-tier evidence. Membership-based and explicit (mirrors the sanitizer
@@ -289,6 +318,10 @@ type AdvisoryFacts struct {
 	// (branch-aware backports). Empty ⇒ the version axis falls back to UpperExclusive
 	// (or fails open when both are empty).
 	AffectedRanges []Range
+	// BuiltIn marks a fact the built-in AdvisoryTable answered. Only tableSource sets it, and it has
+	// no JSON form, so no corpus document can claim it. It is what vouches for an untagged symbol
+	// set: the table's own symbols are curated in this module.
+	BuiltIn bool `json:"-"`
 	// Provenance records where this fact was read from and how far it may be trusted.
 	// TrustTier gates refute eligibility: low-trust facts (byo/third_party) MAY narrow
 	// toward candidate but MAY NEVER refute — no laundering a false negative through an
@@ -559,6 +592,7 @@ type Range struct {
 	Fixed        string // exclusive upper bound: the release fixing THIS range
 	LastAffected string // inclusive upper bound; set instead of Fixed when no fix release exists
 	FixedVersion string // per-range fix source for the branch-aware two-trace PoNE predecessor
+	Type         string `json:",omitempty"` // OSV range type (SEMVER | ECOSYSTEM | GIT); "" when the source states none
 }
 
 // TrustTier gates refute eligibility for a fact. Only first_party facts may drive a
@@ -731,9 +765,15 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		CWEs:    []string{"CWE-94", "CWE-78"},
 		Summary: "code injection / OS command execution: the SQL Expressions feature reaches runDuckQuery, which executes attacker-controlled SQL through the DuckDB engine binary (DuckDB file functions enable LFI/RCE); the upstream fix removes the go-duck dependency and the exec sink outright",
 	},
+	// Fixed go1.16.10 on the 1.16.x branch and go1.17.3 on mainline (OSV GO-2021-0264).
 	"GO-2021-0264": {
-		Aliases: []string{"CVE-2021-41772"},
-		PURL:    "pkg:golang/stdlib",
+		Aliases:       []string{"CVE-2021-41772"},
+		VersionScheme: "go-toolchain",
+		PURL:          "pkg:golang/stdlib",
+		AffectedRanges: []Range{
+			{Fixed: "go1.16.10", FixedVersion: "go1.16.10"},
+			{Introduced: "go1.17.0", Fixed: "go1.17.3", FixedVersion: "go1.17.3"},
+		},
 		Symbols: []string{"archive/zip.(*Reader).Open"},
 	},
 	// --- Go stdlib/toolchain (go-toolchain scheme, U7) -----------------------------------------
@@ -822,13 +862,13 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// established. They live in GuardSufficiency instead, which is Prove-side evidence framing
 	// that Assess never refutes on.
 	//
-	// Each entry carries ONLY its own OSV aliases. Merging them was customer-visible wrong:
-	// internal/intel/data/kev.json lists only CVE-2025-8110, and trigger's priorityFor joins on
-	// ID + Aliases, so the successor sitting in the predecessor's alias array reported
-	// KEVListed against CVE-2024-55947 — which CISA does not list. The GO- ids are load-bearing,
-	// not decoration: they are the key govulncheck reports dependency findings under
-	// (reachcandidate.govulnMatchID, which takes the FIRST GO- alias — with one GO- id per entry
-	// that is now unambiguous, where the merged entry could only ever key one of the two).
+	// Each entry carries ONLY its own OSV aliases. They are two vulnerabilities, and every join on
+	// an entry's id and aliases has one slot per entry: CISA's KEV catalog lists only
+	// CVE-2025-8110, so the successor in the predecessor's alias array would attribute that listing
+	// to CVE-2024-55947, which CISA does not list (TestNoEntryAliasesAnotherEntrysPrimaryID guards
+	// the split). The GO- ids are load-bearing, not decoration: they are the key govulncheck reports
+	// dependency findings under (reachcandidate.govulnMatchID, which takes the FIRST GO- alias), and
+	// with one GO- id per entry that key is unambiguous.
 	"CVE-2024-55947": {
 		Aliases: []string{"GHSA-qf5v-rp47-55gg", "GO-2024-3356"},
 		PURL:    "pkg:golang/gogs.io/gogs/internal/db",
@@ -1263,9 +1303,50 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		FixedVersion:   "13.0.1",
 		VersionScheme:  "nuget",
 		PURL:           "pkg:nuget/Newtonsoft.Json",
+		// The unbounded depth is private JsonReader.Push, which every reader reaches through
+		// SetToken; naming it covers readers and calls no public entry below names (BsonReader,
+		// custom JsonReader subclasses, ReadAs*, a base-typed Read or Skip). The public entries
+		// keep the common routes visible in a path. Fixed by defaulting MaxDepth in upstream
+		// 7e77bbe1beccceac4fc7b174b53abfefac278b66 and b6dc05be5a0f4808f06ec430f3bb59b24d3fbc3e.
 		Symbols: []string{
+			"Newtonsoft.Json.JsonReader.Push",
 			"Newtonsoft.Json.JsonConvert.DeserializeObject",
-			"Newtonsoft.Json.JsonConvert.SerializeObject",
+			"Newtonsoft.Json.JsonConvert.DeserializeAnonymousType",
+			"Newtonsoft.Json.JsonConvert.PopulateObject",
+			"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
+			"Newtonsoft.Json.JsonConvert.DeserializeXNode",
+			"Newtonsoft.Json.JsonSerializer.Deserialize",
+			"Newtonsoft.Json.JsonSerializer.Populate",
+			"Newtonsoft.Json.JsonTextReader.Read",
+			"Newtonsoft.Json.JsonTextReader.ReadAsync",
+			"Newtonsoft.Json.Linq.JToken.Parse",
+			"Newtonsoft.Json.Linq.JToken.ReadFrom",
+			"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
+			"Newtonsoft.Json.Linq.JToken.Load",
+			"Newtonsoft.Json.Linq.JToken.LoadAsync",
+			"Newtonsoft.Json.Linq.JObject.Parse",
+			"Newtonsoft.Json.Linq.JObject.Load",
+			"Newtonsoft.Json.Linq.JObject.LoadAsync",
+			"Newtonsoft.Json.Linq.JArray.Parse",
+			"Newtonsoft.Json.Linq.JArray.Load",
+			"Newtonsoft.Json.Linq.JArray.LoadAsync",
+			"Newtonsoft.Json.Linq.JConstructor.Load",
+			"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
+			"Newtonsoft.Json.Linq.JProperty.Load",
+			"Newtonsoft.Json.Linq.JProperty.LoadAsync",
+		},
+		// net20 through net40 compile no async entries, net20 no XNode entry, and netstandard1.0
+		// no XmlNode entry.
+		TargetConditionalSymbols: []string{
+			"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
+			"Newtonsoft.Json.JsonConvert.DeserializeXNode",
+			"Newtonsoft.Json.JsonTextReader.ReadAsync",
+			"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
+			"Newtonsoft.Json.Linq.JToken.LoadAsync",
+			"Newtonsoft.Json.Linq.JObject.LoadAsync",
+			"Newtonsoft.Json.Linq.JArray.LoadAsync",
+			"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
+			"Newtonsoft.Json.Linq.JProperty.LoadAsync",
 		},
 		CWEs:    []string{"CWE-400"},
 		Summary: "uncontrolled resource consumption: Newtonsoft.Json parses arbitrarily deeply nested JSON with no default MaxDepth, enabling a StackOverflow/CPU denial of service",
@@ -1323,7 +1404,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 			Module:         p.Module,
 			Coordinate:     p.Coordinate,
 			PURL:           p.PURL,
-			AffectedRanges: buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, pkgScheme),
+			AffectedRanges: withDisagreeingLegacyRanges(buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, pkgScheme), p, facts, scheme),
 			Symbols:        p.Symbols,
 		})
 	}
@@ -1376,11 +1457,13 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		FixedVersion     string                    `json:"fixed_version,omitempty"`
 		PURL             string                    `json:"purl,omitempty"`
 		AdvisorySymbols  []string                  `json:"advisory_symbols,omitempty"`
-		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag, read as a candidate-only STRENGTH signal (never admission/refute)
+		Conditional      []string                  `json:"target_conditional_symbols,omitempty"`
+		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag: a candidate STRENGTH signal, and the gate on symbol-absence grounds (never admission)
 		AdvisoryGuards   []string                  `json:"advisory_guards,omitempty"`
 		CWEs             []string                  `json:"cwes,omitempty"`
 		VulnClass        string                    `json:"vuln_class,omitempty"`        // "" ⇒ class not assessed (honest)
 		TrustTier        string                    `json:"trust_tier,omitempty"`        // gates refute eligibility (inv.5); "" ⇒ untrusted
+		BuiltIn          bool                      `json:"built_in,omitempty"`          // the built-in AdvisoryTable answered (AdvisoryFacts.BuiltIn)
 		Trigger          *advisoryTrigger          `json:"trigger,omitempty"`           // v3 per-CVE reach descriptor (row 1)
 		TriggerCondition string                    `json:"trigger_condition,omitempty"` // B3: advisory-declared exploit precondition, read as candidate-only PoE qualifier context (never admission/refute)
 		Prerequisite     string                    `json:"prerequisite,omitempty"`      // B3: advisory-declared mechanism precondition, read alongside TriggerCondition
@@ -1398,11 +1481,13 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		FixedVersion:     facts.FixedVersion,
 		PURL:             facts.PURL,
 		AdvisorySymbols:  facts.Symbols,
+		Conditional:      facts.TargetConditionalSymbols,
 		SymbolProvenance: facts.SymbolProvenance,
 		AdvisoryGuards:   facts.GuardSymbols,
 		CWEs:             facts.CWEs,
 		VulnClass:        string(vulnClass),
 		TrustTier:        string(facts.Provenance.TrustTier),
+		BuiltIn:          facts.BuiltIn,
 		Trigger:          advTrigger,
 		TriggerCondition: facts.TriggerCondition,
 		Prerequisite:     facts.Prerequisite,
@@ -1486,41 +1571,43 @@ func (codebaseInventory) Status() assessment.Status { return assessment.StatusIn
 // U7 comparator had no reachable input and the axis was dark for exactly the advisory class whose
 // verdict depends on the toolchain. There is no "separate comparator path off the
 // AdvisoryTable" — the AdvisoryTable supplies the affected RANGE, never a version.
-func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir, language, module, coordinate, scheme string, toolchain ToolchainFact) (version string, partiality []string, err error) {
+func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir, language, module, coordinate, scheme string, toolchain ToolchainFact) (dep depVersions, partiality []string, err error) {
 	if scheme == "go-toolchain" {
 		switch toolchain.Bound {
 		case ToolchainBoundExact, ToolchainBoundMinimum:
-			return toolchain.Version, nil, nil
+			return singleVersion(toolchain.Version), nil, nil
 		default:
-			return "", nil, nil
+			return depVersions{}, nil, nil
 		}
 	}
 	switch {
 	case module != "":
 		// A Go module coordinate resolves off go.mod with no plugin involved, so this branch
-		// carried no partiality at all — every Go scan disclosed nothing. Distinguish the two
+		// carried no partiality at all — every Go scan disclosed nothing. Distinguish the three
 		// ways the version comes back empty: an unreadable/unparseable go.mod means the
-		// version could not be established (disclose no_manifest), whereas a go.mod that
-		// parses and simply does not require the module means the codebase genuinely does not
-		// depend on it (honest absence — no disclosure, so a true not_exploitable stays
-		// unqualified).
-		v, manifestRead := moduleVersionFromGoMod(buildDir, module)
+		// version could not be established (disclose no_manifest); a module the go.mod requires
+		// but replaces with a local directory or another module is declared with no version
+		// that describes it (disclose source_unpinned and keep it declared, so the version axis
+		// stays open); and a go.mod that parses and simply does not require the module means the
+		// codebase genuinely does not depend on it (honest absence — no disclosure, so a true
+		// not_exploitable stays unqualified).
+		v, pinned, manifestRead := moduleVersionFromGoMod(buildDir, module)
 		if !manifestRead {
-			return "", []string{plugin.PartialReasonNoManifest}, nil
+			return depVersions{}, []string{plugin.PartialReasonNoManifest}, nil
 		}
-		return v, nil, nil
+		if !pinned {
+			return depVersions{Found: true}, []string{plugin.PartialReasonSourceUnpinned}, nil
+		}
+		return singleVersion(v), nil, nil
 	case coordinate != "" && s.plugin != nil && s.plugin.Language() == language:
 		vr, err := s.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{
 			BuildDir:   buildDir,
 			Coordinate: coordinate,
 		})
 		if err != nil {
-			return "", nil, err
+			return depVersions{}, nil, err
 		}
-		v := ""
-		if vr.Found && vr.Match.Resolved {
-			v = vr.Match.Version
-		}
+		dep := depVersionsOf(vr)
 		// Persist WHY the resolution was incomplete (e.g. "no_manifest"): a degraded resolve leaves
 		// the version empty, which downstream is indistinguishable from "this codebase has no such
 		// dependency". Carrying the reason is what makes an unresolvable scan distinguishable from a
@@ -1529,7 +1616,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		if !vr.Partiality.Complete {
 			flags = append(flags, vr.Partiality.Reasons...)
 		}
-		return v, flags, nil
+		return dep, flags, nil
 	}
 	// A managed-ecosystem coordinate with no language-matched analyzer available (the
 	// assay-plugin-<lang> binary is not on PATH, so acquire selected nothing, or the
@@ -1538,9 +1625,71 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 	// disqualifies the advisory on a version comparison that never happened. Disclose the
 	// absence instead; the verdict is untouched.
 	if coordinate != "" {
-		return "", []string{plugin.PartialReasonNoPlugin}, nil
+		return depVersions{}, []string{plugin.PartialReasonNoPlugin}, nil
 	}
-	return "", nil, nil
+	return depVersions{}, nil, nil
+}
+
+// depVersions is what a codebase carries of one dependency. A multi-project build can declare it
+// at a different version per module, and a nested install can sit beside a top-level one, so the
+// version axis needs every version, not the first one a resolver happened to read.
+type depVersions struct {
+	// Version is the representative the inventory records as resolved_version.
+	Version string
+	// Versions is every distinct resolved version, Version first.
+	Versions []string
+	// Complete reports that Versions covers every declaration: the resolver enumerated them all and
+	// resolved each. Only a complete set can show every version is outside an affected range.
+	Complete bool
+	// Found reports that the codebase declares the dependency at all, resolved or not.
+	Found bool
+	// Presence is the first resolved copy, which maliciousPresence matches against. It stands
+	// without agreement, so it is never read by the not-affected path.
+	Presence string
+}
+
+// singleVersion is a dependency whose source can carry one version only (a go.mod require, the
+// subject's toolchain). An empty v is an honest absence.
+func singleVersion(v string) depVersions {
+	if v == "" {
+		return depVersions{}
+	}
+	return depVersions{Version: v, Versions: []string{v}, Complete: true, Found: true, Presence: v}
+}
+
+// depVersionsOf reads a plugin resolution. The set is complete only when the plugin asserts
+// MatchesComplete over a complete scan and every copy it lists is resolved; Match may still be
+// unresolved, as it is when the copies disagree.
+func depVersionsOf(vr plugin.DependencyVersionResult) depVersions {
+	dep := depVersions{Found: vr.Found}
+	if vr.Found && vr.Match.Resolved {
+		dep.Version = vr.Match.Version
+		dep.Versions = []string{dep.Version}
+	}
+	dep.Presence = dep.Version
+	if vr.Presence != nil && vr.Presence.Resolved {
+		dep.Presence = vr.Presence.Version
+	}
+	dep.Complete = vr.MatchesComplete && vr.Partiality.Complete && len(vr.Matches) > 0
+	for _, m := range vr.Matches {
+		if !m.Resolved {
+			dep.Complete = false
+			continue
+		}
+		if !slices.Contains(dep.Versions, m.Version) {
+			dep.Versions = append(dep.Versions, m.Version)
+		}
+	}
+	return dep
+}
+
+// presentPackage is an affected package the codebase carries besides the selected one. The version
+// axis must clear it too: a patched first package does not clear an affected second one.
+type presentPackage struct {
+	Module     string   `json:"module,omitempty"`
+	Coordinate string   `json:"coordinate,omitempty"`
+	Versions   []string `json:"versions,omitempty"`
+	Complete   bool     `json:"complete"`
 }
 
 // PackageKey is one dependency identity an advisory's facts name: the key codebase_inventory
@@ -1701,41 +1850,97 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		src = defaultAdvisorySource()
 	}
 	facts, _ := src.Lookup(c.Request.Vulnerability.ID) // miss → zero facts → fail-open (bool intentionally discarded)
-	resolvedVersion := ""
-	var partialityFlags []string
+	var (
+		resolved        depVersions
+		alsoPresent     []presentPackage
+		partialityFlags []string
+	)
+	// presenceVersion is the version maliciousPresence matches against: the package selection
+	// below run over each package's first resolved copy rather than its agreed Match. It is
+	// never read by the not-affected path.
+	presenceVersion := ""
 	// selectedModule/selectedCoordinate name the v3 affected_packages[] element the target actually
 	// depends on (the select-by-target pick). They are the join key the downstream extractors use to
 	// read the SELECTED element's ranges/symbols/identity off the normalized-advisory artifact. Both
 	// empty ⇒ no element selected: the scalar-primary path ran (a v2 advisory, or a v3 advisory whose
 	// packages the target does not depend on → OPEN).
 	var selectedModule, selectedCoordinate string
+	// isRoot records that the adjudicated package is the scanned project itself (its manifest's own
+	// identity), so its vulnerable code is first-party and its version is the project's.
+	isRoot := false
 	if buildDir != "" {
+		root, hasRoot := ReadRootPackage(ctx, buildDir, language)
+		resolve := func(module, coordinate, purl, scheme string) (depVersions, []string, bool, error) {
+			if v, ok := root.Matches(buildDir, module, coordinate, purl); hasRoot && ok {
+				dep := singleVersion(v)
+				dep.Found = true
+				return dep, nil, true, nil
+			}
+			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
+			return dep, flags, false, err
+		}
+		presenceSelected := false
 		// v3 select-by-target: iterate the advisory's full affected set (producer-sorted,
 		// deterministic) and pick the FIRST package the assessed codebase actually depends on. This
 		// is the whole point of the multi-package block — a target on a SECONDARY package resolves
 		// into real version/symbol analysis instead of falling OPEN against an unmatched primary.
+		// Every other package is resolved too and recorded when the codebase declares it, since the
+		// version axis must clear each one; one that cannot be resolved after the selection is
+		// recorded as present with no versions, which keeps the axis open.
+		selected := false
 		for _, pkg := range facts.AffectedPackages {
-			v, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, pkg.Module, pkg.Coordinate, pkg.VersionScheme, toolchain)
+			dep, flags, rootPkg, err := resolve(pkg.Module, pkg.Coordinate, pkg.PURL, pkg.VersionScheme)
 			if err != nil {
-				return err
+				if !selected {
+					return err
+				}
+				alsoPresent = append(alsoPresent, presentPackage{Module: pkg.Module, Coordinate: pkg.Coordinate})
+				continue
 			}
-			if v != "" {
-				resolvedVersion, partialityFlags = v, flags
+			if !presenceSelected && (dep.Presence != "" || rootPkg) {
+				presenceVersion, presenceSelected = dep.Presence, true
+			}
+			// A package the target declares ends the selection even when its version is unresolved:
+			// moving on would adjudicate the advisory on another package's ranges while this one
+			// may sit inside its own. It is selected with no version, so the version axis stays open.
+			// The presence scan goes on past it to the first package with a resolved copy.
+			switch {
+			case !selected && (dep.Version != "" || dep.Found || rootPkg):
+				resolved, partialityFlags, isRoot = dep, flags, rootPkg
 				selectedModule, selectedCoordinate = pkg.Module, pkg.Coordinate
-				break
+				selected = true
+			case dep.Found:
+				alsoPresent = append(alsoPresent, presentPackage{
+					Module: pkg.Module, Coordinate: pkg.Coordinate, Versions: dep.Versions, Complete: dep.Complete,
+				})
 			}
 		}
 		// Fail-open (inv.5, load-bearing): no array element matched THIS target (or the advisory is
 		// v2/single-package: AffectedPackages is empty) → fall back to the scalar primary. This is
 		// byte-identical to the pre-v3 resolution, so a v2 advisory and a v3-no-match target both get
 		// today's exact behavior (typically OPEN). Selection NEVER fabricates a not-affected.
-		if selectedModule == "" && selectedCoordinate == "" {
-			v, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, facts.Module, facts.Coordinate, facts.VersionScheme, toolchain)
-			if err != nil {
+		// The presence scan falls back the same way when no array element had a resolved copy.
+		// That presence-only lookup is best effort: an error there leaves presence empty rather
+		// than failing a stage that has already selected its package.
+		if !selected || !presenceSelected {
+			dep, flags, rootPkg, err := resolve(facts.Module, facts.Coordinate, facts.PURL, facts.VersionScheme)
+			if err != nil && !selected {
 				return err
 			}
-			resolvedVersion, partialityFlags = v, flags
+			if !selected {
+				resolved, partialityFlags, isRoot = dep, flags, rootPkg
+			}
+			if !presenceSelected {
+				presenceVersion = dep.Presence
+			}
 		}
+	}
+	// Non-Go no-manifest-entry oracle (manifest_membership.go): only consulted when nothing
+	// resolved and the package is not the project itself, since either is present by
+	// construction. A root package need not list itself, and may match with no version.
+	var membership *manifestMembership
+	if buildDir != "" && resolved.Version == "" && !isRoot {
+		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts))
 	}
 
 	inv := struct {
@@ -1754,10 +1959,19 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// per-project readers. Not dead code: it is the on-disk half of the WorkspacePlan contract.
 		WorkspacePlan   checkout.WorkspacePlan `json:"workspace_plan"`
 		ResolvedVersion string                 `json:"resolved_version,omitempty"`
-		Module          string                 `json:"module,omitempty"`
-		GoVersion       string                 `json:"go_version,omitempty"`
-		BuildCommand    string                 `json:"build_command,omitempty"`
-		PartialityFlags []string               `json:"partiality_flags,omitempty"`
+		// ResolvedVersions is every distinct version the codebase carries of the adjudicated
+		// package; VersionsComplete reports that it covers every declaration. AlsoPresent is each
+		// other affected package the codebase declares. Read back by extractVersionAxis.
+		ResolvedVersions []string         `json:"resolved_versions,omitempty"`
+		VersionsComplete bool             `json:"versions_complete,omitempty"`
+		AlsoPresent      []presentPackage `json:"also_present,omitempty"`
+		// PresenceVersion is the version maliciousPresence matches against (presenceVersion
+		// above). Read back by extractPresenceVersion only.
+		PresenceVersion string   `json:"presence_version,omitempty"`
+		Module          string   `json:"module,omitempty"`
+		GoVersion       string   `json:"go_version,omitempty"`
+		BuildCommand    string   `json:"build_command,omitempty"`
+		PartialityFlags []string `json:"partiality_flags,omitempty"`
 		// Toolchain is the subject's Go toolchain resolved to one bounded fact. Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
@@ -1770,6 +1984,12 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// primary path (v2 advisory or v3-no-match) → extractors read the top-level scalar block.
 		SelectedModule     string `json:"selected_module,omitempty"`
 		SelectedCoordinate string `json:"selected_coordinate,omitempty"`
+		// Root is true when the adjudicated package is the scanned project itself. Read back by
+		// RootSubject.
+		Root bool `json:"root,omitempty"`
+		// ManifestMembership is the PyPI/npm manifest-membership fact the intake no-manifest-entry
+		// guard reads back (intakeManifestMembership). Absent ⇒ no fact ⇒ the guard fails open.
+		ManifestMembership *manifestMembership `json:"manifest_membership,omitempty"`
 	}{
 		Repo:               c.Request.Codebase.Repo,
 		Revision:           c.Request.Codebase.Revision,
@@ -1777,7 +1997,11 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		CheckoutRoot:       checkoutRoot,
 		Language:           language,
 		WorkspacePlan:      plan,
-		ResolvedVersion:    resolvedVersion,
+		ResolvedVersion:    resolved.Version,
+		ResolvedVersions:   resolved.Versions,
+		VersionsComplete:   resolved.Complete,
+		AlsoPresent:        alsoPresent,
+		PresenceVersion:    presenceVersion,
 		Module:             module,
 		GoVersion:          goVersion,
 		BuildCommand:       buildCommand,
@@ -1785,34 +2009,45 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Toolchain:          toolchain,
 		SelectedModule:     selectedModule,
 		SelectedCoordinate: selectedCoordinate,
+		Root:               isRoot,
+		ManifestMembership: membership,
 	}
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeInventory, "codebase inventory", inv)
 	return err
 }
 
-// moduleVersionFromGoMod parses buildDir/go.mod and returns the resolved version of the given
-// module path (the version on its require directive). Offline read of the pinned dependency
-// version.
+// moduleVersionFromGoMod parses buildDir/go.mod and returns the version the build selects for
+// module: its require version, or the version a same-module replace directive substitutes.
 //
-// manifestRead separates the two reasons the version can come back empty, which the caller must
-// tell apart: false means go.mod was absent or unparseable, so NOTHING about the dependency set
-// was established; true with an empty version means go.mod was read cleanly and does not require
-// the module, which is a real fact about the codebase.
-func moduleVersionFromGoMod(buildDir, module string) (version string, manifestRead bool) {
+// manifestRead separates the reasons the version can come back empty: false means go.mod was
+// absent or unparseable, so nothing about the dependency set was established; true with an
+// empty version and pinned true means go.mod does not require the module, a real fact about the
+// codebase. pinned false means the module is required but replaced by a local directory or by
+// another module, so the build compiles code no upstream version describes.
+func moduleVersionFromGoMod(buildDir, module string) (version string, pinned, manifestRead bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	for _, r := range mf.Require {
-		if r.Mod.Path == module {
-			return r.Mod.Version, true
+		if r.Mod.Path != module {
+			continue
+		}
+		t, ok := gomod.Replacement(mf, module, r.Mod.Version)
+		switch {
+		case !ok:
+			return r.Mod.Version, true, true
+		case t.Filesystem || t.Path != module:
+			return "", false, true
+		default:
+			return t.Version, true, true
 		}
 	}
-	return "", true
+	return "", true, true
 }
 
 // InventoryBuildDir returns the BuildDir recorded by codebase_inventory, or "" if none. S4/S5 read
@@ -1861,17 +2096,17 @@ func InventoryCheckoutRoot(store artifact.Store, caseID string) (string, error) 
 // maliciousPresence is the decisive OSS "affected" stage. It fires ONLY on an affirmative match: a
 // malicious-package (MAL) advisory whose enumerated affected set contains the version the codebase
 // resolved. It reads two already-produced artifacts — the normalized-advisory malicious_package
-// marker and the codebase-inventory resolved_version — and NEVER re-Lookups.
+// marker and the codebase-inventory presence_version — and NEVER re-Lookups.
 //
-// It is inserted after codebase_inventory (it needs resolved_version) and before
+// It is inserted after codebase_inventory (it needs presence_version) and before
 // disqualification_discovery. It emits the affirmative TypeMaliciousPresence artifact or NOTHING;
 // it can never mint a not-affected. Every non-match case (not malicious, unresolvable version,
 // version-not-listed) falls through to the existing reconcile path unchanged (inv.5 fail-open):
 //
 //   - not declared malicious ⇒ no-op ⇒ every existing stage runs as today.
-//   - declared + resolved_version == "" (unresolvable/absent) ⇒ no match ⇒ OPEN, never clear.
-//   - declared + resolved_version NOT in the enumerated set ⇒ no affirmative ⇒ existing fail-open.
-//   - declared + resolved_version IN the set (EXACT string equality, no comparator) ⇒ affirmative.
+//   - declared + presence_version == "" (unresolvable/absent) ⇒ no match ⇒ OPEN, never clear.
+//   - declared + presence_version NOT in the enumerated set ⇒ no affirmative ⇒ existing fail-open.
+//   - declared + presence_version IN the set (EXACT string equality, no comparator) ⇒ affirmative.
 //
 // Exact string equality is deliberate: MAL versions are enumerated, not ranged, and any spelling
 // drift between the resolved-version and corpus-version fails toward NO match ⇒ OPEN (safe), never a
@@ -1895,12 +2130,19 @@ func (s maliciousPresence) Run(_ context.Context, c *assessment.Assessment, stor
 	if !declared {
 		return nil // not a malicious-package advisory → no presence path (inv.5)
 	}
-	resolved, ok := extractResolvedVersion(store, c.ID)
-	if !ok {
-		return nil // resolved_version == "" (unresolvable/absent) → no match → OPEN
+	presence, ok := extractPresenceVersion(store, c.ID)
+	axis, axisOK := extractVersionAxis(store, c.ID)
+	if !ok && !axisOK {
+		return nil // no resolved copy (unresolvable/absent) → no match → OPEN
 	}
-	for _, v := range versions {
-		if v == resolved { // exact string membership — no semver comparator
+	// Any version the codebase carries at a listed version is present; the set need not be complete
+	// to affirm one. The first resolved copy leads, then every agreed-on or listed copy.
+	candidates := axis.Versions
+	if ok {
+		candidates = append([]string{presence}, candidates...)
+	}
+	for _, resolved := range candidates {
+		if slices.Contains(versions, resolved) { // exact string membership — no semver comparator
 			res := MaliciousPresenceResult{Present: true, MatchedVersion: resolved}
 			_, err := PutArtifact(store, c, s.Name(), artifact.TypeMaliciousPresence, "malicious package present at listed version", res)
 			return err
@@ -1961,10 +2203,16 @@ const (
 )
 
 // affectedRange is the single, unambiguous structured constraint this stage understands: an
-// upper-exclusive semver bound (the "affects < X" form).
+// upper-exclusive semver bound (the "affects < X" form), floored by an inclusive LowerInclusive
+// bound when the range was introduced above zero. LastAffected is the inclusive upper bound a range
+// carries when it has no upper-exclusive one. versionOutsideRange is the one reading of all of
+// them.
 type affectedRange struct {
 	UpperExclusive string `json:"upper_exclusive"`
 	Scheme         string `json:"scheme,omitempty"`
+	LowerInclusive string `json:"lower_inclusive,omitempty"` // an introduced bound above zero
+	LastAffected   string `json:"last_affected,omitempty"`
+	Type           string `json:"type,omitempty"`
 }
 
 // advisoryAffectedPackage is one element of the normalized-advisory artifact's affected_packages[]
@@ -2012,7 +2260,12 @@ func buildAffectedRanges(ranges []Range, upperExclusive, scheme string) []affect
 	if len(ranges) > 0 {
 		out := make([]affectedRange, 0, len(ranges))
 		for _, r := range ranges {
-			out = append(out, affectedRange{UpperExclusive: r.Fixed, Scheme: scheme})
+			ar := affectedRange{UpperExclusive: r.Fixed, Scheme: scheme, LastAffected: r.LastAffected, Type: r.Type}
+			// OSV writes an unbounded start as "0"; some feeds spell it "0.0.0".
+			if r.Introduced != "0" && r.Introduced != "0.0.0" {
+				ar.LowerInclusive = r.Introduced
+			}
+			out = append(out, ar)
 		}
 		return out
 	}
@@ -2174,11 +2427,11 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 }
 
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
-// guard: it reports whether buildDir/go.mod declares module (as the root module or a require), and
+// guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
+// inside it, or a require), and
 // whether the manifest was readable at all. manifestKnown=false — no build dir, or an absent /
 // unparseable go.mod — forces the caller to fail OPEN, because absence is only PROVABLE against a
-// manifest actually parsed (inv.5). Other ecosystems have no S3-side manifest reader yet and so
-// carry no coordinate through this guard (they fail open); wiring a plugin oracle is a follow-up.
+// manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
@@ -2191,11 +2444,11 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if err != nil {
 		return false, false
 	}
-	if mf.Module != nil && mf.Module.Mod.Path == module {
+	if mf.Module != nil && goPathOwner(buildDir, mf.Module.Mod.Path, module) != goOwnedElsewhere {
 		return true, true
 	}
 	for _, r := range mf.Require {
-		if r.Mod.Path == module {
+		if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
 			return true, true
 		}
 	}
@@ -2223,6 +2476,37 @@ func disqualify(rngs []affectedRange, rangeKnown bool, ver string, verKnown bool
 		}
 	}
 	return false, ReasonInsufficient
+}
+
+// disqualifyEvery is disqualify over every version the codebase carries. The version axis refutes
+// only when the set is complete and each version, of the selected package and of every other
+// affected package present, is provably outside its own ranges; the symbol axis and the trust gate
+// are disqualify's, unchanged.
+func disqualifyEvery(rngs []affectedRange, rangeKnown bool, axis versionAxis, axisKnown bool, others []presentRanges, symbol string, symbolKnown bool, trust TrustTier) (bool, string) {
+	if disq, reason := disqualify(rngs, rangeKnown, "", false, symbol, symbolKnown, trust); disq || trust != TrustFirstParty {
+		return disq, reason
+	}
+	if !axisKnown || !everyVersionOutside(axis.Versions, axis.Complete, rngs, rangeKnown, trust) {
+		return false, ReasonInsufficient
+	}
+	for _, o := range others {
+		if !everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown, trust) {
+			return false, ReasonInsufficient
+		}
+	}
+	return true, ReasonVersionNotInRange
+}
+
+func everyVersionOutside(vers []string, complete bool, rngs []affectedRange, rangeKnown bool, trust TrustTier) bool {
+	if !complete || len(vers) == 0 {
+		return false
+	}
+	for _, v := range vers {
+		if disq, _ := disqualify(rngs, rangeKnown, v, true, "", false, trust); !disq {
+			return false
+		}
+	}
+	return true
 }
 
 // VersionOutsideRange reports whether ver is provably outside the affected set
@@ -2259,8 +2543,9 @@ func versionOutsideRanges(ver string, rngs []affectedRange) (outside bool, ok bo
 	return true, true // provably outside every range
 }
 
-// versionOutsideRange reports whether ver is provably outside the affected set affects<upper.
-func versionOutsideRange(ver string, rng affectedRange) (outside bool, ok bool) {
+// versionOutsideUpper reports whether ver is provably at or past rng's upper-exclusive bound
+// (affects<upper). It reads only UpperExclusive and Scheme; versionOutsideRange adds the other bounds.
+func versionOutsideUpper(ver string, rng affectedRange) (outside bool, ok bool) {
 	if rng.Scheme == "maven" {
 		return mavenVersionOutsideRange(ver, rng.UpperExclusive)
 	}
@@ -2293,7 +2578,7 @@ func versionOutsideRange(ver string, rng affectedRange) (outside bool, ok bool) 
 
 // extractAffectedRange reads the advisory's full affected set (one or more disjoint ranges) from
 // the normalized-advisory artifact. rangeKnown is false — the version axis then fails OPEN (inv.5) —
-// when there is no artifact, no range, or ANY range lacks a usable upper-exclusive bound: a set with
+// when there is no artifact, no range, or ANY range carries no bound at all: a set with
 // one unexpressable range cannot soundly prove outside-EVERY-range, so the whole set is withheld
 // rather than disqualifying on the expressable subset (which would risk a fabricated not-affected).
 // extractSelectedPackage joins the codebase_inventory selection back to the normalized-advisory
@@ -2330,15 +2615,45 @@ func extractSelectedPackage(store artifact.Store, caseID string) (advisoryAffect
 	if err := json.Unmarshal(advArts[0].Payload, &adv); err != nil {
 		return advisoryAffectedPackage{}, false
 	}
-	for _, p := range adv.AffectedPackages {
-		if inv.SelectedModule != "" && p.Module == inv.SelectedModule {
-			return p, true
+	return affectedPackageNamed(adv.AffectedPackages, inv.SelectedModule, inv.SelectedCoordinate)
+}
+
+// affectedPackageNamed returns the advisory's entry for a package, merged across every element that
+// names it. An advisory may list one package in several affected[] entries, and a version in any of
+// their ranges is affected, so the ranges are unioned; judging the first entry alone would refute a
+// version only a later entry covers. An entry with no ranges, or no symbols, leaves that field
+// unknown for the whole package rather than letting the other entries narrow it.
+func affectedPackageNamed(pkgs []advisoryAffectedPackage, module, coordinate string) (advisoryAffectedPackage, bool) {
+	var (
+		out                     advisoryAffectedPackage
+		found, rangeless, blind bool
+	)
+	for _, p := range pkgs {
+		if !(module != "" && p.Module == module) && !(coordinate != "" && p.Coordinate == coordinate) {
+			continue
 		}
-		if inv.SelectedCoordinate != "" && p.Coordinate == inv.SelectedCoordinate {
-			return p, true
+		rangeless = rangeless || len(p.AffectedRanges) == 0
+		blind = blind || len(p.Symbols) == 0
+		if !found {
+			out, found = p, true
+			out.AffectedRanges = slices.Clone(p.AffectedRanges)
+			out.Symbols = slices.Clone(p.Symbols)
+			continue
+		}
+		out.AffectedRanges = append(out.AffectedRanges, p.AffectedRanges...)
+		for _, sym := range p.Symbols {
+			if !slices.Contains(out.Symbols, sym) {
+				out.Symbols = append(out.Symbols, sym)
+			}
 		}
 	}
-	return advisoryAffectedPackage{}, false
+	if rangeless {
+		out.AffectedRanges = nil
+	}
+	if blind {
+		out.Symbols = nil
+	}
+	return out, found
 }
 
 func extractAffectedRange(store artifact.Store, caseID string) ([]affectedRange, bool) {
@@ -2363,16 +2678,16 @@ func extractAffectedRange(store artifact.Store, caseID string) ([]affectedRange,
 }
 
 // validAffectedRanges returns the range set only when it is wholly usable: non-empty and every entry
-// carries an upper-exclusive bound. A set with one unexpressable range cannot soundly prove
-// outside-EVERY-range, so the whole set is withheld (rangeKnown=false → the version axis fails OPEN,
-// inv.5) rather than disqualifying on the expressable subset (which would risk a fabricated
-// not-affected).
+// carries at least one bound (upper-exclusive, last_affected or introduced). A set with one boundless
+// range cannot soundly prove outside-EVERY-range, so the whole set is withheld (rangeKnown=false → the
+// version axis fails OPEN, inv.5) rather than disqualifying on the expressable subset (which would
+// risk a fabricated not-affected).
 func validAffectedRanges(rngs []affectedRange) ([]affectedRange, bool) {
 	if len(rngs) == 0 {
 		return nil, false
 	}
 	for _, r := range rngs {
-		if r.UpperExclusive == "" {
+		if r.UpperExclusive == "" && r.LastAffected == "" && r.LowerInclusive == "" {
 			return nil, false
 		}
 	}
@@ -2385,6 +2700,20 @@ func validAffectedRanges(rngs []affectedRange) ([]affectedRange, bool) {
 // branch when selecting a branch-correct fix baseline from a multi-range (backport) advisory.
 func ResolvedVersion(store artifact.Store, caseID string) (string, bool) {
 	return extractResolvedVersion(store, caseID)
+}
+
+// RootSubject reports whether codebase_inventory adjudicated the advisory against the scanned
+// project itself rather than a dependency: the project's own manifest identity is the advisory's
+// package, so the vulnerable code is first-party.
+func RootSubject(store artifact.Store, caseID string) bool {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var inv struct {
+		Root bool `json:"root"`
+	}
+	return json.Unmarshal(arts[0].Payload, &inv) == nil && inv.Root
 }
 
 // Toolchain returns the subject's Go toolchain as the bounded fact codebase_inventory resolved.
@@ -2512,6 +2841,74 @@ func toolchainSubject(purl string, rngs []affectedRange) bool {
 	return false
 }
 
+// versionAxis is the version-axis input codebase_inventory recorded for the adjudicated package.
+type versionAxis struct {
+	Versions []string
+	Complete bool
+}
+
+// presentRanges is another present affected package joined to its own ranges.
+type presentRanges struct {
+	presentPackage
+	Ranges     []affectedRange
+	RangeKnown bool
+}
+
+// extractVersionAxis reads every version codebase_inventory resolved for the adjudicated package.
+// The set stands without a resolved_version, which is empty when the copies disagree. An inventory
+// that recorded a resolved_version with no set yields that version alone, never complete.
+func extractVersionAxis(store artifact.Store, caseID string) (versionAxis, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return versionAxis{}, false
+	}
+	var inv struct {
+		ResolvedVersion  string   `json:"resolved_version"`
+		ResolvedVersions []string `json:"resolved_versions"`
+		VersionsComplete bool     `json:"versions_complete"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
+		return versionAxis{}, false
+	}
+	switch {
+	case len(inv.ResolvedVersions) > 0:
+		return versionAxis{Versions: inv.ResolvedVersions, Complete: inv.VersionsComplete}, true
+	case inv.ResolvedVersion != "":
+		return versionAxis{Versions: []string{inv.ResolvedVersion}}, true
+	}
+	return versionAxis{}, false
+}
+
+// extractAlsoPresent joins each other affected package the inventory recorded to its ranges on the
+// normalized advisory. A package the advisory no longer names keeps no ranges, which keeps the axis open.
+func extractAlsoPresent(store artifact.Store, caseID string) []presentRanges {
+	invArts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(invArts) == 0 {
+		return nil
+	}
+	var inv struct {
+		AlsoPresent []presentPackage `json:"also_present"`
+	}
+	if err := json.Unmarshal(invArts[0].Payload, &inv); err != nil || len(inv.AlsoPresent) == 0 {
+		return nil
+	}
+	var adv struct {
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+	}
+	if advArts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory); err == nil && len(advArts) > 0 {
+		_ = json.Unmarshal(advArts[0].Payload, &adv) // a miss leaves every package rangeless: OPEN
+	}
+	out := make([]presentRanges, 0, len(inv.AlsoPresent))
+	for _, p := range inv.AlsoPresent {
+		pr := presentRanges{presentPackage: p}
+		if a, ok := affectedPackageNamed(adv.AffectedPackages, p.Module, p.Coordinate); ok {
+			pr.Ranges, pr.RangeKnown = validAffectedRanges(a.AffectedRanges)
+		}
+		out = append(out, pr)
+	}
+	return out
+}
+
 func extractResolvedVersion(store artifact.Store, caseID string) (string, bool) {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {
@@ -2527,6 +2924,26 @@ func extractResolvedVersion(store artifact.Store, caseID string) (string, bool) 
 		return "", false
 	}
 	return inv.ResolvedVersion, true
+}
+
+// extractPresenceVersion returns the inventory's presence_version, falling back to
+// resolved_version for a record that carries none. ok is false when both are empty.
+func extractPresenceVersion(store artifact.Store, caseID string) (string, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return "", false
+	}
+	var inv struct {
+		ResolvedVersion string `json:"resolved_version"`
+		PresenceVersion string `json:"presence_version"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
+		return "", false
+	}
+	if inv.PresenceVersion != "" {
+		return inv.PresenceVersion, true
+	}
+	return inv.ResolvedVersion, inv.ResolvedVersion != ""
 }
 
 func extractSymbolSignal(store artifact.Store, caseID string) (string, bool) {
@@ -2579,11 +2996,11 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 		return err
 	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
-	manifestHas, manifestKnown := goModRequires(buildDir, advModule)
+	coordinate, manifestHas, manifestKnown := intakeManifestMembership(store, c.ID, buildDir, advModule)
 	if disq, reason := intakeDisqualify(
 		extractAdvisoryEcosystem(store, c.ID),
 		extractCodebaseEcosystem(store, c.ID),
-		advModule, manifestHas, manifestKnown,
+		coordinate, manifestHas, manifestKnown,
 	); disq {
 		res := DisqualResult{Disqualified: true, Reason: reason}
 		_, err := PutArtifact(store, c, s.Name(), artifact.TypeDiscovery, "disqualification discovery (un-adjudicable at intake)", res)
@@ -2591,11 +3008,12 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	}
 
 	rngs, rangeKnown := extractAffectedRange(store, c.ID)
-	ver, verKnown := extractResolvedVersion(store, c.ID)
+	rngs = rangesForFloorVersion(store, c.ID, rngs)
+	axis, axisKnown := extractVersionAxis(store, c.ID)
 	symbol, symbolKnown := extractSymbolSignal(store, c.ID)
 	trust, _ := extractAdvisoryTrust(store, c.ID) // miss/unknown ⇒ zero tier ⇒ refute suppressed (inv.5)
 
-	disqualified, reason := disqualify(rngs, rangeKnown, ver, verKnown, symbol, symbolKnown, trust)
+	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, extractAlsoPresent(store, c.ID), symbol, symbolKnown, trust)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason}
 
 	descriptor := "disqualification discovery (proceeds: insufficient evidence)"
@@ -2625,6 +3043,7 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 type symbolMapping struct {
 	plugin           plugin.LanguagePlugin
 	skipDisqualified bool
+	deps             *dependencyAcquirer
 }
 
 func (symbolMapping) Name() string              { return "symbol_mapping" }
@@ -2641,12 +3060,20 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 			return err
 		}
 		purl, advisorySymbols := advisoryPURLAndSymbols(store, c.ID)
-		res, err := s.plugin.ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{
+		req := plugin.ResolveSymbolsRequest{
 			BuildDir:        buildDir,
 			VulnID:          c.Request.Vulnerability.ID,
 			PURL:            purl,
 			AdvisorySymbols: advisorySymbols,
-		})
+		}
+		if dc := s.deps.cacheFor(store, c.ID); dc != "" {
+			req.DependencyCache = dc
+			req.Package = admittedPackagePURL(store, c.ID)
+			if req.Package == "" {
+				req.PackageVersions = affectedInstalledVersions(store, c.ID)
+			}
+		}
+		res, err := s.plugin.ResolveDependencySymbols(ctx, req)
 		if err != nil {
 			return err
 		}
@@ -2724,6 +3151,7 @@ type reachabilityIngress struct {
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 	skipDisqualified bool
+	deps             *dependencyAcquirer
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -2811,7 +3239,8 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// normalized-advisory artifact's aliases.
 	vulnID := govulnMatchID(store, c.ID, c.Request.Vulnerability.ID)
 
-	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir})
+	depCache := s.deps.cacheFor(store, c.ID)
+	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, DependencyCache: depCache})
 	if err != nil {
 		return err
 	}
@@ -2825,10 +3254,12 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
-		BuildDir:    buildDir,
-		VulnID:      vulnID,
-		Symbols:     sinks,
-		GoToolchain: requestedToolchain,
+		BuildDir:        buildDir,
+		VulnID:          vulnID,
+		Symbols:         sinks,
+		GoToolchain:     requestedToolchain,
+		Package:         admittedPackagePURL(store, c.ID),
+		DependencyCache: depCache,
 	})
 	if err != nil {
 		return err
@@ -2898,7 +3329,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}, DependencyCache: depCache})
 		if err != nil {
 			return err
 		}
@@ -3057,6 +3488,22 @@ func AdvisorySymbols(store artifact.Store, caseID string) []string {
 	return symbols
 }
 
+// AdvisoryTargetConditionalSymbols returns the advisory symbols that some build target of the
+// package does not compile (AdvisoryFacts.TargetConditionalSymbols).
+func AdvisoryTargetConditionalSymbols(store artifact.Store, caseID string) []string {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	var adv struct {
+		Conditional []string `json:"target_conditional_symbols"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return nil
+	}
+	return adv.Conditional
+}
+
 // AdvisoryPackage returns the name and package URL of the package the advisory was assessed
 // against: the selected package's when the advisory targets a secondary one, else the advisory's
 // primary. The name is the Go module path, or the ecosystem's own coordinate everywhere else.
@@ -3105,11 +3552,78 @@ func AdvisoryPackagePURLs(store artifact.Store, caseID string) []string {
 	return append(purls, adv.DroppedPackages...)
 }
 
+// AdvisoryListsAffectedPackages reports whether the advisory carries an affected_packages[] set. Only
+// that set enumerates every package the advisory affects; a record with only the scalar purl may
+// affect packages it does not name.
+func AdvisoryListsAffectedPackages(store artifact.Store, caseID string) bool {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var adv struct {
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return false
+	}
+	return len(adv.AffectedPackages) > 0
+}
+
 // AdvisoryPURL returns the package URL the advisory was assessed against: the selected package's
 // when the advisory targets a secondary one, else the advisory's primary.
 func AdvisoryPURL(store artifact.Store, caseID string) string {
 	purl, _ := advisoryPURLAndSymbols(store, caseID)
 	return purl
+}
+
+// admittedPackagePURL returns the assessed package's PURL pinned to the inventory-resolved
+// version, or "" when either is unknown or the assessed package is the scanned project itself
+// (RootSubject), whose own code always loads. Any version or qualifier the advisory PURL carries
+// is replaced: the resolved version is the one installed in the build.
+func admittedPackagePURL(store artifact.Store, caseID string) string {
+	if RootSubject(store, caseID) {
+		return ""
+	}
+	purl := AdvisoryPURL(store, caseID)
+	version, ok := ResolvedVersion(store, caseID)
+	if purl == "" || !ok {
+		return ""
+	}
+	if i := strings.IndexAny(purl, "?#"); i >= 0 {
+		purl = purl[:i]
+	}
+	if at := strings.LastIndexByte(purl, '@'); at > strings.LastIndexByte(purl, '/') {
+		purl = purl[:at]
+	}
+	return purl + "@" + version
+}
+
+// affectedInstalledVersions returns the assessed package's installed versions that are not provably
+// outside the advisory's affected ranges, for when the copies disagree and the inventory resolved no
+// single version. It is nil when one version was resolved, when the package is the scanned project
+// itself, or when the inventory lists no versions. A version the ranges cannot place is kept.
+func affectedInstalledVersions(store artifact.Store, caseID string) []string {
+	if RootSubject(store, caseID) {
+		return nil
+	}
+	if _, ok := ResolvedVersion(store, caseID); ok {
+		return nil
+	}
+	axis, ok := extractVersionAxis(store, caseID)
+	if !ok {
+		return nil
+	}
+	rngs, rangeKnown := extractAffectedRange(store, caseID)
+	var out []string
+	for _, v := range axis.Versions {
+		if rangeKnown {
+			if outside, ok := versionOutsideRanges(v, rngs); ok && outside {
+				continue
+			}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // resolvedSinkSCIP reads the upstream vulnerable-symbol artifact and returns the first resolved SCIP
@@ -3163,6 +3677,7 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 			if ir.Partiality.Reasons != nil {
 				payload.PartialityFlags = append(payload.PartialityFlags, ir.Partiality.Reasons...)
 			}
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, ir.Partiality.Scoped)
 		}
 	}
 
@@ -3171,15 +3686,23 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 	} else if len(arts) > 0 {
 		var full struct {
 			Reachability plugin.ReachabilityResult `json:"reachability"`
+			CallGraph    plugin.CallGraphResult    `json:"call_graph"`
 		}
 		// Partiality is harvested whether or not any path was found, and BEFORE the
 		// path-count branch. Harvesting it only on len(Paths) > 0 dropped the disclosure
 		// on precisely the case it exists for: a reachability pass that resolved nothing
 		// because it could not see the code produces zero paths, and without the reason
 		// codes it is indistinguishable from a pass that looked and found nothing.
+		//
+		// The call graph's limits are harvested beside reachability's: a lane may declare a
+		// step that did not run only on its graph, and that limit must hold the verdict
+		// whether or not the graph has edges.
 		unmarshalled := json.Unmarshal(arts[0].Payload, &full) == nil
-		if unmarshalled && full.Reachability.Partiality.Reasons != nil {
+		if unmarshalled {
 			payload.PartialityFlags = append(payload.PartialityFlags, full.Reachability.Partiality.Reasons...)
+			payload.PartialityFlags = append(payload.PartialityFlags, full.CallGraph.Partiality.Reasons...)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.Reachability.Partiality.Scoped)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.CallGraph.Partiality.Scoped)
 		}
 		if unmarshalled && len(full.Reachability.Paths) > 0 {
 			payload.ReachablePathCount = len(full.Reachability.Paths)
@@ -3202,11 +3725,12 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 			if res.Partiality.Reasons != nil {
 				payload.PartialityFlags = append(payload.PartialityFlags, res.Partiality.Reasons...)
 			}
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, res.Partiality.Scoped)
 		}
 	}
 
-	// Dependency-version resolution is the fourth partiality axis (alongside ingress,
-	// reachability and vulnerable-symbol above): the inventory stage records why it
+	// Dependency-version resolution is a partiality axis too (alongside ingress, call
+	// graph, reachability and vulnerable-symbol above): the inventory stage records why it
 	// could not pin an installed version. Harvesting it here keeps the footprint an
 	// honest account of what the pass could not establish.
 	if arts, err := store.Query(c.ID, artifact.TypeInventory); err != nil {
@@ -3226,6 +3750,14 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeExposureFootprint, "exposure footprint (deterministic)", payload)
 	return err
+}
+
+// appendScoped copies a plugin's scoped limits into the footprint's form.
+func appendScoped(dst []artifact.ScopedPartialityFlag, scoped []plugin.ScopedReason) []artifact.ScopedPartialityFlag {
+	for _, r := range scoped {
+		dst = append(dst, artifact.ScopedPartialityFlag{Reason: r.Reason, Package: r.Package, Path: r.Path, Targets: r.Targets})
+	}
+	return dst
 }
 
 func exposureFootprintDepCount(store artifact.Store, caseID string) int {

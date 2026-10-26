@@ -45,6 +45,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		deps      []assembly.DepRef
 		locator   *assembly.AssetsLocator
 		graph     *assetsGraph
+		rt        runtimeTarget
 		untrusted bool
 	)
 	if build.assets != nil {
@@ -56,11 +57,15 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		if loc, parsed := assembly.ParseAssetsLocator(build.assets); parsed {
 			locator = loc
 		}
-		deps = depRefsFrom(build.assets, build.target)
-		for i := range deps {
-			deps[i].Runtime = build.runtime
-		}
 		graph = parseAssetsGraph(build.assets)
+		rt = resolveRuntimeTarget(graph, build.target, build.runtime, build.rids, locator)
+		for _, d := range depRefsFrom(build.assets, rt.load) {
+			if rt.shadowed[d.PkgKey] {
+				continue
+			}
+			d.Runtime = build.runtime
+			deps = append(deps, d)
+		}
 	}
 
 	// A dep that does not locate/read is a DECLARED MISS: absent from the set ⇒ out-of-set ⇒
@@ -68,6 +73,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	// disclosed as a scoped limit bounded by what the missing code could reach, and as a
 	// run-wide reason too, so a consumer that reads only Reasons still sees it.
 	set := assembly.LoadSpanningSet(req.BuildDir, fp, locator, deps)
+	set.Misses = append(set.Misses, rt.misses...)
 	engine := depreach.NewEngine(set.Assemblies)
 	idx := buildReconcileIndex(set.Assemblies)
 	// Calls into the shared framework are leaves except where it can run application code
@@ -107,6 +113,9 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	}
 	if untrusted {
 		reasons[partialReasonRestoreUntrusted] = true
+	}
+	if len(rt.absent) > 0 {
+		reasons[partialReasonRuntimeTargetAbsent] = true
 	}
 	var paths []plugin.ReachPath
 	var searched []string
@@ -206,7 +215,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		searched = append(searched, scip)
 	}
 
-	if len(build.reasons) > 0 || untrusted {
+	if len(build.reasons) > 0 || untrusted || len(rt.absent) > 0 {
 		// Another project or entry assembly went untraced, or the dependency bytes may not
 		// be the ones this build runs against: nothing was searched for the whole program.
 		searched = nil

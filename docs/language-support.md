@@ -1,31 +1,9 @@
 # Language support
 
-Point Ferralon Assay at a Go, Java, Kotlin, JavaScript, Python or .NET repository and every one gets
-the same core scan: dependency versions resolved into an SBOM, advisories disqualified when your
-pinned version is provably outside their affected range, and a full `Report` in every format
-(`report.json`, `report.html`, `report.sarif.json`, `openvex.json`). Reachability analysis runs
-deepest in Go and reaches outward across the others over one shared protocol. Use the matrix to
-reason about fit.
-
-## Fit at a glance
-
-| Capability | Go | Java | Kotlin | JavaScript | Python | .NET |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|
-| Scan → dependency SBOM | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Version-range disqualification | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Every `Report` format | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| First-party-sink reachability | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Reachability into dependencies | dependency source | dependency JARs | dependency JARs | call edge to the dependency boundary | call edge to the dependency boundary | NuGet assemblies |
-
-Every language resolves versions, disqualifies by range, and emits every `Report` format — that is the
-shared floor. Go adds the deepest reachability: it maps advisory symbols into dependency source,
-builds the call graph, and computes reachability from framework entry points to the named symbols.
-Java and Kotlin search the compiled program and its dependency JARs. .NET resolves advisory symbols
-inside the restored NuGet assemblies for the build's target. Python and JavaScript bind imports to
-the packages that provide them and trace first-party calls to the dependency boundary.
-
-C/C++ is not in the scanner release asset. A scan of a C/C++ tree stops at the empty-work-set gate and
-fails the run, so it never publishes a Report that reads as clean.
+Ferralon Assay analyzes Go, Java, Kotlin, JavaScript/TypeScript, Python and .NET repositories. What each
+language supports today, feature by feature and capability group by capability group, with the caveats
+that bound it, is in the [language capability matrix](capabilities/README.md). Every language resolves
+into the same five verdicts below.
 
 ## Verdicts
 

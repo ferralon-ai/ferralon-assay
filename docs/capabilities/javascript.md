@@ -116,19 +116,19 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 | Taint (call-path presence ingress to sink) | Partial | [JS-TAINT-PATH-ONLY](#js-taint-path-only) |
 | Capability manifest | Planned | [JS-MANIFEST-UNPUBLISHED](#js-manifest-unpublished) |
 | Value-flow / sanitizer modeling | N/A |  |
-| Dependency-code fetch is an opt-in network step | Partial | [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off) |
+| Dependency-code fetch is a network step, on by default | Partial | [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off) |
 
 ## Caveats
 
 ### JS-UNINSPECTABLE-RUNWIDE
 
-**Trigger.** Any first-party import of a bare specifier into a package whose code is not read (every npm project by default, since dependency code is off).
+**Trigger.** Any first-party import of a bare specifier into a package whose code is not read (every npm project that imports a package when dependency code is off; see [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off)), or into a read package whose loads the reconstructed layout can't bound (yarn berry, an incomplete layout, a bundler alias, a load inside dependency code that can't be bounded).
 
 **Effect.** Run-wide `uninspectable_package` (did_not_run) blocks `not_exploitable` for every advisory.
 
 ### JS-DEPCODE-DEFAULT-OFF
 
-**Trigger.** Running without `-dependency-code=fetch|offline`. The Action does not expose it as an input.
+**Trigger.** Running with `-dependency-code=off` (the Action's `dependency-code: off`), or a fetch that failed and fell back to reading no dependency code (`dependency_code.cause` set, with a `tool_failure:dependency_code_unavailable` note).
 
 **Effect.** No dependency edges, and the run-wide limit under JS-UNINSPECTABLE-RUNWIDE applies.
 

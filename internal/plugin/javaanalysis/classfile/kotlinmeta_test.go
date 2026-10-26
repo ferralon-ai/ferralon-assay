@@ -251,6 +251,11 @@ func TestKotlinInline(t *testing.T) {
 		owner:   "p/I$DefaultImpls",
 		methods: map[string]bool{"g": true},
 	}, {
+		name:    "DefaultImpls whose interface is not loaded fails closed",
+		cs:      classes{}.add("p/I$DefaultImpls", &KotlinMetadata{Kind: 3, Version: kmv}),
+		owner:   "p/I$DefaultImpls",
+		wantErr: true,
+	}, {
 		name:    "other synthetic classes declare nothing",
 		cs:      classes{}.add("p/B$f$1", &KotlinMetadata{Kind: 3, Version: kmv}),
 		owner:   "p/B$f$1",
@@ -263,6 +268,11 @@ func TestKotlinInline(t *testing.T) {
 	}, {
 		name:    "malformed annotation element fails closed",
 		cs:      classes{}.add("p/B", &KotlinMetadata{Kind: 2, Version: kmv, malformed: "d1"}),
+		owner:   "p/B",
+		wantErr: true,
+	}, {
+		name:    "a malformed element fails closed even when d1 decodes",
+		cs:      classes{}.add("p/B", withMalformed(meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "g"), "xi")),
 		owner:   "p/B",
 		wantErr: true,
 	}, {
@@ -283,6 +293,21 @@ func TestKotlinInline(t *testing.T) {
 	}, {
 		name:    "a predefined inline name fails closed",
 		cs:      classes{}.add("p/B", meta(2, [][]byte{pv(2, 7)}, pl(3, fn(inlineFlags, 0)))),
+		owner:   "p/B",
+		wantErr: true,
+	}, {
+		name:    "a predefined inline name fails closed even when d2 has an entry at its index",
+		cs:      classes{}.add("p/B", meta(2, [][]byte{pv(2, 7)}, pl(3, fn(inlineFlags, 0)), "g")),
+		owner:   "p/B",
+		wantErr: true,
+	}, {
+		name:    "an inline name past d2 with no string of its own fails closed",
+		cs:      classes{}.add("p/B", meta(2, [][]byte{pv(1, 2)}, pl(3, fn(inlineFlags, 1)), "h")),
+		owner:   "p/B",
+		wantErr: true,
+	}, {
+		name:    "an inline name with an unknown string operation fails closed",
+		cs:      classes{}.add("p/B", meta(2, [][]byte{pv(3, 5)}, pl(3, fn(inlineFlags, 0)), "g")),
 		owner:   "p/B",
 		wantErr: true,
 	}, {
@@ -584,3 +609,5 @@ func TestParseClass_KotlinMetadata(t *testing.T) {
 }
 
 func withVersion(m *KotlinMetadata, v []int) *KotlinMetadata { m.Version = v; return m }
+
+func withMalformed(m *KotlinMetadata, elem string) *KotlinMetadata { m.malformed = elem; return m }

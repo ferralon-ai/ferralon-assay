@@ -288,13 +288,18 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 			"pnpm-lock.yaml":            lock("1.0.0", "1.0.0"),
 		}
 	}
+	suffixed := func(f map[string]string) map[string]string {
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "version: 1.0.0\n", "version: 1.0.0(react@18.0.0)\n", 1)
+		return f
+	}
 	for name, tc := range map[string]struct {
 		files    map[string]string
 		withheld bool
 	}{
-		"same_version_member":          {tree("q", "1.0.0"), true},
-		"control_member_other_version": {tree("q", "2.0.0"), false},
-		"control_member_other_name":    {tree("q-local", "1.0.0"), false},
+		"same_version_member":                    {tree("q", "1.0.0"), true},
+		"control_member_other_version":           {tree("q", "2.0.0"), false},
+		"control_member_other_name":              {tree("q-local", "1.0.0"), false},
+		"same_version_member_peer_suffixed_lock": {suffixed(tree("q", "1.0.0")), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := nonFrozenWithheld(t, tc.files); got != tc.withheld {
@@ -323,6 +328,7 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 		"control_link_caret_only":       {linked("^", "2.0.0"), false},
 		"control_link_dist_tag":         {linked("latest", "2.0.0"), false},
 		"control_link_workspace_range":  {linked("workspace:^1.0.0", "1.4.0"), false},
+		"link_v_prefixed_range":         {linked("v1", "2.0.0"), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := nonFrozenWithheld(t, tc.files); got != tc.withheld {
@@ -347,4 +353,59 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 			t.Error("a link: dependency is not a registry copy a member can shadow")
 		}
 	})
+}
+
+func TestFlowScalar(t *testing.T) {
+	for in, want := range map[string]struct {
+		out string
+		ok  bool
+	}{
+		"plain":           {"plain", true},
+		"'quoted'":        {"quoted", true},
+		"'it''s'":         {"it's", true},
+		"'open":           {"", false},
+		"close'":          {"", false},
+		"'a'b'":           {"", false},
+		`"double"`:        {"", false},
+		"":                {"", false},
+		"[a]":             {"", false},
+		"a # c":           {"", false},
+		"&anchor":         {"", false},
+		"'file:vendor/x'": {"file:vendor/x", true},
+	} {
+		if out, ok := flowScalar(in); out != want.out || ok != want.ok {
+			t.Errorf("flowScalar(%q) = %q, %v; want %q, %v", in, out, ok, want.out, want.ok)
+		}
+	}
+}
+
+func TestReadLocalResolutionFlow(t *testing.T) {
+	for in, ok := range map[string]bool{
+		"{tarball: file:vendor/x.tgz, integrity: sha512-a}":     true,
+		"{tarball: 'file:vendor/x.tgz', integrity: sha512-a}":   true,
+		"{'tarball': file:vendor/x.tgz, integrity: sha512-a}":   false,
+		"{tarball: \"file:vendor/x.tgz\", integrity: sha512-a}": false,
+		"tarball: file:vendor/x.tgz":                            false,
+		"{tarball file:vendor/x.tgz}":                           false,
+	} {
+		if _, got := readLocalResolution(&ynode{val: in}); got != ok {
+			t.Errorf("readLocalResolution(%q) ok = %v, want %v", in, got, ok)
+		}
+	}
+	r, _ := readLocalResolution(&ynode{val: "{tarball: 'file:vendor/it''s.tgz', integrity: sha512-a}"})
+	if r.kind != "tarball" || r.rel != "vendor/it's.tgz" {
+		t.Errorf("single-quoted escape: got %+v", r)
+	}
+}
+
+func TestLocalPath(t *testing.T) {
+	p := &pnpmLock{root: "/r"}
+	for rel, ok := range map[string]bool{
+		"vendor/x.tgz": true, "": false, "/vendor/x.tgz": false, "../x": false,
+		"a/../x": false, "a\\b": false, "a/..b": true,
+	} {
+		if _, got := p.localPath(rel); got != ok {
+			t.Errorf("localPath(%q) ok = %v, want %v", rel, got, ok)
+		}
+	}
 }

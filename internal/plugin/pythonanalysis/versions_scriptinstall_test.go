@@ -279,6 +279,26 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 		{"pre", map[string]string{"pip.conf": "[install]\npre = true\n", "Dockerfile": dockerHead + upgrade}, false},
 		{"another option", map[string]string{"pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": dockerHead + upgrade}, false},
 		{"empty", map[string]string{"pip.conf": "", "Dockerfile": dockerHead + upgrade}, false},
+
+		// pip reads a config where the build puts it, whatever the tree calls it, so a script
+		// surface naming a pip config path withholds.
+		{"COPY to /etc/pip.conf from another name", map[string]string{"config/pip-prod.cfg": "[global]\nindex-url = https://pkgs.example.com/simple\n",
+			"Dockerfile": dockerHead + "COPY config/pip-prod.cfg /etc/pip.conf\n" + upgrade}, false},
+		{"COPY to ~/.config/pip", map[string]string{"cfg/pip.cfg": "[global]\n", "Dockerfile": dockerHead + "COPY cfg/pip.cfg /root/.config/pip/pip.conf\n" + upgrade}, false},
+		{"ADD from a URL", map[string]string{"Dockerfile": dockerHead + "ADD https://example.com/pip.conf /etc/pip.conf\n" + upgrade}, false},
+		{"BuildKit secret mount", map[string]string{"Dockerfile": dockerHead + "RUN --mount=type=secret,id=pipconf,target=/etc/pip.conf pip install -U pip && uv sync --frozen\n"}, false},
+		{"mention: pip.ini", map[string]string{"Dockerfile": dockerHead + "COPY cfg/win.cfg C:/ProgramData/pip/pip.ini\n" + upgrade}, false},
+		{"mention: name case", map[string]string{"Dockerfile": dockerHead + "COPY cfg/x /ETC/PIP.CONF\n" + upgrade}, false},
+		{"mention: PIP_CONFIG_FILE referenced", map[string]string{"Dockerfile": dockerHead + "RUN echo \"$PIP_CONFIG_FILE\"\n" + upgrade}, false},
+		{"mention: pip config", map[string]string{"Dockerfile": dockerHead + "# settings: pip config list\n" + upgrade}, false},
+		{"mention: /etc/xdg/pip", map[string]string{"Dockerfile": dockerHead + "COPY cfg/ /etc/xdg/pip/\n" + upgrade}, false},
+		{"mention: .config/pip", map[string]string{"Dockerfile": dockerHead + "COPY cfg/ /root/.config/pip/\n" + upgrade}, false},
+		{"mention: /etc/pip", map[string]string{"Dockerfile": dockerHead + "COPY cfg/ /etc/pip/\n" + upgrade}, false},
+		{"mention in another surface", map[string]string{"Dockerfile": dockerHead + "COPY cfg/x /etc/pip.conf\n", "install.sh": "#!/bin/sh\npip install -U pip\n"}, false},
+		{"mention in a GitLab local include", map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/setup.yml\nbuild:\n  script:\n    - pip install -U pip\n",
+			"ci/setup.yml": "setup:\n  script:\n    - cp ci/x.cfg /etc/pip.conf\n"}, false},
+		{"GitLab local include naming no config", map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/setup.yml\nbuild:\n  script:\n    - pip install -U pip\n",
+			"ci/setup.yml": "setup:\n  script:\n    - echo ready\n"}, true},
 	}
 	for _, v := range []string{"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_NO_INDEX", "PIP_PRE", "PIP_CONFIG_FILE"} {
 		tests = append(tests,

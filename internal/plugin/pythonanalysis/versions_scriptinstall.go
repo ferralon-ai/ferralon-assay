@@ -55,6 +55,10 @@ import (
 // in selfUpgradeFlags and the command withholds every pin. pip reads every install option
 // from its config files as well, and a build can COPY a pip.conf or pip.ini from the tree to
 // where pip reads one, so a tree that holds either allows no self-upgrade (pipConfigInTree).
+// pip reads a config where it lands, not by the name it had in the tree, and a build can also
+// fetch or mount one, so a script surface that names a pip config path, PIP_CONFIG_FILE or
+// pip config allows none either (pipConfigNamedRE). A config the base image already holds is
+// not observed, as for hash-checking mode (pipConfigMatches).
 // A PIP_* variable falls under the lane-wide rule above. setuptools and wheel are not
 // targets: wheel requires packaging.
 
@@ -144,6 +148,11 @@ func pipSelfUpgrade(args []string) bool {
 	}
 	return targets == 1
 }
+
+// pipConfigNamedRE matches, in a script surface's text, a pip config file or directory
+// (pip.conf, pip.ini, /etc/pip..., /etc/xdg/pip, .config/pip), PIP_CONFIG_FILE, or a pip
+// config subcommand.
+var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip`)
 
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}

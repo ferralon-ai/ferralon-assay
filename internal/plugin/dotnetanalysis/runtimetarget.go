@@ -77,14 +77,14 @@ func resolveRuntimeTarget(g *assetsGraph, target string, rt assembly.Runtime, lo
 			if inPortable && strings.EqualFold(plainKey, key) {
 				continue
 			}
+			if locator.HasNoAssemblies(ridKey, key) {
+				continue // restore recorded no assembly for it: no code to read, so the portable bytes stay
+			}
 			if inPortable {
 				if out.shadowed == nil {
 					out.shadowed = map[string]bool{}
 				}
 				out.shadowed[plainKey] = true
-			}
-			if locator.HasNoAssemblies(ridKey, key) {
-				continue // restore recorded no assembly for it: no code to read
 			}
 			out.misses = append(out.misses, assembly.DepMiss{
 				Dep:    assembly.DepRef{Target: ridKey, PkgKey: key, Runtime: rt},

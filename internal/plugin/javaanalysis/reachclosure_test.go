@@ -338,7 +338,7 @@ func TestBytecodeReach_LinkBoundLoadability(t *testing.T) {
 	}
 }
 
-// runtimeListed holds only when the graph lists every install and resolves no node on a
+// RuntimeListed holds only when the graph lists every install and resolves no node on a
 // configuration that is no classpath.
 func TestRuntimeListed(t *testing.T) {
 	build := t.TempDir()
@@ -356,8 +356,8 @@ func TestRuntimeListed(t *testing.T) {
 		{true, buildgraph.ScopeOther, false},
 		{false, "compile", false},
 	} {
-		if got := runtimeListed(graph(tc.complete, tc.scope), build); got != tc.want {
-			t.Errorf("complete=%t scope=%s: runtimeListed = %t, want %t", tc.complete, tc.scope, got, tc.want)
+		if got := RuntimeListed(graph(tc.complete, tc.scope), build); got != tc.want {
+			t.Errorf("complete=%t scope=%s: RuntimeListed = %t, want %t", tc.complete, tc.scope, got, tc.want)
 		}
 	}
 }

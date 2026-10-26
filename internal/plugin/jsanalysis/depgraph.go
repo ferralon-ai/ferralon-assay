@@ -303,8 +303,9 @@ func callGraphFor(ctx context.Context, buildDir, depCache string) (plugin.CallGr
 }
 
 // callGraphWithDeps builds the call graph with the lock-pinned dependency code store holds
-// read into it. First-party analysis is exactly callGraphInternal's; dependency code only adds
-// edges and limits. A cancelled ctx is an error, never a partial graph.
+// read into it. First-party analysis is callGraphInternal's, less the declines read dependency
+// code covers (coverReadPackages); dependency code adds edges and limits. A cancelled ctx is an
+// error, never a partial graph.
 func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache.Store, budget time.Duration) (plugin.CallGraphResult, map[plugin.CallEdge]provenance, error) {
 	prog, err := loadProgram(buildDir)
 	if err != nil {
@@ -420,7 +421,10 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		g.add(plugin.CallEdge{Caller: sym(rewrite(e.Caller.SCIP)), Callee: sym(rewrite(e.Callee.SCIP))}, aug.prov[e])
 	}
 
-	flags := mergeFlags(baseFlags, dflags)
+	if !layout.berry && !layout.incomplete {
+		coverReadPackages(prog, g)
+	}
+	flags := mergeFlags(g.flags, dflags)
 	flags.scoped = sortedScoped(flags.scoped)
 	if g.anyExempt && g.anyProto {
 		flags.evaluated = true
@@ -435,6 +439,118 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 	b := g.built(g.result(callGraphPartiality(prog, flags)), flags.unlisted)
 	b.report(buildDir)
 	return b.res, b.prov, nil
+}
+
+// coverReadPackages retracts the first-party declines that dependency code read into prog
+// covers. A load is covered when it runs only code the program read (readLoad); augment links
+// it to that code. A call is resolved again with dependency code attached: one that now
+// resolves to a function is no longer declined, and one into a read package that names no
+// single function, or that is unconnected, stays declined as dynamic dispatch. Every other
+// site keeps its decline, and g.flags.uninspectable is recomputed from what stays.
+func coverReadPackages(prog *program, g *graphBuild) {
+	rs := prog.resolver()
+	drop := map[int]bool{}
+	for _, s := range g.pkgLoads {
+		if rs.readLoad(s.module, s.spec, s.viaRequire) {
+			drop[s.at] = true
+		}
+	}
+	entered := g.entered
+	for _, s := range g.pkgCalls {
+		r := rs.resolveCallSite(s.module, s.cs)
+		_, ok := r.edge()
+		switch {
+		case ok && !s.cs.unconnected:
+			drop[s.at] = true
+		case ok, r.Kind == resolvePackage && r.Reason == plugin.PartialReasonDynamicDispatch:
+			// Code the program read: the call may land on any of its functions, none listed.
+			g.unresolved[s.at].Reason = plugin.PartialReasonDynamicDispatch
+			g.unresolved[s.at].Targets = nil
+		default:
+			entered = entered || s.entered
+		}
+	}
+	kept := g.unresolved[:0]
+	for i, u := range g.unresolved {
+		if drop[i] {
+			g.declined--
+			continue
+		}
+		kept = append(kept, u)
+	}
+	g.unresolved = kept
+	g.flags.uninspectable = entered
+	for _, u := range g.unresolved {
+		accumulateReason(&g.flags, u.Reason)
+	}
+}
+
+// readLoad reports whether a first-party load of bare specifier spec runs only code read into
+// the program: no paths alias, workspace member or self-reference claims it, the layout
+// resolves it to a read package (read, SRI-verified and unpatched: d.pkgs holds no other), and
+// every module that package's entry selects is read. A stock Create React App module also
+// loads the package's module and browser entries, so each of those must be read too.
+func (rs *resolver) readLoad(fromModule, spec string, viaRequire bool) bool {
+	if !isDepSpecifier(spec) {
+		return false
+	}
+	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
+		return false
+	}
+	if _, _, _, ok := rs.workspaceMember(spec); ok {
+		return false
+	}
+	name, sub := splitBareSpecifier(spec)
+	if own, _ := rs.governingPackageJSON(fromModule); own != nil && own.name == name && own.exports != nil {
+		return false
+	}
+	d := rs.prog.deps
+	e := d.layout.lookup(moduleDir(fromModule), name)
+	if e == nil {
+		return false
+	}
+	p := d.pkgs[e.path]
+	if p == nil || p.manifest == nil || !rs.entrySelectionRead(p, sub, viaRequire) {
+		return false
+	}
+	if stockCRAPackage(rs.prog.root, fromModule) {
+		if sub != "." && len(p.manifest.frontEntries) > 0 {
+			return false
+		}
+		for _, t := range p.manifest.frontEntries {
+			if rs.depModuleAt(e.path, t) == "" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// entrySelectionRead reports whether every target a subpath of read package p selects, as
+// entryModules resolves it, is a read module (or JSON, which runs no code). A non-relative or
+// unresolvable target, an exports map selecting nothing, or a main naming no read module
+// leaves code the load may run unread.
+func (rs *resolver) entrySelectionRead(p *depPackage, sub string, viaRequire bool) bool {
+	dir := p.entry.path
+	switch {
+	case p.manifest.exports != nil:
+		targets := exportsTargets(p.manifest.exports, sub, loadConditions(viaRequire))
+		for _, t := range targets {
+			if !isRelativeTarget(t) {
+				return false
+			}
+			if path.Ext(t) != ".json" && rs.depModuleAt(dir, t) == "" {
+				return false
+			}
+		}
+		return len(targets) > 0
+	case sub == ".":
+		if p.manifest.main != "" {
+			return rs.depModuleAt(dir, p.manifest.main) != ""
+		}
+		return rs.matchModule(path.Join(dir, "index")) != ""
+	}
+	return rs.matchModule(stripJSExt(path.Join(dir, sub))) != ""
 }
 
 // augment adds the edges dependency code contributes to aug: module loads, calls resolved

@@ -284,9 +284,9 @@ func TestDepGraph_OnlyTheOnPathCopy(t *testing.T) {
 // otherwise.
 func TestDepGraph_Controls(t *testing.T) {
 	const app = "const dep = require('dep');\ndep.run();\n"
-	// A first-party load of any package already declares uninspectable_package run-wide, so the
-	// rows that tell run-wide from scoped use a program that loads nothing. An install script
-	// runs whether or not anything loads its package.
+	// A first-party load of a package whose code is not read declares uninspectable_package
+	// run-wide, so the rows that tell run-wide from scoped use a program that loads nothing. An
+	// install script runs whether or not anything loads its package.
 	const idle = "module.exports = 1;\n"
 	plain := func(files map[string]string) *depPkg {
 		m := map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js"}`, "index.js": "exports.run = function run() {};\n"}
@@ -422,8 +422,9 @@ func TestDepGraph_FirstPartyByteIdentical(t *testing.T) {
 	}
 }
 
-// TestDepGraph_NoNewNotExploitable: reading dependency code only adds edges and limits, so a
-// verdict that was not refuted at main can never become refuted at head.
+// TestDepGraph_NoNewNotExploitable: reading dependency code adds edges and limits, and drops
+// only a site whose code it read and linked, so a verdict that was not refuted at main can never
+// become refuted at head.
 func TestDepGraph_NoNewNotExploitable(t *testing.T) {
 	plainDep := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
 		"package.json": `{"name":"dep","version":"1.0.0"}`, "index.js": "exports.run = function run() {};\n",
@@ -438,14 +439,26 @@ func TestDepGraph_NoNewNotExploitable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, store := range []artifactcache.Store{f.memStore(), artifactcache.NewDeclaredAbsentStore()} {
+		for j, store := range []artifactcache.Store{f.memStore(), artifactcache.NewDeclaredAbsentStore()} {
+			read := j == 0
 			head := withDeps(t, f.dir, store)
 			if head.Partiality.Complete && !base.Partiality.Complete {
 				t.Errorf("fixture %d: head completed a graph main left partial", i)
 			}
 			for _, r := range base.Partiality.Reasons {
-				if !hasReason(head.Partiality, r) {
+				if !hasReason(head.Partiality, r) && !(read && r == plugin.PartialReasonUninspectablePackage) {
 					t.Errorf("fixture %d: head dropped limit %s", i, r)
+				}
+			}
+			// A site head no longer lists is one whose caller now links into code head read.
+			for _, u := range base.Unresolved {
+				if slices.ContainsFunc(head.Unresolved, func(h plugin.UnresolvedCall) bool { return h.Caller == u.Caller && h.Callee == u.Callee }) {
+					continue
+				}
+				if !read || !slices.ContainsFunc(head.Edges, func(e plugin.CallEdge) bool {
+					return e.Caller.SCIP == u.Caller.SCIP && strings.HasPrefix(e.Callee.SCIP, scipManager+" ") && !strings.HasPrefix(e.Callee.SCIP, scipManager+" . . ")
+				}) {
+					t.Errorf("fixture %d: head dropped site %s -> %s without linking it into read code", i, u.Caller.SCIP, u.Callee)
 				}
 			}
 			for _, e := range base.Edges {

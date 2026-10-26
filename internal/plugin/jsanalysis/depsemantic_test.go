@@ -1489,8 +1489,8 @@ func semKeys[V any](m map[string]V) []string {
 
 // semRun builds dir's call graph with store's dependency code twice. The edges come from the
 // build as written; the partiality comes from the same build with every first-party module
-// emptied. A first-party load of a package always withholds run-wide in the base graph, so
-// only the emptied build shows whether the dependency lane itself withholds.
+// emptied. A first-party load of a package whose code is not read withholds run-wide in the
+// base graph, so only the emptied build shows whether the dependency lane itself withholds.
 func semRun(t *testing.T, dir string, store artifactcache.Store) plugin.CallGraphResult {
 	t.Helper()
 	loaded := withDeps(t, dir, store)

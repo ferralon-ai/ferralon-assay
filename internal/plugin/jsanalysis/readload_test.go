@@ -1,0 +1,232 @@
+package jsanalysis
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
+
+// loadListed reports whether cg lists a first-party load declined as an uninspectable package.
+func loadListed(cg plugin.CallGraphResult) bool {
+	for _, u := range cg.Unresolved {
+		if (u.Callee == "require" || u.Callee == "import") && u.Reason == plugin.PartialReasonUninspectablePackage {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDepGraph_ReadLoad: a first-party load of a package whose code is read, SRI-verified and
+// unpatched is not an uninspectable load: the load and the calls it resolves stop withholding
+// run-wide. Every way the package's code stays unread, or the load's target stays unknown,
+// keeps the run-wide limit and the listed load.
+func TestDepGraph_ReadLoad(t *testing.T) {
+	const namespaced = "const dep = require('dep');\ndep.run();\n"
+	plain := func(files map[string]string) *depPkg {
+		m := map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js"}`, "index.js": "exports.run = function run() {};\n"}
+		for k, v := range files {
+			m[k] = v
+		}
+		return &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: m}
+	}
+	fixture := func(app string, p *depPkg) func(t *testing.T) plugin.CallGraphResult {
+		return func(t *testing.T) plugin.CallGraphResult {
+			f := newDepFixture(t, map[string]string{"index.js": app}, p)
+			return withDeps(t, f.dir, f.memStore())
+		}
+	}
+	const depInit = "scip-typescript npm dep 1.0.0 index/`<module-init>`()."
+	const depRun = "scip-typescript npm dep 1.0.0 index/run()."
+	const appInit = "scip-typescript npm . . index/`<module-init>`()."
+
+	for _, tc := range []struct {
+		name     string
+		run      func(t *testing.T) plugin.CallGraphResult
+		withheld bool
+		check    func(t *testing.T, cg plugin.CallGraphResult)
+	}{
+		{
+			name: "read_namespace_call",
+			run:  fixture(namespaced, plain(nil)),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				if !hasEdge(cg.Edges, appInit, depInit) {
+					t.Errorf("the load must link to dep's top level; edges %+v", cg.Edges)
+				}
+				// A namespace member call resolves to no single function, as for a relative module.
+				if len(cg.Unresolved) != 1 || cg.Unresolved[0].Callee != "dep.run" || cg.Unresolved[0].Reason != plugin.PartialReasonDynamicDispatch {
+					t.Errorf("only dep.run stays listed, as dynamic dispatch; got %+v", cg.Unresolved)
+				}
+			},
+		},
+		{
+			name: "read_destructured_call",
+			run:  fixture("const { run } = require('dep');\nrun();\n", plain(nil)),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				if !cg.Partiality.Complete || len(cg.Unresolved) != 0 {
+					t.Errorf("a resolved call into a read package hides nothing; got %+v unresolved %+v", cg.Partiality, cg.Unresolved)
+				}
+				if !hasEdge(cg.Edges, appInit, depRun) {
+					t.Errorf("the call must link to dep's run; edges %+v", cg.Edges)
+				}
+			},
+		},
+		{
+			name: "read_esm_import",
+			run:  fixture("import { run } from 'dep';\nrun();\n", plain(nil)),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				if !cg.Partiality.Complete || !hasEdge(cg.Edges, appInit, depRun) {
+					t.Errorf("an import of a read package resolves as a require does; got %+v edges %+v", cg.Partiality, cg.Edges)
+				}
+			},
+		},
+		{
+			name: "read_exports_json_entry",
+			run: fixture("require('dep/data.json');\nrequire('dep');\n", plain(map[string]string{
+				"package.json": `{"name":"dep","version":"1.0.0","exports":{".":"./index.js","./data.json":"./data.json"}}`,
+				"data.json":    "{}",
+			})),
+		},
+		{
+			name: "sri_mismatch",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				p := plain(nil)
+				f := newDepFixture(t, map[string]string{"index.js": namespaced}, p)
+				tampered := artifactcache.NewMemStore(map[artifactcache.Ref][]byte{f.ref(p): buildTgz(t, map[string]string{"package.json": `{"name":"dep"}`, "index.js": "exports.run = function run() {};\n"})})
+				return withDeps(t, f.dir, tampered)
+			},
+			withheld: true,
+		},
+		{
+			name: "cache_miss",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"index.js": namespaced}, plain(nil))
+				return withDeps(t, f.dir, artifactcache.NewDeclaredAbsentStore())
+			},
+			withheld: true,
+		},
+		{
+			name: "budget_overrun",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"index.js": namespaced}, plain(nil))
+				res, _, err := callGraphWithDeps(context.Background(), f.dir, f.memStore(), 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return res
+			},
+			withheld: true,
+		},
+		{
+			name:     "main_names_no_module",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"lib/gone.js"}`})),
+			withheld: true,
+		},
+		{
+			name:     "exports_target_not_read",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","exports":{".":["./index.js","./lib/gone.js"]}}`})),
+			withheld: true,
+		},
+		{
+			name:     "exports_selects_nothing",
+			run:      fixture("require('dep/hidden');\n", plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","exports":{".":"./index.js"}}`, "hidden.js": "module.exports = 1;\n"})),
+			withheld: true,
+		},
+		{
+			name:     "subpath_not_read",
+			run:      fixture("require('dep/lib/gone');\n", plain(nil)),
+			withheld: true,
+		},
+		{
+			name: "self_reference",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"index.js": namespaced, "package.json": `{"name":"dep","version":"1.0.0","exports":"./index.js"}`}, plain(nil))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			withheld: true,
+		},
+		{
+			name: "incomplete_layout",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{
+					"index.js":                namespaced,
+					"tools/package.json":      `{"name":"tools","version":"1.0.0","dependencies":{"x":"1.0.0"}}`,
+					"tools/package-lock.json": "{",
+				}, plain(nil))
+				if l := buildDepLayout(context.Background(), f.dir); !l.incomplete || l.byPath["node_modules/dep"] == nil {
+					t.Fatalf("fixture: want an incomplete layout that still places dep; incomplete=%v", l.incomplete)
+				}
+				return withDeps(t, f.dir, f.memStore())
+			},
+			withheld: true,
+		},
+		{
+			name: "pnpm_patched",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				q := qPkg("1.0.0")
+				lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"q": "1.0.0"}}, q)
+				lock = strings.Replace(lock, "importers:", "patchedDependencies:\n  'q@1.0.0':\n    hash: abc\n    path: patches/q.patch\n\nimporters:", 1)
+				lock = strings.Replace(lock, "version: '1.0.0'", "version: '1.0.0(patch_hash=abc)'", 1)
+				lock = strings.Replace(lock, "\n  'q@1.0.0': {}", "\n  'q@1.0.0(patch_hash=abc)': {}", 1)
+				dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+					"index.js":            "const q = require('q');\nq.go();\n",
+					"package.json":        manifestWith("app", map[string]string{"q": "1.0.0"}, ""),
+					"pnpm-workspace.yaml": "patchedDependencies:\n  'q@1.0.0': patches/q.patch\n",
+					"patches/q.patch":     patchHead,
+				})
+				cg := withDeps(t, dir, semStore(t, q))
+				if !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, makePURL("q", "1.0.0")) {
+					t.Fatalf("fixture: q must be patched and unread; got %+v", cg.Partiality)
+				}
+				return cg
+			},
+			withheld: true,
+		},
+		{
+			name: "pnpm_read_control",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				q := qPkg("1.0.0")
+				lock := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"q": "1.0.0"}}, q)
+				dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+					"index.js":     "const q = require('q');\nq.go();\n",
+					"package.json": manifestWith("app", map[string]string{"q": "1.0.0"}, ""),
+				})
+				return withDeps(t, dir, semStore(t, q))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cg := tc.run(t)
+			if got := runWide(cg) || loadListed(cg); got != tc.withheld {
+				t.Errorf("withheld = %v, want %v; partiality %+v unresolved %+v", got, tc.withheld, cg.Partiality, cg.Unresolved)
+			}
+			if tc.withheld && !(runWide(cg) && loadListed(cg)) {
+				t.Errorf("an unread load keeps both the run-wide limit and its listed site; partiality %+v unresolved %+v", cg.Partiality, cg.Unresolved)
+			}
+			if tc.check != nil {
+				tc.check(t, cg)
+			}
+		})
+	}
+}
+
+// TestDepGraph_ReadLoadDepsOffUnchanged: without dependency code the first-party graph of a
+// program that loads packages is the graph callGraphInternal builds, decline for decline.
+func TestDepGraph_ReadLoadDepsOffUnchanged(t *testing.T) {
+	for _, app := range []string{
+		"const dep = require('dep');\ndep.run();\n",
+		"const { run } = require('dep');\nrun();\n",
+		"import { run } from 'dep';\nrun();\nrequire('fs').readFileSync('x');\n",
+	} {
+		dir := writeProgram(t, map[string]string{"index.js": app, "package.json": `{"name":"app","version":"1.0.0"}`})
+		cg, err := callGraphFor(context.Background(), dir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !runWide(cg) || !loadListed(cg) {
+			t.Errorf("%q: dependency code off keeps every package load uninspectable; got %+v unresolved %+v", app, cg.Partiality, cg.Unresolved)
+		}
+	}
+}

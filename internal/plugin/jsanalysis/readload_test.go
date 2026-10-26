@@ -520,12 +520,18 @@ func TestDepGraph_ReadLoadDepInternal(t *testing.T) {
 		{name: "dual_load_linked", run: run(nil, dep(map[string]string{"index.js": "require('b');\nexports.run = function run() {};\n"}), b(bDual, map[string]string{"esm.js": bBundled})), complete: true, edges: []string{bInit, bEsm}},
 		// dep's load of b cannot be bounded: an unparsed module entry, a bundler alias.
 		{name: "dep_load_unparsed_entry", run: run(nil, dep(nil), b(`{"name":"b","version":"1.0.0","main":"n.js","module":"esm/entry"}`, map[string]string{"esm/entry": bBundled})), withheld: true},
-		{name: "dep_load_aliased", run: run(map[string]string{"webpack.config.js": "const path = require('path');\nmodule.exports = { resolve: { alias: { b: path.resolve(__dirname, 'shim.js') } } };\n", "shim.js": "exports.go = function go() {};\n"}, dep(nil), b(bMain, nil)), withheld: true},
+		{name: "dep_load_aliased", run: run(map[string]string{"webpack.config.js": "module.exports = { resolve: { alias: { b: './shim.js' } } };\n", "shim.js": "exports.go = function go() {};\n"}, dep(nil), b(bMain, nil)), withheld: true},
+		// A browser field in dep's own package.json may remap its load of b.
+		{name: "dep_browser_remaps_bare", run: run(nil, dep(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","browser":{"b":"./lib/shim.js"}}`, "lib/shim.js": "exports.go = function go() {};\n"}), b(bMain, nil)), withheld: true},
 		// dep's relative loads: a bundler preferring .mjs, a browser map in dep's own package.json,
 		// and a directory whose package.json has a module entry.
 		{name: "relative_bounded", run: run(nil, dep(map[string]string{"index.js": "require('./lib/x');\nexports.run = function run() {};\n", "lib/x.js": "exports.y = 1;\n"})), complete: true},
 		{name: "relative_mjs_twin", run: run(nil, dep(map[string]string{"index.js": "require('./lib/x');\nexports.run = function run() {};\n", "lib/x.js": "exports.y = 1;\n", "lib/x.mjs": "export const y = 1;\n"})), withheld: true},
 		{name: "relative_browser_remap", run: run(nil, dep(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","browser":{"./lib/x.js":"./lib/y.js"}}`, "index.js": "require('./lib/x');\nexports.run = function run() {};\n", "lib/x.js": "exports.y = 1;\n", "lib/y.js": "exports.y = 2;\n"})), withheld: true},
+		{name: "relative_unparsed_twin", run: run(nil, dep(map[string]string{"index.js": "require('./lib/x');\nexports.run = function run() {};\n", "lib/x.js": "exports.y = 1;\n", "lib/x.node": "\x7fELF"})), withheld: true},
+		{name: "relative_outside_package", run: run(nil, dep(map[string]string{"index.js": "require('../b');\nexports.run = function run() {};\n"}), b(bMain, nil)), withheld: true},
+		{name: "relative_target_nested_remap", run: run(nil, dep(map[string]string{"index.js": "require('./sub/x');\nexports.run = function run() {};\n", "sub/package.json": `{"browser":{"./x.js":"./y.js"}}`, "sub/x.js": "exports.y = 1;\n", "sub/y.js": "exports.y = 2;\n"})), withheld: true},
+		{name: "relative_target_manifest_unparsed", run: run(nil, dep(map[string]string{"index.js": "require('./sub/x');\nexports.run = function run() {};\n", "sub/package.json": `{"main":`, "sub/x.js": "exports.y = 1;\n"})), withheld: true},
 		{name: "relative_dir_module_entry", run: run(nil, dep(map[string]string{"index.js": "require('./sub');\nexports.run = function run() {};\n", "sub/package.json": `{"main":"n.js","module":"m.js"}`, "sub/n.js": "exports.y = 1;\n", "sub/m.js": "export const y = 1;\n"})), withheld: true},
 		// The app's own package.json maps dep elsewhere for a browser build.
 		{name: "app_browser_map", run: run(map[string]string{"package.json": `{"name":"app","version":"1.0.0","browser":{"dep":"./shim.js"}}`, "shim.js": "exports.run = function run() {};\n"}, dep(nil), b(bMain, nil)), withheld: true},

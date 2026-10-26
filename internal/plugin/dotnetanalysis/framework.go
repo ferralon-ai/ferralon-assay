@@ -17,10 +17,19 @@ package dotnetanalysis
 // dynamic binder and late binding, so they stay out. Microsoft.AspNetCore.App and the
 // Microsoft.Extensions.* hosting and dependency-injection assemblies are not in the list at
 // all: they construct and invoke application types from configuration, so calls into them
-// stay hazards. Five assemblies appear in both Microsoft.NETCore.App and
-// Microsoft.AspNetCore.App (Microsoft.Win32.Registry, System.IO.Pipelines,
-// System.Security.AccessControl, System.Security.Cryptography.Cng,
-// System.Security.Principal.Windows); they are core platform libraries and stay framework.
+// stay hazards. Those hazards also cover the entry points the IL search does not root
+// (ingress_il.go): middleware a host activates by type (UseMiddleware's Invoke/InvokeAsync),
+// Startup.Configure and ConfigureServices, SignalR hubs, gRPC services, views compiled into
+// a separate assembly, lambdas held in generic closure classes, and a controller whose base
+// is unloaded and which has neither the name suffix nor [Controller]. A hosted Main stays
+// undetermined only because its call into the host is a hazard; making these assemblies
+// framework leaves without first rooting those shapes turns each into a false
+// not_exploitable (TestReachability_ASPNetUnrootedEntriesRelyOnHostingHazard).
+//
+// Five assemblies appear in both Microsoft.NETCore.App and Microsoft.AspNetCore.App
+// (Microsoft.Win32.Registry, System.IO.Pipelines, System.Security.AccessControl,
+// System.Security.Cryptography.Cng, System.Security.Principal.Windows); they are core
+// platform libraries and stay framework.
 
 import (
 	_ "embed"

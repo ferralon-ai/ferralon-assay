@@ -103,10 +103,11 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 }
 
 // propagate pushes taint from a tainted value v to the values its referrers
-// derive from it, forwarding through assignments, phi, field/element access,
-// extract, conversions, tainted-operand binops, and (inter-procedurally) from a
-// call's actual arg to the callee's formal param. Sanitizer results are NOT
-// tainted. A tainted arg to a resolved sink records a finding.
+// derive from it, forwarding through assignments, phi, field/element access, map
+// and string lookup, type assertion, extract, conversions, tainted-operand binops,
+// and (inter-procedurally) from a call's actual arg to the callee's formal param.
+// Sanitizer results are NOT tainted. A tainted arg to a resolved sink records a
+// finding.
 func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin)) {
 	o := ta.origin[v]
 	refs := v.Referrers()
@@ -141,6 +142,13 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 			seed(in, o)
 		case *ssa.Index:
 			seed(in, o)
+		case *ssa.Lookup:
+			// m[k] on a tainted map (r.Header["X-A"]), or s[i] on a tainted string.
+			seed(in, o)
+		case *ssa.TypeAssert:
+			// x.(T) yields the tainted interface's dynamic value; the comma-ok
+			// form's tuple carries it to its Extract.
+			seed(in, o)
 		case *ssa.Extract:
 			seed(in, o)
 		case *ssa.Store:
@@ -148,6 +156,14 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 			// later loads of the address observe taint.
 			if in.Val == v {
 				seed(in.Addr, o)
+				// A store into a field also taints the struct base (&w{r: r}
+				// stores through &t0.r), so a later read through another
+				// FieldAddr of the same base observes taint. This is
+				// field-insensitive by design: every field of the base reads
+				// as tainted.
+				if fa, ok := in.Addr.(*ssa.FieldAddr); ok {
+					seed(fa.X, o)
+				}
 			}
 		case *ssa.MapUpdate:
 			if in.Value == v {
@@ -186,6 +202,16 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	// formal parameter. A sanitizer call clears taint — its result is not seeded,
 	// and we do not forward into its body for sink purposes.
 	if callee == nil || callee.Blocks == nil {
+		// Only the module's own packages get SSA bodies, so a stdlib or dependency
+		// callee (r.Header.Get, url.Values.Get, strings.TrimSpace) has none: an
+		// unmodeled transform forwards taint from a tainted argument, the receiver
+		// included, to its result. A (T, error) result's tuple carries it to its
+		// Extract. A dynamic call with no static callee forwards nothing.
+		if forwardsUnbuilt(common, callee, v) {
+			if val, ok := in.(ssa.Value); ok {
+				seed(val, o)
+			}
+		}
 		return
 	}
 	if isSanitizer(callee) {
@@ -212,6 +238,13 @@ func forwardArgs(common *ssa.CallCommon, callee *ssa.Function, v ssa.Value, o ta
 			seed(callee.Params[i], taintOrigin{ingress: o.ingress, enclFn: callee})
 		}
 	}
+}
+
+// forwardsUnbuilt reports whether a call to a callee with no built body taints its
+// result: the callee is statically known, is not a modeled sanitizer, and takes
+// the tainted value v as an argument (a static method call's receiver is Args[0]).
+func forwardsUnbuilt(common *ssa.CallCommon, callee *ssa.Function, v ssa.Value) bool {
+	return callee != nil && !isSanitizer(callee) && argContains(common.Args, v)
 }
 
 func argContains(args []ssa.Value, v ssa.Value) bool {

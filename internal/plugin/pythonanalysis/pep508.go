@@ -197,10 +197,21 @@ func requirementConstraint(spec string) string {
 	return r.Specifier
 }
 
+// specifierPin returns the version a normalized specifier (pep508Req.Specifier) pins when its first
+// clause is an exact "==X" with no "*" prefix match, as parseRequirementSpec resolves one.
+func specifierPin(specifier string) (string, bool) {
+	first, _, _ := strings.Cut(specifier, ",")
+	ver, ok := strings.CutPrefix(first, "==")
+	if !ok || ver == "" || strings.HasPrefix(ver, "=") || strings.Contains(ver, "*") {
+		return "", false
+	}
+	return ver, true
+}
+
 // declaredDependency builds the advisory-path record for one declared PEP 508 requirement read
-// from a non-lock manifest. Exact-pin resolution comes from parseRequirementSpec (shared with
-// every other Python path, so an exact "==" pin keeps resolving exactly as before); a range rides only in Constraint and never becomes Version. ok is false for a string
-// that is not a well-formed requirement.
+// from a non-lock manifest. An exact "==" pin resolves (specifierPin); a range rides only in
+// Constraint and never becomes Version. ok is false for a string that is not a well-formed
+// requirement.
 func declaredDependency(spec, source string) (plugin.ResolvedDependency, bool) {
 	r, ok := parsePEP508(spec)
 	if !ok {
@@ -208,11 +219,7 @@ func declaredDependency(spec, source string) (plugin.ResolvedDependency, bool) {
 	}
 	version, resolved := "", false
 	if r.URL == "" {
-		head := spec
-		if k := strings.IndexByte(head, ';'); k >= 0 {
-			head = head[:k]
-		}
-		_, version, resolved, _ = parseRequirementSpec(strings.TrimSpace(head))
+		version, resolved = specifierPin(r.Specifier)
 	}
 	d := pyResolved(r.Name, version, resolved, source)
 	if !d.Resolved {

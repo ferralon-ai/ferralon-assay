@@ -1013,6 +1013,12 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"uv-dev-uv-lock":       {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask>=2\"]\n", "uv.lock": uvLock},
 		"pdm-dev-pdm-lock":     {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n", "pdm.lock": pdmLk},
 		"poetry-caret-covered": {"pyproject.toml": "[tool.poetry.group.web.dependencies]\nflask = \"^2.1\"\n", "poetry.lock": pdmLk},
+		// A parenthesized specifier with no space before it keys on the name alone.
+		"project-paren-uv-lock":  {"pyproject.toml": head[:len(head)-1] + "dependencies = [\"Flask(>=2)\"]\n", "uv.lock": uvLock},
+		"groups-paren-exact-pin": {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(==2.3.0)\"]\n"},
+		"groups-paren-uv-lock":   {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(>=2)\"]\n", "uv.lock": uvLock},
+		"uv-dev-paren-uv-lock":   {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask(>=2)\"]\n", "uv.lock": uvLock},
+		"pdm-dev-paren-pdm-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask(>=2)\"]\n", "pdm.lock": pdmLk},
 	}
 	for name, files := range covered {
 		t.Run(name, func(t *testing.T) {
@@ -1028,6 +1034,13 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"poetry-caret-stale-lock": {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2.4\"\n", "poetry.lock": pdmLk},
 		"poetry-git":              {"pyproject.toml": "[tool.poetry.dependencies]\nflask = {git = \"https://github.com/pallets/flask\"}\n", "poetry.lock": pdmLk},
 		"group-direct-reference":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask @ https://example.com/flask-2.3.0.tar.gz\"]\n", "uv.lock": uvLock},
+		// A parenthesized range a pin elsewhere does not satisfy: the name must still match.
+		"project-paren-stale-lock": {"pyproject.toml": head[:len(head)-1] + "dependencies = [\"Flask(<2.3)\"]\n", "uv.lock": uvLock},
+		"groups-paren-stale-lock":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(<2.3)\"]\n", "uv.lock": uvLock},
+		"uv-dev-paren-stale-lock":  {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask(<2.3)\"]\n", "uv.lock": uvLock},
+		"pdm-dev-paren-stale-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask(<2.3)\"]\n", "pdm.lock": pdmLk},
+		"groups-paren-beside-another-pin": {"svc-a/requirements.txt": "flask==2.3.0\n",
+			"svc-b/pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(<2.3)\"]\n"},
 	}
 	for name, files := range undecided {
 		t.Run(name, func(t *testing.T) {

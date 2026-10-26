@@ -639,10 +639,10 @@ func isProjectNameRune(c rune) bool {
 // (parseRequirementLines, parsePyproject) ignores it, while the selected-set path resolves it
 // against the declared extras selection.
 func parseRequirementSpec(spec string) (name, version string, resolved bool, extras []string) {
-	// Name runs up to the first operator/extras/space.
+	// Name runs up to the first operator/extras/space, or the "(" of a parenthesized specifier.
 	end := len(spec)
 	for i, c := range spec {
-		if c == '=' || c == '<' || c == '>' || c == '!' || c == '~' || c == '[' || c == ' ' || c == '\t' {
+		if c == '=' || c == '<' || c == '>' || c == '!' || c == '~' || c == '[' || c == '(' || c == ' ' || c == '\t' {
 			end = i
 			break
 		}

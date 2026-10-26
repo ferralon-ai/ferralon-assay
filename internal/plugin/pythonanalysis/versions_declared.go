@@ -194,16 +194,10 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		ok      = true
 	)
 	addPEP508 := func(spec string, lockedBy []string) {
-		if _, valid := parsePEP508(spec); !valid {
-			ok = false
-			return
-		}
 		d, o, keep, entryOK := pep508Entry(spec, dir)
 		ok = ok && entryOK
 		if keep {
-			if !o.directRef {
-				o.lockedBy = lockedBy
-			}
+			o.lockedBy = lockedBy
 			deps = append(deps, d)
 			origins = append(origins, o)
 		}
@@ -358,34 +352,27 @@ func dependencyGroupSpecs(groups map[string]any) ([]string, bool) {
 // pep508Entry turns one [project].dependencies string into an entry and its origin. Only an
 // exact "==" pin resolves. A "name @ url" direct reference is UNRESOLVED and no lock covers
 // it. A file: URL other than the project's own directory makes ok false; the project's own
-// directory is dropped (keep false).
+// directory is dropped (keep false). Name and specifier come from parsePEP508, and a string
+// it rejects makes ok false.
 func pep508Entry(spec, dir string) (d plugin.ResolvedDependency, o manifestOrigin, keep, ok bool) {
 	s := strings.TrimSpace(spec)
 	o = manifestOrigin{dir: dir, lockedBy: projectLocks}
 	if loc, isFile := fileURLPath(s); isFile {
 		return d, o, false, isProjectDir(loc, dir)
 	}
-	if i := strings.IndexByte(s, ';'); i >= 0 {
-		s = strings.TrimSpace(s[:i])
+	r, valid := parsePEP508(s)
+	if !valid {
+		return d, o, false, false
 	}
-	if name := directReferenceName(s); name != "" && strings.Contains(s, "@") {
+	if r.URL != "" {
 		o.directRef = true
-		return pyResolved(name, "", false, "pyproject.toml"), o, true, true
+		return pyResolved(r.Name, "", false, "pyproject.toml"), o, true, true
 	}
-	name, version, resolved, _ := parseRequirementSpec(s)
-	if name == "" {
-		return d, o, false, true
-	}
-	rest := strings.TrimSpace(s[len(name):])
-	if strings.HasPrefix(rest, "[") {
-		if j := strings.IndexByte(rest, ']'); j >= 0 {
-			rest = strings.TrimSpace(rest[j+1:])
-		}
-	}
-	o.spec = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(rest, "("), ")"))
-	d = pyResolved(name, version, resolved, "pyproject.toml")
+	o.spec = r.Specifier
+	version, resolved := specifierPin(r.Specifier)
+	d = pyResolved(r.Name, version, resolved, "pyproject.toml")
 	if !d.Resolved {
-		d.Constraint = requirementConstraint(s)
+		d.Constraint = r.Specifier
 	}
 	return d, o, true, true
 }

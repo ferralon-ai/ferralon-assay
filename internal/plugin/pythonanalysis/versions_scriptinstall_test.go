@@ -290,6 +290,8 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 		{"mention: pip.ini", map[string]string{"Dockerfile": dockerHead + "COPY cfg/win.cfg C:/ProgramData/pip/pip.ini\n" + upgrade}, false},
 		{"mention: name case", map[string]string{"Dockerfile": dockerHead + "COPY cfg/x /ETC/PIP.CONF\n" + upgrade}, false},
 		{"mention: PIP_CONFIG_FILE referenced", map[string]string{"Dockerfile": dockerHead + "RUN echo \"$PIP_CONFIG_FILE\"\n" + upgrade}, false},
+		{"mention: pip.conf in a virtualenv", map[string]string{"Dockerfile": dockerHead + "COPY cfg/x /opt/venv/pip.conf\n" + upgrade}, false},
+		{"mention: pip_config_file, lower case", map[string]string{"Dockerfile": dockerHead + "# see pip_config_file\n" + upgrade}, false},
 		{"mention: pip config", map[string]string{"Dockerfile": dockerHead + "# settings: pip config list\n" + upgrade}, false},
 		{"mention: /etc/xdg/pip", map[string]string{"Dockerfile": dockerHead + "COPY cfg/ /etc/xdg/pip/\n" + upgrade}, false},
 		{"mention: .config/pip", map[string]string{"Dockerfile": dockerHead + "COPY cfg/ /root/.config/pip/\n" + upgrade}, false},

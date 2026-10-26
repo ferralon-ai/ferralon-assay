@@ -176,7 +176,7 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 				out += tt.buildRID + "/"
 			}
 			files := map[string][]byte{
-				"App.csproj":              []byte("<Project></Project>"),
+				"App.csproj":              restoredProject,
 				"obj/project.assets.json": []byte(assets),
 				out + "App.dll":           appMain(".NETCoreApp,Version=v8.0"),
 				out + "App.deps.json":     depsJSON(tt.buildRID),
@@ -195,6 +195,9 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 			res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{ridSinkSCIP}})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if hasILReason(res.Partiality, partialReasonRestoreUntrusted) {
+				t.Fatalf("restore output untrusted, so every row below could pass for that reason: %v", res.Partiality.Reasons)
 			}
 			if got := slices.Contains(res.Searched, ridSinkSCIP); got != tt.wantSearched {
 				t.Errorf("searched = %v, want %v (paths %d, partiality %+v)", got, tt.wantSearched, len(res.Paths), res.Partiality)
@@ -302,7 +305,7 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 				out += tt.buildRID + "/"
 			}
 			dir := composeILBuildDir(t, map[string][]byte{
-				"App.csproj":              []byte("<Project></Project>"),
+				"App.csproj":              restoredProject,
 				"obj/project.assets.json": []byte(assets),
 				out + "App.dll":           appMain(".NETCoreApp,Version=v8.0"),
 				out + "App.deps.json":     depsJSON(tt.buildRID),
@@ -317,6 +320,9 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if hasILReason(res.Partiality, partialReasonRestoreUntrusted) {
+				t.Fatalf("restore output untrusted, so every row below could pass for that reason: %v", res.Partiality.Reasons)
 			}
 			if got := len(res.Matched) == 1; got != tt.wantMatched {
 				t.Errorf("matched = %v, want %v (resolved %d, partiality %+v)", res.Matched, tt.wantMatched, len(res.Resolved), res.Partiality)

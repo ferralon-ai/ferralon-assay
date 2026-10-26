@@ -24,7 +24,15 @@ package depreach
 //   - the framework calls back into application objects it is given: a comparer's
 //     Compare, an enumerable's GetEnumerator, an override of ToString. Those callbacks
 //     are the re-entry roots (reentryRoots): every virtual of a type that is instantiated
-//     and has framework ancestry, plus the Object virtuals of every instantiated type.
+//     and has framework ancestry, plus the Object virtuals of every instantiated type;
+//   - the framework also reads the properties of objects it is given, by reflection and
+//     without virtual dispatch: serializers, formatters, binders and diagnostic payload
+//     fetchers run the accessors of whatever object they were handed. So every property
+//     getter and setter of an instantiated type, of any visibility, static or instance, is
+//     a re-entry root as well. Accessors are the methods the MethodSemantics table binds to
+//     a property, which is what reflection runs; their get_/set_ names are a compiler
+//     convention and are not consulted. Which framework member did the reading does not
+//     matter, so this class needs no list of reflecting members.
 //     A search that touched framework code is not_exploitable only if the sink is
 //     unreachable from the re-entry roots as well; otherwise it is undetermined.
 //   - delegates the framework invokes were captured by an ldftn/ldvirtftn in code the
@@ -449,7 +457,9 @@ func (e *Engine) frameworkOverrides(ctx *searchCtx, fromAsm *assembly.Assembly, 
 
 // reentryRoots are the methods framework code can call on application objects it holds:
 // for an instantiated type with framework ancestry, every virtual body it has or inherits
-// in-set (and every MethodImpl body); for any other instantiated type, its Object virtuals.
+// in-set (and every MethodImpl body); for any other instantiated type, its Object virtuals;
+// and for every instantiated type, each property getter and setter it has or inherits
+// in-set, as the MethodSemantics table names them.
 // A generic argument's static constructor and parameterless constructor are roots too
 // (the framework constructs a T through new T()), and its static methods when it
 // implements a framework interface (static abstract members).
@@ -473,6 +483,9 @@ func (e *Engine) reentryRoots(ctx *searchCtx) []*methodNode {
 		if ctx.counts(te.td) {
 			for _, a := range e.ancestryOf(te) {
 				for _, m := range a.td.Methods {
+					if m.RVA != 0 && a.asm.PropertyAccessor(m.RID) {
+						add(m)
+					}
 					if m.Flags&maVirtual == 0 || m.RVA == 0 {
 						continue
 					}

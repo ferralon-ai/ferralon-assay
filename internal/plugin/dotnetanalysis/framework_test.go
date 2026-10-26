@@ -16,13 +16,15 @@ import (
 )
 
 const (
-	fPublicCtor = 0x1886 // public hidebysig specialname rtspecialname
-	fIfaceImpl  = 0x1E6  // public final virtual hidebysig newslot
-	fOverride   = 0xC6   // public virtual hidebysig
-	fNewSlot    = 0x1C6  // public virtual hidebysig newslot
-	fStatic     = 0x16   // public static hidebysig
-	xMethodSpec = 0x2B
-	xField      = 0x04
+	fPublicCtor      = 0x1886 // public hidebysig specialname rtspecialname
+	fIfaceImpl       = 0x1E6  // public final virtual hidebysig newslot
+	fOverride        = 0xC6   // public virtual hidebysig
+	fNewSlot         = 0x1C6  // public virtual hidebysig newslot
+	fStatic          = 0x16   // public static hidebysig
+	xMethodSpec      = 0x2B
+	xField           = 0x04
+	xProperty        = 0x17
+	xMethodSemantics = 0x18
 )
 
 var (
@@ -447,6 +449,72 @@ func appGenericCall(ns, typ, name string, sig []byte) []byte {
 	return a.main(ilCall(mtok(xMethodSpec, spec)))
 }
 
+// payloadOpts shapes appPayload.
+type payloadOpts struct {
+	getter    string // the accessor's method name; "" is get_Value
+	unbound   bool   // no MethodSemantics row: a plain method, not a property accessor
+	setter    bool   // bind it as the setter rather than the getter
+	quiet     bool   // the accessor does not call the sink
+	inherited bool   // the accessor is declared on App.Base, which Payload derives from
+	unbuilt   bool   // Main never constructs a Payload
+}
+
+// appPayload adds App.Payload with a property Value whose non-virtual accessor calls the
+// sink, constructs one in Main, and then runs the framework call call builds (given the
+// Payload TypeDef rid).
+func appPayload(o payloadOpts, call func(a *fwApp, payload uint32) []byte) []byte {
+	a := newFWApp()
+	if o.getter == "" {
+		o.getter = "get_Value"
+	}
+	sig := sigToString // instance string get_Value()
+	if o.setter {
+		sig = []byte{0x20, 0x01, 0x01, 0x0E} // instance void set_Value(string)
+	}
+	acc := mspec{name: o.getter, flags: 0x886, sig: sig, il: a.sinkIf(!o.quiet)} // public hidebysig specialname
+	ctor := mspec{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}
+	owner, ext := uint32(0), a.obj
+	var accRID uint32
+	if o.inherited {
+		var m []uint32
+		owner, m = a.addType(0, "Base", "App", a.obj, []mspec{acc})
+		accRID, ext = m[0], cTypeDefOrRef(xTypeDef, owner)
+	}
+	ms := []mspec{ctor}
+	if !o.inherited {
+		ms = append(ms, acc)
+	}
+	payload, m := a.addType(0, "Payload", "App", ext, ms)
+	if !o.inherited {
+		accRID = m[1]
+	}
+	if !o.unbound {
+		prop := a.row(xProperty, 0, a.str("Value"), a.blob([]byte{0x28, 0x00, 0x0E}))
+		sem := uint32(0x0002) // Getter
+		if o.setter {
+			sem = 0x0001 // Setter
+		}
+		a.row(xMethodSemantics, sem, accRID, prop<<1|1) // HasSemantics: Property
+	}
+	var instrs [][]byte
+	if !o.unbuilt {
+		instrs = append(instrs, ilNewobjOp(mtok(xMethodDef, m[0])))
+	}
+	return a.main(append(instrs, call(a, payload))...)
+}
+
+// atPayload calls the generic method ref instantiated at App.Payload.
+func atPayload(a *fwApp, ref, payload uint32) []byte {
+	spec := a.row(xMethodSpec, (ref&0xFFFFFF)<<1|1, a.blob([]byte{0x0A, 0x01, 0x12, byte(cTypeDefOrRef(xTypeDef, payload))}))
+	return ilCall(mtok(xMethodSpec, spec))
+}
+
+// diagnosticWrite is DiagnosticSource.Write(string, object): a framework leaf whose
+// payload fetcher reads the object's public properties when a listener asks for them.
+func diagnosticWrite(a *fwApp, _ uint32) []byte {
+	return ilCallvirt(a.refIn("System.Diagnostics.DiagnosticSource", "System.Diagnostics", "DiagnosticSource", "Write", []byte{0x20, 0x02, 0x01, 0x0E, 0x1C}))
+}
+
 func TestFramework_Searched(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -646,6 +714,19 @@ func TestFramework_Searched(t *testing.T) {
 		{name: "a JSON value of a primitive", app: appCall(func(a *fwApp) uint32 {
 			return a.fwRef("System.Text.Json.Nodes", "JsonValue", "Create", []byte{0x00, 0x01, 0x1C, 0x08})
 		}), wantSearched: true},
+		// Property accessors of an instantiated type are re-entry roots: the framework reads
+		// the properties of objects it is handed by reflection, whichever member does it.
+		{name: "a diagnostic payload's getter is a re-entry root", app: appPayload(payloadOpts{}, diagnosticWrite),
+			reason: plugin.PartialReasonReachabilityUndetermined, wantReason: true},
+		{name: "a getter is a re-entry root whichever framework member is handed the object", app: appPayload(payloadOpts{}, func(a *fwApp, _ uint32) []byte {
+			return ilCall(a.refIn("System.Console", "System", "Console", "WriteLine", []byte{0x00, 0x01, 0x01, 0x1C}))
+		}), reason: plugin.PartialReasonReachabilityUndetermined, wantReason: true},
+		{name: "a setter is a re-entry root", app: appPayload(payloadOpts{setter: true}, diagnosticWrite)},
+		{name: "an inherited getter is a re-entry root", app: appPayload(payloadOpts{inherited: true}, diagnosticWrite)},
+		{name: "an accessor is what MethodSemantics binds, whatever its name", app: appPayload(payloadOpts{getter: "Fetch"}, diagnosticWrite)},
+		{name: "a get_ method no property binds is not an accessor", app: appPayload(payloadOpts{unbound: true}, diagnosticWrite), wantSearched: true},
+		{name: "a getter that does not reach the sink is searched", app: appPayload(payloadOpts{quiet: true}, diagnosticWrite), wantSearched: true},
+		{name: "a getter of a type never constructed is not a re-entry root", app: appPayload(payloadOpts{unbuilt: true}, diagnosticWrite), wantSearched: true},
 
 		// Members taking a type or handle that construct and invoke nothing.
 		{name: "typeof", app: appCall(func(a *fwApp) uint32 {

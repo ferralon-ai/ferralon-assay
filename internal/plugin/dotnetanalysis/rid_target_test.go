@@ -67,6 +67,7 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 		wantSearched bool
 		wantPath     bool
 		wantScoped   map[string]string // purl -> reason
+		wantReason   string            // a run-wide reason with no scope, "" for none
 	}{
 		{
 			name:      "runtime-only package is read from the runtime target",
@@ -123,8 +124,9 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 			wantScoped: map[string]string{"pkg:nuget/dep": partialReasonRIDUnknown},
 		},
 		{
-			name:      "runtime ambiguous: a runtime-only package is a named miss",
-			targets:   `"net8.0":{` + plainDep + `},"net8.0/win-x64":{` + plainDep + `,` + ridOnly + `}`,
+			name: "runtime ambiguous: a runtime-only package is a named miss",
+			targets: `"net8.0":{` + plainDep + `},"net8.0/win-x64":{` + plainDep + `,` + ridOnly + `},` +
+				`"net8.0/linux-x64":{` + plainDep + `}`,
 			libraries: depLib + `,` + ridOnlyLib,
 			pkgFiles: map[string][]byte{
 				"dep/1.0.0/" + depDLL:         ridDep(false),
@@ -134,6 +136,48 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 			alsoRID:      "linux-x64",
 			wantSearched: true,
 			wantScoped:   map[string]string{"pkg:nuget/ridonly": partialReasonRIDAmbiguous},
+		},
+		{
+			name: "runtime unknown: a re-versioned package with no runtime assemblies keeps its portable bytes",
+			targets: `"net8.0":{` + plainDep + `,` + ridOnly + `},"net8.0/win-x64":{` + plainDep +
+				`,"RidOnly/2.0.0":{"type":"package","compile":{"lib/netstandard1.0/_._":{}},"dependencies":{"Dep":"1.0.0"}}}`,
+			libraries: depLib + `,` + ridOnlyLib + `,"RidOnly/2.0.0":{"type":"package","path":"ridonly/2.0.0"}`,
+			pkgFiles: map[string][]byte{
+				"dep/1.0.0/" + depDLL:         ridDep(false),
+				"ridonly/1.0.0/" + ridOnlyDLL: ridOnlyPkg(),
+			},
+			wantPath: true,
+		},
+		{
+			name:      "runtime known, restore wrote no runtime target",
+			targets:   `"net8.0":{` + plainDep + `}`,
+			libraries: depLib,
+			pkgFiles: map[string][]byte{
+				"dep/1.0.0/" + depDLL: ridDep(false),
+			},
+			buildRID:   "linux-x64",
+			wantReason: partialReasonRuntimeTargetAbsent,
+		},
+		{
+			name:      "runtime known, restore wrote only another runtime's target",
+			targets:   `"net8.0":{` + plainDep + `},"net8.0/win-x64":{` + plainDep + `}`,
+			libraries: depLib,
+			pkgFiles: map[string][]byte{
+				"dep/1.0.0/" + depDLL: ridDep(false),
+			},
+			buildRID:   "linux-x64",
+			wantReason: partialReasonRuntimeTargetAbsent,
+		},
+		{
+			name:      "runtime ambiguous, restore wrote no runtime target",
+			targets:   `"net8.0":{` + plainDep + `}`,
+			libraries: depLib,
+			pkgFiles: map[string][]byte{
+				"dep/1.0.0/" + depDLL: ridDep(false),
+			},
+			buildRID:   "linux-x64",
+			alsoRID:    "win-x64",
+			wantReason: partialReasonRuntimeTargetAbsent,
 		},
 		{
 			name: "runtime unknown: a runtime-only package with no assemblies is not a miss",
@@ -223,6 +267,12 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 			if len(tt.wantScoped) == 0 && len(scoped) != 0 {
 				t.Errorf("scoped = %v, want none", scoped)
 			}
+			if tt.wantReason != "" && !hasILReason(res.Partiality, tt.wantReason) {
+				t.Errorf("reasons = %v, want %s", res.Partiality.Reasons, tt.wantReason)
+			}
+			if tt.wantReason == "" && hasILReason(res.Partiality, partialReasonRuntimeTargetAbsent) {
+				t.Errorf("reasons = %v, want no %s", res.Partiality.Reasons, partialReasonRuntimeTargetAbsent)
+			}
 		})
 	}
 }
@@ -250,6 +300,7 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 		libraries   string
 		pkgFiles    map[string][]byte
 		buildRID    string
+		alsoRID     string
 		wantMatched bool
 		wantScoped  string // reason scoped to pkg:nuget/dep, "" for none
 	}{
@@ -293,6 +344,40 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 			},
 			wantScoped: partialReasonRIDUnknown,
 		},
+		{
+			name:      "runtime known, restore wrote no runtime target",
+			targets:   `"net8.0":{` + ridRow("Dep/1.0.0", depDLL, "") + `}`,
+			libraries: depLib,
+			pkgFiles: map[string][]byte{
+				"dep/1.0.0/" + depDLL: ridDep(false),
+			},
+			buildRID:    "linux-x64",
+			wantMatched: true,
+			wantScoped:  partialReasonRuntimeTargetAbsent,
+		},
+		{
+			name:      "runtime known, restore wrote only another runtime's target",
+			targets:   `"net8.0":{` + ridRow("Dep/1.0.0", depDLL, "") + `},"net8.0/win-x64":{` + ridRow("Dep/1.0.0", depDLL, "") + `}`,
+			libraries: depLib,
+			pkgFiles: map[string][]byte{
+				"dep/1.0.0/" + depDLL: ridDep(false),
+			},
+			buildRID:    "linux-x64",
+			wantMatched: true,
+			wantScoped:  partialReasonRuntimeTargetAbsent,
+		},
+		{
+			name:      "runtime ambiguous, restore wrote no runtime target",
+			targets:   `"net8.0":{` + ridRow("Dep/1.0.0", depDLL, "") + `}`,
+			libraries: depLib,
+			pkgFiles: map[string][]byte{
+				"dep/1.0.0/" + depDLL: ridDep(false),
+			},
+			buildRID:    "linux-x64",
+			alsoRID:     "win-x64",
+			wantMatched: true,
+			wantScoped:  partialReasonRuntimeTargetAbsent,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -304,12 +389,18 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 			if tt.buildRID != "" {
 				out += tt.buildRID + "/"
 			}
-			dir := composeILBuildDir(t, map[string][]byte{
+			files := map[string][]byte{
 				"App.csproj":              restoredProject,
 				"obj/project.assets.json": []byte(assets),
 				out + "App.dll":           appMain(".NETCoreApp,Version=v8.0"),
 				out + "App.deps.json":     depsJSON(tt.buildRID),
-			})
+			}
+			if tt.alsoRID != "" {
+				also := "bin/Release/net8.0/" + tt.alsoRID + "/"
+				files[also+"App.dll"] = appMain(".NETCoreApp,Version=v8.0")
+				files[also+"App.deps.json"] = depsJSON(tt.alsoRID)
+			}
+			dir := composeILBuildDir(t, files)
 			f := depFixture{buildDir: dir, pkgRoot: pkgRoot}
 			for rel, data := range tt.pkgFiles {
 				f.writePkgFile(t, rel, data)
@@ -321,8 +412,8 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if hasILReason(res.Partiality, partialReasonRestoreUntrusted) {
-				t.Fatalf("restore output untrusted, so every row below could pass for that reason: %v", res.Partiality.Reasons)
+			if trusted, why := AssetsTrusted(dir, locateFirstPartyBuild(dir).assetsPath); !trusted {
+				t.Fatalf("restore output untrusted (%s): the row does not model a restored project", why)
 			}
 			if got := len(res.Matched) == 1; got != tt.wantMatched {
 				t.Errorf("matched = %v, want %v (resolved %d, partiality %+v)", res.Matched, tt.wantMatched, len(res.Resolved), res.Partiality)
@@ -333,7 +424,7 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 				}
 				return
 			}
-			if len(res.Resolved) != 0 {
+			if !tt.wantMatched && len(res.Resolved) != 0 {
 				t.Errorf("resolved %d symbols from bytes that may not run", len(res.Resolved))
 			}
 			var depReasons []string

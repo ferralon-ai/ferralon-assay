@@ -84,6 +84,14 @@ provided input, read from, in order:
 2. the `ASSAY_ADVISORY_SIGNALS` environment variable;
 3. the `signals.json` at the root of an `-advisory-corpus` **directory**, when it has one.
 
+The Action supplies the first of these on its bundle route (`advisory-corpus-repo` with
+`advisory-corpus-policy`, reading a `corpus-*` release): it downloads the release's `signals.json.gz`
+only after verifying the release's signed `bundles.json`, checks the asset's sha256 against the
+`signals` object there, and passes it as `-advisory-signals`. A release that cannot supply verified
+signals — a `bundles.json` older than `bundle_version` 1.1.0, no `signals` object, no asset, or a
+sha256 mismatch — fails the run. With an `advisory-corpus` directory the Action passes nothing, so
+the directory's own `signals.json` applies.
+
 The file is the corpus's signals sidecar (`signals_version` 1.x — see the vulnerability corpus's
 `CONSUMING.md`, "The signals sidecar"). Any other `signals_version`, or a file that is malformed or
 carries a value without its stamp, fails the run: a broken signals file never turns silently into no

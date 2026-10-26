@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/dotnetanalysis/assembly"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 const (
@@ -416,6 +417,36 @@ func fwAssets(targets, libraries string) []byte {
 		`"libraries":{"Dep/1.0.0":{"type":"package","path":"dep/1.0.0"},` + libraries + `}}`)
 }
 
+// appDbFactory adds App.MyFactory : DbProviderFactory, whose CreateConnection override
+// calls the sink, and calls it through the factory DbProviderFactories returns for a
+// registered name. With construct, Main also builds a MyFactory with newobj.
+func appDbFactory(construct bool) []byte {
+	a := newFWApp()
+	sdc := a.asmRef("System.Data.Common")
+	base := a.extTypeRefScoped(sdc, "System.Data.Common", "DbProviderFactory")
+	sigCC := []byte{0x20, 0x00, 0x1C} // instance object CreateConnection()
+	_, m := a.addType(0, "MyFactory", "App", cTypeDefOrRef(xTypeRef, base), []mspec{
+		{name: "CreateConnection", flags: fOverride, sig: sigCC, il: a.sinkIf(true)},
+		{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()},
+	})
+	facs := a.extTypeRefScoped(sdc, "System.Data.Common", "DbProviderFactories")
+	reg := a.memberRef(facs, "RegisterFactory", []byte{0x00, 0x02, 0x01, 0x0E, 0x0E})                           // (string, string)
+	get := a.memberRef(facs, "GetFactory", []byte{0x00, 0x01, 0x12, byte(cTypeDefOrRef(xTypeRef, base)), 0x0E}) // DbProviderFactory (string)
+	instrs := [][]byte{ilCall(reg), ilCall(get), ilCallvirt(a.memberRef(base, "CreateConnection", sigCC))}
+	if construct {
+		instrs = append([][]byte{ilNewobjOp(mtok(xMethodDef, m[1]))}, instrs...)
+	}
+	return a.main(instrs...)
+}
+
+// appGenericCall calls ns.typ::name, a generic method of one type parameter, at int32.
+func appGenericCall(ns, typ, name string, sig []byte) []byte {
+	a := newFWApp()
+	ref := a.fwRef(ns, typ, name, sig)
+	spec := a.row(xMethodSpec, (ref&0xFFFFFF)<<1|1, a.blob([]byte{0x0A, 0x01, 0x08}))
+	return a.main(ilCall(mtok(xMethodSpec, spec)))
+}
+
 func TestFramework_Searched(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -558,6 +589,63 @@ func TestFramework_Searched(t *testing.T) {
 		{name: "a member taking a list of System.Type", app: appCall(func(a *fwApp) uint32 {
 			return a.fwRef("System", "Console", "Write", a.reflectionParam("System", "Type", 2))
 		})},
+
+		// Framework members that resolve a type from a name, or reflect over one handed to them.
+		{ // the hazard turns the instantiation filter off, which binds the override
+			name: "a provider factory resolved by name", app: appDbFactory(false), wantPath: true,
+			reason: plugin.PartialReasonReflection, wantReason: true,
+		},
+		{name: "a provider factory constructed in code", app: appDbFactory(true), wantPath: true},
+		{name: "CryptoConfig", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.Security.Cryptography", "CryptoConfig", "CreateFromName", []byte{0x00, 0x01, 0x1C, 0x0E})
+		})},
+		{name: "a cryptography factory taking an algorithm name", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.Security.Cryptography", "HashAlgorithm", "Create", []byte{0x00, 0x01, 0x1C, 0x0E})
+		})},
+		{name: "a cryptography factory taking no name", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.Security.Cryptography", "Aes", "Create", []byte{0x00, 0x00, 0x1C})
+		}), wantSearched: true},
+		{name: "a cryptography Create in a nested namespace", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.Security.Cryptography.Synthetic", "Algo", "Create", []byte{0x00, 0x01, 0x1C, 0x0E})
+		}), wantSearched: true},
+		{name: "a password hash by name", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.Security.Cryptography", "PasswordDeriveBytes", "GetBytes", []byte{0x20, 0x01, 0x1D, 0x05, 0x08})
+		})},
+		{name: "a type converter's property walk", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.ComponentModel", "TypeConverter", "GetProperties", []byte{0x20, 0x01, 0x1C, 0x1C})
+		})},
+		{name: "a type converter's conversion", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.ComponentModel", "TypeConverter", "ConvertToString", []byte{0x20, 0x01, 0x0E, 0x1C})
+		}), wantSearched: true},
+		{name: "a component added to a container", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.ComponentModel", "Container", "Add", []byte{0x20, 0x01, 0x01, 0x1C})
+		})},
+		{name: "a member descriptor", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.ComponentModel", "MemberDescriptor", "get_Attributes", []byte{0x20, 0x00, 0x1C})
+		})},
+		{name: "a binding list on an instantiation", app: appCall(func(a *fwApp) uint32 {
+			bl := byte(cTypeDefOrRef(xTypeRef, a.extTypeRef("System.ComponentModel", "BindingList`1")))
+			return a.specRef([]byte{0x15, 0x12, bl, 0x01, 0x08}, "AddNew", []byte{0x20, 0x00, 0x13, 0x00})
+		})},
+		{name: "a validation attribute", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.ComponentModel.DataAnnotations", "ValidationAttribute", "IsValid", []byte{0x20, 0x01, 0x02, 0x1C})
+		})},
+		{name: "JSON over HTTP", app: appCall(func(a *fwApp) uint32 {
+			return a.refIn("System.Net.Http.Json", "System.Net.Http.Json", "HttpClientJsonExtensions", "GetFromJsonAsync", []byte{0x00, 0x01, 0x1C, 0x0E})
+		})},
+		{name: "a DataSet inferring a schema", app: appCall(func(a *fwApp) uint32 {
+			return a.refIn("System.Data.Common", "System.Data", "DataSet", "InferXmlSchema", []byte{0x20, 0x02, 0x01, 0x0E, 0x1D, 0x0E})
+		})},
+		{name: "an event written from a generic payload", app: appGenericCall("System.Diagnostics.Tracing", "EventSource", "Write",
+			[]byte{0x30, 0x01, 0x02, 0x01, 0x0E, 0x1E, 0x00})}, // instance void Write<T>(string, !!0)
+		{name: "an event written by name alone", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.Diagnostics.Tracing", "EventSource", "Write", []byte{0x20, 0x01, 0x01, 0x0E})
+		}), wantSearched: true},
+		{name: "a JSON value of a generic type", app: appGenericCall("System.Text.Json.Nodes", "JsonValue", "Create",
+			[]byte{0x10, 0x01, 0x01, 0x1C, 0x1E, 0x00})}, // static object Create<T>(!!0)
+		{name: "a JSON value of a primitive", app: appCall(func(a *fwApp) uint32 {
+			return a.fwRef("System.Text.Json.Nodes", "JsonValue", "Create", []byte{0x00, 0x01, 0x1C, 0x08})
+		}), wantSearched: true},
 
 		// Members taking a type or handle that construct and invoke nothing.
 		{name: "typeof", app: appCall(func(a *fwApp) uint32 {

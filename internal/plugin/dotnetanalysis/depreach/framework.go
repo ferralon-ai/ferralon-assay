@@ -13,6 +13,14 @@ package depreach
 //     member taking a System.Type, a runtime handle or a System.Reflection type
 //     (paramHazard), since that is how code hands the framework a type to instantiate or
 //     a member to invoke;
+//   - some framework members resolve a type from a name and construct it: a provider
+//     invariant name, a CryptoConfig algorithm name, an assembly-qualified name, a
+//     converter or editor declared by attribute. Those are hazards too (frameworkHazard,
+//     nameHazard), because the type they construct is never seen constructed, so its
+//     overrides are not re-entry roots. The list comes from walking the implementation IL
+//     of the Microsoft.NETCore.App runtime pack back from Type.GetType, Activator,
+//     Assembly/AssemblyLoadContext loading and RuntimeType activation to the public
+//     members that reach them, keeping those whose name or type input the caller controls;
 //   - the framework calls back into application objects it is given: a comparer's
 //     Compare, an enumerable's GetEnumerator, an override of ToString. Those callbacks
 //     are the re-entry roots (reentryRoots): every virtual of a type that is instantiated
@@ -366,6 +374,9 @@ func (e *Engine) frameworkEdge(edge assembly.Edge, fromAsm *assembly.Assembly, c
 			return edgeOut{hazard: true, why: "framework call takes " + p + " (a type or member handed to the framework): " + owner + "::" + name}, true
 		}
 	}
+	if nameHazard(owner, name, sig, inst != nil) {
+		return edgeOut{hazard: true, why: "framework reflection over a named or generic type: " + owner + "::" + name}, true
+	}
 	out := edgeOut{fw: true}
 	if inst != nil && isAsyncBuilderStep(owner, name) {
 		// The builder runs the state machine it was handed: an edge to its MoveNext.
@@ -657,19 +668,28 @@ var fwHazardNamespaces = []string{
 	"Microsoft.VisualBasic",
 	"System.Text.Json.Serialization",
 	"System.Runtime.CompilerServices.CallSite", // CallSite, CallSite`1, CallSiteBinder, CallSiteHelpers
+	"System.ComponentModel.DataAnnotations",    // validation attributes read off the user type
+	"System.Net.Http.Json",                     // JsonSerializer over the caller's type
 }
 
 // fwHazardTypes: every member of these types is a hazard.
 var fwHazardTypes = map[string]bool{
 	"System.Activator": true,
-	"System.Runtime.InteropServices.NativeLibrary":    true,
-	"System.Runtime.InteropServices.ComWrappers":      true,
-	"System.Text.Json.JsonSerializer":                 true,
-	"System.ComponentModel.TypeDescriptor":            true,
-	"System.ComponentModel.PropertyDescriptor":        true,
-	"System.ComponentModel.EventDescriptor":           true,
-	"System.ComponentModel.DataAnnotations.Validator": true,
-	"System.Resources.ResourceReader":                 true,
+	"System.Runtime.InteropServices.NativeLibrary":           true,
+	"System.Runtime.InteropServices.ComWrappers":             true,
+	"System.Text.Json.JsonSerializer":                        true,
+	"System.ComponentModel.TypeDescriptor":                   true,
+	"System.ComponentModel.PropertyDescriptor":               true,
+	"System.ComponentModel.EventDescriptor":                  true,
+	"System.ComponentModel.MemberDescriptor":                 true,
+	"System.ComponentModel.ICustomTypeDescriptor":            true,
+	"System.ComponentModel.BindingList`1":                    true, // TypeDescriptor over T
+	"System.Resources.ResourceReader":                        true,
+	"System.Data.Common.DbProviderFactories":                 true, // provider type by invariant or assembly-qualified name
+	"System.Security.Cryptography.CryptoConfig":              true, // algorithm type by name, falling back to Type.GetType
+	"System.Security.Cryptography.PasswordDeriveBytes":       true, // hash by name through CryptoConfig
+	"System.Security.Cryptography.PKCS1MaskGenerationMethod": true,
+	"System.Security.Cryptography.SignatureDescription":      true,
 }
 
 // fwHazardMembers: these members of otherwise-trusted types are hazards.
@@ -705,6 +725,34 @@ var fwHazardMembers = map[nameKey]bool{
 	{"System.Data.DataTable", "ReadXmlSchema"}:                                   true,
 	{"System.Resources.ResourceManager", "GetObject"}:                            true,
 	{"System.Resources.ResourceSet", "GetObject"}:                                true,
+	{"System.Data.DataSet", "InferXmlSchema"}:                                    true,
+	{"System.Data.DataSet", "ReadXmlSerializable"}:                               true,
+	{"System.Data.DataTable", "ReadXmlSerializable"}:                             true,
+	{"System.ComponentModel.TypeConverter", "GetProperties"}:                     true, // TypeDescriptor over the value
+	{"System.ComponentModel.ExpandableObjectConverter", "GetProperties"}:         true,
+	{"System.ComponentModel.ComponentConverter", "GetProperties"}:                true,
+	{"System.Data.Common.DbConnectionStringBuilder", "GetProperties"}:            true,
+	{"System.ComponentModel.Container", "Add"}:                                   true, // TypeDescriptor over the component
+	{"System.ComponentModel.Container", "ValidateName"}:                          true,
+}
+
+// nameHazard reports the hazards a member name alone does not settle: a cryptography
+// factory's Create(string), which builds whatever CryptoConfig resolves the name to, and
+// the generic members that reflect over their type argument (EventSource.Write<T> reads
+// T's properties, JsonValue.Create<T> serializes T later).
+func nameHazard(owner, name string, sig MethodSignature, generic bool) bool {
+	if name == "Create" && strings.HasPrefix(owner, "System.Security.Cryptography.") &&
+		!strings.Contains(owner[len("System.Security.Cryptography."):], ".") &&
+		len(sig.Params) == 1 && sig.Params[0].Elem == etString && !sig.Params[0].ByRef {
+		return true
+	}
+	if generic {
+		switch (nameKey{owner, name}) {
+		case nameKey{"System.Diagnostics.Tracing.EventSource", "Write"}, nameKey{"System.Text.Json.Nodes.JsonValue", "Create"}:
+			return true
+		}
+	}
+	return false
 }
 
 // typeMemberExempt: System.Type members that neither construct nor invoke anything.

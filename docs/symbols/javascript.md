@@ -186,3 +186,106 @@ The symbol indexer's `skipDir` excludes `node_modules` (and `dist`, `build`, `ou
 
 None of these put an npm coordinate or version into a symbol string; the Layer-1 `"."` limitation
 stands.
+
+## Declined call sites and escaped frames
+
+`CallGraph` connects a call only when the resolver finds a unique in-tree declaration, and declares
+every other call as a partiality reason. Beside those run-wide reasons it puts two lists on the wire,
+so a reader can tell whether an unresolved call could reach a given function
+(`plugin.CallGraphResult.Unresolved` and `.Escaped`; `callgraph.go`). Both are additive and
+`omitempty`, and `ProtocolVersion` stays `tegron.plugin.v1`.
+
+**`Unresolved` lists every declined site, or the result says it does not.** It has one
+`plugin.UnresolvedCall` per site behind `dynamic_dispatch` and the `relationship_unexpressed:*`
+reasons:
+
+- every call `resolveCallSite` declines, including a call into a package and a call the package
+  boundary connects to a dependency member;
+- every call whose callee is not a name or a dotted chain (`opaque.go`): call-on-call (`get()(1)`),
+  a computed member or index (`t[k](1)`, `hs[0](1)`), a parenthesized or comma expression
+  (`(0, sink)(1)`), an optional call on one of those (`t[k]?.(1)`), a TypeScript non-null call
+  (`f!(1)`), a tagged template (`` sink`x` ``), a `new` with no argument list (`new C`), a
+  `super(…)` call and a bare decorator (`@sealed`). Each is unbounded, with `Callee` the callee's
+  source text. A function expression called in place (`(function () {…})()`) is not listed: its
+  body is read in the enclosing frame;
+- every call the scan reads but never connects, so the edges stay what they were: an optional call
+  on a name or chain (`g?.(1)`, bounded by what the name resolves to, since `escape.go` does not
+  count `g?.(` as an escape), a call in a parameter default (on the function's own frame), a call in
+  a class heritage clause (`class C extends mix(A)`), and a call after `import(` or `import.meta`
+  on the same line;
+- every module-level dynamic load: a computed `require`/`import()`, a native load (`dlopen`) and
+  `eval`/`Function`, one entry per module per kind; and every literal load of an out-of-tree
+  package or of a relative specifier naming no in-tree source, one entry per specifier. Each is on
+  the module's top-level frame (`<module-init>`), with `Callee` naming the loader;
+- every static-prefix load (`require('./locales/' + lang)`), on the frame that holds it. It keeps
+  its edges to the in-tree modules the prefix names.
+
+`relationship_unexpressed:unlisted_sites` (`plugin.PartialReasonUnlistedSites`) is set **if and only
+if** a declined site is missing from the list. The lane sets it for the body of evaluated code, which
+it never reads, for a source file it could not read, and for the run-wide prototype judgment that
+turns a literal-receiver computed read into `evaluated_code`. `Unresolved` and `Escaped` list
+first-party code only, so with dependency code read into the graph it also sets it when dependency
+code declines a site (a call it cannot connect, including one that reaches only a package-boundary
+node), when a first-party site is declined beside dependency code (the site may land on a dependency
+frame `Escaped` omits), and when a dependency limit withholds run-wide. Dependency code that declines
+nothing, read beside first-party code that declines nothing, hides no site. Without it, the list is
+complete. A
+reason no entry carries (`tool_failure`, `unsupported_phase1`) is not attributable to a listed site.
+Scoped limits (the stylesheet loader runtime) are not sites; they keep their own package `Targets`.
+
+**`Targets` over-approximates.** It is present only when the site's candidate set is complete and
+bounded: a name that resolves to more than one declaration, or to declarations none of whose arities
+match (`pickFunc`). It then lists every declaration of that name, whatever its arity, because JS does
+not dispatch on arity. It is complete to the same standard as an edge. A receiver the lane does not
+track, a package call or a call entering a package omits it, and omitted means the site could reach
+anything.
+
+The candidates bound a site only when the name denotes what the resolver read (`boundable`,
+`shadow.go`):
+
+- the callee is a bare name, or a method of a plain receiver (`j.put()`). The leaf of a longer chain
+  (`o.b.c()`), or of a chain read off another value (`f().m()`, `a?.m()`), is a property of a value
+  the lane does not track, though the resolver reads the leaf as a bare name;
+- it is not a `this` call, which may run a subclass override;
+- the scan proves no other binding of the name (or of the receiver) can be in force where the call
+  runs. Any binding anywhere in the outermost block holding the call counts: a parameter
+  (destructured, defaulted, rest), a `let`/`const`/`var`, a function or class declaration, a
+  `catch` binding, a destructuring pattern, a named function expression. So do a top-level
+  assignment or non-function `let`/`const`/`var` beside the declaration, a `for`-`in`/`of` head or
+  destructuring assignment anywhere in the module, and any `with` statement.
+
+Any other declined site is unbounded.
+
+**`Escaped` is every frame a hidden call or load can land on.** It is #106's escape roots
+(`escape.go`):
+
+- class members;
+- functions whose name is used as a value (passed, stored, returned, exported, spread, wrapped,
+  constructed, a JSX tag, a template substitution);
+- exported functions and named function expressions;
+- every function of a module that reaches functions by computed name (`.vue`, `eval`/`Function`,
+  script-mode globals).
+
+It also holds every module's top-level frame, which any load may run. A reader treats an escaped
+frame as callable from any `Unresolved` entry without `Targets`. A function missing from `Escaped`
+runs only as a root or through the `Edges` and `Targets` that reach it.
+
+**What this gives tegron on FERRALON-JS-SSRF-0001.** `fetchUrl` is escaped on all three trees,
+including tegron's path-removing patch, because `module.exports = { fetchUrl }` uses its name as a
+value. #106 counts that as an escape root, whether or not any in-tree module loads `./fetcher`. None
+of the declined sites is bounded, so the path-removing tree stays `graph_partial` under the narrowing
+rule, not path-dead.
+
+**What the list does not cover.** Code that runs with no call written at the site is in no entry,
+and `unlisted_sites` does not declare it:
+
+- a JSX element (`<Comp />`), whose component the JSX runtime calls later;
+- a getter or setter run by a property read or write, and the coercion, iteration and thenable
+  hooks (`toString`/`valueOf`, `Symbol.iterator`, `then`) and `Proxy` traps the language calls.
+
+Each target is escaped (a JSX tag, a class member, a function used as a value), but no entry in the
+frame holding the site reaches it.
+
+The contract is tested in `unresolved_test.go`. Its `TestMain` holds every call graph the package's
+tests build to the invariant: `len(Unresolved)` equals the declined-site count, `unlisted_sites`
+matches the unlisted flag, and every site reason is carried by an entry.

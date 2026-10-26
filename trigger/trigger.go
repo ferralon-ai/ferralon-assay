@@ -52,6 +52,7 @@ type BaselineRequest struct {
 	AssessOptions []pipeline.AssessOption
 	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
 	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.
+	// A caller outside this module sets it with signals.Feed.
 	Signals *intel.Signals
 	// Bands is the OPTIONAL scheduler-only prioritization hint: advisory id → Band. It is
 	// read ONLY by the admission gate (admitAdvisories), above S1, to decide whether/when a

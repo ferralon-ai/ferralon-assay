@@ -121,6 +121,13 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 // extractBindings is extractModuleBindings with loader names declared outside clean
 // (extraReq require aliases, extraCr createRequire aliases) added to those clean declares.
 func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) moduleBindings {
+	mb, _ := extractBindingsScoped(clean, src, extraReq, extraCr)
+	return mb
+}
+
+// extractBindingsScoped is extractBindings that also returns the scope model it read the
+// module with, which the call scan's rebinding proof reuses (shadow.go).
+func extractBindingsScoped(clean, src []rune, extraReq, extraCr map[string]bool) (moduleBindings, *globalScope) {
 	mb := newModuleBindings()
 	n := len(clean)
 	add := func(b binding) {
@@ -208,7 +215,7 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 			i = next
 		}
 	}
-	return mb
+	return mb, globals
 }
 
 // memberName reports whether the word at i is read as a property (`x.import`, `x?.export`),

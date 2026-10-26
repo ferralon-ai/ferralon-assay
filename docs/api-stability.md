@@ -48,14 +48,23 @@ about to depend on:
 ```sh
 cd ferralon-assay
 for p in artifact artifactcache artifactcache/acquire assessment buildgraph capability checkout \
-         corpus hostmatch pipeline plugin projection report resultsink resultsink/github statestore \
-         telemetry trigger verdict vulnclass; do
+         corpus hostmatch pipeline plugin projection report resultsink resultsink/github signals \
+         statestore telemetry trigger verdict vulnclass; do
   GOWORK=off go doc -all ./$p
 done | grep -nE '(x/tools|x/vuln|x/mod|go\.opentelemetry\.io|packages|otel|metric|attribute|sdkmetric|sdktrace|modfile|semver|ssa)\.[A-Z]'
 ```
 
 It is a text match, so it reports prose inside doc comments as well as real declarations. At the
 time of writing the only hits are prose. Any hit that is an actual declaration is a regression.
+
+## `signals` is the public face of an internal package
+
+`signals` lets a caller outside this module load an EPSS/KEV signals file and hand it to a
+`trigger.Run*` request. Its types are defined in `signals`, not aliased to the internal loader's
+(`internal/intel`), so its surface is only what it names on purpose: `Load`, `Parse`, `Feed` and
+`Request`; the `Signals` methods `EPSS`, `KEV`, `Records`, `StaleEPSS` and `Digest`; and the `EPSS`
+and `KEV` value structs. A caller sets a request's signals with `signals.Feed`, never by assigning
+the request's `Signals` field, whose type is the internal one.
 
 ## Exported mutable process-wide state
 

@@ -73,11 +73,15 @@ type KEV struct {
 }
 
 // Signals is a loaded signals file. A nil *Signals is valid and holds nothing: every lookup misses.
+// It is public through package signals (signals/), whose wrapper forwards Load, Parse, EPSS, KEV,
+// Records, StaleEPSS and Digest, and converts EPSS and KEV: a change to any of those is a public one.
 type Signals struct {
 	// Version is the file's signals_version (1.x).
 	Version string
-	// Digest is the file's signals_digest, which pins the payload. Load and Parse set it only after
-	// recomputing it from the payload and finding the file's own value equal.
+	// Digest is the file's signals_digest. Load and Parse set it only after recomputing it from the
+	// payload and finding the file's own value equal, so it names exactly the values loaded. That
+	// proves the file self-consistent, not who wrote it: a file edited and re-stamped with a
+	// recomputed digest loads.
 	Digest string
 	// GeneratedAt is when the producer wrote the file. It is NOT the freshness of any value.
 	GeneratedAt string

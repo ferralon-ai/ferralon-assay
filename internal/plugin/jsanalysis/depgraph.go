@@ -399,7 +399,9 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		flags := baseFlags
 		flags.toolFailure = true
 		flags.scoped = sortedScoped(dflags.scoped)
-		return g.result(callGraphPartiality(prog, flags)), g.prov, nil
+		b := g.built(g.result(callGraphPartiality(prog, flags)), flags.unlisted)
+		b.report(buildDir)
+		return b.res, b.prov, nil
 	}
 
 	reached := reachedFrom(baseRoots, g.edges, aug.edges)
@@ -419,8 +421,17 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 	flags.scoped = sortedScoped(flags.scoped)
 	if g.anyExempt && g.anyProto {
 		flags.evaluated = true
+		flags.unlisted = true
 	}
-	return g.result(callGraphPartiality(prog, flags)), g.prov, nil
+	// Unresolved and Escaped list first-party code only: dependency code's declined sites, the
+	// dependency frames a declined site anywhere can land on, and a run-wide dependency limit
+	// are in neither. Dependency code read with nothing declined anywhere hides no site.
+	if dflags.uninspectable || len(depFiles) > 0 && (g.declined > 0 || depDeclined(dflags)) {
+		flags.unlisted = true
+	}
+	b := g.built(g.result(callGraphPartiality(prog, flags)), flags.unlisted)
+	b.report(buildDir)
+	return b.res, b.prov, nil
 }
 
 // augment adds the edges dependency code contributes to aug: module loads, calls resolved
@@ -489,7 +500,8 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			}
 		}
 		for _, cs := range f.calls {
-			if cs.calleeFrame {
+			// An opaque or unconnected call is listed, never connected (callgraph.go).
+			if cs.calleeFrame || cs.opaque || cs.unconnected {
 				continue
 			}
 			caller := sym(funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity))
@@ -597,15 +609,28 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 				aug.add(plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}, provenance{Algo: algoLocal})
 				continue
 			}
+			if cs.opaque {
+				// A callee the lane does not track may be any value.
+				accumulateReason(flags, plugin.PartialReasonDynamicDispatch)
+				continue
+			}
 			r := rs.resolveCallSite(f.module, cs)
-			if target, ok := r.edge(); ok {
+			// An unconnected call draws no edge, as in first-party code (callgraph.go).
+			target, connected := r.edge()
+			connected = connected && !cs.unconnected
+			if connected {
 				aug.add(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 			}
-			if boundary(f.module, cs, caller) {
+			if !cs.unconnected && boundary(f.module, cs, caller) {
+				// A boundary edge names the member the call enters, not what it runs: a call
+				// resolved to nothing else is declined, and no list carries it.
+				if !connected {
+					flags.unlisted = true
+				}
 				continue
 			}
 			switch {
-			case r.Kind == resolveFirstParty:
+			case r.Kind == resolveFirstParty && !cs.unconnected:
 			case r.Kind == resolvePackage && r.Reason == plugin.PartialReasonUninspectablePackage && r.InstanceID != "":
 				// An unread package: its scoped limit already covers the call.
 			default:
@@ -760,6 +785,13 @@ func sortedScoped(in []plugin.ScopedReason) []plugin.ScopedReason {
 	return out
 }
 
+// depDeclined reports whether f, the limits dependency code contributed, declares any: every
+// site dependency code declines sets one.
+func depDeclined(f partialFlags) bool {
+	return f.unresolved || f.uninspectable || f.dynImport || f.computedReq || f.unreadModule || f.evaluated ||
+		f.stylesheet || f.unlisted || f.toolFailure || f.unsupported || len(f.scoped) > 0
+}
+
 func mergeFlags(a, b partialFlags) partialFlags {
 	return partialFlags{
 		unresolved:    a.unresolved || b.unresolved,
@@ -769,6 +801,7 @@ func mergeFlags(a, b partialFlags) partialFlags {
 		unreadModule:  a.unreadModule || b.unreadModule,
 		evaluated:     a.evaluated || b.evaluated,
 		stylesheet:    a.stylesheet || b.stylesheet,
+		unlisted:      a.unlisted || b.unlisted,
 		toolFailure:   a.toolFailure || b.toolFailure,
 		unsupported:   a.unsupported || b.unsupported,
 		scoped:        append(append([]plugin.ScopedReason(nil), a.scoped...), b.scoped...),

@@ -64,8 +64,8 @@ type depClosure struct {
 // already loaded from the build output; a dependency class with the same binary name is skipped
 // (the build output is what the build packaged).
 func loadDependencyClosure(buildDir string, firstParty map[string]bool, opts ...javaanalysis.Option) *depClosure {
-	dc := &depClosure{loaded: map[string]string{}, reasons: javaanalysis.LaunchOptionReasons(buildDir)}
 	g := javaanalysis.BuildGraph(opts...)
+	dc := &depClosure{loaded: map[string]string{}, reasons: javaanalysis.LaunchOptionReasons(buildDir, g)}
 	if g == nil {
 		dc.reasons = append(dc.reasons, javaanalysis.PartialReasonBuildGraphAbsent)
 		return dc

@@ -30,10 +30,15 @@ func (c countingCheckout) Fetch(ctx context.Context, repo, revision string) (che
 	return c.fixedCheckout.Fetch(ctx, repo, revision)
 }
 
+// fastPathEdit changes a fastPathRun's baseline and request before the run, leaving the head's
+// packages as the baseline's so the run still takes the fast path.
+type fastPathEdit func(baseline *report.Report, req *PRInheritRequest)
+
 // fastPathRun runs PR re-analysis of workSet over a head identical to a baseline that holds
-// wiringPkg and a row for twoPackageAdvisory. cursor is the run's advisory cursor. It returns the
-// result and the number of checkouts the run fetched.
-func fastPathRun(t *testing.T, workSet []assessment.VulnRef, p plugin.LanguagePlugin, cursor string) (*PRInheritResult, int) {
+// wiringPkg and a row for twoPackageAdvisory. cursor is the run's advisory cursor; edits change
+// the baseline and request first. It returns the result and the number of checkouts the run
+// fetched.
+func fastPathRun(t *testing.T, workSet []assessment.VulnRef, p plugin.LanguagePlugin, cursor string, edits ...fastPathEdit) (*PRInheritResult, int) {
 	t.Helper()
 	pkg := wiringPkg
 	baseline := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "base-sha"}).
@@ -41,9 +46,8 @@ func fastPathRun(t *testing.T, workSet []assessment.VulnRef, p plugin.LanguagePl
 		NotExploitable(report.Advisory{ID: twoPackageAdvisory.ID, Source: twoPackageAdvisory.Source}, &pkg, "vulnerable_symbol_absent", baselineDetail).
 		WithProvenance(report.Provenance{CommitSHA: "base-sha", AdvisoryCursor: twoPackageAdvisory.ID}).
 		Build()
-	store := &memStore{state: &statestore.State{Report: &baseline, SBOM: baseline.SBOM, Cursor: twoPackageAdvisory.ID}}
 	fetches := 0
-	res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+	req := PRInheritRequest{
 		Subject:    Subject{Repo: "r", ResolvedCommit: "pr-sha"},
 		Codebase:   assessment.CodebaseRef{Repo: "r", Revision: "main"},
 		PRSBOM:     report.SBOM{Packages: []report.Package{wiringPkg}},
@@ -53,7 +57,12 @@ func fastPathRun(t *testing.T, workSet []assessment.VulnRef, p plugin.LanguagePl
 			pipeline.WithCheckout(countingCheckout{fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}, &fetches}),
 			pipeline.WithPlugin(p),
 		},
-	})
+	}
+	for _, edit := range edits {
+		edit(&baseline, &req)
+	}
+	store := &memStore{state: &statestore.State{Report: &baseline, SBOM: baseline.SBOM, Cursor: twoPackageAdvisory.ID}}
+	res, err := RunPRInherit(context.Background(), store, req)
 	if err != nil {
 		t.Fatalf("RunPRInherit: %v", err)
 	}
@@ -122,6 +131,14 @@ func TestInheritFastPath_AssessedAdvisories(t *testing.T) {
 	}
 	oneRow(t, res.Report, wiringAdvisory.ID)
 
+	// Two sources sharing C's id are two rows, but one id to name.
+	otherSource := assessment.VulnRef{ID: wiringAdvisory.ID, Source: "osv"}
+	res, _ = fastPathRun(t, []assessment.VulnRef{twoPackageAdvisory, wiringAdvisory, otherSource},
+		refutingGoPlugin{inventory: plugin.Complete()}, "")
+	if want := []string{wiringAdvisory.ID}; !slices.Equal(res.AssessedAdvisories, want) {
+		t.Errorf("two sources: AssessedAdvisories = %q, want %q", res.AssessedAdvisories, want)
+	}
+
 	migrated := &report.Report{Advisories: []report.AdvisoryFinding{{Advisory: report.Advisory{ID: wiringAdvisory.ID}}}}
 	if got := unrowedAdvisories(migrated, []assessment.VulnRef{wiringAdvisory}); len(got) != 0 {
 		t.Errorf("unrowed = %+v, want none: the migrated v1 row stands for it", got)
@@ -162,6 +179,110 @@ func TestInheritFastPath_CursorClaimsOnlyRowedOrDisclosed(t *testing.T) {
 				if c := oneRow(t, rep, wiringAdvisory.ID); c.Verdict != report.VerdictUndetermined || !noted(wiringAdvisory.ID) {
 					t.Errorf("C's row = %s, noted = %v; want undetermined and a note naming %s", c.Verdict, noted(wiringAdvisory.ID), wiringAdvisory.ID)
 				}
+			}
+		})
+	}
+}
+
+// forkNamingSource is the advisory table, with C also naming example.com/fork beside
+// golang.org/x/text. The fork is in the build only where a replace directive brings it in.
+type forkNamingSource struct{}
+
+func (forkNamingSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
+	facts, ok := pipeline.NewTableSource().Lookup(id)
+	if id != wiringAdvisory.ID {
+		return facts, ok
+	}
+	affected := func(module string) pipeline.AffectedPackage {
+		return pipeline.AffectedPackage{
+			Module: module, PURL: "pkg:golang/" + module,
+			UpperExclusive: facts.UpperExclusive, FixedVersion: facts.FixedVersion,
+			Symbols: facts.Symbols,
+		}
+	}
+	facts.AffectedPackages = []pipeline.AffectedPackage{affected("golang.org/x/text"), affected("example.com/fork")}
+	return facts, ok
+}
+
+// TestInheritFastPath_FreshRowIsTheHeads: C's fresh row is the head's, held to the head's
+// inventory limits and checked against the head's Go module list, and an undetermined one carries
+// the notes that explain it. The last row is the control.
+func TestInheritFastPath_FreshRowIsTheHeads(t *testing.T) {
+	didNotRun := inventoryPartialityNotes(partialInv, "Go")
+	// The baseline and head both carry a complete Go build list; the head replaces x/text with
+	// example.com/fork, which changes the module list and nothing changedPackages compares.
+	replaceOnly := func(baseline *report.Report, req *PRInheritRequest) {
+		baseline.SBOM.GoBuildList, baseline.SBOM.GoMainModule = plugin.BuildListGoModGraph, "example.com/target"
+		fork := wiringPkg
+		fork.Replace = "example.com/fork"
+		req.PRSBOM = report.SBOM{GoBuildList: plugin.BuildListGoModGraph, GoMainModule: "example.com/target", Packages: []report.Package{fork}}
+		req.AssessOptions = append(req.AssessOptions, pipeline.WithAdvisorySource(forkNamingSource{}))
+	}
+	cases := []struct {
+		name       string
+		edit       fastPathEdit
+		wantReason string                  // C's undetermined reason; "" wants the assessment's not_exploitable
+		wantNotes  []report.PartialityNote // notes the Report must carry for C's undetermined row
+	}{
+		{"G0: the head's Go inventory did not run",
+			func(_ *report.Report, req *PRInheritRequest) { req.DiffLimits = didNotRun },
+			report.ReasonAnalysisDidNotRun, didNotRun},
+		{"a replace-only head brings the fork C names into the build",
+			replaceOnly,
+			report.ReasonVulnerableSymbolUnresolved, []report.PartialityNote{{Reason: report.ReasonVulnerableSymbolUnresolved, Ecosystem: "Go"}}},
+		{"control: a complete head with no replace",
+			func(*report.Report, *PRInheritRequest) {},
+			"", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, _ := fastPathRun(t, []assessment.VulnRef{twoPackageAdvisory, wiringAdvisory},
+				refutingGoPlugin{inventory: plugin.Complete()}, "", tc.edit)
+			c := oneRow(t, res.Report, wiringAdvisory.ID)
+			if tc.wantReason == "" {
+				if c.Verdict != report.VerdictNotExploitable {
+					t.Errorf("C's row = %s/%s, want not_exploitable", c.Verdict, c.UndeterminedReason)
+				}
+				return
+			}
+			if c.Verdict != report.VerdictUndetermined || c.UndeterminedReason != tc.wantReason {
+				t.Errorf("C's row = %s/%s, want undetermined/%s", c.Verdict, c.UndeterminedReason, tc.wantReason)
+			}
+			for _, n := range tc.wantNotes {
+				if !slices.ContainsFunc(res.Report.Partiality, func(got report.PartialityNote) bool {
+					return got.Reason == n.Reason && got.Ecosystem == n.Ecosystem && got.Detail == n.Detail
+				}) {
+					t.Errorf("C's row is undetermined, but the Report carries no %+v: %+v", n, res.Report.Partiality)
+				}
+			}
+		})
+	}
+}
+
+// TestInheritBaseline_ValidatesFreshRows: a Report carrying fresh rows is validated, as the slow
+// path's is; a pure inherit re-emits the baseline's rows unvalidated, as it always has.
+func TestInheritBaseline_ValidatesFreshRows(t *testing.T) {
+	valid := report.AdvisoryFinding{Advisory: report.Advisory{ID: "FERRALON-TEST-357", Source: "corpus"},
+		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonAnalysisDidNotRun}
+	invalid := valid
+	invalid.UndeterminedReason = "" // an undetermined row must say why
+	cases := []struct {
+		name    string
+		stored  []report.AdvisoryFinding
+		fresh   []report.AdvisoryFinding
+		wantErr bool
+	}{
+		{"an invalid fresh row", nil, []report.AdvisoryFinding{invalid}, true},
+		{"a valid fresh row", nil, []report.AdvisoryFinding{valid}, false},
+		{"pure inherit of an invalid stored row", []report.AdvisoryFinding{invalid}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseline := report.Report{SchemaVersion: report.SchemaVersion, Advisories: tc.stored}
+			_, err := inheritBaseline(&baseline, PRInheritRequest{Subject: Subject{Repo: "r", ResolvedCommit: "pr-sha"}},
+				&statestore.State{}, tc.fresh, nil)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("inheritBaseline err = %v, want error: %v", err, tc.wantErr)
 			}
 		})
 	}

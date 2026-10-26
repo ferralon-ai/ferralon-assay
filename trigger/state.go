@@ -173,10 +173,12 @@ func joinSortedUnique(names []string) string {
 
 // inheritBaseline produces the PR-inherit fast-path Report: it re-emits the baseline's
 // findings/SBOM verbatim for the PR head's subject, carrying a Baseline pointer back
-// to the baseline it inherited (so a reader knows the verdicts were not re-derived).
+// to the baseline it inherited (so a reader knows the inherited rows were not re-derived).
 // fresh and notes are assessUnrowed's rows and limits for the advisories the baseline
-// holds no row for; a fresh row never shares a key with a baseline row.
-func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *statestore.State, fresh []report.AdvisoryFinding, notes []report.PartialityNote) *report.Report {
+// holds no row for; those rows were derived on this run, and a fresh row never shares a
+// key with a baseline row. A Report carrying fresh rows is validated, as the slow path's
+// is; a pure inherit is built as before, re-emitting only what the baseline already held.
+func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *statestore.State, fresh []report.AdvisoryFinding, notes []report.PartialityNote) (*report.Report, error) {
 	b := report.NewBuilder(report.Subject{
 		Repo:           req.Subject.Repo,
 		Revision:       req.Subject.Revision,
@@ -209,7 +211,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// disclosed HERE, on the inherited path, as a quiet inherent_limit (C6). Declaring
 	// it is the honest state; claiming the checkbox without it is the failure.
 	b.AddPartiality(buildContextNotComparedNote())
-	// The inherited verdicts were not re-derived, so the baseline's coverage limits
+	// The inherited rows' verdicts were not re-derived, so the baseline's coverage limits
 	// are still exactly the limits of what this Report asserts. Dropping them here
 	// would make an inherited partial scan render clean on the PR surface.
 	b.AddPartiality(baseline.Partiality...)
@@ -224,8 +226,15 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	})
 	b.WithBaseline(baselinePointer(baseline, state))
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
-	rep := b.Build()
-	return &rep
+	if len(fresh) == 0 {
+		rep := b.Build()
+		return &rep, nil
+	}
+	rep, err := b.BuildValidated()
+	if err != nil {
+		return nil, err
+	}
+	return &rep, nil
 }
 
 // unrowedAdvisories returns the work-set advisories the baseline holds no row for, each once,
@@ -252,10 +261,12 @@ func unrowedAdvisories(baseline *report.Report, advisories []assessment.VulnRef)
 }
 
 // assessUnrowed runs S1–S6 for the fast path's unrowed advisories, building each row as
-// reanalyzeSlice builds a fresh one, against the baseline SBOM the inherited Report carries
-// (the head's, since nothing changed). A failed assessment gets an undetermined row and a
-// note naming it, so no advisory comes back without a row.
-func assessUnrowed(ctx context.Context, baseline *report.Report, req PRInheritRequest, advisories []assessment.VulnRef) ([]report.AdvisoryFinding, []report.PartialityNote) {
+// reanalyzeSlice builds a fresh one: against the PR head's SBOM and its Go module list. The
+// baseline's would not do, though the fast path found no package changed: changedPackages
+// does not compare a replace directive, the main module or the build-list source, and each
+// of those changes the module list a row is checked against. A failed assessment gets an
+// undetermined row and a note naming it, so no advisory comes back without a row.
+func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []assessment.VulnRef) ([]report.AdvisoryFinding, []report.PartialityNote) {
 	var findings []report.AdvisoryFinding
 	var notes []report.PartialityNote
 	for _, adv := range advisories {
@@ -267,8 +278,8 @@ func assessUnrowed(ctx context.Context, baseline *report.Report, req PRInheritRe
 			continue
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
-		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, baseline.SBOM.Packages)
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(baseline.SBOM, req.DiffLimits)), req.DiffLimits)
+		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
 		if note, ok := limitNoteFor(f); ok {
 			notes = append(notes, note)
 		}

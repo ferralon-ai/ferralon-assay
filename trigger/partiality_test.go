@@ -80,9 +80,12 @@ func TestInheritBaseline_CarriesPartiality(t *testing.T) {
 		AddPartiality(report.PartialityNote{Reason: plugin.PartialReasonNoManifest, Ecosystem: "npm"}).
 		Build()
 
-	got := inheritBaseline(&baseline, PRInheritRequest{
+	got, err := inheritBaseline(&baseline, PRInheritRequest{
 		Subject: Subject{Repo: "github.com/example/widget", ResolvedCommit: "head"},
 	}, &statestore.State{}, nil, nil)
+	if err != nil {
+		t.Fatalf("inheritBaseline: %v", err)
+	}
 
 	// The baseline's coverage limit must be carried (the property this test guards).
 	// PLAN-104 additionally attaches a standing build-context-not-compared note on the

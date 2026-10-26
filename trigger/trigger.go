@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -227,7 +228,8 @@ type PRInheritResult struct {
 	// the fast path.
 	ChangedPackages []string
 	// AssessedAdvisories names the fast path's work-set advisories the baseline holds no
-	// row for, which it assessed rather than leave rowless. Empty on the slow path, and
+	// row for, which it assessed rather than leave rowless, each id once even when two
+	// sources share it. Empty on the slow path, and
 	// on a fast path with a row for every advisory.
 	AssessedAdvisories []string
 }
@@ -266,11 +268,17 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 		// Nothing changed, so every baseline row stands; but an advisory new to the work set has
 		// no row to inherit, and the Report's cursor covers it all the same.
 		unrowed := unrowedAdvisories(baseline, req.Advisories)
-		fresh, notes := assessUnrowed(ctx, baseline, req, unrowed)
-		rep := inheritBaseline(baseline, req, state, fresh, notes)
+		fresh, notes := assessUnrowed(ctx, req, unrowed)
+		rep, err := inheritBaseline(baseline, req, state, fresh, notes)
+		if err != nil {
+			return nil, err
+		}
 		res := &PRInheritResult{Report: rep, Inherited: true}
 		for _, adv := range unrowed {
-			res.AssessedAdvisories = append(res.AssessedAdvisories, adv.ID)
+			// unrowed holds one entry per (id, source), so two sources sharing an id would name it twice.
+			if !slices.Contains(res.AssessedAdvisories, adv.ID) {
+				res.AssessedAdvisories = append(res.AssessedAdvisories, adv.ID)
+			}
 		}
 		return res, nil
 	}

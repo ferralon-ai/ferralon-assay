@@ -230,11 +230,18 @@ func TestPnpmNonFrozenLocalTarball(t *testing.T) {
 	// on) is hashed too.
 	t.Run("unreferenced_tarball_swapped", func(t *testing.T) {
 		f := tree(&swapped, res(sriOf(locked)))
-		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "      x:\n        specifier: "+spec+"\n        version: "+spec+"\n", " {}\n", 1)
-		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "  .:\n {}", "  .: {}", 1)
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "  .:\n    dependencies:\n      x:\n        specifier: "+spec+"\n        version: "+spec+"\n", "  .: {}\n", 1)
 		f["package.json"] = rootManifest(`{}`)
 		if !nonFrozenWithheld(t, f) {
 			t.Error("a pinned tarball no importer names was swapped and must withhold")
+		}
+	})
+	t.Run("control_unreferenced_tarball", func(t *testing.T) {
+		f := tree(&same, res(sriOf(locked)))
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "  .:\n    dependencies:\n      x:\n        specifier: "+spec+"\n        version: "+spec+"\n", "  .: {}\n", 1)
+		f["package.json"] = rootManifest(`{}`)
+		if nonFrozenWithheld(t, f) {
+			t.Error("an unchanged pinned tarball no importer names must be read")
 		}
 	})
 	// A block-form resolution is read only when its values are plain and non-empty.
@@ -354,6 +361,15 @@ func TestPnpmNonFrozenLocalDirectory(t *testing.T) {
 	t.Run("control_root_directory", func(t *testing.T) {
 		if nonFrozenWithheld(t, rootDir("")) {
 			t.Error("the lock's own directory is read like any other directory")
+		}
+	})
+	// Only the flow form pnpm writes names the lock's own directory; a block-form empty value is
+	// not read.
+	t.Run("root_directory_block_form_empty", func(t *testing.T) {
+		f := rootDir("")
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "{directory: '', type: directory}", "\n      directory:\n      type: directory", 1)
+		if !nonFrozenWithheld(t, f) {
+			t.Error("an empty block-form directory must withhold")
 		}
 	})
 	t.Run("root_directory_peer_dependency", func(t *testing.T) {

@@ -242,7 +242,11 @@ inputs:
       leaves the choice to the scanner release's own default. Unless this is 'off', the cache lives
       under the runner's temp directory and is restored and saved with actions/cache, keyed on the
       repository's lockfiles. If the fetch fails, the scan reports what it would with 'off' and names
-      the cause on the Report. VERSION REQUIREMENT: a scanner release that reads
+      the cause on the Report. The scanned branch's .npmrc chooses which registry host receives
+      NODE_AUTH_TOKEN/NPM_TOKEN, as with npm ci; don't export them on pull-request jobs, or set
+      'off'. The cache holds every fetched tarball, private packages included, and any workflow run
+      that may restore it can read them (on a public repository, fork pull-request workflows can
+      restore default-branch caches). VERSION REQUIREMENT: a scanner release that reads
       ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
     required: false
     default: ""
@@ -660,7 +664,7 @@ runs:
       # tarballs; restore-keys reuses an earlier cache after a lock changes, and the scanner
       # re-verifies every file it reads against the lock either way.
       if: inputs.dependency-code != 'off' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') != ''
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/ferralon-assay-deps
         key: ferralon-assay-deps-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') }}

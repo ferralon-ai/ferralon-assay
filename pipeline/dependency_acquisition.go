@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -294,28 +295,60 @@ func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc a
 	if _, _, err := artifactcache.DecodeDigest(pin.digest); err != nil {
 		return unread(UnreadMalformedIntegrity, "")
 	}
+	fetch := func() *UnreadDependency { return nil }
 	if d.cfg.Mode == DependencyCodeFetch {
 		name, err := acquire.NPMNameOf(pin.purl)
 		if err != nil {
 			return unread(UnreadMalformedIntegrity, "")
 		}
-		if _, err := fetcher.Acquire(ctx, ref, npmrc.PolicyFor(name)); err != nil {
-			return classifyAcquireError(ctx, pin.purl, err)
+		policy := npmrc.PolicyFor(name)
+		fetch = func() *UnreadDependency {
+			if _, err := fetcher.Acquire(ctx, ref, policy); err != nil {
+				return classifyAcquireError(ctx, pin.purl, err)
+			}
+			return nil
+		}
+		if u := fetch(); u != nil {
+			return u
 		}
 	}
 
-	h, err := disk.Lookup(ctx, ref)
-	switch {
-	case errors.Is(err, artifactcache.ErrDeclaredAbsent):
+	path, err := verifiedEntry(ctx, disk, ref)
+	if err == nil {
+		return nil
+	}
+	// A cached entry that fails verification in fetch mode is a poisoned or corrupt cache
+	// file, not a registry finding: Acquire treats any published file as a hit, so drop that
+	// one file and fetch it once more. Offline mode has no registry and falls back.
+	if d.cfg.Mode == DependencyCodeFetch && path != "" && errors.Is(err, artifactcache.ErrIntegrityMismatch) {
+		if rmErr := os.Remove(path); rmErr != nil {
+			return classifyAcquireError(ctx, pin.purl, err)
+		}
+		if u := fetch(); u != nil {
+			return u
+		}
+		if _, err = verifiedEntry(ctx, disk, ref); err == nil {
+			return nil
+		}
+	}
+	if errors.Is(err, artifactcache.ErrDeclaredAbsent) {
 		return unread(UnreadNotCached, "")
-	case err != nil:
-		return classifyAcquireError(ctx, pin.purl, err)
+	}
+	return classifyAcquireError(ctx, pin.purl, err)
+}
+
+// verifiedEntry opens ref's cache entry and verifies it against the lock digest. On a
+// verification failure it returns the entry's path so the caller can discard it.
+func verifiedEntry(ctx context.Context, disk artifactcache.Store, ref artifactcache.Ref) (string, error) {
+	h, err := disk.Lookup(ctx, ref)
+	if err != nil {
+		return "", err
 	}
 	defer h.Close()
 	if err := artifactcache.Verify(h, ref); err != nil {
-		return classifyAcquireError(ctx, pin.purl, err)
+		return h.Path(), err
 	}
-	return nil
+	return "", nil
 }
 
 // classifyAcquireError names why err left purl unread. A concrete finding (a policy refusal,

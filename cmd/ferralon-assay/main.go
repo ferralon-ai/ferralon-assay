@@ -17,7 +17,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -233,7 +232,7 @@ func runBaseline(args []string) error {
 	printSummary(*f.outDir, rep, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, store, req.Subject, rescan)
-	return errors.Join(acq.graph.err(), f.depRun.forLanguage(acq.language).err())
+	return runExit(acq.graph, f.depRun.forLanguage(acq.language))
 }
 
 // baselineStore resolves the StateStore the baseline writes to. When an operator selects a store

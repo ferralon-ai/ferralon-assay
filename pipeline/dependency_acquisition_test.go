@@ -179,7 +179,9 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		{name: "offline empty cache", mode: DependencyCodeOffline, served: tarball, digest: sri512(tarball), want: UnreadNotCached},
 		{name: "offline seeded cache", mode: DependencyCodeOffline, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "offline tampered cache", mode: DependencyCodeOffline, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
-		{name: "fetch over tampered cache entry", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, fallback: UnreadIntegrityMismatch},
+		{name: "fetch over tampered cache entry refetches it once", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
+		{name: "tampered cache entry and a registry serving bad bytes", mode: DependencyCodeFetch, served: other, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1, fallback: UnreadIntegrityMismatch},
+		{name: "tampered cache entry and a registry that does not serve it", mode: DependencyCodeFetch, seed: other, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

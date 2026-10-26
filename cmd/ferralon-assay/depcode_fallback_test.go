@@ -142,7 +142,7 @@ func scanJS(t *testing.T, dir, mode, cache, timeout string) (*report.Report, err
 	deps := f.depRun.forLanguage("js")
 	deps.stamp(rep)
 	rep.Provenance.Timestamp = time.Time{}
-	return rep, deps.err(), p.caches
+	return rep, runExit(nil, deps), p.caches
 }
 
 // withoutDependencyCode is rep's JSON with the dependency_code field and the

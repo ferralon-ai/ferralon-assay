@@ -40,6 +40,7 @@ func TestDependencyCodeOption(t *testing.T) {
 			if tt.noHome {
 				t.Setenv("HOME", "")
 				t.Setenv("XDG_CACHE_HOME", "")
+				t.Setenv("TMPDIR", t.TempDir())
 			}
 			mode, cache, npmrcEnv, timeout := tt.mode, tt.cache, "", ""
 			f := &runFlags{depCode: &mode, depCache: &cache, depNPMRCEnv: &npmrcEnv, depTimeout: &timeout}
@@ -57,6 +58,40 @@ func TestDependencyCodeOption(t *testing.T) {
 				t.Fatalf("depRun = %+v, want source %q", f.depRun, tt.wantSource)
 			}
 		})
+	}
+}
+
+// With no user cache directory the default fetch gets a private per-run cache, never a shared
+// temp path another local user could seed.
+func TestDependencyCodeNoHomeCacheIsPerRun(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv(envDependencyCode, "")
+	t.Setenv(envDependencyCache, "")
+	dirs := map[string]bool{}
+	for range 2 {
+		mode, cache, npmrcEnv, timeout := "", "", "", ""
+		f := &runFlags{depCode: &mode, depCache: &cache, depNPMRCEnv: &npmrcEnv, depTimeout: &timeout}
+		cfg, err := f.dependencyAcquisitionConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Dir(cfg.CacheDir) != filepath.Clean(tmp) {
+			t.Fatalf("cache dir %q is not directly under TMPDIR %q", cfg.CacheDir, tmp)
+		}
+		fi, err := os.Stat(cfg.CacheDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := fi.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("cache dir mode = %o, want 700", perm)
+		}
+		dirs[cfg.CacheDir] = true
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("two runs shared a cache dir: %v", dirs)
 	}
 }
 

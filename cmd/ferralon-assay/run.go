@@ -1164,7 +1164,7 @@ func runPRInherit(args []string) error {
 	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
-	return errors.Join(cfg.graph.err(), cfg.deps.err())
+	return runExit(cfg.graph, cfg.deps)
 }
 
 // runCVEWatch runs the scheduled `cve-watch` mode: it queries OSV.dev for advisories
@@ -1229,7 +1229,7 @@ func runCVEWatch(args []string) error {
 		postScan(ctx, cfg.store, cfg.subject, rescan)
 	}
 	// Heartbeat or earnest, a run without its build graph exits red.
-	return errors.Join(cfg.graph.err(), cfg.deps.err())
+	return runExit(cfg.graph, cfg.deps)
 }
 
 // cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
@@ -1242,6 +1242,6 @@ func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchReq
 		AssessOptions: cfg.assessOptions,
 		Signals:       signals,
 		Advisories:    cfg.advisories,
-		HoldCursor:    cfg.graph.err() != nil || cfg.deps.err() != nil,
+		HoldCursor:    runExit(cfg.graph, cfg.deps) != nil,
 	}
 }

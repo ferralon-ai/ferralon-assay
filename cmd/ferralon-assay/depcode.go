@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,6 +115,12 @@ func (d *depCodeRun) err() error {
 	return fmt.Errorf("dependency code not read: %s", describeCause(c))
 }
 
+// runExit is a scan's exit status once its Report is published: the JVM build graph's
+// fail-closed error joined with the dependency-code policy's.
+func runExit(graph *jvmGraph, deps *depCodeRun) error {
+	return errors.Join(graph.err(), deps.err())
+}
+
 func describeCause(c *report.DependencyCodeCause) string {
 	if c.Detail == "" {
 		return c.Kind
@@ -142,13 +149,16 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 			base, err := os.UserCacheDir()
 			switch {
 			case err == nil:
+				cache = filepath.Join(base, brand.Name, "artifacts")
 			case mode == "":
 				// The default must not turn a host with no user cache directory into a failed run.
-				base = os.TempDir()
+				// A private per-run directory, not a shared temp path another user could seed.
+				if cache, err = os.MkdirTemp("", brand.Name+"-artifacts-*"); err != nil {
+					return nil, fmt.Errorf("-dependency-code: no user cache directory and no temp directory: %w", err)
+				}
 			default:
 				return nil, fmt.Errorf("-dependency-code=fetch: no -dependency-cache and no user cache directory: %w", err)
 			}
-			cache = filepath.Join(base, brand.Name, "artifacts")
 		}
 	case string(pipeline.DependencyCodeOffline):
 		m = pipeline.DependencyCodeOffline

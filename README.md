@@ -85,7 +85,9 @@ packages in a cache keyed on your lockfiles, so an unchanged lock fetches nothin
 `dependency-code: off` to skip the fetch, or `offline` to read only a cache already on the runner.
 If the fetch fails (an unreachable registry, a missing token, a timeout), the scan reports what it
 would with `off` and the Report says why, under `dependency_code` and a
-`tool_failure:dependency_code_unavailable` note.
+`tool_failure:dependency_code_unavailable` note. Before a pull-request job exports a registry
+token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
+receives it, and private packages land in the Actions cache.
 
 **`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
@@ -349,7 +351,8 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 
 ## Network egress
 
-**Your code and your credentials never leave the runner.** No run mode is offline: a default
+**Your code never leaves the runner, and a registry token leaves it only for the npm registry
+host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a default
 `baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
@@ -360,8 +363,14 @@ signature. A JS scan also fetches each lock-pinned package tarball by name and v
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
-is presented only to the host it is bound to. Fetch mode trusts the repository's `.npmrc` with
-those token variables, exactly as `npm ci` does. What any of this carries is dependency metadata — module paths,
+is presented only to the host it is bound to. Fetch is the default, and the scanned branch's
+`.npmrc` chooses that host, exactly as with `npm ci`: a branch that rewrites its `.npmrc` sends any
+of those tokens the job exports to the host it names. To keep tokens out of a scan, set
+`dependency-code: off`, or don't export `NODE_AUTH_TOKEN`/`NPM_TOKEN` on pull-request jobs. The
+Action saves the fetched tarballs, private packages included, to the GitHub Actions cache, where
+any workflow run that may restore it can read them; on a public repository that includes
+pull-request workflows from forks, which can restore default-branch caches. `dependency-code: off`
+skips the cache too. What any of this carries is dependency metadata — module paths,
 versions, package coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 

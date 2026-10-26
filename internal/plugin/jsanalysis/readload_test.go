@@ -455,6 +455,102 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 	}
 }
 
+// TestDepGraph_ReadLoadDepInternal: the read package dep loads package b. The first-party load of
+// dep is retracted only when every module any resolver may load for dep's own loads has an edge
+// and dep's calls into them resolve the same under every resolver. A bundler-only entry behind a
+// call keeps the result incomplete. A load no resolver can bound keeps the first-party decline,
+// as without dependency code.
+func TestDepGraph_ReadLoadDepInternal(t *testing.T) {
+	const app = "const { run } = require('dep');\nrun();\n"
+	const callsB = "const { go } = require('b');\nexports.run = function run() { go(); };\n"
+	const bNode = "exports.go = function go() {};\n"
+	const bBundled = "export function go() { bad(); }\nfunction bad() {}\n"
+	dep := func(files map[string]string) *depPkg {
+		m := map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js"}`, "index.js": callsB}
+		for k, v := range files {
+			if v == "" {
+				delete(m, k)
+				continue
+			}
+			m[k] = v
+		}
+		return &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: m}
+	}
+	b := func(manifest string, files map[string]string) *depPkg {
+		m := map[string]string{"package.json": manifest, "n.js": bNode}
+		for k, v := range files {
+			m[k] = v
+		}
+		return &depPkg{path: "node_modules/b", name: "b", version: "1.0.0", files: m}
+	}
+	run := func(firstParty map[string]string, pkgs ...*depPkg) func(t *testing.T) plugin.CallGraphResult {
+		return func(t *testing.T) plugin.CallGraphResult {
+			files := map[string]string{"index.js": app}
+			for k, v := range firstParty {
+				files[k] = v
+			}
+			f := newDepFixture(t, files, pkgs...)
+			return withDeps(t, f.dir, f.memStore())
+		}
+	}
+	const depIndex = "scip-typescript npm dep 1.0.0 index/`<module-init>`()."
+	const depRun = "scip-typescript npm dep 1.0.0 index/run()."
+	const bInit = "scip-typescript npm b 1.0.0 n/`<module-init>`()."
+	const bEsm = "scip-typescript npm b 1.0.0 esm/`<module-init>`()."
+	const bGo = "scip-typescript npm b 1.0.0 n/go()."
+	const bMain = `{"name":"b","version":"1.0.0","main":"n.js"}`
+	const bDual = `{"name":"b","version":"1.0.0","main":"n.js","module":"esm.js"}`
+	webpack := map[string]string{"webpack.config.js": "module.exports = { mode: 'production' };\n"}
+
+	for _, tc := range []struct {
+		name     string
+		run      func(t *testing.T) plugin.CallGraphResult
+		withheld bool
+		complete bool
+		edges    []string // callee of an edge from dep's index init, or from dep's run for b's go
+	}{
+		// Node's pick is the only candidate: the call into b resolves and the run is Complete.
+		{name: "node_only_bounded", run: run(nil, dep(nil), b(bMain, nil)), complete: true, edges: []string{bInit, bGo}},
+		// The reviewer's case under webpack and with no bundler configured: b's module entry
+		// runs go() from esm.js, which no edge from dep's call reaches.
+		{name: "module_entry_call_webpack", run: run(webpack, dep(nil), b(bDual, map[string]string{"esm.js": bBundled})), edges: []string{bInit, bEsm}},
+		{name: "module_entry_call_no_config", run: run(nil, dep(nil), b(bDual, map[string]string{"esm.js": bBundled})), edges: []string{bInit, bEsm}},
+		{name: "browser_map_call", run: run(webpack, dep(nil), b(`{"name":"b","version":"1.0.0","main":"n.js","browser":{"./n.js":"./esm.js"}}`, map[string]string{"esm.js": bBundled})), edges: []string{bInit, bEsm}},
+		// A dual package dep only loads: both entries are linked and nothing else can run.
+		{name: "dual_load_linked", run: run(nil, dep(map[string]string{"index.js": "require('b');\nexports.run = function run() {};\n"}), b(bDual, map[string]string{"esm.js": bBundled})), complete: true, edges: []string{bInit, bEsm}},
+		// dep's load of b cannot be bounded: an unparsed module entry, a bundler alias.
+		{name: "dep_load_unparsed_entry", run: run(nil, dep(nil), b(`{"name":"b","version":"1.0.0","main":"n.js","module":"esm/entry"}`, map[string]string{"esm/entry": bBundled})), withheld: true},
+		{name: "dep_load_aliased", run: run(map[string]string{"webpack.config.js": "const path = require('path');\nmodule.exports = { resolve: { alias: { b: path.resolve(__dirname, 'shim.js') } } };\n", "shim.js": "exports.go = function go() {};\n"}, dep(nil), b(bMain, nil)), withheld: true},
+		// dep's relative loads: a bundler preferring .mjs, a browser map in dep's own package.json,
+		// and a directory whose package.json has a module entry.
+		{name: "relative_bounded", run: run(nil, dep(map[string]string{"index.js": "require('./lib/x');\nexports.run = function run() {};\n", "lib/x.js": "exports.y = 1;\n"})), complete: true},
+		{name: "relative_mjs_twin", run: run(nil, dep(map[string]string{"index.js": "require('./lib/x');\nexports.run = function run() {};\n", "lib/x.js": "exports.y = 1;\n", "lib/x.mjs": "export const y = 1;\n"})), withheld: true},
+		{name: "relative_browser_remap", run: run(nil, dep(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","browser":{"./lib/x.js":"./lib/y.js"}}`, "index.js": "require('./lib/x');\nexports.run = function run() {};\n", "lib/x.js": "exports.y = 1;\n", "lib/y.js": "exports.y = 2;\n"})), withheld: true},
+		{name: "relative_dir_module_entry", run: run(nil, dep(map[string]string{"index.js": "require('./sub');\nexports.run = function run() {};\n", "sub/package.json": `{"main":"n.js","module":"m.js"}`, "sub/n.js": "exports.y = 1;\n", "sub/m.js": "export const y = 1;\n"})), withheld: true},
+		// The app's own package.json maps dep elsewhere for a browser build.
+		{name: "app_browser_map", run: run(map[string]string{"package.json": `{"name":"app","version":"1.0.0","browser":{"dep":"./shim.js"}}`, "shim.js": "exports.run = function run() {};\n"}, dep(nil), b(bMain, nil)), withheld: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cg := tc.run(t)
+			if got := runWide(cg) || loadListed(cg); got != tc.withheld {
+				t.Errorf("withheld = %v, want %v; partiality %+v unresolved %+v", got, tc.withheld, cg.Partiality, cg.Unresolved)
+			}
+			if cg.Partiality.Complete != tc.complete {
+				t.Errorf("complete = %v, want %v; partiality %+v", cg.Partiality.Complete, tc.complete, cg.Partiality)
+			}
+			for _, callee := range tc.edges {
+				caller := depIndex
+				if callee == bGo {
+					caller = depRun
+				}
+				if !hasEdge(cg.Edges, caller, callee) {
+					t.Errorf("missing edge %s -> %s; edges %+v", caller, callee, cg.Edges)
+				}
+			}
+		})
+	}
+}
+
 // TestDepGraph_ReadLoadBoundaryCall: a call on a value a read package returned enters the
 // package at a boundary its read code does not resolve, so it keeps the run-wide limit while
 // the load itself is covered.

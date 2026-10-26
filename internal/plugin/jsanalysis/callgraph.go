@@ -296,6 +296,9 @@ type graphBuild struct {
 	pkgLoads []pkgSite
 	pkgCalls []pkgSite
 	entered  bool
+	// depUnbounded marks a load or call in read dependency code for which some resolver may run
+	// code the graph has no edge to; coverReadPackages then retracts nothing.
+	depUnbounded bool
 }
 
 // pkgSite is a first-party site declined on a bare specifier: the unresolved entry at index at,

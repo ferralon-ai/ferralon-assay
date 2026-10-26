@@ -684,7 +684,7 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		g.add(plugin.CallEdge{Caller: sym(rewrite(e.Caller.SCIP)), Callee: sym(rewrite(e.Callee.SCIP))}, aug.prov[e])
 	}
 
-	if !layout.berry && !layout.incomplete {
+	if !layout.berry && !layout.incomplete && !g.depUnbounded {
 		coverReadPackages(prog, g, rewrite)
 	}
 	flags := mergeFlags(g.flags, dflags)
@@ -705,7 +705,8 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 }
 
 // coverReadPackages retracts the first-party declines that dependency code read into prog
-// covers. A load is covered when every module any resolver may load for it is read (readLoad)
+// covers. It runs only when augment bounded every load and call in dependency code
+// (graphBuild.depUnbounded). A load is covered when every module any resolver may load for it is read (readLoad)
 // and its load edge is in g; augment links each one. A call is resolved again with dependency
 // code attached and every resolver's candidates in play: one that now resolves to a function
 // whose edge is in g is no longer declined, and one into a read package that names no single
@@ -761,8 +762,10 @@ func coverReadPackages(prog *program, g *graphBuild, rewrite func(string) string
 
 // readLoad returns the modules a first-party load of bare specifier spec may run and whether
 // those are all of them: no paths alias, workspace member, self-reference or bundler alias claims
-// it, the layout resolves it to a read package (read, SRI-verified and unpatched: d.pkgs holds no
-// other), and loadCandidates bounds it.
+// it, no browser field of the loader's package.json remaps, the layout resolves it to a read
+// package (read, SRI-verified and unpatched: d.pkgs holds no other), and loadCandidates bounds it.
+// augment skips the same specifiers, so the edge check in coverReadPackages also keeps those
+// declines; the guards here keep the gate right if augment changes.
 func (rs *resolver) readLoad(fromModule, spec string, viaRequire bool) ([]string, bool) {
 	if !isDepSpecifier(spec) {
 		return nil, false
@@ -774,15 +777,13 @@ func (rs *resolver) readLoad(fromModule, spec string, viaRequire bool) ([]string
 		return nil, false
 	}
 	name, sub := splitBareSpecifier(spec)
-	if own, _ := rs.governingPackageJSON(fromModule); own != nil && own.name == name && own.exports != nil {
+	own, _ := rs.governingPackageJSON(fromModule)
+	if own != nil && own.name == name && own.exports != nil {
 		return nil, false
 	}
-	if rs.bctx != nil {
-		for _, k := range []string{spec, name, name + "$"} {
-			if _, found, _ := rs.bctx.lookupAlias(k); found {
-				return nil, false
-			}
-		}
+	// A browser field in the loader's own package.json may map the specifier elsewhere.
+	if remaps(own) || rs.aliased(spec) {
+		return nil, false
 	}
 	d := rs.prog.deps
 	e := d.layout.lookup(moduleDir(fromModule), name)
@@ -794,6 +795,70 @@ func (rs *resolver) readLoad(fromModule, spec string, viaRequire bool) ([]string
 		return nil, false
 	}
 	return rs.loadCandidates(p, sub, viaRequire)
+}
+
+// aliased reports whether a bundler alias the build configures may replace bare specifier spec.
+func (rs *resolver) aliased(spec string) bool {
+	if rs.bctx == nil {
+		return false
+	}
+	name, _ := splitBareSpecifier(spec)
+	for _, k := range []string{spec, name, name + "$"} {
+		if _, found, _ := rs.bctx.lookupAlias(k); found {
+			return true
+		}
+	}
+	return false
+}
+
+// remaps reports whether package.json m has a browser object field mapping a path or package to
+// another file or package.
+func remaps(m *pkgManifest) bool {
+	return m != nil && (m.browserBare || len(m.browserMap) > 0)
+}
+
+// remapsAlong reports whether a bundler may remap a load from package-relative directory rel of
+// read package p: a package.json from rel up to the package root has a browser object field, or
+// does not parse.
+func (p *depPackage) remapsAlong(rel string) bool {
+	if rel == "." {
+		rel = ""
+	}
+	for {
+		if m, ok := p.manifestAt(rel); !ok || remaps(m) {
+			return true
+		}
+		if rel == "" {
+			return false
+		}
+		if rel = path.Dir(rel); rel == "." {
+			rel = ""
+		}
+	}
+}
+
+// relativeLoadBounded reports whether m, the module Node loads for relative load spec from module
+// fromModule of read package p, is every module any resolver may load for it (loadSet). A target
+// outside the package is not bounded.
+func (rs *resolver) relativeLoadBounded(p *depPackage, fromModule, spec, m string) bool {
+	cand := path.Join(moduleDir(fromModule), spec)
+	rel, ok := strings.CutPrefix(cand, p.entry.path+"/")
+	if cand == p.entry.path {
+		rel, ok = "", true
+	}
+	if !ok {
+		return false
+	}
+	if p.remapsAlong(path.Dir(rel)) {
+		return false
+	}
+	c := &loadSet{rs: rs, p: p}
+	if namesDirectory(spec) {
+		c.dir(rel)
+	} else {
+		c.path(rel)
+	}
+	return !c.hidden && len(c.mods) == 1 && c.mods[0] == m
 }
 
 // augment adds the edges dependency code contributes to aug: module loads, calls resolved
@@ -903,11 +968,17 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			}
 		}
 		init := sym(moduleInitSCIP(f.module))
+		if len(b.specifiers) > 0 && pkg.remapsAlong(moduleDir(strings.TrimPrefix(f.module, pkg.entry.path+"/"))) {
+			g.depUnbounded = true
+		}
 		for _, ls := range b.specifiers {
 			algo := loadAlgo(ls.viaRequire)
 			switch {
 			case isRelativeLoad(ls.spec):
 				m, dir, viaDir := rs.resolveRelativeDir(f.module, ls.spec)
+				if m != "" && !rs.relativeLoadBounded(pkg, f.module, ls.spec, m) {
+					g.depUnbounded = true
+				}
 				if viaDir && anyFrontend {
 					// A bundler loading a package root ("require('..')" from inside it) takes its
 					// module and browser entries, as for a load by name.
@@ -968,6 +1039,16 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 				if anyFrontend {
 					loadEdges(f, rs.frontEntryModules(f.module, ls.spec), algo)
 				}
+				if p := d.pkgs[e.path]; p != nil {
+					// Every module any resolver may load is linked; one that cannot be bounded
+					// leaves the run's first-party declines in place.
+					_, sub := splitBareSpecifier(ls.spec)
+					all, ok := anyRS.loadCandidates(p, sub, ls.viaRequire)
+					if !ok || rs.aliased(ls.spec) {
+						g.depUnbounded = true
+					}
+					loadEdges(f, all, algo)
+				}
 			}
 		}
 		for _, cs := range f.calls {
@@ -987,6 +1068,16 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			connected = connected && !cs.unconnected
 			if connected {
 				aug.add(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
+				// With every resolver's candidates in play the call may land elsewhere: into a
+				// read package naming no single function it is dynamic dispatch, as for
+				// first-party calls (coverReadPackages); anything else is not bounded.
+				if ar := anyRS.resolveCallSite(f.module, cs); ar.Target != target || ar.Kind != resolveFirstParty {
+					if ar.Kind == resolvePackage && ar.Reason == plugin.PartialReasonDynamicDispatch {
+						accumulateReason(flags, plugin.PartialReasonDynamicDispatch)
+					} else {
+						g.depUnbounded = true
+					}
+				}
 			}
 			if !cs.unconnected && boundary(f.module, cs, caller) {
 				// A boundary edge names the member the call enters, not what it runs: a call

@@ -197,8 +197,9 @@ func requirementConstraint(spec string) string {
 	return r.Specifier
 }
 
-// specifierPin returns the version a normalized specifier (pep508Req.Specifier) pins when its first
-// clause is an exact "==X" with no "*" prefix match, as parseRequirementSpec resolves one.
+// specifierPin returns the version a normalized specifier (pep508Req.Specifier) pins when
+// its first clause is an exact "==X" with no "*" prefix match, as parseRequirementSpec
+// resolves one.
 func specifierPin(specifier string) (string, bool) {
 	first, _, _ := strings.Cut(specifier, ",")
 	ver, ok := strings.CutPrefix(first, "==")

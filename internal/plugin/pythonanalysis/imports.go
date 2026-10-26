@@ -275,7 +275,7 @@ func firstPartyTops(modules []string) map[string]bool {
 }
 
 // declaredDistributions returns the PEP 503 names every recognized manifest under buildDir
-// declares. complete is false when a manifest fails to parse, a file declares dependencies
+// declares, and each distribution a script surface's self-upgrade installs. complete is false when a manifest fails to parse, a file declares dependencies
 // version resolution does not read (the same surfaces that leave a version unresolved), or an
 // install surface is not fully read by the coverage check (ManifestCandidates): a name only
 // that file holds is missing, so an import of it reaches no boundary node. read is false when a
@@ -289,8 +289,11 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete, re
 			}
 		}
 	}
-	manifests, unread, _, _ := versionSurfaces(buildDir)
+	manifests, unread, _, _, tooling := versionSurfaces(buildDir)
 	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
+	for n := range tooling {
+		names[n] = true // a self-upgrade installs it as surely as a manifest declares it
+	}
 	for _, f := range manifests {
 		data, err := readRegular(f)
 		if err != nil {

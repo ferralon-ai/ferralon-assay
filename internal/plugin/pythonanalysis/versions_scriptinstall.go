@@ -41,16 +41,30 @@ import (
 // PIP_* or UV_* variable set in any script surface withholds, since every pip or uv the build
 // runs reads it. How a surface is read, and what binds a command to a file, is lane-neutral,
 // in scriptsurface.
+//
+// One more pip form installs nothing but pip itself, so it withholds the pip coordinate alone
+// (pipSelfUpgrade):
+//
+//	pip install [flags] pip[<specifier>]   the one target pip, bare or with a version
+//	                                       specifier and no extras, marker, URL or path; the
+//	                                       flags only from selfUpgradeFlags
+//
+// No published pip release declares a dependency outside its testing extra, so the target
+// installs pip and nothing else. That holds for the distribution PyPI serves: an index,
+// extra index or find-links location may serve a different one, so a flag naming one is not
+// in selfUpgradeFlags and the command withholds every pin. setuptools and wheel are not
+// targets: wheel requires packaging.
 
-// scriptSpec is the Python lane's part of the rule.
-var scriptSpec = newScriptSpec(nil)
-
-// newScriptSpec is scriptSpec recording into installs every pip install -r it allows.
-func newScriptSpec(installs pipInstalls) scriptsurface.Spec {
+// newScriptSpec is the Python lane's part of the rule, recording into installs every pip
+// install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
+// a caller that allows a self-upgrade must withhold what tooling names.
+func newScriptSpec(installs pipInstalls, tooling map[string]bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
-		Token:       laneToken,
-		Env:         laneEnvRE,
-		Allowed:     installs.allowed,
+		Token: laneToken,
+		Env:   laneEnvRE,
+		Allowed: func(words []string, b scriptsurface.Binder) bool {
+			return installs.allowed(words, b, tooling)
+		},
 		RunWrapper:  laneRunWrapper,
 		RunBinds:    laneRunBinds,
 		ReadRegular: readRegular,
@@ -99,6 +113,33 @@ var (
 	pipHeadRE    = regexp.MustCompile(`^pip(?:\d+(?:\.\d+)?)?$`)
 	pythonHeadRE = regexp.MustCompile(`^python(?:\d+(?:\.\d+)?)?$`)
 )
+
+// selfUpgradeFlags are the flags a pip self-upgrade may carry: none changes what pip installs
+// or where it finds it.
+var selfUpgradeFlags = map[string]bool{
+	"-U": true, "--upgrade": true, "-q": true, "--quiet": true, "--no-cache-dir": true,
+	"--disable-pip-version-check": true, "--user": true, "--no-warn-script-location": true,
+	"--root-user-action=ignore": true,
+}
+
+// pipTargetRE matches the requirement pip, bare or with a PEP 440 version specifier.
+var pipTargetRE = regexp.MustCompile(`^[Pp][Ii][Pp](?:(?:===|==|~=|!=|<=|>=|<|>)[0-9][0-9A-Za-z.*+!_-]*(?:,(?:===|==|~=|!=|<=|>=|<|>)[0-9][0-9A-Za-z.*+!_-]*)*)?$`)
+
+// pipSelfUpgrade reports whether pip install's arguments, after install, are flags from
+// selfUpgradeFlags and the one target pip.
+func pipSelfUpgrade(args []string) bool {
+	targets := 0
+	for _, a := range args {
+		switch {
+		case selfUpgradeFlags[a]:
+		case pipTargetRE.MatchString(a):
+			targets++
+		default:
+			return false
+		}
+	}
+	return targets == 1
+}
 
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}
@@ -163,16 +204,16 @@ func laneRunBinds(words []string, b scriptsurface.Binder) bool {
 
 // allowed reports whether a command holding an installer token, already free of
 // expansions and redirects, is one of the allowed forms and binds to files read here.
-func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder) bool {
+func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tooling map[string]bool) bool {
 	head, ok := scriptsurface.CommandName(words[0])
 	if !ok {
 		return false
 	}
 	switch {
 	case pipHeadRE.MatchString(head):
-		return installs.pip(words[1:], b)
+		return installs.pip(words[1:], b, tooling)
 	case pythonHeadRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && pipHeadRE.MatchString(words[2]):
-		return installs.pip(words[3:], b)
+		return installs.pip(words[3:], b, tooling)
 	case len(words) < 2:
 		return false
 	case head == "uv" && words[1] == "sync":
@@ -191,10 +232,16 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder) bool
 
 // pip reports whether pip's arguments are install, the shared flags, --no-deps,
 // --require-hashes, and one or more -r naming a requirements file read here, and records the
-// install of each file.
-func (installs pipInstalls) pip(args []string, b scriptsurface.Binder) bool {
+// install of each file; or a self-upgrade (pipSelfUpgrade), recorded in tooling.
+func (installs pipInstalls) pip(args []string, b scriptsurface.Binder, tooling map[string]bool) bool {
 	if len(args) == 0 || args[0] != "install" {
 		return false
+	}
+	if pipSelfUpgrade(args[1:]) {
+		if tooling != nil {
+			tooling["pip"] = true
+		}
+		return true
 	}
 	var (
 		how   pipInstall

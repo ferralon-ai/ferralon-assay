@@ -26,9 +26,10 @@ import (
 
 // versionSurfaces returns the manifests version resolution parses, whether any other install
 // surface under root goes unread, whether a script surface may install a package no manifest
-// or lock read here names (scriptsurface.Veto.Withheld), and every pip install -r the script
-// surfaces run.
-func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls) {
+// or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
+// surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
+// read here records (pipSelfUpgrade), which a caller withholds as it would every pin.
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -54,15 +55,15 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	installs = pipInstalls{}
-	veto := scriptsurface.New(root, read, newScriptSpec(installs))
+	installs, tooling = pipInstalls{}, map[string]bool{}
+	veto := scriptsurface.New(root, read, newScriptSpec(installs, tooling))
 	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
 	scriptWithheld = veto.Withheld()
-	return manifests, unread || scriptWithheld, scriptWithheld, installs
+	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -175,6 +176,75 @@ func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
 			f := finding(store, a.ID, report.Advisory{ID: "FERRALON-JAVA-SSRF-0002", Source: "corpus"}, pkg)
 			if f.Verdict != tt.wantVerdict {
 				t.Fatalf("verdict = %q (%s), want %q", f.Verdict, f.UndeterminedReason, tt.wantVerdict)
+			}
+		})
+	}
+}
+
+// TestFinding_KotlinUnreadableJarHoldsOnlyItsClosure feeds the Kotlin lane's reachability shape for
+// a dependency JAR it could not read (kotlinanalysis TestReachability_UnreadableJarOutsideItsClosure)
+// through the real footprint stage to the verdict. The limit is scoped to the modules that resolved
+// the JAR: a searched sink in a package outside that bound clears, one inside it is held. Had the
+// lane also declared the reason run-wide, it would hold every row.
+func TestFinding_KotlinUnreadableJarHoldsOnlyItsClosure(t *testing.T) {
+	unreadable := plugin.ScopedReason{
+		Reason:  plugin.PartialReasonToolFailure,
+		Package: "pkg:maven/org.a/a",
+		Path:    "org.a:a:1.0: a-1.0.jar unreadable or changed since the build resolved it",
+		Targets: []string{"", "pkg:maven/org.a/a"},
+	}
+	tests := []struct {
+		name        string
+		group, art  string
+		runWide     bool
+		wantVerdict report.Verdict
+	}{
+		{"package outside the JAR's closure clears", "org.b", "b", false, report.VerdictNotExploitable},
+		{"the JAR's own package is held", "org.a", "a", false, report.VerdictUndetermined},
+		{"the same limit declared run-wide holds the outside package too", "org.b", "b", true, report.VerdictUndetermined},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, err := assessment.NewMemStore().Create(assessment.Request{Vulnerability: assessment.VulnRef{ID: "FERRALON-KOTLIN-TEST-0001"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := artifact.NewMemStore()
+			purl := "pkg:maven/" + tt.group + "/" + tt.art
+			cls := strings.ReplaceAll(tt.group, ".", "/") + "/" + strings.ToUpper(tt.art)
+			sink := cls + ".sink()V"
+			advSym := strings.ReplaceAll(cls, "/", ".") + ".sink"
+			putJSON(t, store, a.ID, artifact.TypeNormalizedAdvisory, map[string]any{
+				"module": tt.group + ":" + tt.art, "purl": purl + "@1.0",
+				"advisory_symbols": []string{advSym}, "built_in": true,
+			})
+			putJSON(t, store, a.ID, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
+				Partiality: plugin.Complete(),
+				Resolved:   []plugin.Symbol{{SCIP: sink}},
+				Origins:    map[string]string{sink: purl},
+				Matched:    map[string][]string{advSym: {sink}},
+			})
+			part := plugin.Partiality{Scoped: []plugin.ScopedReason{unreadable}}
+			if tt.runWide {
+				part.Reasons = []string{unreadable.Reason}
+			}
+			cg := plugin.CallGraphResult{
+				Algorithm:  "bytecode-cha",
+				Partiality: plugin.Complete(),
+				Edges:      []plugin.CallEdge{depEdge("com/example/MainKt.main([Ljava/lang/String;)V", "com/example/MainKt.helper()V")},
+			}
+			seedReachArtifact(t, store, a.ID, cg, plugin.ReachabilityResult{Partiality: part, Searched: []string{sink}})
+			if err := pipeline.NewExposureFootprint().Run(context.Background(), a, store); err != nil {
+				t.Fatal(err)
+			}
+
+			pkg := &report.Package{Ecosystem: "Maven", Name: tt.group + ":" + tt.art, Version: "1.0", PURL: purl + "@1.0"}
+			f := finding(store, a.ID, report.Advisory{ID: "FERRALON-KOTLIN-TEST-0001", Source: "corpus"}, pkg)
+			if f.Verdict != tt.wantVerdict {
+				t.Fatalf("verdict = %q (%s), want %q", f.Verdict, f.UndeterminedReason, tt.wantVerdict)
+			}
+			if tt.wantVerdict == report.VerdictUndetermined && f.UndeterminedReason != report.ReasonAnalysisDidNotRun {
+				t.Errorf("undetermined_reason = %q, want %q", f.UndeterminedReason, report.ReasonAnalysisDidNotRun)
 			}
 		})
 	}

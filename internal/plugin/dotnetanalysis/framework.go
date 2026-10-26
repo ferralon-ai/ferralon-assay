@@ -10,7 +10,9 @@ package dotnetanalysis
 //     of FrameworkList.xml across 3.1 through 10.0; a union is safe because a program can
 //     only reference an assembly its target framework or one of its packages supplies);
 //   - a name some restored package supplies itself is not framework: that package's bytes
-//     are either loaded (and read) or a declared miss, never a trusted leaf;
+//     are either loaded (and read) or a declared miss, never a trusted leaf. When the build's
+//     runtime does not pick out a runtime target, the packages of every runtime target that
+//     adds or re-versions one may run, so their names are subtracted too;
 //   - a name the loaded set supplies is not framework either.
 //
 // Microsoft.CSharp and Microsoft.VisualBasic ship in Microsoft.NETCore.App but are the
@@ -33,6 +35,7 @@ package dotnetanalysis
 
 import (
 	_ "embed"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -63,18 +66,26 @@ func netCoreAppNames() map[string]bool {
 }
 
 // frameworkNames returns the assembly names the engine may treat as shared framework for
-// a build that runs the restore target target, or nil when the model does not apply (no
-// bound netcoreapp >= 3.1 target, or no restore output to say what the packages supply).
-func frameworkNames(target string, locator *assembly.AssetsLocator, loaded []*assembly.Assembly) map[string]bool {
-	if locator == nil || !netCoreAppAtLeast31(target) {
+// a build that runs rt, or nil when the model does not apply (no bound netcoreapp >= 3.1
+// target, or no restore output to say what the packages supply).
+func frameworkNames(rt runtimeTarget, locator *assembly.AssetsLocator, loaded []*assembly.Assembly) map[string]bool {
+	if locator == nil || !netCoreAppAtLeast31(rt.load) {
 		return nil
 	}
 	names := netCoreAppNames()
 	for n := range frameworkExcluded {
 		delete(names, n)
 	}
-	for _, n := range locator.PackageAssemblyNames(target) {
-		delete(names, strings.ToLower(n))
+	targets := []string{rt.load}
+	for _, m := range rt.misses {
+		if !slices.Contains(targets, m.Dep.Target) {
+			targets = append(targets, m.Dep.Target)
+		}
+	}
+	for _, t := range targets {
+		for _, n := range locator.PackageAssemblyNames(t) {
+			delete(names, strings.ToLower(n))
+		}
 	}
 	for _, a := range loaded {
 		if a != nil {

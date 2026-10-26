@@ -79,7 +79,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	// Calls into the shared framework are leaves except where it can run application code
 	// the graph does not show (framework.go, depreach/framework.go). A package restore marks
 	// as supplied by that framework is then not a missing dependency.
-	fw := frameworkNames(rt.load, locator, set.Assemblies)
+	fw := frameworkNames(rt, locator, set.Assemblies)
 	engine.SetFramework(fw)
 	var misses []assembly.DepMiss
 	for _, m := range set.Misses {

@@ -275,10 +275,10 @@ func yarnDepEntry(trimmed string, g *quoteGuard) (name, rng string) {
 	i := strings.IndexAny(trimmed, " \t")
 	if i < 0 {
 		g.raw = true
-		return g.classicScalar(trimmed), ""
+		return trimmed, ""
 	}
 	name = g.classicScalar(trimmed[:i])
-	rng = g.classicRequired(trimmed[i:])
+	rng = g.classicScalar(trimmed[i:])
 	return name, rng
 }
 

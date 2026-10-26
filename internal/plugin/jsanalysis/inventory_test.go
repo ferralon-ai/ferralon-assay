@@ -734,6 +734,10 @@ func TestInventory_QuotedEscapes(t *testing.T) {
 		{name: "berry_resolution_empty", file: "yarn.lock", lock: edit(berry, "resolution: \"q@npm:1.0.0\"", "resolution:"), withheld: true},
 		{name: "berry_dep_empty", file: "yarn.lock", lock: edit(berry, "    q: \"npm:1.0.0\"", "    q:"), withheld: true},
 		{name: "berry_peer_empty", file: "yarn.lock", lock: edit(berry, "  dependencies:\n    q:", "  peerDependencies:\n    p:\n  dependencies:\n    q:"), withheld: true},
+		{name: "classic_resolved_empty", file: "yarn.lock", lock: edit(classic, "resolved \"https://registry.yarnpkg.com/q/-/q-1.0.0.tgz#abc\"", "resolved"), withheld: true},
+		{name: "classic_integrity_empty", file: "yarn.lock", lock: edit(classic, "integrity sha512-AAAA", "integrity"), withheld: true},
+		{name: "classic_dependency_name_digit", file: "yarn.lock", lock: edit(classic, "  integrity sha512-AAAA\n", "  integrity sha512-AAAA\n  dependencies:\n    7r \"^1.0.0\"\n"), withheld: true},
+		{name: "classic_dependency_no_range", file: "yarn.lock", lock: edit(classic, "  integrity sha512-AAAA\n", "  integrity sha512-AAAA\n  dependencies:\n    r\n"), withheld: true},
 		{name: "pnpm_version_plain_quote", file: "pnpm-lock.yaml", lock: edit(pnpm, "version: 1.0.0", "version: 1.0.0\"x"), withheld: true},
 		{name: "pnpm_control_quoted_colon_key", file: "pnpm-lock.yaml", lock: edit(pnpm, "\n  q@1.0.0: {}", "\n  q@1.0.0: {}\n  'z@file:': {}")},
 

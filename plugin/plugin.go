@@ -279,6 +279,10 @@ const (
 	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
 	// (plugin.Open), so none of that code's calls were read.
 	PartialReasonPluginLoad = "plugin_load"
+	// PartialReasonCgoUnresolved: the go command did not resolve whether cgo is on (`go env
+	// CGO_ENABLED` failed), so which of the build's cgo and non-cgo files the shipped binary
+	// compiles is unknown.
+	PartialReasonCgoUnresolved = PartialReasonCgo + ":env_unresolved"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every

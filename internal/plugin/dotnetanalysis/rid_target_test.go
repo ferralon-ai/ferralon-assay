@@ -277,6 +277,44 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 	}
 }
 
+// TestReachability_RIDTargetFrameworkNamedPackage: the runtime is unknown and a runtime
+// target adds a package, depending on Dep, whose assembly carries a framework name. Main
+// calls into it. That package may be what runs, so the name is not framework and the call
+// is out of the loaded set, exactly as for a package under any other name.
+func TestReachability_RIDTargetFrameworkNamedPackage(t *testing.T) {
+	for _, pkg := range []string{"System.Text.Json", "RidOnly"} {
+		t.Run(pkg, func(t *testing.T) {
+			t.Setenv("NUGET_PACKAGES", t.TempDir())
+			pkgRoot := t.TempDir()
+			plainDep := ridRow("Dep/1.0.0", "lib/net8.0/Dep.dll", "")
+			ridPkg := ridRow(pkg+"/9.0.0", "lib/net8.0/"+pkg+".dll", `"Dep":"1.0.0"`)
+			assets := `{"version":3,"targets":{"net8.0":{` + plainDep + `},"net8.0/win-x64":{` + plainDep + `,` + ridPkg + `}},` +
+				`"libraries":{"Dep/1.0.0":{"type":"package","path":"dep/1.0.0"},"` + pkg + `/9.0.0":{"type":"package","path":"x/9.0.0"}},` +
+				`"packageFolders":{"` + pkgRoot + `/":{}}}`
+			a := newFWApp()
+			a.markTargetFramework(".NETCoreApp,Version=v8.0")
+			app := a.main(ilCall(a.refIn(pkg, pkg, "Api", "Run", sigStaticVoid)))
+			out := "bin/Release/net8.0/"
+			dir := composeILBuildDir(t, map[string][]byte{
+				"App.csproj":              restoredProject,
+				"obj/project.assets.json": []byte(assets),
+				out + "App.dll":           app,
+				out + "App.deps.json":     depsJSON(""),
+			})
+			f := depFixture{buildDir: dir, pkgRoot: pkgRoot}
+			f.writePkgFile(t, "dep/1.0.0/lib/net8.0/Dep.dll", ridDep(false))
+			res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{ridSinkSCIP}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(res.Searched, ridSinkSCIP) || len(res.Paths) > 0 || res.Partiality.Complete {
+				t.Fatalf("searched = %v, paths = %d, partiality = %+v; want the sink undetermined",
+					slices.Contains(res.Searched, ridSinkSCIP), len(res.Paths), res.Partiality)
+			}
+		})
+	}
+}
+
 // ridDepWithoutSink builds a "Dep" whose code declares no D.Sink.boom.
 func ridDepWithoutSink() []byte {
 	b := scaffold()

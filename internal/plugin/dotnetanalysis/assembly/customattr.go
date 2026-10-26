@@ -176,3 +176,10 @@ func firstStringArg(b []byte) (string, bool) {
 	}
 	return string(raw), true
 }
+
+// HasAttribute reports whether the element (a TypeDef or MethodDef token) carries a custom
+// attribute whose type is one of the given short names, matched as hasAttributeSuffix
+// matches them.
+func (a *Assembly) HasAttribute(parent Token, names ...string) bool {
+	return a.hasAttributeSuffix(parent, names...)
+}

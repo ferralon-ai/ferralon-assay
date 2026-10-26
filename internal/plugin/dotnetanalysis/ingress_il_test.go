@@ -48,8 +48,10 @@ type aspCtx struct {
 }
 
 // aspApp builds App.dll. main is "hosted" (Main hands control to the ASP.NET Core host, an
-// out-of-set call), "console" (Main calls nothing) or "none" (no entry point). aspRefs adds
-// the MVC base types to the image; add declares the shape under test.
+// out-of-set call), "generic-host" (Main runs a Microsoft.Extensions.Hosting host, also
+// out-of-set), "bcl" (Main calls System.Console.WriteLine, a shared-framework leaf),
+// "console" (Main calls nothing) or "none" (no entry point). aspRefs adds the MVC base types
+// to the image; add declares the shape under test.
 func aspApp(main string, aspRefs bool, add func(b *peb, x aspCtx)) []byte {
 	b := scaffold()
 	x := aspCtx{obj: cTypeDefOrRef(xTypeRef, b.extTypeRef("System", "Object"))}
@@ -60,9 +62,16 @@ func aspApp(main string, aspRefs bool, add func(b *peb, x aspCtx)) []byte {
 		x.pageModel = cTypeDefOrRef(xTypeRef, b.extTypeRefScoped(b.asmRef("Microsoft.AspNetCore.Mvc.RazorPages"), "Microsoft.AspNetCore.Mvc.RazorPages", "PageModel"))
 	}
 	mainIL := body()
-	if main == "hosted" {
+	switch main {
+	case "hosted":
 		host := b.extTypeRefScoped(b.asmRef("Microsoft.AspNetCore"), "Microsoft.AspNetCore.Builder", "WebApplication")
 		mainIL = body(ilCall(b.memberRef(host, "Run", sigStaticVoid)))
+	case "generic-host":
+		host := b.extTypeRefScoped(b.asmRef("Microsoft.Extensions.Hosting.Abstractions"), "Microsoft.Extensions.Hosting", "HostingAbstractionsHostExtensions")
+		mainIL = body(ilCall(b.memberRef(host, "Run", sigStaticVoid)))
+	case "bcl":
+		console := b.extTypeRefScoped(b.asmRef("System.Console"), "System", "Console")
+		mainIL = body(ilCall(b.memberRef(console, "WriteLine", sigStaticVoid)))
 	}
 	b.addType(0, "<Module>", "", 0, nil)
 	_, pm := b.addType(tPublic, "Program", "App", x.obj, []mspec{{name: "Main", flags: mPublicStatic, sig: sigStaticVoid, il: mainIL}})
@@ -294,6 +303,87 @@ func TestReachability_ASPNetIngressRoots(t *testing.T) {
 			}
 			if !c.wantSearched && !hasILReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
 				t.Fatalf("unsearched sink without %s: %+v", plugin.PartialReasonReachabilityUndetermined, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestReachability_ASPNetIngress_ControllerOnlySink pins ferralon-ai/tracker#530: a sink
+// reached only from a controller action, under a Main that reaches neither the sink nor a
+// hazard, is a candidate path from the action, never a clean not_exploitable. The BCL row
+// is the shape the shared-framework model makes hazard-free: without the ingress roots,
+// that Main alone would clear the sink.
+func TestReachability_ASPNetIngress_ControllerOnlySink(t *testing.T) {
+	httpGetController := func(extends func(aspCtx) uint32) func(*peb, aspCtx) {
+		return func(b *peb, x aspCtx) {
+			b.attr(hcaMethodDef(b.nextMethodRID()), "Microsoft.AspNetCore.Mvc", "HttpGetAttribute")
+			controller("HomeController", tPublic, extends, "Get", mPublic, callsBoom)(b, x)
+		}
+	}
+	cases := []struct {
+		name string
+		app  []byte
+	}{
+		{"empty Main, ControllerBase controller", aspApp("console", true, httpGetController(baseCB))},
+		{"Console.WriteLine Main, ControllerBase controller", aspApp("bcl", true, httpGetController(baseCB))},
+		{"empty Main, POCO controller", aspApp("console", true, httpGetController(baseObj))},
+		{"Console.WriteLine Main, POCO controller", aspApp("bcl", true, httpGetController(baseObj))},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := runReachSet(t, c.app, depWithBoomOverloads(false), boomSCIP)
+			if slices.Contains(res.Searched, boomSCIP) {
+				t.Fatalf("sink searched (a clean not_exploitable); paths=%d partiality=%+v", len(res.Paths), res.Partiality)
+			}
+			if len(res.Paths) != 1 {
+				t.Fatalf("paths = %d, want 1 (partiality=%+v)", len(res.Paths), res.Partiality)
+			}
+			if tr := res.Paths[0].Trace; len(tr) < 2 || tr[0].Name != "Get" || tr[len(tr)-1].Name != "boom" {
+				t.Fatalf("trace = %+v, want Get .. boom", tr)
+			}
+			if !hasILReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
+				t.Fatalf("no %s: %+v", plugin.PartialReasonReachabilityUndetermined, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestReachability_ASPNetUnrootedEntriesRelyOnHostingHazard pins what keeps the entry points
+// ingress_il.go does not root from a false not_exploitable: a hosted Main calls into
+// ASP.NET Core or Microsoft.Extensions hosting, which framework.go keeps out of the shared
+// framework, so Main is undetermined. Making those assemblies framework leaves without
+// first rooting these shapes fails this test.
+func TestReachability_ASPNetUnrootedEntriesRelyOnHostingHazard(t *testing.T) {
+	middleware := func(b *peb, x aspCtx) {
+		b.addType(tPublic, "RequestLogging", "App", x.obj, []mspec{{name: "InvokeAsync", flags: mPublic, sig: sigInstVoid, il: callsBoom(x)}})
+	}
+	startup := func(b *peb, x aspCtx) {
+		b.addType(tPublic, "Startup", "App", x.obj, []mspec{{name: "Configure", flags: mPublic, sig: sigInstVoid, il: callsBoom(x)}})
+	}
+	hub := func(b *peb, x aspCtx) {
+		h := cTypeDefOrRef(xTypeRef, b.extTypeRefScoped(b.asmRef("Microsoft.AspNetCore.SignalR.Core"), "Microsoft.AspNetCore.SignalR", "Hub"))
+		b.addType(tPublic, "ChatHub", "App", h, []mspec{{name: "Send", flags: mPublic, sig: sigInstVoid, il: callsBoom(x)}})
+	}
+	cases := []struct {
+		name string
+		app  []byte
+	}{
+		{"UseMiddleware class under WebApplication", aspApp("hosted", true, middleware)},
+		{"Startup.Configure under WebApplication", aspApp("hosted", true, startup)},
+		{"SignalR hub under WebApplication", aspApp("hosted", true, hub)},
+		{"UseMiddleware class under the generic host", aspApp("generic-host", true, middleware)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := runReachSet(t, c.app, depWithBoomOverloads(false), boomSCIP)
+			if slices.Contains(res.Searched, boomSCIP) {
+				t.Fatalf("sink searched (a clean not_exploitable) for an entry the ingress roots do not cover; partiality=%+v", res.Partiality)
+			}
+			if len(res.Paths) != 0 {
+				t.Fatalf("paths = %+v, want none: this shape is not rooted, so only the hosting hazard covers it", res.Paths)
+			}
+			if !hasILReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
+				t.Fatalf("no %s: %+v", plugin.PartialReasonReachabilityUndetermined, res.Partiality)
 			}
 		})
 	}

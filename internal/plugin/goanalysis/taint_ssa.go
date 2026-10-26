@@ -1,6 +1,7 @@
 package goanalysis
 
 import (
+	"cmp"
 	"sort"
 
 	"golang.org/x/tools/go/ssa"
@@ -62,22 +63,24 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 	}
 
 	// Sources: every parameter of every ingress function is attacker-controllable.
-	for sym, fn := range ingresses {
-		if fn == nil {
-			continue
-		}
-		o := taintOrigin{ingress: sym, enclFn: fn}
+	// Each ingress is seeded and drained to a fixpoint in turn, in ingressOrder, so a
+	// value keeps the first ingress in that order that reaches it, and a sink is
+	// credited to the first ingress in that order whose taint reaches it. The tainted
+	// set is the same in any order; only the credit depends on it, which ranging over
+	// the map left to its iteration order.
+	for _, id := range sp.ingressOrder(ingresses) {
+		fn := ingresses[id]
+		o := taintOrigin{ingress: id, enclFn: fn}
 		for _, p := range fn.Params {
 			seed(p, o)
 		}
 		// Method ingresses also expose free vars / the receiver is generally not
 		// attacker-controlled, so only parameters are seeded.
-	}
-
-	for len(work) > 0 {
-		v := work[len(work)-1]
-		work = work[:len(work)-1]
-		ta.propagate(v, seed)
+		for len(work) > 0 {
+			v := work[len(work)-1]
+			work = work[:len(work)-1]
+			ta.propagate(v, seed)
+		}
 	}
 
 	reasons := map[string]bool{}
@@ -100,6 +103,53 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		return paths[i].Ingress.SCIP < paths[j].Ingress.SCIP
 	})
 	return paths, reasons
+}
+
+// ingressOrder returns the SCIP ids of the ingresses with a function, ordered by the
+// function's package path, then its full name, then its source position, then the SCIP
+// id, which the map keys make unique. Every part is the same from run to run; a
+// token.Pos is not, since it depends on the order files were added to the file set,
+// so the position compares as file, line and column.
+func (s *ssaProgram) ingressOrder(ingresses map[string]*ssa.Function) []string {
+	ids := make([]string, 0, len(ingresses))
+	for id, fn := range ingresses {
+		if fn != nil {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		if c := s.compareFuncs(ingresses[ids[i]], ingresses[ids[j]]); c != 0 {
+			return c < 0
+		}
+		return ids[i] < ids[j]
+	})
+	return ids
+}
+
+// compareFuncs orders two SSA functions by package path, full name and source position
+// (file, line, column).
+func (s *ssaProgram) compareFuncs(a, b *ssa.Function) int {
+	if c := cmp.Compare(funcPkgPath(a), funcPkgPath(b)); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(a.String(), b.String()); c != 0 {
+		return c
+	}
+	pa, pb := s.prog.Fset.Position(a.Pos()), s.prog.Fset.Position(b.Pos())
+	if c := cmp.Compare(pa.Filename, pb.Filename); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(pa.Line, pb.Line); c != 0 {
+		return c
+	}
+	return cmp.Compare(pa.Column, pb.Column)
+}
+
+func funcPkgPath(fn *ssa.Function) string {
+	if p := funcTypePackage(fn); p != nil {
+		return p.Path()
+	}
+	return ""
 }
 
 // propagate pushes taint from a tainted value v to the values its referrers

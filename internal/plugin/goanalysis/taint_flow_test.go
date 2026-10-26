@@ -28,9 +28,10 @@ var taintFlowStdlib = []struct{ path, src string }{
 	{"strings", "package strings\nfunc TrimSpace(s string) string { return s }"},
 }
 
-// buildTaintFlow type-checks taintflowmod's dependencies (the stand-ins, then the
-// chimod stubs) and builds its main package, the only one with SSA bodies.
-func buildTaintFlow(t *testing.T) *ssa.Package {
+// buildTaintModule type-checks a taint fixture's dependencies (the stand-ins, then the
+// chimod stubs) and builds its main package, mainGo, under path: the only package with
+// SSA bodies.
+func buildTaintModule(t *testing.T, path, mainGo string) *ssa.Package {
 	t.Helper()
 	fset := token.NewFileSet()
 	parse := func(name string, src any) *ast.File {
@@ -59,10 +60,10 @@ func buildTaintFlow(t *testing.T) *ssa.Package {
 	}
 	check("tegron.test/nethttp", parse("testdata/chimod/nethttpstub/http.go", nil))
 	check("github.com/go-chi/chi/v5", parse("testdata/chimod/chiv5stub/chi.go", nil))
-	app, _, err := ssautil.BuildPackage(conf, fset, types.NewPackage("tegron.test/taintflowmod", "main"),
-		[]*ast.File{parse("testdata/taintflowmod/main.go", nil)}, ssa.SanityCheckFunctions)
+	app, _, err := ssautil.BuildPackage(conf, fset, types.NewPackage(path, "main"),
+		[]*ast.File{parse(mainGo, nil)}, ssa.SanityCheckFunctions)
 	if err != nil {
-		t.Fatalf("build taintflowmod: %v", err)
+		t.Fatalf("build %s: %v", path, err)
 	}
 	return app
 }
@@ -91,7 +92,7 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 		{"first-party ownID", "sinkOwnID", true},
 		{"library call on a value not from the request", "sinkUntainted", false},
 	}
-	app := buildTaintFlow(t)
+	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
 	sp := &ssaProgram{prog: app.Prog}
 	ids := map[string]string{}
 	sinks := map[string]bool{}

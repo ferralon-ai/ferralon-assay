@@ -119,13 +119,20 @@ func taintIngresses(ctx context.Context, buildDir string) (plugin.IngressResult,
 // by indexing every built function's SCIP id once. Ingresses whose function is
 // not in the SSA program (e.g. a handler value with no static body) are dropped:
 // absence of a source is honestly no source, never a fabricated one.
+//
+// A method's synthetic wrappers and a generic function's instantiations share its SCIP
+// id, and AllFunctions is a map, so the function a shared id resolves to is chosen by
+// preferIngressFunc, never by iteration order.
 func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]*ssa.Function {
 	bySymbol := map[string]*ssa.Function{}
 	for fn := range ssautil.AllFunctions(s.prog) {
 		if fn.Blocks == nil {
 			continue
 		}
-		bySymbol[s.scipFunc(fn)] = fn
+		id := s.scipFunc(fn)
+		if prev, ok := bySymbol[id]; !ok || s.preferIngressFunc(fn, prev) {
+			bySymbol[id] = fn
+		}
 	}
 
 	out := map[string]*ssa.Function{}
@@ -138,4 +145,22 @@ func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]
 		}
 	}
 	return out
+}
+
+// preferIngressFunc reports whether a is preferred over b as the function behind one
+// SCIP id: the declared function (neither a synthetic wrapper nor a generic
+// instantiation) over the others, then the first by compareFuncs, then by the SSA
+// function's own name, which tells apart instantiations and wrappers of one function.
+func (s *ssaProgram) preferIngressFunc(a, b *ssa.Function) bool {
+	if da, db := declaredFunc(a), declaredFunc(b); da != db {
+		return da
+	}
+	if c := s.compareFuncs(a, b); c != 0 {
+		return c < 0
+	}
+	return a.Synthetic+"\x00"+a.Name() < b.Synthetic+"\x00"+b.Name()
+}
+
+func declaredFunc(fn *ssa.Function) bool {
+	return fn.Synthetic == "" && fn.Origin() == nil
 }

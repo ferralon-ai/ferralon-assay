@@ -126,6 +126,12 @@ type MethodRef struct {
 	ParentToken Token
 }
 
+// MethodSemanticsAttributes (§II.23.1.12) for a property's accessors.
+const (
+	msSetter = 0x0001
+	msGetter = 0x0002
+)
+
 // MethodImpl is one row of the MethodImpl table (§II.22.27): the .NET-unique
 // explicit-interface body→declaration map. callvirt IFoo.Bar resolves through THIS,
 // not name+signature — Body is the implementing method, Declaration the interface
@@ -185,6 +191,7 @@ type Assembly struct {
 	nestTypeByTok map[Token]*TypeDef
 
 	methodsByRID map[uint32]*MethodDef
+	accessors    map[uint32]bool // MethodDef RIDs MethodSemantics binds as a property's getter or setter
 	md           *mdTables
 	pe           *peFile // retained for the IL-body RVA→bytes path (02b's ilBody seam)
 }
@@ -192,6 +199,11 @@ type Assembly struct {
 // MethodByRID resolves a MethodDef RID (e.g. the low bits of a MethodDefOrRef
 // token) to the declared method, or nil.
 func (a *Assembly) MethodByRID(rid uint32) *MethodDef { return a.methodsByRID[rid] }
+
+// PropertyAccessor reports whether the MethodSemantics table binds the MethodDef rid as a
+// property's getter or setter: the method reflection runs for that property, whatever it
+// is named.
+func (a *Assembly) PropertyAccessor(rid uint32) bool { return a.accessors[rid] }
 
 // MemberRef resolves a MemberRef RID to its MethodRef, or nil.
 func (a *Assembly) MemberRef(rid uint32) *MethodRef {
@@ -515,6 +527,20 @@ func buildModel(pe *peFile, m *mdTables) (*Assembly, error) {
 			Body:        decodeCoded(ciMethodDefOrRef, a.rowVal(tMethodImpl, rid, 1)),
 			Declaration: decodeCoded(ciMethodDefOrRef, a.rowVal(tMethodImpl, rid, 2)),
 		})
+	}
+
+	// MethodSemantics table → property getters and setters (§II.22.28).
+	for rid := uint32(1); rid <= m.rowCount[tMethodSemantics]; rid++ {
+		if a.rowVal(tMethodSemantics, rid, 0)&(msSetter|msGetter) == 0 {
+			continue
+		}
+		if decodeCoded(ciHasSemantics, a.rowVal(tMethodSemantics, rid, 2)).Table() != tProperty {
+			continue
+		}
+		if a.accessors == nil {
+			a.accessors = map[uint32]bool{}
+		}
+		a.accessors[a.rowVal(tMethodSemantics, rid, 1)] = true
 	}
 
 	// NestedClass table.

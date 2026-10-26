@@ -424,9 +424,9 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		flags.unlisted = true
 	}
 	// Unresolved and Escaped list first-party code only: dependency code's declined sites, the
-	// dependency frames a hidden call can land on, and a run-wide dependency limit are in
-	// neither.
-	if len(depFiles) > 0 || dflags.uninspectable {
+	// dependency frames a declined site anywhere can land on, and a run-wide dependency limit
+	// are in neither. Dependency code read with nothing declined anywhere hides no site.
+	if dflags.uninspectable || len(depFiles) > 0 && (g.declined > 0 || depDeclined(dflags)) {
 		flags.unlisted = true
 	}
 	b := g.built(g.result(callGraphPartiality(prog, flags)), flags.unlisted)
@@ -776,6 +776,13 @@ func sortedScoped(in []plugin.ScopedReason) []plugin.ScopedReason {
 	}
 	sort.Slice(out, func(i, j int) bool { return key(out[i]) < key(out[j]) })
 	return out
+}
+
+// depDeclined reports whether f, the limits dependency code contributed, declares any: every
+// site dependency code declines sets one.
+func depDeclined(f partialFlags) bool {
+	return f.unresolved || f.uninspectable || f.dynImport || f.computedReq || f.unreadModule || f.evaluated ||
+		f.stylesheet || f.unlisted || f.toolFailure || f.unsupported || len(f.scoped) > 0
 }
 
 func mergeFlags(a, b partialFlags) partialFlags {

@@ -536,8 +536,13 @@ func TestCompletenessViolations_CatchesADroppedEntry(t *testing.T) {
 }
 
 // TestCallGraph_DependencyCodeDeclaresUnlisted: Unresolved and Escaped list first-party code
-// only, so a graph with dependency code read into it declares unlisted_sites, and an unconnected
-// call in that code draws no edge. With the package unread, the graph is the first-party one.
+// only, so a graph with dependency code read into it declares unlisted_sites once a site
+// anywhere is declined, and an unconnected call in that code draws no edge. A site dependency
+// code declines declares it with nothing first-party declined, and a first-party site declined
+// beside dependency code that declines nothing declares it too: the site may land on a
+// dependency frame Escaped omits. Dependency code that declines nothing, read beside
+// first-party code that declines nothing, hides no site. With the package
+// unread, the graph is the first-party one.
 func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 	dep := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
 		"package.json": `{"name":"dep","version":"1.0.0"}`,
@@ -555,5 +560,21 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 	}
 	if absent := withDeps(t, f.dir, artifactcache.NewDeclaredAbsentStore()); hasReason(absent.Partiality, plugin.PartialReasonUnlistedSites) {
 		t.Errorf("control: no dependency code read, yet unlisted_sites: %+v", absent.Partiality)
+	}
+	idle := newDepFixture(t, map[string]string{"index.js": guardIdle}, dep)
+	if cg := withDeps(t, idle.dir, idle.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+		t.Errorf("a site declined in dependency code alone, without unlisted_sites: %+v", cg.Partiality)
+	}
+	plain := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"dep","version":"1.0.0"}`,
+		"index.js":     "exports.run = function run() {};\n",
+	}}
+	quiet := newDepFixture(t, map[string]string{"index.js": guardIdle}, plain)
+	if cg := withDeps(t, quiet.dir, quiet.memStore()); !cg.Partiality.Complete {
+		t.Errorf("control: nothing declined anywhere, yet partial: %+v", cg.Partiality)
+	}
+	hidden := newDepFixture(t, map[string]string{"index.js": "function main() { return missing(1); }\nmodule.exports = { main };\n"}, plain)
+	if cg := withDeps(t, hidden.dir, hidden.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+		t.Errorf("a first-party site declined beside dependency frames Escaped omits, without unlisted_sites: %+v", cg.Partiality)
 	}
 }

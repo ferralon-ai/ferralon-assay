@@ -160,6 +160,14 @@ func TestKotlinInline(t *testing.T) {
 		owner:   "p/BKt",
 		methods: map[string]bool{"g": true, "g$default": true, "h": false, "absent": false},
 	}, {
+		name:  "bodies kotlinc derives from an inline name: $default, $$forInline, atomicfu",
+		cs:    classes{}.add("p/BKt", meta(2, plainRecords(2), facadeFns, "g", "h")),
+		owner: "p/BKt",
+		methods: map[string]bool{
+			"g$$forInline": true, "g$atomicfu": true, "g$atomicfu$array": true,
+			"h$default": false, "h$$forInline": false, "gg": false, "$g": false,
+		},
+	}, {
 		name:    "metadata without a version fails closed",
 		cs:      classes{}.add("p/BKt", withVersion(meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "g"), nil)),
 		owner:   "p/BKt",

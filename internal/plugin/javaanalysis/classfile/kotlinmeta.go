@@ -154,7 +154,10 @@ func kelemStrings(v kelem) ([]string, bool) {
 // KotlinInline reports whether calls to ref may be missing from compiled callers because
 // kotlinc copies the body of the Kotlin declaration behind it into each call site: an inline
 // function or an inline property accessor of ref's owner, matched by JVM method name, so
-// every overload of an inline name counts. class looks up a loaded class by internal name.
+// every overload of an inline name counts. A name n$… also counts for an inline n: kotlinc
+// derives the $default bridge, a suspend function's n$$forInline copy and atomicfu's
+// n$atomicfu bodies from n, and the metadata lists none of them. class looks up a loaded
+// class by internal name.
 //
 // An owner with no @kotlin.Metadata is not Kotlin, and its methods are never inline. An
 // error means the metadata of the owner, or of a class it defers to (a multifile facade's
@@ -169,7 +172,15 @@ func KotlinInline(ref MethodRef, class func(name string) (*Class, bool)) (bool, 
 	if err != nil {
 		return false, fmt.Errorf("classfile: %s @kotlin.Metadata: %w", owner.Name, err)
 	}
-	return names[ref.Name], nil
+	if names[ref.Name] {
+		return true, nil
+	}
+	for i := 1; i < len(ref.Name); i++ {
+		if ref.Name[i] == '$' && names[ref.Name[:i]] {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // KotlinInlineWithheld reports whether an empty search for ref says nothing because ref may
@@ -414,7 +425,6 @@ func (d *kotlinDecls) function(b []byte, strs *kotlinStrings) error {
 		return err
 	}
 	d.inline[n] = true
-	d.inline[n+"$default"] = true
 	return nil
 }
 

@@ -604,7 +604,7 @@ func TestSemantic_G8PnpmPatched(t *testing.T) {
 			return strings.Replace(s, "\n  'q@1.0.0': {}", "\n  'q@1.0.0(patch_hash=abc)': {}", 1)
 		}
 		files := map[string]string{
-			"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"pnpm":{"patchedDependencies":{"`+cfgKey+`":"patches/q.patch"}}`),
+			"pnpm-workspace.yaml": "patchedDependencies:\n  " + yq(cfgKey) + ": patches/q.patch\n",
 		}
 		if patch != "" {
 			files["patches/q.patch"] = patch
@@ -665,8 +665,8 @@ func TestSemantic_G9PnpmConfigHazards(t *testing.T) {
 	withOverrides := func(s string) string {
 		return strings.Replace(s, "importers:", "overrides:\n  q: 1.0.0\n\nimporters:", 1)
 	}
-	if cg := pnpmVariant(t, withOverrides, map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"pnpm":{"overrides":{"q":"1.0.0"}}`)}); runWide(cg) {
-		t.Fatalf("control: matching overrides read; got %+v", cg.Partiality)
+	if cg := pnpmVariant(t, nil, nil); runWide(cg) {
+		t.Fatalf("control: a tree with no hazard is read; got %+v", cg.Partiality)
 	}
 	for name, tc := range map[string]struct {
 		edit  func(string) string

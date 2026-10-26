@@ -166,7 +166,7 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 
 // pyprojectAll is every pyproject.toml table that declares something to install.
 type pyprojectAll struct {
-	DependencyGroups map[string][]any `toml:"dependency-groups"`
+	DependencyGroups map[string]any `toml:"dependency-groups"`
 	Tool             struct {
 		UV struct {
 			DevDependencies []string `toml:"dev-dependencies"`
@@ -235,21 +235,8 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			return out, false
 		}
 	}
-	for _, g := range slices.Sorted(maps.Keys(all.DependencyGroups)) {
-		for _, e := range all.DependencyGroups[g] {
-			switch v := e.(type) {
-			case string:
-				if !add([]string{v}) {
-					return out, false
-				}
-			case map[string]any:
-				if _, inc := v["include-group"]; !inc || len(v) != 1 {
-					return out, false
-				}
-			default:
-				return out, false
-			}
-		}
+	if groups, ok := dependencyGroupSpecs(all.DependencyGroups); !ok || !add(groups) {
+		return out, false
 	}
 	if !add(all.Tool.UV.DevDependencies) {
 		return out, false

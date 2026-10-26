@@ -1033,20 +1033,18 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 //     The one non-PURL value allowed is "", the first-party code.
 //   - Go names match when either path is the other or under it, so a package path inside the
 //     admitted module counts, and so does a module path holding an admitted package path.
-//   - Against the Go standard library (a toolchain subject), every Go entry and the first-party code
-//     count: code the analysis did not see can call into the standard library from anywhere in the
-//     build.
 //
-// Otherwise the first-party entry matches only when the advisory's package is the scanned project
-// itself.
+// The standard library is matched like any other package: a limit whose hidden code can call into
+// it names it among its Targets, as the Targets contract requires of every package a hidden edge
+// could reach. The first-party entry matches only when the advisory's package is the scanned
+// project itself.
 func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved, root bool) bool {
 	if len(r.Targets) == 0 || !resolved {
 		return true
 	}
-	stdlib := admitted == pkgKey{typ: "golang", name: "stdlib"}
 	for _, p := range append([]string{r.Package}, r.Targets...) {
 		if p == "" {
-			if stdlib || root {
+			if root {
 				return true
 			}
 			continue
@@ -1056,7 +1054,7 @@ func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolve
 		case !ok, key == admitted:
 			return true
 		case key.typ == "golang" && admitted.typ == "golang":
-			if stdlib || goPathWithin(key.name, admitted.name) || goPathWithin(admitted.name, key.name) {
+			if goPathWithin(key.name, admitted.name) || goPathWithin(admitted.name, key.name) {
 				return true
 			}
 		}

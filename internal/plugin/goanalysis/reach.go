@@ -186,8 +186,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // reconciledResult turns one govulncheck run into the reachability result: it reconciles the
 // findings against the build's call graph and withholds a refutation that files the build left out,
 // exported methods govulncheck never searched, a library's callers, or a call reflection makes may
-// contradict. load supplies
-// the loaded program, and is asked for it only to build the graph or to withhold a refutation.
+// contradict, and one for a load that could not tell whether the build has cgo on (cgoPinned). load
+// supplies the loaded program, and is asked for it only to build the graph or to withhold a
+// refutation.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error)) (plugin.ReachabilityResult, error) {
 	g, err := reconcileCallGraph(ctx, buildDir, load)
 	if err != nil {
@@ -201,6 +202,11 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	loaded, err := load()
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
+	}
+	if loaded.cgoUnresolved {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
+		return res, nil
 	}
 	return withholdForReflectReach(withholdRefutation(ctx, res, scanned, loaded.Packages, buildDir, env), scanned, g.ReflectReach), nil
 }

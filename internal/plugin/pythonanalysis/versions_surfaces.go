@@ -28,7 +28,8 @@ import (
 // surface under root goes unread, whether a script surface may install a package no manifest
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
 // surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
-// read here records (pipSelfUpgrade), which a caller withholds as it would every pin.
+// read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
+// is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree).
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
@@ -55,7 +56,10 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	installs, tooling = pipInstalls{}, map[string]bool{}
+	installs = pipInstalls{}
+	if !pipConfigInTree(root) {
+		tooling = map[string]bool{}
+	}
 	veto := scriptsurface.New(root, read, newScriptSpec(installs, tooling))
 	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {

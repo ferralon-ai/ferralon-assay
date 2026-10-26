@@ -254,3 +254,58 @@ func TestResolveVersions_PipSelfUpgradeExhaustive(t *testing.T) {
 		t.Fatalf("declaredDistributions = %v complete %v read %v, want pip declared, complete and read", names, complete, read)
 	}
 }
+
+// pip reads its index, find-links and every other install option from a config file a build
+// can COPY into place, and from PIP_* variables, so either one in the tree withholds every pin
+// around a self-upgrade, as on any other pip install of a package.
+func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
+	const (
+		dockerHead = "FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\n"
+		upgrade    = "RUN pip install -U pip && uv sync --frozen\n"
+	)
+	type row struct {
+		name  string
+		files map[string]string
+		want  bool // PyJWT exhaustive
+	}
+	tests := []row{
+		{"no config", map[string]string{"Dockerfile": dockerHead + upgrade}, true},
+
+		{"pip.conf COPY'd to /etc", map[string]string{"pip.conf": "[global]\nextra-index-url = https://pkgs.example.com/simple\n",
+			"Dockerfile": dockerHead + "COPY pip.conf /etc/pip.conf\n" + upgrade}, false},
+		{"committed .venv/pip.conf", map[string]string{".venv/pip.conf": "[global]\nfind-links = /wheels\n", "Dockerfile": dockerHead + upgrade}, false},
+		{"pip.ini", map[string]string{"config/pip.ini": "[global]\nindex-url = https://pkgs.example.com/simple\n", "Dockerfile": dockerHead + upgrade}, false},
+		{"name case", map[string]string{"PIP.CONF": "[global]\nno-index = true\n", "Dockerfile": dockerHead + upgrade}, false},
+		{"pre", map[string]string{"pip.conf": "[install]\npre = true\n", "Dockerfile": dockerHead + upgrade}, false},
+		{"another option", map[string]string{"pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": dockerHead + upgrade}, false},
+		{"empty", map[string]string{"pip.conf": "", "Dockerfile": dockerHead + upgrade}, false},
+	}
+	for _, v := range []string{"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_NO_INDEX", "PIP_PRE", "PIP_CONFIG_FILE"} {
+		tests = append(tests,
+			row{v + " in Dockerfile ENV", map[string]string{"Dockerfile": dockerHead + "ENV " + v + "=x\n" + upgrade}, false},
+			row{v + " in Dockerfile ARG", map[string]string{"Dockerfile": dockerHead + "ARG " + v + "=x\n" + upgrade}, false},
+			row{v + " in the script", map[string]string{"install.sh": "#!/bin/sh\nexport " + v + "=x\npip install -U pip\nuv sync --frozen\n"}, false},
+			row{v + " in another file", map[string]string{"Dockerfile": dockerHead + "ENV " + v + "=x\n", "install.sh": "#!/bin/sh\npip install -U pip\n"}, false},
+		)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"pyproject.toml": exPyproject, "uv.lock": exUVLock}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			if r := resolveVersion(t, writeTree(t, files), "PyJWT"); r.Found || r.Exhaustive != tt.want {
+				t.Fatalf("PyJWT = found %v exhaustive %v, want absent and exhaustive %v", r.Found, r.Exhaustive, tt.want)
+			}
+		})
+	}
+
+	// A requirements install beside a pip config resolves as before: only the self-upgrade
+	// allowance reads the config.
+	t.Run("pip.conf beside pip install -r", func(t *testing.T) {
+		dir := writeTree(t, map[string]string{"requirements.txt": "jinja2==3.1.4\n", "pip.conf": "[global]\ntimeout = 60\n", "install.sh": "pip install -r requirements.txt\n"})
+		if r := resolveVersion(t, dir, "jinja2"); !r.Match.Resolved {
+			t.Fatalf("jinja2 = %+v, want resolved", r.Match)
+		}
+	})
+}

@@ -52,12 +52,16 @@ import (
 // No published pip release declares a dependency outside its testing extra, so the target
 // installs pip and nothing else. That holds for the distribution PyPI serves: an index,
 // extra index or find-links location may serve a different one, so a flag naming one is not
-// in selfUpgradeFlags and the command withholds every pin. setuptools and wheel are not
+// in selfUpgradeFlags and the command withholds every pin. pip reads every install option
+// from its config files as well, and a build can COPY a pip.conf or pip.ini from the tree to
+// where pip reads one, so a tree that holds either allows no self-upgrade (pipConfigInTree).
+// A PIP_* variable falls under the lane-wide rule above. setuptools and wheel are not
 // targets: wheel requires packaging.
 
 // newScriptSpec is the Python lane's part of the rule, recording into installs every pip
 // install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
-// a caller that allows a self-upgrade must withhold what tooling names.
+// a caller that allows a self-upgrade must withhold what tooling names. A nil tooling allows
+// no self-upgrade.
 func newScriptSpec(installs pipInstalls, tooling map[string]bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
 		Token: laneToken,
@@ -232,15 +236,17 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 
 // pip reports whether pip's arguments are install, the shared flags, --no-deps,
 // --require-hashes, and one or more -r naming a requirements file read here, and records the
-// install of each file; or a self-upgrade (pipSelfUpgrade), recorded in tooling.
+// install of each file; or, when tooling is not nil, a self-upgrade (pipSelfUpgrade), recorded
+// in tooling.
 func (installs pipInstalls) pip(args []string, b scriptsurface.Binder, tooling map[string]bool) bool {
 	if len(args) == 0 || args[0] != "install" {
 		return false
 	}
 	if pipSelfUpgrade(args[1:]) {
-		if tooling != nil {
-			tooling["pip"] = true
+		if tooling == nil {
+			return false
 		}
+		tooling["pip"] = true
 		return true
 	}
 	var (

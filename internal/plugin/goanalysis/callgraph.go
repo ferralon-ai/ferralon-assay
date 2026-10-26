@@ -48,7 +48,13 @@ func loadSSA(ctx context.Context, buildDir string) (*ssaProgram, *LoadResult, er
 }
 
 func buildSSA(res *LoadResult) (*ssaProgram, error) {
-	prog, pkgs := ssautil.Packages(res.Packages, ssa.InstantiateGenerics)
+	return buildSSAWith(res, ssautil.Packages)
+}
+
+// buildSSAWith builds res's SSA program with create, which decides whose function bodies it holds
+// (ssautil.Packages: the loaded packages'; ssautil.AllPackages: their dependencies' too).
+func buildSSAWith(res *LoadResult, create func([]*packages.Package, ssa.BuilderMode) (*ssa.Program, []*ssa.Package)) (*ssaProgram, error) {
+	prog, pkgs := create(res.Packages, ssa.InstantiateGenerics)
 	if prog == nil {
 		return nil, fmt.Errorf("ssa: failed to create program from loaded packages")
 	}
@@ -116,6 +122,11 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 
 // callGraphOf builds the call graph of an already-loaded program; algo is "vta", "cha" or "rta".
 func callGraphOf(res *LoadResult, algo string) (plugin.CallGraphResult, error) {
+	return callGraphDeclaring(res, algo, func(string) bool { return true })
+}
+
+// callGraphDeclaring is callGraphOf declaring only the run-time calls' reasons that declare keeps.
+func callGraphDeclaring(res *LoadResult, algo string, declare func(reason string) bool) (plugin.CallGraphResult, error) {
 	sp, err := buildSSA(res)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
@@ -134,7 +145,9 @@ func callGraphOf(res *LoadResult, algo string) (plugin.CallGraphResult, error) {
 	roots := sp.collectRoots()
 	part := sp.partiality(res)
 	for _, r := range runTime {
-		part = withReason(part, r)
+		if declare(r) {
+			part = withReason(part, r)
+		}
 	}
 
 	return plugin.CallGraphResult{

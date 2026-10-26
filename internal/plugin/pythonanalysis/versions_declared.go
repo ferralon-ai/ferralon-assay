@@ -196,6 +196,75 @@ func pyprojectHasUnreadTables(doc pyprojectDoc) bool {
 		len(p.DevDependencies) > 0 || len(doc.Tool.UV.DevDependencies) > 0 || len(doc.Tool.PDM.DevDependencies) > 0
 }
 
+// dependencyGroupSpecs returns every requirement string a PEP 735 [dependency-groups] table
+// declares, group by group in sorted order. An {include-group = "..."} entry adds nothing,
+// since every group is read; it is only checked. ok is false, and the table must be treated as
+// unread, when two group names normalize alike, a group is not an array, an entry is neither a
+// string nor a table whose only key is include-group with a string value, an include names no
+// group, or includes form a cycle: an installer rejects each of these, so nothing here can say
+// what it installs. The strings themselves are not validated.
+func dependencyGroupSpecs(groups map[string]any) ([]string, bool) {
+	entries := make(map[string][]any, len(groups))
+	for name, v := range groups {
+		n := normalizePyCoordinate(name)
+		list, isList := v.([]any)
+		if _, dup := entries[n]; dup || !isList {
+			return nil, false
+		}
+		entries[n] = list
+	}
+	includes := make(map[string][]string, len(entries))
+	var specs []string
+	for _, g := range slices.Sorted(maps.Keys(entries)) {
+		for _, e := range entries[g] {
+			switch v := e.(type) {
+			case string:
+				specs = append(specs, v)
+			case map[string]any:
+				target, isStr := v["include-group"].(string)
+				if !isStr || len(v) != 1 {
+					return nil, false
+				}
+				t := normalizePyCoordinate(target)
+				if _, known := entries[t]; !known {
+					return nil, false
+				}
+				includes[g] = append(includes[g], t)
+			default:
+				return nil, false
+			}
+		}
+	}
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := make(map[string]int, len(entries))
+	var acyclic func(string) bool
+	acyclic = func(g string) bool {
+		switch state[g] {
+		case visiting:
+			return false
+		case done:
+			return true
+		}
+		state[g] = visiting
+		for _, t := range includes[g] {
+			if !acyclic(t) {
+				return false
+			}
+		}
+		state[g] = done
+		return true
+	}
+	for _, g := range slices.Sorted(maps.Keys(entries)) {
+		if !acyclic(g) {
+			return nil, false
+		}
+	}
+	return specs, true
+}
+
 // pep508Entry turns one [project].dependencies string into an entry and its origin. Only an
 // exact "==" pin resolves. A "name @ url" direct reference is UNRESOLVED and no lock covers
 // it. A file: URL other than the project's own directory makes ok false; the project's own

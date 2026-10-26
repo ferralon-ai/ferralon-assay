@@ -36,7 +36,7 @@ func TestEveryPathRanksRowsByThisRunsSignals(t *testing.T) {
 	subject := Subject{Repo: "github.com/example/widget", ResolvedCommit: "head"}
 	paths := map[string]func(*testing.T, PRInheritRequest) *report.Report{
 		"inherit": func(t *testing.T, req PRInheritRequest) *report.Report {
-			return inheritBaseline(storedWithStalePriority(), req, &statestore.State{})
+			return inheritBaseline(storedWithStalePriority(), req, &statestore.State{}, nil, nil)
 		},
 		"reanalyze": func(t *testing.T, req PRInheritRequest) *report.Report {
 			rep, err := reanalyzeSlice(ctx, storedWithStalePriority(), req, &statestore.State{}, []string{"Go\x00example.com/changed"})

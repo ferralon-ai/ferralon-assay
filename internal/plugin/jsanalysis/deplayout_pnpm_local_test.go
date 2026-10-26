@@ -155,6 +155,27 @@ func TestPnpmNonFrozenLocalTarball(t *testing.T) {
 			}
 		})
 	}
+	// The tarball pnpm hashes is the one the importer's ref names, whatever the resolution says.
+	integ := sriOf(locked)
+	for name, resolution := range map[string]string{
+		"comma_in_value":     "{integrity: " + integ + ", tarball: file:vendor/x.tgz,y}",
+		"comma_in_key":       "{integrity: " + integ + ", foo,tarball: file:vendor/x.tgz}",
+		"other_path":         "{integrity: " + integ + ", tarball: file:vendor/y.tgz}",
+		"empty_tarball":      "{integrity: " + integ + ", tarball: ''}",
+		"unknown_key":        "{integrity: " + integ + ", tarball: file:vendor/x.tgz, extra: 1}",
+		"duplicate_key":      "{integrity: " + integ + ", tarball: file:vendor/x.tgz, tarball: file:vendor/x.tgz}",
+		"empty_integrity":    "{integrity: '', tarball: file:vendor/x.tgz}",
+		"tarball_and_type":   "{integrity: " + integ + ", tarball: file:vendor/x.tgz, type: directory}",
+		"directory_in_place": "{directory: vendor/x.tgz, type: directory}",
+	} {
+		t.Run(name+"_swapped", func(t *testing.T) {
+			f := tree(&swapped, resolution)
+			f["vendor/x.tgz,y"], f["vendor/y.tgz"] = locked, locked
+			if !nonFrozenWithheld(t, f) {
+				t.Errorf("resolution %s names no file the importer ref does, and the ref's file was swapped", resolution)
+			}
+		})
+	}
 	t.Run("absolute_path", func(t *testing.T) {
 		const abs = "file:/vendor/x.tgz"
 		f := map[string]string{
@@ -226,6 +247,48 @@ func TestPnpmNonFrozenLocalDirectory(t *testing.T) {
 			}
 		})
 	}
+	// A resolution the lane cannot read exactly withholds, even over an unchanged directory.
+	for name, resolution := range map[string]string{
+		"comma_shape":     "{x,directory: libs/x, y,type: directory}",
+		"unknown_key":     "{directory: libs/x, type: directory, extra: 1}",
+		"no_type":         "{directory: libs/x}",
+		"type_no_dir":     "{type: directory}",
+		"empty_dir_plain": "{directory: , type: directory}",
+		"duplicate_key":   "{directory: libs/x, directory: libs/x, type: directory}",
+		"double_quoted":   "{directory: \"libs/x\", type: directory}",
+		"dir_and_tarball": "{directory: libs/x, type: directory, tarball: file:libs/x}",
+	} {
+		t.Run("unreadable_"+name, func(t *testing.T) {
+			f := tree(`{"name":"x","version":"1.0.0","dependencies":{"q":"1.0.0"}}`)
+			f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "{directory: libs/x, type: directory}", resolution, 1)
+			if !nonFrozenWithheld(t, f) {
+				t.Errorf("resolution %s must withhold", resolution)
+			}
+		})
+	}
+	// The lock's own directory: ts-sdk's example importer installs the workspace root as file:..,
+	// which pnpm writes as {directory: '', type: directory}.
+	rootDir := func(rootPeers string) map[string]string {
+		return map[string]string{
+			"package.json":         `{"name":"root","version":"1.0.0","private":true,"dependencies":{"q":"1.0.0"}` + rootPeers + `}`,
+			"pnpm-workspace.yaml":  "packages:\n  - 'example'\n",
+			"example/package.json": `{"name":"example","version":"1.0.0","dependencies":{"x":"file:.."}}`,
+			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      q:\n        specifier: 1.0.0\n        version: 1.0.0\n\n" +
+				"  example:\n    dependencies:\n      x:\n        specifier: file:..\n        version: file:..\n\n" +
+				"packages:\n\n  q@1.0.0:\n    resolution: {integrity: " + fillerIntegrity + "}\n\n  x@file:..:\n    resolution: {directory: '', type: directory}\n    version: 1.0.0\n\n" +
+				"snapshots:\n\n  q@1.0.0: {}\n\n  x@file:..:\n    dependencies:\n      q: 1.0.0\n",
+		}
+	}
+	t.Run("control_root_directory", func(t *testing.T) {
+		if nonFrozenWithheld(t, rootDir("")) {
+			t.Error("the lock's own directory is read like any other directory")
+		}
+	})
+	t.Run("root_directory_peer_dependency", func(t *testing.T) {
+		if !nonFrozenWithheld(t, rootDir(`,"peerDependencies":{"esbuild":"*"}`)) {
+			t.Error("a peer dependency in the lock's own directory must withhold")
+		}
+	})
 	t.Run("outside_root", func(t *testing.T) {
 		f := tree(`{"name":"x","dependencies":{"q":"1.0.0"}}`)
 		f["pnpm-lock.yaml"] = strings.ReplaceAll(f["pnpm-lock.yaml"], "libs/x", "../x")
@@ -271,8 +334,8 @@ func TestPnpmNonFrozenLocalDirectory(t *testing.T) {
 // TestPnpmNonFrozenMemberShadow: linkedPackagesAreUpToDate re-resolves a registry-locked
 // dependency when a workspace member has its name and exactly its locked version and
 // link-workspace-packages is on (probe fx/p1b-10: pnpm 10.34.8 installs packages/q in place of
-// the registry q@1.0.0). The setting is never read (an .npmrc that sets it is withheld by the install-surface veto
-// before this gate runs, so rows here carry none).
+// the registry q@1.0.0). The setting is never read: the rows carry none, and the gate withholds
+// whatever the files say.
 func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 	lock := func(depSpec, depVersion string) string {
 		return "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n\n  packages/app:\n    dependencies:\n      q:\n        specifier: " + depSpec +
@@ -296,10 +359,12 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 		files    map[string]string
 		withheld bool
 	}{
-		"same_version_member":                    {tree("q", "1.0.0"), true},
-		"control_member_other_version":           {tree("q", "2.0.0"), false},
-		"control_member_other_name":              {tree("q-local", "1.0.0"), false},
-		"same_version_member_peer_suffixed_lock": {suffixed(tree("q", "1.0.0")), true},
+		"same_version_member":          {tree("q", "1.0.0"), true},
+		"control_member_other_version": {tree("q", "2.0.0"), false},
+		"control_member_other_name":    {tree("q-local", "1.0.0"), false},
+		// Non-regression: the suffixed importer version has no snapshot, which withholds on
+		// ab1b657 too; the row does not exercise the suffix cut in noMemberShadow.
+		"non_regression_peer_suffixed_lock": {suffixed(tree("q", "1.0.0")), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := nonFrozenWithheld(t, tc.files); got != tc.withheld {
@@ -318,6 +383,14 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 				"\n        version: link:../t\n\n  packages/t: {}\n",
 		}
 	}
+	// The same tree as a nested region: members are looked up relative to the lock's directory.
+	nested := func(f map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range f {
+			out["sub/"+k] = v
+		}
+		return out
+	}
 	for name, tc := range map[string]struct {
 		files    map[string]string
 		withheld bool
@@ -329,6 +402,12 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 		"control_link_dist_tag":         {linked("latest", "2.0.0"), false},
 		"control_link_workspace_range":  {linked("workspace:^1.0.0", "1.4.0"), false},
 		"link_v_prefixed_range":         {linked("v1", "2.0.0"), true},
+		"link_alias_bumped":             {linked("npm:t@^1.0.0", "2.0.0"), true},
+		"control_link_alias_in_range":   {linked("npm:t@^1.0.0", "1.3.0"), false},
+		"control_link_alias_no_range":   {linked("npm:t", "2.0.0"), false},
+		"control_link_specifier":        {linked("link:../t", "2.0.0"), false},
+		"nested_region_link_bumped":     {nested(linked("^1.0.0", "2.0.0")), true},
+		"control_nested_region_link":    {nested(linked("^1.0.0", "1.4.0")), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := nonFrozenWithheld(t, tc.files); got != tc.withheld {
@@ -372,6 +451,15 @@ func TestFlowScalar(t *testing.T) {
 		"a # c":           {"", false},
 		"&anchor":         {"", false},
 		"'file:vendor/x'": {"file:vendor/x", true},
+		"file:a,b":        {"", false},
+		"file:a b":        {"", false},
+		"a:":              {"", false},
+		"-a":              {"", false},
+		"?a":              {"", false},
+		"@scope/x":        {"", false},
+		"sha512-ab+c/d==": {"sha512-ab+c/d==", true},
+		"../x":            {"../x", true},
+		"''":              {"", true},
 	} {
 		if out, ok := flowScalar(in); out != want.out || ok != want.ok {
 			t.Errorf("flowScalar(%q) = %q, %v; want %q, %v", in, out, ok, want.out, want.ok)
@@ -387,6 +475,14 @@ func TestReadLocalResolutionFlow(t *testing.T) {
 		"{tarball: \"file:vendor/x.tgz\", integrity: sha512-a}": false,
 		"tarball: file:vendor/x.tgz":                            false,
 		"{tarball file:vendor/x.tgz}":                           false,
+		"{tarball: file:vendor/x.tgz,y}":                        false,
+		"{foo,tarball: file:vendor/x.tgz}":                      false,
+		"{tarball: file:a.tgz, tarball: file:b.tgz}":            false,
+		"{directory: '', type: directory}":                      true,
+		"{directory: libs/x,y, type: directory}":                false,
+		"{directory: libs/x, type: directory, extra: 1}":        false,
+		"{directory: libs/x}":                                   false,
+		"{type: directory}":                                     false,
 	} {
 		if _, got := readLocalResolution(&ynode{val: in}); got != ok {
 			t.Errorf("readLocalResolution(%q) ok = %v, want %v", in, got, ok)

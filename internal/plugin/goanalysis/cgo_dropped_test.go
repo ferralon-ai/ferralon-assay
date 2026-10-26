@@ -209,3 +209,152 @@ func TestReconcile_CarriesScopedLimits(t *testing.T) {
 		t.Fatalf("withReason = %+v, want the reason added and the scoped limit kept", part)
 	}
 }
+
+// goOnlyPath returns a directory holding only the go command, for a PATH with no C compiler on it.
+func goOnlyPath(t *testing.T) string {
+	t.Helper()
+	goroot, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(strings.TrimSpace(string(goroot)), "bin", "go"), filepath.Join(dir, "go")); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestLoadProgram_CgoFollowsGoEnv: the build loaded is the variant `go env CGO_ENABLED` resolves,
+// with CGO_ENABLED and CC left to the environment: cgo off when the default C compiler is not on
+// the PATH, its cgo file then the dropped limit; cgo on, its cgo file loaded, when it is.
+func TestLoadProgram_CgoFollowsGoEnv(t *testing.T) {
+	t.Setenv("GOENV", "off")
+	for _, k := range []string{"CC", "CGO_ENABLED", "GOFLAGS"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	defaultCC, err := exec.Command("go", "env", "CC").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc, ccErr := exec.LookPath(strings.TrimSpace(string(defaultCC)))
+	goDir := goOnlyPath(t)
+	const pure = "//go:build !cgo\n\npackage m\n\nfunc Run() {}\n"
+	const cgo = "//go:build cgo\n\npackage m\n\n// void run(void) {}\nimport \"C\"\n\nfunc Run() { C.run() }\n"
+	cases := []struct {
+		name        string
+		path        string
+		wantFile    string
+		wantTargets []string
+	}{
+		{"no default C compiler on the PATH", goDir, "run.go", []string{"", stdlibPURL}},
+		{"default C compiler on the PATH", goDir + string(os.PathListSeparator) + filepath.Dir(cc), "run_cgo.go", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantFile == "run_cgo.go" && ccErr != nil {
+				t.Skip("no default C compiler")
+			}
+			t.Setenv("PATH", tc.path)
+			res, err := LoadProgram(context.Background(), writeModule(t, map[string]string{"run.go": pure, "run_cgo.go": cgo}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var files []string
+			for _, f := range res.Packages[0].GoFiles {
+				files = append(files, filepath.Base(f))
+			}
+			if !reflect.DeepEqual(files, []string{tc.wantFile}) {
+				t.Errorf("loaded %v, want [%s]", files, tc.wantFile)
+			}
+			if _, targets := cgoScope(t, res.Partiality); !reflect.DeepEqual(targets, tc.wantTargets) {
+				t.Errorf("dropped cgo targets = %v, want %v (partiality %+v)", targets, tc.wantTargets, res.Partiality)
+			}
+			if res.cgoUnresolved || slices.Contains(res.Partiality.Reasons, plugin.PartialReasonCgoUnresolved) {
+				t.Errorf("cgo declared unresolved (partiality %+v)", res.Partiality)
+			}
+		})
+	}
+}
+
+// TestReconciledResult_WithholdsWhenCgoUnresolved: when `go env CGO_ENABLED` fails, which variant
+// of the build was loaded is unknown, so the load declares it and a refutation is withheld under
+// that reason rather than stated for a variant picked by default.
+func TestReconciledResult_WithholdsWhenCgoUnresolved(t *testing.T) {
+	goroot, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := t.TempDir()
+	script := "#!/bin/sh\nif [ $# -eq 2 ] && [ \"$1\" = env ] && [ \"$2\" = CGO_ENABLED ]; then exit 1; fi\nexec '" +
+		filepath.Join(strings.TrimSpace(string(goroot)), "bin", "go") + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shim, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	}
+	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
+	for _, unresolved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "resolved", true: "unresolved"}[unresolved], func(t *testing.T) {
+			if unresolved {
+				t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
+			dir := writeTree(t, files)
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if declared := slices.Contains(load.Partiality.Reasons, plugin.PartialReasonCgoUnresolved); declared != unresolved {
+				t.Errorf("load declares %s = %v, want %v (partiality %+v)", plugin.PartialReasonCgoUnresolved, declared, unresolved, load.Partiality)
+			}
+			res, err := reconciledResult(context.Background(), scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != unresolved {
+				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, unresolved, res)
+			}
+			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonCgoUnresolved); declared != unresolved {
+				t.Errorf("result declares %s = %v, want %v (partiality %+v)", plugin.PartialReasonCgoUnresolved, declared, unresolved, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestCgoPinned: only a 0 or a 1 from `go env CGO_ENABLED` is pinned; anything else the go
+// command answers leaves the variant unknown.
+func TestCgoPinned(t *testing.T) {
+	cases := []struct {
+		name, answer string
+		want         string
+	}{
+		{"on", "echo 1", "CGO_ENABLED=1"},
+		{"off", "echo 0", "CGO_ENABLED=0"},
+		{"an empty answer", "echo", ""},
+		{"an answer other than 0 or 1", "echo yes", ""},
+		{"a failed command", "exit 1", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			shim := t.TempDir()
+			if err := os.WriteFile(filepath.Join(shim, "go"), []byte("#!/bin/sh\n"+c.answer+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", shim)
+			env, err := cgoPinned(context.Background(), t.TempDir(), []string{"HOME=/nonexistent"})
+			if c.want == "" {
+				if err == nil {
+					t.Errorf("cgoPinned = %v, want an error", env)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(env, []string{"HOME=/nonexistent", c.want}) {
+				t.Errorf("cgoPinned = %v, %v; want [HOME=/nonexistent %s]", env, err, c.want)
+			}
+		})
+	}
+}

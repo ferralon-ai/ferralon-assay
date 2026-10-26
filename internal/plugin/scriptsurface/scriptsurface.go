@@ -107,6 +107,9 @@ type Spec struct {
 	// means a path is not there: the lane's own, so every file this reads is read the lane's way.
 	ReadRegular func(path string) ([]byte, error)
 	Absent      func(err error) bool
+	// Text, when not nil, is given the whole text of every script surface and GitLab local
+	// include this reads, before the rule applies to it.
+	Text func(src string)
 }
 
 func (s Spec) complete() bool {
@@ -616,6 +619,9 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 			return "script surface unreadable", true
 		}
 		src = string(data)
+	}
+	if v.spec.Text != nil {
+		v.spec.Text(src)
 	}
 	if v.setsEnv(src) {
 		return "script surface sets an installer variable", true

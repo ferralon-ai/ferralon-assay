@@ -107,6 +107,9 @@ func (v *Veto) gitlabIncludes(path, src string, seen map[string]bool, depth int)
 		if err != nil {
 			return nil, "GitLab local include unreadable: " + l
 		}
+		if v.spec.Text != nil {
+			v.spec.Text(string(data))
+		}
 		if v.setsEnv(string(data)) {
 			return nil, "GitLab local include sets an installer variable"
 		}

@@ -19,6 +19,10 @@ type Context struct {
 	Writer  http.ResponseWriter
 }
 
+// GetString returns the string the application stored on the context under key (gin
+// keeps it in c.Keys): no request data, so no request accessor.
+func (c *Context) GetString(key string) string { return "" }
+
 // Param returns a path parameter.
 func (c *Context) Param(key string) string { return c.Request.URL.Path }
 
@@ -101,4 +105,14 @@ func WrapF(f http.HandlerFunc) HandlerFunc {
 // WrapH wraps a net/http Handler as a gin handler.
 func WrapH(h http.Handler) HandlerFunc {
 	return func(c *Context) { h.ServeHTTP(c.Writer, c.Request) }
+}
+
+// RecoveryFunc handles a panic recovered by CustomRecovery.
+type RecoveryFunc func(c *Context, err any)
+
+// CustomRecovery returns middleware that recovers a panic and hands it to handle. It
+// takes one function argument, as WrapF and WrapH do, but is no net/http adapter:
+// handle is no route handler.
+func CustomRecovery(handle RecoveryFunc) HandlerFunc {
+	return func(c *Context) { handle(c, nil) }
 }

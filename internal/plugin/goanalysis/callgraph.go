@@ -239,7 +239,7 @@ func (s *ssaProgram) partiality(load *LoadResult) plugin.Partiality {
 	}
 
 	scoped := slices.Clone(load.Partiality.Scoped)
-	if reasons[plugin.PartialReasonCgo] && load.cgo != nil {
+	if reasons[plugin.PartialReasonCgo] && load.cgoBounded {
 		delete(reasons, plugin.PartialReasonCgo)
 		for _, r := range load.cgo {
 			if !slices.ContainsFunc(scoped, func(s plugin.ScopedReason) bool {

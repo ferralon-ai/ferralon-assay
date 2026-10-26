@@ -79,6 +79,14 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
+A JavaScript scan reads its dependencies' code by default: it fetches each package the lockfile
+pins and reads it only once it matches the lockfile's integrity hash. The Action keeps those
+packages in a cache keyed on your lockfiles, so an unchanged lock fetches nothing. Set
+`dependency-code: off` to skip the fetch, or `offline` to read only a cache already on the runner.
+If the fetch fails (an unreachable registry, a missing token, a timeout), the scan reports what it
+would with `off` and the Report says why, under `dependency_code` and a
+`tool_failure:dependency_code_unavailable` note.
+
 **`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
 `vX.Y.Z` scanner it was cut with, so `@v0.5` fetches the scanner of the patch it currently points at.
@@ -348,8 +356,8 @@ fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
 `api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
 GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. A JS scan run with `-dependency-code=fetch` (off by default) also fetches each
-lock-pinned package tarball by name and version from the configured registry (the repository's
+signature. A JS scan also fetches each lock-pinned package tarball by name and version from the
+configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
 is presented only to the host it is bound to. Fetch mode trusts the repository's `.npmrc` with
@@ -361,8 +369,9 @@ versions, package coordinates — never source, never analysis results. The full
 
 Nothing in this repository opens pull requests against yours, and no automation here rewrites the
 `uses: ferralon-ai/ferralon-assay@…` ref on your workflow line. That ref is yours to move — or to let
-float. Open [`action.yml`](action.yml): the composite action has exactly three steps — fetch the
-scanner (verifying its checksum only if you pinned one), fetch the advisory corpus, and run the scan.
+float. Open [`action.yml`](action.yml): the composite action's steps fetch the
+scanner (verifying its checksum only if you pinned one), fetch the advisory corpus, restore the
+dependency code cache, and run the scan.
 None of them write to a workflow file or open anything against your repository.
 
 Whether you pin the ref or track a moving one, the scanner is fetched from the release named by

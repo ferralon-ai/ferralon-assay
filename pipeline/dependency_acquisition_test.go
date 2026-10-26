@@ -156,29 +156,30 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		want     string // Unread reason, "" when read
 		detail   string
 		wantReqs int
+		fallback string // Fallback kind, "" when the result does not fall back
 	}{
 		{name: "fetch verifies and reads", mode: DependencyCodeFetch, served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
-		{name: "fetch sri mismatch", mode: DependencyCodeFetch, served: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1},
+		{name: "fetch sri mismatch", mode: DependencyCodeFetch, served: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1, fallback: UnreadIntegrityMismatch},
 		{name: "no lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "", want: UnreadNoIntegrity},
 		{name: "malformed lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "sha512:short", want: UnreadMalformedIntegrity},
 		{name: "fetch verifies a sha1-only lock entry", mode: DependencyCodeFetch, served: tarball, digest: sri1(tarball), wantRead: 1, wantReqs: 1},
-		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "NPM_TOKEN"`},
-		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed},
-		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1},
-		{name: "empty per-host token refuses before any request", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential"},
-		{name: "top-level auth refuses before any request", mode: DependencyCodeFetch, npmrc: "_auth=Zm9vOmJhcg==", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential"},
+		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "NPM_TOKEN"`, fallback: UnreadNPMRCMalformed},
+		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, fallback: UnreadNPMRCMalformed},
+		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
+		{name: "empty per-host token refuses before any request", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
+		{name: "top-level auth refuses before any request", mode: DependencyCodeFetch, npmrc: "_auth=Zm9vOmJhcg==", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
 		{name: "public registry reads with an optional token unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
-		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1},
-		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1},
-		{name: "401 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1},
-		{name: "403 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1},
-		{name: "401 with no auth configured", mode: DependencyCodeFetch, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1},
-		{name: "transport failure", mode: DependencyCodeFetch, registry: "down.test", served: tarball, digest: sri512(tarball), want: UnreadFetchFailed},
-		{name: "stage deadline passes", mode: DependencyCodeFetch, timeout: time.Nanosecond, served: tarball, digest: sri512(tarball), want: UnreadCancelled},
+		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "401 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "403 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "401 with no auth configured", mode: DependencyCodeFetch, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
+		{name: "transport failure", mode: DependencyCodeFetch, registry: "down.test", served: tarball, digest: sri512(tarball), want: UnreadFetchFailed, fallback: UnreadFetchFailed},
+		{name: "stage deadline passes", mode: DependencyCodeFetch, timeout: time.Nanosecond, served: tarball, digest: sri512(tarball), want: UnreadCancelled, fallback: UnreadCancelled},
 		{name: "offline empty cache", mode: DependencyCodeOffline, served: tarball, digest: sri512(tarball), want: UnreadNotCached},
 		{name: "offline seeded cache", mode: DependencyCodeOffline, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "offline tampered cache", mode: DependencyCodeOffline, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
-		{name: "fetch over tampered cache entry", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
+		{name: "fetch over tampered cache entry", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, fallback: UnreadIntegrityMismatch},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -216,6 +217,16 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 			}
 			if strings.Contains(detail, acqSecret) {
 				t.Fatal("unread detail carries the token")
+			}
+			gotFallback := ""
+			if res.Fallback != nil {
+				gotFallback = res.Fallback.Kind
+				if strings.Contains(res.Fallback.Detail, acqSecret) || !strings.HasPrefix(res.Fallback.Detail, qs) {
+					t.Fatalf("fallback detail = %q, want it to name %s and no token", res.Fallback.Detail, qs)
+				}
+			}
+			if gotFallback != tt.fallback {
+				t.Fatalf("fallback = %q, want %q", gotFallback, tt.fallback)
 			}
 			seen := regs.seen("registry.test")
 			if n := len(seen); n != tt.wantReqs {
@@ -515,13 +526,18 @@ func TestDependencyAcquisitionStageOptIn(t *testing.T) {
 	}
 }
 
-// The JS lane is handed the dependency cache only for a case dependency_acquisition ran for.
+// The JS lane is handed the dependency cache only for a case dependency_acquisition ran for and
+// did not fall back on.
 func TestDependencyCacheForRequiresTheStage(t *testing.T) {
 	cache := t.TempDir()
 	acq := &dependencyAcquirer{cfg: DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: cache}}
 	ran := &assessment.Assessment{ID: "ran"}
 	store := artifact.NewMemStore()
 	if _, err := PutArtifact(store, ran, "dependency_acquisition", TypeDependencyAcquisition, "", DependencyAcquisitionResult{}); err != nil {
+		t.Fatal(err)
+	}
+	fell := &assessment.Assessment{ID: "fell"}
+	if _, err := PutArtifact(store, fell, "dependency_acquisition", TypeDependencyAcquisition, "", DependencyAcquisitionResult{Fallback: &DependencyCodeCause{Kind: UnreadFetchFailed}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -533,6 +549,7 @@ func TestDependencyCacheForRequiresTheStage(t *testing.T) {
 		{"no acquirer", nil, "ran", ""},
 		{"stage did not run", acq, "other", ""},
 		{"stage ran", acq, "ran", cache},
+		{"stage fell back", acq, "fell", ""},
 	} {
 		if got := tc.acq.cacheFor(store, tc.caseID); got != tc.want {
 			t.Errorf("%s: cacheFor = %q, want %q", tc.name, got, tc.want)

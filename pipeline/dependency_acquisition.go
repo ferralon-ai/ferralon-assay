@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -65,6 +66,9 @@ type DependencyAcquisition struct {
 	Timeout time.Duration
 	// Client supplies the transport; nil uses one with a per-request timeout.
 	Client *http.Client
+	// Observe, when set, receives each build directory's result once, when acquisition for it
+	// finishes.
+	Observe func(DependencyAcquisitionResult)
 }
 
 // WithDependencyAcquisition adds dependency_acquisition between codebase_inventory and
@@ -90,6 +94,62 @@ type DependencyAcquisitionResult struct {
 	// InventoryCancelled marks an inventory failure caused by the stage deadline or the run's
 	// context ending, so a timeout is not read as a plugin defect.
 	InventoryCancelled bool `json:"inventory_cancelled,omitempty"`
+	// Fallback is set when a fetch failed: the JS lane then reads no dependency code at all, as
+	// with dependency code off, and Fallback names why. Only DependencyCodeFetch sets it.
+	Fallback *DependencyCodeCause `json:"fallback,omitempty"`
+}
+
+// DependencyCodeCause is why a fetch-mode acquisition fell back to reading no dependency code.
+type DependencyCodeCause struct {
+	// Kind is FallbackInventoryFailed or the Unread reason of the first package, in PURL order,
+	// whose fetch failed.
+	Kind string `json:"kind"`
+	// Detail names that package and, for UnreadPolicyRefused, the policy code or, for
+	// UnreadNPMRCMalformed, the configuration file and line. It never carries a URL, a host or a
+	// credential.
+	Detail string `json:"detail,omitempty"`
+}
+
+// FallbackInventoryFailed is the DependencyCodeCause kind for an inventory that failed outright,
+// so no package could be fetched.
+const FallbackInventoryFailed = "inventory_failed"
+
+// fetchFailed reports whether reason is a fetch that did not complete: the registry refused,
+// failed or did not serve the tarball, the bytes it served were wrong, the npm configuration
+// could not be read, or the deadline passed. A lock entry with no usable integrity is not one:
+// nothing could have fetched it, and it stays a per-package limit.
+func fetchFailed(reason string) bool {
+	switch reason {
+	case UnreadFetchFailed, UnreadNotServed, UnreadPolicyRefused, UnreadCancelled, UnreadIntegrityMismatch, UnreadNPMRCMalformed:
+		return true
+	}
+	return false
+}
+
+// fallbackCause is why res, a fetch-mode acquisition, falls back to reading no dependency code,
+// or nil. One failed package is enough: a partial fetch is never read as dependency code.
+func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
+	if res.Mode != string(DependencyCodeFetch) {
+		return nil
+	}
+	if slices.Contains(res.InventoryPartial, plugin.PartialReasonToolFailure) {
+		detail := ""
+		if res.InventoryCancelled {
+			detail = UnreadCancelled
+		}
+		return &DependencyCodeCause{Kind: FallbackInventoryFailed, Detail: detail}
+	}
+	for _, u := range res.Unread {
+		if !fetchFailed(u.Reason) {
+			continue
+		}
+		detail := u.PURL
+		if u.Detail != "" {
+			detail += ": " + u.Detail
+		}
+		return &DependencyCodeCause{Kind: u.Reason, Detail: detail}
+	}
+	return nil
 }
 
 // UnreadDependency is one package acquisition left unread, with one of the Unread* reasons and,
@@ -128,7 +188,13 @@ func (d *dependencyAcquirer) result(ctx context.Context, buildDir, checkoutRoot 
 		d.byDir[buildDir] = b
 	}
 	d.mu.Unlock()
-	b.once.Do(func() { b.res = d.acquire(ctx, buildDir, checkoutRoot, p) })
+	b.once.Do(func() {
+		b.res = d.acquire(ctx, buildDir, checkoutRoot, p)
+		b.res.Fallback = fallbackCause(b.res)
+		if d.cfg.Observe != nil {
+			d.cfg.Observe(b.res)
+		}
+	})
 	return b.res
 }
 
@@ -328,12 +394,14 @@ func inventoryBuildLanguage(store artifact.Store, caseID string) (string, string
 }
 
 // cacheFor returns the dependency cache the JS lane reads for caseID: set only when
-// dependency_acquisition ran for it.
+// dependency_acquisition ran for it and did not fall back. A fallback hands the lane no cache, so
+// it reads exactly what it reads with dependency code off.
 func (a *dependencyAcquirer) cacheFor(store artifact.Store, caseID string) string {
 	if a == nil {
 		return ""
 	}
-	if _, ok := DependencyAcquisitionOf(store, caseID); !ok {
+	res, ok := DependencyAcquisitionOf(store, caseID)
+	if !ok || res.Fallback != nil {
 		return ""
 	}
 	return a.cfg.CacheDir

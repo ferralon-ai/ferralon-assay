@@ -35,6 +35,12 @@ coordinates — ecosystem, name, version — and nothing else. Enabling subject-
 (`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, also off by default) additionally downloads a Go toolchain
 from the module proxy.
 
+A JavaScript scan fetches each package tarball its lockfile pins, by name and version, from the
+registry the repository's `.npmrc` (or `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`) names, unless
+it runs with `-dependency-code=off` or `offline` (`ASSAY_DEPENDENCY_CODE`). A token is presented
+only to the host it is bound to, and an `.npmrc` `${VAR}` reference reads only `NODE_AUTH_TOKEN`,
+`NPM_TOKEN` or a variable named with `-dependency-npmrc-env`.
+
 What all of these carry is dependency metadata — module paths, versions, package coordinates — never
 source, and never analysis results.
 

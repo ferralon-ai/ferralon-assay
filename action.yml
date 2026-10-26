@@ -233,6 +233,19 @@ inputs:
       scanner-version to a release that carries it.
     required: false
     default: "false"
+  dependency-code:
+    description: >-
+      Whether a JavaScript scan reads its npm dependencies' code, forwarded to the scanner as
+      ASSAY_DEPENDENCY_CODE. 'fetch' downloads each locked package from the registry the
+      repository's .npmrc names and reads it only once its bytes match the lockfile's integrity
+      hash; 'offline' reads only a cache already on the runner; 'off' reads none. Empty (default)
+      leaves the choice to the scanner release's own default. Unless this is 'off', the cache lives
+      under the runner's temp directory and is restored and saved with actions/cache, keyed on the
+      repository's lockfiles. If the fetch fails, the scan reports what it would with 'off' and names
+      the cause on the Report. VERSION REQUIREMENT: a scanner release that reads
+      ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
+    required: false
+    default: ""
   issue:
     description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
     required: false
@@ -642,6 +655,18 @@ runs:
         fi
         echo "==> Advisory corpus checked out at $DEST ($CORPUS_REPO@$CORPUS_REF)"
 
+    - name: Restore the dependency code cache
+      # Keyed on every lockfile the scanner reads, so the same locks restore the same verified
+      # tarballs; restore-keys reuses an earlier cache after a lock changes, and the scanner
+      # re-verifies every file it reads against the lock either way.
+      if: inputs.dependency-code != 'off' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') != ''
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/ferralon-assay-deps
+        key: ferralon-assay-deps-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') }}
+        restore-keys: |
+          ferralon-assay-deps-${{ runner.os }}-
+
     - name: Run the Ferralon Assay
       id: run
       shell: bash
@@ -664,6 +689,11 @@ runs:
         # explicit affirmative ('true') enables it — the ternary yields the literal 'false'
         # otherwise, which envEnabled reads as off.
         ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability == 'true' }}
+        # JS dependency code. Empty inherits the scanner's default. The cache path is the one the
+        # restore step above uses; it is left unset for 'off'. Env vars rather than flags, so a scanner
+        # release that predates them ignores them.
+        ASSAY_DEPENDENCY_CODE: ${{ inputs.dependency-code }}
+        ASSAY_DEPENDENCY_CACHE: ${{ inputs.dependency-code != 'off' && format('{0}/ferralon-assay-deps', runner.temp) || '' }}
         GITHUB_TOKEN: ${{ github.token }}
         # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
         # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined

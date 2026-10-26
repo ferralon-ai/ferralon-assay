@@ -176,6 +176,78 @@ func TestPnpmNonFrozenLocalTarball(t *testing.T) {
 			}
 		})
 	}
+	// The extensions refIsLocalTarball accepts; unchanged files are read as the lock's.
+	for _, ext := range []string{".tgz", ".tar.gz", ".tar"} {
+		t.Run("control_extension"+ext, func(t *testing.T) {
+			ref := "file:vendor/x" + ext
+			f := map[string]string{
+				"package.json":   rootManifest(`{"x":"` + ref + `"}`),
+				"pnpm-lock.yaml": localLock(ref, "{integrity: "+sriOf(locked)+", tarball: "+ref+"}", ": {}"),
+				"vendor/x" + ext: locked,
+			}
+			if nonFrozenWithheld(t, f) {
+				t.Error("an unchanged local tarball must be read")
+			}
+		})
+	}
+	// A ref that is not a tarball ref is read as a directory; a tarball resolution behind it
+	// is not what pnpm compares.
+	t.Run("tarball_resolution_behind_directory_ref", func(t *testing.T) {
+		const ref = "file:vendor/x"
+		f := map[string]string{
+			"package.json":   rootManifest(`{"x":"` + ref + `"}`),
+			"pnpm-lock.yaml": localLock(ref, "{integrity: "+sriOf(locked)+", tarball: "+ref+"}", ": {}"),
+			"vendor/x":       locked,
+		}
+		if !nonFrozenWithheld(t, f) {
+			t.Error("a directory-shaped ref whose package is a tarball resolution must withhold")
+		}
+	})
+	// The importer's ref carries a peer suffix: pnpm cuts it before testing for a tarball and
+	// before hashing.
+	suffixedTarball := func(bytes string) map[string]string {
+		const ref = "file:vendor/x.tgz"
+		return map[string]string{
+			"package.json": rootManifest(`{"x":"` + ref + `","react":"18.0.0"}`),
+			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      react:\n        specifier: 18.0.0\n        version: 18.0.0\n" +
+				"      x:\n        specifier: " + ref + "\n        version: " + ref + "(react@18.0.0)\n\n" +
+				"packages:\n\n  react@18.0.0:\n    resolution: {integrity: " + fillerIntegrity + "}\n\n  x@" + ref + ":\n    resolution: {integrity: " + sriOf(locked) + ", tarball: " + ref + "}\n    version: 1.0.0\n    peerDependencies:\n      react: '*'\n\n" +
+				"snapshots:\n\n  react@18.0.0: {}\n\n  x@" + ref + "(react@18.0.0):\n    dependencies:\n      react: 18.0.0\n",
+			"vendor/x.tgz": bytes,
+		}
+	}
+	t.Run("peer_suffixed_ref_swapped", func(t *testing.T) {
+		if !nonFrozenWithheld(t, suffixedTarball(swapped)) {
+			t.Error("a swapped tarball behind a peer-suffixed ref must withhold")
+		}
+	})
+	t.Run("control_peer_suffixed_ref", func(t *testing.T) {
+		if nonFrozenWithheld(t, suffixedTarball(locked)) {
+			t.Error("an unchanged tarball behind a peer-suffixed ref must be read")
+		}
+	})
+	// A tarball the lock pins that no importer names (here, one a directory package depends
+	// on) is hashed too.
+	t.Run("unreferenced_tarball_swapped", func(t *testing.T) {
+		f := tree(&swapped, res(sriOf(locked)))
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "      x:\n        specifier: "+spec+"\n        version: "+spec+"\n", " {}\n", 1)
+		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "  .:\n {}", "  .: {}", 1)
+		f["package.json"] = rootManifest(`{}`)
+		if !nonFrozenWithheld(t, f) {
+			t.Error("a pinned tarball no importer names was swapped and must withhold")
+		}
+	})
+	// A block-form resolution is read only when its values are plain and non-empty.
+	for name, resolution := range map[string]string{
+		"block_quoted_tarball": "\n      integrity: " + sriOf(locked) + "\n      tarball: 'file:vendor/x.tgz'",
+		"block_empty_tarball":  "\n      integrity: " + sriOf(locked) + "\n      tarball:",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !nonFrozenWithheld(t, tree(&same, resolution)) {
+				t.Errorf("resolution %q is not read exactly and must withhold", resolution)
+			}
+		})
+	}
 	t.Run("absolute_path", func(t *testing.T) {
 		const abs = "file:/vendor/x.tgz"
 		f := map[string]string{
@@ -379,7 +451,7 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 			"pnpm-workspace.yaml":       "packages:\n  - 'packages/*'\n",
 			"packages/app/package.json": `{"name":"app","version":"1.0.0","dependencies":{"t":"` + spec + `"}}`,
 			"packages/t/package.json":   `{"name":"t","version":"` + memberVersion + `"}`,
-			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n\n  packages/app:\n    dependencies:\n      t:\n        specifier: " + spec +
+			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n\n  packages/app:\n    dependencies:\n      t:\n        specifier: '" + spec + "'" +
 				"\n        version: link:../t\n\n  packages/t: {}\n",
 		}
 	}
@@ -415,6 +487,34 @@ func TestPnpmNonFrozenMemberShadow(t *testing.T) {
 			}
 		})
 	}
+	// Specifiers pnpm skips are not tested against the member, which need not exist.
+	for name, spec := range map[string]string{
+		"control_link_star_member_missing":     "*",
+		"control_link_tilde_member_missing":    "~",
+		"control_link_caret_member_missing":    "^",
+		"control_link_file_member_missing":     "file:../t",
+		"control_link_alias_empty_member_gone": "npm:t@",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := linked(spec, "1.4.0")
+			f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "link:../t", "link:../gone", 1)
+			if nonFrozenWithheld(t, f) {
+				t.Errorf("specifier %q is skipped by pnpm and needs no member", spec)
+			}
+		})
+	}
+	// Deliberate over-approximation: a complete peer-suffixed registry lock whose package is
+	// also a workspace member of the same version. pnpm matches the member by the whole ref and
+	// keeps the lock; the lane cuts the suffix and withholds.
+	t.Run("peer_suffixed_lock_with_same_version_member", func(t *testing.T) {
+		f := tree("q", "1.0.0")
+		l := strings.Replace(f["pnpm-lock.yaml"], "version: 1.0.0\n", "version: 1.0.0(react@18.0.0)\n", 1)
+		l = strings.Replace(l, "snapshots:\n\n  q@1.0.0: {}", "snapshots:\n\n  q@1.0.0(react@18.0.0): {}", 1)
+		f["pnpm-lock.yaml"] = l
+		if !nonFrozenWithheld(t, f) {
+			t.Error("the suffix cut withholds a same-version member behind a peer-suffixed ref")
+		}
+	})
 	t.Run("link_member_missing", func(t *testing.T) {
 		f := linked("^1.0.0", "1.4.0")
 		f["pnpm-lock.yaml"] = strings.Replace(f["pnpm-lock.yaml"], "link:../t", "link:../gone", 1)
@@ -483,6 +583,8 @@ func TestReadLocalResolutionFlow(t *testing.T) {
 		"{directory: libs/x, type: directory, extra: 1}":        false,
 		"{directory: libs/x}":                                   false,
 		"{type: directory}":                                     false,
+		"{directory: libs/x, tarball: '', type: directory}":     false,
+		"{directory: libs/x, type: directory, integrity: ''}":   false,
 	} {
 		if _, got := readLocalResolution(&ynode{val: in}); got != ok {
 			t.Errorf("readLocalResolution(%q) ok = %v, want %v", in, got, ok)
@@ -491,6 +593,17 @@ func TestReadLocalResolutionFlow(t *testing.T) {
 	r, _ := readLocalResolution(&ynode{val: "{tarball: 'file:vendor/it''s.tgz', integrity: sha512-a}"})
 	if r.kind != "tarball" || r.rel != "vendor/it's.tgz" {
 		t.Errorf("single-quoted escape: got %+v", r)
+	}
+}
+
+func TestVersionRange(t *testing.T) {
+	for in, want := range map[string]string{
+		"^1.0.0": "^1.0.0", "npm:t@^1.0.0": "^1.0.0", "npm:t": "*", "npm:t@": "*",
+		"npm:@s/t@~2": "~2", "npm:@s/t": "*", "npm:": "*",
+	} {
+		if got := versionRange(in); got != want {
+			t.Errorf("versionRange(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

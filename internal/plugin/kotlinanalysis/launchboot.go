@@ -70,9 +70,11 @@ var (
 	pluginByAccessor       = regexp.MustCompile("^`?([A-Za-z][A-Za-z0-9\\-]*)`?$")
 	gradleApplyPlugin      = regexp.MustCompile(`(?m)(?:^|[^.\w])apply\s*\(?\s*plugin\s*[:=]\s*["']([A-Za-z0-9_.\-]+)["'][ \t]*\)?`)
 	gradleApplyWord        = regexp.MustCompile(`\bapply\b`)
-	// gradleBootInput is a script mention that can change the main the Boot plugin finds: its
-	// main-class settings (any not a literal named entry) and the class output it scans.
-	gradleBootInput = regexp.MustCompile(`(?i)mainclass|start-class|\bsourceSets\b`)
+	// gradleBootInput is a script mention that can change the main the Boot plugin finds or the
+	// one bootJar launches: its main-class settings, any manifest customization (a manifest
+	// from(...) can carry a Start-Class), and the class output it scans. A literal named entry is
+	// read as named and takes precedence regardless.
+	gradleBootInput = regexp.MustCompile(`(?i)mainclass|start-class|\bmanifest\b|\bsourceSets\b`)
 	// gradleImport is an import in a build script: code beyond the Gradle API and applied plugins.
 	gradleImport = regexp.MustCompile(`(?m)^\s*import\s`)
 	// interpolation is a ${name} string template, whose braces are not blocks.

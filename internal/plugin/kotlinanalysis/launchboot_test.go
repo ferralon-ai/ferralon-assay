@@ -124,6 +124,7 @@ rootProject.name = "app"
 		{"apply from a script", bootPluginsBlock + "apply(from = \"gradle/boot.gradle.kts\")\n", nil, false, reasonLaunchEntryUnnamed},
 		{"apply of an unlisted plugin", bootPluginsBlock + "apply(plugin = \"com.example.conventions\")\n", nil, false, reasonLaunchEntryUnnamed},
 		{"resolveMainClassName configured", bootPluginsBlock + "tasks.resolveMainClassName { configuredMainClassName.set(provider { pick() }) }\n", nil, false, reasonLaunchEntryUnnamed},
+		{"bootJar manifest from a file", bootPluginsBlock + "tasks.bootJar { manifest { from(\"boot.mf\") } }\n", nil, false, reasonLaunchEntryUnnamed},
 		{"source sets reconfigured", bootPluginsBlock + "sourceSets { main { kotlin.srcDir(\"gen\") } }\n", nil, false, reasonLaunchEntryUnnamed},
 		{"settings hook configures every project", bootPluginsBlock, func(t *testing.T, dir string) {
 			writeBuildFile(t, dir, "settings.gradle.kts", "gradle.allprojects { }\n")

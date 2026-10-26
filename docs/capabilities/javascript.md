@@ -122,7 +122,7 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 
 ### JS-UNINSPECTABLE-RUNWIDE
 
-**Trigger.** Any first-party import of a bare specifier into a package whose code is not read (every npm project that imports a package when dependency code is off; see [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off)), or into a read package whose loads the reconstructed layout can't bound (yarn berry, an incomplete layout, a bundler alias, a load inside dependency code that can't be bounded).
+**Trigger.** Any first-party import of a bare specifier while no dependency code is read: dependency code off, or a fetch that fell back (see [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off)). With dependency code read, the limit stays run-wide when the reconstructed layout can't bound what a load reaches (yarn berry, an incomplete layout, a bundler alias that may replace the specifier, a load inside dependency code that can't be bounded), and for the dependency-code reasons the v0.6.0 notes list as run-wide: an install script, an unread package whose lock doesn't record install scripts, a `binding.gyp`, a computed load inside dependency code, or a budget overrun.
 
 **Effect.** Run-wide `uninspectable_package` (did_not_run) blocks `not_exploitable` for every advisory.
 

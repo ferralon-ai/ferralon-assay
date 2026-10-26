@@ -178,6 +178,11 @@ func TestKotlinInline(t *testing.T) {
 		owner:   "p/BKt",
 		wantErr: true,
 	}, {
+		name:    "metadata of major version 0 fails closed",
+		cs:      classes{}.add("p/BKt", withVersion(meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "g"), []int{0, 9, 0})),
+		owner:   "p/BKt",
+		wantErr: true,
+	}, {
 		name:    "an earlier major version is read",
 		cs:      classes{}.add("p/BKt", withVersion(meta(2, plainRecords(1), pl(3, fn(inlineFlags, 0)), "g"), []int{1, 9, 0})),
 		owner:   "p/BKt",

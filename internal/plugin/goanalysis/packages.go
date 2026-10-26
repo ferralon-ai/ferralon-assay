@@ -68,6 +68,8 @@ type LoadResult struct {
 	// run-wide reason.
 	cgo        []plugin.ScopedReason
 	cgoBounded bool
+	// cgoUnresolved: `go env CGO_ENABLED` failed, so which variant of the build was loaded is unknown.
+	cgoUnresolved bool
 }
 
 // LoadProgram loads the buildable module rooted at buildDir with full type and
@@ -88,6 +90,14 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		// packages.Load try to resolve the target against the wrong module graph and
 		// return an empty/garbled program.
 		Env: append(os.Environ(), "GOWORK=off"),
+	}
+	// The build loaded is the one `go build` ships from this environment: cgo is on or off as the go
+	// command resolves it here (CGO_ENABLED and CC inherited, else on when the default C compiler is
+	// found), pinned so every load reads that one variant. The files the other variant compiles are
+	// the dropped limit below.
+	pinned, cgoErr := cgoPinned(ctx, buildDir, cfg.Env)
+	if cgoErr == nil {
+		cfg.Env = pinned
 	}
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
@@ -120,6 +130,9 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	if dropped && !bounded {
 		reasons = append(reasons, plugin.PartialReasonCgo)
 	}
+	if cgoErr != nil {
+		reasons = append(reasons, plugin.PartialReasonCgoUnresolved)
+	}
 	if len(reasons) > 0 {
 		part = plugin.Partial(reasons...)
 	}
@@ -131,7 +144,24 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		part.Scoped = cgo
 	}
 
-	return &LoadResult{Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded}, nil
+	return &LoadResult{Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil}, nil
+}
+
+// cgoPinned returns env with CGO_ENABLED set to the value `go env CGO_ENABLED` resolves for dir
+// under env, or an error when the go command does not resolve it to 0 or 1.
+func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "go", "env", "CGO_ENABLED")
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go env CGO_ENABLED: %w", err)
+	}
+	v := strings.TrimSpace(string(out))
+	if v != "0" && v != "1" {
+		return nil, fmt.Errorf("go env CGO_ENABLED: %q", v)
+	}
+	return append(slices.Clip(env), "CGO_ENABLED="+v), nil
 }
 
 // cgoLimits bounds what the cgo boundaries in the build can hide from the analysis, as one

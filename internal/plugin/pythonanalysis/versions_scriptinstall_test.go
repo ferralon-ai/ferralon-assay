@@ -295,10 +295,10 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 		{"mention: .config/pip", map[string]string{"Dockerfile": dockerHead + "COPY cfg/ /root/.config/pip/\n" + upgrade}, false},
 		{"mention: /etc/pip", map[string]string{"Dockerfile": dockerHead + "COPY cfg/ /etc/pip/\n" + upgrade}, false},
 		{"mention in another surface", map[string]string{"Dockerfile": dockerHead + "COPY cfg/x /etc/pip.conf\n", "install.sh": "#!/bin/sh\npip install -U pip\n"}, false},
-		{"mention in a GitLab local include", map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/setup.yml\nbuild:\n  script:\n    - pip install -U pip\n",
-			"ci/setup.yml": "setup:\n  script:\n    - cp ci/x.cfg /etc/pip.conf\n"}, false},
-		{"GitLab local include naming no config", map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/setup.yml\nbuild:\n  script:\n    - pip install -U pip\n",
-			"ci/setup.yml": "setup:\n  script:\n    - echo ready\n"}, true},
+		{"mention in a GitLab local include", map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/setup.inc\nbuild:\n  script:\n    - pip install -U pip\n",
+			"ci/setup.inc": "# pip reads /etc/pip.conf\nsetup:\n  script:\n    - echo ready\n"}, false},
+		{"GitLab local include naming no config", map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/setup.inc\nbuild:\n  script:\n    - pip install -U pip\n",
+			"ci/setup.inc": "setup:\n  script:\n    - echo ready\n"}, true},
 	}
 	for _, v := range []string{"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_NO_INDEX", "PIP_PRE", "PIP_CONFIG_FILE"} {
 		tests = append(tests,

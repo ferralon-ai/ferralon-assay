@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -536,8 +537,13 @@ func TestCompletenessViolations_CatchesADroppedEntry(t *testing.T) {
 }
 
 // TestCallGraph_DependencyCodeDeclaresUnlisted: Unresolved and Escaped list first-party code
-// only, so a graph with dependency code read into it declares unlisted_sites, and an unconnected
-// call in that code draws no edge. With the package unread, the graph is the first-party one.
+// only, so a graph with dependency code read into it declares unlisted_sites once a site
+// anywhere is declined, and an unconnected call in that code draws no edge. A site dependency
+// code declines declares it with nothing first-party declined, and a first-party site declined
+// beside dependency code that declines nothing declares it too: the site may land on a
+// dependency frame Escaped omits. Dependency code that declines nothing, read beside
+// first-party code that declines nothing, hides no site. With the package
+// unread, the graph is the first-party one.
 func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 	dep := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
 		"package.json": `{"name":"dep","version":"1.0.0"}`,
@@ -555,5 +561,67 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 	}
 	if absent := withDeps(t, f.dir, artifactcache.NewDeclaredAbsentStore()); hasReason(absent.Partiality, plugin.PartialReasonUnlistedSites) {
 		t.Errorf("control: no dependency code read, yet unlisted_sites: %+v", absent.Partiality)
+	}
+	idle := newDepFixture(t, map[string]string{"index.js": guardIdle}, dep)
+	if cg := withDeps(t, idle.dir, idle.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+		t.Errorf("a site declined in dependency code alone, without unlisted_sites: %+v", cg.Partiality)
+	}
+	plain := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"dep","version":"1.0.0"}`,
+		"index.js":     "exports.run = function run() {};\n",
+	}}
+	quiet := newDepFixture(t, map[string]string{"index.js": guardIdle}, plain)
+	if cg := withDeps(t, quiet.dir, quiet.memStore()); !cg.Partiality.Complete {
+		t.Errorf("control: nothing declined anywhere, yet partial: %+v", cg.Partiality)
+	}
+	hidden := newDepFixture(t, map[string]string{"index.js": "function main() { return missing(1); }\nmodule.exports = { main };\n"}, plain)
+	if cg := withDeps(t, hidden.dir, hidden.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+		t.Errorf("a first-party site declined beside dependency frames Escaped omits, without unlisted_sites: %+v", cg.Partiality)
+	}
+
+	// Each row is dependency code whose only declined site is of one kind, beside first-party
+	// code that declines nothing.
+	other := &depPkg{path: "node_modules/other", name: "other", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"other","version":"1.0.0"}`,
+		"index.js":     "exports.f = function f() {};\nexports.a = { b: function b() {} };\nexports.K = class K { m() {} };\n",
+	}}
+	connected := newDepFixture(t, map[string]string{"index.js": guardIdle}, &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"dep","version":"1.0.0"}`,
+		"index.js":     "const { f } = require('other');\nexports.run = function run() { f(); };\n",
+	}}, other)
+	if cg := withDeps(t, connected.dir, connected.memStore()); !cg.Partiality.Complete {
+		t.Errorf("control: a dependency call connected into a read package, yet partial: %+v", cg.Partiality)
+	}
+	for _, tc := range []struct {
+		name, src string
+		extra     map[string]string
+		pkgs      []*depPkg
+		refuse    bool
+	}{
+		{name: "boundary member", src: "const o = require('other');\nfunction go() { o.a.b(); }\nexports.run = go;\n", pkgs: []*depPkg{other}},
+		{name: "boundary constructor", src: "const o = require('other');\nfunction go() { new o.K().m(); }\nexports.run = go;\n", pkgs: []*depPkg{other}},
+		{name: "dynamic import", src: "exports.run = function run(x) { return import(x); };\n"},
+		{name: "computed require", src: "const x = require(name);\nexports.run = function run() {};\n"},
+		{name: "evaluated", src: "const g = globalThis[k];\nexports.run = function run() {};\n"},
+		{name: "unread module", src: "require('./x.node');\nexports.run = function run() {};\n"},
+		{name: "stylesheet", src: "require('./a.css');\nexports.run = function run() {};\n", extra: map[string]string{"a.css": "a {}\n"}},
+		{name: "skipped construct", src: "exports.run = function run() {};\n", refuse: true},
+		{name: "unread package", src: "require('missing');\nexports.run = function run() {};\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.refuse {
+				perRune, floor := depWorkPerRune, depWorkFloor
+				depWorkPerRune, depWorkFloor = -1, 0
+				t.Cleanup(func() { depWorkPerRune, depWorkFloor = perRune, floor })
+			}
+			files := map[string]string{"package.json": `{"name":"dep","version":"1.0.0"}`, "index.js": tc.src}
+			maps.Copy(files, tc.extra)
+			p := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: files}
+			f := newDepFixture(t, map[string]string{"index.js": guardIdle}, append([]*depPkg{p}, tc.pkgs...)...)
+			cg := withDeps(t, f.dir, f.memStore())
+			if cg.Partiality.Complete || !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+				t.Errorf("a site declined in dependency code alone, without unlisted_sites: %+v", cg.Partiality)
+			}
+		})
 	}
 }

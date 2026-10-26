@@ -4,10 +4,11 @@ package javaanalysis
 // A launch option can run code no call graph shows before main: an agent, a system class
 // loader, a security manager, a logging config class, a provider the JDK looks up by property,
 // a classpath entry. The lanes model only an allowlist of options known not to load or select
-// code. Every file in the checkout is scanned for launch-option tokens; each occurrence is
-// either classified inert, accounted for by a reader that can see its whole value, or it
-// withholds Searched. Options that only the deploy environment sets (platform config vars,
-// another repository's entrypoint, an env file outside the checkout) are residue.
+// code. Every file in the checkout but the artifacts of the build's own Maven local repository
+// is scanned for launch-option tokens; each occurrence is either classified inert, accounted
+// for by a reader that can see its whole value, or it withholds Searched. Options that only the
+// deploy environment sets (platform config vars, another repository's entrypoint, an env file
+// outside the checkout) are residue.
 
 import (
 	"archive/tar"
@@ -28,6 +29,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -41,12 +43,15 @@ const (
 )
 
 // LaunchOptionReasons scans every file under buildDir and returns the reasons its launch-option
-// tokens declare, sorted: none when every occurrence is accounted for. Only node_modules and
-// site-packages are skipped. A file or directory that cannot be read, and a symlink that
-// dangles, escapes buildDir, or leads into a skipped directory, withholds Searched.
-func LaunchOptionReasons(buildDir string) []string {
+// tokens declare, sorted: none when every occurrence is accounted for. node_modules and
+// site-packages are skipped, and so are the artifact files of a local repository inside buildDir
+// that g's build resolved its dependencies from (launchScan.repoArtifact); without g, or when
+// none of its artifact files lies inside buildDir, nothing else is. A file or directory that
+// cannot be read, and a symlink that dangles, escapes buildDir, or leads into a skipped
+// directory, withholds Searched.
+func LaunchOptionReasons(buildDir string, g *buildgraph.Graph) []string {
 	s := &launchScan{reasons: map[string]bool{}}
-	s.walk(buildDir)
+	s.walk(buildDir, buildgraph.LocalRepositories(g))
 	out := make([]string, 0, len(s.reasons))
 	for r := range s.reasons {
 		out = append(out, r)
@@ -55,9 +60,10 @@ func LaunchOptionReasons(buildDir string) []string {
 	return out
 }
 
-// checkoutDefines reports whether any file the LaunchOptionReasons walk reads sets one of keys
-// as a system property on a command line (-D<key> or --define <key>, with or without a value),
-// as Maven's -D does for a POM property. A file it cannot read counts as setting one.
+// checkoutDefines reports whether any file the LaunchOptionReasons walk reads with no local
+// repository left out sets one of keys as a system property on a command line (-D<key> or
+// --define <key>, with or without a value), as Maven's -D does for a POM property. A file it
+// cannot read counts as setting one.
 func checkoutDefines(buildDir string, keys map[string]bool) bool {
 	alts := make([]string, 0, len(keys))
 	for k := range keys {
@@ -69,7 +75,7 @@ func checkoutDefines(buildDir string, keys map[string]bool) bool {
 		return true
 	}
 	s := &launchScan{reasons: map[string]bool{}, defines: re}
-	s.walk(buildDir)
+	s.walk(buildDir, nil)
 	return s.defined || s.unread
 }
 
@@ -88,6 +94,8 @@ type launchScan struct {
 	defines *regexp.Regexp
 	defined bool // a -D the defines pattern matched
 	unread  bool // a file or directory could not be read
+	// repos are the real paths of the build's local repositories inside the walked root.
+	repos []string
 }
 
 func (s *launchScan) unreadable() { s.reasons[PartialReasonLaunchOption] = true }
@@ -97,12 +105,19 @@ func (s *launchScan) agent()      { s.reasons[PartialReasonLaunchAgent] = true }
 // walk visits every file under root at its real path. A symlinked directory is walked at its
 // real path when that lies inside root's real path and outside a skipped directory; links are
 // never followed by the directory walk itself, and each link target directory is walked at
-// most once, so the walk terminates on cycles.
-func (s *launchScan) walk(root string) {
+// most once, so the walk terminates on cycles. repos are the local repositories the build
+// resolved its artifacts from; those strictly inside root have their artifacts skipped.
+func (s *launchScan) walk(root string, repos []string) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		s.readFail()
 		return
+	}
+	for _, r := range repos {
+		// A relative path, which the tool never resolves, is inside nothing (strictlyInside).
+		if real, err := filepath.EvalSymlinks(r); err == nil && strictlyInside(realRoot, real) {
+			s.repos = append(s.repos, real)
+		}
 	}
 	walked := map[string]bool{realRoot: true}
 	s.walkDir(realRoot, realRoot, walked)
@@ -123,7 +138,9 @@ func (s *launchScan) walkDir(realRoot, dir string, walked map[string]bool) {
 		case d.Type()&fs.ModeSymlink != 0:
 			s.link(realRoot, path, rel, walked)
 		case d.Type().IsRegular():
-			s.file(path, filepath.ToSlash(rel))
+			if !s.repoArtifact(path) {
+				s.file(path, filepath.ToSlash(rel))
+			}
 		}
 		return nil
 	})
@@ -163,8 +180,54 @@ func (s *launchScan) link(realRoot, path, rel string, walked map[string]bool) {
 			s.walkDir(realRoot, target, walked)
 		}
 	case fi.Mode().IsRegular():
-		s.file(path, filepath.ToSlash(rel))
+		if !s.repoArtifact(path) {
+			s.file(path, filepath.ToSlash(rel))
+		}
 	}
+}
+
+// repoArtifact reports whether path, as the walk reached it, is an artifact file of one of the
+// build's local repositories: <repo>/<group path>/<artifact>/<version>/<file>, the file named
+// <artifact>-<version> followed by '.' or '-' (a classifier, an extension, a checksum, a
+// .lastUpdated marker), or for a -SNAPSHOT version <artifact>-<base>- and a timestamp digit.
+// These are the files the scan does not read when the repository lies outside the checkout, so
+// leaving them out gives an in-checkout repository the same coverage; a parent POM or BOM among
+// them is no more read than it is there. A launch that runs one of them names it on a surface
+// outside the repository, and the walk reads that surface. Anything else under a repository, such as a launch script or a project file beside the
+// artifacts, is scanned.
+func (s *launchScan) repoArtifact(path string) bool {
+	for _, repo := range s.repos {
+		if !strictlyInside(repo, path) {
+			continue
+		}
+		rel, _ := filepath.Rel(repo, path)
+		parts := strings.Split(rel, string(filepath.Separator))
+		n := len(parts)
+		if n < 4 {
+			return false
+		}
+		return repoArtifactName(parts[n-1], parts[n-3], parts[n-2])
+	}
+	return false
+}
+
+// strictlyInside reports whether p lies under dir and is not dir itself, both real absolute
+// paths; a relative p is under no absolute dir.
+func strictlyInside(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func repoArtifactName(name, artifact, version string) bool {
+	if rest, ok := strings.CutPrefix(name, artifact+"-"+version); ok && rest != "" && (rest[0] == '.' || rest[0] == '-') {
+		return true
+	}
+	base, ok := strings.CutSuffix(version, "-SNAPSHOT")
+	if !ok || base == "" {
+		return false
+	}
+	rest, ok := strings.CutPrefix(name, artifact+"-"+base+"-")
+	return ok && rest != "" && rest[0] >= '0' && rest[0] <= '9'
 }
 
 const (

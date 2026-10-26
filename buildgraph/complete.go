@@ -663,6 +663,16 @@ func mavenOutputs(dir string, reactor []reactorProject, effective []effectivePro
 	return sortedUnique(out)
 }
 
+// LocalRepositories are the local repository directories a Maven graph's artifact files lie in,
+// as the tool resolved them. Another tool's graph has none: its files are not laid out by a Maven
+// local repository, and one in the checkout can be the project's own.
+func LocalRepositories(g *Graph) []string {
+	if g == nil || g.Tool.Name != ToolMaven {
+		return nil
+	}
+	return mavenRepos(g.Modules)
+}
+
 // mavenRepos are the local repository directories the graph's artifacts lie in.
 func mavenRepos(modules []Module) []string {
 	var out []string

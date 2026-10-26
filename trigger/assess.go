@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -577,7 +578,7 @@ func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRe
 // taint path-presence to the sink; anything less is control_flow_only.
 func reachabilityEvidence(store artifact.Store, assessmentID string) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
 	ingresses := ingressMap(store, assessmentID)
-	frames, ingressSym := candidateTrace(store, assessmentID)
+	frames, credit, ingressSym := candidateTrace(store, assessmentID)
 
 	// attacker_tainted requires an attacker-controllable ingress to lie ON the
 	// ingress→sink path-presence trace (the call path IS the path-presence evidence,
@@ -586,7 +587,9 @@ func reachabilityEvidence(store artifact.Store, assessmentID string) (report.Rea
 	// stronger candidate grade. Otherwise the sink is only reachable via internal
 	// entries (main/cli) or an unknown ingress → control_flow_only. Either way it
 	// stays a candidate (inv. 5): the strong grade is evidence strength, not a proof.
-	entry := attackerIngressInTrace(frames, ingresses)
+	// The entry is read off credit, the path's own trace: for a taint path that is the
+	// taint's [ingress, sink], so the frames shown between them never move the credit.
+	entry := attackerIngressInTrace(credit, ingresses)
 	grade := report.GradeControlFlowOnly
 	if entry != nil {
 		grade = report.GradeAttackerTainted
@@ -657,17 +660,90 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 	return nil
 }
 
-// candidateTrace returns the ingress→sink call frames and the ingress symbol for the
-// representative candidate path. It prefers the taint artifact's path-presence trace
-// (populated for first-party taint flows), then the govulncheck reachability paths.
-func candidateTrace(store artifact.Store, assessmentID string) ([]report.CallFrame, string) {
+// candidateTrace returns the representative candidate path's ingress→sink call frames, the
+// frames its entry point is credited from, and its ingress symbol. It prefers the taint
+// artifact's path (populated for first-party taint flows), then the reachability paths.
+//
+// A taint path names its ingress and its sink but none of the calls between them: its trace
+// is the two frames [ingress, sink], which reads as a direct call even when there is none. So
+// a taint path's frames come from taintFrames, while its entry point is still credited from
+// the taint path's own trace.
+func candidateTrace(store artifact.Store, assessmentID string) (frames, credit []report.CallFrame, ingressSym string) {
+	paths := reachPaths(store, assessmentID)
 	if p, ok := firstTaintPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+		edges := func() []plugin.CallEdge { return callGraphEdges(store, assessmentID) }
+		return framesOf(taintFrames(p, paths, edges)), framesOf(p.Trace), p.Ingress.SCIP
 	}
-	if p, ok := firstReachPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+	if len(paths) > 0 {
+		f := framesOf(paths[0].Trace)
+		return f, f, paths[0].Ingress.SCIP
 	}
-	return nil, ""
+	return nil, nil, ""
+}
+
+// taintFrames returns the frames shown for taint path tp. When a reachability path ends at
+// tp's sink, they are a call chain from tp's ingress to that sink: the first such path from
+// the ingress on, when the ingress lies on one, else the shortest chain of call-graph edges
+// (edges) from the ingress to the sink. Either is made only of a reachability path's own
+// frames or of call-graph edges, so it never shows a call the graph does not have. tp's own
+// trace stays when no reachability path ends at the sink, or when neither yields a chain.
+func taintFrames(tp plugin.ReachPath, paths []plugin.ReachPath, edges func() []plugin.CallEdge) []plugin.Symbol {
+	ingress, sink := tp.Ingress.SCIP, tp.Sink.SCIP
+	reached := false
+	for _, p := range paths {
+		if len(p.Trace) == 0 || p.Trace[len(p.Trace)-1].SCIP != sink {
+			continue
+		}
+		reached = true
+		for i, s := range p.Trace {
+			if s.SCIP == ingress {
+				return p.Trace[i:]
+			}
+		}
+	}
+	if !reached || ingress == "" || ingress == sink {
+		return tp.Trace
+	}
+	if chain := callChain(edges(), tp.Ingress, sink); chain != nil {
+		return chain
+	}
+	return tp.Trace
+}
+
+// callChain returns the shortest chain of call-graph edges from from to the callee to, both
+// ends included, or nil when the graph holds none. A tie goes to the edge first in the
+// graph's own order, so the chain is the same on every run.
+func callChain(edges []plugin.CallEdge, from plugin.Symbol, to string) []plugin.Symbol {
+	callees := make(map[string][]plugin.Symbol)
+	for _, e := range edges {
+		callees[e.Caller.SCIP] = append(callees[e.Caller.SCIP], e.Callee)
+	}
+	type step struct {
+		sym    plugin.Symbol
+		parent string
+	}
+	seen := map[string]step{from.SCIP: {sym: from}}
+	queue := []string{from.SCIP}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == to {
+			var chain []plugin.Symbol
+			for n := to; n != from.SCIP; n = seen[n].parent {
+				chain = append(chain, seen[n].sym)
+			}
+			chain = append(chain, from)
+			slices.Reverse(chain)
+			return chain
+		}
+		for _, c := range callees[cur] {
+			if _, ok := seen[c.SCIP]; !ok {
+				seen[c.SCIP] = step{sym: c, parent: cur}
+				queue = append(queue, c.SCIP)
+			}
+		}
+	}
+	return nil
 }
 
 func framesOf(trace []plugin.Symbol) []report.CallFrame {
@@ -732,18 +808,19 @@ func firstTaintPath(store artifact.Store, assessmentID string) (plugin.ReachPath
 	return td.Result.Paths[0], true
 }
 
-func firstReachPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+// reachPaths reads the reachability artifact's resolved paths, in their stored order.
+func reachPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
 	arts, err := store.Query(assessmentID, artifact.TypeReachability)
 	if err != nil || len(arts) == 0 {
-		return plugin.ReachPath{}, false
+		return nil
 	}
 	var payload struct {
 		Reachability plugin.ReachabilityResult `json:"reachability"`
 	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil || len(payload.Reachability.Paths) == 0 {
-		return plugin.ReachPath{}, false
+	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
+		return nil
 	}
-	return payload.Reachability.Paths[0], true
+	return payload.Reachability.Paths
 }
 
 // disqualResult reads the disqualification_discovery artifact (TypeDiscovery).

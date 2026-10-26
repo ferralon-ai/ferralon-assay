@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -22,13 +23,16 @@ import (
 // and no other entry shape is in the build.
 //
 // This is an allow-list. The named forms are a Gradle start script's main class; a literal
-// mainClass = / mainClass.set(...) / mainClassName = or 'Main-Class' attribute in the root
-// build.gradle(.kts); a literal <mainClass>, <start-class>, <Main-Class> or <Start-Class> in
-// the root pom.xml; and a Main-Class (or Spring Boot's JarLauncher/WarLauncher with a
-// Start-Class) in a manifest the project ships or built (src/main/resources, a class root,
-// a JAR under build/libs/ or target/). Each named class must be first-party and declare
-// main(String[]). Every other shape withholds Searched with a named reason:
-//   - no named entry: launch_entry_unnamed;
+// mainClass = / mainClass.set(...) / mainClassName = or 'Main-Class' / 'Start-Class' attribute
+// in the root build.gradle(.kts); the main the Spring Boot Gradle plugin resolved
+// (build/resolvedMainClassName); a literal <mainClass>, <start-class>, <Main-Class> or
+// <Start-Class> in the root pom.xml; and a Main-Class (or Spring Boot's JarLauncher/WarLauncher
+// with a Start-Class) in a manifest the project ships or built (src/main/resources, a class
+// root, a JAR under build/libs/ or target/). Each named class must be first-party and declare
+// main(String[]). With none named, a build applying the Spring Boot Gradle or Maven plugin
+// launches the main that plugin finds itself (bootMain). Every other shape withholds Searched
+// with a named reason:
+//   - no named entry and no main the Boot plugin finds: launch_entry_unnamed;
 //   - a named class outside the first-party code (a dependency launcher such as Ktor's
 //     EngineMain), a Main-Verticle attribute, a non-literal or unreadable entry, or a build
 //     file that cannot be read: launch_entry_unmapped;
@@ -42,7 +46,9 @@ import (
 //     container_callback;
 //   - a META-INF/versions/N/ class in a first-party class root, a first-party JAR or a loaded
 //     dependency JAR, or one of those that cannot be read: multi_release_override_unread. A
-//     JDK at release N runs the override, and this lane reads only the base class.
+//     JDK at release N runs the override, and this lane reads only the base class;
+//   - spring-boot-maven-plugin applied and start-class or spring-boot.run.main-class set by a
+//     launch option in the checkout (javaanalysis.MavenBootPlugin): launch_entry_cli_property.
 //
 // This is the Kotlin lane's interim check. The Java lane's launch-entry allow-list
 // (javaanalysis/launchentry.go) is richer and replaces it when the two lanes share it.
@@ -53,6 +59,7 @@ const (
 	reasonWarPackaging        = plugin.PartialReasonRelationshipUnexpressed + ":war_packaging"
 	reasonContainerCallback   = plugin.PartialReasonRelationshipUnexpressed + ":container_callback"
 	reasonMultiReleaseUnread  = plugin.PartialReasonToolFailure + ":multi_release_override_unread"
+	reasonLaunchEntryCLIProp  = plugin.PartialReasonRelationshipUnexpressed + ":launch_entry_cli_property"
 )
 
 const launchTextLimit = 4 << 20
@@ -110,8 +117,8 @@ var springBootLaunchers = map[string]bool{
 var (
 	blockComment    = regexp.MustCompile(`(?s)/\*.*?\*/`)
 	lineComment     = regexp.MustCompile(`(?m)^\s*//.*$`)
-	gradleEntryWord = regexp.MustCompile(`\bmainClass(Name)?\b|Main-Class`)
-	gradleEntry     = regexp.MustCompile(`\bmainClass(?:Name)?\s*(?:\.set\s*\(\s*|=\s*)["']([^"'$]*)["']|["']Main-Class["']\s*(?::|to|,)\s*["']([^"'$]*)["']`)
+	gradleEntryWord = regexp.MustCompile(`\bmainClass(Name)?\b|Main-Class|Start-Class`)
+	gradleEntry     = regexp.MustCompile(`\bmainClass(?:Name)?\s*(?:\.set\s*\(\s*|=\s*)["']([^"'$]*)["']|["'](?:Main|Start)-Class["']\s*(?::|to|,)\s*["']([^"'$]*)["']`)
 	gradleWar       = regexp.MustCompile("\\bid\\s*\\(?\\s*[\"']war[\"']|\\bapply\\s*\\(?\\s*plugin\\s*[:=]\\s*[\"']war[\"']|(?m)^\\s*`?war`?\\s*$|\\bbootWar\\b")
 	pomEntryElement = regexp.MustCompile(`<(mainClass|start-class|Main-Class|Start-Class|Main-Verticle)>([^<]*)</`)
 	pomWar          = regexp.MustCompile(`<packaging>\s*war\s*</packaging>`)
@@ -123,6 +130,9 @@ var javaBinaryName = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][
 type entryReader struct {
 	reasons map[string]bool
 	named   map[string]bool
+
+	bootPlugin  bool // the build applies the Spring Boot Gradle or Maven plugin
+	bootBlocked bool // the build may hand the Boot plugin a main bootMain does not see
 }
 
 // launchEntryReasons returns the reasons the build's launch shape withholds Searched, sorted;
@@ -133,6 +143,7 @@ func launchEntryReasons(buildDir string, prog *program, deps *depClosure, all []
 	for _, n := range []string{"build.gradle", "build.gradle.kts"} {
 		r.gradle(filepath.Join(buildDir, n))
 	}
+	r.gradleBoot(buildDir)
 	r.maven(filepath.Join(buildDir, "pom.xml"))
 	r.startScripts(buildDir)
 	r.manifestFile(filepath.Join(buildDir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
@@ -162,7 +173,7 @@ func launchEntryReasons(buildDir string, prog *program, deps *depClosure, all []
 	for i := range prog.classes {
 		firstParty[prog.classes[i].Name] = &prog.classes[i]
 	}
-	if len(r.named) == 0 {
+	if len(r.named) == 0 && !r.bootMain(buildDir, prog) {
 		r.reasons[reasonLaunchEntryUnnamed] = true
 	}
 	for n := range r.named {
@@ -368,6 +379,14 @@ func (r *entryReader) maven(path string) {
 			continue
 		}
 		r.name(m[2])
+	}
+	applies, blocked, cli := javaanalysis.MavenBootPlugin(filepath.Dir(path), path)
+	if applies {
+		r.bootPlugin = true
+		r.bootBlocked = r.bootBlocked || blocked
+		if cli {
+			r.reasons[reasonLaunchEntryCLIProp] = true
+		}
 	}
 }
 

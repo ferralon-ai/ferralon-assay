@@ -72,9 +72,9 @@ func isCondaToolPackage(spec string) bool {
 
 // --- pyproject.toml ----------------------------------------------------------------
 
-// pyprojectDoc is the subset of pyproject.toml version resolution reads ([project]
-// dependencies and [build-system] requires) plus the tables it recognizes as unread install
-// surfaces.
+// pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
+// dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
+// dependency tables, and the uv and pdm dev-dependencies.
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -108,10 +108,8 @@ type pyprojectDoc struct {
 // table names, and [build-system].requires, which no lock covers. The bool is false when the
 // file does not decode, when an entry installs a local path other than the project itself or
 // ends in a backslash (setuptoolsJoins),
-// when dynamic dependencies name no file this reader can read, or when the file declares
-// dependencies anywhere version resolution does not read: [dependency-groups],
-// [tool.poetry] dependencies, dev-dependencies or groups, [tool.uv] dev-dependencies, or
-// [tool.pdm] dev-dependencies.
+// when dynamic dependencies name no file this reader can read, or when a dependency group or
+// tool dependency table holds an entry it cannot read (pyprojectToolDeps).
 func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -120,7 +118,7 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	var (
 		deps     []plugin.ResolvedDependency
 		origins  []manifestOrigin
-		readable = !pyprojectHasUnreadTables(doc)
+		readable = true
 	)
 	addSpec := func(spec string) {
 		d, o, keep, ok := pep508Entry(spec, dir)
@@ -138,6 +136,8 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 			addSpec(spec)
 		}
 	}
+	tdeps, torigins, tok := pyprojectToolDeps(doc, dir)
+	deps, origins, readable = append(deps, tdeps...), append(origins, torigins...), readable && tok
 	if pyprojectDynamicDeps(doc) {
 		// Dynamic dependencies are read only from the requirement files a dynamic-metadata
 		// table names; with none named, nothing here can say what the build backend will
@@ -180,20 +180,110 @@ func pyprojectDynamicDeps(doc pyprojectDoc) bool {
 	return false
 }
 
-func pyprojectHasUnreadTables(doc pyprojectDoc) bool {
+// pyprojectToolDeps reads the pyproject tables that declare installs outside [project]: PEP 735
+// [dependency-groups], [tool.uv] dev-dependencies and [tool.pdm] dev-dependencies as PEP 508
+// strings, and the [tool.poetry] dependencies, dev-dependencies and group tables as poetry
+// constraints. Each declaration is covered only by its own tool's lock in the same directory
+// (PEP 735 groups by any of projectLocks). ok is false when an entry is not a well-formed
+// requirement, a group is malformed (dependencyGroupSpecs), a poetry constraint does not
+// translate, or a poetry entry installs a local path or file.
+func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	var (
+		deps    []plugin.ResolvedDependency
+		origins []manifestOrigin
+		ok      = true
+	)
+	addPEP508 := func(spec string, lockedBy []string) {
+		if _, valid := parsePEP508(spec); !valid {
+			ok = false
+			return
+		}
+		d, o, keep, entryOK := pep508Entry(spec, dir)
+		ok = ok && entryOK
+		if keep {
+			if !o.directRef {
+				o.lockedBy = lockedBy
+			}
+			deps = append(deps, d)
+			origins = append(origins, o)
+		}
+	}
+	addAny := func(v any, lockedBy []string) {
+		entries, isList := v.([]any)
+		if v != nil && !isList {
+			ok = false
+			return
+		}
+		for _, e := range entries {
+			s, isStr := e.(string)
+			if !isStr {
+				ok = false
+				return
+			}
+			addPEP508(s, lockedBy)
+		}
+	}
+
+	groupSpecs, groupsOK := dependencyGroupSpecs(doc.DependencyGroups)
+	ok = ok && groupsOK
+	for _, s := range groupSpecs {
+		addPEP508(s, projectLocks)
+	}
+	addAny(doc.Tool.UV.DevDependencies, []string{"uv.lock"})
+	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {
+		addAny(doc.Tool.PDM.DevDependencies[g], []string{"pdm.lock"})
+	}
+
 	p := doc.Tool.Poetry
-	for name := range p.Dependencies {
-		if !strings.EqualFold(name, "python") { // the interpreter constraint, not a package
-			return true
+	tables := []map[string]any{p.Dependencies, p.DevDependencies}
+	for _, g := range slices.Sorted(maps.Keys(p.Group)) {
+		tables = append(tables, p.Group[g].Dependencies)
+	}
+	for _, t := range tables {
+		for _, name := range slices.Sorted(maps.Keys(t)) {
+			if strings.EqualFold(name, "python") { // the interpreter constraint, not a package
+				continue
+			}
+			if poetryInstallsLocal(t[name]) {
+				ok = false
+				continue
+			}
+			decls, declOK := poetryDecls(name, t[name])
+			if !declOK {
+				ok = false
+				continue
+			}
+			for _, d := range decls {
+				if d.Direct {
+					deps = append(deps, pyResolved(name, "", false, "pyproject.toml"))
+					origins = append(origins, manifestOrigin{dir: dir, directRef: true})
+					continue
+				}
+				addPEP508(name+d.Specifier, []string{"poetry.lock"})
+			}
 		}
 	}
-	for _, g := range p.Group {
-		if len(g.Dependencies) > 0 {
-			return true
+	return deps, origins, ok
+}
+
+// poetryInstallsLocal reports whether a [tool.poetry] dependency value, or any element of an
+// array of them, installs from a local path or file, whose version nothing here reads.
+func poetryInstallsLocal(v any) bool {
+	entries, isList := v.([]any)
+	if !isList {
+		entries = []any{v}
+	}
+	for _, e := range entries {
+		if m, isMap := e.(map[string]any); isMap {
+			if _, has := m["path"]; has {
+				return true
+			}
+			if _, has := m["file"]; has {
+				return true
+			}
 		}
 	}
-	return len(doc.DependencyGroups) > 0 ||
-		len(p.DevDependencies) > 0 || len(doc.Tool.UV.DevDependencies) > 0 || len(doc.Tool.PDM.DevDependencies) > 0
+	return false
 }
 
 // dependencyGroupSpecs returns every requirement string a PEP 735 [dependency-groups] table

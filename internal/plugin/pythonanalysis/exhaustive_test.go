@@ -177,9 +177,9 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 				files[k] = v
 			}
 			r := resolveVersion(t, writeTree(t, files), "PyJWT")
-			// An installed copy is a found match of its own (installedCopies); no other row
-			// holds PyJWT anywhere.
-			if r.Found && r.Match.Source != "site-packages" {
+			// An installed copy is a found match of its own (installedCopies), and so is an
+			// unlocked pyproject declaration; no other row holds PyJWT anywhere.
+			if r.Found && r.Match.Source != "site-packages" && (r.Match.Source != "pyproject.toml" || r.Match.Resolved) {
 				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
 			}
 			if r.Exhaustive != tt.want {

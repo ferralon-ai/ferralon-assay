@@ -389,22 +389,36 @@ func TestResolveVersions_PipfileBesideOwnLockVetoes(t *testing.T) {
 	mustVetoedPy(t, dir, "pytest")
 }
 
-// [tool.poetry] dependencies are not read, so they veto even beside their own poetry.lock,
-// group dependencies included.
-func TestResolveVersions_PoetryBesideOwnLockVetoes(t *testing.T) {
+// [tool.poetry] dependencies, group dependencies included, are covered by their own
+// poetry.lock when its pin satisfies the translated constraint.
+func TestResolveVersions_PoetryBesideOwnLockResolves(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"pyproject.toml": "[tool.poetry]\nname = \"app\"\n\n[tool.poetry.dependencies]\npython = \"^3.11\"\nflask = \"^2.0\"\n\n[tool.poetry.group.dev.dependencies]\npytest = {version = \">=8\"}\n",
 		"poetry.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\n",
 	})
-	mustVetoedPy(t, dir, "flask")
-	mustVetoedPy(t, dir, "pytest")
+	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
+	mustResolvedCompletePy(t, dir, "pytest", "8.0.0")
 }
 
-// [tool.poetry] main, dev and group dependencies each veto another service's pin.
-func TestResolveVersions_PoetryRangeWithoutLockVetoesPin(t *testing.T) {
+// mustUndecidedCompletePy asserts the coordinate is found but unresolved while the result stays
+// complete: a declared range no lock covers, not an unread surface.
+func mustUndecidedCompletePy(t *testing.T, dir, coordinate string) {
+	t.Helper()
+	for i := 0; i < resolveRuns; i++ {
+		res := resolveVersion(t, dir, coordinate)
+		mustUnresolvedPy(t, res)
+		if !res.Partiality.Complete {
+			t.Fatalf("result must stay complete; got %+v", res.Partiality)
+		}
+	}
+}
+
+// A [tool.poetry] main, dev or group range no lock covers leaves another service's pin
+// unresolved without making the result partial.
+func TestResolveVersions_PoetryRangeWithoutLockLeavesPinUnresolved(t *testing.T) {
 	for name, table := range map[string]string{
 		"main":  "[tool.poetry.dependencies]\nflask = \"^2.0\"\n",
-		"dev":   "[tool.poetry.dev-dependencies]\npytest = \"^8\"\n",
+		"dev":   "[tool.poetry.dev-dependencies]\nflask = \"^2\"\n",
 		"group": "[tool.poetry.group.web.dependencies]\nflask = {version = \"^2.0\"}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -412,26 +426,17 @@ func TestResolveVersions_PoetryRangeWithoutLockVetoesPin(t *testing.T) {
 				"svc-a/requirements.txt": "flask==2.3.0\n",
 				"svc-b/pyproject.toml":   "[tool.poetry]\nname = \"b\"\n\n" + table,
 			})
-			mustVetoedPy(t, dir, "flask")
+			mustUndecidedCompletePy(t, dir, "flask")
 		})
 	}
 }
 
-// An exact Pipfile or Poetry pin is not read either: equal to another service's pin, it
-// still vetoes.
+// An exact Pipfile pin is not read: equal to another service's pin, it still vetoes. An exact
+// Poetry pin is read, so the two agree.
 func TestResolveVersions_DeclaredExactPins(t *testing.T) {
-	for name, file := range map[string]string{
-		"Pipfile":        "[packages]\nflask = \"==2.3.0\"\n",
-		"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"2.3.0\"\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			dir := writeTree(t, map[string]string{
-				"svc-a/requirements.txt": "flask==2.3.0\n",
-				"svc-b/" + name:          file,
-			})
-			mustVetoedPy(t, dir, "flask")
-		})
-	}
+	pin := "svc-a/requirements.txt"
+	mustVetoedPy(t, writeTree(t, map[string]string{pin: "flask==2.3.0\n", "svc-b/Pipfile": "[packages]\nflask = \"==2.3.0\"\n"}), "flask")
+	mustResolvedCompletePy(t, writeTree(t, map[string]string{pin: "flask==2.3.0\n", "svc-b/pyproject.toml": "[tool.poetry.dependencies]\nflask = \"2.3.0\"\n"}), "flask", "2.3.0")
 }
 
 // A Pipfile with no package category, and a [tool.poetry] that declares only the
@@ -953,15 +958,33 @@ func TestResolveVersions_StandardRequirementsNamesRead(t *testing.T) {
 	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
 }
 
-// pyproject.toml tables version resolution does not read veto, even beside a lock that pins
-// the coordinate; so do dynamic dependencies whose file is missing or that name no file.
+// Dynamic dependencies whose file is missing or that name no file veto, even beside a lock
+// that pins the coordinate; so does a dependency group or tool table holding an entry nothing
+// here can read: an installer rejects the malformed group shapes, and a local path or
+// untranslatable poetry constraint installs a version nothing here reads.
 func TestResolveVersions_PyprojectUnreadTablesVeto(t *testing.T) {
+	const head = "[project]\nname = \"b\"\n\n"
 	for name, table := range map[string]string{
-		"dependency-groups": "[project]\nname = \"b\"\n\n[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"x\"}]\n",
-		"uv-dev":            "[project]\nname = \"b\"\n\n[tool.uv]\ndev-dependencies = [\"flask>=2\"]\n",
-		"pdm-dev":           "[project]\nname = \"b\"\n\n[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n",
-		"dynamic-deps":      "[project]\nname = \"b\"\ndynamic = [\"version\", \"dependencies\"]\n\n[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n",
-		"dynamic-optional":  "[project]\nname = \"b\"\ndynamic = [\"optional-dependencies\"]\n",
+		"dynamic-deps":              head[:len(head)-1] + "dynamic = [\"version\", \"dependencies\"]\n\n[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n",
+		"dynamic-optional":          head[:len(head)-1] + "dynamic = [\"optional-dependencies\"]\n",
+		"group-include-unknown":     head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"x\"}]\n",
+		"group-include-cycle":       head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"test\"}]\ntest = [{include-group = \"dev\"}]\n",
+		"group-include-self":        head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"dev\"}]\n",
+		"group-include-extra-key":   head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"test\", optional = true}]\ntest = []\n",
+		"group-include-not-string":  head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = 1}]\n\"\" = []\n",
+		"group-entry-not-string":    head + "[dependency-groups]\ndev = [\"flask>=2\", 1]\n",
+		"group-not-array":           head + "[dependency-groups]\ndev = \"flask>=2\"\n",
+		"group-names-collide":       head + "[dependency-groups]\nDev_Tools = [\"flask>=2\"]\ndev-tools = []\n",
+		"group-entry-unparseable":   head + "[dependency-groups]\ndev = [\"flask>=2\", \"=bad\"]\n",
+		"group-entry-local-file":    head + "[dependency-groups]\ndev = [\"flask>=2\", \"lib @ file:///opt/lib\"]\n",
+		"uv-dev-not-string":         head + "[tool.uv]\ndev-dependencies = [\"flask>=2\", {name = \"x\"}]\n",
+		"pdm-dev-editable":          head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\", \"-e ./lib\"]\n",
+		"pdm-dev-not-array":         head + "[tool.pdm.dev-dependencies]\ntest = \"flask>=2\"\n",
+		"poetry-path":               head + "[tool.poetry.dependencies]\nflask = \"^2\"\nlib = {path = \"../lib\"}\n",
+		"poetry-file":               head + "[tool.poetry.group.dev.dependencies]\nflask = \"^2\"\nlib = {file = \"dist/lib.whl\"}\n",
+		"poetry-path-in-array":      head + "[tool.poetry.dependencies]\nflask = [{version = \"^2\", python = \"<3.12\"}, {path = \"../flask\", python = \">=3.12\"}]\n",
+		"poetry-alternation":        head + "[tool.poetry.dependencies]\nflask = \"^1.0 || ^2.0\"\n",
+		"poetry-version-not-string": head + "[tool.poetry.dependencies]\nflask = {version = 2}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeTree(t, map[string]string{
@@ -970,6 +993,45 @@ func TestResolveVersions_PyprojectUnreadTablesVeto(t *testing.T) {
 				"svc-b/uv.lock":          "version = 1\n\n[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
 			})
 			mustVetoedPy(t, dir, "flask")
+		})
+	}
+}
+
+// PEP 735 groups (include-group included), uv and pdm dev-dependencies and poetry tables are
+// read as declarations: covered by their own tool's lock when its pin satisfies the range, and
+// otherwise a range that leaves the coordinate unresolved without making the result partial.
+func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
+	const (
+		head   = "[project]\nname = \"b\"\n\n"
+		uvLock = "version = 1\n\n[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n"
+		pdmLk  = "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n"
+	)
+	covered := map[string]map[string]string{
+		"groups-uv-lock":       {"pyproject.toml": head + "[dependency-groups]\ndev = [\"pytest\", {include-group = \"Web_Stack\"}]\nweb-stack = [\"flask>=2\"]\n", "uv.lock": uvLock},
+		"groups-pdm-lock":      {"pyproject.toml": head + "[dependency-groups]\ntest = [\"flask>=2; python_version >= '3.9'\"]\n", "pdm.lock": pdmLk},
+		"groups-exact-pin":     {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask==2.3.0\"]\n"},
+		"uv-dev-uv-lock":       {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask>=2\"]\n", "uv.lock": uvLock},
+		"pdm-dev-pdm-lock":     {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n", "pdm.lock": pdmLk},
+		"poetry-caret-covered": {"pyproject.toml": "[tool.poetry.group.web.dependencies]\nflask = \"^2.1\"\n", "poetry.lock": pdmLk},
+	}
+	for name, files := range covered {
+		t.Run(name, func(t *testing.T) {
+			mustResolvedCompletePy(t, writeTree(t, files), "flask", "2.3.0")
+		})
+	}
+	undecided := map[string]map[string]string{
+		"groups-no-lock":          {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask>=2\"]\n"},
+		"groups-stale-lock":       {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask>=2,<2.3\"]\n", "uv.lock": uvLock},
+		"uv-dev-other-tool-lock":  {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask>=2\"]\n", "pdm.lock": pdmLk},
+		"pdm-dev-other-tool-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n", "uv.lock": uvLock},
+		"poetry-other-tool-lock":  {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2\"\n", "uv.lock": uvLock},
+		"poetry-caret-stale-lock": {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2.4\"\n", "poetry.lock": pdmLk},
+		"poetry-git":              {"pyproject.toml": "[tool.poetry.dependencies]\nflask = {git = \"https://github.com/pallets/flask\"}\n", "poetry.lock": pdmLk},
+		"group-direct-reference":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask @ https://example.com/flask-2.3.0.tar.gz\"]\n", "uv.lock": uvLock},
+	}
+	for name, files := range undecided {
+		t.Run(name, func(t *testing.T) {
+			mustUndecidedCompletePy(t, writeTree(t, files), "flask")
 		})
 	}
 }

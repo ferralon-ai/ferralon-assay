@@ -52,8 +52,8 @@ import (
 //   - Any other install surface under the build dir, matched by name or content anywhere the
 //     shared walk reaches (everything but node_modules and site-packages), is treated exactly
 //     like an unparseable manifest unless it is read and found to declare nothing; so is a
-//     pyproject.toml table other than [project] dependencies, optional-dependencies and
-//     file-backed dynamic dependencies, and [build-system].requires.
+//     pyproject.toml whose dynamic dependencies name no readable file, or whose dependency
+//     groups or tool dependency tables hold an entry that cannot be read.
 //     See versions_surfaces.go and versions_declared.go.
 //   - A distribution installed in a site-packages directory under the build dir is another
 //     copy of its project: it takes part in Match like a pin, without joining All.
@@ -138,7 +138,7 @@ type manifestOrigin struct {
 	directRef bool
 }
 
-// projectLocks are the locks that resolve a [project].dependencies declaration.
+// projectLocks are the locks that resolve a [project] or [dependency-groups] declaration.
 var projectLocks = []string{"poetry.lock", "pdm.lock", "uv.lock"}
 
 // originsFor repeats one origin for every entry of deps.
@@ -163,10 +163,11 @@ func originsFor(deps []plugin.ResolvedDependency, o manifestOrigin) []manifestOr
 //     that install surface may hold any version;
 //   - no resolved entry: Match is the first entry, UNRESOLVED.
 //
-// One exception to the third case: a pyproject.toml [project] range does not veto when
-// poetry.lock, pdm.lock or uv.lock in the SAME directory pins the coordinate at a version
-// that satisfies the range. That lock is the project's own resolution of the declared
-// range, so both describe one environment. A pin outside the range is a stale lock, and a
+// One exception to the third case: a pyproject.toml range does not veto when a lock in the
+// SAME directory that resolves its table (manifestOrigin.lockedBy: poetry.lock, pdm.lock or
+// uv.lock for [project] and [dependency-groups], only the tool's own lock for a [tool.*]
+// table) pins the coordinate at a version that satisfies the range. That lock is the
+// project's own resolution of the declared range, so both describe one environment. A pin outside the range is a stale lock, and a
 // direct reference ("name @ url") is never covered. A range in any other manifest or
 // directory, or beside a lock of another tool, is a separate install surface and still
 // vetoes.
@@ -1099,7 +1100,7 @@ func normalizePyCoordinate(c string) string {
 // coverageCovers is the no-manifest-entry coverage check (manifestSetCovers) over the
 // manifests' declared names. It reads each manifest with the coverage readers
 // (parseManifestCoverage), not the version-resolution vetoes above: a surface version
-// resolution declines to read (a -r include, a [dependency-groups] table) is one the coverage
+// resolution declines to read (a -r include) is one the coverage
 // check accounts for itself, through manifestDecls and the install-surface walk, so a version
 // left undecided must not withhold Exhaustive on its own.
 func coverageCovers(root, coordinate string, manifests []string, installs pipInstalls) bool {

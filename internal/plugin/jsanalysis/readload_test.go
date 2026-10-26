@@ -253,6 +253,46 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 			},
 		},
 		{
+			// A bundler may run esm.js's run, which the call's edge into index.js does not cover.
+			name: "call_through_module_entry",
+			run: fixture("const { run } = require('dep');\nrun();\n", plain(map[string]string{
+				"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm.js"}`, "esm.js": "export function run() {}\n"})),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				for _, u := range cg.Unresolved {
+					if u.Callee == "run" && u.Reason == plugin.PartialReasonDynamicDispatch {
+						return
+					}
+				}
+				t.Errorf("a call two entries may answer must stay listed; unresolved %+v", cg.Unresolved)
+			},
+		},
+		{
+			// The call's load is not covered, so the call keeps its uninspectable decline.
+			name: "call_through_unparsed_entry",
+			run: fixture("const { run } = require('dep');\nrun();\n", plain(map[string]string{
+				"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm/entry"}`, "esm/entry": "export function run() {}\n"})),
+			withheld: true,
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				for _, u := range cg.Unresolved {
+					if u.Callee == "run" && u.Reason == plugin.PartialReasonUninspectablePackage {
+						return
+					}
+				}
+				t.Errorf("the call must stay uninspectable; unresolved %+v", cg.Unresolved)
+			},
+		},
+		{
+			name:     "exports_target_missing",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","exports":{".":"./gone.json"}}`})),
+			withheld: true,
+		},
+		{
+			// Node loads a main outside the package (node v26), which nothing read covers.
+			name:     "main_outside_package",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"../shim.js"}`})),
+			withheld: true,
+		},
+		{
 			// A yarn berry lock beside the npm lock: the layout is berry and nothing is retracted.
 			name: "berry_mixed_lock",
 			run: func(t *testing.T) plugin.CallGraphResult {

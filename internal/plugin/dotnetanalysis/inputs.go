@@ -150,6 +150,18 @@ var computedProperties = map[string]func(project, thisFile string) string{
 // (MSB4004), so they are a run condition, not a project input.
 var toolsetPrefixes = []string{"$(msbuildtoolspath)", "$(msbuildbinpath)"}
 
+// toolsetEscape reports whether an Import skipped as a toolset file can name a file outside the
+// toolset: its remainder climbs out, expands, or matches a pattern.
+func toolsetEscape(project string) bool {
+	lower := strings.ToLower(project)
+	for _, prefix := range toolsetPrefixes {
+		if rest, ok := strings.CutPrefix(lower, prefix); ok {
+			return strings.Contains(rest, "..") || strings.ContainsAny(rest, "$@*?")
+		}
+	}
+	return false
+}
+
 // bundledSDKs is the exact set of SDKs the .NET SDK ships. They add no package references of
 // their own beyond the implicit ones restore records. Any other SDK, or any version on one
 // (which routes resolution through an SDK resolver), withholds.
@@ -320,6 +332,9 @@ type projectEval struct {
 	identity  bool              // sets a property that names it as a reference
 	pinning   bool              // CentralPackageTransitivePinningEnabled is true
 	generated bool              // obj/ holds restore-generated imports for it
+
+	opaque       bool     // a file it reads could bring code in outside restore (msbuildFile.opaque)
+	assemblyRefs []string // normalized simple names of its Reference and FrameworkReference items
 }
 
 type projectRef struct {
@@ -491,6 +506,20 @@ func (e *evaluator) evaluate(real string) *projectEval {
 	}
 	if r := e.finalize(pe, reads); r != "" {
 		return fail(r)
+	}
+	for _, r := range reads {
+		pe.opaque = pe.opaque || r.mf.opaque
+		pe.assemblyRefs = append(pe.assemblyRefs, r.mf.assemblyRefs...)
+		for _, p := range r.mf.props {
+			if !inertProperty(p.name) {
+				pe.opaque = true
+			}
+		}
+		for _, imp := range r.mf.imports {
+			if strings.ContainsAny(imp.project, "%;") || toolsetEscape(imp.project) {
+				pe.opaque = true
+			}
+		}
 	}
 	return pe
 }

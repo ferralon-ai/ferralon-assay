@@ -170,13 +170,17 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// step to have run: a run that loads code from outside the build list (plugin_load) can
 		// hold the advisory's code with no module declaring it.
 		if !undetermined {
-			if detail, ok := outsideBuildGrounds(store, assessmentID, pkg, mods); ok {
+			detail, unvetted, ok := outsideBuildGrounds(store, assessmentID, pkg, mods)
+			if ok {
 				f = report.AdvisoryFinding{
 					Advisory: adv,
 					Verdict:  report.VerdictNotExploitable,
 					Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: detail},
 				}
 				break
+			}
+			if unvetted != "" {
+				reason, undetermined = unvetted, true
 			}
 		}
 		detail, groundsReason, grounded := "", "", false
@@ -206,10 +210,8 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	}
-	// Attach offline EPSS/KEV likelihood context (package intel) to every finding by
-	// the advisory's CVE id/aliases. It only ranks attention; it NEVER changes the
-	// deterministic verdict (inv. 5) — a disqualified high-EPSS CVE stays disqualified.
-	f.Priority = priorityFor(adv)
+	// No Priority here: EPSS/KEV context is attached by the report Builder (rankWith), after every
+	// verdict is final, so nothing on this path can read it (inv. 5).
 	return f
 }
 
@@ -274,8 +276,9 @@ func advisoryGuards(store artifact.Store, assessmentID string) []string {
 // advisorySymbolProvenance reads the corpus's record-scoped symbol_provenance derivation tag
 // from the normalized advisory artifact (S1). Empty ("") when the advisory carries none, when
 // the artifact is absent, or when the payload is unreadable — every miss is the honest-absent
-// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed only as a
-// candidate-scoped strength signal (symbolConfidenceFor), never as an admission or refute input.
+// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed as a
+// candidate-scoped strength signal (symbolConfidenceFor); the not_exploitable grounds read the same
+// tag through vettedSymbols.
 func advisorySymbolProvenance(store artifact.Store, assessmentID string) string {
 	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
@@ -298,6 +301,7 @@ func advisorySymbolProvenance(store artifact.Store, assessmentID string) string 
 //   - absent / "" ⇒ ""       unknown derivation, NOT low confidence — candidate reported as today.
 //   - "osv-declared"/"curated" ⇒ high      authoritatively declared symbols.
 //   - "diff-lexed"           ⇒ moderate   heuristically extracted — a LOWER label, never a gate.
+//   - "cna-declared"         ⇒ ""         declared by the CNA, completeness unmeasured: no label.
 //   - any unrecognized tier   ⇒ ""         we never invent a confidence for a tier we don't know.
 //
 // No tier, including diff-lexed, yields a value that could gate a symbol out of reachability or
@@ -503,27 +507,66 @@ func maliciousPresentDetail(matchedVersion string) string {
 	return "the resolved dependency version is listed by the advisory as a known-malicious package release"
 }
 
-// priorityFor looks the advisory up in the pinned EPSS/KEV snapshot by its id and
-// aliases (EPSS/KEV are CVE-keyed; a GO-/GHSA-keyed advisory matches via its CVE
-// alias). Returns nil when neither feed has a record — most synthetic corpus ids
-// have no CVE, so they carry no likelihood signal, which is correct.
-func priorityFor(adv report.Advisory) *report.Priority {
-	ids := append([]string{adv.ID}, adv.Aliases...)
-	p := &report.Priority{}
-	matched := false
-	if s, ok := intel.EPSS(ids...); ok {
-		p.EPSSScore, p.EPSSPercentile = s.Score, s.Percentile
-		matched = true
-	}
-	if k, ok := intel.KEV(ids...); ok {
-		p.KEVListed, p.KEVDateAdded = true, k.DateAdded
-		matched = true
-	}
-	if !matched {
+// priorityFor attributes the run's signals to one advisory through intel's Attribute join and
+// returns each value with its own stamp. It returns nil when the run has no signals, or the join
+// attributes no record to the advisory — most synthetic corpus ids have no CVE and so no likelihood
+// signal, which is correct.
+//
+// The join takes the record under the advisory's own id, or — for an advisory not keyed by a CVE —
+// the record of a CVE alias that no other advisory in the run's work set (claims) also names, and
+// nothing when two such aliases' records disagree. It never
+// hands a CVE-keyed advisory a GO/PYSEC/RUSTSEC/GHSA roll-up record through an alias: that record
+// may carry a sibling CVE's KEV listing (GO-2023-2102 stands for CVE-2023-39325 AND KEV-listed
+// CVE-2023-44487). pipeline's TestKEVAttributionFollowsListedCVE guards the rule.
+//
+// Ranking context only (inv. 5): it is read by Builder.WithPriority after every verdict is final.
+func priorityFor(adv report.Advisory, sig *intel.Signals, claims *intel.Claims) *report.Priority {
+	m, ok := sig.Attribute(adv.ID, adv.Aliases, claims)
+	if !ok {
 		return nil
 	}
-	p.Snapshot = intel.SnapshotDate
-	return p
+	var p report.Priority
+	if e := m.EPSS; m.HasEPSS {
+		p.EPSSScore, p.EPSSAsOf = e.Score, e.AsOf
+		p.EPSSPercentile, p.HasPercentile = e.Percentile, e.HasPercentile
+	}
+	if k := m.KEV; m.HasKEV {
+		p.KEVListed, p.KEVDateAdded = k.Listed, k.DateAdded
+		p.KEVCatalogVersion, p.KEVDateReleased = k.CatalogVersion, k.DateReleased
+	}
+	if !p.HasEPSS() && !p.HasKEV() {
+		return nil
+	}
+	return &p
+}
+
+// rankWith makes b rank every finding by the run's signals sig (nil for none). The join refuses a
+// shared alias against the run's claims, and a run's claims are its work set: every advisory the run
+// was asked about, by its id and the aliases its record lists, and every row its report holds, fresh
+// or inherited. workSet is what the run was asked about, its records read through src, the fact
+// source its assessments read; the rows are read from b itself — Build has no side effects — once
+// every finding is added.
+//
+// So an advisory the run deferred, or assessed into no row, still claims its aliases, and a row ranks
+// the same over the same work set on every path that ranks one: the baseline, the PR-inherit fast
+// path, the PR re-analysis and the CVE-watch earnest run. pipeline's
+// TestKEVAttributionFollowsListedCVE guards the join over the same scope.
+func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRef, src pipeline.AdvisorySource) {
+	claims := new(intel.Claims)
+	if sig != nil {
+		ids := make([]string, 0, len(workSet))
+		for _, v := range workSet {
+			ids = append(ids, v.ID)
+		}
+		// An id whose record does not resolve still claims itself.
+		pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
+			claims.Add(id, facts.Aliases...)
+		})
+		for _, f := range b.Build().Advisories {
+			claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
+		}
+	}
+	b.WithPriority(func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig, claims) })
 }
 
 // reachabilityEvidence derives the structured reachability evidence for a candidate
@@ -752,7 +795,7 @@ func disqualDetail(reason string) string {
 	case pipeline.ReasonAdvisoryEcosystemMismatch:
 		return "the advisory targets a different ecosystem than this codebase; no version or symbol comparison was performed"
 	case pipeline.ReasonNoManifestEntry:
-		return "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+		return "the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed"
 	default:
 		return "disqualified on an axis that is neither a version nor a symbol comparison; neither comparison was performed"
 	}
@@ -1106,7 +1149,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	}
 	switch f.UndeterminedReason {
 	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
-		report.ReasonAdvisoryRangeAbsent:
+		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {
 			note.Ecosystem = f.Package.Ecosystem
@@ -1255,8 +1298,11 @@ const assessErrorLimit = 200
 // secretREs match the credentials a tool error can echo, each with what replaces them: the
 // userinfo of a URL (with or without a scheme, up to the authority's last '@', since a password
 // may hold one), a user:password@host without one (a proxy setting), query-string values, an
-// Authorization header and a bearer token. A Go module@version has no ':' before its '@', so it
-// is kept.
+// Authorization header, a bearer token and a GitLab PRIVATE-TOKEN header; a token= or npm
+// _authToken= setting outside a query string; a .netrc entry's password; and a bare GitHub, GitLab
+// or npm token, by its prefix and a body of a token's length (the prefix is kept). A Go
+// module@version has no ':' before its '@', so it is kept; a word that only contains "token" or
+// "password" (tokenizer, password-reset) has no value to redact, so it is kept.
 var secretREs = []struct {
 	re   *regexp.Regexp
 	repl string
@@ -1266,6 +1312,14 @@ var secretREs = []struct {
 	{regexp.MustCompile(`([?&][^\s?&#=]+=)[^\s&#]*`), "${1}REDACTED"},
 	{regexp.MustCompile(`(?i)\b((?:proxy-)?authorization)\s*[:=]\s*(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+`), "${1}: REDACTED"},
 	{regexp.MustCompile(`(?i)\b(bearer)\s+[^\s,;]+`), "${1} REDACTED"},
+	{regexp.MustCompile(`(?i)\b(private-token)\s*[:=]\s*[^\s,;]+`), "${1}: REDACTED"},
+	{regexp.MustCompile(`(?i)(_authToken)\s*=\s*[^\s,;]+`), "${1}=REDACTED"},
+	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_-]*token)=[^\s&#,;]+`), "${1}=REDACTED"},
+	{regexp.MustCompile(`(?i)\b((?:machine\s+\S+(?:\s+(?:login|account)\s+\S+)*|default(?:\s+(?:login|account)\s+\S+)+)\s+password)\s+\S+`), "${1} REDACTED"},
+	{regexp.MustCompile(`\b(gh[pousr]_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]{22,}`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(glpat-)[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(npm_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
 }
 
 // assessErrorText renders err for a report row: one line, credentials redacted, at most

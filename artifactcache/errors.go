@@ -35,6 +35,7 @@ const (
 	PolicyOffAllowlist         = "off-allowlist"
 	PolicyNonHTTPS             = "non-https"
 	PolicyMissingCredential    = "missing-credential"
+	PolicyCredentialRejected   = "credential-rejected"
 	PolicyUserinfoInURL        = "userinfo-in-url"
 	PolicyRedirectOffAllowlist = "redirect-off-allowlist"
 	PolicyRedirectDowngrade    = "https-downgrade-on-redirect"

@@ -17,9 +17,6 @@ import (
 // sink Searched. Every row's main is empty and never calls the sink.
 func TestReachability_LaunchOptions(t *testing.T) {
 	agent, option := javaanalysis.PartialReasonLaunchAgent, javaanalysis.PartialReasonLaunchOption
-	// A build script outside the Java lane's SAFE statement set leaves the lock unconfirmed, so
-	// Searched is withheld for that reason alone; such a row asserts no launch reason fires.
-	const unconfirmed = "source_unpinned:gradle_lockfile_unconfirmed"
 	inventory := func(files map[string]string) func(t *testing.T) string {
 		return func(t *testing.T) string {
 			dir := gradleJacksonBuild(t, "")
@@ -50,6 +47,7 @@ func TestReachability_LaunchOptions(t *testing.T) {
 		setup  func(t *testing.T) string
 		reason string // "" when the row stays Searched
 	}{
+		{"a pom beside the gradle graph", inventory(map[string]string{"pom.xml": "<project/>"}), javaanalysis.PartialReasonOtherToolBuild},
 		{"start script: -Djava.system.class.loader", func(t *testing.T) string {
 			return jvmOptsBuild(t, `'"-Djava.system.class.loader=org.d.D"'`)
 		}, option},
@@ -71,7 +69,7 @@ func TestReachability_LaunchOptions(t *testing.T) {
 			return dir
 		}, option},
 		{"applicationDefaultJvmArgs", appendBuild("\napplication {\n    applicationDefaultJvmArgs = listOf(\"-Xmx64m\", \"-Djava.security.manager=org.d.D\")\n}\n"), option},
-		{"applicationDefaultJvmArgs, allowlisted: no launch reason", appendBuild("\napplication {\n    applicationDefaultJvmArgs = listOf(\"-Xmx64m\", \"-Dfile.encoding=UTF-8\")\n}\n"), unconfirmed},
+		{"applicationDefaultJvmArgs, allowlisted: searched", appendBuild("\napplication {\n    applicationDefaultJvmArgs = listOf(\"-Xmx64m\", \"-Dfile.encoding=UTF-8\")\n}\n"), ""},
 		{"applicationDefaultJvmArgs unparseable", appendBuild("\napplication {\n    applicationDefaultJvmArgs = jvmArgsFrom(project)\n}\n"), option},
 		{"Dockerfile ENV JAVA_TOOL_OPTIONS", inventory(map[string]string{
 			"Dockerfile": "FROM eclipse-temurin:21\nENV JAVA_TOOL_OPTIONS=\"-Djava.util.logging.config.class=org.d.D\"\nENTRYPOINT [\"/app/bin/app\"]\n",
@@ -89,7 +87,7 @@ func TestReachability_LaunchOptions(t *testing.T) {
 			"entrypoint.sh": "#!/bin/sh\nexec java -javaagent:/otel.jar com.example.MainKt \"$@\"\n",
 		}), agent},
 		{"run task jvmArgs agent", appendBuild("\ntasks.named<JavaExec>(\"run\") {\n    jvmArgs = listOf(\"-javaagent:/otel.jar\", \"-Dspring.profiles.active=dev\")\n}\n"), agent},
-		{"test task jvmArgs configure a test JVM: no launch reason", appendBuild("\ntasks.withType<Test>().configureEach {\n    jvmArgs = listOf(\"-javaagent:/jacoco.jar\", \"-Dspring.profiles.active=test\")\n}\n"), unconfirmed},
+		{"test task jvmArgs configure a test JVM: searched", appendBuild("\ntasks.withType<Test>().configureEach {\n    jvmArgs = listOf(\"-javaagent:/jacoco.jar\", \"-Dspring.profiles.active=test\")\n}\n"), ""},
 		{"Dockerfile ENTRYPOINT java option", inventory(map[string]string{
 			"docker/Dockerfile": "FROM eclipse-temurin:21\nENTRYPOINT [\"java\", \"-Djava.system.class.loader=org.d.D\", \"-jar\", \"/app.jar\"]\n",
 		}), option},
@@ -153,9 +151,6 @@ func TestReachability_LaunchOptions(t *testing.T) {
 			}
 			if !hasReason(res.Partiality, tt.reason) {
 				t.Errorf("reasons %v must carry %q", res.Partiality.Reasons, tt.reason)
-			}
-			if tt.reason == unconfirmed && (hasReason(res.Partiality, agent) || hasReason(res.Partiality, option)) {
-				t.Errorf("reasons %v carry a launch reason", res.Partiality.Reasons)
 			}
 		})
 	}

@@ -8,7 +8,12 @@
 #   CORPUS_REF     `corpus-<12 hex>` names a release; `latest` or `main` resolves the latest release;
 #                  anything else (a branch or commit SHA) cannot name a release -> route=git
 #   CORPUS_POLICY  policy id, e.g. published-7d
+#   CORPUS_SIGNER_IDENTITY  certificate identity the release's bundles.json must be signed by
+#   CORPUS_SIGNER_ISSUER    OIDC issuer of that identity
+#                  Both are required whenever a release is read; neither has a default (Assay names no
+#                  signer of its own). Unused on the route=git exit for a ref that names no release.
 #   DEST           directory the verified bundle is written into, as DEST/<policy>.jsonl.gz
+#   PATH           must carry cosign 3.x; action.yml puts the pinned scripts/install-cosign.sh binary first
 #   CORPUS_GITHUB  (optional) base URL for releases + git, default https://github.com
 #   CORPUS_RAW     (optional) base URL for raw repository files, default https://raw.githubusercontent.com
 #
@@ -18,8 +23,22 @@
 #                  not a release; the caller falls back to the git tree fetch at git-ref
 #   git-ref=<ref>  the ref the git fallback should fetch: the RESOLVED release tag when one was
 #                  resolved (so both routes read the same corpus state), else CORPUS_REF unchanged
+#   corpus-signer-identity=<id>, corpus-signer-issuer=<issuer>
+#                  route=bundle only: the identity and issuer cosign verified bundles.json against
+#   signals-path=<path>
+#                  whenever a release was read (route=bundle, and route=git for a manifest-only
+#                  policy): DEST/signals.json.gz, the release's EPSS/KEV signals asset, after it passed
+#                  check S below. Absent on the route=git exit for a ref that names no release.
 #
 # THE PIN. Every check anchors the bundle one step further from the release asset it arrived as:
+#   0. cosign verify-blob bundles.json against bundles.json.sigstore.json, with the EXACT caller-named
+#      certificate identity and OIDC issuer, before anything in bundles.json is read
+#                                                                  (sidecar is the signer's)
+#   S. bundle_version is 1.1 or later and bundles.json carries a `signals` object (INTEL-276), and
+#      sha256(signals.json.gz) == bundles.json .signals.sha256     (signals intact vs. the sidecar)
+#      A 1.0.x sidecar predates the signals asset and fails, naming its version: the run never
+#      proceeds without signals. Checked before the policy lookup, so every exit that read a release
+#      hands the scanner signals that passed it.
 #   1. sha256(<policy>.jsonl.gz) == bundles.json .digest           (asset intact vs. its sidecar)
 #   2. the policy manifest is read from the git commit the release TAG points at, and
 #      sha256(manifest.json) == bundles.json .manifest_digest      (sidecar agrees with the git tree)
@@ -30,11 +49,20 @@
 # The scanner then checks every record's bytes against its inline output_digest on each lookup, so a
 # record that is used is chained back to the policy manifest in git.
 #
-# TRUST LIMIT. All of it — release assets, tag, git tree — comes from the same UNSIGNED repository.
-# This detects corruption, truncation, a bundle mixed across releases, and a release asset that
-# disagrees with the git tree it claims to be derived from. It does NOT defend against a malicious
-# release: whoever can push the tag and upload the assets can make every check pass. Closing that
-# needs signed releases, which the corpus does not have yet.
+# TRUST LIMIT. The signature makes bundles.json the signer's: a release whose sidecar was not signed
+# by CORPUS_SIGNER_IDENTITY (as issued by CORPUS_SIGNER_ISSUER) fails, and so does a sidecar altered
+# after signing. Steps 1-4 then carry that to the bundle bytes. What is still TRUSTED, not verified:
+#   - the Sigstore public-good trust root (Fulcio, Rekor), which cosign fetches from the Sigstore TUF
+#     CDN, so the runner must reach it;
+#   - the identity and issuer the caller supplies: the check proves "signed by the named identity",
+#     never that the named identity is the right one;
+#   - the git tree read on the route=git exits: a ref that names no release, or a policy the release
+#     ships no bundle for, is read by the Action's git fetch, which no signature covers.
+# The tag -> commit lookup is unsigned too, but it only says where to read the manifest from; the
+# manifest's bytes are pinned by the signed manifest_digest.
+# A signals-only refresh updates a release in place and re-signs bundles.json (INTEL-277), so a run
+# that straddles one can pair the old bundles.json with the new signals.json.gz; check S then fails
+# the run, and a re-run reads a consistent pair.
 #
 # Presents NO credential, same as the git corpus fetch: the corpus must be publicly readable.
 set -euo pipefail
@@ -77,6 +105,7 @@ command -v curl >/dev/null 2>&1 || die "curl is required to fetch a corpus bundl
 
 rm -rf "$DEST"
 mkdir -p "$DEST"
+DEST="$(cd "$DEST" && pwd)" # signals-path is handed to a later step, so it is absolute
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -106,14 +135,68 @@ case "$CORPUS_REF" in
 esac
 echo "==> Corpus release: $CORPUS_REPO@$TAG"
 
+# A release is read from here on, so its signature is checked; there is no unverified mode. Each
+# requirement is checked before anything is downloaded from the release.
+SIGNER_ID="${CORPUS_SIGNER_IDENTITY:-}"
+SIGNER_ISSUER="${CORPUS_SIGNER_ISSUER:-}"
+[ -n "$SIGNER_ID" ] ||
+  die "corpus-signer-identity is not set; a corpus release is only used once its signature verifies, so set it to the certificate identity that signs $CORPUS_REPO releases"
+[ -n "$SIGNER_ISSUER" ] ||
+  die "corpus-signer-issuer is not set; a corpus release is only used once its signature verifies, so set it to the OIDC issuer of corpus-signer-identity"
+[[ "$SIGNER_ID$SIGNER_ISSUER" != *[$'\n\r']* ]] || die "corpus-signer-identity and corpus-signer-issuer must each be one line"
+command -v cosign >/dev/null 2>&1 ||
+  die "cosign is required to verify the corpus release signature and was not found on this runner"
+
 COMMIT="$(git ls-remote "$GH/$CORPUS_REPO.git" "refs/tags/$TAG" | awk '{print $1}' | head -n1)" || COMMIT=""
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "release tag $TAG has no git tag in $CORPUS_REPO to anchor the policy manifest to"
 
-# --- 2. the sidecar ------------------------------------------------------------------------------
+# --- 2. the sidecar, signature-verified before it is read ----------------------------------------
 "${CURL[@]}" -o "$WORK/bundles.json" "$GH/$CORPUS_REPO/releases/download/$TAG/bundles.json" ||
   die "release $TAG of $CORPUS_REPO has no bundles.json"
+"${CURL[@]}" -o "$WORK/bundles.json.sigstore.json" "$GH/$CORPUS_REPO/releases/download/$TAG/bundles.json.sigstore.json" ||
+  die "release $TAG of $CORPUS_REPO has no bundles.json.sigstore.json signature; refusing an unsigned corpus release"
+# The exact identity, never --certificate-identity-regexp: the caller names one signer.
+cosign verify-blob --bundle "$WORK/bundles.json.sigstore.json" \
+  --certificate-identity "$SIGNER_ID" --certificate-oidc-issuer "$SIGNER_ISSUER" "$WORK/bundles.json" ||
+  die "bundles.json of $TAG is not signed by '$SIGNER_ID' (issuer '$SIGNER_ISSUER'): wrong signer identity or issuer, a bad signature, or a tampered bundles.json (cosign's reason is above)"
+echo "==> bundles.json of $TAG signature verified: $SIGNER_ID ($SIGNER_ISSUER)"
 jq -e '(.bundle_version | type == "string" and startswith("1.")) and (.bundles | type == "array")' \
   "$WORK/bundles.json" >/dev/null || die "bundles.json of $TAG is not a bundle_version 1.x sidecar"
+
+# --- S. the signals asset, pinned to the sidecar --------------------------------------------------
+# Every release from bundle_version 1.1.0 on ships the EPSS/KEV signals as signals.json.gz, named in
+# bundles.json's `signals` object. Without it the scan would rank nothing, so a sidecar that cannot
+# name one fails the run rather than proceeding without signals.
+bundle_version="$(jq -r '.bundle_version' "$WORK/bundles.json")"
+[[ "$bundle_version" =~ ^1\.([0-9]+)\.[0-9]+$ ]] ||
+  die "bundles.json of $TAG has a bundle_version that is not 1.<minor>.<patch>"
+(( 10#${BASH_REMATCH[1]} >= 1 )) ||
+  die "bundles.json of $TAG is bundle_version $bundle_version, which predates the signals asset (1.1.0); the release ships no verifiable EPSS/KEV signals, so it is refused rather than scanned without them"
+jq -e '.signals | type == "object"' "$WORK/bundles.json" >/dev/null ||
+  die "bundles.json of $TAG (bundle_version $bundle_version) has no signals object; every release from 1.1.0 on lists its signals.json.gz there"
+SIGNALS="signals.json.gz"
+sig_asset="$(jq -r '.signals.asset' "$WORK/bundles.json")"
+want_sig="$(jq -r '.signals.sha256' "$WORK/bundles.json")"
+sig_digest="$(jq -r '.signals.signals_digest' "$WORK/bundles.json")"
+# As for the bundle, the sidecar's asset name must be exactly the one expected; it never steers the
+# download anywhere else.
+[ "$sig_asset" = "$SIGNALS" ] || die "bundles.json of $TAG names '$sig_asset' as the signals asset, want '$SIGNALS'"
+[[ "$want_sig" =~ ^[0-9a-f]{64}$ ]] || die "bundles.json signals sha256 of $TAG is not 64 lowercase hex"
+[[ "$sig_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "bundles.json signals_digest of $TAG is not sha256:<hex>"
+"${CURL[@]}" -o "$WORK/$SIGNALS" "$GH/$CORPUS_REPO/releases/download/$TAG/$SIGNALS" ||
+  die "could not download $SIGNALS from release $TAG, which its bundles.json lists"
+got_sig="$(sha256_of "$WORK/$SIGNALS")"
+[ "$got_sig" = "$want_sig" ] || die "$SIGNALS from $TAG hashes to $got_sig, but bundles.json's signals object says $want_sig"
+echo "==> Signals asset verified: $SIGNALS of $TAG (sha256 $got_sig)"
+# Only the sha256 is checked here; the sidecar's signals_digest is printed as it claims it.
+echo "    bundles.json signals_digest (claimed, not checked by this script): $sig_digest"
+
+# accept_signals hands the verified signals to the scan step. Called on each exit that read a release,
+# last, so a run that fails after check S emits no signals path.
+accept_signals() {
+  mv "$WORK/$SIGNALS" "$DEST/$SIGNALS"
+  emit "signals-path=$DEST/$SIGNALS"
+}
 
 entry="$(jq -c --arg p "$CORPUS_POLICY" '[.bundles[] | select(.policy_id == $p)]' "$WORK/bundles.json")"
 case "$(jq 'length' <<<"$entry")" in
@@ -121,6 +204,7 @@ case "$(jq 'length' <<<"$entry")" in
     echo "==> Policy '$CORPUS_POLICY' has no bundle in $TAG (manifest-only); using the git corpus fetch at $TAG"
     emit "route=git"
     emit "git-ref=$TAG"
+    accept_signals
     exit 0
     ;;
   1) ;;
@@ -169,3 +253,6 @@ mv "$WORK/$asset" "$DEST/$asset"
 echo "==> Advisory corpus bundle verified: $DEST/$asset ($got_members records, $got_gz, $CORPUS_REPO@$TAG = $COMMIT)"
 emit "route=bundle"
 emit "git-ref=$TAG"
+emit "corpus-signer-identity=$SIGNER_ID"
+emit "corpus-signer-issuer=$SIGNER_ISSUER"
+accept_signals

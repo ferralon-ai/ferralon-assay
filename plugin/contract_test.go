@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"maps"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
@@ -34,7 +36,8 @@ func TestSymbolThreadedThroughGraphTypes(t *testing.T) {
 		{reflect.TypeOf(CallEdge{}), []string{"Caller", "Callee"}},
 		{reflect.TypeOf(Ingress{}), []string{"Symbol"}},
 		{reflect.TypeOf(ReachPath{}), []string{"Sink", "Ingress", "Trace"}},
-		{reflect.TypeOf(CallGraphResult{}), []string{"Roots"}},
+		{reflect.TypeOf(CallGraphResult{}), []string{"Roots", "Escaped"}},
+		{reflect.TypeOf(UnresolvedCall{}), []string{"Caller", "Targets"}},
 		{reflect.TypeOf(SymbolIndexResult{}), []string{"Symbols"}},
 	}
 	for _, tc := range cases {
@@ -57,6 +60,41 @@ func TestSymbolThreadedThroughGraphTypes(t *testing.T) {
 				t.Errorf("%s.%s is %s, want plugin.Symbol", tc.typ.Name(), name, ft)
 			}
 		}
+	}
+}
+
+// TestCallGraphResult_UnresolvedEscapedAreAdditive: a result that lists no declined site and no
+// escaped frame encodes exactly as it did before the two fields existed, and an entry without
+// Targets omits the key, since omitted means unbounded.
+func TestCallGraphResult_UnresolvedEscapedAreAdditive(t *testing.T) {
+	cases := []struct {
+		name string
+		v    any
+		want []string // the encoded object's keys
+	}{
+		{"empty result", CallGraphResult{Partiality: Complete()}, []string{"partiality", "algorithm", "edges", "roots"}},
+		{"listed result", CallGraphResult{Unresolved: []UnresolvedCall{{}}, Escaped: []Symbol{{}}},
+			[]string{"partiality", "algorithm", "edges", "roots", "unresolved", "escaped"}},
+		{"unbounded entry", UnresolvedCall{Callee: "f", Reason: PartialReasonDynamicDispatch}, []string{"caller", "callee", "arity", "reason"}},
+		{"bounded entry", UnresolvedCall{Targets: []Symbol{{}}}, []string{"caller", "callee", "arity", "reason", "targets"}},
+	}
+	for _, tc := range cases {
+		enc, err := json.Marshal(tc.v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(enc, &obj); err != nil {
+			t.Fatal(err)
+		}
+		keys := slices.Sorted(maps.Keys(obj))
+		slices.Sort(tc.want)
+		if !reflect.DeepEqual(keys, tc.want) {
+			t.Errorf("%s encodes keys %v, want %v (%s)", tc.name, keys, tc.want, enc)
+		}
+	}
+	if ProtocolVersion != "tegron.plugin.v1" {
+		t.Errorf("ProtocolVersion = %q; the additive fields need no bump", ProtocolVersion)
 	}
 }
 

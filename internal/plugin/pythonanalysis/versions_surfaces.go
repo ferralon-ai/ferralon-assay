@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -23,9 +24,11 @@ import (
 // content, so a surface this lane has no reader for vetoes by default instead of being
 // listed one name at a time.
 
-// versionSurfaces returns the manifests version resolution parses, and whether any other
-// install surface under root goes unread.
-func versionSurfaces(root string) (manifests []string, unread bool) {
+// versionSurfaces returns the manifests version resolution parses, whether any other install
+// surface under root goes unread, whether a script surface may install a package no manifest
+// or lock read here names (scriptsurface.Veto.Withheld), and every pip install -r the script
+// surfaces run.
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -51,12 +54,15 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	for _, c := range buildtree.Candidates(root, pyInstallSurface, read) {
+	installs = pipInstalls{}
+	veto := scriptsurface.New(root, read, newScriptSpec(installs))
+	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
-	return manifests, unread
+	scriptWithheld = veto.Withheld()
+	return manifests, unread || scriptWithheld, scriptWithheld, installs
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

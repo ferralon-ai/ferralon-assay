@@ -10,11 +10,11 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// TestScanResult_WithholdsForUnsearchedMethods: an exported method govulncheck never searches (one
+// TestReconciledResult_WithholdsForUnsearchedMethods: an exported method govulncheck never searches (one
 // of a generic type, or one promoted from a type outside its entry points) withholds a refutation
 // when the package declaring it imports the refuted module, directly or through other packages, and
 // leaves it standing otherwise. The library packages are internal, so library_escape stays out of it.
-func TestScanResult_WithholdsForUnsearchedMethods(t *testing.T) {
+func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
 		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
@@ -88,7 +88,7 @@ func TestScanResult_WithholdsForUnsearchedMethods(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := scanResult(context.Background(), tc.scanned, load, dir, append(os.Environ(), "GOWORK=off"))
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -105,10 +105,10 @@ func TestScanResult_WithholdsForUnsearchedMethods(t *testing.T) {
 	}
 }
 
-// TestScanResult_WithholdsForLibraryEscape: a refutation is withheld whenever an importable package
+// TestReconciledResult_WithholdsForLibraryEscape: a refutation is withheld whenever an importable package
 // reaches the refuted module, however it hands a value of it to its importer and whether or not a
 // main package is in the build, and stands when only main or internal packages do.
-func TestScanResult_WithholdsForLibraryEscape(t *testing.T) {
+func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/neutral v0.0.0\n\texample.com/vulnmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/neutral => ./_neutral\n",
 		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
@@ -204,7 +204,7 @@ func TestScanResult_WithholdsForLibraryEscape(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := scanResult(context.Background(), tc.scanned, load, dir, append(os.Environ(), "GOWORK=off"))
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -29,6 +30,9 @@ const reasonFirstPartyBytecodeAbsent = "first_party_bytecode_absent"
 type firstPartyBytecode struct {
 	classes []classfile.Class
 	roots   []string // class output directories that were read
+	// cp lists the packages each class output directory defines; one that cannot be listed,
+	// or holds a nested archive, leaves it unlisted.
+	cp depreach.Classpath
 	// gaps lists, one line each, why the output does not stand for the sources: a main
 	// source type with no class file, a class file older than its source, or an unreadable
 	// class file. Empty when the output covers every main source.
@@ -105,6 +109,8 @@ func loadFirstPartyBytecode(buildDir string, prog *program) *firstPartyBytecode 
 			return nil
 		}
 		out.roots = append(out.roots, path)
+		pkgs, listed, closed := classfile.ClasspathPackages(path, buildDir)
+		out.cp.Add(pkgs, listed && closed)
 		classes, times, failed := loadClassTree(path)
 		out.classes = append(out.classes, classes...)
 		for k, v := range times {

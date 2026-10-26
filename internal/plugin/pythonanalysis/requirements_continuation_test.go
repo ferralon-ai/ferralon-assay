@@ -57,8 +57,8 @@ func TestResolveVersions_ExhaustiveContinuedInclude(t *testing.T) {
 			r := resolveVersion(t, writeTree(t, map[string]string{
 				"uv.lock":              exUVLock,
 				"pyproject.toml":       exPyproject,
-				"requirements.txt":     flag + " requirements-\\\ndev.txt\nflask==3.0.0\n",
-				"requirements-dev.txt": "jinja2==3.1.4\n",
+				"requirements.txt":     flag + " requirements-\\\ndev.txt\nflask==3.0.0 --hash=sha256:aaa\n",
+				"requirements-dev.txt": "jinja2==3.1.4 --hash=sha256:aaa\n",
 			}), "PyJWT")
 			if r.Found || !r.Exhaustive {
 				t.Fatalf("Found=%v Exhaustive=%v, want absent and exhaustive (partiality %+v)", r.Found, r.Exhaustive, r.Partiality)

@@ -2,7 +2,6 @@ package javaanalysis
 
 import (
 	"archive/zip"
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,7 +12,7 @@ import (
 
 // TestBuildDependencyGraph_SplitPackages: the engine buildDependencyGraph assembles takes a
 // JDK-named class as the JDK's only while no dependency JAR defines its package, and not at
-// all (outside java/) while a declared dependency's JAR was never found.
+// all (outside java/) while a dependency JAR the build graph names could not be read.
 func TestBuildDependencyGraph_SplitPackages(t *testing.T) {
 	const (
 		fetcher = "com/evil/netkit/UrlFetcher"
@@ -107,7 +106,13 @@ func TestBuildDependencyGraph_SplitPackages(t *testing.T) {
 			map[string][]byte{"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\nCreated-By: test\n\n")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dg, err := buildDependencyGraph(context.Background(), write(t, tc.pom, tc.mrOption, tc.corrupt, tc.extra))
+			build := write(t, tc.pom, tc.mrOption, tc.corrupt, tc.extra)
+			deps := []graphDep{{group: "com.evil", artifact: "netkit", version: "1.0.0", jar: netkitJarPath(build)}}
+			if tc.pom == withUncached {
+				gone := filepath.Join(build, ".m2", "repository", "com", "other", "gone", "1.0.0", "gone-1.0.0.jar")
+				deps = append(deps, graphDep{group: "com.other", artifact: "gone", version: "1.0.0", jar: gone})
+			}
+			dg, err := buildDependencyGraph(build, graphOption(t, "maven", testModule(t, ".", "app", deps...)))
 			if err != nil {
 				t.Fatalf("buildDependencyGraph: %v", err)
 			}

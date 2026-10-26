@@ -84,6 +84,28 @@ func checkJDK(want, have string) *Failure {
 	return nil
 }
 
+// JDKMajor is the feature release of the JDK the run conditions state, or 0 when they state none
+// or one javaMajor cannot read.
+func (c Conditions) JDKMajor() int { return javaMajor(c.JDK) }
+
+// RuntimeJDK is the feature release of the JDK the program runs on: the one the run conditions
+// state, or 0 when they state none, or a module's toolchain selects another or went unread, since
+// the stated JDK then does not describe the platform that module's code meets.
+func (g *Graph) RuntimeJDK() int {
+	jdk := g.Conditions.JDKMajor()
+	for _, m := range g.Modules {
+		if !m.JDKToolchainsKnown {
+			return 0
+		}
+		for _, t := range m.JDKToolchains {
+			if javaMajor(t) != jdk {
+				return 0
+			}
+		}
+	}
+	return jdk
+}
+
 // javaMajor reads the feature release from a Java version string: "21.0.12" is 21, "1.8.0_392"
 // is 8, "17" is 17. Anything else is 0.
 func javaMajor(v string) int {

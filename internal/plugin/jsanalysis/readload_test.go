@@ -520,6 +520,8 @@ func TestDepGraph_ReadLoadDepInternal(t *testing.T) {
 		{name: "dual_load_linked", run: run(nil, dep(map[string]string{"index.js": "require('b');\nexports.run = function run() {};\n"}), b(bDual, map[string]string{"esm.js": bBundled})), complete: true, edges: []string{bInit, bEsm}},
 		// dep's load of b cannot be bounded: an unparsed module entry, a bundler alias.
 		{name: "dep_load_unparsed_entry", run: run(nil, dep(nil), b(`{"name":"b","version":"1.0.0","main":"n.js","module":"esm/entry"}`, map[string]string{"esm/entry": bBundled})), withheld: true},
+		// A load for its side effects only: no call catches the unparsed module entry.
+		{name: "dep_side_effect_load_unparsed_entry", run: run(nil, dep(map[string]string{"index.js": "require('b');\nexports.run = function run() {};\n"}), b(`{"name":"b","version":"1.0.0","main":"n.js","module":"esm/entry"}`, map[string]string{"esm/entry": bBundled})), withheld: true},
 		{name: "dep_load_aliased", run: run(map[string]string{"webpack.config.js": "module.exports = { resolve: { alias: { b: './shim.js' } } };\n", "shim.js": "exports.go = function go() {};\n"}, dep(nil), b(bMain, nil)), withheld: true},
 		// A browser field in dep's own package.json may remap its load of b.
 		{name: "dep_browser_remaps_bare", run: run(nil, dep(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","browser":{"b":"./lib/shim.js"}}`, "lib/shim.js": "exports.go = function go() {};\n"}), b(bMain, nil)), withheld: true},

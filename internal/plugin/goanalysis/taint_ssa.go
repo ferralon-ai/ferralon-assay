@@ -76,6 +76,9 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		}
 		// Method ingresses also expose free vars / the receiver is generally not
 		// attacker-controlled, so only parameters are seeded.
+		// The receiver is not seeded directly, but a store of tainted data into
+		// one of its fields taints it anyway (see the ssa.Store case in
+		// propagate), so this choice is only partly honoured.
 		for len(work) > 0 {
 			v := work[len(work)-1]
 			work = work[:len(work)-1]
@@ -211,6 +214,13 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 				// FieldAddr of the same base observes taint. This is
 				// field-insensitive by design: every field of the base reads
 				// as tainted.
+				//
+				// This deliberately over-approximates, and it partly undoes the
+				// choice not to seed receivers (see runTaint): in a method, s.last
+				// = r.URL.Path taints s, so a call through another field of s
+				// (s.db.Query(constQ)) counts as tainted and can be a sink hit. It
+				// only affects which trace and entry point are picked, and the
+				// grade can only rise; no verdict reads it.
 				if fa, ok := in.Addr.(*ssa.FieldAddr); ok {
 					seed(fa.X, o)
 				}
@@ -257,6 +267,11 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// unmodeled transform forwards taint from a tainted argument, the receiver
 		// included, to its result. A (T, error) result's tuple carries it to its
 		// Extract. A dynamic call with no static callee forwards nothing.
+		// This is also how a context.Context becomes tainted: r.Context() is such
+		// a call on the tainted request, so its result is tainted, and every
+		// callee then receiving that ctx is tainted too (exec.CommandContext(ctx,
+		// "const") is a sink hit). Like the field-base seed, this only affects
+		// trace and entry-point selection, never a verdict.
 		if forwardsUnbuilt(common, callee, v) {
 			if val, ok := in.(ssa.Value); ok {
 				seed(val, o)

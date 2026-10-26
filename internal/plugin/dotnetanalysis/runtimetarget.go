@@ -22,17 +22,26 @@ type runtimeTarget struct {
 	// shadowed are load's package keys some runtime target resolves at another version:
 	// their bytes may not be the ones that run, so they are not read in place of the miss.
 	shadowed map[string]bool
+	// absent are the "<tfm>/<rid>" targets the build's runtimes need and restore did not
+	// write: what those graphs add or re-version is unknown, and nothing bounds it.
+	absent []string
 }
 
 // resolveRuntimeTarget picks the restore target the build runs. When the build's runtime is
 // known and restore wrote a target for it, that target runs. Otherwise every package a
 // runtime target adds or re-versions is a named miss, never a silent skip: which of them
 // run is unknown. A portable build that also restored runtime targets is treated the same
-// way, since its outputs record no runtime to tell it from an unknown one.
-func resolveRuntimeTarget(g *assetsGraph, target string, rt assembly.Runtime, locator *assembly.AssetsLocator) runtimeTarget {
+// way, since its outputs record no runtime to tell it from an unknown one. A runtime the
+// build's outputs record (rids) with no target of its own is listed in absent.
+func resolveRuntimeTarget(g *assetsGraph, target string, rt assembly.Runtime, rids []string, locator *assembly.AssetsLocator) runtimeTarget {
 	out := runtimeTarget{load: target}
 	if g == nil || target == "" {
 		return out
+	}
+	for _, rid := range rids {
+		if _, ok := g.targets[target+"/"+rid]; !ok {
+			out.absent = append(out.absent, target+"/"+rid)
+		}
 	}
 	var ridTargets []string
 	for k := range g.targets {

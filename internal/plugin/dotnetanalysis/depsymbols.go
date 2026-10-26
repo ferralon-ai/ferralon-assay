@@ -78,7 +78,12 @@ func resolveInDependency(buildDir, id, version string, wanted []string) plugin.S
 	}
 	locator, _ := assembly.ParseAssetsLocator(build.assets)
 	graph := parseAssetsGraph(build.assets)
-	rt := resolveRuntimeTarget(graph, build.target, build.runtime, locator)
+	rt := resolveRuntimeTarget(graph, build.target, build.runtime, build.rids, locator)
+	// A runtime the build records with no restore target: its graph may add or re-version
+	// this package, and nothing bounds what that hides.
+	if len(rt.absent) > 0 {
+		miss(partialReasonRuntimeTargetAbsent, purl, strings.Join(rt.absent, ", ")+" not in project.assets.json", nil)
+	}
 	var occurrences []assembly.DepRef
 	for _, d := range graph.occurrences(id, version) {
 		if (rt.load == "" || d.Target == rt.load) && !rt.shadowed[d.PkgKey] {

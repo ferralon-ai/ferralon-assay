@@ -58,7 +58,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 			locator = loc
 		}
 		graph = parseAssetsGraph(build.assets)
-		rt = resolveRuntimeTarget(graph, build.target, build.runtime, locator)
+		rt = resolveRuntimeTarget(graph, build.target, build.runtime, build.rids, locator)
 		for _, d := range depRefsFrom(build.assets, rt.load) {
 			if rt.shadowed[d.PkgKey] {
 				continue
@@ -94,6 +94,9 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	}
 	if untrusted {
 		reasons[partialReasonRestoreUntrusted] = true
+	}
+	if len(rt.absent) > 0 {
+		reasons[partialReasonRuntimeTargetAbsent] = true
 	}
 	var paths []plugin.ReachPath
 	var searched []string
@@ -170,7 +173,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		searched = append(searched, scip)
 	}
 
-	if len(build.reasons) > 0 || untrusted {
+	if len(build.reasons) > 0 || untrusted || len(rt.absent) > 0 {
 		// Another project or entry assembly went untraced, or the dependency bytes may not
 		// be the ones this build runs against: nothing was searched for the whole program.
 		searched = nil

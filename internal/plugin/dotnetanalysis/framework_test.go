@@ -704,7 +704,7 @@ func TestFrameworkNames(t *testing.T) {
 		t.Fatal("assets did not parse")
 	}
 	loaded := []*assembly.Assembly{{Name: "System.Collections"}}
-	names := frameworkNames(firstPartyBuild{target: "net8.0"}, loc, loaded)
+	names := frameworkNames("net8.0", loc, loaded)
 	cases := []struct {
 		name string
 		want bool
@@ -727,10 +727,24 @@ func TestFrameworkNames(t *testing.T) {
 			t.Errorf("framework[%s] = %v, want %v", c.name, got, c.want)
 		}
 	}
-	if got := frameworkNames(firstPartyBuild{target: "netstandard2.0"}, loc, nil); got != nil {
+	// The runtime target is the one whose packages run: a package only it carries
+	// supplies that name, and the portable target does not know of it.
+	rid, ok := assembly.ParseAssetsLocator([]byte(`{"version":3,"targets":{"net8.0":{},` +
+		`"net8.0/linux-x64":{"System.Console/4.3.0":{"type":"package","runtime":{"lib/net8.0/System.Console.dll":{}}}}},` +
+		`"libraries":{"System.Console/4.3.0":{"type":"package","path":"system.console/4.3.0"}}}`))
+	if !ok {
+		t.Fatal("runtime-target assets did not parse")
+	}
+	if frameworkNames("net8.0/linux-x64", rid, nil)["system.console"] {
+		t.Error("net8.0/linux-x64: System.Console is framework, want the runtime target's package")
+	}
+	if !frameworkNames("net8.0", rid, nil)["system.console"] {
+		t.Error("net8.0: System.Console is not framework")
+	}
+	if got := frameworkNames("netstandard2.0", loc, nil); got != nil {
 		t.Errorf("netstandard2.0: model on (%d names), want off", len(got))
 	}
-	if got := frameworkNames(firstPartyBuild{target: "net8.0"}, nil, nil); got != nil {
+	if got := frameworkNames("net8.0", nil, nil); got != nil {
 		t.Errorf("no restore output: model on (%d names), want off", len(got))
 	}
 }

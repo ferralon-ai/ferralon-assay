@@ -63,17 +63,17 @@ func netCoreAppNames() map[string]bool {
 }
 
 // frameworkNames returns the assembly names the engine may treat as shared framework for
-// this build, or nil when the model does not apply (no bound netcoreapp >= 3.1 target, or
-// no restore output to say what the packages supply).
-func frameworkNames(build firstPartyBuild, locator *assembly.AssetsLocator, loaded []*assembly.Assembly) map[string]bool {
-	if locator == nil || !netCoreAppAtLeast31(build.target) {
+// a build that runs the restore target target, or nil when the model does not apply (no
+// bound netcoreapp >= 3.1 target, or no restore output to say what the packages supply).
+func frameworkNames(target string, locator *assembly.AssetsLocator, loaded []*assembly.Assembly) map[string]bool {
+	if locator == nil || !netCoreAppAtLeast31(target) {
 		return nil
 	}
 	names := netCoreAppNames()
 	for n := range frameworkExcluded {
 		delete(names, n)
 	}
-	for _, n := range locator.PackageAssemblyNames(build.target) {
+	for _, n := range locator.PackageAssemblyNames(target) {
 		delete(names, strings.ToLower(n))
 	}
 	for _, a := range loaded {

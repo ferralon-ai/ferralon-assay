@@ -24,7 +24,9 @@ const partialReasonNoWholeProgramRoot = "no_whole_program_root"
 //   - `main` (every mainMethodRefs entry, plus each main owner's companion initializers) is the
 //     whole-program root and the ONLY root that licenses a cleared sink. A sink is listed in
 //     Searched only when at least one main exists, the sink is a concrete method in loaded
-//     bytecode, and every root's search (main and framework) was a hazard-free empty search.
+//     bytecode, its owner's @kotlin.Metadata (if any) was read and does not declare it inline (kotlinc
+//     copies an inline body into each caller, which then holds no call to it), and every
+//     root's search (main and framework) was a hazard-free empty search.
 //     Every first-party class root and build/libs JAR must also have been listed and read in
 //     full (program.loadFailed): code that was not read may call any sink.
 //   - framework ingress roots (frameworkIngressRefs) add a candidate path or undetermined,
@@ -80,6 +82,13 @@ func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...jav
 	cp.Merge(deps.cp)
 	engine := depreach.NewEngineOn(all, cp)
 	concrete := concreteMethods(all, cp.JDK)
+	byName := make(map[string]*classfile.Class, len(all))
+	for i := range all {
+		if _, dup := byName[all[i].Name]; !dup {
+			byName[all[i].Name] = &all[i]
+		}
+	}
+	class := func(name string) (*classfile.Class, bool) { c, ok := byName[name]; return c, ok }
 
 	// Roots are first-party mains. A `main` inside a dependency JAR is not this program's entry
 	// point; a build that launches one leaves its launch entry unmapped (launchEntryReasons).
@@ -112,6 +121,10 @@ func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...jav
 		case out.undetermined || !concrete[sink.String()] || multiProject || len(deps.reasons) > 0 || prog.loadFailed:
 			// An abstract sink is never an engine target (dispatch lands on overrides), so
 			// an empty search for it says nothing.
+			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
+		case classfile.KotlinInlineWithheld(sink, class):
+			// kotlinc copies an inline function's body into each caller, so callers hold no
+			// call to it and an empty search for it says nothing.
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
 		case len(entryReasons) > 0:
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true

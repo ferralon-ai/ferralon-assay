@@ -116,7 +116,7 @@ type closureEntry struct {
 // The engine runs on the JDK the graph's run conditions state.
 func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath depreach.Classpath, opts ...Option) (*reachClosure, error) {
 	g := BuildGraph(opts...)
-	reasons := LaunchOptionReasons(buildDir)
+	reasons := LaunchOptionReasons(buildDir, g)
 
 	targetsMemo := map[string][]string{}
 	targets := func(coord string) []string {

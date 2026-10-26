@@ -30,8 +30,8 @@ func writeTree(t *testing.T, files map[string]string) string {
 // another platform or behind a tag that may call into the refuted module withholds the refutation.
 func TestWithholdForLeftOutFiles(t *testing.T) {
 	base := map[string]string{
-		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/dep v0.0.0\n\texample.com/other v0.0.0\n)\n\n" +
-			"replace (\n\texample.com/vulnmod => ./_vulnmod\n\texample.com/dep => ./_dep\n\texample.com/other => ./_other\n)\n",
+		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/dep v0.0.0\n\texample.com/other v0.0.0\n\texample.com/lib v0.0.0\n)\n\n" +
+			"replace (\n\texample.com/vulnmod => ./_vulnmod\n\texample.com/dep => ./_dep\n\texample.com/other => ./_other\n\texample.com/lib => ./_lib\n)\n",
 		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
 		"mid/mid.go":          "package mid\n\nimport \"example.com/vulnmod\"\n\nfunc Call() { vulnmod.Bad() }\n",
 		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
@@ -40,9 +40,15 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 		"_dep/dep.go":         "package dep\n\nimport \"example.com/vulnmod\"\n\nfunc Call() { vulnmod.Bad() }\n",
 		"_other/go.mod":       "module example.com/other\n\ngo 1.22\n",
 		"_other/other.go":     "package other\n\nfunc Call() {}\n",
+		"plain/plain.go":      "package plain\n\nfunc Call() {}\n",
+		// lib is a loaded dependency module that reaches the module.
+		"uselib/uselib.go": "package uselib\n\nimport \"example.com/lib\"\n\nfunc Call() { lib.Call() }\n",
+		"_lib/go.mod":      "module example.com/lib\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n",
+		"_lib/lib.go":      "package lib\n\nimport \"example.com/vulnmod\"\n\nfunc Call() {}\n\nfunc use() { vulnmod.Bad() }\n",
 	}
+	// leftOut is a file of plain, a loaded package that does not reach the module.
 	leftOut := func(constraint, imp string) string {
-		return "//go:build " + constraint + "\n\npackage main\n\nimport _ \"" + imp + "\"\n"
+		return "//go:build " + constraint + "\n\npackage plain\n\nimport _ \"" + imp + "\"\n"
 	}
 	cases := []struct {
 		name     string
@@ -50,13 +56,18 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 		withheld bool
 	}{
 		{"no file left out", nil, false},
-		{"a tagged file imports the module", map[string]string{"prod.go": leftOut("prod", "example.com/vulnmod")}, true},
-		{"another platform's file imports the module", map[string]string{"run_plan9.go": "package main\n\nimport _ \"example.com/vulnmod\"\n"}, true},
-		{"a tagged file imports a loaded package that imports the module", map[string]string{"prod.go": leftOut("prod", "example.com/m/mid")}, true},
-		{"a tagged file imports an unloaded module that requires the module", map[string]string{"prod.go": leftOut("prod", "example.com/dep")}, true},
-		{"a tagged file imports an unloaded module that does not require it", map[string]string{"prod.go": leftOut("prod", "example.com/other")}, false},
-		{"a tagged file imports only the standard library, against a module refutation", map[string]string{"prod.go": leftOut("prod", "net/http")}, false},
-		{"an ignore-tagged file is never built", map[string]string{"gen.go": leftOut("ignore", "example.com/vulnmod")}, false},
+		{"a tagged file imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/vulnmod")}, true},
+		{"another platform's file imports the module", map[string]string{"plain/run_plan9.go": "package plain\n\nimport _ \"example.com/vulnmod\"\n"}, true},
+		{"a tagged file imports a loaded package that imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/m/mid")}, true},
+		{"a tagged file imports an unloaded module that requires the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/dep")}, true},
+		{"a tagged file imports an unloaded module that does not require it", map[string]string{"plain/prod.go": leftOut("prod", "example.com/other")}, false},
+		{"a tagged file imports only the standard library, against a module refutation", map[string]string{"plain/prod.go": leftOut("prod", "net/http")}, false},
+		{"an ignore-tagged file is never built", map[string]string{"plain/gen.go": leftOut("ignore", "example.com/vulnmod")}, false},
+		{"a tagged file imports nothing but its package reaches the module", map[string]string{"mid/mid_prod.go": "//go:build prod\n\npackage mid\n\nfunc init() { Call() }\n"}, true},
+		{"a tagged file names another package than the one that reaches the module", map[string]string{"mid/tools.go": "//go:build tools\n\npackage tools\n"}, false},
+		{"another platform's file of a dependency calls its own package's helper", map[string]string{"_lib/lib_windows.go": "package lib\n\nfunc init() { use() }\n"}, true},
+		{"another platform's file of the module itself", map[string]string{"_vulnmod/vulnmod_windows.go": "package vulnmod\n\nfunc init() { Bad() }\n"}, true},
+		{"a tagged file imports nothing and its package does not reach the module", map[string]string{"plain/plain_prod.go": "//go:build prod\n\npackage plain\n\nfunc init() { Call() }\n"}, false},
 		{"a tagged package wholly left out imports the module", map[string]string{"prodonly/p.go": "//go:build prod\n\npackage prodonly\n\nimport _ \"example.com/vulnmod\"\n"}, true},
 	}
 	for _, tc := range cases {
@@ -131,6 +142,9 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 		}, httpVuln, true},
 		{"a tagged file imports an unloaded module that does not import the vulnerable package", map[string]string{"prod.go": leftOut("prod", "example.com/other")}, httpVuln, true},
 		{"a tagged file imports a standard-library path no port lists", map[string]string{"prod.go": leftOut("prod", "net/nosuch")}, httpVuln, true},
+		{"a tagged file imports nothing but its package reaches the vulnerable package", merge(web, map[string]string{
+			"web/web_prod.go": "//go:build prod\n\npackage web\n\nfunc init() { Serve() }\n",
+		}), httpVuln, true},
 		{"another platform's file imports only syscall", map[string]string{"run_windows.go": "package main\n\nimport _ \"syscall\"\n"}, httpVuln, false},
 		{"a tagged file imports only an unrelated standard package", map[string]string{"prod.go": leftOut("prod", "strings")}, httpVuln, false},
 		{"the vulnerable packages are unknown, so any standard import counts", map[string]string{"prod.go": leftOut("prod", "strings")}, nil, true},

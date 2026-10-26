@@ -15,23 +15,14 @@ import (
 // the lane's honest capability manifest (K5).
 //
 // ResolveDependencyVersions (P1) and ResolveDependencySymbols (P2, see resolve.go) are now
-// LIVE at Assess tier — the two ops that read the build's declared dependency versions and
-// resolve advisory symbols against the dependency artifact. The remaining ops below stay
+// LIVE at Assess tier — the two ops that read the build graph's resolved dependency versions
+// and resolve advisory symbols against the dependency artifact. The remaining ops below stay
 // honest-absent.
 
-// ResolveDependencyVersions reads the codebase's declared dependency versions from its
-// build files (pom.xml, build.gradle, build.gradle.kts) and returns the declared version
-// for the advisory's coordinate. It DELEGATES to javaanalysis.ResolveDependencyVersions:
-// build-file parsing is JVM-generic (Maven POM + Gradle string/map notation), not
-// Java-source-specific, and firstQuoted already tolerates the Kotlin-DSL parenthesized,
-// double-quoted form `implementation("g:a:v")`. Soundness rides the shared parser (inv.5):
-// a version it cannot pin to a literal — a version-catalog reference (`libs.foo`), the
-// `kotlin("stdlib")` helper (no coordinate literal), or an interpolated `"$version"` — is
-// returned Resolved=false (UNRESOLVED), never a guessed version, so the disqualification
-// predicate fails OPEN. Non-literal Gradle version forms are the residual
-// gradle_version_resolution boundary the manifest still declares.
-func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
-	return javaanalysis.ResolveDependencyVersions(ctx, req)
+// ResolveDependencyVersions DELEGATES to javaanalysis.ResolveDependencyVersions: the version
+// is the one the build graph resolved, which is JVM-generic, not Kotlin-specific.
+func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest, opts ...javaanalysis.Option) (plugin.DependencyVersionResult, error) {
+	return javaanalysis.ResolveDependencyVersions(ctx, req, opts...)
 }
 
 // ComputeTaint is LIVE at Assess tier — see taint.go. It reports call-graph PATH PRESENCE
@@ -45,29 +36,22 @@ func GenerateHarness(_ context.Context, _ plugin.GenerateHarnessRequest) (plugin
 	return plugin.HarnessResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// BuildManifest DELEGATES to javaanalysis.BuildManifest (lang "kotlin"): the build manifest is
-// derived from JVM-generic build files (Maven POM <properties>, Gradle version/toolchain
-// lines, .tool-versions/.sdkmanrc pins), not Java-source-specific state — the same delegation
-// shape as ResolveDependencyVersions / ResolveInventory. The "kotlin" lang keeps RuntimeSpec.Name
-// honest per lane; the honest-absent residue (Target/Configuration/exact-Toolchain/multi-module)
-// and determinism ride the shared impl.
-func BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
-	return javaanalysis.BuildManifest(ctx, req, "kotlin")
+// BuildManifest DELEGATES to javaanalysis.BuildManifest (lang "kotlin"): the runtime is the JDK
+// the build graph was resolved on, the resolver the build tool that resolved it. The "kotlin"
+// lang keeps RuntimeSpec.Name honest per lane.
+func BuildManifest(ctx context.Context, req plugin.BuildManifestRequest, opts ...javaanalysis.Option) (plugin.BuildManifestResult, error) {
+	return javaanalysis.BuildManifest(ctx, req, "kotlin", opts...)
 }
 
-// ResolveInventory DELEGATES to javaanalysis.ResolveInventory (C6): whole-graph dependency
-// inventory is read from the build's resolved on-disk state (reactor POMs + ~/.m2 cache, or the
-// Gradle lockfile + modules-2 cache), which is JVM-generic, not Java-source-specific — the same
-// delegation shape as ResolveDependencyVersions. No resolution logic is duplicated in the Kotlin
-// lane; honest-absent + determinism ride the shared resolver.
-func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
-	return javaanalysis.ResolveInventory(ctx, req)
+// ResolveInventory DELEGATES to javaanalysis.ResolveInventory (C6): the whole-graph dependency
+// inventory is the build graph's, the same delegation shape as ResolveDependencyVersions.
+func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest, opts ...javaanalysis.Option) (plugin.DependencyInventory, error) {
+	return javaanalysis.ResolveInventory(ctx, req, opts...)
 }
 
 // manifestContentVersion is the Kotlin capability manifest's content version; it bumps when
-// a later increment adds a supported axis. 1.1.0 adds the Resolvers axis (build-file
-// version resolution went live, P1).
-const manifestContentVersion = "1.1.0"
+// the manifest's content changes.
+const manifestContentVersion = "1.2.0"
 
 // CapabilityManifest returns the Kotlin lane's HONEST capability manifest (K5): every
 // Supported axis is one the analyzer genuinely does at Assess tier over bytecode, and every
@@ -76,29 +60,25 @@ const manifestContentVersion = "1.1.0"
 // path). It is a static fact, so it takes no build input.
 //
 // The axes, and why each is honest:
-//   - Resolvers: pom.xml, build.gradle.kts — the build-file formats the lane now reads to
-//     resolve a dependency's declared version (P1, via the shared JVM build-file parser,
-//     which also reads Groovy build.gradle). Only LITERAL versions resolve; non-literal
-//     forms (version catalog, interpolation, the kotlin() helper) fail open UNRESOLVED —
-//     the residual gradle_version_resolution boundary below.
+//   - Resolvers: gradle, maven — the build tools whose resolved graph the lane reads every
+//     dependency version and JAR from.
 //   - Runtimes: jvm — the only runtime the analyzer targets.
 //   - GraphSemantics: cha — depreach's class-hierarchy analysis, used unchanged.
 //   - Frameworks: none — framework ingress (Spring) is deliberately not detected here.
 //   - DynamicBoundaries: the frontiers where a sound static graph must fail open —
 //     coroutine builder dispatch, inline-function edge erasure, invokedynamic (SAM/lambda),
-//     reflection, and the non-literal Gradle build-file version forms.
+//     and reflection.
 //   - Analyzers: the shared classfile reader + depreach engine the lane rides.
 func CapabilityManifest() capability.Manifest {
 	return capability.Manifest{
 		Version:        manifestContentVersion,
 		Language:       "kotlin",
 		Supported:      true,
-		Resolvers:      []string{"build.gradle.kts", "pom.xml"},
+		Resolvers:      []string{"gradle", "maven"},
 		Runtimes:       []string{"jvm"},
 		GraphSemantics: []string{"cha"},
 		DynamicBoundaries: []string{
 			"coroutine_dispatch",
-			"gradle_version_resolution",
 			"inline_function",
 			"invokedynamic",
 			"reflection",

@@ -1,10 +1,10 @@
 // migrate_test.go
 //
-// The tegron.report.v1 → v2 migration. Two properties matter more
+// The tegron.report.v1 → v2 migration (and, through it, v1 → v3). Two properties matter more
 // than the mechanics:
 //
 //  1. No stored report becomes unreadable. A v1 document written before the bump — the only kind a
-//     pre-bump StateStore holds — must load, and must load as v2.
+//     pre-bump StateStore holds — must load, and must load as the current schema.
 //  2. No advisory changes meaning across the migration. A v1 withheld id and a v2 undetermined row
 //     say the same thing about the same advisory; the migration may move it, never restate it.
 package report_test
@@ -22,7 +22,7 @@ import (
 // v1WithheldJSON is a consumer-visible tegron.report.v1 report in the shape M2 shipped: one
 // disqualified row, and four toolchain advisories withheld from advisories[] and named in one
 // scan-level limit. It is written as literal JSON rather than built through the Builder on purpose —
-// the Builder now produces v2, so only literal bytes can stand in for what is actually on a ref.
+// the Builder now produces the current schema, so only literal bytes can stand in for what is actually on a ref.
 const v1WithheldJSON = `{
   "schema_version": "tegron.report.v1",
   "subject": {"repo": "github.com/example/widget", "revision": "main", "resolved_commit": "abc123"},
@@ -215,9 +215,10 @@ func TestUpgrade_SchemaVersionHandling(t *testing.T) {
 		wantErr string
 	}{
 		{name: "current schema passes through", version: report.SchemaVersion},
+		{name: "v2 upgrades", version: report.SchemaVersionV2},
 		{name: "v1 upgrades", version: report.SchemaVersionV1},
 		{name: "absent version is refused", version: "", wantErr: "no schema_version"},
-		{name: "future version is refused", version: "tegron.report.v3", wantErr: "unrecognized schema_version"},
+		{name: "future version is refused", version: "tegron.report.v4", wantErr: "unrecognized schema_version"},
 		{name: "another artifact's schema is refused", version: "tegron.inventory.v1", wantErr: "unrecognized schema_version"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

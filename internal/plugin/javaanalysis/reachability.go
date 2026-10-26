@@ -63,7 +63,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 	// A build with several projects, or without class output, keeps the lexical answer and
 	// says why it went no further.
 	fp := loadFirstPartyBytecode(req.BuildDir, prog)
-	multi, why := multipleProjects(req.BuildDir)
+	multi, why := multipleProjects(req.BuildDir, opts...)
 	if dirs := fp.projectDirs(); !multi && len(dirs) > 1 {
 		multi, why = true, "class output in "+strings.Join(relSlashAll(req.BuildDir, dirs), ", ")
 	}
@@ -93,7 +93,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 			reasons[r] = true
 		}
 	}
-	bp, searched, br, scoped, err := bytecodeReachability(ctx, req.BuildDir, req.TargetEnv, prog, fp, depSinks, opts...)
+	bp, searched, br, scoped, err := bytecodeReachability(ctx, req.BuildDir, prog, fp, depSinks, opts...)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

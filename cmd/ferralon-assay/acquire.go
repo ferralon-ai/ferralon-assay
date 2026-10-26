@@ -32,6 +32,9 @@ type acquired struct {
 	// the default path. See provenance.
 	analyzeRef     string
 	analyzedCommit string
+
+	// graph is the Java or Kotlin scan's build graph; nil for every other language.
+	graph *jvmGraph
 }
 
 // provenance returns the Revision and ResolvedCommit to record on the Report's subject. By default
@@ -76,7 +79,7 @@ func (a *acquired) provenance(revision, commit string) (string, string) {
 // corpus. It defaults OFF so a customer/investor scan never evaluates them (see
 // goAdvisoryCorpus); the demo scan sets it via -include-house-canaries so the DOS canary
 // surfaces as a reachable_candidate the pipeline can enumerate and fire.
-func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool) (*acquired, error) {
+func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool, graphReq graphRequest) (*acquired, error) {
 	var buildDir, language, repo, analyzeRef, analyzedCommit string
 	cleanup := func() {}
 
@@ -154,7 +157,32 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 			cfOpts = append(cfOpts, plugin.WithCFamilyWasmCacheDir(dir))
 		}
 	}
-	lp, err := selectPlugin(language, pluginBin, cfOpts...)
+	var graph *jvmGraph
+	if language == checkout.LangJava || language == checkout.LangKotlin {
+		var done func()
+		graph, done = acquireBuildGraph(ctx, buildDir, graphReq)
+		prev := cleanup
+		cleanup = func() { done(); prev() }
+	}
+	var goOpts []plugin.Option
+	if language == checkout.LangGo {
+		dir := scanRunCacheDir("go")
+		if dir != "" {
+			prev := cleanup
+			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
+		}
+		goOpts = append(goOpts, plugin.WithRunCacheDir(dir))
+	}
+	var jsOpts []plugin.JSOption
+	if language == checkout.LangJS {
+		dir := scanRunCacheDir("js")
+		if dir != "" {
+			prev := cleanup
+			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
+		}
+		jsOpts = append(jsOpts, plugin.WithJSRunCacheDir(dir))
+	}
+	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, cfOpts...)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -170,6 +198,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 
 		analyzeRef:     analyzeRef,
 		analyzedCommit: analyzedCommit,
+		graph:          graph,
 	}, nil
 }
 
@@ -177,29 +206,35 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 // A non-empty bin is an explicit path to that language's assay-plugin-<lang> binary
 // (the -plugin-go flag); when empty each constructor discovers its binary on PATH. Only one
 // plugin runs per scan (the tree is a single language), so a single override suffices. cfOpts
-// apply to the C-family plugin only.
-func selectPlugin(language, bin string, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
+// apply to the C-family plugin only, goOpts to the Go plugin only.
+func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
+	var graphFile string
+	if graph != nil {
+		graphFile = graph.file
+	}
 	switch language {
 	case checkout.LangGo:
 		if bin != "" {
-			return plugin.NewGoPlugin(plugin.WithBinaryPath(bin))
+			goOpts = append(goOpts, plugin.WithBinaryPath(bin))
 		}
-		return plugin.NewGoPlugin()
+		return plugin.NewGoPlugin(goOpts...)
 	case checkout.LangJava:
+		opts := []plugin.JavaOption{plugin.WithJavaBuildGraph(graphFile)}
 		if bin != "" {
-			return plugin.NewJavaPlugin(plugin.WithJavaBinaryPath(bin))
+			opts = append(opts, plugin.WithJavaBinaryPath(bin))
 		}
-		return plugin.NewJavaPlugin()
+		return plugin.NewJavaPlugin(opts...)
 	case checkout.LangKotlin:
+		opts := []plugin.KotlinOption{plugin.WithKotlinBuildGraph(graphFile)}
 		if bin != "" {
-			return plugin.NewKotlinPlugin(plugin.WithKotlinBinaryPath(bin))
+			opts = append(opts, plugin.WithKotlinBinaryPath(bin))
 		}
-		return plugin.NewKotlinPlugin()
+		return plugin.NewKotlinPlugin(opts...)
 	case checkout.LangJS:
 		if bin != "" {
-			return plugin.NewJSPlugin(plugin.WithJSBinaryPath(bin))
+			jsOpts = append(jsOpts, plugin.WithJSBinaryPath(bin))
 		}
-		return plugin.NewJSPlugin()
+		return plugin.NewJSPlugin(jsOpts...)
 	case checkout.LangPython:
 		if bin != "" {
 			return plugin.NewPythonPlugin(plugin.WithPythonBinaryPath(bin))
@@ -235,6 +270,22 @@ func scanWasmCacheDir() string {
 	dir, err := os.MkdirTemp("", "assay-cfamily-wasm-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: cfamily wasm cache dir: %v; each analysis step compiles the module\n", err)
+		return ""
+	}
+	return dir
+}
+
+// scanRunCacheDir creates the private directory one scan's analyzer subprocesses for lang share
+// per-tree results through (plugin.WithRunCacheDir, plugin.WithJSRunCacheDir). The caller removes
+// it when the scan ends.
+// Unlike the wasm cache it is never taken from the operator: its entries are keyed on the build
+// directory's path, so a directory that outlived one scan could answer for another tree at that
+// path. A directory that cannot be created leaves every advisory computing its own, which is slower
+// and changes no result.
+func scanRunCacheDir(lang string) string {
+	dir, err := os.MkdirTemp("", "assay-"+lang+"-run-cache-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s run cache dir: %v; each advisory rescans the tree\n", lang, err)
 		return ""
 	}
 	return dir

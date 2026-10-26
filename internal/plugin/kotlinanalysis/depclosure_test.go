@@ -3,23 +3,23 @@ package kotlinanalysis
 import (
 	"archive/zip"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // depclosure_test.go — S2 fixtures: Reachability over first-party build output PLUS the
-// dependency closure the inventory resolves, with root licensing (only `main` clears a sink).
-// Classes are emitted as JVMS §4 bytes and JARs are written into the build-local caches
-// LocateDependencyJar searches, so everything runs through the real parser, inventory and
-// engine.
+// dependency closure the build graph resolves, with root licensing (only `main` clears a sink).
+// Classes are emitted as JVMS §4 bytes and JARs are written into build-local caches that a test
+// graph names, so everything runs through the real parser, graph reader and engine.
 
 const (
 	opInvokeVirtual = 0xB6
@@ -65,11 +65,13 @@ func writeJar(t *testing.T, path string, classes map[string][]byte) {
 	}
 }
 
-// writeGradleCacheJar places a JAR in the build-local Gradle module cache.
-func writeGradleCacheJar(t *testing.T, build, group, artifact, version string, classes map[string][]byte) {
+// writeGradleCacheJar places a JAR in the build-local Gradle module cache and returns its path.
+func writeGradleCacheJar(t *testing.T, build, group, artifact, version string, classes map[string][]byte) string {
 	t.Helper()
-	writeJar(t, filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1",
-		group, artifact, version, "0123abcd", artifact+"-"+version+".jar"), classes)
+	p := filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1",
+		group, artifact, version, "0123abcd", artifact+"-"+version+".jar")
+	writeJar(t, p, classes)
+	return p
 }
 
 // m2Path returns the build-local Maven repository path of an artifact file.
@@ -87,54 +89,10 @@ func jacksonJar() map[string][]byte {
 	return map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")}
 }
 
-// gradleLocking is the locking statement the Java lane's lock confirmation requires before it
-// takes a lockfile's versions as the build's: without it Gradle never reads the lock.
-const gradleLocking = "dependencyLocking { lockAllConfigurations() }\n"
-
-// enforceLocking appends gradleLocking to dir's build.gradle.kts.
-func enforceLocking(t *testing.T, dir string) {
-	t.Helper()
-	p := filepath.Join(dir, "build.gradle.kts")
-	data, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, append(data, gradleLocking...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // gradleJacksonBuild declares jackson-databind (and any extra implementation lines) in
-// build.gradle.kts, enforces locking, locks every declared coordinate on runtimeClasspath with
-// its POM cached, and caches the jackson JAR. The confirmed lock is what lets an empty search be
-// Searched: without one the inventory declares gradle_transitive (no lockfile) or
-// gradle_lockfile_unconfirmed and the op withholds Searched.
+// build.gradle.kts and caches the jackson JAR. reach hands Reachability the graph of every
+// cached JAR (cacheGraph).
 func gradleJacksonBuild(t *testing.T, extra string) string {
-	t.Helper()
-	dir := unlockedJacksonBuild(t, extra)
-	enforceLocking(t, dir)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	coords := []string{jacksonGroup + ":" + jacksonArtifact + ":" + jacksonVersion}
-	for _, m := range regexp.MustCompile(`implementation\("([^"]+)"\)`).FindAllStringSubmatch(extra, -1) {
-		coords = append(coords, m[1])
-	}
-	var lock strings.Builder
-	for _, c := range coords {
-		gav := strings.Split(c, ":")
-		lock.WriteString(c + "=runtimeClasspath\n")
-		pom := filepath.Join(home, ".gradle", "caches", "modules-2", "files-2.1", gav[0], gav[1], gav[2], "feed", gav[1]+"-"+gav[2]+".pom")
-		writeFileAt(t, filepath.Dir(pom), filepath.Base(pom),
-			"<project><groupId>"+gav[0]+"</groupId><artifactId>"+gav[1]+"</artifactId><version>"+gav[2]+"</version></project>")
-	}
-	lock.WriteString("empty=\n")
-	writeBuildFile(t, dir, "gradle.lockfile", lock.String())
-	return dir
-}
-
-// unlockedJacksonBuild is gradleJacksonBuild without a lockfile: the inventory carries the
-// declared-direct coordinates only and declares gradle_transitive.
-func unlockedJacksonBuild(t *testing.T, extra string) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeBuildFile(t, dir, "build.gradle.kts", `
@@ -165,15 +123,16 @@ func nameLaunchEntry(t *testing.T, dir, main string) {
 		"Manifest-Version: 1.0\nMain-Class: "+main+"\n")
 }
 
+// reach runs Reachability under the graph of every JAR cached in dir when it runs.
 func reach(t *testing.T, dir string, sinks ...string) plugin.ReachabilityResult {
 	t.Helper()
-	return reachUnder(t, dir, nil, sinks...)
+	return reachWith(t, dir, cacheGraph(t, dir), sinks...)
 }
 
-// reachUnder runs Reachability with the run's stated target-environment conditions.
-func reachUnder(t *testing.T, dir string, env map[string]string, sinks ...string) plugin.ReachabilityResult {
+// reachWith runs Reachability under the given build graph.
+func reachWith(t *testing.T, dir string, graph javaanalysis.Option, sinks ...string) plugin.ReachabilityResult {
 	t.Helper()
-	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: sinks, TargetEnv: env})
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: sinks}, graph)
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}
@@ -422,174 +381,69 @@ func buildAbstractMethodClass(b *kclassBuilder, name string) []byte {
 	return out
 }
 
-// TestReachability_MissingJarScopedTargets: an inventory dependency whose JAR is not cached is a
-// scoped blind spot. Its Targets are the JAR's package, its closure, first-party code ("") and
-// first-party code's dependency closure (every inventory node), or nil when either closure is
-// unknown. Each scoped reason is also declared run-wide.
+// TestReachability_UnreadableJarScopedTargets: a graph JAR that is gone, or whose bytes changed
+// since the build resolved it, is a scoped tool_failure bounded by first-party code ("") and
+// every package of each module that resolved it. Each scoped reason is also declared run-wide.
+// Alone it leaves an unrelated sink Searched: the scoped reasons are the gate's to apply per
+// advisory.
 //
-// The fixture inventory: app depends on a, c and optionally nopom; a depends on b. b and c are
-// fully cached; a's POM is cached, its JAR only when the row says so; nopom has neither.
-func TestReachability_MissingJarScopedTargets(t *testing.T) {
+// The fixture graph: app resolves a, b and c; b holds the sink, and main never calls it.
+func TestReachability_UnreadableJarScopedTargets(t *testing.T) {
+	const detail = "org.a:a:1.0: a-1.0.jar unreadable or changed since the build resolved it"
+	targets := []string{"", "pkg:maven/org.a/a", "pkg:maven/org.b/b", "pkg:maven/org.c/c"}
 	tests := []struct {
-		name      string
-		cacheA    bool // a's JAR is cached
-		withNoPOM bool // the app also depends on nopom (no POM, no JAR)
-		want      []plugin.ScopedReason
+		name   string
+		breakA func(t *testing.T, jar string)
+		want   []plugin.ScopedReason
 	}{
-		{name: "jar present: no reason", cacheA: true},
+		{name: "jar present: no reason"},
 		{
-			name: "jar missing, closures known: own closure, first party and its closure",
-			want: []plugin.ScopedReason{{
-				Reason: partialReasonMissingJar, Package: "pkg:maven/org.a/a", Path: "org.a:a:1.0",
-				Targets: []string{"", "pkg:maven/org.a/a", "pkg:maven/org.b/b", "pkg:maven/org.c/c"},
-			}},
-		},
-		{
-			name:   "jar and metadata missing: unbounded",
-			cacheA: true, withNoPOM: true,
-			want: []plugin.ScopedReason{{Reason: partialReasonMissingJar, Package: "pkg:maven/org.nopom/nopom", Path: "org.nopom:nopom:3.0"}},
-		},
-		{
-			name:      "jar missing, first-party closure unknown: unbounded",
-			withNoPOM: true,
-			want: []plugin.ScopedReason{
-				{Reason: partialReasonMissingJar, Package: "pkg:maven/org.a/a", Path: "org.a:a:1.0"},
-				{Reason: partialReasonMissingJar, Package: "pkg:maven/org.nopom/nopom", Path: "org.nopom:nopom:3.0"},
+			name: "jar gone",
+			breakA: func(t *testing.T, jar string) {
+				if err := os.Remove(jar); err != nil {
+					t.Fatal(err)
+				}
 			},
+			want: []plugin.ScopedReason{{Reason: plugin.PartialReasonToolFailure, Package: "pkg:maven/org.a/a", Path: detail, Targets: targets}},
+		},
+		{
+			name: "jar changed since the build resolved it",
+			breakA: func(t *testing.T, jar string) {
+				writeJar(t, jar, map[string][]byte{"org/a/Other": plainClass("org/a/Other")})
+			},
+			want: []plugin.ScopedReason{{Reason: plugin.PartialReasonToolFailure, Package: "pkg:maven/org.a/a", Path: detail, Targets: targets}},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			deps := `<dependency><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version></dependency>
-<dependency><groupId>org.c</groupId><artifactId>c</artifactId><version>1.0</version></dependency>`
-			if tt.withNoPOM {
-				deps += `
-<dependency><groupId>org.nopom</groupId><artifactId>nopom</artifactId><version>3.0</version></dependency>`
-			}
-			writeBuildFile(t, dir, "pom.xml", `<project>
-<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
-<dependencies>
-`+deps+`
-</dependencies></project>`)
-			writePOM := func(group, artifact, version, body string) {
-				p := m2Path(dir, group, artifact, version, "pom")
-				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			writePOM("org.a", "a", "1.0", `<project><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version>
-<dependencies><dependency><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></dependency></dependencies></project>`)
-			writePOM("org.b", "b", "2.0", `<project><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></project>`)
-			writePOM("org.c", "c", "1.0", `<project><groupId>org.c</groupId><artifactId>c</artifactId><version>1.0</version></project>`)
-			jar := func(group, artifact, version, class string) {
+			jar := func(group, artifact, version, class string) graphDep {
 				b := newKClassBuilder()
 				b.addMethod("sink", "()V", []byte{opReturn})
-				writeJar(t, m2Path(dir, group, artifact, version, "jar"), map[string][]byte{class: b.build(class, "java/lang/Object")})
+				p := m2Path(dir, group, artifact, version, "jar")
+				writeJar(t, p, map[string][]byte{class: b.build(class, "java/lang/Object")})
+				return graphDep{group: group, artifact: artifact, version: version, jar: p}
 			}
-			jar("org.b", "b", "2.0", "org/b/B")
-			jar("org.c", "c", "1.0", "org/c/C")
-			if tt.cacheA {
-				jar("org.a", "a", "1.0", "org/a/A")
+			a := jar("org.a", "a", "1.0", "org/a/A")
+			graph := graphOption(t, graphModule(".", "app", a, jar("org.b", "b", "2.0", "org/b/B"), jar("org.c", "c", "1.0", "org/c/C")))
+			if tt.breakA != nil {
+				tt.breakA(t, a.jar)
 			}
+			writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
 
-			mb := newKClassBuilder()
-			mb.addMethod("main", mainStringsDesc, []byte{opReturn})
-			path := filepath.Join(dir, "target", "classes", "com", "example", "Main.class")
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, mb.build("com/example/Main", "java/lang/Object"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			nameLaunchEntry(t, dir, "com.example.Main")
-
-			res := reach(t, dir, "org/b/B.sink()V")
+			res := reachWith(t, dir, graph, "org/b/B.sink()V")
 			if !reflect.DeepEqual(res.Partiality.Scoped, tt.want) {
 				t.Fatalf("Scoped = %+v\nwant     %+v", res.Partiality.Scoped, tt.want)
 			}
-			if mirrored := hasReason(res.Partiality, partialReasonMissingJar); mirrored != (len(tt.want) > 0) {
+			if mirrored := hasReason(res.Partiality, plugin.PartialReasonToolFailure); mirrored != (len(tt.want) > 0) {
 				t.Errorf("run-wide %s declared = %v, want %v (every scoped reason is mirrored run-wide): %v",
-					partialReasonMissingJar, mirrored, len(tt.want) > 0, res.Partiality.Reasons)
+					plugin.PartialReasonToolFailure, mirrored, len(tt.want) > 0, res.Partiality.Reasons)
 			}
 			if len(tt.want) > 0 && res.Partiality.Complete {
 				t.Error("a result carrying scoped reasons must not be Complete")
 			}
-			// b was loaded and main never calls it. A missing JAR alone leaves the sink searched:
-			// the scoped reasons are the gate's to apply per advisory. A missing POM leaves a
-			// subtree the inventory cannot see (maven_uncached_subtree), and the op withholds
-			// Searched under it.
-			var want []string
-			if !tt.withNoPOM {
-				want = []string{"org/b/B.sink()V"}
-			}
-			if !reflect.DeepEqual(res.Searched, want) {
+			if want := []string{"org/b/B.sink()V"}; !reflect.DeepEqual(res.Searched, want) {
 				t.Errorf("Searched = %v, want %v (%v)", res.Searched, want, res.Partiality.Reasons)
-			}
-		})
-	}
-}
-
-// TestProgramClosure: first-party code's dependency closure is every inventory node, and it is
-// unknown (nil) as soon as any part of the graph is: a graph-level limit, a node whose out-edges
-// were not read, a node that is not a Maven package, or an edge to a node the inventory lacks.
-func TestProgramClosure(t *testing.T) {
-	node := func(id, purl string, reasons ...string) plugin.DependencyNode {
-		return plugin.DependencyNode{ID: id, PURL: purl, Partiality: plugin.Partiality{Complete: len(reasons) == 0, Reasons: reasons}}
-	}
-	a := node("a", "pkg:maven/org.a/a@1.0")
-	b := node("b", "pkg:maven/org.b/b@2.0")
-	c := node("c", "pkg:maven/org.c/c@1.0")
-	ab := []plugin.DependencyEdge{{Parent: "a", Child: "b"}}
-	tests := []struct {
-		name string
-		inv  plugin.DependencyInventory
-		want []string
-	}{
-		{
-			name: "complete graph: every node",
-			inv:  plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c}, Edges: ab},
-			want: []string{"pkg:maven/org.a/a", "pkg:maven/org.b/b", "pkg:maven/org.c/c"},
-		},
-		{
-			name: "graph-level limit",
-			inv: plugin.DependencyInventory{
-				Partiality: plugin.Partiality{Reasons: []string{plugin.PartialReasonRelationshipUnexpressed + ":property_unresolved"}},
-				Nodes:      []plugin.DependencyNode{a, b, c}, Edges: ab,
-			},
-		},
-		{
-			name: "a node whose out-edges were not read",
-			inv: plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{
-				a, b, node("c", "pkg:maven/org.c/c@1.0", partialReasonMissingJar),
-			}, Edges: ab},
-		},
-		{
-			name: "a node that is not a Maven package",
-			inv:  plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c, node("x", "pkg:generic/x@1")}, Edges: ab},
-		},
-		{
-			// A scoped limit names a package the inventory could not fully read, so the graph is
-			// not fully known even with no graph-level reason.
-			name: "a scoped limit only",
-			inv: plugin.DependencyInventory{
-				Partiality: plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonToolFailure, Package: "pkg:maven/org.c/c"}}},
-				Nodes:      []plugin.DependencyNode{a, b, c}, Edges: ab,
-			},
-		},
-		{
-			name: "an edge to a node the inventory lacks",
-			inv: plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c},
-				Edges: append([]plugin.DependencyEdge{{Parent: "c", Child: "gone"}}, ab...)},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := newInventoryGraph(tt.inv).programClosure(); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("programClosure = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -625,9 +479,8 @@ dependencies {
 	if got.Reason != partialReasonDuplicateClass || got.Package != "pkg:maven/org.two/two" {
 		t.Errorf("scoped = %+v, want duplicate_class on org.two:two", got)
 	}
-	// Declared-direct Gradle nodes carry gradle_transitive: the closure is unknown.
-	if got.Targets != nil {
-		t.Errorf("Targets = %v, want nil (closure unknown without a lockfile)", got.Targets)
+	if want := []string{"", "pkg:maven/org.one/one", "pkg:maven/org.two/two"}; !reflect.DeepEqual(got.Targets, want) {
+		t.Errorf("Targets = %v, want %v", got.Targets, want)
 	}
 }
 
@@ -645,7 +498,7 @@ func TestResolveDependencySymbols_OriginsAndMatched(t *testing.T) {
 		BuildDir:        dir,
 		PURL:            jacksonPURL,
 		AdvisorySymbols: []string{hit, " " + miss},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,103 +534,64 @@ func jacksonJarWriteCallsRead() map[string][]byte {
 	return map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")}
 }
 
-// lockedJacksonBuild is a Gradle build declaring jackson-databind with the given lockfiles
-// (path relative to the build -> content). Jackson 2.9.8's writeValueAsString is a leaf and
-// 2.9.9's calls the sink; both JARs are cached, with their POMs in the user Gradle cache so the
-// inventory graph is complete. main calls writeValueAsString.
-func lockedJacksonBuild(t *testing.T, lockfiles map[string]string) string {
+// versionedJacksonBuild caches jackson-databind 2.9.8, whose writeValueAsString is a leaf, and
+// 2.9.9, whose writeValueAsString calls the sink, under a main that calls writeValueAsString. It
+// returns the build and the graph dependency on each JAR at the given scopes.
+func versionedJacksonBuild(t *testing.T, scope298, scope299 string) (dir string, v298, v299 graphDep) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := t.TempDir()
-	writeBuildFile(t, dir, "build.gradle.kts", "dependencies {\n    implementation(\""+jacksonGroup+":"+jacksonArtifact+":2.9.8\")\n}\n"+gradleLocking)
-	for rel, content := range lockfiles {
-		p := filepath.Join(dir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, v := range []string{"2.9.8", "2.9.9"} {
-		pom := filepath.Join(home, ".gradle", "caches", "modules-2", "files-2.1", jacksonGroup, jacksonArtifact, v, "feed", jacksonArtifact+"-"+v+".pom")
-		if err := os.MkdirAll(filepath.Dir(pom), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		body := "<project><groupId>" + jacksonGroup + "</groupId><artifactId>" + jacksonArtifact + "</artifactId><version>" + v + "</version></project>"
-		if err := os.WriteFile(pom, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.8", jacksonJar())
-	writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.9", jacksonJarWriteCallsRead())
+	dir = t.TempDir()
+	writeBuildFile(t, dir, "build.gradle.kts", "dependencies {\n    implementation(\""+jacksonGroup+":"+jacksonArtifact+":2.9.8\")\n}\n")
+	v298 = graphDep{group: jacksonGroup, artifact: jacksonArtifact, version: "2.9.8", scope: scope298,
+		jar: writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.8", jacksonJar())}
+	v299 = graphDep{group: jacksonGroup, artifact: jacksonArtifact, version: "2.9.9", scope: scope299,
+		jar: writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.9", jacksonJarWriteCallsRead())}
 	writeMain(t, dir, func(b *kclassBuilder) []byte {
 		return b.invokeVirtual(objectMapper, "writeValueAsString", "(Ljava/lang/Object;)Ljava/lang/String;")
 	})
-	return dir
+	return dir, v298, v299
 }
 
-// TestReachability_GradleLockRuntimeVersion: with a lockfile, the closure loads the version
-// runtimeClasspath locks, never one locked only for kapt, annotation processing or tests. A
-// coordinate runtimeClasspath locks at more than one version, or at one that is not concrete,
-// loads nothing: a named scoped miss (mirrored run-wide) and its package is never Searched.
-func TestReachability_GradleLockRuntimeVersion(t *testing.T) {
+// TestReachability_RuntimeVersion: the closure loads the version on a module's runtime
+// classpath, never one the graph resolved only for tests. A coordinate the modules resolved at
+// more than one runtime version loads nothing: a named scoped miss (mirrored run-wide), and its
+// package is never Searched.
+func TestReachability_RuntimeVersion(t *testing.T) {
 	const ga = jacksonGroup + ":" + jacksonArtifact
-	bounded := []string{"", jacksonPURL}
 	tests := []struct {
 		name       string
-		lockfiles  map[string]string
+		graph      func(t *testing.T, v298, v299 graphDep) javaanalysis.Option
 		wantPath   bool
 		wantScoped []plugin.ScopedReason
 	}{
 		{
-			// The inventory keeps the first-seen 2.9.8 (kapt); the runtime runs 2.9.9, whose
-			// writeValueAsString reaches the sink.
-			name:      "kapt version and runtime version: runtime loads",
-			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.9.9=compileClasspath,runtimeClasspath\nempty=\n"},
-			wantPath:  true,
+			// The runtime runs 2.9.9, whose writeValueAsString reaches the sink.
+			name: "test version and runtime version: runtime loads",
+			graph: func(t *testing.T, v298, v299 graphDep) javaanalysis.Option {
+				return graphOption(t, graphModule(".", "app", v298, v299))
+			},
+			wantPath: true,
 		},
 		{
 			// Not on the runtime classpath: not loaded, so the call is an unloaded dependency.
-			name:      "locked only for kapt and tests: not loaded",
-			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt,testRuntimeClasspath\nempty=\n"},
+			name: "test scope only: not loaded",
+			graph: func(t *testing.T, v298, _ graphDep) javaanalysis.Option {
+				return graphOption(t, graphModule(".", "app", v298))
+			},
 		},
 		{
-			// A legacy gradle/dependency-locks directory leaves the lock unconfirmed, so the
-			// inventory is incomplete and the closure, hence Targets, unbounded.
-			name: "two runtime versions: named miss",
-			lockfiles: map[string]string{
-				"gradle.lockfile": ga + ":2.9.8=runtimeClasspath\nempty=\n",
-				"gradle/dependency-locks/runtimeClasspath.lockfile": ga + ":2.9.9=runtimeClasspath\n",
+			name: "two modules resolve two runtime versions: named miss",
+			graph: func(t *testing.T, v298, v299 graphDep) javaanalysis.Option {
+				v298.scope = "compile"
+				return graphOption(t, graphModule(".", "app", v298), graphModule("lib", "lib", v299))
 			},
 			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
-				Path: ga + ": runtime classpaths lock 2.9.8, 2.9.9"}},
-		},
-		{
-			// Spring Boot's bootJar packages productionRuntimeClasspath.
-			name:      "kapt version and productionRuntimeClasspath version: production runtime loads",
-			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.9.9=productionRuntimeClasspath\nempty=\n"},
-			wantPath:  true,
-		},
-		{
-			name:      "runtimeClasspath and productionRuntimeClasspath disagree: named miss",
-			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=runtimeClasspath\n" + ga + ":2.9.9=productionRuntimeClasspath\nempty=\n"},
-			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
-				Path: ga + ": runtime classpaths lock 2.9.8, 2.9.9", Targets: bounded}},
-		},
-		{
-			// No POM is cached for 2.+, so the inventory is incomplete (gradle_uncached) and the
-			// closure, hence Targets, unbounded.
-			name:      "runtime version not concrete: named miss",
-			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.+=runtimeClasspath\nempty=\n"},
-			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
-				Path: ga + ": runtime classpaths lock 2.+"}},
+				Path: ga + ": runtime versions 2.9.8, 2.9.9", Targets: []string{"", jacksonPURL}}},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res := reach(t, lockedJacksonBuild(t, tt.lockfiles), readValueSink)
+			dir, v298, v299 := versionedJacksonBuild(t, "test", "runtime")
+			res := reachWith(t, dir, tt.graph(t, v298, v299), readValueSink)
 			if got := len(res.Paths) == 1; got != tt.wantPath {
 				t.Errorf("path found = %v, want %v (partiality %+v)", got, tt.wantPath, res.Partiality)
 			}
@@ -794,41 +608,44 @@ func TestReachability_GradleLockRuntimeVersion(t *testing.T) {
 	}
 }
 
-// TestResolveDependencySymbols_GradleLockRuntimeVersion: with a lockfile the sink resolves
-// against the runtimeClasspath version, the bytes the closure loads, not the build file's or a
-// kapt lock's. A PURL pinned to another version is declared: the bytes resolved are not the ones
-// it names.
-func TestResolveDependencySymbols_GradleLockRuntimeVersion(t *testing.T) {
-	const (
-		ga       = jacksonGroup + ":" + jacksonArtifact
-		onlyNew  = "com.fasterxml.jackson.databind.ObjectMapper.onlyInRuntime"
-		onlyDesc = "()V"
-	)
+// TestResolveDependencySymbols_ResolvedVersion: the sink resolves against the versions the
+// build resolved. A PURL pinned to one of them reads only that one; a PURL pinned to a version
+// the build did not resolve is declared, and every resolved version is read instead: those are
+// the bytes that run.
+func TestResolveDependencySymbols_ResolvedVersion(t *testing.T) {
+	const onlyNew = "com.fasterxml.jackson.databind.ObjectMapper.onlyInRuntime"
 	tests := []struct {
 		name         string
 		purl         string
+		with298      bool // the graph also resolves 2.9.8, for tests
+		wantMatched  bool
 		wantDeclared bool
 	}{
-		{name: "unpinned", purl: jacksonPURL},
-		{name: "pinned to the kapt version", purl: jacksonPURL + "@2.9.8", wantDeclared: true},
+		{name: "unpinned", purl: jacksonPURL, wantMatched: true},
+		{name: "pinned to a version the build did not resolve", purl: jacksonPURL + "@2.9.8", wantMatched: true, wantDeclared: true},
+		{name: "pinned to a resolved version: only it is read", purl: jacksonPURL + "@2.9.8", with298: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := lockedJacksonBuild(t, map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.9.9=runtimeClasspath\nempty=\n"})
+			dir, v298, v299 := versionedJacksonBuild(t, "test", "runtime")
 			b := newKClassBuilder()
 			b.addMethod("readValue", readValueDesc, []byte{opReturn})
-			b.addMethod("onlyInRuntime", onlyDesc, []byte{opReturn})
-			writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.9", map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")})
+			b.addMethod("onlyInRuntime", "()V", []byte{opReturn})
+			writeJar(t, v299.jar, map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")})
+			deps := []graphDep{v299}
+			if tt.with298 {
+				deps = append(deps, v298)
+			}
 			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
 				BuildDir:        dir,
 				PURL:            tt.purl,
 				AdvisorySymbols: []string{onlyNew},
-			})
+			}, graphOption(t, graphModule(".", "app", deps...)))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, ok := res.Matched[onlyNew]; !ok {
-				t.Errorf("%s did not resolve against the runtime 2.9.9 JAR: Matched=%v partiality=%+v", onlyNew, res.Matched, res.Partiality)
+			if _, ok := res.Matched[onlyNew]; ok != tt.wantMatched {
+				t.Errorf("%s matched = %v, want %v: Matched=%v partiality=%+v", onlyNew, ok, tt.wantMatched, res.Matched, res.Partiality)
 			}
 			if got := hasReason(res.Partiality, partialReasonNoDependencyArtifact); got != tt.wantDeclared {
 				t.Errorf("%s declared = %v, want %v: %v", partialReasonNoDependencyArtifact, got, tt.wantDeclared, res.Partiality.Reasons)
@@ -837,220 +654,167 @@ func TestResolveDependencySymbols_GradleLockRuntimeVersion(t *testing.T) {
 	}
 }
 
-// TestReachability_InventoryVersionSelectionLimit: an inventory graph-level reason under which a
-// node's version may not be the one the build selects (here an imported BOM absent from the
-// cache, so the versions it manages are unknown) is declared run-wide on the result.
-func TestReachability_InventoryVersionSelectionLimit(t *testing.T) {
-	const bomUncached = plugin.PartialReasonSourceUnpinned + ":bom_uncached"
-	tests := []struct {
-		name      string
-		cacheBOM  bool
-		wantLimit bool
-	}{
-		{name: "imported BOM cached", cacheBOM: true},
-		{name: "imported BOM uncached", wantLimit: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			dir := t.TempDir()
-			writeBuildFile(t, dir, "pom.xml", `<project>
-<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
-<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>
-<dependencies><dependency><groupId>`+jacksonGroup+`</groupId><artifactId>`+jacksonArtifact+`</artifactId><version>`+jacksonVersion+`</version></dependency></dependencies></project>`)
-			writePOM := func(group, artifact, version, body string) {
-				p := m2Path(dir, group, artifact, version, "pom")
-				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tt.cacheBOM {
-				writePOM("org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging></project>`)
-			}
-			writePOM(jacksonGroup, jacksonArtifact, jacksonVersion, `<project><groupId>`+jacksonGroup+`</groupId><artifactId>`+jacksonArtifact+`</artifactId><version>`+jacksonVersion+`</version></project>`)
-			writeJar(t, m2Path(dir, jacksonGroup, jacksonArtifact, jacksonVersion, "jar"), jacksonJar())
-			writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
-
-			res := reach(t, dir, readValueSink)
-			if got := hasReason(res.Partiality, bomUncached); got != tt.wantLimit {
-				t.Errorf("%s declared = %v, want %v: %+v", bomUncached, got, tt.wantLimit, res.Partiality)
-			}
-			if tt.wantLimit && res.Partiality.Complete {
-				t.Error("result Complete despite an inventory version-selection limit")
-			}
-			// The loaded jackson may not be the version the BOM would select: no Searched.
-			if got := res.Searched != nil; got == tt.wantLimit {
-				t.Errorf("Searched = %v with limit %v", res.Searched, tt.wantLimit)
-			}
-		})
-	}
-}
-
-// TestMissingJarReasonIsDistinct: the missing-JAR reason is not the inventory's uncached-POM
-// reason, so a report never merges "one JAR absent" into "the graph is unresolved", and it
-// stays a did-not-run disclosure.
-func TestMissingJarReasonIsDistinct(t *testing.T) {
-	if partialReasonMissingJar == plugin.PartialReasonRelationshipUnexpressed+":maven_uncached_subtree" {
-		t.Errorf("%s is the inventory's maven_uncached_subtree reason", partialReasonMissingJar)
-	}
-	for _, r := range []string{partialReasonMissingJar, partialReasonRuntimeVersionAmbiguous} {
+// TestClosureReasonsAreDidNotRun: the closure's scoped reasons are did-not-run disclosures, so a
+// report never reads a JAR the closure could not load as evidence about the code.
+func TestClosureReasonsAreDidNotRun(t *testing.T) {
+	for _, r := range []string{partialReasonNoDependencyArtifact, partialReasonRuntimeVersionAmbiguous} {
 		if got := report.ClassifyPartialityReason(r); got != report.PartialityDidNotRun {
 			t.Errorf("ClassifyPartialityReason(%s) = %v, want did_not_run", r, got)
 		}
 	}
 }
 
-// TestProgramClosureCoversInventory pins admitted ⊆ program for inventory mode: the dependency
-// SBOM a Kotlin run admits advisories against is javaanalysis.ResolveInventory's node set, the
-// same call the closure reads, so every package it names must be inside first-party code's
-// closure whenever that closure is bounded. A Targets bound that excluded one of them could
-// narrow a limit away from an admitted package.
-func TestProgramClosureCoversInventory(t *testing.T) {
-	const ga = jacksonGroup + ":" + jacksonArtifact
-	dir := lockedJacksonBuild(t, map[string]string{"gradle.lockfile": ga + ":2.9.8=runtimeClasspath\nempty=\n"})
-	inv, err := javaanalysis.ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+// TestBlindSpotTargetsCoverInventory pins admitted ⊆ bound: the dependency SBOM a Kotlin run
+// admits advisories against is javaanalysis.ResolveInventory's node set over the same graph the
+// closure reads, so every package it names must be inside an unreadable JAR's Targets. A bound
+// that excluded one could narrow a limit away from an admitted package.
+func TestBlindSpotTargetsCoverInventory(t *testing.T) {
+	dir, v298, v299 := versionedJacksonBuild(t, "test", "runtime")
+	other := graphDep{group: "org.a", artifact: "a", version: "1.0", jar: m2Path(dir, "org.a", "a", "1.0", "jar")}
+	writeJar(t, other.jar, map[string][]byte{"org/a/A": plainClass("org/a/A")})
+	graph := graphOption(t, graphModule(".", "app", v298, v299, other))
+	inv, err := javaanalysis.ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir}, graph)
 	if err != nil {
 		t.Fatal(err)
 	}
-	program := newInventoryGraph(inv).programClosure()
-	if program == nil {
-		t.Fatalf("closure unbounded on a complete lockfile inventory: %+v", inv.Partiality)
+	if err := os.Remove(v299.jar); err != nil {
+		t.Fatal(err)
+	}
+	res := reachWith(t, dir, graph, readValueSink)
+	if len(res.Partiality.Scoped) != 1 {
+		t.Fatalf("want one scoped reason for the removed JAR, got %+v", res.Partiality.Scoped)
 	}
 	in := map[string]bool{}
-	for _, p := range program {
+	for _, p := range res.Partiality.Scoped[0].Targets {
 		in[p] = true
 	}
+	if len(inv.Nodes) == 0 {
+		t.Fatal("inventory admits nothing")
+	}
 	for _, n := range inv.Nodes {
-		group, artifact, _, ok := splitMavenNodePURL(n.PURL)
-		if !ok || !in["pkg:maven/"+group+"/"+artifact] {
-			t.Errorf("admitted node %s outside the program closure %v", n.PURL, program)
+		if purl, _, _ := strings.Cut(n.PURL, "@"); !in[purl] {
+			t.Errorf("admitted node %s outside the bound %v", n.PURL, res.Partiality.Scoped[0].Targets)
 		}
 	}
 }
 
-// TestLocateDependencyJar_CopiesAcrossCaches: the Gradle module cache and .m2 are one set of
-// candidates. Copies of a version whose bytes differ, even one per cache, leave the build's
-// bytes unknown and are a miss.
-func TestLocateDependencyJar_CopiesAcrossCaches(t *testing.T) {
-	jar := func(method string) map[string][]byte {
-		b := newKClassBuilder()
-		b.addMethod(method, "()V", []byte{opReturn})
-		return map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")}
+// TestNoBuildGraph: without a build graph nothing but first-party code is loaded and no
+// dependency JAR is read, and build_graph_absent withholds Searched.
+func TestNoBuildGraph(t *testing.T) {
+	dir := gradleJacksonBuild(t, "")
+	writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{readValueSink}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	tests := []struct {
-		name          string
-		gradle, maven string // method the copy in each cache defines; "" = no copy
-		wantOK        bool
+	if res.Searched != nil || res.Partiality.Complete || !hasReason(res.Partiality, javaanalysis.PartialReasonBuildGraphAbsent) {
+		t.Errorf("Reachability: Searched = %v, partiality %+v; want none, carrying %s", res.Searched, res.Partiality, javaanalysis.PartialReasonBuildGraphAbsent)
+	}
+	syms, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+		BuildDir: dir, PURL: jacksonPURL, AdvisorySymbols: []string{"com.fasterxml.jackson.databind.ObjectMapper.readValue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(syms.Resolved) != 0 || !hasReason(syms.Partiality, javaanalysis.PartialReasonBuildGraphAbsent) {
+		t.Errorf("ResolveDependencySymbols: Resolved = %v, partiality %+v; want none, carrying %s", syms.Resolved, syms.Partiality, javaanalysis.PartialReasonBuildGraphAbsent)
+	}
+}
+
+// The closure's classpath carries the JDK the program runs on, which is the stated one only when
+// every module's toolchain was read and selects it.
+func TestDependencyClosureRunsOnTheGraphRuntimeJDK(t *testing.T) {
+	for _, tc := range []struct {
+		jdk        string
+		toolchains []string
+		unread     bool
+		want       int
 	}{
-		{name: "gradle cache only", gradle: "a", wantOK: true},
-		{name: "m2 only", maven: "a", wantOK: true},
-		{name: "same bytes in both", gradle: "a", maven: "a", wantOK: true},
-		{name: "different bytes across caches", gradle: "a", maven: "b"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			dir := t.TempDir()
-			if tt.gradle != "" {
-				writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, jacksonVersion, jar(tt.gradle))
-			}
-			if tt.maven != "" {
-				writeJar(t, m2Path(dir, jacksonGroup, jacksonArtifact, jacksonVersion, "jar"), jar(tt.maven))
-			}
-			if _, ok := LocateDependencyJar(dir, jacksonGroup+":"+jacksonArtifact, jacksonVersion); ok != tt.wantOK {
-				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
-			}
+		{jdk: "21.0.4", want: 21},
+		{jdk: "17.0.12", want: 17},
+		{jdk: "21.0.4", toolchains: []string{"21"}, want: 21},
+		{jdk: "21.0.4", toolchains: []string{"17"}, want: 0},
+		{jdk: "21.0.4", unread: true, want: 0},
+	} {
+		m := graphModule(".", "app")
+		m.JDKToolchains = tc.toolchains
+		m.JDKToolchainsKnown = !tc.unread
+		b, err := json.Marshal(buildgraph.Graph{
+			Schema:     buildgraph.Schema,
+			Tool:       buildgraph.Tool{Name: "gradle", Version: "test"},
+			JVM:        buildgraph.JVM{Version: "21.0.4"},
+			Conditions: buildgraph.Conditions{JDK: tc.jdk},
+			Modules:    []buildgraph.Module{m},
 		})
-	}
-}
-
-// TestReachability_InventoryGraphReasonsWithholdSearched: the op itself withholds Searched under
-// every graph reason the inventory declares, so a library consumer that never applies the
-// gate's inventory limits still cannot read an empty search as complete. Each row's main never
-// calls the loaded sink.
-func TestReachability_InventoryGraphReasonsWithholdSearched(t *testing.T) {
-	mavenBuild := func(t *testing.T, childPOM bool) string {
-		dir := t.TempDir()
-		writeBuildFile(t, dir, "pom.xml", `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
-<dependencies><dependency><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version></dependency></dependencies></project>`)
-		pom := func(g, a, v, body string) {
-			p := m2Path(dir, g, a, v, "pom")
-			writeFileAt(t, filepath.Dir(p), filepath.Base(p), body)
-		}
-		pom("org.a", "a", "1.0", `<project><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version>
-<dependencies><dependency><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></dependency></dependencies></project>`)
-		if childPOM {
-			pom("org.b", "b", "2.0", `<project><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></project>`)
-		}
-		for _, j := range []struct{ g, a, v, class string }{{"org.a", "a", "1.0", "org/a/A"}, {"org.b", "b", "2.0", "org/b/B"}} {
-			b := newKClassBuilder()
-			b.addMethod("sink", "()V", []byte{opReturn})
-			writeJar(t, m2Path(dir, j.g, j.a, j.v, "jar"), map[string][]byte{j.class: b.build(j.class, "java/lang/Object")})
-		}
-		mb := newKClassBuilder()
-		mb.addMethod("main", mainStringsDesc, []byte{opReturn})
-		writeFileAt(t, filepath.Join(dir, "target", "classes", "com", "example"), "Main.class", string(mb.build("com/example/Main", "java/lang/Object")))
-		nameLaunchEntry(t, dir, "com.example.Main")
-		return dir
-	}
-	gradle := func(locked bool) func(t *testing.T) (string, string) {
-		return func(t *testing.T) (string, string) {
-			var dir string
-			if locked {
-				dir = gradleJacksonBuild(t, "")
-			} else {
-				t.Setenv("HOME", t.TempDir())
-				dir = unlockedJacksonBuild(t, "")
-			}
-			writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
-			return dir, readValueSink
-		}
-	}
-	maven := func(childPOM bool) func(t *testing.T) (string, string) {
-		return func(t *testing.T) (string, string) { return mavenBuild(t, childPOM), "org/a/A.sink()V" }
-	}
-	// mavenProfile adds a profile that sets a property, undecided until the selection is stated.
-	mavenProfile := func(t *testing.T) (string, string) {
-		dir, sink := maven(true)(t)
-		pom := filepath.Join(dir, "pom.xml")
-		body, err := os.ReadFile(pom)
 		if err != nil {
 			t.Fatal(err)
 		}
-		writeBuildFile(t, dir, "pom.xml", strings.Replace(string(body), "</project>",
-			"<profiles><profile><id>prod</id><properties><deploy.env>prod</deploy.env></properties></profile></profiles></project>", 1))
-		return dir, sink
+		file := filepath.Join(t.TempDir(), "graph.json")
+		if err := os.WriteFile(file, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dc := loadDependencyClosure(t.TempDir(), nil, javaanalysis.WithBuildGraph(file))
+		if dc.cp.JDK != tc.want {
+			t.Errorf("JDK %q, toolchains %q, unread %t: closure JDK = %d, want %d", tc.jdk, tc.toolchains, tc.unread, dc.cp.JDK, tc.want)
+		}
 	}
-	tests := []struct {
-		name     string
-		build    func(t *testing.T) (string, string)
-		env      map[string]string
-		reason   string // the graph reason the row declares, "" for none
-		searched bool
+}
+
+// TestDependencyClosure_LocalRepositoryLaunchReasons: the Kotlin closure hands the launch scan
+// its graph as the Java closure does, so a cached POM in the resolved in-checkout repository does
+// not withhold Searched, and one in a directory merely named like it still does.
+func TestDependencyClosure_LocalRepositoryLaunchReasons(t *testing.T) {
+	const pluginPOM = "<plugin><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>-javaagent:/a.jar</argLine></configuration></plugin>\n"
+	write := func(t *testing.T, p string, data []byte) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		name, root string
+		want       bool
 	}{
-		{"gradle, locked: searched", gradle(true), nil, "", true},
-		{"gradle, no lockfile: gradle_transitive withholds Searched", gradle(false), nil, "relationship_unexpressed:gradle_transitive", false},
-		{"maven, child POM cached: searched", maven(true), nil, "", true},
-		{"maven, child POM uncached: maven_uncached_subtree withholds Searched", maven(false), nil, "relationship_unexpressed:maven_uncached_subtree", false},
-		{"maven, profile with no selection stated: profile_activation withholds Searched", mavenProfile, nil, "env_condition_unresolved:profile_activation", false},
-		{"maven, profile with no profiles selected: searched", mavenProfile, map[string]string{"maven.profiles": ","}, "", true},
-	}
-	for _, tt := range tests {
+		{"resolved repository", ".m2/repository", false},
+		{"repository resolved elsewhere in the checkout", "cache/m2", true},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			dir, sink := tt.build(t)
-			res := reachUnder(t, dir, tt.env, sink)
-			if got := len(res.Searched) > 0; got != tt.searched {
-				t.Errorf("Searched = %v, want searched %v (%+v)", res.Searched, tt.searched, res.Partiality)
+			dir := t.TempDir()
+			jar := filepath.Join(dir, filepath.FromSlash(tt.root), "com/acme/lib/1.0/lib-1.0.jar")
+			var buf strings.Builder
+			zw := zip.NewWriter(&buf)
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
 			}
-			if tt.reason != "" && !hasReason(res.Partiality, tt.reason) {
-				t.Errorf("reasons %v must carry %q", res.Partiality.Reasons, tt.reason)
+			write(t, jar, []byte(buf.String()))
+			write(t, filepath.Join(dir, ".m2/repository/org/apache/maven/surefire/surefire/3.2.5/surefire-3.2.5.pom"), []byte(pluginPOM))
+			b, err := json.Marshal(buildgraph.Graph{
+				Schema:  buildgraph.Schema,
+				Tool:    buildgraph.Tool{Name: buildgraph.ToolMaven, Version: "test"},
+				JVM:     buildgraph.JVM{Version: "21.0.4"},
+				Modules: []buildgraph.Module{graphModule(".", "app", graphDep{group: "com.acme", artifact: "lib", version: "1.0", jar: jar})},
+			})
+			if err != nil {
+				t.Fatal(err)
 			}
-			if len(res.Paths) > 0 {
-				t.Errorf("main never calls the sink, got paths %v", res.Paths)
+			file := filepath.Join(t.TempDir(), "graph.json")
+			write(t, file, b)
+			dc := loadDependencyClosure(dir, nil, javaanalysis.WithBuildGraph(file))
+			if got := slicesContains(dc.reasons, javaanalysis.PartialReasonLaunchAgent); got != tt.want {
+				t.Errorf("reasons = %v; %s present %v, want %v", dc.reasons, javaanalysis.PartialReasonLaunchAgent, got, tt.want)
 			}
 		})
 	}
+}
+
+func slicesContains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

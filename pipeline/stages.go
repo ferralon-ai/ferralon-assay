@@ -30,6 +30,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
 )
@@ -47,14 +48,6 @@ type AssessConfig struct {
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
-	// SubjectJavaVersion is the java.version of the JVM running the subject's Maven build, as the
-	// caller states it. It reaches the language plugin's inventory resolution as TargetEnv
-	// "java.version". See WithSubjectJavaVersion.
-	SubjectJavaVersion string
-	// SubjectMavenProfiles is the subject build's explicit Maven profile selection in -P syntax, as
-	// the caller states it. It reaches inventory resolution as TargetEnv "maven.profiles". See
-	// WithSubjectMavenProfiles.
-	SubjectMavenProfiles string
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
 	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
 	// WithSubjectToolchainReachability.
@@ -63,6 +56,9 @@ type AssessConfig struct {
 	// the plugin when disqualification_discovery already settled the advisory. Off by default. See
 	// WithSkipDisqualifiedAnalysis.
 	SkipDisqualifiedAnalysis bool
+	// DependencyAcquisition fills the dependency cache for a JS build. nil leaves the stage out.
+	// See WithDependencyAcquisition.
+	DependencyAcquisition *dependencyAcquirer
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -87,6 +83,19 @@ func WithCheckout(co checkout.Checkout) AssessOption {
 // default path is byte-identical to today.
 func WithAdvisorySource(src AdvisorySource) AssessOption {
 	return func(c *AssessConfig) { c.Source = src }
+}
+
+// AdvisorySourceOf returns the AdvisorySource a run assessed with opts reads advisory facts through:
+// the one WithAdvisorySource injected, else the process-wide default — the source S1 reads.
+func AdvisorySourceOf(opts ...AssessOption) AdvisorySource {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.Source != nil {
+		return cfg.Source
+	}
+	return defaultAdvisorySource()
 }
 
 // WithSubjectToolchain injects the two candidate EXACT sources of the subject's Go toolchain that
@@ -147,15 +156,20 @@ func AssessStages(opts ...AssessOption) []Stage {
 	for _, o := range opts {
 		o(cfg)
 	}
-	return []Stage{
+	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
 		maliciousPresence{},
 		disqualificationDiscovery{},
-		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, targetEnv: cfg.targetEnv()},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, targetEnv: cfg.targetEnv()},
-		exposureFootprintStage{},
 	}
+	if cfg.DependencyAcquisition != nil {
+		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
+	}
+	return append(stages,
+		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
+		exposureFootprintStage{},
+	)
 }
 
 // SBOMStages returns ONLY the SBOM-producing stages — S1 advisory_intake + S2
@@ -848,13 +862,13 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// established. They live in GuardSufficiency instead, which is Prove-side evidence framing
 	// that Assess never refutes on.
 	//
-	// Each entry carries ONLY its own OSV aliases. Merging them was customer-visible wrong:
-	// internal/intel/data/kev.json lists only CVE-2025-8110, and trigger's priorityFor joins on
-	// ID + Aliases, so the successor sitting in the predecessor's alias array reported
-	// KEVListed against CVE-2024-55947 — which CISA does not list. The GO- ids are load-bearing,
-	// not decoration: they are the key govulncheck reports dependency findings under
-	// (reachcandidate.govulnMatchID, which takes the FIRST GO- alias — with one GO- id per entry
-	// that is now unambiguous, where the merged entry could only ever key one of the two).
+	// Each entry carries ONLY its own OSV aliases. They are two vulnerabilities, and every join on
+	// an entry's id and aliases has one slot per entry: CISA's KEV catalog lists only
+	// CVE-2025-8110, so the successor in the predecessor's alias array would attribute that listing
+	// to CVE-2024-55947, which CISA does not list (TestNoEntryAliasesAnotherEntrysPrimaryID guards
+	// the split). The GO- ids are load-bearing, not decoration: they are the key govulncheck reports
+	// dependency findings under (reachcandidate.govulnMatchID, which takes the FIRST GO- alias), and
+	// with one GO- id per entry that key is unambiguous.
 	"CVE-2024-55947": {
 		Aliases: []string{"GHSA-qf5v-rp47-55gg", "GO-2024-3356"},
 		PURL:    "pkg:golang/gogs.io/gogs/internal/db",
@@ -1569,15 +1583,20 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 	switch {
 	case module != "":
 		// A Go module coordinate resolves off go.mod with no plugin involved, so this branch
-		// carried no partiality at all — every Go scan disclosed nothing. Distinguish the two
+		// carried no partiality at all — every Go scan disclosed nothing. Distinguish the three
 		// ways the version comes back empty: an unreadable/unparseable go.mod means the
-		// version could not be established (disclose no_manifest), whereas a go.mod that
-		// parses and simply does not require the module means the codebase genuinely does not
-		// depend on it (honest absence — no disclosure, so a true not_exploitable stays
-		// unqualified).
-		v, manifestRead := moduleVersionFromGoMod(buildDir, module)
+		// version could not be established (disclose no_manifest); a module the go.mod requires
+		// but replaces with a local directory or another module is declared with no version
+		// that describes it (disclose source_unpinned and keep it declared, so the version axis
+		// stays open); and a go.mod that parses and simply does not require the module means the
+		// codebase genuinely does not depend on it (honest absence — no disclosure, so a true
+		// not_exploitable stays unqualified).
+		v, pinned, manifestRead := moduleVersionFromGoMod(buildDir, module)
 		if !manifestRead {
 			return depVersions{}, []string{plugin.PartialReasonNoManifest}, nil
+		}
+		if !pinned {
+			return depVersions{Found: true}, []string{plugin.PartialReasonSourceUnpinned}, nil
 		}
 		return singleVersion(v), nil, nil
 	case coordinate != "" && s.plugin != nil && s.plugin.Language() == language:
@@ -1997,29 +2016,38 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	return err
 }
 
-// moduleVersionFromGoMod parses buildDir/go.mod and returns the resolved version of the given
-// module path (the version on its require directive). Offline read of the pinned dependency
-// version.
+// moduleVersionFromGoMod parses buildDir/go.mod and returns the version the build selects for
+// module: its require version, or the version a same-module replace directive substitutes.
 //
-// manifestRead separates the two reasons the version can come back empty, which the caller must
-// tell apart: false means go.mod was absent or unparseable, so NOTHING about the dependency set
-// was established; true with an empty version means go.mod was read cleanly and does not require
-// the module, which is a real fact about the codebase.
-func moduleVersionFromGoMod(buildDir, module string) (version string, manifestRead bool) {
+// manifestRead separates the reasons the version can come back empty: false means go.mod was
+// absent or unparseable, so nothing about the dependency set was established; true with an
+// empty version and pinned true means go.mod does not require the module, a real fact about the
+// codebase. pinned false means the module is required but replaced by a local directory or by
+// another module, so the build compiles code no upstream version describes.
+func moduleVersionFromGoMod(buildDir, module string) (version string, pinned, manifestRead bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	for _, r := range mf.Require {
-		if r.Mod.Path == module {
-			return r.Mod.Version, true
+		if r.Mod.Path != module {
+			continue
+		}
+		t, ok := gomod.Replacement(mf, module, r.Mod.Version)
+		switch {
+		case !ok:
+			return r.Mod.Version, true, true
+		case t.Filesystem || t.Path != module:
+			return "", false, true
+		default:
+			return t.Version, true, true
 		}
 	}
-	return "", true
+	return "", true, true
 }
 
 // InventoryBuildDir returns the BuildDir recorded by codebase_inventory, or "" if none. S4/S5 read
@@ -3015,8 +3043,7 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 type symbolMapping struct {
 	plugin           plugin.LanguagePlugin
 	skipDisqualified bool
-	// targetEnv is the run's stated subject conditions, handed to the analyzer on the request.
-	targetEnv map[string]string
+	deps             *dependencyAcquirer
 }
 
 func (symbolMapping) Name() string              { return "symbol_mapping" }
@@ -3033,13 +3060,20 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 			return err
 		}
 		purl, advisorySymbols := advisoryPURLAndSymbols(store, c.ID)
-		res, err := s.plugin.ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{
+		req := plugin.ResolveSymbolsRequest{
 			BuildDir:        buildDir,
 			VulnID:          c.Request.Vulnerability.ID,
 			PURL:            purl,
 			AdvisorySymbols: advisorySymbols,
-			TargetEnv:       s.targetEnv,
-		})
+		}
+		if dc := s.deps.cacheFor(store, c.ID); dc != "" {
+			req.DependencyCache = dc
+			req.Package = admittedPackagePURL(store, c.ID)
+			if req.Package == "" {
+				req.PackageVersions = affectedInstalledVersions(store, c.ID)
+			}
+		}
+		res, err := s.plugin.ResolveDependencySymbols(ctx, req)
 		if err != nil {
 			return err
 		}
@@ -3117,8 +3151,7 @@ type reachabilityIngress struct {
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 	skipDisqualified bool
-	// targetEnv is the run's stated subject conditions, handed to the analyzer on the request.
-	targetEnv map[string]string
+	deps             *dependencyAcquirer
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3206,7 +3239,8 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// normalized-advisory artifact's aliases.
 	vulnID := govulnMatchID(store, c.ID, c.Request.Vulnerability.ID)
 
-	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir})
+	depCache := s.deps.cacheFor(store, c.ID)
+	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, DependencyCache: depCache})
 	if err != nil {
 		return err
 	}
@@ -3220,12 +3254,12 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
-		BuildDir:    buildDir,
-		VulnID:      vulnID,
-		Symbols:     sinks,
-		GoToolchain: requestedToolchain,
-		Package:     admittedPackagePURL(store, c.ID),
-		TargetEnv:   s.targetEnv,
+		BuildDir:        buildDir,
+		VulnID:          vulnID,
+		Symbols:         sinks,
+		GoToolchain:     requestedToolchain,
+		Package:         admittedPackagePURL(store, c.ID),
+		DependencyCache: depCache,
 	})
 	if err != nil {
 		return err
@@ -3295,7 +3329,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}, DependencyCache: depCache})
 		if err != nil {
 			return err
 		}
@@ -3562,6 +3596,34 @@ func admittedPackagePURL(store artifact.Store, caseID string) string {
 		purl = purl[:at]
 	}
 	return purl + "@" + version
+}
+
+// affectedInstalledVersions returns the assessed package's installed versions that are not provably
+// outside the advisory's affected ranges, for when the copies disagree and the inventory resolved no
+// single version. It is nil when one version was resolved, when the package is the scanned project
+// itself, or when the inventory lists no versions. A version the ranges cannot place is kept.
+func affectedInstalledVersions(store artifact.Store, caseID string) []string {
+	if RootSubject(store, caseID) {
+		return nil
+	}
+	if _, ok := ResolvedVersion(store, caseID); ok {
+		return nil
+	}
+	axis, ok := extractVersionAxis(store, caseID)
+	if !ok {
+		return nil
+	}
+	rngs, rangeKnown := extractAffectedRange(store, caseID)
+	var out []string
+	for _, v := range axis.Versions {
+		if rangeKnown {
+			if outside, ok := versionOutsideRanges(v, rngs); ok && outside {
+				continue
+			}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // resolvedSinkSCIP reads the upstream vulnerable-symbol artifact and returns the first resolved SCIP

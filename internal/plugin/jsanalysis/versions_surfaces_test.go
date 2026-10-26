@@ -43,6 +43,8 @@ func TestResolveVersions_UnreadInstallSurfaceVetoes(t *testing.T) {
 		"YARN.lock case":        {"svc/YARN.lock", "# yarn lockfile v1\n"},
 		"templated lock":        {"svc/package-lock.json.tmpl", otherLockJSON5},
 		"pnpmfile":              {".pnpmfile.cjs", "module.exports = { hooks: {} }\n"},
+		"escaped hook key":      {".npmrc", "\"pnpm\\u0066ile\"=./hook.cjs\n"},
+		"unparsable npmrc key":  {".npmrc", "\"bad\\q\"=1\n"},
 		"rewrite config":        {"pnpm-workspace.yaml", "packageExtensions:\n  a:\n    dependencies:\n      json5: 2.2.3\n"},
 		"lock content":          {"svc/frozen.json", otherLockJSON5},
 		"manifest content":      {"svc/deps.json5", `{"dependencies": {"json5": "2.2.3"}}`},

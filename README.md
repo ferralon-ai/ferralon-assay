@@ -6,9 +6,10 @@ it resolves dependency versions, maps the advisory to vulnerable symbols, builds
 computes reachability from framework entry points to those symbols. A CVE sitting in a function
 nothing calls reports as not-reachable, instead of landing on your desk as a finding to triage away.
 
-It runs entirely in your own runner. It never runs a model, and a scan reads the repository without
-running its code. The `resolve-graph` command runs the repository's own Maven or Gradle, which executes
-its build scripts and plugins.
+It runs entirely in your own runner and never runs a model. For a Java or Kotlin repository, the
+project's own Maven or Gradle resolves the dependency graph, which executes its build scripts and plugins;
+no project code runs beyond what that build tool executes during resolution. The rest of the scan reads
+the repository without running it.
 
 Point it at a **Go, Java, Kotlin, JavaScript, Python or .NET** repository and every one gets a full scan
 and a `Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory
@@ -99,7 +100,7 @@ Ferralon.
 | | |
 |---|---|
 | **What turns it on** | Setting `link-to-console: true` in the workflow. It is the *only* switch — no other input or default enables any part of this. |
-| **What it does when on** | After each run, the scan beacons your results to the ingest endpoint baked into the pinned scanner release (no Ferralon hostname appears in your workflow file). When the run analyzed the repository's canonical ref (the `analyze.ref` set in `.github/ferralon.yml`, else the default branch), it also pushes a `tegron.report.v2` verdict layer to a run-snapshot endpoint, under the workflow's own GitHub Actions OIDC token (`id-token: write`, audience `ferralon-ingest`); that push is fail-open — a rejected or unreachable endpoint only warns, it never fails the job. PR runs and runs of any other ref stay stateless and never file a run; a repository with no `analyze.ref` pushes on exactly the default-branch runs, as before. If a cryptographically-signed HTTP-410 install-revoke (the backing Ferralon App was uninstalled) is confirmed on two consecutive runs, the scan removes its own footprint: it deletes the workflow file (direct push, or a removal PR if it cannot push), and deletes the default state ref `refs/assay/state` — never a custom `state-ref` you configured. If git or API writes are refused, it degrades to disabling itself and opening a one-step manual Issue instead. As the release documents the flow, the removal fires only on a signature that verifies against the revoke key baked into the release and is bound to *this* repository, never on a transient outage — the signature check itself runs inside the pinned binary and is not verifiable from this repository's source. |
+| **What it does when on** | After each run, the scan beacons your results to the ingest endpoint baked into the pinned scanner release (no Ferralon hostname appears in your workflow file). When the run analyzed the repository's canonical ref (the `analyze.ref` set in `.github/ferralon.yml`, else the default branch), it also pushes a `tegron.report.v3` verdict layer to a run-snapshot endpoint, under the workflow's own GitHub Actions OIDC token (`id-token: write`, audience `ferralon-ingest`); that push is fail-open — a rejected or unreachable endpoint only warns, it never fails the job. PR runs and runs of any other ref stay stateless and never file a run; a repository with no `analyze.ref` pushes on exactly the default-branch runs, as before. If a cryptographically-signed HTTP-410 install-revoke (the backing Ferralon App was uninstalled) is confirmed on two consecutive runs, the scan removes its own footprint: it deletes the workflow file (direct push, or a removal PR if it cannot push), and deletes the default state ref `refs/assay/state` — never a custom `state-ref` you configured. If git or API writes are refused, it degrades to disabling itself and opening a one-step manual Issue instead. As the release documents the flow, the removal fires only on a signature that verifies against the revoke key baked into the release and is bound to *this* repository, never on a transient outage — the signature check itself runs inside the pinned binary and is not verifiable from this repository's source. |
 | **What data leaves** | Your scan results (the `Report`) and, for a run of the canonical ref, the run-snapshot verdict layer — sent to the ingest/run-snapshot endpoints baked into the pinned release. Your code and credentials never leave the runner regardless of this switch. |
 | **How to keep it permanently off** | Leave `link-to-console` unset, or delete the line entirely. Deleting it disables the link outright; it never silently re-enables. |
 
@@ -139,9 +140,9 @@ against a filesystem corpus instead of the built-in table, and `-subject-java-ve
 `go.mod` alone.
 
 `./ferralon-assay resolve-graph -dir /path/to/repo -out "$RUNNER_TEMP/graph"` runs the repository's own Maven or
-Gradle and writes its resolved dependency graph as `assay.buildgraph/v1` JSON (`buildgraph.json`) into
+Gradle and writes its resolved dependency graph as `assay.buildgraph/v2` JSON (`buildgraph.json`) into
 `-out`, which must be an empty directory outside the repository; the command rejects any other path.
-It takes `-tool auto|maven|gradle`, `-profiles`, `-java-version`, `-D` and `-env`. The build
+It takes `-tool auto|maven|gradle`, `-profiles` and `-java-version`. The build
 tool fetches from the repositories your build configures. See the
 [operator guide](docs/operator-guide.md#resolving-the-jvm-build-graph).
 
@@ -247,11 +248,25 @@ from the corpus's own consumer documentation. Then the bundle's sha256 is checke
 `bundles.json`, and its member set against the policy manifest at the release's git tag. A missing
 signer input, a missing or failing signature, or any mismatch fails the run; there is no unverified
 mode. The `Report` records the verified signer as `corpus_signer` (`identity`, `issuer`), and has no
-`corpus_signer` when no signature was verified. What stays trusted rather than verified is the
-Sigstore trust root and the identity you supply. A policy with no bundle, or a ref that names no
-release, is read through the git fetch, which is not signature-checked. On the CLI, `-advisory-corpus` takes either a corpus directory or a bundle
-file; for a bundle the `Report`'s corpus digest is the sha256 of the `.gz`, the value `bundles.json`
-publishes for it.
+`corpus_signer` when no signature was verified. The EPSS/KEV signals findings are ranked with come
+from the same verified release: after the signature check the Action downloads the release's
+`signals.json.gz`, checks its sha256 against the `signals` object in that `bundles.json`, and passes
+it to the scanner as `-advisory-signals`. This holds whenever a release is read, including for a policy
+with no bundle. A release that cannot supply verified signals fails the run: a `bundles.json` older
+than `bundle_version` 1.1.0 (which predates the signals asset), a missing `signals` object or asset,
+or a sha256 mismatch. Verified is not fresh: the check proves the file is the one the signed
+release names, not that its values are recent, so a stale signals file still loads, with a warning
+in the scan log. Passing the signals needs a scanner release carrying the `-advisory-signals` flag;
+one that lacks it fails the scan with "flag provided but not defined", so raise `scanner-version`
+if you see that. On the git route, with `advisory-corpus-repo` and no `advisory-corpus-policy`, no
+signals are fetched, so findings carry no EPSS/KEV priority; to get priority, set
+`advisory-corpus-policy` (the release route). A corpus directory handed to `advisory-corpus` is
+ranked with its own root `signals.json`, when it has one
+([operator guide](docs/operator-guide.md#epss-and-kev)). What stays trusted rather than verified is
+the Sigstore trust root and the identity you supply. A policy with no bundle, or a ref that names no
+release, is read through the git fetch, which is not signature-checked. On the CLI,
+`-advisory-corpus` takes either a corpus directory or a bundle file; for a bundle the `Report`'s
+corpus digest is the sha256 of the `.gz`, the value `bundles.json` publishes for it.
 
 The CLI reads the corpus from `-advisory-corpus` or, when the flag is absent, the
 `ASSAY_ADVISORY_CORPUS_DIR` environment variable (the name says directory; it accepts a bundle file
@@ -333,8 +348,13 @@ fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
 `api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
 GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. What any of this carries is dependency metadata — module paths, versions, package
-coordinates — never source, never analysis results. The full picture, including where the
+signature. A JS scan run with `-dependency-code=fetch` (off by default) also fetches each
+lock-pinned package tarball by name and version from the configured registry (the repository's
+`.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
+only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
+is presented only to the host it is bound to. Fetch mode trusts the repository's `.npmrc` with
+those token variables, exactly as `npm ci` does. What any of this carries is dependency metadata — module paths,
+versions, package coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 
 ## Automatic upgrades
@@ -378,7 +398,7 @@ implementation detail with no compatibility promise; the packages below are the 
 | `vulnclass` | Maps an advisory's CWE to a closed vulnerability-class enum. |
 | `hostmatch` | A standalone host-allowlist matcher used by the checkout credential seam. |
 | `telemetry` | OpenTelemetry wiring for the pipeline's spans and metrics. |
-| `buildgraph` | The `assay.buildgraph/v1` resolved JVM dependency graph schema, and `Resolve`, which runs Maven or Gradle to produce it (what `resolve-graph` calls). |
+| `buildgraph` | The `assay.buildgraph/v2` resolved JVM dependency graph schema, and `Resolve`, which runs Maven or Gradle to produce it (what `resolve-graph` calls). |
 | `capability` | The per-language capability manifest: what a language's analyzer declares it supports. |
 | `artifactcache` | The content-addressed, read-through view of dependency artifact bytes, keyed by PURL and integrity digest; the acquirer is `artifactcache/acquire`. |
 | `plugin/symboltest` | The symbol-profile golden-equality harness for language-lane conformance tests. A test helper with no API-stability promise. |

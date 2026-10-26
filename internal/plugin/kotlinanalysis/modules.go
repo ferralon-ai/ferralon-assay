@@ -139,3 +139,8 @@ func stripBuildComments(s string) string {
 var xmlComment = regexp.MustCompile(`(?s)<!--.*?-->`)
 
 func stripXMLComments(s string) string { return xmlComment.ReplaceAllString(s, "") }
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}

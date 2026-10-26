@@ -76,6 +76,16 @@
 # caller supplies; then the bundle's sha256 against that bundles.json, and its member set against the
 # policy manifest read from the git commit the release tag points at. Any failure fails the run, and
 # a release is never used unverified. The scanner records the verified signer on the Report.
+# The same release supplies the EPSS/KEV signals the scanner ranks findings with: its
+# signals.json.gz, downloaded only after the signature check and pinned to the sha256 the signed
+# bundles.json names (bundle_version 1.1.0 or later), is passed to the scanner as -advisory-signals.
+# A release that cannot supply verified signals (an older bundle_version, no `signals` object, no
+# asset, a mismatch) fails the run. VERSION REQUIREMENT: a scanner release carrying the
+# `-advisory-signals` flag, which the scan step passes whenever a release is read; see the note on
+# `advisory-corpus-policy` below. Verified is not fresh: a stale signals file still loads, with a
+# warning in the scan log. A corpus directory handed to `advisory-corpus` is ranked with its own root
+# signals.json, when it has one. The git fetch fetches no signals, so a run on that route alone (no
+# `advisory-corpus-policy`) ranks nothing.
 # TRUST LIMIT: the signature proves bundles.json came from the identity the CALLER names, as
 # certified by the Sigstore public-good trust root; both are trusted, not verified, here. Assay
 # names no signer of its own. A ref that names no release, and a policy the release publishes no
@@ -245,8 +255,10 @@ inputs:
       digest-pinned per-advisory JSON records it indexes), forwarded to the scanner as
       -advisory-corpus. Use this when the workflow materializes the corpus itself; it takes
       precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. The corpus
-      supplies advisory facts; it does not change which advisories the scan evaluates. Empty
-      (default) = no corpus, and the scan resolves advisory facts from the built-in table.
+      supplies advisory facts; it does not change which advisories the scan evaluates. Findings are
+      ranked by EPSS/KEV from the signals.json at the directory's root when it has one (and carry
+      no priority when it has none); nothing is fetched or verified for it. Empty (default) = no
+      corpus, and the scan resolves advisory facts from the built-in table.
     required: false
     default: ""
   advisory-corpus-repo:
@@ -262,7 +274,9 @@ inputs:
       scanner-version default carries it before you opt in. A release that lacks it fails the scan
       loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
       input; if that is what you get, raise scanner-version to a release that
-      carries it.
+      carries it. On this git route without advisory-corpus-policy, no EPSS/KEV signals are
+      fetched, so findings carry no EPSS/KEV priority; to get priority, set advisory-corpus-policy
+      (the release route), which reads the verified signals of the corpus release the ref names.
     required: false
     default: ""
   advisory-corpus-ref:
@@ -287,7 +301,17 @@ inputs:
       it first (sha256 against the release's bundles.json; members against the policy manifest at
       the release's git tag), after verifying the release's signature with cosign against
       corpus-signer-identity and corpus-signer-issuer, which this route then requires. A bundle that
-      fails any check FAILS the run. A policy the release
+      fails any check FAILS the run. Whenever a release is read, its EPSS/KEV signals come from it
+      too, verified: the release's signals.json.gz must match the sha256 its signed bundles.json
+      names, and is passed to the scanner as -advisory-signals. A release that cannot supply them
+      (bundles.json older than bundle_version 1.1.0, no signals object, no asset, or a mismatch)
+      FAILS the run. Verified is not fresh: the check proves the file is the one the signed release
+      names, not that its values are recent, so a stale signals file still loads, with a warning in
+      the scan log. VERSION REQUIREMENT: a scanner release carrying the -advisory-signals flag —
+      confirm the release named by the scanner-version default carries it before you set this
+      input. A release that lacks it fails the scan loudly ("flag provided but not defined:
+      -advisory-signals") rather than ranking without the verified signals; if that is what you
+      get, raise scanner-version to a release that carries it. A policy the release
       publishes no bundle for is read from the git fetch, using the policy's manifest. Empty
       (default) = the whole corpus via the git fetch, exactly as without this input. Ignored when
       advisory-corpus is set. Bundles need a scanner release whose -advisory-corpus accepts a
@@ -354,7 +378,7 @@ inputs:
       OVERRIDE for the run-snapshot endpoint a linked run pushes to (GHE / substrate / dev). Empty
       (default) = use the endpoint baked into the pinned scanner release; like ingest-url it enables
       nothing on its own. When a linked scan has assessed this repository's CANONICAL REF it pushes
-      its own tegron.report.v2 verdict layer there at run time, under the workflow's GitHub-Actions
+      its own tegron.report.v3 verdict layer there at run time, under the workflow's GitHub-Actions
       OIDC token (audience ferralon-ingest, id-token: write) — the push the console fleet view
       renders a live assessment from. The canonical ref is the one .github/ferralon.yml `analyze.ref`
       designates, and, absent that file, your repository's default branch — so a repository that sets
@@ -514,6 +538,12 @@ runs:
     # and the job. The step's route/git-ref outputs steer the git fetch below, which runs when the
     # bundle route did not apply; its signer outputs only feed the run step's Report disclosure.
     #
+    # Its signals-path output is the release's signals.json.gz, verified against the signed
+    # bundles.json; it is set whenever the step read a release, on route=bundle and on a
+    # manifest-only policy's route=git, and the run step passes it as -advisory-signals. A release
+    # that cannot supply verified signals fails this step, so the output never stands for "no
+    # signals": a run that reaches the scan with a release behind it has them.
+    #
     # cosign is installed here, in the bundle route only, from the sigstore/cosign release pinned by
     # version and sha256 in scripts/install-cosign.sh, and put first on PATH so the fetch script runs
     # that binary and no other. The signer outputs exist only when route=bundle, i.e. only for the
@@ -657,6 +687,8 @@ runs:
         IN_ADVISORY_CORPUS: ${{ inputs.advisory-corpus }}
         IN_ADVISORY_CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
         IN_ADVISORY_CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        # The release's signals.json.gz, verified by the bundle step; empty when no release was read.
+        IN_ADVISORY_SIGNALS: ${{ steps.corpus-bundle.outputs.signals-path }}
         # THE REQUIREMENT DECLARATION. Computed from this action's INPUTS ALONE — it names no step,
         # reads no step output, and consults no step status, so it says "this workflow was
         # configured to scan against a corpus", never "a fetch worked". That distinction is the
@@ -769,6 +801,14 @@ runs:
           else
             args+=(-advisory-corpus "$RUNNER_TEMP/ferralon-assay-corpus")
           fi
+        fi
+        # EPSS/KEV signals. The release's verified signals.json.gz when the bundle step read a
+        # release; otherwise nothing is passed, and a corpus directory's own signals.json is the
+        # scanner's default. A flag rather than the env channel on purpose: verified signals a
+        # scanner release could not read must fail the run ("flag provided but not defined:
+        # -advisory-signals"), not be ignored, as an unknown env var would be.
+        if [ -n "$IN_ADVISORY_SIGNALS" ]; then
+          args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
         fi
 
         "$BIN" "${args[@]}"

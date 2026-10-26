@@ -1,7 +1,7 @@
 // Package buildgraph produces and checks a JVM project's dependency graph as the project's own
 // build tool resolves it. The repository's Maven or Gradle runs with the job's environment and
 // JDK; the run conditions it is handed are recorded, never inferred. The result is an
-// assay.buildgraph/v1 document bound to the checkout by the sha256 of every build input the
+// assay.buildgraph/v2 document bound to the checkout by the sha256 of every build input the
 // tool read.
 package buildgraph
 
@@ -14,9 +14,13 @@ import (
 )
 
 // Schema is the only schema identifier this package writes or accepts.
-const Schema = "assay.buildgraph/v1"
+const Schema = "assay.buildgraph/v2"
 
-// Graph is one assay.buildgraph/v1 document.
+// schemaV1 is what v0.5.x's resolve-graph wrote: no classpath copies, and none of a Gradle
+// project's other *RuntimeClasspath configurations. Load rejects it with the fix in the log.
+const schemaV1 = "assay.buildgraph/v1"
+
+// Graph is one assay.buildgraph/v2 document.
 type Graph struct {
 	Schema     string     `json:"schema"`
 	Producer   Producer   `json:"producer"`
@@ -27,6 +31,14 @@ type Graph struct {
 	Modules    []Module   `json:"modules"`
 	Commands   []Command  `json:"commands"`
 	Sidecars   []Sidecar  `json:"sidecars,omitempty"`
+	// Complete is set only by a producer that observed every way its build installs a dependency
+	// and found each one listed in Modules: every build file of the tool is a module's, every
+	// resolvable configuration was collected, and every Maven plugin goal or Gradle task the build
+	// binds is one whose installs dependency resolution lists. A graph without it lists what the
+	// build resolved, but not that nothing else is installed.
+	Complete bool `json:"complete,omitempty"`
+	// Incomplete names what kept the producer from setting Complete.
+	Incomplete []string `json:"incomplete,omitempty"`
 }
 
 // Producer identifies the build of the code that wrote the graph.
@@ -57,12 +69,24 @@ type Conditions struct {
 	JDK        string            `json:"jdk,omitempty"`
 }
 
-// Subject binds the graph to the tree it was resolved from.
+// Subject binds the graph to the tree it was resolved from. The inputs are the binding: Commit
+// and Tree are provenance, and Load does not check them, so a graph resolved on an uncommitted
+// tree loads on that tree.
 type Subject struct {
-	Commit       string  `json:"commit,omitempty"`
-	Tree         string  `json:"tree,omitempty"`
-	Inputs       []Input `json:"inputs"`
-	InputsDigest string  `json:"inputs_digest"`
+	Commit string `json:"commit,omitempty"`
+	Tree   string `json:"tree,omitempty"`
+	// IncludedBuilds are the Gradle builds the build includes, nested ones too, by slash path
+	// from the repository root. Every file under each is a build input.
+	IncludedBuilds []string `json:"included_builds,omitempty"`
+	// UnbindableIncludedBuilds are included builds outside the checkout, by absolute path. Nothing
+	// binds their files, so only the run that resolved the graph may use it.
+	UnbindableIncludedBuilds []string `json:"unbindable_included_builds,omitempty"`
+	// Outputs are the directories inside the checkout the build writes or caches into, by slash
+	// path from the repository root: build directories, the tool's cache, a local repository.
+	// The checks that walk the checkout skip them, and only them.
+	Outputs      []string `json:"outputs,omitempty"`
+	Inputs       []Input  `json:"inputs"`
+	InputsDigest string   `json:"inputs_digest"`
 }
 
 // Input is one build file the tool read, by its slash-separated path from the repository root.
@@ -71,14 +95,44 @@ type Input struct {
 	SHA256 string `json:"sha256"`
 }
 
-// Module is one Maven reactor module or Gradle project.
+// Module is one Maven reactor module or Gradle project, or a classpath copy of a Gradle project:
+// CopyOf the project's ID, ID "<project>#<classpath>", the project's Path and Root, holding the
+// components that classpath resolved at a version other than the one the project kept.
+// JDKToolchains are the JDK versions, as the build states them, that a toolchain selects for the
+// module's compiling, testing or running. JDKToolchainsKnown is set when the producer could read
+// them: then an absent JDKToolchains means the module uses the build's own JVM. Unset, as in a
+// graph written before toolchains were recorded or for an Android project, the module's JDK is
+// unknown.
 type Module struct {
-	ID             string   `json:"id"`
-	Path           string   `json:"path"`
-	Root           string   `json:"root"`
-	ActiveProfiles []string `json:"active_profiles,omitempty"`
-	Nodes          []Node   `json:"nodes"`
-	Edges          []Edge   `json:"edges"`
+	ID                 string   `json:"id"`
+	CopyOf             string   `json:"copy_of,omitempty"`
+	Path               string   `json:"path"`
+	Root               string   `json:"root"`
+	ActiveProfiles     []string `json:"active_profiles,omitempty"`
+	JDKToolchains      []string `json:"jdk_toolchains,omitempty"`
+	JDKToolchainsKnown bool     `json:"jdk_toolchains_known,omitempty"`
+	Nodes              []Node   `json:"nodes"`
+	Edges              []Edge   `json:"edges"`
+	// Unlisted names what the module's build resolves or installs that Nodes does not list: a
+	// Gradle configuration that failed to resolve, a dependency-plugin execution's artifactItems.
+	// A coordinate's absence from such a graph is not its absence from the build.
+	Unlisted []string `json:"unlisted,omitempty"`
+	// Aliases are other group:artifact coordinates the module publishes under: a Gradle project's
+	// archives name or a publication's own artifactId.
+	Aliases []string `json:"aliases,omitempty"`
+}
+
+// ClasspathCopyID is the ID of project's copy for classpath.
+func ClasspathCopyID(project, classpath string) string { return project + "#" + classpath }
+
+// Project returns the ID of the project m belongs to, and whether m is a classpath copy rather
+// than the project itself. A consumer counting projects or their directories skips the copies.
+// Gradle allows '#' in a project name, so only CopyOf marks a copy.
+func (m Module) Project() (id string, isCopy bool) {
+	if m.CopyOf != "" {
+		return m.CopyOf, true
+	}
+	return m.ID, false
 }
 
 // Node is one resolved component. Root is the module itself. File is absent for the module
@@ -132,6 +186,12 @@ func NodeID(group, artifact, typ, classifier, version string) string {
 	return group + ":" + artifact + ":" + typ + ":" + classifier + ":" + version
 }
 
+// Key is the node's coordinate without its version, group:artifact:type:classifier: a module
+// holds at most one node per key.
+func (n Node) Key() string {
+	return n.Group + ":" + n.Artifact + ":" + n.Type + ":" + n.Classifier
+}
+
 // InputsDigest is the sha256 over the inputs sorted by path, one "path\x00sha256\n" line each.
 func InputsDigest(inputs []Input) string {
 	sorted := append([]Input(nil), inputs...)
@@ -146,11 +206,19 @@ func InputsDigest(inputs []Input) string {
 // Normalize puts every list in its canonical order, so the same resolution always serializes to
 // the same bytes.
 func (g *Graph) Normalize() {
+	sort.Strings(g.Subject.IncludedBuilds)
+	sort.Strings(g.Subject.UnbindableIncludedBuilds)
+	g.Subject.Outputs = sortedUnique(g.Subject.Outputs)
 	sort.Slice(g.Subject.Inputs, func(i, j int) bool { return g.Subject.Inputs[i].Path < g.Subject.Inputs[j].Path })
 	if g.Subject.Inputs == nil {
 		g.Subject.Inputs = []Input{}
 	}
-	sort.Slice(g.Modules, func(i, j int) bool { return g.Modules[i].Path < g.Modules[j].Path })
+	sort.Slice(g.Modules, func(i, j int) bool {
+		if g.Modules[i].Path != g.Modules[j].Path {
+			return g.Modules[i].Path < g.Modules[j].Path
+		}
+		return g.Modules[i].ID < g.Modules[j].ID
+	})
 	for i := range g.Modules {
 		m := &g.Modules[i]
 		if m.Nodes == nil {
@@ -209,6 +277,18 @@ func (g *Graph) Validate() string {
 		for _, e := range m.Edges {
 			if !nodes[e.From] || !nodes[e.To] {
 				return "missing_node"
+			}
+		}
+	}
+	byID := make(map[string]Module, len(g.Modules))
+	for _, m := range g.Modules {
+		byID[m.ID] = m
+	}
+	for _, m := range g.Modules {
+		if id, isCopy := m.Project(); isCopy {
+			p, ok := byID[id]
+			if !ok || p.CopyOf != "" || p.Path != m.Path || p.Root != m.Root || !strings.HasPrefix(m.ID, id+"#") {
+				return "classpath_copy"
 			}
 		}
 	}

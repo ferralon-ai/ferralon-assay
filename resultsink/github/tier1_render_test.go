@@ -45,12 +45,12 @@ func gradedFixtureResult() resultsink.Result {
 		switch r.Advisories[i].Advisory.ID {
 		case "CVE-2021-44228":
 			r.Advisories[i].Priority = &report.Priority{
-				EPSSScore: 0.974, EPSSPercentile: 0.999,
-				KEVListed: true, KEVDateAdded: "2021-12-10", Snapshot: "2026-06-01",
+				EPSSScore: 0.974, EPSSPercentile: 0.999, EPSSAsOf: "2026-06-01",
+				KEVListed: true, KEVDateAdded: "2021-12-10", KEVCatalogVersion: "2026.05.30", KEVDateReleased: "2026-05-30T17:00:00Z",
 			}
 		case "CVE-2022-42003":
 			r.Advisories[i].Priority = &report.Priority{
-				EPSSScore: 0.014, EPSSPercentile: 0.68, Snapshot: "2026-06-01",
+				EPSSScore: 0.014, EPSSPercentile: 0.68, EPSSAsOf: "2026-05-28",
 			}
 			// CVE-2020-0001 deliberately left with nil Priority (no matched intel).
 		}
@@ -78,7 +78,7 @@ func renderedTier1Body(t *testing.T, res resultsink.Result) string {
 
 // TestTier1Body_RendersGradeEPSSKEV asserts the enhanced candidate table surfaces the
 // reachability grade, the entry point (with attacker-controllable marker), EPSS
-// score+percentile, the KEV-listed marker with date, and the snapshot footer — plus
+// score+percentile with its model date, the KEV-listed marker with date and catalog — plus
 // the inv. 5 framing that none of these is an exploitability verdict.
 func TestTier1Body_RendersGradeEPSSKEV(t *testing.T) {
 	body := renderedTier1Body(t, gradedFixtureResult())
@@ -89,14 +89,13 @@ func TestTier1Body_RendersGradeEPSSKEV(t *testing.T) {
 		// Attacker-tainted candidate: grade, entry point + controllability, EPSS, KEV.
 		"`attacker_tainted`",
 		"`GET /api/ingest` (http_route) — attacker-controllable",
-		"0.974 (p100)",
-		"KEV-listed (2021-12-10)",
+		"0.974 (p100) as of 2026-06-01",
+		"KEV-listed (2021-12-10), catalog 2026.05.30",
 		// Control-flow-only candidate: grade, EPSS, non-attacker entry.
 		"`control_flow_only`",
 		"`main.batch` (cli)",
-		"0.014 (p68)",
-		// Snapshot footer (once).
-		"EPSS/KEV intel snapshot: 2026-06-01",
+		// Each value carries its own date: no shared footer could state both.
+		"0.014 (p68) as of 2026-05-28",
 		// inv. 5 framing must be present.
 		"evidence strength, not a verdict",
 		"in the wild",
@@ -106,10 +105,9 @@ func TestTier1Body_RendersGradeEPSSKEV(t *testing.T) {
 		}
 	}
 
-	// The intel-context note must be present exactly once (it is a per-table footer note,
-	// not per-finding).
-	if n := strings.Count(body, "EPSS/KEV intel snapshot:"); n != 1 {
-		t.Errorf("want snapshot line exactly once, got %d\n%s", n, body)
+	// The report-wide snapshot footer is gone: values of different ages share no one date.
+	if strings.Contains(body, "intel snapshot") {
+		t.Errorf("body still renders a report-wide snapshot line\n%s", body)
 	}
 
 	// inv. 5: the body must never assert exploitability or surface forbidden verdicts.

@@ -40,6 +40,7 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -51,11 +52,21 @@ import (
 // SchemaVersion is the versioned identifier of the Report schema. It is written
 // into every Report so future readers can detect and migrate older documents.
 // Bump it on any breaking change to the field set or semantics.
-const SchemaVersion = "tegron.report.v2"
+//
+// v3 is the per-value-stamped Priority: every EPSS/KEV value carries its own stamp
+// (epss_as_of; kev_catalog_version + kev_date_released), each field is present exactly
+// when it has a value (a sourced EPSS score or percentile of 0 included), a stamped
+// KEV observation without kev_listed means "not in that catalog", and the signals file
+// is named once as provenance.intel.signals_digest. upgradeV2 records how v2 differs.
+const SchemaVersion = "tegron.report.v3"
 
-// SchemaVersionV1 is the predecessor schema. Documents carrying it are still read
-// (a StateStore written before the bump holds one) and are upgraded on read by
-// Upgrade; nothing produces it any more.
+// SchemaVersionV2 is the schema before per-value priority stamps. Documents carrying
+// it are still read and are upgraded on read by Upgrade; nothing produces it any more.
+const SchemaVersionV2 = "tegron.report.v2"
+
+// SchemaVersionV1 is the schema before first-class undetermined rows. Documents
+// carrying it are still read (a StateStore written before the v2 bump holds one) and
+// are upgraded on read by Upgrade; nothing produces it any more.
 const SchemaVersionV1 = "tegron.report.v1"
 
 // Verdict is the per-advisory deterministic verdict an OSS scan may assign. It is
@@ -503,24 +514,121 @@ type EvidenceSummary struct {
 	GuardSufficiency []GuardSufficiencyNote `json:"guard_sufficiency,omitempty"`
 }
 
-// Priority is the deterministic, offline prioritization signal attached to a
-// finding from the pinned EPSS/KEV snapshot (package intel). It is exploitation-
-// LIKELIHOOD context from public feeds — NEVER an exploitability verdict for this
-// codebase (inv. 5). EPSS is FIRST.org's probability the CVE is exploited in the
-// wild; KEVListed means CISA records active exploitation of the CVE somewhere.
-// Neither asserts the finding is exploitable here — they only rank attention.
+// Priority is the EPSS/KEV prioritization context attached to a finding from the signals file the
+// run was given (package intel). It is exploitation-LIKELIHOOD context from public feeds — NEVER an
+// exploitability verdict for this codebase (inv. 5). EPSS is FIRST.org's probability the CVE is
+// exploited in the wild; KEVListed means CISA records active exploitation of the CVE somewhere.
+// Neither asserts the finding is exploitable here — they only rank attention, and nothing that
+// decides a verdict reads them.
+//
+// EVERY VALUE CARRIES ITS OWN STAMP, because the values are point-in-time captures of differing
+// age and there is no report-wide "as of" date: the EPSS fields come with EPSSAsOf, the model date
+// they are from; the KEV fields come with KEVCatalogVersion and KEVDateReleased, the CISA catalog
+// they were read from. A value is never set without its stamp (Validate enforces it), so a reader
+// can always say how old each one is. Which signals file the values came from is recorded once, as
+// Provenance.Intel.SignalsDigest.
+//
+// A nil Priority means the run had no signals, or the file had no stamped value for the advisory's
+// id or aliases. It never means "not exploited".
 type Priority struct {
-	// EPSSScore is FIRST.org's 0..1 probability the CVE is exploited in the wild.
+	// EPSSScore is FIRST.org's 0..1 probability the CVE is exploited in the wild in the 30 days
+	// after EPSSAsOf. Set only with EPSSAsOf. Not omitempty: 0 is a real score, so it serializes
+	// whenever EPSSAsOf does (MarshalJSON); a Priority with no EPSS value omits it.
 	EPSSScore float64 `json:"epss_score"`
-	// EPSSPercentile is the CVE's percentile rank among all scored CVEs (0..1).
+	// EPSSPercentile is the score's percentile rank among all CVEs scored by the same model run
+	// (0..1). Not omitempty: 0 is a real percentile, so it serializes whenever HasPercentile is set
+	// (MarshalJSON); a percentile the signals file did not source is omitted.
 	EPSSPercentile float64 `json:"epss_percentile"`
-	// KEVListed is true when the CVE is in CISA's Known Exploited Vulnerabilities catalog.
-	KEVListed bool `json:"kev_listed"`
-	// KEVDateAdded is the date CISA added the CVE to KEV (YYYY-MM-DD); set iff KEVListed.
+	// HasPercentile is whether the signals file sourced EPSSPercentile, zero included. It is not a
+	// field of its own on the wire: epss_percentile's presence carries it both ways.
+	HasPercentile bool `json:"-"`
+	// EPSSAsOf is the EPSS model date (YYYY-MM-DD) the score and percentile come from. Set iff the
+	// finding carries an EPSS value.
+	EPSSAsOf string `json:"epss_as_of,omitempty"`
+	// KEVListed is true when the CVE was in the CISA Known Exploited Vulnerabilities catalog named
+	// by KEVCatalogVersion. With the catalog stamp set and KEVListed false (omitted on the wire), the
+	// CVE was NOT in that catalog as of KEVDateReleased — which says nothing about the catalog today.
+	KEVListed bool `json:"kev_listed,omitempty"`
+	// KEVDateAdded is the date CISA added the CVE to KEV (YYYY-MM-DD); set only when KEVListed and
+	// the signals file stated it.
 	KEVDateAdded string `json:"kev_date_added,omitempty"`
-	// Snapshot is the pinned intel snapshot date the score/flag came from — provenance
-	// for reproducibility (a later snapshot may rank the same finding differently).
-	Snapshot string `json:"snapshot,omitempty"`
+	// KEVCatalogVersion is CISA's version string for the catalog the KEV observation was read
+	// from. Set iff the finding carries a KEV observation, together with KEVDateReleased.
+	KEVCatalogVersion string `json:"kev_catalog_version,omitempty"`
+	// KEVDateReleased is CISA's release timestamp for that catalog version.
+	KEVDateReleased string `json:"kev_date_released,omitempty"`
+}
+
+// MarshalJSON writes epss_score whenever the Priority carries an EPSS value, so a genuine score of 0
+// is never read as an as-of with no score, and omits it from a block with no EPSS value at all (a
+// KEV-only observation). It writes epss_percentile whenever the signals file sourced one, so a
+// genuine percentile of 0 is never read as an unsourced one. A value with no stamp is written too
+// (Validate refuses it), and so is a nonzero percentile without HasPercentile: the encoder never
+// hides a value it was given.
+func (p Priority) MarshalJSON() ([]byte, error) {
+	type plain Priority // the same fields without this method
+	w := struct {
+		EPSSScore      *float64 `json:"epss_score,omitempty"`
+		EPSSPercentile *float64 `json:"epss_percentile,omitempty"`
+		plain
+	}{plain: plain(p)}
+	if p.EPSSAsOf != "" || p.EPSSScore != 0 {
+		w.EPSSScore = &p.EPSSScore
+	}
+	if p.HasPercentile || p.EPSSPercentile != 0 {
+		w.EPSSPercentile = &p.EPSSPercentile
+	}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON reads a priority block, setting HasPercentile exactly when epss_percentile is
+// present, so a sourced percentile of 0 reads back as sourced.
+func (p *Priority) UnmarshalJSON(b []byte) error {
+	type plain Priority // the same fields without this method
+	w := struct {
+		EPSSPercentile *float64 `json:"epss_percentile"`
+		*plain
+	}{plain: (*plain)(p)}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	if w.EPSSPercentile != nil {
+		p.EPSSPercentile, p.HasPercentile = *w.EPSSPercentile, true
+	}
+	return nil
+}
+
+// HasEPSS reports whether the Priority carries a (stamped) EPSS value.
+func (p *Priority) HasEPSS() bool { return p != nil && p.EPSSAsOf != "" }
+
+// HasEPSSPercentile reports whether the Priority carries a (stamped) EPSS percentile: one the
+// signals file sourced, zero included, or any nonzero one.
+func (p *Priority) HasEPSSPercentile() bool {
+	return p.HasEPSS() && (p.HasPercentile || p.EPSSPercentile != 0)
+}
+
+// HasKEV reports whether the Priority carries a (stamped) KEV observation, listed or not.
+func (p *Priority) HasKEV() bool { return p != nil && p.KEVCatalogVersion != "" }
+
+// validate enforces that no priority value is set without its stamp, and that an empty Priority is
+// nil rather than present-and-empty.
+func (p *Priority) validate() error {
+	if p.EPSSAsOf == "" && (p.EPSSScore != 0 || p.EPSSPercentile != 0 || p.HasPercentile) {
+		return fmt.Errorf("an EPSS value without its epss_as_of stamp")
+	}
+	if (p.KEVCatalogVersion == "") != (p.KEVDateReleased == "") {
+		return fmt.Errorf("half a KEV catalog stamp (kev_catalog_version and kev_date_released go together)")
+	}
+	if p.KEVCatalogVersion == "" && (p.KEVListed || p.KEVDateAdded != "") {
+		return fmt.Errorf("a KEV value without its kev_catalog_version / kev_date_released stamp")
+	}
+	if p.KEVDateAdded != "" && !p.KEVListed {
+		return fmt.Errorf("kev_date_added on a CVE that is not kev_listed")
+	}
+	if p.EPSSAsOf == "" && p.KEVCatalogVersion == "" {
+		return fmt.Errorf("an empty priority block (no signal must be a nil priority)")
+	}
+	return nil
 }
 
 // Advisory identifies a vulnerability the scan evaluated. It is a self-contained
@@ -564,9 +672,11 @@ type AdvisoryFinding struct {
 	UndeterminedReason string `json:"undetermined_reason,omitempty"`
 	// Evidence is the compact grounds behind the verdict (see EvidenceSummary).
 	Evidence EvidenceSummary `json:"evidence"`
-	// Priority is the offline EPSS/KEV prioritization signal for this advisory, from
-	// the pinned intel snapshot. Nil when no CVE record matched. Exploitation-
-	// likelihood context only — never an exploitability claim for this codebase.
+	// Priority is the EPSS/KEV prioritization context for this advisory, from the signals
+	// file the run was given, each value carrying its own stamp (see Priority). Nil when
+	// the run had no signals or the file had no stamped value for the advisory's id or
+	// aliases — never "not exploited". Exploitation-likelihood context only — never an
+	// exploitability claim for this codebase.
 	Priority *Priority `json:"priority,omitempty"`
 }
 
@@ -646,6 +756,10 @@ type IntelProvenance struct {
 	// signature was verified for the corpus the pass read (no corpus, a corpus directory, or a
 	// bundle handed over without one). It records what was verified, not who should have signed.
 	CorpusSigner *CorpusSigner `json:"corpus_signer,omitempty"`
+	// SignalsDigest is the signals_digest of the EPSS/KEV signals file the pass ranked its findings
+	// with, as the file states it. Empty when the run had no signals, in which case no finding
+	// carries a Priority. Each priority value carries its own age stamp; this names the file.
+	SignalsDigest string `json:"signals_digest,omitempty"`
 }
 
 // CorpusSigner names the keyless signer a corpus release's signature verified against. Both fields
@@ -896,6 +1010,40 @@ type Report struct {
 	// Baseline points at the prior baseline Report this one inherits from / diffs
 	// against. Nil for a fresh baseline run.
 	Baseline *BaselineRef `json:"baseline,omitempty"`
+	// BuildGraph records where a JVM scan's dependency graph came from and, when it could not be
+	// had, the typed cause. Set on every Java and Kotlin scan; nil for every other language.
+	BuildGraph *BuildGraph `json:"build_graph,omitempty"`
+}
+
+// Build graph sources.
+const (
+	// BuildGraphSourceTool is a graph the scan resolved by running the repository's own Maven or
+	// Gradle.
+	BuildGraphSourceTool = "build_tool"
+	// BuildGraphSourceFile is a graph the caller resolved ahead of the scan and handed in.
+	BuildGraphSourceFile = "build_tool_file"
+	// BuildGraphSourceOff is a scan the caller ran with the build graph switched off: it has no
+	// JVM dependency inventory, and says so.
+	BuildGraphSourceOff = "off"
+)
+
+// BuildGraph is the provenance of a JVM scan's dependency graph.
+type BuildGraph struct {
+	// Source is one of the BuildGraphSource constants.
+	Source string `json:"source"`
+	// Cause is why the graph could not be had. Nil when the scan read a graph, and for "off".
+	// A scan with a Cause exits non-zero once its Report is published.
+	Cause *BuildGraphCause `json:"cause,omitempty"`
+}
+
+// BuildGraphCause is a typed build graph failure.
+type BuildGraphCause struct {
+	// Kind is one of toolchain_absent, jdk_mismatch, credentials, tool_failed or
+	// graph_rejected.
+	Kind string `json:"kind"`
+	// Detail narrows Kind: the wanted and found JDK (jdk_mismatch, as want/have), the repository
+	// (credentials), the failed step (tool_failed) or the failed check (graph_rejected).
+	Detail string `json:"detail,omitempty"`
 }
 
 // Subject identifies the scanned codebase by neutral coordinates. It carries no
@@ -1005,6 +1153,13 @@ func (r Report) Validate() error {
 			if n.Symbol == "" || !n.Sufficiency.Valid() {
 				return fmt.Errorf("report: advisory %q carries a malformed guard-sufficiency note (symbol %q, sufficiency %q) — a note must name an on-path guard and a recognized label",
 					f.Advisory.ID, n.Symbol, n.Sufficiency)
+			}
+		}
+		// Every priority value carries its own stamp (see Priority). An unstamped value would
+		// read as current when it is a capture of unknown age.
+		if f.Priority != nil {
+			if err := f.Priority.validate(); err != nil {
+				return fmt.Errorf("report: advisory %q carries %v", f.Advisory.ID, err)
 			}
 		}
 	}

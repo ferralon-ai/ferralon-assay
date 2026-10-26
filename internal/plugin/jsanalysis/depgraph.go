@@ -616,10 +616,17 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			}
 			r := rs.resolveCallSite(f.module, cs)
 			// An unconnected call draws no edge, as in first-party code (callgraph.go).
-			if target, ok := r.edge(); ok && !cs.unconnected {
+			target, connected := r.edge()
+			connected = connected && !cs.unconnected
+			if connected {
 				aug.add(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 			}
 			if !cs.unconnected && boundary(f.module, cs, caller) {
+				// A boundary edge names the member the call enters, not what it runs: a call
+				// resolved to nothing else is declined, and no list carries it.
+				if !connected {
+					flags.unlisted = true
+				}
 				continue
 			}
 			switch {

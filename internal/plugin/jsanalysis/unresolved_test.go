@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -576,5 +577,43 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 	hidden := newDepFixture(t, map[string]string{"index.js": "function main() { return missing(1); }\nmodule.exports = { main };\n"}, plain)
 	if cg := withDeps(t, hidden.dir, hidden.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
 		t.Errorf("a first-party site declined beside dependency frames Escaped omits, without unlisted_sites: %+v", cg.Partiality)
+	}
+
+	// Each row is dependency code whose only declined site is of one kind, beside first-party
+	// code that declines nothing.
+	other := &depPkg{path: "node_modules/other", name: "other", version: "1.0.0", files: map[string]string{
+		"package.json": `{"name":"other","version":"1.0.0"}`,
+		"index.js":     "exports.a = { b: function b() {} };\nexports.K = class K { m() {} };\n",
+	}}
+	for _, tc := range []struct {
+		name, src string
+		extra     map[string]string
+		pkgs      []*depPkg
+		refuse    bool
+	}{
+		{name: "boundary member", src: "const o = require('other');\nfunction go() { o.a.b(); }\nexports.run = go;\n", pkgs: []*depPkg{other}},
+		{name: "boundary constructor", src: "const o = require('other');\nfunction go() { new o.K().m(); }\nexports.run = go;\n", pkgs: []*depPkg{other}},
+		{name: "dynamic import", src: "exports.run = function run(x) { return import(x); };\n"},
+		{name: "computed require", src: "exports.run = function run(v) { return require(v); };\n"},
+		{name: "evaluated", src: "exports.run = function run(s) { return eval(s); };\n"},
+		{name: "stylesheet", src: "require('./a.css');\nexports.run = function run() {};\n", extra: map[string]string{"a.css": "a {}\n"}},
+		{name: "skipped construct", src: "exports.run = function run() {};\n", refuse: true},
+		{name: "unread package", src: "const m = require('missing');\nexports.run = function run() { m(); };\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.refuse {
+				perRune, floor := depWorkPerRune, depWorkFloor
+				depWorkPerRune, depWorkFloor = -1, 0
+				t.Cleanup(func() { depWorkPerRune, depWorkFloor = perRune, floor })
+			}
+			files := map[string]string{"package.json": `{"name":"dep","version":"1.0.0"}`, "index.js": tc.src}
+			maps.Copy(files, tc.extra)
+			p := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: files}
+			f := newDepFixture(t, map[string]string{"index.js": guardIdle}, append([]*depPkg{p}, tc.pkgs...)...)
+			cg := withDeps(t, f.dir, f.memStore())
+			if cg.Partiality.Complete || !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+				t.Errorf("a site declined in dependency code alone, without unlisted_sites: %+v", cg.Partiality)
+			}
+		})
 	}
 }

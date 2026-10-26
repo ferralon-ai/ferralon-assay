@@ -184,7 +184,7 @@ func pyprojectDynamicDeps(doc pyprojectDoc) bool {
 // [dependency-groups], [tool.uv] dev-dependencies and [tool.pdm] dev-dependencies as PEP 508
 // strings, and the [tool.poetry] dependencies, dev-dependencies and group tables as poetry
 // constraints. Each declaration is covered only by its own tool's lock in the same directory
-// (PEP 735 groups by any of projectLocks). ok is false when an entry is not a well-formed
+// (PEP 735 groups by groupLocks). ok is false when an entry is not a well-formed
 // requirement, a group is malformed (dependencyGroupSpecs), a poetry constraint does not
 // translate, or a poetry entry installs a local path or file.
 func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
@@ -221,7 +221,7 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	groupSpecs, groupsOK := dependencyGroupSpecs(doc.DependencyGroups)
 	ok = ok && groupsOK
 	for _, s := range groupSpecs {
-		addPEP508(s, projectLocks)
+		addPEP508(s, groupLocks)
 	}
 	addAny(doc.Tool.UV.DevDependencies, []string{"uv.lock"})
 	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {

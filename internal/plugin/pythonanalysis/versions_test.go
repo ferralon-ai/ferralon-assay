@@ -1039,6 +1039,8 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"groups-paren-stale-lock":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(<2.3)\"]\n", "uv.lock": uvLock},
 		"uv-dev-paren-stale-lock":  {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask(<2.3)\"]\n", "uv.lock": uvLock},
 		"pdm-dev-paren-stale-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask(<2.3)\"]\n", "pdm.lock": pdmLk},
+		// Poetry reads PEP 735 groups only from 2.2.0, so its lock does not resolve them.
+		"groups-poetry-lock": {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask>=2\"]\n", "poetry.lock": pdmLk},
 		"groups-paren-beside-another-pin": {"svc-a/requirements.txt": "flask==2.3.0\n",
 			"svc-b/pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(<2.3)\"]\n"},
 	}

@@ -138,8 +138,13 @@ type manifestOrigin struct {
 	directRef bool
 }
 
-// projectLocks are the locks that resolve a [project] or [dependency-groups] declaration.
+// projectLocks are the locks that resolve a [project] declaration.
 var projectLocks = []string{"poetry.lock", "pdm.lock", "uv.lock"}
+
+// groupLocks are the locks that resolve a [dependency-groups] declaration. poetry.lock is not
+// one: Poetry reads PEP 735 groups only from 2.2.0, so a poetry.lock written by an earlier
+// Poetry left the groups unresolved.
+var groupLocks = []string{"pdm.lock", "uv.lock"}
 
 // originsFor repeats one origin for every entry of deps.
 func originsFor(deps []plugin.ResolvedDependency, o manifestOrigin) []manifestOrigin {
@@ -164,13 +169,13 @@ func originsFor(deps []plugin.ResolvedDependency, o manifestOrigin) []manifestOr
 //   - no resolved entry: Match is the first entry, UNRESOLVED.
 //
 // One exception to the third case: a pyproject.toml range does not veto when a lock in the
-// SAME directory that resolves its table (manifestOrigin.lockedBy: poetry.lock, pdm.lock or
-// uv.lock for [project] and [dependency-groups], only the tool's own lock for a [tool.*]
+// SAME directory that resolves its table (manifestOrigin.lockedBy: projectLocks for
+// [project], groupLocks for [dependency-groups], only the tool's own lock for a [tool.*]
 // table) pins the coordinate at a version that satisfies the range. That lock is the
-// project's own resolution of the declared range, so both describe one environment. A pin outside the range is a stale lock, and a
-// direct reference ("name @ url") is never covered. A range in any other manifest or
-// directory, or beside a lock of another tool, is a separate install surface and still
-// vetoes.
+// project's own resolution of the declared range, so both describe one environment. A pin
+// outside the range is a stale lock, and a direct reference ("name @ url") is never covered.
+// A range in any other manifest or directory, or beside a lock of another tool, is a
+// separate install surface and still vetoes.
 // Versions compare as exact strings: "2.3" and "2.3.0" read as distinct, which can only fail
 // open.
 func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, want string) (plugin.ResolvedDependency, bool) {

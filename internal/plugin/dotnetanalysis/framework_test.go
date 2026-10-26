@@ -192,6 +192,68 @@ func appGenericArgMember(cctor bool) []byte {
 	return a.main(ilNewobjOp(a.specRef(spec, ".ctor", sigInstVoid)))
 }
 
+// appGenericArgCtor constructs a List<App.Gen>, where Gen derives from Object alone and
+// its parameterless constructor calls the sink: only the framework's new T() runs it.
+func appGenericArgCtor() []byte {
+	a := newFWApp()
+	gen, _ := a.addType(0, "Gen", "App", a.obj, []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: a.sinkIf(true)}})
+	list := a.extTypeRef("System.Collections.Generic", "List`1")
+	spec := []byte{0x15, 0x12, byte(cTypeDefOrRef(xTypeRef, list)), 0x01, 0x12, byte(cTypeDefOrRef(xTypeDef, gen))}
+	return a.main(ilNewobjOp(a.specRef(spec, ".ctor", sigInstVoid)))
+}
+
+// appReentryHazard constructs App.Cmp, an IComparer whose Compare calls System.Activator
+// and never the sink, then calls the console.
+func appReentryHazard() []byte {
+	a := newFWApp()
+	act := a.fwRef("System", "Activator", "CreateInstanceFrom", []byte{0x00, 0x02, 0x1C, 0x0E, 0x0E})
+	rid, m := a.addType(0, "Cmp", "App", a.obj, []mspec{
+		{name: "Compare", flags: fIfaceImpl, sig: sigCompare, il: body(ilCall(act))},
+		{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()},
+	})
+	a.implements(rid, "System.Collections", "IComparer")
+	return a.main(ilNewobjOp(mtok(xMethodDef, m[1])), a.console())
+}
+
+// appReentryConstructs constructs App.Outer, an IComparer whose Compare constructs
+// App.Inner, another IComparer whose Compare calls the sink, then calls the console. No
+// code but Outer's callback ever constructs an Inner.
+func appReentryConstructs() []byte {
+	a := newFWApp()
+	inner, im := a.addType(0, "Inner", "App", a.obj, []mspec{
+		{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()},
+		{name: "Compare", flags: fIfaceImpl, sig: sigCompare, il: a.sinkIf(true)},
+	})
+	a.implements(inner, "System.Collections", "IComparer")
+	outer, om := a.addType(0, "Outer", "App", a.obj, []mspec{
+		{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()},
+		{name: "Compare", flags: fIfaceImpl, sig: sigCompare, il: body(ilNewobjOp(mtok(xMethodDef, im[0])))},
+	})
+	a.implements(outer, "System.Collections", "IComparer")
+	return a.main(ilNewobjOp(mtok(xMethodDef, om[0])), a.console())
+}
+
+// appUndecodable declares App.Cmp, an IComparer whose Compare calls the sink and which
+// nothing constructs, so with a complete instantiated-type closure the sink is searched.
+// Main then calls the console and either calls App.G.Run<T> through a MethodSpec whose
+// instantiation does not decode (methodSpec), or constructs App.Odd, which implements an
+// interface named by a TypeSpec that does not decode.
+func appUndecodable(methodSpec bool) []byte {
+	a := newFWApp()
+	a.comparer("Cmp", false, true, true)
+	var instrs [][]byte
+	if methodSpec {
+		_, g := a.addType(0, "G", "App", a.obj, []mspec{{name: "Run", flags: fStatic, sig: []byte{0x10, 0x01, 0x00, 0x01}, il: body()}})
+		spec := a.row(xMethodSpec, cMethodDefOrRefRecert(xMethodDef, g[0]), a.blob([]byte{0x0A, 0x01, 0xFF}))
+		instrs = append(instrs, ilCall(mtok(xMethodSpec, spec)))
+	} else {
+		odd, m := a.addType(0, "Odd", "App", a.obj, []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}})
+		a.row(xInterfaceImpl, odd, a.row(xTypeSpec, a.blob([]byte{0x15, 0xFF}))<<2|2)
+		instrs = append(instrs, ilNewobjOp(mtok(xMethodDef, m[0])))
+	}
+	return a.main(append(instrs, a.console())...)
+}
+
 // appLdftnAction captures App.Handlers.Handle with ldftn into a System.Action and invokes it.
 func appLdftnAction() []byte {
 	a := newFWApp()
@@ -305,6 +367,20 @@ func appStaticField(addr, cctorCallsSink bool) []byte {
 	}
 	prog, m := a.addType(0, "Program", "App", a.obj, []mspec{{name: "Main", flags: fStatic, sig: sigStaticVoid, il: body(append([]byte{op}, tok4(mtok(xField, 1))...))}})
 	a.tables[xTypeDef][prog-1][4] = 2 // f is Holder's alone; Program's field run starts past it
+	a.entry = mtok(xMethodDef, m[0])
+	return a.bytesNamed("App")
+}
+
+// appStaticFieldUnloadedBase reads the static field App.Holder.f, where Holder derives
+// from Ext.Base in an assembly that is neither loaded nor framework, so the base's static
+// constructor, which the read runs first, is unreadable.
+func appStaticFieldUnloadedBase() []byte {
+	a := newFWApp()
+	a.row(xField, 0x16, a.str("f"), a.blob([]byte{0x06, 0x08})) // public static int32 f
+	ext := cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(a.asmRef("Ext"), "Ext", "Base"))
+	a.addType(0, "Holder", "App", ext, []mspec{{name: ".cctor", flags: 0x1811, sig: sigStaticVoid, il: body()}})
+	prog, m := a.addType(0, "Program", "App", a.obj, []mspec{{name: "Main", flags: fStatic, sig: sigStaticVoid, il: body(append([]byte{0x7E}, tok4(mtok(xField, 1))...))}})
+	a.tables[xTypeDef][prog-1][4] = 2 // f is Holder's alone
 	a.entry = mtok(xMethodDef, m[0])
 	return a.bytesNamed("App")
 }
@@ -579,6 +655,11 @@ func TestFramework_Searched(t *testing.T) {
 		{name: "a generic argument without one is not constructed", app: appGenericArg(false), wantSearched: true},
 		{name: "a generic argument's static constructor is a re-entry root", app: appGenericArgMember(true)},
 		{name: "a generic argument's static interface member is a re-entry root", app: appGenericArgMember(false)},
+		{name: "a generic argument's default constructor is a re-entry root", app: appGenericArgCtor()},
+		{name: "a hazard in a re-entry root keeps the sink undetermined", app: appReentryHazard()},
+		{name: "a type constructed only inside a re-entry root is instantiated", app: appReentryConstructs()},
+		{name: "an undecodable type specification turns the instantiated filter off", app: appUndecodable(false)},
+		{name: "an undecodable method instantiation turns the instantiated filter off", app: appUndecodable(true)},
 
 		// Edges through framework slots.
 		{name: "dispatch through a framework interface binds the implementation", app: appInterfaceDispatch(), wantPath: true},
@@ -597,6 +678,7 @@ func TestFramework_Searched(t *testing.T) {
 		{name: "ldsflda runs the static constructor", app: appStaticField(true, true), wantPath: true},
 		{name: "ldsfld runs the static constructor", app: appStaticField(false, true), wantPath: true},
 		{name: "an application field is not a hazard", app: appStaticField(false, false), wantSearched: true},
+		{name: "a static field on a type with an unloaded base is a hazard", app: appStaticFieldUnloadedBase()},
 		{name: "a top-level type is not its nested namesake", app: appNestedCall(false), dep: depNested(true), wantSearched: true},
 		{name: "a nested type is not its top-level namesake", app: appNestedCall(true), dep: depNested(false), wantSearched: true},
 		{name: "a call reaches the top-level type", app: appNestedCall(false), dep: depNested(false), wantPath: true},

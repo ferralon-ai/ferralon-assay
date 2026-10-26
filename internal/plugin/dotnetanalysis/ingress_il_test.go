@@ -100,15 +100,45 @@ func callsNothing(aspCtx) []byte { return body() }
 // mapLambda declares App.Startup.Configure, which hands a delegate over its lambda
 // <Configure>b__0_0 (whose body calls boom) to owner::method, and nothing else.
 func mapLambda(asmName, ns, owner, method string) func(*peb, aspCtx) {
+	return handDelegate(false, asmName, ns, owner, method)
+}
+
+// handDelegate is mapLambda where virt captures the public virtual App.Startup.Handle
+// (whose body calls boom) with ldvirtftn and hands it to the instance member
+// owner::method with callvirt.
+func handDelegate(virt bool, asmName, ns, owner, method string) func(*peb, aspCtx) {
 	return func(b *peb, x aspCtx) {
 		funcCtor := b.memberRef(b.extTypeRef("System", "Func`1"), ".ctor", sigFuncCtor)
-		target := b.memberRef(b.extTypeRefScoped(b.asmRef(asmName), ns, owner), method, sigStaticVoid)
+		target := b.extTypeRefScoped(b.asmRef(asmName), ns, owner)
 		lambda := b.nextMethodRID() + 1
+		capture := ilLdftn(mtok(xMethodDef, lambda))
+		handOff := ilCall(b.memberRef(target, method, sigStaticVoid))
+		handler := mspec{name: "<Configure>b__0_0", flags: mPrivate, sig: sigInstVoid, il: callsBoom(x)}
+		if virt {
+			capture = append([]byte{0xFE, 0x07}, tok4(mtok(xMethodDef, lambda))...)
+			handOff = ilCallvirt(b.memberRef(target, method, sigInstVoid))
+			handler = mspec{name: "Handle", flags: fNewSlot, sig: sigInstVoid, il: callsBoom(x)}
+		}
 		b.addType(tPublic, "Startup", "App", x.obj, []mspec{
-			{name: "Configure", flags: mPublic, sig: sigInstVoid, il: body(ilLdftn(mtok(xMethodDef, lambda)), ilNewobjOp(funcCtor), ilCall(target))},
-			{name: "<Configure>b__0_0", flags: mPrivate, sig: sigInstVoid, il: callsBoom(x)},
+			{name: "Configure", flags: mPublic, sig: sigInstVoid, il: body(capture, ilNewobjOp(funcCtor), handOff)},
+			handler,
 		})
 	}
+}
+
+// controllerReachesViaCallback declares a controller whose action constructs App.Cmp, an
+// IComparer whose Compare calls boom, and calls it through the framework slot
+// IComparer::Compare. Main never constructs a Cmp.
+func controllerReachesViaCallback(b *peb, x aspCtx) {
+	rid, cm := b.addType(0, "Cmp", "App", x.obj, []mspec{
+		{name: "Compare", flags: fIfaceImpl, sig: sigCompare, il: callsBoom(x)},
+		{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()},
+	})
+	b.row(xInterfaceImpl, rid, cTypeDefOrRef(xTypeRef, b.extTypeRef("System.Collections", "IComparer")))
+	compare := b.memberRef(b.extTypeRef("System.Collections", "IComparer"), "Compare", sigCompare)
+	controller("PackagesController", tPublic, baseCB, "Search", mPublic, func(aspCtx) []byte {
+		return body(ilNewobjOp(mtok(xMethodDef, cm[1])), ilCallvirt(compare))
+	})(b, x)
 }
 
 // depWithController is Dep.dll with D.Sink.boom(int) and an MVC controller whose action
@@ -239,6 +269,21 @@ func TestReachability_ASPNetIngressRoots(t *testing.T) {
 			name:        "delegate handed to MapGet",
 			app:         aspApp("console", true, mapLambda("Microsoft.AspNetCore.Routing", "Microsoft.AspNetCore.Builder", "EndpointRouteBuilderExtensions", "MapGet")),
 			wantIngress: "Configure", // the lambda, projected to the method that declares it
+		},
+		{
+			name:        "virtual method captured with ldvirtftn and handed to ASP.NET Core with callvirt",
+			app:         aspApp("console", true, handDelegate(true, "Microsoft.AspNetCore.Http.Abstractions", "Microsoft.AspNetCore.Builder", "IApplicationBuilder", "Use")),
+			wantIngress: "Handle",
+		},
+		{
+			name:        "POCO controller suffix matches case-insensitively",
+			app:         aspApp("console", true, controller("Homecontroller", tPublic, baseObj, "Index", mPublic, callsBoom)),
+			wantIngress: "Index",
+		},
+		{
+			name:        "controller reaches the sink through a callback type Main never constructs",
+			app:         aspApp("console", true, controllerReachesViaCallback),
+			wantIngress: "Search",
 		},
 		{
 			name:         "delegate handed to a non-ASP.NET method",

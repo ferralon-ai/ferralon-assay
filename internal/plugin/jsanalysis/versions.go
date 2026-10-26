@@ -66,7 +66,7 @@ import (
 // concrete installed literal version. Advisory RANGE matching (^ ~ || x-ranges, npm
 // ordering) is applied by the pipeline disqualification predicate (pipeline/npm_version.go),
 // never here.
-func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
 		return plugin.DependencyVersionResult{}, fmt.Errorf("jsanalysis: stat build dir %q: %w", req.BuildDir, err)
@@ -82,8 +82,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all    []plugin.ResolvedDependency
 		parsed = make(map[string]lockInfo, len(locks))
 	)
-	unread, scriptWithheld := unreadSurfaces(req.BuildDir, locks)
-	parseFailed := unread || !copiesRead
+	parseFailed := !copiesRead
 	lockFailed := false // a lock that does not parse; exhaustiveLockSet judges every other surface itself
 	for _, l := range locks {
 		info, ok := parseLockfile(l)
@@ -96,6 +95,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		parsed[l] = info
 		all = append(all, info.deps...)
 	}
+	unread, scriptWithheld := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
+	parseFailed = parseFailed || unread
 
 	part := plugin.Complete()
 	switch {
@@ -305,8 +306,19 @@ type lockInfo struct {
 	// specs a format records without their field (pnpm v5 specifiers). A yarn.lock records berry
 	// workspaces here with no specs.
 	importers map[string]map[string]map[string]string
+	// peers maps each npm v2/v3 project, keyed like importers, to the peerDependencies specs it
+	// recorded. It is kept apart from importers so a peer alone never makes a project recorded.
+	peers map[string]map[string]string
+	// installed maps each npm v2/v3 install path ("node_modules/<name>", nested or under a
+	// workspace folder) to the version installed there: a link's target's version, and "" when
+	// the entry installs a package other than its folder name (an alias) or records none.
+	installed map[string]string
 	// descriptors is every "name@range" a yarn.lock entry header lists.
 	descriptors map[string]bool
+	// rootVersions maps each key of a v1 package-lock's top-level "dependencies" (the packages
+	// installed at the root's node_modules, every direct dependency among them) to the version
+	// string it records.
+	rootVersions map[string]string
 }
 
 const (
@@ -318,10 +330,13 @@ const (
 
 func newLockInfo(kind string) lockInfo {
 	return lockInfo{
-		kind:        kind,
-		names:       map[string]bool{},
-		importers:   map[string]map[string]map[string]string{},
-		descriptors: map[string]bool{},
+		kind:         kind,
+		names:        map[string]bool{},
+		importers:    map[string]map[string]map[string]string{},
+		peers:        map[string]map[string]string{},
+		installed:    map[string]string{},
+		descriptors:  map[string]bool{},
+		rootVersions: map[string]string{},
 	}
 }
 
@@ -401,6 +416,9 @@ type packageLockPkg struct {
 	Dependencies         map[string]string `json:"dependencies"`
 	DevDependencies      map[string]string `json:"devDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+	Link                 bool              `json:"link"`
+	Resolved             string            `json:"resolved"`
 }
 
 type packageLockDep struct {
@@ -436,6 +454,9 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 						info.record(project, field, n, spec)
 					}
 				}
+				if len(pkg.PeerDependencies) > 0 {
+					info.peers[project] = pkg.PeerDependencies
+				}
 				if installPath == "" {
 					// The "" install path is the root project itself, not a dependency — skip
 					// it even when it carries a "name" field.
@@ -444,6 +465,7 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 			}
 			if key := packageLockName(installPath, ""); key != "" {
 				info.names[normalizeNPMCoordinate(key)] = true // the folder name: an alias key when "name" differs
+				info.installed[installPath] = installedVersion(pl.Packages, key, pkg)
 			}
 			name := packageLockName(installPath, pkg.Name)
 			if name == "" {
@@ -456,9 +478,22 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 
 	info := newLockInfo(lockNPMv1)
 	for _, name := range slices.Sorted(maps.Keys(pl.Dependencies)) {
+		info.rootVersions[name] = pl.Dependencies[name].Version
 		collectV1(name, pl.Dependencies[name], &info)
 	}
 	return info, true
+}
+
+// installedVersion returns the version of the package named key that a v2/v3 entry installs: a
+// link's target's own version, and "" for an entry installing another package (an alias).
+func installedVersion(packages map[string]packageLockPkg, key string, pkg packageLockPkg) string {
+	if pkg.Link {
+		pkg = packages[pkg.Resolved]
+	}
+	if pkg.Name != "" && pkg.Name != key {
+		return ""
+	}
+	return pkg.Version
 }
 
 // packageLockName derives the dependency's npm name from a v2/v3 "packages" key. The key

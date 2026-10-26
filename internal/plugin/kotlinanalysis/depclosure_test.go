@@ -759,3 +759,62 @@ func TestDependencyClosureRunsOnTheGraphRuntimeJDK(t *testing.T) {
 		}
 	}
 }
+
+// TestDependencyClosure_LocalRepositoryLaunchReasons: the Kotlin closure hands the launch scan
+// its graph as the Java closure does, so a cached POM in the resolved in-checkout repository does
+// not withhold Searched, and one in a directory merely named like it still does.
+func TestDependencyClosure_LocalRepositoryLaunchReasons(t *testing.T) {
+	const pluginPOM = "<plugin><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>-javaagent:/a.jar</argLine></configuration></plugin>\n"
+	write := func(t *testing.T, p string, data []byte) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		name, root string
+		want       bool
+	}{
+		{"resolved repository", ".m2/repository", false},
+		{"repository resolved elsewhere in the checkout", "cache/m2", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			jar := filepath.Join(dir, filepath.FromSlash(tt.root), "com/acme/lib/1.0/lib-1.0.jar")
+			var buf strings.Builder
+			zw := zip.NewWriter(&buf)
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			write(t, jar, []byte(buf.String()))
+			write(t, filepath.Join(dir, ".m2/repository/org/apache/maven/surefire/surefire/3.2.5/surefire-3.2.5.pom"), []byte(pluginPOM))
+			b, err := json.Marshal(buildgraph.Graph{
+				Schema:  buildgraph.Schema,
+				Tool:    buildgraph.Tool{Name: buildgraph.ToolMaven, Version: "test"},
+				JVM:     buildgraph.JVM{Version: "21.0.4"},
+				Modules: []buildgraph.Module{graphModule(".", "app", graphDep{group: "com.acme", artifact: "lib", version: "1.0", jar: jar})},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(t.TempDir(), "graph.json")
+			write(t, file, b)
+			dc := loadDependencyClosure(dir, nil, javaanalysis.WithBuildGraph(file))
+			if got := slicesContains(dc.reasons, javaanalysis.PartialReasonLaunchAgent); got != tt.want {
+				t.Errorf("reasons = %v; %s present %v, want %v", dc.reasons, javaanalysis.PartialReasonLaunchAgent, got, tt.want)
+			}
+		})
+	}
+}
+
+func slicesContains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}

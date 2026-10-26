@@ -46,6 +46,19 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		pnpmCustomReg  = "lockfileVersion: 5.4\n\nspecifiers:\n  express: ^4.18.0\n  left-pad: ^1.3.0\n\npackages:\n\n  /express/4.18.2:\n    resolution: {integrity: sha512-x}\n\n  /left-pad/1.3.0:\n    resolution: {integrity: sha512-y}\n\n  registry.example.com/absent-package/2.2.1:\n    resolution: {tarball: https://registry.example.com/absent-package/-/absent-package-2.2.1.tgz}\n"
 		yarnWorkspaces = `{"name":"app","workspaces":["tools"],"dependencies":{"express":"^4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}}`
 	)
+	// peerLock is a v2/v3 lock that locked the root and the tools workspace, each depending on
+	// express, against react peer range rootPeer and toolPeer.
+	peerLock := func(version, rootPeer, toolPeer string) string {
+		return `{"name":"app","lockfileVersion":` + version + `,"packages":{
+  "": {"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"react":"` + rootPeer + `"}},
+  "tools": {"name":"tool","dependencies":{"express":"^4.18.0"},"peerDependencies":{"react":"` + toolPeer + `"}},
+  "node_modules/express": {"version":"4.18.2"},
+  "node_modules/react": {"version":"17.0.2","peer":true},
+  "node_modules/tool": {"resolved":"tools","link":true}}}`
+	}
+	peerPkg := func(name, peer string) string {
+		return `{"name":"` + name + `","dependencies":{"express":"^4.18.0"},"peerDependencies":{"react":"` + peer + `"}}`
+	}
 	// rewrite is exPkgJSON with one more top-level field.
 	rewrite := func(field string) string { return strings.TrimSuffix(exPkgJSON, "}") + "," + field + "}" }
 	// catalogLock is exPnpmV9 as pnpm writes it for a left-pad declared as catalog:.
@@ -101,12 +114,36 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 package-lock spec drift", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": exLockV3}, false},
 		{"S1 yarn spec drift", map[string]string{"package.json": pkgJSONDrift, "yarn.lock": exYarnLock}, false},
 		{"S1 pnpm spec drift", map[string]string{"package.json": pkgJSONDrift, "pnpm-lock.yaml": exPnpmV9}, false},
-		{"S1 package-lock v1 records no specs", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, false},
+		// pnpm installs a name declared in two fields from the stronger (optional, then
+		// dependencies, then dev) and records it there alone.
+		{"S1 pnpm name also declared dev", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"devDependencies":{"left-pad":"^1.3.0","express":"^4.17.0"}}`, "pnpm-lock.yaml": exPnpmV9}, true},
+		// ferralon-ai/tracker#495: a v1 lock records no specs, so it covers its root project
+		// when each locked version satisfies the declared range, and nothing less.
+		{"#495 package-lock v1 whose versions satisfy every range", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, true},
+		{"#495 package-lock v1 version outside its range", map[string]string{"package.json": pkgJSONDrift, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 against a range form not modelled", map[string]string{"package.json": `{"name":"app","dependencies":{"express":">= 4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 against an x-range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"4.x"},"devDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, true},
+		{"#495 package-lock v1 locking a prerelease", map[string]string{"package.json": exPkgJSON, "package-lock.json": strings.Replace(lockV1, "4.18.2", "4.19.0-rc.1", 1)}, false},
+		{"#495 package-lock v1 locking the name only nested", map[string]string{"package.json": exPkgJSON, "package-lock.json": `{"name":"app","lockfileVersion":1,"dependencies":{"left-pad":{"version":"1.3.0","dependencies":{"express":{"version":"4.18.2"}}}}}`}, false},
+		{"#495 package-lock v1 governing a nested project", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1, "tools/package.json": toolJSON}, false},
+		{"#495 package-lock v1 root peer outside its range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"left-pad":"^2.0.0"}}`, "package-lock.json": lockV1}, false},
+		{"#495 package-lock v1 root peer inside its range", map[string]string{"package.json": `{"name":"app","dependencies":{"express":"^4.18.0"},"peerDependencies":{"left-pad":"^1.3.0"}}`, "package-lock.json": lockV1}, true},
 		{"S1 nested project the lock does not record", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": toolJSON}, false},
 		{"S1 nested project the lock does not record, declaring only a peer it keys", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": `{"name":"tool","peerDependencies":{"express":"^4.18.0"}}`}, false},
 		{"S1 nested workspace the lock records", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV3Tools, "tools/package.json": toolJSON}, true},
 		{"S1 classic yarn workspace named by the root", map[string]string{"package.json": yarnWorkspaces, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, true},
 		{"S1 classic yarn project not a workspace", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, false},
+		// npm v2/v3 records the project's own peer ranges and re-resolves a drifted one.
+		{"S1 package-lock v3 root peer drift", map[string]string{"package.json": peerPkg("app", "^18.0.0"), "package-lock.json": peerLock("3", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, false},
+		{"S1 package-lock v3 workspace peer drift", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("3", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^18.0.0")}, false},
+		{"S1 package-lock v3 peer specs match", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("3", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, true},
+		{"S1 package-lock v2 root peer drift", map[string]string{"package.json": peerPkg("app", "^18.0.0"), "package-lock.json": peerLock("2", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, false},
+		{"S1 package-lock v2 peer specs match", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": peerLock("2", "^17.0.0", "^17.0.0"), "tools/package.json": peerPkg("tool", "^17.0.0")}, true},
+		{"S1 package-lock v3 peer added after locking", map[string]string{"package.json": peerPkg("app", "^17.0.0"), "package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{
+  "": {"name":"app","dependencies":{"express":"^4.18.0"}},
+  "node_modules/express": {"version":"4.18.2"},
+  "node_modules/react": {"version":"17.0.2"}}}`}, false},
+		{"S1 pnpm peer the lock keys", map[string]string{"package.json": strings.TrimSuffix(exPkgJSON, "}") + `,"peerDependencies":{"left-pad":"^1.3.0"}}`, "pnpm-lock.yaml": exPnpmV9}, true},
 		{"S1 stale lock beside a covering one", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "yarn.lock": yarnStale}, false},
 
 		// B6: every file that looks like a JS manifest or lockfile, by name or content, is read
@@ -173,6 +210,105 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 	}
 }
 
+// A peer-only workspace stays unrecorded: npm --legacy-peer-deps records the workspace's chalk
+// peer range without installing a copy that satisfies it, and a plain npm install then adds
+// chalk 4, supports-color 7 and has-flag. Lock shape as npm 11.14.1 wrote it.
+func TestResolveVersions_ExhaustiveLegacyPeerOnlyWorkspace(t *testing.T) {
+	files := map[string]string{
+		"package.json":               `{"name":"app","version":"1.0.0","workspaces":["packages/*"],"dependencies":{"babel-code-frame":"6.26.0"}}`,
+		"packages/tool/package.json": `{"name":"tool","version":"1.0.0","peerDependencies":{"chalk":"^4.0.0"}}`,
+		"package-lock.json": `{"name":"app","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{
+  "": {"name":"app","version":"1.0.0","workspaces":["packages/*"],"dependencies":{"babel-code-frame":"6.26.0"}},
+  "node_modules/ansi-regex": {"version":"2.1.1"},
+  "node_modules/ansi-styles": {"version":"2.2.1"},
+  "node_modules/babel-code-frame": {"version":"6.26.0","dependencies":{"chalk":"^1.1.3","esutils":"^2.0.2","js-tokens":"^3.0.2"}},
+  "node_modules/chalk": {"version":"1.1.3","dependencies":{"ansi-styles":"^2.2.1","escape-string-regexp":"^1.0.2","has-ansi":"^2.0.0","strip-ansi":"^3.0.0","supports-color":"^2.0.0"}},
+  "node_modules/escape-string-regexp": {"version":"1.0.5"},
+  "node_modules/esutils": {"version":"2.0.3"},
+  "node_modules/has-ansi": {"version":"2.0.0","dependencies":{"ansi-regex":"^2.0.0"}},
+  "node_modules/js-tokens": {"version":"3.0.2"},
+  "node_modules/strip-ansi": {"version":"3.0.1","dependencies":{"ansi-regex":"^2.0.0"}},
+  "node_modules/supports-color": {"version":"2.0.0"},
+  "node_modules/tool": {"resolved":"packages/tool","link":true},
+  "packages/tool": {"version":"1.0.0","peerDependencies":{"chalk":"^4.0.0"}}}}`,
+	}
+	r := resolveJS(t, writeLockTree(t, files), "has-flag")
+	if r.Found {
+		t.Fatalf("has-flag unexpectedly found")
+	}
+	if r.Exhaustive {
+		t.Fatalf("Exhaustive = true, want false")
+	}
+}
+
+// ferralon-ai/tracker#506: an npm v2/v3 project's own peer covers only when the copy it resolves to
+// in the lock (the nearest <dir>/node_modules/<name> from the project up) satisfies its recorded
+// range. The root shape is the lock npm 11.14.1 writes with --legacy-peer-deps for debug 2.6.9
+// plus a root peer ms ^2.1.0: ms stays 2.0.0, and a plain npm install adds ms 2.1.3.
+func TestResolveVersions_ExhaustivePeerSatisfied(t *testing.T) {
+	const toolPkg = `{"name":"tool","version":"1.0.0","dependencies":{"debug":"2.6.9"},"peerDependencies":{"react":"^18.0.0"}}`
+	rootPkg := func(peer string) string {
+		return `{"name":"app","version":"1.0.0","workspaces":["tools"],"dependencies":{"debug":"2.6.9"},"peerDependencies":{` + peer + `}}`
+	}
+	// lock records the root (debug 2.6.9 and rootPeer) and the tools workspace (debug 2.6.9 and
+	// react ^18.0.0), plus the given install-path entries.
+	lock := func(rootPeer string, entries ...string) string {
+		return `{"name":"app","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{
+  "": {"name":"app","version":"1.0.0","workspaces":["tools"],"dependencies":{"debug":"2.6.9"},"peerDependencies":{` + rootPeer + `}},
+  "node_modules/debug": {"version":"2.6.9","dependencies":{"ms":"2.0.0"}},
+  "node_modules/tool": {"resolved":"tools","link":true},
+  "tools": {"name":"tool","version":"1.0.0","dependencies":{"debug":"2.6.9"},"peerDependencies":{"react":"^18.0.0"}},
+  ` + strings.Join(entries, ",\n  ") + `}}`
+	}
+	const (
+		ms200    = `"node_modules/ms": {"version":"2.0.0"}`
+		ms213    = `"node_modules/ms": {"version":"2.1.3"}`
+		react17  = `"node_modules/react": {"version":"17.0.2"}`
+		react18  = `"node_modules/react": {"version":"18.3.1"}`
+		msPeer   = `"ms":"^2.1.0"`
+		toolPeer = `"tool":"^1.0.0"`
+	)
+	tests := []struct {
+		name     string
+		rootPeer string
+		entries  []string
+		want     bool
+	}{
+		{"root peer the lock keeps below its range (--legacy-peer-deps)", msPeer, []string{ms200, react18}, false},
+		{"root peer satisfied", msPeer, []string{ms213, react18}, true},
+		{"workspace peer unsatisfied", msPeer, []string{ms213, react17}, false},
+		{"workspace peer satisfied by its own copy over the root's", msPeer,
+			[]string{ms213, react17, `"tools/node_modules/react": {"version":"18.3.1"}`}, true},
+		{"workspace peer shadowed by its own unsatisfying copy", msPeer,
+			[]string{ms213, react18, `"tools/node_modules/react": {"version":"17.0.2"}`}, false},
+		{"root peer with no copy it resolves to", msPeer,
+			[]string{`"node_modules/debug/node_modules/ms": {"version":"2.1.3"}`, react18}, false},
+		{"root peer range latest", `"ms":"latest"`, []string{ms213, react18}, false},
+		{"root peer git URL", `"ms":"github:vercel/ms"`, []string{ms213, react18}, false},
+		{"root peer on an aliased copy", msPeer, []string{`"node_modules/ms": {"name":"other","version":"2.1.3"}`, react18}, false},
+		{"root peer || range the lock satisfies", msPeer + `,"react":"^17.0.0 || ^18.0.0"`, []string{ms213, react18}, true},
+		{"root peer || range the lock does not satisfy", msPeer + `,"react":"^16 || ^17"`, []string{ms213, react18}, false},
+		{"root peer on a workspace link", msPeer + "," + toolPeer, []string{ms213, react18}, true},
+		{"root peer on a workspace link outside its range", msPeer + `,"tool":"^2.0.0"`, []string{ms213, react18}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{
+				"package.json":       rootPkg(tt.rootPeer),
+				"tools/package.json": toolPkg,
+				"package-lock.json":  lock(tt.rootPeer, tt.entries...),
+			}
+			r := resolveJS(t, writeLockTree(t, files), "absent-package")
+			if r.Found {
+				t.Fatalf("absent-package unexpectedly found")
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
 // B3: a script surface the version veto withholds on may install a package no lock or
 // manifest read here names, so it withholds Exhaustive too; a kept form installs only what a
 // read lock holds and does not.
@@ -195,11 +331,11 @@ func TestResolveVersions_ExhaustiveScriptInstall(t *testing.T) {
 		{"postinstall installs the coordinate", npm(map[string]string{"package.json": withScripts + `,"scripts":{"postinstall":"npm install absent-package"}}`}), false},
 		{"Dockerfile npm install, which may rewrite the lock", npm(map[string]string{"Dockerfile": docker + "npm install\n"}), false},
 		{"PowerShell installs the coordinate", npm(map[string]string{"deploy.ps1": "npm install absent-package\n"}), false},
+		{"Dockerfile yarn --frozen-lockfile, which yarn 1 does not hold to the lock", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nRUN yarn --frozen-lockfile\n"}, false},
 
 		// Kept forms install only what a read lock holds.
 		{"Dockerfile npm ci", npm(map[string]string{"Dockerfile": docker + "npm ci\n"}), true},
 		{"Dockerfile npm ci --omit=dev", npm(map[string]string{"Dockerfile": docker + "npm ci --omit=dev\n"}), true},
-		{"Dockerfile yarn --frozen-lockfile", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nRUN yarn --frozen-lockfile\n"}, true},
 		{"Dockerfile pnpm install --frozen-lockfile", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json pnpm-lock.yaml ./\nRUN pnpm install --frozen-lockfile\n"}, true},
 		{"Dockerfile npm ci, then a script that builds", npm(map[string]string{"package.json": withScripts + `,"scripts":{"build":"tsc"}}`, "Dockerfile": docker + "npm ci && npm run build\n"}), true},
 	}

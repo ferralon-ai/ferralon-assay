@@ -12,6 +12,7 @@ package goanalysis
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/build"
 	"go/build/constraint"
@@ -931,7 +932,7 @@ func recvDisplay(t types.Type) string {
 // resolves them against the loaded program. A no-match is an empty result, not
 // an error; a load failure is a hard error (inv.4).
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
-	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir})
+	index, err := resolutionIndex(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
@@ -980,6 +981,27 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	}
 
 	return plugin.SymbolResolutionResult{Partiality: index.Partiality, Resolved: resolved, ModuleSearch: search}, nil
+}
+
+// resolutionIndex returns the symbol index ResolveDependencySymbols filters, built once per tree per
+// scan through the run cache: the index depends only on the build, while every advisory resolves
+// against it. The program load reads the process environment, so that is part of the key.
+func resolutionIndex(ctx context.Context, buildDir string) (plugin.SymbolIndexResult, error) {
+	b, err := runCached(ctx, "symbolindex", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+		index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: buildDir})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(index)
+	})
+	if err != nil {
+		return plugin.SymbolIndexResult{}, err
+	}
+	var index plugin.SymbolIndexResult
+	if err := json.Unmarshal(b, &index); err != nil {
+		return plugin.SymbolIndexResult{}, fmt.Errorf("decode cached symbol index: %w", err)
+	}
+	return index, nil
 }
 
 // packageFromPURL extracts the import path from a Go PURL of the form

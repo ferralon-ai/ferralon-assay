@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf16"
+
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 )
 
 func TestClassifyLaunchOption(t *testing.T) {
@@ -409,7 +412,7 @@ func TestLaunchOptionReasons(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if got := LaunchOptionReasons(dir); !reflect.DeepEqual(got, tt.want) {
+			if got := LaunchOptionReasons(dir, nil); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("LaunchOptionReasons = %v, want %v", got, tt.want)
 			}
 		})
@@ -469,7 +472,7 @@ func TestLaunchContent_ReadError(t *testing.T) {
 
 // TestLaunchOptionReasons_MissingRoot: a build root that cannot be resolved withholds Searched.
 func TestLaunchOptionReasons_MissingRoot(t *testing.T) {
-	if got := LaunchOptionReasons(filepath.Join(t.TempDir(), "missing")); !reflect.DeepEqual(got, optionOnly) {
+	if got := LaunchOptionReasons(filepath.Join(t.TempDir(), "missing"), nil); !reflect.DeepEqual(got, optionOnly) {
 		t.Errorf("LaunchOptionReasons = %v, want %v", got, optionOnly)
 	}
 }
@@ -542,7 +545,7 @@ func TestLaunchOptionReasons_Walk(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := tt.setup(t, t.TempDir())
-			if got := LaunchOptionReasons(dir); !reflect.DeepEqual(got, tt.want) {
+			if got := LaunchOptionReasons(dir, nil); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("LaunchOptionReasons = %v, want %v", got, tt.want)
 			}
 		})
@@ -576,8 +579,187 @@ func TestLaunchOptionReasons_Unreadable(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
-			if got := LaunchOptionReasons(dir); !reflect.DeepEqual(got, optionOnly) {
+			if got := LaunchOptionReasons(dir, nil); !reflect.DeepEqual(got, optionOnly) {
 				t.Errorf("LaunchOptionReasons = %v, want %v", got, optionOnly)
+			}
+		})
+	}
+}
+
+// TestLaunchOptionReasons_LocalRepository: the artifact files of the local repository a Maven
+// graph's dependency files lie in are not read as launch configuration when that repository is
+// inside the checkout. Only that repository is left out, and only its artifact-named files:
+// anything else under it, a directory merely named like one, and every file when the repository
+// cannot be identified are scanned as before.
+func TestLaunchOptionReasons_LocalRepository(t *testing.T) {
+	const (
+		repo = ".m2/repository"
+		// A cached plugin POM: argLine outside the project's pom.xml is not exempt.
+		pluginPOM = "<plugin><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>-javaagent:/a.jar</argLine></configuration></plugin>\n"
+		dataJar   = "com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-2.17.2.jar"
+		agentFile = "ENV JAVA_TOOL_OPTIONS=-javaagent:/a.jar\n"
+	)
+	agentJar := manifestJar("Manifest-Version: 1.0\r\nLauncher-Agent-Class: net.bytebuddy.agent.Installer\r\n")
+	// cached is what a resolved build leaves in its local repository: a dependency JAR the graph
+	// lists, a plugin POM and an agent JAR it does not.
+	cached := func(root string) map[string]string {
+		return map[string]string{
+			root + "/" + dataJar: zipOf(map[string]string{"x.txt": ""}),
+			root + "/org/apache/maven/surefire/surefire/3.2.5/surefire-3.2.5.pom":                                    pluginPOM,
+			root + "/net/bytebuddy/byte-buddy-agent/1.14.19/byte-buddy-agent-1.14.19.jar":                            agentJar,
+			root + "/org/apache/commons/commons-parent/69/commons-parent-69.pom.lastUpdated":                         pluginPOM,
+			root + "/com/acme/lib/1.0-SNAPSHOT/lib-1.0-20240101.120000-1.pom":                                        pluginPOM,
+			root + "/org/apache/maven/surefire/surefire/3.2.5/surefire-3.2.5-tests.jar":                              agentJar,
+			root + "/org/apache/maven/surefire/surefire/3.2.5/_remote.repositories":                                  "surefire-3.2.5.pom>central=\n",
+			root + "/org/apache/maven/surefire/surefire/maven-metadata-central.xml":                                  "<metadata/>\n",
+			root + "/org/springframework/boot/spring-boot-starter-parent/3.3.5/spring-boot-starter-parent-3.3.5.pom": pluginPOM,
+		}
+	}
+	with := func(base map[string]string, extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	// dep is the graph node for dataJar under root (a path from the build dir, or absolute).
+	dep := graphDep{group: "com.fasterxml.jackson.core", artifact: "jackson-databind", version: "2.17.2"}
+	tests := []struct {
+		name  string
+		files map[string]string // build-dir-relative; "@out/" lies beside the checkout, "@up/" in its parent
+		links map[string]string // build-dir-relative link -> target
+		tool  string            // "" for no graph
+		root  string            // where the graph's dependency file lies
+		rel   bool              // the graph names that file by a relative path
+		want  []string
+	}{
+		{"resolved in-checkout repository is left out", cached(repo), nil, "maven", repo, false, []string{}},
+		{"no graph: repository unidentified, withheld", cached(repo), nil, "", repo, false, agentOnly},
+		{"graph lists no file: repository unidentified, withheld", cached(repo), nil, "maven", "", false, agentOnly},
+		{"gradle graph: no Maven repository identified, withheld", cached(repo), nil, "gradle", repo, false, agentOnly},
+		{"a .m2/repository that is not the resolved one is scanned", with(cached("cache/m2"), map[string]string{
+			repo + "/org/apache/maven/surefire/surefire/3.2.5/surefire-3.2.5.pom": pluginPOM,
+		}), nil, "maven", "cache/m2", false, agentOnly},
+		{"launch file at the repository root is scanned", with(cached(repo), map[string]string{repo + "/Dockerfile": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"launch file in a group directory is scanned", with(cached(repo), map[string]string{repo + "/com/acme/run.sh": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"non-artifact name in a version directory is scanned", with(cached(repo), map[string]string{repo + "/com/acme/app/1.0/start.sh": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"artifact-name prefix without a separator is scanned", with(cached(repo), map[string]string{repo + "/com/acme/app/1.0/app-1.0evil.sh": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"snapshot prefix without a timestamp is scanned", with(cached(repo), map[string]string{repo + "/com/acme/app/1.0-SNAPSHOT/app-1.0-local.sh": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"artifact-named file under the resolved repository is left out", with(cached(repo), map[string]string{repo + "/com/acme/app/1.0/app-1.0.sh": agentFile}), nil, "maven", repo, false, []string{}},
+		{"project launch file outside the repository is scanned", with(cached(repo), map[string]string{"Dockerfile": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"repository at the checkout root is not left out", cached("."), nil, "maven", ".", false, agentOnly},
+		{"repository in the checkout's parent is not left out", with(cached("@up"), map[string]string{"com/acme/app/1.0/app-1.0.sh": agentFile}), nil, "maven", "@up", false, agentOnly},
+		{"graph naming its file by a relative path identifies no repository", cached(repo), nil, "maven", repo, true, agentOnly},
+		{"artifact-shaped project file outside the repository is scanned", with(cached(repo), map[string]string{"com/acme/app/1.0/app-1.0.sh": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"artifact path with no group directory is scanned", with(cached(repo), map[string]string{repo + "/app/1.0/app-1.0.sh": agentFile}), nil, "maven", repo, false, agentOnly},
+		{"linked artifact in the repository is left out", with(cached(repo), map[string]string{repo + "/com/acme/app/1.0/app-1.0-cached.pom": pluginPOM}),
+			map[string]string{repo + "/com/acme/app/1.0/app-1.0.pom": "app-1.0-cached.pom"}, "maven", repo, false, []string{}},
+		{"repository outside the checkout: clean checkout unchanged", with(cached("@out/m2"), map[string]string{"Dockerfile": "ENV JAVA_TOOL_OPTIONS=-Xmx1g\n"}), nil, "maven", "@out/m2", false, []string{}},
+		{"repository outside the checkout: in-checkout cache still scanned", with(cached("@out/m2"), map[string]string{
+			repo + "/org/apache/maven/surefire/surefire/3.2.5/surefire-3.2.5.pom": pluginPOM,
+		}), nil, "maven", "@out/m2", false, agentOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			dir := filepath.Join(base, "checkout")
+			at := func(rel string) string {
+				if out, ok := strings.CutPrefix(rel, "@out/"); ok {
+					return filepath.Join(base, "outside", filepath.FromSlash(out))
+				}
+				if up, ok := strings.CutPrefix(rel, "@up"); ok {
+					return filepath.Join(base, filepath.FromSlash(up))
+				}
+				return filepath.Join(dir, filepath.FromSlash(rel))
+			}
+			for rel, content := range tt.files {
+				writeFile(t, at(rel), content)
+			}
+			for rel, target := range tt.links {
+				if err := os.Symlink(target, at(rel)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			var g *buildgraph.Graph
+			if tt.tool != "" {
+				var deps []graphDep
+				if tt.root != "" {
+					d := dep
+					d.jar = at(tt.root + "/" + dataJar)
+					if tt.rel {
+						t.Chdir(base)
+						d.jar, _ = filepath.Rel(base, d.jar)
+					}
+					deps = append(deps, d)
+				}
+				g = &buildgraph.Graph{Tool: buildgraph.Tool{Name: tt.tool}, Modules: []buildgraph.Module{testModule(t, ".", "app", deps...)}}
+			}
+			got := LaunchOptionReasons(dir, g)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("LaunchOptionReasons = %v, want %v", got, tt.want)
+			}
+			if strings.HasPrefix(tt.root, "@out/") {
+				if unchanged := LaunchOptionReasons(dir, nil); !reflect.DeepEqual(got, unchanged) {
+					t.Errorf("LaunchOptionReasons = %v, without the graph %v", got, unchanged)
+				}
+			}
+		})
+	}
+}
+
+func TestRepoArtifactName(t *testing.T) {
+	for _, tt := range []struct {
+		name, artifact, version string
+		want                    bool
+	}{
+		{"a-1.0.pom", "a", "1.0", true},
+		{"a-1.0.jar.sha1", "a", "1.0", true},
+		{"a-1.0-tests.jar", "a", "1.0", true},
+		{"a-1.0-SNAPSHOT.pom", "a", "1.0-SNAPSHOT", true},
+		{"a-1.0-20240101.120000-1.jar", "a", "1.0-SNAPSHOT", true},
+		{"a-1.0", "a", "1.0", false},
+		{"a-1.0x.pom", "a", "1.0", false},
+		{"b-1.0.pom", "a", "1.0", false},
+		{"a-1.0-x.sh", "a", "1.0-SNAPSHOT", false},
+		{"a--1.jar", "a", "-SNAPSHOT", false},
+		{"pom.xml", "a", "1.0", false},
+	} {
+		if got := repoArtifactName(tt.name, tt.artifact, tt.version); got != tt.want {
+			t.Errorf("repoArtifactName(%q, %q, %q) = %v, want %v", tt.name, tt.artifact, tt.version, got, tt.want)
+		}
+	}
+}
+
+// TestReachClosure_LocalRepositoryLaunchReasons: the Java closure hands the launch scan its
+// graph, so a cached POM in the resolved in-checkout repository does not withhold Searched, and
+// one in a directory merely named like it still does.
+func TestReachClosure_LocalRepositoryLaunchReasons(t *testing.T) {
+	const pluginPOM = "<plugin><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>-javaagent:/a.jar</argLine></configuration></plugin>\n"
+	for _, tt := range []struct {
+		name, root string
+		want       bool
+	}{
+		{"resolved repository", ".m2/repository", false},
+		{"repository resolved elsewhere in the checkout", "cache/m2", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			jar := filepath.Join(dir, filepath.FromSlash(tt.root), "com/acme/lib/1.0/lib-1.0.jar")
+			writeFile(t, jar, zipOf(map[string]string{"x.txt": ""}))
+			writeFile(t, filepath.Join(dir, ".m2/repository/org/apache/maven/surefire/surefire/3.2.5/surefire-3.2.5.pom"), pluginPOM)
+			opt := graphOption(t, "maven", testModule(t, ".", "app", graphDep{group: "com.acme", artifact: "lib", version: "1.0", jar: jar}))
+			rc, err := loadReachClosure(dir, nil, depreach.Classpath{}, opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasStr(rc.Reasons, PartialReasonLaunchAgent); got != tt.want {
+				t.Errorf("Reasons = %v; %s present %v, want %v", rc.Reasons, PartialReasonLaunchAgent, got, tt.want)
 			}
 		})
 	}

@@ -76,7 +76,7 @@ func withheld(root string, spec Spec) bool {
 			return true
 		}
 	}
-	return v.Rebound()
+	return v.Withheld()
 }
 
 // gitlabChain is a pipeline whose local includes nest n files deep, none of which installs.
@@ -195,6 +195,22 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"variable package manager behind sudo", tree(map[string]string{"install.sh": "sudo -E $INSTALLER install x\n"}), true, ""},
 		{"make variable installer then an install verb", tree(map[string]string{"Makefile": "deps:\n\t$(PKG) install x\n"}), true, ""},
 		{"redirect", tree(map[string]string{"install.sh": "inst sync > /tmp/log\n"}), true, ""},
+		{"Procfile command behind a leading redirect", tree(map[string]string{"Procfile": "web: >/dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind a spaced redirect", tree(map[string]string{"Procfile": "web: > /dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind an append", tree(map[string]string{"Procfile": "web: >>log inst add x\n"}), true, ""},
+		{"Procfile command behind a spaced append", tree(map[string]string{"Procfile": "web: >> log inst add x\n"}), true, ""},
+		{"Procfile command behind a stderr redirect", tree(map[string]string{"Procfile": "web: 2>/dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind a spaced stderr redirect", tree(map[string]string{"Procfile": "web: 2> /dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind a descriptor duplicate", tree(map[string]string{"Procfile": "web: 2>&1 inst add x\n"}), true, ""},
+		{"Procfile command behind an all-output redirect", tree(map[string]string{"Procfile": "web: &>/dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind an input redirect", tree(map[string]string{"Procfile": "web: <in inst add x\n"}), true, ""},
+		{"Procfile command behind a spaced input redirect", tree(map[string]string{"Procfile": "web: < in inst add x\n"}), true, ""},
+		{"Procfile command behind a leading pipe", tree(map[string]string{"Procfile": "web: |inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a name starting -", tree(map[string]string{"Procfile": "web: >-#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a numeric name", tree(map[string]string{"Procfile": "web: >2#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a name starting +", tree(map[string]string{"Procfile": "web: >+#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a name starting -1", tree(map[string]string{"Procfile": "web: >-1#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect, no installer", tree(map[string]string{"Procfile": "web: >/dev/null serve\n"}), false, ""},
 		{"unterminated quote", tree(map[string]string{"install.sh": "echo 'x && inst sync\n"}), true, ""},
 		{"unjoined continuation", tree(map[string]string{"install.sh": "inst sync \\"}), true, ""},
 
@@ -328,6 +344,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		// Controls.
 		{"literal block keeps a command per line", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          inst sync\n          inst run build\n")}), false, ""},
 		{"folded block, a blank line between commands", tree(map[string]string{".github/workflows/ci.yml": steps("- run: >\n          inst sync\n\n          inst run build\n        name: deps\n")}), false, ""},
+		{"folded block with a chomping indicator", tree(map[string]string{".github/workflows/ci.yml": steps("- run: >-\n          inst sync\n        name: deps\n")}), false, ""},
+		{"folded block with a header comment", tree(map[string]string{".github/workflows/ci.yml": steps("- run: >- # note\n          inst sync\n        name: deps\n")}), false, ""},
 		{"folded block under a key a build never runs", tree(map[string]string{".github/workflows/ci.yml": steps("- name: >\n          inst add x\n        run: inst sync\n")}), false, ""},
 		{"plain scalar beside a sibling key", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync\n        name: deps\n")}), false, ""},
 		{"job key naming a token opens a block", tree(map[string]string{".gitlab-ci.yml": "inst-build: &job\n  script:\n    - inst sync\n"}), false, ""},
@@ -439,5 +457,176 @@ func TestVeto_SpecDecidesEveryKeep(t *testing.T) {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A symlink into a .git directory lets a path that names neither reach a hooks directory.
+func TestVeto_SampleHookThroughSymlink(t *testing.T) {
+	root := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n",
+		".git/hooks/pre-commit.sample": "#!/bin/sh\ninst add x\n", "build.sh": "sh tools/pre-commit.s*\n"})
+	if err := os.Symlink(filepath.Join(".git", "hooks"), filepath.Join(root, "tools")); err != nil {
+		t.Fatal(err)
+	}
+	if !withheld(root, testSpec) {
+		t.Fatal("withheld = false, want true")
+	}
+}
+
+// Git never runs a hook under a .sample name, so the sample hooks in a repository's hooks
+// directory are not surfaces while nothing in the build may reach one. Every other hook, path
+// and suffix is, and a build whose text names a sample hook, its hooks directory or .git makes
+// them surfaces again.
+func TestVeto_SampleHooks(t *testing.T) {
+	const hook = "#!/bin/sh\n. git-sh-setup\n"
+	tree := func(extra map[string]string) map[string]string {
+		files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	const install = "#!/bin/sh\ninst add x\n"
+	sampleRun := func(build string) map[string]string {
+		return tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": build})
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool // withheld
+	}{
+		{"sample hook sourcing git-sh-setup", tree(map[string]string{".git/hooks/pre-rebase.sample": hook}), false},
+		{"sample hook that installs", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\ninst add x\n"}), false},
+		{"live hook sourcing git-sh-setup", tree(map[string]string{".git/hooks/pre-rebase": hook}), true},
+		{"live hook that installs", tree(map[string]string{".git/hooks/post-checkout": "#!/bin/sh\ninst add x\n"}), true},
+		{"suffix after .sample", tree(map[string]string{".git/hooks/pre-rebase.sample.sh": hook}), true},
+		{"suffix .sample with no name", tree(map[string]string{".git/hooks/.sample": hook}), true},
+		{"suffix .sample in another case", tree(map[string]string{".git/hooks/pre-rebase.SAMPLE": hook}), true},
+		{".sample outside .git/hooks", tree(map[string]string{"scripts/pre-rebase.sample": hook}), true},
+		{".sample directly under .git", tree(map[string]string{".git/pre-rebase.sample": hook}), true},
+		{".sample in a directory under .git/hooks", tree(map[string]string{".git/hooks/old/pre-rebase.sample": hook}), true},
+		{".sample in a nested repository's hooks", tree(map[string]string{"vendor/lib/.git/hooks/pre-rebase.sample": hook}), false},
+		{"live hook in a nested repository's hooks", tree(map[string]string{"vendor/lib/.git/hooks/pre-rebase": hook}), true},
+		{".sample in a submodule's hooks", tree(map[string]string{".git/modules/lib/hooks/pre-rebase.sample": hook}), false},
+		{".sample in a nested submodule's hooks", tree(map[string]string{".git/modules/lib/modules/sub/hooks/pre-rebase.sample": hook}), false},
+		{"live hook in a submodule's hooks", tree(map[string]string{".git/modules/lib/hooks/pre-rebase": hook}), true},
+		{".sample in hooks directly under .git/modules", tree(map[string]string{".git/modules/hooks/pre-rebase.sample": hook}), true},
+		{".sample in a hooks directory under .git that is not a repository's", tree(map[string]string{".git/info/hooks/pre-rebase.sample": hook}), true},
+		{".sample in a hooks directory outside .git", tree(map[string]string{"tools/hooks/pre-rebase.sample": hook}), true},
+		{"script sources a sample hook", tree(map[string]string{".git/hooks/pre-rebase.sample": install, "build.sh": ". .git/hooks/pre-rebase.sample\n"}), true},
+		{"script runs a sample hook", tree(map[string]string{".git/hooks/pre-rebase.sample": install, "build.sh": "sh .git/hooks/pre-rebase.sample\n"}), true},
+		{"script makes a sample hook live", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "cp .git/hooks/pre-commit.sample .git/hooks/pre-commit\n"}), true},
+		{"script execs a sample hook by path", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\ninst add x\n", "build.sh": "./.git/hooks/pre-commit.sample\n"}), true},
+		{"script execs a sample hook after cd", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\ninst add x\n", "build.sh": "cd .git/hooks && ./pre-commit.sample\n"}), true},
+		{"script makes every sample hook live in a cp loop", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "for f in .git/hooks/*.sample; do cp \"$f\" \"${f%.sample}\"; done\ngit commit -m x\n"}), true},
+		{"script renames every sample hook live", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "rename 's/\\.sample$//' .git/hooks/*\n"}), true},
+		{"glob in another directory", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "cp dist/* out/\n"}), false},
+		{"glob matching no sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "rm -f *.log\n"}), false},
+		{"glob in the hooks directory after cd", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "cd .git/hooks && rename 's/\\.sample$//' *\n"}), true},
+		{"dot-glob into .git", sampleRun("cd .g*/h* && ./*\n"), true},
+		{"directory change through a variable", sampleRun(`cd "$GITDIR" && ./*` + "\n"), true},
+		{"prefix through a command substitution", sampleRun("npm --prefix $(git rev-parse --git-dir) run x\n"), true},
+		{"sample hook named in a JSON surface's commands", tree(map[string]string{".git/hooks/pre-commit.sample": install, "package.json": `{"scripts":{"x":"sh .git/hooks/pre-commit.sample"}}`}), true},
+		{"dependency named like a trigger", tree(map[string]string{".git/hooks/pre-commit.sample": install, "package.json": `{"devDependencies":{"eslint-plugin-react-hooks":"4.0.0"}}`}), false},
+		{"triggered sample hook that rewrites a lock", tree(map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\nsed -i s/a/b/ inst.lock\n", "build.sh": "inst sync\necho .git\n"}), true},
+		{"script runs a program named like no sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "./tools/pre-commit\n"}), false},
+		{"script runs a sample hook in a group", sampleRun("{ ./.git/hooks/pre-commit.sample; }\n"), true},
+		{"script runs a sample hook in a command substitution", sampleRun("X=$(./.git/hooks/pre-commit.sample)\n"), true},
+		{"script runs a sample hook in backticks", sampleRun("echo `./.git/hooks/pre-commit.sample`\n"), true},
+		{"glob of every source file", sampleRun(`prettier --write "src/**/*"` + "\n"), false},
+		{"glob of the build root", sampleRun("rm -rf *\n"), false},
+		{"glob of the build root with an extension", sampleRun("cp *.* dist/\n"), false},
+		{"python build script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "python3 tools/setup.py\n", "tools/setup.py": "import subprocess\nsubprocess.run(['sh', '.git/hooks/pre-commit.sample'])\n"}), true},
+		{"dotglob loop", sampleRun("shopt -s dotglob\nfor f in */*/*; do sh \"$f\"; done\n"), true},
+		{"sample hook in a JSON exec form", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".devcontainer.json": `{"postCreateCommand":["sh",".git/hooks/pre-commit.sample"]}`}), true},
+		{"node build script and React hooks", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/build.js\n", "scripts/build.js": "require('fs').copyFileSync('a', 'b')\n", "src/hooks/useThing.ts": "export const useThing = () => 1\n", "src/index.ts": "import { useThing } from './hooks/useThing'\n"}), false},
+		{"Rakefile runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "rake setup\n", "Rakefile": "task :setup do\n  sh 'sh .git/hooks/pre-commit.sample'\nend\n"}), true},
+		{"rake task file runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "rake setup\n", "lib/tasks/setup.rake": "task :setup do\n  system('sh .git/hooks/pre-commit.sample')\nend\n"}), true},
+		{"python shebang script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "scripts/bootstrap\n", "scripts/bootstrap": "#!/usr/bin/env python3\nimport os\nos.system('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"jsx build script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/setup.jsx\n", "scripts/setup.jsx": "require('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"pyproject task runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "poe setup\n", "pyproject.toml": "[tool.poe.tasks]\nsetup = \"sh .git/hooks/pre-commit.sample\"\n"}), true},
+		{"node script with a dotglob loop", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/each.js\n", "scripts/each.js": "require('child_process').execSync('shopt -s dotglob; for f in */*/*; do sh \"$f\"; done', {shell: '/bin/bash'})\n"}), true},
+		{"node script runs a sample hook by name", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/x.js\n", "scripts/x.js": "const d = process.env.HOOK_DIR\nrequire('child_process').execSync('sh pre-commit.sample', {cwd: d})\n"}), true},
+		{"node script filters names ending in .sample", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/x.js\n", "scripts/x.js": "const fs = require('fs'), cp = require('child_process'), d = process.env.HOOK_DIR\nfor (const f of fs.readdirSync(d)) if (f.endsWith('.sample')) cp.execSync('sh ' + f, {cwd: d})\n"}), true},
+		{"node script globs *.sample", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/x.js\n", "scripts/x.js": "const glob = require('glob'), cp = require('child_process'), d = process.env.HOOK_DIR\nfor (const f of glob.sync(\"*.sample\", {cwd: d})) cp.execSync('sh ' + f, {cwd: d})\n"}), true},
+		{"sample method call", tree(map[string]string{".git/hooks/pre-commit.sample": install, "src/texture.ts": "export const color = (texture: any, uv: number[]) => texture.sample(uv)\n"}), false},
+		{"identifier starting with sample", tree(map[string]string{".git/hooks/pre-commit.sample": install, "src/mission.js": "export const params = (ep) => ep.sample_params\n"}), false},
+		{"CMakeLists.txt runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "cmake -S . -B build\n", "CMakeLists.txt": "execute_process(COMMAND sh .git/hooks/pre-commit.sample)\n"}), true},
+		{"changelog script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/changelog.js\n", "scripts/changelog.js": "require('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"authors script runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "python3 tools/authors.py\n", "tools/authors.py": "import subprocess\nsubprocess.run(['sh', '.git/hooks/pre-commit.sample'])\n"}), true},
+		{"node script matches sample hooks with an anchored regex", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/x.js\n", "scripts/x.js": "const { execSync } = require('child_process'), fs = require('fs')\nconst d = execSync('git rev-parse --git-path hooks').toString().trim()\nfs.readdirSync(d).filter(f => /\\.sample$/.test(f)).forEach(f => execSync('sh ' + d + '/' + f))\n"}), true},
+		{"python script matches sample hooks with an anchored regex", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "python3 tools/x.py\n", "tools/x.py": "import os, re, subprocess\nd = subprocess.check_output(['git', 'rev-parse', '--git-path', 'hooks']).decode().strip()\nfor f in os.listdir(d):\n    if re.search(r'\\.sample$', f):\n        subprocess.run(['sh', os.path.join(d, f)])\n"}), true},
+		{"active node hook runs a sample hook", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "git commit -m x\n", ".git/hooks/pre-commit": "#!/usr/bin/env node\nrequire('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"LICENSE.md naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, "LICENSE.md": "Source: https://github.com/a/b.git\n"}), false},
+		{"LICENSE-MIT naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, "LICENSE-MIT": "Source: https://github.com/a/b.git\n"}), true},
+		{"extensionless license-check run by sh", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "sh scripts/license-check\n", "scripts/license-check": "sh .git/hooks/pre-commit.sample\n"}), true},
+		{"extensionless changelog script", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "bin/changelog\n", "bin/changelog": "#!/usr/bin/env python3\nimport os\nos.system('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"extensionless authors script", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "script/authors\n", "script/authors": "#!/usr/bin/env ruby\nsystem('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"check-gitignore script", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "node scripts/check-gitignore\n", "scripts/check-gitignore": "require('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"shebang script with a docs extension", tree(map[string]string{".git/hooks/pre-commit.sample": install, "build.sh": "./setup.md\n", "setup.md": "#!/usr/bin/env node\nrequire('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"}), true},
+		{"LICENSE naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, "LICENSE": "Source: https://github.com/a/b.git\n"}), false},
+		{"COPYING naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, "COPYING": "Source: https://github.com/a/b.git\n"}), false},
+		{"CHANGELOG.md naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, "CHANGELOG.md": "See https://github.com/a/b.git\n"}), false},
+		{".gitignore naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".gitignore": ".git\nnode_modules\n"}), false},
+		{"perl sample hook naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".git/hooks/fsmonitor-watchman.sample": "#!/usr/bin/perl\nmy $git_work_tree = get_working_dir();\nmy $o = `git rev-parse --git-path .git/fsmonitor`;\n"}), false},
+		{"submodule gitdir file", tree(map[string]string{".git/hooks/pre-commit.sample": install, "sub/.git": "gitdir: ../.git/modules/sub\n", "sub/index.js": "module.exports = 1\n"}), false},
+		{"README naming a git URL", tree(map[string]string{".git/hooks/pre-commit.sample": install, "README.md": "git clone https://github.com/a/b.git\n"}), false},
+		{".dockerignore naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".dockerignore": ".git\nnode_modules\n"}), false},
+		{"lockfile with a git URL", tree(map[string]string{".git/hooks/pre-commit.sample": install, "package-lock.json": `{"packages":{"node_modules/x":{"resolved":"git+https://github.com/a/x.git#abc"}}}`}), false},
+		{"git config with a remote URL", tree(map[string]string{".git/hooks/pre-commit.sample": install, ".git/config": "[remote \"origin\"]\n\turl = https://github.com/a/b.git\n"}), false},
+		{"binary file naming .git", tree(map[string]string{".git/hooks/pre-commit.sample": install, "assets/logo.png": "\x89PNG\x00\x00 .git/hooks\n"}), false},
+		{"dirless glob after cd into another directory", tree(map[string]string{".git/hooks/pre-commit.sample": install, "dist/a.txt": "x\n", "build.sh": "cd dist && zip -r ../out.zip *\n"}), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := withheld(writeTree(t, tt.files), testSpec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A variable the lane's EnvKeeps keeps does not withhold, and names no token; every other
+// variable Env matches still does, beside a kept one or not. With no EnvKeeps, none is kept.
+func TestVeto_EnvKeeps(t *testing.T) {
+	keeps := testSpec
+	keeps.EnvKeeps = func(name string) bool { return name == "INST_ONLY" || name == "inst_only" }
+	tests := []struct {
+		name   string
+		spec   Spec
+		script string
+		want   bool // withheld
+	}{
+		{"kept variable", keeps, "export INST_ONLY=prod\ninst sync\n", false},
+		{"kept variable naming the token", keeps, "export inst_only=prod\ninst sync\n", false},
+		{"kept beside another", keeps, "export INST_ONLY=prod INST_INDEX=https://x\ninst sync\n", true},
+		{"another variable", keeps, "export INST_INDEX=https://x\ninst sync\n", true},
+		{"a name extending a kept one", keeps, "export INST_ONLY_X=1\ninst sync\n", true},
+		{"no EnvKeeps", testSpec, "export INST_ONLY=prod\ninst sync\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "install.sh": tt.script}
+			if got := withheld(writeTree(t, files), tt.spec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A symlinked package.json passes read when the lane's read follows the link, as a WalkDir walk
+// with a Stat-based read does, and passes walkedSurface; inside Prefixed only unlinked refuses
+// it.
+func TestPrefixed_SymlinkedPackageJSON(t *testing.T) {
+	root := writeTree(t, map[string]string{"frontend/package.json": `{"name":"web"}` + "\n"})
+	if err := os.Mkdir(filepath.Join(root, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "frontend", "package.json"), filepath.Join(root, "web", "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	v := New(root, func(string) bool { return true }, testSpec)
+	c := &hostCursor{v: v, dirs: []string{root}}
+	if got := c.Prefixed("web", "package.json"); got != nil {
+		t.Fatalf("Prefixed = %v, want nil", got)
 	}
 }

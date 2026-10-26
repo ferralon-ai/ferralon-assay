@@ -217,7 +217,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 		Timestamp:       time.Now().UTC(),
 	})
 	b.WithBaseline(baselinePointer(baseline, state))
-	b.WithPriority(rankBy(req.Signals))
+	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	rep := b.Build()
 	return &rep
 }
@@ -327,7 +327,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		Timestamp:       time.Now().UTC(),
 	})
 	b.WithBaseline(baselinePointer(baseline, state))
-	b.WithPriority(rankBy(req.Signals))
+	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
 	rep, err := b.BuildValidated()
 	if err != nil {
@@ -424,6 +424,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	reFindings := make(map[string]report.AdvisoryFinding)
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
+	// The pass assesses the newly-relevant advisories, but it is asked about the run's whole work set:
+	// both claim, and so do the prior rows it inherits.
+	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
@@ -432,6 +435,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			Vulnerability: assessment.VulnRef{ID: a.ID, Source: "osv"},
 			Codebase:      req.Codebase,
 		}
+		workSet = append(workSet, areq.Vulnerability)
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
 			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
@@ -496,7 +500,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if prior.Baseline != nil {
 		b.WithBaseline(*prior.Baseline)
 	}
-	b.WithPriority(rankBy(req.Signals))
+	rankWith(b, req.Signals, workSet, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
 	rep, err := b.BuildValidated()
 	if err != nil {

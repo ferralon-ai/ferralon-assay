@@ -197,6 +197,14 @@ const (
 	PartialReasonUnresolvedModule         = PartialReasonRelationshipUnexpressed + ":unresolved_module"     // static relative specifier naming no in-tree source module (native addon, build-generated file), or a process.dlopen load; its code runs on load but is never read
 	PartialReasonEvaluatedCode            = PartialReasonRelationshipUnexpressed + ":evaluated_code"        // code built from a string at run time (eval, new Function); never read, so its calls and loads are never seen
 
+	// PartialReasonUnlistedSites is set on a CallGraphResult if and only if at least one call or
+	// load the lane declined to connect is missing from CallGraphResult.Unresolved: the body of
+	// evaluated code, a source file the lane could not read, a skipped construct, a limit the lane
+	// records for the whole run rather than for a site. Its absence is the lane's promise that
+	// Unresolved lists every declined site. A reader that narrows a result by the listed sites
+	// must treat it as partial whenever this reason is present, whatever the list says.
+	PartialReasonUnlistedSites = PartialReasonRelationshipUnexpressed + ":unlisted_sites"
+
 	// --- Spring semantic-decode partiality codes (edge-seam.md §3) ---
 	//
 	// The six honest-residue conditions the JVM Spring bean-model + AOP/repo/SpEL/guard
@@ -313,6 +321,9 @@ type IndexSymbolsRequest struct {
 type CallGraphRequest struct {
 	BuildDir  string `json:"build_dir"`
 	Algorithm string `json:"algorithm,omitempty"` // "vta" (default) | "rta" | "cha"
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // FindIngressesRequest carries the buildable module to scan for entry points.
@@ -330,6 +341,17 @@ type ResolveSymbolsRequest struct {
 	// a lane that resolves the inventory to choose which dependency versions to read resolves it
 	// under these. Nil means none were stated.
 	TargetEnv map[string]string `json:"target_env,omitempty"`
+	// Package is the advisory's package pinned to the version the build installs, as on
+	// ReachabilityRequest. A lane that tells installed copies apart resolves the advisory's
+	// symbols only on the copy at that version. Empty means unknown.
+	Package string `json:"package,omitempty"`
+	// PackageVersions, when Package carries no version because the installed copies disagree,
+	// lists the installed versions not shown outside the advisory's affected ranges; the lane
+	// resolves the symbols on a copy at any of them.
+	PackageVersions []string `json:"package_versions,omitempty"`
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // ResolveVersionsRequest carries the advisory's dependency coordinate whose declared
@@ -432,6 +454,9 @@ type ReachabilityRequest struct {
 	// configuration handed to the plugin, never read from the tree: nil means none were stated, and
 	// whatever they would have decided stays unresolved and is disclosed, not assumed.
 	TargetEnv map[string]string `json:"target_env,omitempty"`
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // --- result payloads ---
@@ -513,6 +538,52 @@ type CallGraphResult struct {
 	Algorithm  string     `json:"algorithm"` // the algorithm actually used
 	Edges      []CallEdge `json:"edges"`
 	Roots      []Symbol   `json:"roots"` // entrypoint symbols (main, init, etc.)
+	// Unresolved lists every call or load the lane declined to connect, one entry per declined
+	// call site, except module-level dynamic loads (a computed import() or require(), a native
+	// load, evaluated code), which aggregate to one entry per module per kind, and a module's
+	// literal loads of an out-of-tree package or an unread module, one entry per specifier on the
+	// module's top-level frame: the sites behind the result's dynamic_dispatch and
+	// relationship_unexpressed:* reasons. It is
+	// complete unless Partiality carries PartialReasonUnlistedSites, which the lane sets if and
+	// only if a declined site is missing here. A reason no entry carries, tool_failure and
+	// unsupported_phase1 among them, is attributable to no listed site, so a reader treats it as
+	// partial. A lane that does not list its sites leaves this empty, which makes every reason it
+	// declares unattributable. Scoped limits are not sites: they keep their own package Targets.
+	Unresolved []UnresolvedCall `json:"unresolved,omitempty"`
+	// Escaped is every first-party frame a call or load the lane cannot see may run: each
+	// function opaque code can call back (a class member, a function whose name is used as a
+	// value, an exported function, a named function expression, every function of a module that
+	// reaches functions by computed name) and each module's top-level frame, which any load may
+	// run. A reader treats an escaped symbol as callable from any Unresolved entry without
+	// Targets. A frame missing from Escaped runs only as one of Roots or through the Edges and
+	// Targets that reach it.
+	Escaped []Symbol `json:"escaped,omitempty"`
+}
+
+// UnresolvedCall is one call or load the lane declined to connect.
+type UnresolvedCall struct {
+	// Caller is the frame holding the site, in the same SCIP space as CallEdge.Caller. For a
+	// load the lane records per module rather than per call (a package load, a computed or
+	// unread specifier, evaluated code), it is the module's top-level frame, standing for
+	// whichever frame of that module holds the load.
+	Caller Symbol `json:"caller"`
+	// Callee is the callee as written: "name" or its dotted chain "head.name". A load names its
+	// loader: "require", "import", "dlopen" (native code) or "eval" (code built at run time). A
+	// callee that is neither a name nor a chain is its source text, whitespace collapsed and cut
+	// at 80 runes: "get()", "t[k]", "(0, f)", "tag" of a tagged template, "new C", "super",
+	// "@decorator".
+	Callee string `json:"callee"`
+	// Arity is the argument count at the site; a load counts its one specifier or source, a
+	// tagged template its strings and each substitution, and a bare decorator the one value it
+	// decorates.
+	Arity int `json:"arity"`
+	// Reason is the PartialReason* code this site contributed to Partiality.Reasons.
+	Reason string `json:"reason"`
+	// Targets, when present, over-approximates every frame the site can reach: the lane lists it
+	// only when the candidate set is complete and bounded, as for a name that resolves to more
+	// than one first-party declaration, and then lists all of it. Omitted means the site could
+	// reach anything, so every Escaped symbol.
+	Targets []Symbol `json:"targets,omitempty"`
 }
 
 // Ingress is one framework-idiomatic entry point.
@@ -668,6 +739,9 @@ type DependencyProvenance struct {
 type ComputeTaintRequest struct {
 	BuildDir string   `json:"build_dir"`
 	Sinks    []string `json:"sinks,omitempty"` // resolved sink SCIP ids to trace toward
+	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
+	// build. A lane that reads dependency code reads it only from there; empty, none is read.
+	DependencyCache string `json:"dependency_cache,omitempty"`
 }
 
 // TaintResult is ComputeTaint's response: the source→sink graph paths found.

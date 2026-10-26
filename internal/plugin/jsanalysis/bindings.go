@@ -51,6 +51,11 @@ type moduleBindings struct {
 	computedReq   bool               // saw a runtime-computed CJS target `require(var)` with no static prefix
 	nativeLoad    bool               // saw dlopen, getBuiltinModule, _linkedBinding or binding, which load code this lane never reads
 	evaluated     bool               // saw eval or the Function constructor, which run code built at run time
+	// literalExempt: a computed read that may be a constructor key was accepted only because
+	// its receiver is a literal receiver, which holds only while no module rewrites a
+	// prototype (protoWrite).
+	literalExempt bool
+	protoWrite    bool // may set an object's prototype to a value the lane does not see
 }
 
 // loadSpec is one literal specifier a module loads. viaRequire marks a require() load,
@@ -88,6 +93,8 @@ func (mb *moduleBindings) addLoads(o moduleBindings) {
 	}
 	mb.nativeLoad = mb.nativeLoad || o.nativeLoad
 	mb.evaluated = mb.evaluated || o.evaluated
+	mb.literalExempt = mb.literalExempt || o.literalExempt
+	mb.protoWrite = mb.protoWrite || o.protoWrite
 }
 
 func newModuleBindings() moduleBindings {
@@ -114,6 +121,13 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 // extractBindings is extractModuleBindings with loader names declared outside clean
 // (extraReq require aliases, extraCr createRequire aliases) added to those clean declares.
 func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) moduleBindings {
+	mb, _ := extractBindingsScoped(clean, src, extraReq, extraCr)
+	return mb
+}
+
+// extractBindingsScoped is extractBindings that also returns the scope model it read the
+// module with, which the call scan's rebinding proof reuses (shadow.go).
+func extractBindingsScoped(clean, src []rune, extraReq, extraCr map[string]bool) (moduleBindings, *globalScope) {
 	mb := newModuleBindings()
 	n := len(clean)
 	add := func(b binding) {
@@ -127,14 +141,16 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 		mb.imports[b.Local] = b
 	}
 	frames := newThisFrames(clean)
-	globals := newGlobalScope(clean, frames)
+	globals := newGlobalScope(clean, src, frames)
 	ls := newLoaderScope(clean, globals)
 	reqNames, crNames := ls.req, ls.cr
 	maps.Copy(reqNames, extraReq)
 	maps.Copy(crNames, extraCr)
-	if globals.keyed || computedIndexPair(clean, src) || identifierEscape(clean) {
+	evaluated, exempt, protoWrite := indexScan(clean, src, globals)
+	if globals.keyed || evaluated || identifierEscape(clean) {
 		mb.evaluated = true
 	}
+	mb.literalExempt, mb.protoWrite = exempt, protoWrite
 	mb.patternKeys(clean, src, globals)
 	if processComputedKey(clean, src, ls.process.names) {
 		mb.nativeLoad = true
@@ -199,7 +215,7 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 			i = next
 		}
 	}
-	return mb
+	return mb, globals
 }
 
 // memberName reports whether the word at i is read as a property (`x.import`, `x?.export`),
@@ -242,7 +258,7 @@ func parseImportForm(clean, src []rune, pos int, mb *moduleBindings, add func(bi
 	if clean[p] == '.' { // import.meta
 		return pos
 	}
-	if clean[p] == '_' { // side-effect import 'x'
+	if clean[p] == '_' && isStrAt(src, p) { // side-effect import 'x', not a default import named _x
 		mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, p)})
 		return p + 1
 	}

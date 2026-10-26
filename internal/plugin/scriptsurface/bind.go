@@ -17,6 +17,13 @@ type Binder interface {
 	// the command may run in, each read here and unchanged; with locks given, the nearest of
 	// them at or above each must be read here and unchanged too. nil when any is not.
 	Nearest(name string, locks ...string) []string
+	// Prefixed returns dir/name from each directory the command may run in, the file a
+	// command told to treat dir as its package root (npm --prefix dir) reads, without looking
+	// above it. dir must be a literal relative path with no .. part, inside the build and
+	// reached through no symlink, and dir/name a regular file, read here, that the walk checks
+	// as a surface on its own. With locks given, each of them that is there in dir must be a
+	// regular file read here, reached through no symlink. nil when any is not.
+	Prefixed(dir, name string, locks ...string) []string
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -24,6 +31,9 @@ type cursor interface {
 	Binder
 	cd(words []string) // nil when the target is not literal
 	other()            // a command that runs no installer and may change files
+	// fork returns a cursor for a command started from here in a shell of its own, whose
+	// directory changes do not reach this one.
+	fork() cursor
 	// sourced reports whether p, from every directory the command may run in, names an in-tree
 	// script surface the walk checks on its own.
 	sourced(p string) bool
@@ -87,6 +97,12 @@ func (c *hostCursor) cd(words []string) {
 }
 
 func (c *hostCursor) other() {}
+
+func (c *hostCursor) fork() cursor {
+	f := *c
+	f.dirs = append([]string(nil), c.dirs...)
+	return &f
+}
 
 func (c *hostCursor) merge(o *hostCursor) {
 	c.unknown = c.unknown || o.unknown
@@ -203,6 +219,46 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 	return found
 }
 
+func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
+	if c.unknown || len(c.dirs) == 0 || dir == "" || filepath.IsAbs(dir) || strings.ContainsAny(dir, "$`*?[{~") {
+		return nil
+	}
+	for _, part := range strings.Split(filepath.ToSlash(dir), "/") {
+		if part == ".." {
+			return nil
+		}
+	}
+	found := make([]string, 0, len(c.dirs))
+	for _, d := range c.dirs {
+		f := filepath.Join(d, dir, name)
+		// The walk yields no path through a symlinked directory, so read refuses one too. A
+		// symlinked file is the lane's to read: a read that follows the link passes it, and
+		// only unlinked (in packageFile) refuses it here, though Candidates withholds the run
+		// on one regardless.
+		if !c.v.packageFile(f) || !c.v.walkedSurface(f) {
+			return nil
+		}
+		for _, l := range locks {
+			lf := filepath.Join(d, dir, l)
+			if _, err := os.Lstat(lf); err != nil && !c.v.spec.Absent(err) || err == nil && !c.v.packageFile(lf) {
+				return nil
+			}
+		}
+		found = append(found, f)
+	}
+	c.v.bind(name)
+	for _, l := range locks {
+		c.v.bind(l)
+	}
+	return found
+}
+
+// packageFile reports whether f is inside the build, reached through no symlink, and a regular
+// file read here.
+func (v *Veto) packageFile(f string) bool {
+	return v.inRoot(f) && v.unlinked(f) && v.read(f)
+}
+
 // lockAbove reports whether the nearest of locks at or above dir, inside root, is read here.
 func (c *hostCursor) lockAbove(dir string, locks []string) bool {
 	for ; c.v.inRoot(dir); dir = filepath.Dir(dir) {
@@ -255,6 +311,28 @@ func (v *Veto) glob(pattern string) (matches []string, ok bool) {
 		}
 	}
 	return matches, true
+}
+
+// unlinked reports whether p, inside root, is a regular file reached from root through no
+// symlink: every directory on the way, and p itself, is what it names.
+func (v *Veto) unlinked(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil {
+		return false
+	}
+	at := v.root
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		at = filepath.Join(at, part)
+		fi, err := os.Lstat(at)
+		if err != nil {
+			return false
+		}
+		if last := i == len(parts)-1; last && !fi.Mode().IsRegular() || !last && !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 func isDir(p string) bool {

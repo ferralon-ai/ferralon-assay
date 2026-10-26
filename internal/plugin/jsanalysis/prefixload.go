@@ -48,7 +48,7 @@ var prefixCodeExtensions = map[string]bool{
 // prefixFirstParty it returns the in-tree modules the load can reach. Any prefix that is
 // not relative (a package, a builtin, an alias, an absolute path) is prefixUnbounded.
 func (rs *resolver) classifyPrefixLoad(fromModule string, pl prefixLoad) (prefixLoadKind, []string) {
-	if !isRelativeSpecifier(pl.prefix) {
+	if !isRelativeTarget(pl.prefix) {
 		return prefixUnbounded, nil
 	}
 	if mods, ok := rs.enumeratePrefix(fromModule, pl.prefix); ok {

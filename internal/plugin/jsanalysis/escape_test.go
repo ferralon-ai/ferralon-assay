@@ -8,7 +8,8 @@ import (
 )
 
 // TestCallGraph_EscapeRoots pins which first-party functions become roots because a
-// package (or computed access) could call them through an edge this lane does not see.
+// package (or computed access) could call them through an edge this lane does not see, and
+// that each such root is on the wire in Escaped, while a function that is not one is not.
 func TestCallGraph_EscapeRoots(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -169,14 +170,24 @@ export default {};
 			for _, r := range res.Roots {
 				got[r.SCIP] = true
 			}
+			escaped := map[string]bool{}
+			for _, e := range res.Escaped {
+				escaped[e.SCIP] = true
+			}
 			for _, r := range tc.roots {
 				if !got[r] {
 					t.Errorf("want root %s; got %v", r, res.Roots)
+				}
+				if !escaped[r] {
+					t.Errorf("want %s escaped; got %v", r, res.Escaped)
 				}
 			}
 			for _, r := range tc.notRoots {
 				if got[r] {
 					t.Errorf("%s must not be a root", r)
+				}
+				if escaped[r] {
+					t.Errorf("%s must not be escaped", r)
 				}
 			}
 		})

@@ -83,7 +83,7 @@ type handlerExpr struct {
 // function passed to a route method or server factory gets its own frame, an ingress,
 // and an edge from the frame that registered it.
 func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
-	calls, ingresses, _ := parseCallsAndIngressesProbing(r, nil)
+	calls, ingresses, _ := parseCallsAndIngressesProbing(r, nil, nil)
 	return calls, ingresses
 }
 
@@ -97,8 +97,9 @@ type frameRef struct {
 
 // parseCallsAndIngressesProbing is parseCallsAndIngresses that also reports, for each
 // position in probes (ascending rune indexes), the frame the scan was in when it reached
-// that position.
-func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingressMarker, []frameRef) {
+// that position. raw is the position-identical source, or nil; with it, a template set off
+// from its tag by a space is read as tagged (opaqueSiteAt).
+func parseCallsAndIngressesProbing(r, raw []rune, probes []int) ([]callSite, []ingressMarker, []frameRef) {
 	n := len(r)
 	var probed []frameRef
 	var stack []bodyFrame
@@ -137,6 +138,67 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 		line := sort.SearchInts(lineStarts, pos+1) // index of the first line starting after pos == 1-based line of pos
 		return line, pos - lineStarts[line-1] + 1
 	}
+	// listSkipped lists the calls in r[from:to], a stretch the scan steps over: a parameter
+	// list, whose defaults run in the function's own frame, a class heritage clause, which runs
+	// in the frame holding the class, or the rest of a line after import( or import.meta. Each
+	// is a site of frame f, listed and never connected, so the graph's edges stay those the
+	// scan has always drawn.
+	//
+	// scopeAt, when ≥ 0, is where the stretch's names are read (a function's body, for its
+	// parameter list).
+	listSkipped := func(from, to, scopeAt int, f bodyFrame) {
+		site := func(cs callSite, at int) {
+			if scopeAt >= 0 {
+				at = scopeAt
+			}
+			cs.callerEnclosing = append([]string(nil), f.enclosing...)
+			cs.callerName, cs.callerArity, cs.at = f.funcName, f.funcArity, at
+			calls = append(calls, cs)
+		}
+		for p := from; p < to; {
+			if s, ok := opaqueSiteAt(r, raw, p); ok {
+				site(callSite{calleeArity: s.arity, opaque: true, written: s.written}, p)
+			}
+			if !isIdentStart(r[p]) || p > 0 && isIdentPart(r[p-1]) {
+				p++
+				continue
+			}
+			// No callee: a function expression's own name, async before an arrow's parameters,
+			// or import(…), a load the binding scan reads (or a TypeScript type).
+			word, next := readWord(r, p)
+			if word == "function" {
+				q := skipSpace(r, next)
+				if q < to && r[q] == '*' {
+					q = skipSpace(r, q+1)
+				}
+				if _, e := peekWord(r, q); e > q {
+					next = e
+				}
+			} else if ce, ok := callExprAt(r, p); ok && word != "async" && word != "import" && ce.open < to {
+				recv := ce.receiver
+				if recv == "this" {
+					recv = ""
+				}
+				site(callSite{calleeName: ce.name, calleeArity: ce.arity, receiver: recv, receiverThis: ce.receiver == "this",
+					head: ce.head, chain: memberChain(r, p, ce.chain), unconnected: true}, p)
+				next = ce.open + 1
+			}
+			p = next
+		}
+	}
+	// listParams lists the calls in the parameter list that opens at or after from, before the
+	// body at bodyOpen (listSkipped).
+	listParams := func(from, bodyOpen int, f bodyFrame) {
+		for p := from; p < bodyOpen && p < n; p++ {
+			if r[p] == '(' {
+				if c := closeOf(r, p); c < bodyOpen {
+					listSkipped(p+1, c, bodyOpen+1, f)
+				}
+				return
+			}
+		}
+	}
+
 	// enterHandler opens the frame of a pending inline handler at its first rune and
 	// records its ingress plus the edge from the frame that registered it.
 	enterHandler := func(at int, h handlerExpr) int {
@@ -158,9 +220,11 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 		})
 		f := bodyFrame{enclosing: enc, funcName: name, funcArity: h.arity, params: h.params}
 		if h.open >= 0 {
+			listParams(at, h.open, f)
 			stack = append(stack, f)
 			return h.open + 1
 		}
+		listParams(at, h.body, f)
 		f.end = h.end
 		stack = append(stack, f)
 		return h.body
@@ -189,6 +253,20 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 			i = enterHandler(i, h)
 			continue
 		}
+		// A call of a value the scanner does not track is a site of its own (opaque.go);
+		// the scan then reads the position as it always has.
+		if s, ok := opaqueSiteAt(r, raw, i); ok {
+			m := innermostFunc()
+			calls = append(calls, callSite{
+				callerEnclosing: append([]string(nil), m.enclosing...),
+				callerName:      m.funcName,
+				callerArity:     m.funcArity,
+				calleeArity:     s.arity,
+				opaque:          true,
+				written:         s.written,
+				at:              i,
+			})
+		}
 		c := r[i]
 		switch {
 		case c == '{':
@@ -210,6 +288,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 					i = next
 					continue
 				}
+				listSkipped(next, openIdx, -1, *innermostFunc())
 				stack = append(stack, bodyFrame{className: name, enclosing: enclosingChain()})
 				pendingExportDefault = false
 				i = openIdx + 1
@@ -225,7 +304,9 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 						})
 					}
 					pendingExportDefault = false
-					stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, next, openIdx)})
+					f := bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, next, openIdx)}
+					listParams(next, openIdx, f)
+					stack = append(stack, f)
 					i = openIdx + 1
 					continue
 				}
@@ -242,7 +323,9 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 						})
 					}
 					pendingExportDefault = false
-					stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, assignPos(r, next), openIdx)})
+					f := bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, assignPos(r, next), openIdx)}
+					listParams(assignPos(r, next), openIdx, f)
+					stack = append(stack, f)
 					i = openIdx + 1
 					continue
 				}
@@ -262,7 +345,13 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 				continue
 
 			case word == "import":
-				i = skipImportStatement(r, next)
+				end := skipImportStatement(r, next)
+				if p := skipSpace(r, next); p < n && (r[p] == '(' || r[p] == '.') {
+					// import() and import.meta are expressions, not statements, but the scan
+					// steps over the rest of the line all the same: the calls there are listed.
+					listSkipped(next, end, -1, *innermostFunc())
+				}
+				i = end
 				continue
 
 			default:
@@ -270,7 +359,9 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 				if inClassBody() && !methodModifierSkip(word) {
 					if mname, marity, openIdx, ok := methodDeclAt(r, i); ok {
 						enc := enclosingChain()
-						stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, i, openIdx)})
+						f := bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, i, openIdx)}
+						listParams(i, openIdx, f)
+						stack = append(stack, f)
 						i = openIdx + 1
 						continue
 					}
@@ -278,7 +369,30 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 				pendingExportDefault = false
 				// A "ref.method(args)" or "name(args)" run: classify as a route
 				// registration / server factory (ingress) or a plain call.
-				if ce, isCall := callExprAt(r, i); isCall {
+				if ce, isCall := callExprAt(r, i); isCall && ce.optional {
+					// name?.(args) is listed, never connected, and registers no ingress: the
+					// graph's edges and roots stay those of the plain-call scan (callgraph.go).
+					m := innermostFunc()
+					recv := ce.receiver
+					if recv == "this" {
+						recv = ""
+					}
+					calls = append(calls, callSite{
+						callerEnclosing: append([]string(nil), m.enclosing...),
+						callerName:      m.funcName,
+						callerArity:     m.funcArity,
+						calleeName:      ce.name,
+						calleeArity:     ce.arity,
+						receiver:        recv,
+						receiverThis:    ce.receiver == "this",
+						head:            ce.head,
+						chain:           memberChain(r, i, ce.chain),
+						unconnected:     true,
+						at:              i,
+					})
+					i = ce.open + 1
+					continue
+				} else if isCall {
 					if in, ok := routeIngress(ce.leaf, ce.handler); ok {
 						in.router = ce.router()
 						ingresses = append(ingresses, in)
@@ -306,6 +420,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 							head:            ce.head,
 							chain:           memberChain(r, i, ce.chain),
 							headParam:       headParamOf(stack, ce.chain),
+							at:              i,
 						})
 					}
 					if kind := handlerKind(ce.leaf); kind != "" {
@@ -507,6 +622,7 @@ type callExpr struct {
 	head     string   // first segment of a dotted chain ("JSON5" in JSON5.parse); "" for a bare call
 	chain    []string // every dotted segment, leaf last ("JSON5","parse")
 	open     int      // index of the argument list's '('
+	optional bool     // an optional call, name?.(args): never an edge (callgraph.go)
 }
 
 // router is the value a method call is made on: every segment but the leaf. It is nil for
@@ -553,6 +669,11 @@ func callExprAt(r []rune, i int) (callExpr, bool) {
 		p = skipGroup(r, p)
 		p = skipSpace(r, p)
 	}
+	optional := false
+	if p+2 < n && r[p] == '?' && r[p+1] == '.' && r[p+2] == '(' {
+		optional = true
+		p += 2
+	}
 	if p >= n || r[p] != '(' {
 		return callExpr{}, false
 	}
@@ -564,7 +685,7 @@ func callExprAt(r []rune, i int) (callExpr, bool) {
 	// fail-closes on the non-instance and drops the edge. Leave the receiver empty so
 	// the leaf resolves through the bare-name path (whose own ambiguity guard keeps it
 	// fail-closed against fabrication).
-	ce := callExpr{name: last, leaf: last, arity: ar, handler: routeArg{leaf: last, handlerRef: lastArgNamedRef(r, p)}, chain: chain, open: p}
+	ce := callExpr{name: last, leaf: last, arity: ar, handler: routeArg{leaf: last, handlerRef: lastArgNamedRef(r, p)}, chain: chain, open: p, optional: optional}
 	if segs == 2 {
 		ce.receiver = prev
 	}

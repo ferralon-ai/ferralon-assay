@@ -783,6 +783,18 @@ var noRequireHashesRE = regexp.MustCompile(`(?i)no[-_]require[-_]hashes`)
 // pipConfigDisablesHashes walks root (all but its own .git) for a pip.conf or pip.ini that
 // names no-require-hashes, whatever value it gives it. A walk or read error counts as naming it.
 func pipConfigDisablesHashes(root string) bool {
+	return pipConfigMatches(root, noRequireHashesRE.Match)
+}
+
+// pipConfigInTree reports whether root (all but its own .git) holds any pip.conf or pip.ini.
+// A walk or read error counts as holding one.
+func pipConfigInTree(root string) bool {
+	return pipConfigMatches(root, func([]byte) bool { return true })
+}
+
+// pipConfigMatches walks root (all but its own .git) for a pip.conf or pip.ini whose content
+// match accepts. A walk or read error counts as a match.
+func pipConfigMatches(root string, match func([]byte) bool) bool {
 	found := false
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -799,7 +811,7 @@ func pipConfigDisablesHashes(root string) bool {
 			return nil
 		}
 		data, rerr := readRegular(path)
-		if rerr != nil || noRequireHashesRE.Match(data) {
+		if rerr != nil || match(data) {
 			found = true
 			return filepath.SkipAll
 		}

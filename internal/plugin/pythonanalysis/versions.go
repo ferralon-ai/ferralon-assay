@@ -55,6 +55,8 @@ import (
 //     pyproject.toml whose dynamic dependencies name no readable file, or whose dependency
 //     groups or tool dependency tables hold an entry that cannot be read.
 //     See versions_surfaces.go and versions_declared.go.
+//   - A script surface that runs a pip self-upgrade (pipSelfUpgrade) is treated the same way
+//     for the pip coordinate alone: it installs pip and nothing else.
 //   - A distribution installed in a site-packages directory under the build dir is another
 //     copy of its project: it takes part in Match like a pin, without joining All.
 //
@@ -77,7 +79,11 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all     []plugin.ResolvedDependency
 		origins []manifestOrigin
 	)
-	manifests, parseFailed, scriptWithheld, installs := versionSurfaces(req.BuildDir)
+	want := normalizePyCoordinate(req.Coordinate)
+	manifests, parseFailed, scriptWithheld, installs, tooling := versionSurfaces(req.BuildDir)
+	if tooling[want] {
+		parseFailed, scriptWithheld = true, true
+	}
 	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
 	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
@@ -97,7 +103,6 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	want := normalizePyCoordinate(req.Coordinate)
 	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests, installs)
 	res := plugin.DependencyVersionResult{
 		Partiality: part,

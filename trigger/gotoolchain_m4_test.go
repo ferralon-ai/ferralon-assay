@@ -70,9 +70,9 @@ func (p toolchainReachPlugin) Reachability(_ context.Context, req plugin.Reachab
 	return res, nil
 }
 
-// stdlibNoRangeAdvisory is GO-2021-0264: a pkg:golang/stdlib advisory that declares NO affected
-// range. That makes it the clean probe for this matrix — the version axis can never disqualify it, so
-// its disposition is decided by the reachability licence alone and by nothing else.
+// stdlibNoRangeAdvisory is GO-2021-0264, which runGoBaseline serves with NO affected range
+// (stdlibNoRangeSource). That makes it the clean probe for this matrix — the version axis can never
+// disqualify it, so its disposition is decided by the reachability licence alone and by nothing else.
 var stdlibNoRangeAdvisory = []assessment.VulnRef{{ID: "GO-2021-0264", Source: "corpus"}}
 
 const (
@@ -383,6 +383,7 @@ func assessOneForToolchain(t *testing.T, flagOn, honored bool) (store artifact.S
 		pipeline.WithPlugin(toolchainReachPlugin{honored: honored, analyzerToolchain: analyzerToolchain}),
 		pipeline.WithSubjectToolchainReachability(flagOn),
 		pipeline.WithSubjectToolchain("", dogfoodObservedToolchain, true),
+		pipeline.WithAdvisorySource(stdlibNoRangeSource{}),
 	)
 	if err != nil {
 		t.Fatalf("assess: %v", err)

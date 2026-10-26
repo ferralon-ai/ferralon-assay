@@ -20,12 +20,16 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/dotnetanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
@@ -36,10 +40,12 @@ import (
 
 // realResolverPlugin is a plugin whose BuildManifest and ResolveDependencyVersions are the REAL
 // per-language implementations. Only the analysis ops (symbols, call graph, ingresses) stay stubbed —
-// the subject of this table is where a version comes from, not what is reachable from it.
+// the subject of this table is where a version comes from, not what is reachable from it. java
+// carries the build graph the Java resolver reads; without one it answers build_graph_absent.
 type realResolverPlugin struct {
 	plugin.StubPlugin
 	lang string
+	java []javaanalysis.Option
 }
 
 func (p realResolverPlugin) Language() string { return p.lang }
@@ -54,7 +60,7 @@ func (p realResolverPlugin) BuildManifest(ctx context.Context, req plugin.BuildM
 func (p realResolverPlugin) ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	switch p.lang {
 	case "java":
-		return javaanalysis.ResolveDependencyVersions(ctx, req)
+		return javaanalysis.ResolveDependencyVersions(ctx, req, p.java...)
 	case "js":
 		return jsanalysis.ResolveDependencyVersions(ctx, req)
 	case "python":
@@ -81,6 +87,52 @@ func writeTreeFixture(t *testing.T, files map[string]string) string {
 		}
 	}
 	return dir
+}
+
+// graphModule is one module of a Maven build graph: its path and the group:artifact → version
+// pairs the build resolved for it.
+type graphModule struct {
+	path string
+	deps map[string]string
+}
+
+// mavenGraph writes the Maven build graph of modules to a fresh file and returns the option
+// handing it to the Java resolver, as the host hands over the graph Maven produced. No modules
+// hands over no graph.
+func mavenGraph(t *testing.T, modules ...graphModule) []javaanalysis.Option {
+	t.Helper()
+	if modules == nil {
+		return nil
+	}
+	g := buildgraph.Graph{Schema: buildgraph.Schema, Tool: buildgraph.Tool{Name: "maven", Version: "test"}, JVM: buildgraph.JVM{Version: "21.0.4"}, Complete: true}
+	for i, m := range modules {
+		name := "m" + string(rune('a'+i))
+		root := buildgraph.Node{Group: "com.example", Artifact: name, Version: "1.0.0", Type: "jar"}
+		root.ID = buildgraph.NodeID(root.Group, root.Artifact, root.Type, "", root.Version)
+		mod := buildgraph.Module{ID: "com.example:" + name, Path: m.path, Root: root.ID, Nodes: []buildgraph.Node{root}}
+		coords := make([]string, 0, len(m.deps))
+		for c := range m.deps {
+			coords = append(coords, c)
+		}
+		sort.Strings(coords)
+		for _, c := range coords {
+			group, artifact, _ := strings.Cut(c, ":")
+			n := buildgraph.Node{Group: group, Artifact: artifact, Version: m.deps[c], Type: "pom", Scope: "compile"}
+			n.ID = buildgraph.NodeID(n.Group, n.Artifact, n.Type, "", n.Version)
+			mod.Nodes = append(mod.Nodes, n)
+			mod.Edges = append(mod.Edges, buildgraph.Edge{From: root.ID, To: n.ID})
+		}
+		g.Modules = append(g.Modules, mod)
+	}
+	b, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(file, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return []javaanalysis.Option{javaanalysis.WithBuildGraph(file)}
 }
 
 // defaultSchemeSource is the representative advisory for the "" (no derivable scheme) arm of the
@@ -135,7 +187,7 @@ func TestVersionAxis_EveryDispatchedSchemeHasALiveProducer(t *testing.T) {
 			}
 			stage := codebaseInventory{
 				checkout: dirCheckout{dir: buildDir, lang: tc.lang},
-				plugin:   realResolverPlugin{lang: tc.lang},
+				plugin:   realResolverPlugin{lang: tc.lang, java: mavenGraph(t, tc.graph...)},
 				src:      tc.src,
 			}
 			if err := stage.Run(context.Background(), c, store); err != nil {
@@ -176,6 +228,7 @@ type deadAxisCase struct {
 	lang   string
 	src    AdvisorySource // nil ⇒ the real corpus AdvisoryTable
 	files  map[string]string
+	graph  []graphModule // the Maven build graph the Java resolver reads; nil hands it none
 }
 
 func deadAxisTableSchemes() []string {
@@ -209,14 +262,7 @@ func deadAxisCases() []deadAxisCase {
 			scheme: "maven",
 			vulnID: "FERRALON-JAVA-DEP-0001", // com.example.lib:widget, fixed 1.4.0
 			lang:   "java",
-			files: map[string]string{
-				"pom.xml": `<project>
-  <groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
-  <dependencies>
-    <dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.3.9</version></dependency>
-  </dependencies>
-</project>`,
-			},
+			graph:  []graphModule{{".", map[string]string{"com.example.lib:widget": "1.3.9"}}},
 		},
 		{
 			scheme: "npm",
@@ -248,7 +294,7 @@ func deadAxisCases() []deadAxisCase {
 			files: map[string]string{
 				"App.csproj": `<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="[13.0.0]" />
   </ItemGroup>
 </Project>`,
 			},

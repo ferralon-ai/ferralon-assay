@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -404,5 +406,369 @@ func TestResolveVersions_CoordinateNotDeclaredNotFound(t *testing.T) {
 	}
 	if !res.Partiality.Complete {
 		t.Fatal("a clean parse with a missing coordinate is still Complete (the absence is known)")
+	}
+}
+
+// --- multiple installed copies -----------------------------------------------
+
+// resolveRuns is how many times a multi-copy row re-resolves. Go randomizes map iteration on
+// every range, so a resolver whose answer depends on map order flips across these runs.
+const resolveRuns = 50
+
+func mustUnresolved(t *testing.T, res plugin.DependencyVersionResult) {
+	t.Helper()
+	if !res.Found {
+		t.Fatalf("coordinate not found; all=%+v", res.All)
+	}
+	if res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match must be UNRESOLVED with no version; match=%+v", res.Match)
+	}
+}
+
+// qs installed at 6.5.2 (hoisted) and 6.5.1 (nested under x): an advisory whose range covers
+// only one of them must not be ruled on the other.
+const packageLockStraddleV3 = `{
+  "lockfileVersion": 3,
+  "packages": {
+    "": { "name": "app", "version": "1.0.0" },
+    "node_modules/qs": { "version": "6.5.2" },
+    "node_modules/x": { "version": "1.0.0" },
+    "node_modules/x/node_modules/qs": { "version": "6.5.1" }
+  }
+}`
+
+func TestResolveVersions_V2StraddlingCopiesUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{"package-lock.json": packageLockStraddleV3})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+	mustMatch(t, resolveJS(t, dir, "x"), "1.0.0")
+}
+
+const packageLockStraddleV1 = `{
+  "lockfileVersion": 1,
+  "dependencies": {
+    "qs": { "version": "6.5.2" },
+    "x": {
+      "version": "1.0.0",
+      "dependencies": {
+        "qs": { "version": "6.5.1" }
+      }
+    }
+  }
+}`
+
+func TestResolveVersions_V1NestedStraddlingCopiesUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{"package-lock.json": packageLockStraddleV1})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+func TestResolveVersions_LockfilesDisagreeUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {"node_modules/qs": {"version": "6.5.2"}}}`,
+		"svc/yarn.lock":     "qs@^6.5.0:\n  version \"6.5.1\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+// A lockfile that fails to parse may hold another copy of any coordinate, so a readable
+// lockfile's pin must not decide the version on its own. A coordinate no readable lockfile
+// holds stays not found.
+func TestResolveVersions_CorruptSecondLockfileUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json":     `{"lockfileVersion": 3, "packages": {"node_modules/qs": {"version": "6.5.2"}}}`,
+		"svc/package-lock.json": `{"lockfileVersion": 3, "packages": {`,
+	})
+	mustUnresolved(t, resolveJS(t, dir, "qs"))
+	if r := resolveJS(t, dir, "left-pad"); r.Found {
+		t.Fatalf("coordinate in no readable lockfile must stay not found; got %+v", r.Match)
+	}
+}
+
+func TestResolveVersions_YarnTwoVersionsUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"yarn.lock": "qs@6.5.1:\n  version \"6.5.1\"\n\nqs@^6.5.2:\n  version \"6.5.2\"\n",
+	})
+	mustUnresolved(t, resolveJS(t, dir, "qs"))
+}
+
+func TestResolveVersions_SameVersionCopiesResolve(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {
+  "node_modules/qs": {"version": "6.5.2"},
+  "node_modules/x/node_modules/qs": {"version": "6.5.2"}
+}}`,
+		"svc/yarn.lock": "qs@^6.5.0:\n  version \"6.5.2\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustMatch(t, resolveJS(t, dir, "qs"), "6.5.2")
+	}
+}
+
+func TestResolveVersions_UnknownCopyNextToResolvedUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {
+  "node_modules/qs": {"version": "6.5.2"},
+  "node_modules/x/node_modules/qs": {}
+}}`,
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+// All is built in sorted key order for every map the npm parser walks (v2/v3 packages, v1
+// dependencies and their nested children), so its order is the same on every run.
+func TestResolveVersions_AllOrderDeterministic(t *testing.T) {
+	cases := []struct {
+		name string
+		lock string
+		want []string
+	}{
+		{"v3 packages", packageLockStraddleV3, []string{"qs@6.5.2", "x@1.0.0", "qs@6.5.1"}},
+		{"v1 dependencies", packageLockV1, []string{"express@4.17.1", "cookie@0.4.0", "left-pad@1.2.0"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{"package-lock.json": tc.lock})
+			for i := 0; i < resolveRuns; i++ {
+				all := resolveJS(t, dir, "qs").All
+				got := make([]string, 0, len(all))
+				for _, d := range all {
+					got = append(got, d.Coordinate+"@"+d.Version)
+				}
+				if !slices.Equal(got, tc.want) {
+					t.Fatalf("run %d: All order = %v, want %v", i, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// --- npm alias entries ---------------------------------------------------------
+
+// An npm alias ("qs-old": "npm:qs@6.5.1") installs a real package under another name. A v1
+// package-lock and yarn.lock key the entry by the alias; the lock readers file it under the
+// real package's name, so the real package's two distinct copies cannot decide its version.
+func TestResolveVersions_NpmAliasCopiesVeto(t *testing.T) {
+	cases := []struct{ name, file, lock, want string }{
+		{"package-lock v1", "package-lock.json", `{"lockfileVersion": 1, "dependencies": {
+  "qs": {"version": "6.5.2"},
+  "qs-old": {"version": "npm:qs@6.5.1"}
+}}`, "qs"},
+		{"package-lock v1 nested", "package-lock.json", `{"lockfileVersion": 1, "dependencies": {
+  "qs": {"version": "6.5.2"},
+  "x": {"version": "1.0.0", "dependencies": {"qs-old": {"version": "npm:qs@6.5.1"}}}
+}}`, "qs"},
+		{"yarn classic", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\n\"qs-old@npm:qs@6.5.1\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn classic second descriptor", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\nqs-old@^1.0.0, \"qs-old@npm:qs@6.5.1\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn classic bare alias", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\n\"qs-old@npm:qs\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn berry", "yarn.lock", "__metadata:\n  version: 6\n\n\"qs@npm:^6.5.2\":\n  version: 6.5.2\n\n\"qs-old@npm:qs@npm:6.5.1\":\n  version: 6.5.1\n", "qs"},
+		{"yarn berry scoped target", "yarn.lock", "__metadata:\n  version: 6\n\n\"@s/qs@npm:^6.5.2\":\n  version: 6.5.2\n\n\"qs-old@npm:@s/qs@npm:6.5.1\":\n  version: 6.5.1\n", "@s/qs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{tc.file: tc.lock})
+			res := resolveJS(t, dir, tc.want)
+			mustUnresolved(t, res)
+		})
+	}
+}
+
+// Berry writes every ordinary registry range as "name@npm:<range>"; those are not aliases.
+func TestResolveVersions_BerryNpmRangeIsNotAlias(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"yarn.lock": "__metadata:\n  version: 6\n\n\"qs@npm:^6.5.2, qs@npm:6.5.2\":\n  version: 6.5.2\n\n\"left-pad@npm:*\":\n  version: 1.3.0\n",
+	})
+	res := resolveJS(t, dir, "qs")
+	mustMatch(t, res, "6.5.2")
+	if !res.Partiality.Complete {
+		t.Fatalf("berry npm: ranges must not degrade partiality; got %+v", res.Partiality)
+	}
+	mustMatch(t, resolveJS(t, dir, "left-pad"), "1.3.0")
+}
+
+// MatchesComplete holds only when lockfiles read in full govern every package.json and every
+// installed copy was read; anything that could carry another version leaves it false.
+func TestResolveVersions_MatchesComplete(t *testing.T) {
+	const (
+		pkg    = `{"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}}`
+		lockV3 = `{"name":"app","lockfileVersion":3,"packages":{
+  "": {"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}},
+  "node_modules/left-pad": {"version":"1.3.0"},
+  "node_modules/wrapper": {"version":"2.0.0"},
+  "node_modules/wrapper/node_modules/left-pad": {"version":"1.4.0"}}}`
+		lockGit = `{"name":"app","lockfileVersion":1,"dependencies":{"left-pad":{"version":"1.3.0"},"wrapper":{"version":"github:acme/wrapper#abc123"}}}`
+	)
+	tests := []struct {
+		name     string
+		files    map[string]string
+		want     bool
+		versions []string
+	}{
+		{"lock covers every copy", map[string]string{"package.json": pkg, "package-lock.json": lockV3}, true, []string{"1.3.0", "1.4.0"}},
+		{"installed copies join the set", map[string]string{
+			"package.json": pkg, "package-lock.json": lockV3,
+			"node_modules/left-pad/package.json":                      `{"name":"left-pad","version":"1.3.0"}`,
+			"node_modules/wrapper/node_modules/left-pad/package.json": `{"name":"left-pad","version":"1.4.0"}`,
+		}, true, nil},
+		{"package.json only", map[string]string{"package.json": pkg}, false, nil},
+		{"an unlocked sibling project", map[string]string{
+			"package.json": pkg, "package-lock.json": lockV3, "web/package.json": `{"name":"web","dependencies":{"left-pad":"^1.0.0"}}`,
+		}, false, nil},
+		{"garbage yarn.lock", map[string]string{"package.json": pkg, "yarn.lock": "garbage {{{\n"}, false, nil},
+		{"a git dependency the lock cannot enumerate", map[string]string{"package.json": pkg, "package-lock.json": lockGit}, false, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := resolveJS(t, writeLockTree(t, tc.files), "left-pad")
+			if r.MatchesComplete != tc.want {
+				t.Fatalf("MatchesComplete = %v, want %v (Matches %+v)", r.MatchesComplete, tc.want, r.Matches)
+			}
+			var got []string
+			for _, m := range r.Matches {
+				got = append(got, m.Version)
+			}
+			slices.Sort(got)
+			if tc.versions != nil && !slices.Equal(got, tc.versions) {
+				t.Fatalf("Matches = %v, want %v", got, tc.versions)
+			}
+		})
+	}
+}
+
+// An installed copy or a subtree the reader cannot open may hold another version, so Matches
+// cannot be complete.
+func TestResolveVersions_MatchesCompleteUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads mode-0 files")
+	}
+	const (
+		pkg    = `{"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}}`
+		lockV3 = `{"name":"app","lockfileVersion":3,"packages":{
+  "": {"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}},
+  "node_modules/left-pad": {"version":"1.3.0"},
+  "node_modules/wrapper": {"version":"2.0.0"}}}`
+	)
+	for _, tc := range []struct{ name, target string }{
+		{"nested installed copy", "node_modules/wrapper/node_modules/left-pad/package.json"},
+		{"subproject directory", "web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{
+				"package.json": pkg, "package-lock.json": lockV3,
+				"node_modules/left-pad/package.json":                      `{"name":"left-pad","version":"1.3.0"}`,
+				"node_modules/wrapper/node_modules/left-pad/package.json": `{"name":"left-pad","version":"1.2.0"}`,
+				"web/package.json": `{"name":"web"}`,
+			})
+			p := filepath.Join(dir, tc.target)
+			if err := os.Chmod(p, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
+			if r := resolveJS(t, dir, "left-pad"); r.MatchesComplete {
+				t.Fatalf("an unreadable %s must leave MatchesComplete false; got %+v", tc.target, r.Matches)
+			}
+		})
+	}
+}
+
+// TestVersions_QuotedEscapes resolves coordinates from locks whose quoted scalars carry a
+// double-quoted escape or a doubled single quote. The readers only strip quotes, so an escape
+// would be taken as the version's text; the lock is withheld and the match is unresolved.
+// Controls keep handled quoting and an escape in a comment, and resolve.
+func TestVersions_QuotedEscapes(t *testing.T) {
+	const classic = "# yarn lockfile v1\n\n\nq@^1.0.0:\n  version \"1.0.0\"\n  resolved \"https://registry.yarnpkg.com/q/-/q-1.0.0.tgz\"\n"
+	const berry = "__metadata:\n  version: 6\n  cacheKey: 8\n\n\"q@npm:^1.0.0\":\n  version: 1.0.0\n  resolution: \"q@npm:1.0.0\"\n"
+	const pnpm = "lockfileVersion: '6.0'\n\npackages:\n\n  /q@1.0.0:\n    resolution: {integrity: sha512-xxx}\n    name: q\n    version: 1.0.0\n"
+	edit := func(lock, old, repl string) string {
+		if !strings.Contains(lock, old) {
+			t.Fatalf("lock has no %q:\n%s", old, lock)
+		}
+		return strings.ReplaceAll(lock, old, repl)
+	}
+	for _, tc := range []struct {
+		name, file, lock string
+		withheld         bool
+	}{
+		{"classic_control", "yarn.lock", classic, false},
+		{"classic_control_comments", "yarn.lock", "# c\n\n" + edit(classic, "  resolved", "  # c\n\n  resolved"), false},
+		{"classic_version_comment", "yarn.lock", edit(classic, "version \"1.0.0\"", "version \"1.0.0\" # 2.0.0"), true},
+		{"classic_version_unclosed", "yarn.lock", edit(classic, "version \"1.0.0\"", "version \"1.0.0"), true},
+		{"classic_header_comment", "yarn.lock", edit(classic, "\nq@^1.0.0:", "\nq@^1.0.0: # c"), true},
+		{"classic_stray_line", "yarn.lock", classic + "stray\n", true},
+		{"classic_control_quoted_header", "yarn.lock", edit(classic, "\nq@^1.0.0:", "\n\"q@^1.0.0\":"), false},
+		{"classic_control_comment", "yarn.lock", "# \"\\x31\"\n" + classic, false},
+		{"classic_version", "yarn.lock", edit(classic, "version \"1.0.0\"", "version \"\\x31.0.0\""), true},
+		{"classic_header", "yarn.lock", edit(classic, "\nq@^1.0.0:", "\n\"q@^\\x31.0.0\":"), true},
+		{"classic_version_plain_hash", "yarn.lock", edit(classic, "version \"1.0.0\"", "version 1.0.0#2.0.0"), true},
+		{"classic_version_plain_digit", "yarn.lock", edit(classic, "version \"1.0.0\"", "version 1.0.0"), true},
+		{"classic_version_empty", "yarn.lock", edit(classic, "version \"1.0.0\"", "version "), true},
+		{"classic_header_anchor", "yarn.lock", edit(classic, "\nq@^1.0.0:", "\n&a q@^1.0.0:"), true},
+		{"pnpm_version_quoted_outside_grammar", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: \"1.0.0{x}\""), true},
+		{"classic_version_quoted_outside_grammar", "yarn.lock", edit(classic, "version \"1.0.0\"", "version \"1.0.0{x}\""), true},
+		{"berry_version_quoted_outside_grammar", "yarn.lock", edit(berry, "  version: 1.0.0", "  version: \"1.0.0{x}\""), true},
+		{"pnpm_version_plain_colon_space", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: 1.0.0: x"), true},
+		{"pnpm_version_plain_trailing_colon", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: 1.0.0:"), true},
+		{"pnpm_version_plain_dash_space", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: - 1.0.0"), true},
+		{"pnpm_name_empty", "pnpm-lock.yaml", edit(pnpm, "    name: q", "    name:"), true},
+		{"pnpm_specifiers_empty", "pnpm-lock.yaml", "lockfileVersion: '6.0'\n\nimporters:\n\n  .:\n    specifiers:\n      q:\n    dependencies:\n      q: 1.0.0\n\npackages:\n\n  /q@1.0.0:\n    resolution: {integrity: sha512-xxx}\n", true},
+		{"pnpm_specifier_empty", "pnpm-lock.yaml", "lockfileVersion: '6.0'\n\nimporters:\n\n  .:\n    dependencies:\n      q:\n        specifier:\n        version: 1.0.0\n\npackages:\n\n  /q@1.0.0:\n    resolution: {integrity: sha512-xxx}\n", true},
+		{"classic_version_plain_letter_brace", "yarn.lock", edit(classic, "version \"1.0.0\"", "version beta{x}"), true},
+		{"classic_version_plain_letter_hash", "yarn.lock", edit(classic, "version \"1.0.0\"", "version beta#1"), true},
+		{"classic_version_plain_letter_colon", "yarn.lock", edit(classic, "version \"1.0.0\"", "version beta:1"), true},
+		{"classic_version_plain_letter_comma", "yarn.lock", edit(classic, "version \"1.0.0\"", "version beta,1"), true},
+		{"classic_version_plain_letter_space", "yarn.lock", edit(classic, "version \"1.0.0\"", "version beta 1"), true},
+		{"classic_version_plain_false", "yarn.lock", edit(classic, "version \"1.0.0\"", "version false1"), true},
+		{"classic_header_digit", "yarn.lock", edit(classic, "\nq@^1.0.0:", "\n7q@^1.0.0:"), true},
+		{"berry_version_alias", "yarn.lock", edit(berry, "  version: 1.0.0", "  version: *v"), true},
+		{"berry_version_tag", "yarn.lock", edit(berry, "  version: 1.0.0", "  version: !!str 1.0.0"), true},
+		{"berry_version_empty", "yarn.lock", edit(berry, "  version: 1.0.0", "  version:"), true},
+		{"berry_header_anchor", "yarn.lock", edit(berry, "\n\"q@npm:^1.0.0\":", "\n&a \"q@npm:^1.0.0\":"), true},
+		{"pnpm_version_alias", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: *v"), true},
+		{"pnpm_version_tag", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: !!str 1.0.0"), true},
+		{"pnpm_version_block_scalar", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: |-\n      1.0.0"), true},
+		{"pnpm_version_tab_comment", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: 1.0.0\t# 2.0.0"), true},
+		{"pnpm_version_empty", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version:"), true},
+		{"pnpm_version_next_line", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version:\n      1.0.0"), true},
+		{"berry_control", "yarn.lock", berry, false},
+		{"berry_control_comments", "yarn.lock", "# c\n\n" + edit(berry, "  resolution", "  # c\n\n  resolution"), false},
+		{"berry_version_comment_quoted", "yarn.lock", edit(berry, "  version: 1.0.0", "  version: \"1.0.0\" # 2.0.0"), true},
+		{"berry_version_comment_plain", "yarn.lock", edit(berry, "  version: 1.0.0", "  version: 1.0.0 # 2.0.0"), true},
+		{"berry_header_comment", "yarn.lock", edit(berry, "\"q@npm:^1.0.0\":", "\"q@npm:^1.0.0\": # c"), true},
+		{"berry_flow_key", "yarn.lock", edit(berry, "  resolution", "  {a: b}\n  resolution"), true},
+		{"berry_control_comment", "yarn.lock", "# \"\\x31\"\n" + berry, false},
+		{"berry_version", "yarn.lock", edit(berry, "  version: 1.0.0", "  version: \"\\x31.0.0\""), true},
+		{"berry_header", "yarn.lock", edit(berry, "\"q@npm:^1.0.0\"", "\"q@npm:^\\x31.0.0\""), true},
+		{"pnpm_control", "pnpm-lock.yaml", pnpm, false},
+		{"pnpm_control_comments", "pnpm-lock.yaml", edit(pnpm, "packages:\n\n", "packages: # c\n\n  # c\n"), false},
+		{"pnpm_section_flow", "pnpm-lock.yaml", "lockfileVersion: '6.0'\n\npackages: {/q@1.0.0: {resolution: {integrity: sha512-xxx}}}\n", true},
+		{"pnpm_flow_key", "pnpm-lock.yaml", edit(pnpm, "  /q@1.0.0:", "  {/q@1.0.0:"), true},
+		{"pnpm_entry_comment", "pnpm-lock.yaml", edit(pnpm, "/q@1.0.0:", "/q@1.0.0: # c"), true},
+		{"pnpm_version_comment_quoted", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: \"1.0.0\" # 2.0.0"), true},
+		{"pnpm_version_comment_plain", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: 1.0.0 # 2.0.0"), true},
+		{"pnpm_stray_line", "pnpm-lock.yaml", pnpm + "stray\n", true},
+		{"pnpm_control_comment", "pnpm-lock.yaml", edit(pnpm, "packages:\n", "packages: # \"\\x31\"\n"), false},
+		{"pnpm_key", "pnpm-lock.yaml", edit(pnpm, "/q@1.0.0:", "\"/q@\\x31.0.0\":"), true},
+		{"pnpm_version_field", "pnpm-lock.yaml", edit(pnpm, "    version: 1.0.0", "    version: \"\\x31.0.0\""), true},
+		{"pnpm_doubled_single_quote", "pnpm-lock.yaml", edit(pnpm, "    name: q", "    name: 'q'''"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveJS(t, writeLockTree(t, map[string]string{tc.file: tc.lock}), "q")
+			if !tc.withheld {
+				mustMatch(t, res, "1.0.0")
+				return
+			}
+			if res.Match.Resolved {
+				t.Errorf("an escaped lock must not resolve; match %+v", res.Match)
+			}
+			if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("want tool_failure partiality; got %+v", res.Partiality)
+			}
+		})
 	}
 }

@@ -3,7 +3,6 @@ package javaanalysis
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,14 +154,26 @@ func buildNetkitFixture(t *testing.T, omitJar bool) string {
 		{"entry", "()V", append(append([]byte{0x2a}, append([]byte{0xB6}, be2(sink)...)...), 0xB1)}, // aload_0; invokevirtual fetch; return
 		{"safe", "()V", []byte{0xB1}}, // return only: never calls the sink
 	})
-	jarPath := filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
-	writeJar(t, jarPath, "com/evil/netkit/UrlFetcher.class", classBytes)
+	writeJar(t, netkitJarPath(build), "com/evil/netkit/UrlFetcher.class", classBytes)
 	return build
+}
+
+// netkitJarPath is where buildNetkitFixture writes netkit's JAR.
+func netkitJarPath(build string) string {
+	return filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
+}
+
+// netkitGraph is the build graph of buildNetkitFixture's build: one module depending on
+// com.evil:netkit:1.0.0 at the fixture's JAR, recorded with the digest it has now (none when it
+// was not written).
+func netkitGraph(t *testing.T, build string) Option {
+	t.Helper()
+	return graphOption(t, "maven", testModule(t, ".", "app", graphDep{group: "com.evil", artifact: "netkit", version: "1.0.0", jar: netkitJarPath(build)}))
 }
 
 func TestBuildDependencyGraph_OpensJarAndAnswersPoNE(t *testing.T) {
 	build := buildNetkitFixture(t, false)
-	dg, err := buildDependencyGraph(context.Background(), build)
+	dg, err := buildDependencyGraph(build, netkitGraph(t, build))
 	if err != nil {
 		t.Fatalf("buildDependencyGraph: %v", err)
 	}
@@ -181,11 +192,11 @@ func TestBuildDependencyGraph_OpensJarAndAnswersPoNE(t *testing.T) {
 	}
 }
 
-// An uncached dependency is a Gap, never a silent complete graph: a not_exploitable
+// A dependency whose JAR is gone is a Gap, never a silent complete graph: a not_exploitable
 // must not be claimed while the sink could live in a JAR we never opened.
-func TestBuildDependencyGraph_UncachedDependencyIsAGap(t *testing.T) {
-	build := buildNetkitFixture(t, true) // pom declares netkit, but no JAR in cache
-	dg, err := buildDependencyGraph(context.Background(), build)
+func TestBuildDependencyGraph_MissingJarIsAGap(t *testing.T) {
+	build := buildNetkitFixture(t, true) // the graph names netkit, but its JAR is not there
+	dg, err := buildDependencyGraph(build, netkitGraph(t, build))
 	if err != nil {
 		t.Fatalf("buildDependencyGraph: %v", err)
 	}
@@ -194,11 +205,68 @@ func TestBuildDependencyGraph_UncachedDependencyIsAGap(t *testing.T) {
 	}
 	var sawNetkit bool
 	for _, g := range dg.Gaps {
-		if strings.Contains(g, "com.evil:netkit") && strings.Contains(g, "not in local cache") {
+		if strings.Contains(g, "com.evil:netkit") && strings.Contains(g, "unreadable") {
 			sawNetkit = true
 		}
 	}
 	if !sawNetkit {
 		t.Errorf("gap for the uncached netkit JAR not recorded: %v", dg.Gaps)
 	}
+}
+
+// The engine opens a dependency JAR only as the build graph recorded it: no graph, a JAR that
+// changed since the build resolved it, or one that cannot be read each leave a gap saying so.
+func TestBuildDependencyGraph_OpensOnlyTheRecordedJar(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file modes do not stop root reading a file")
+	}
+	for _, tc := range []struct {
+		name  string
+		after func(t *testing.T, build string) // runs once the graph is recorded
+		graph bool
+		gap   string
+	}{
+		{name: "no build graph", gap: PartialReasonBuildGraphAbsent},
+		{name: "jar changed since the build resolved it", graph: true, after: func(t *testing.T, build string) {
+			writeJar(t, netkitJarPath(build), "com/evil/netkit/Other.class", emitClass(&cpb{}, "com/evil/netkit/Other", nil))
+		}, gap: "com.evil:netkit:1.0.0: netkit-1.0.0.jar unreadable"},
+		{name: "jar cannot be read", graph: true, after: func(t *testing.T, build string) {
+			if err := os.Chmod(netkitJarPath(build), 0); err != nil {
+				t.Fatal(err)
+			}
+		}, gap: "com.evil:netkit:1.0.0: netkit-1.0.0.jar unreadable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := buildNetkitFixture(t, false)
+			var opts []Option
+			if tc.graph {
+				opts = append(opts, netkitGraph(t, build))
+			}
+			if tc.after != nil {
+				tc.after(t, build)
+			}
+			dg, err := buildDependencyGraph(build, opts...)
+			if err != nil {
+				t.Fatalf("buildDependencyGraph: %v", err)
+			}
+			if dg.Complete {
+				t.Fatal("opened a JAR the graph does not vouch for and called the closure complete")
+			}
+			var saw bool
+			for _, g := range dg.Gaps {
+				if strings.Contains(g, tc.gap) {
+					saw = true
+				}
+			}
+			if !saw {
+				t.Errorf("want a gap saying %q, got %v", tc.gap, dg.Gaps)
+			}
+		})
+	}
+}
+
+// writeNetkitJar writes a netkit JAR holding UrlFetcher at path.
+func writeNetkitJar(t *testing.T, path string) {
+	t.Helper()
+	writeJar(t, path, "com/evil/netkit/UrlFetcher.class", emitClass(&cpb{}, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}}))
 }

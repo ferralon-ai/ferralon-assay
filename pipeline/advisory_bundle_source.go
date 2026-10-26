@@ -34,6 +34,7 @@
 // this the right bundle? — the .gz hash vs the trusted `corpus-<12hex>` release tag) is the
 // fetcher/provisioning layer's job, exactly as artifactSource trusts the root it was handed. A
 // wholesale-substituted bundle is not caught by this reader alone; that is the fetch pin's job.
+
 package pipeline
 
 import (

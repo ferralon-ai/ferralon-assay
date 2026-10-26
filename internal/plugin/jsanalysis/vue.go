@@ -51,6 +51,8 @@ func parseVueSFC(module, src string) parseResult {
 		res = parseResult{module: module}
 	}
 	res.ingresses = append(res.ingresses, vueTemplateIngresses(template)...)
+	// The template calls the script's functions by name.
+	res.escapes.all = true
 	return res
 }
 

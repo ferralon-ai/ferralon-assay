@@ -339,6 +339,9 @@ func composeILBuildDir(t *testing.T, files map[string][]byte) string {
 			t.Fatalf("write %s: %v", p, err)
 		}
 	}
+	if bytes.Equal(files["App.csproj"], restoredProject) {
+		trustRestore(t, dir)
+	}
 	return dir
 }
 
@@ -389,7 +392,7 @@ func appReachesDep(t *testing.T) (appDLL, depDLL []byte) {
 func TestC5_Reachable_EmitsPath(t *testing.T) {
 	appDLL, depDLL := appReachesDep(t)
 	dir := composeILBuildDir(t, map[string][]byte{
-		"App.csproj":              []byte("<Project></Project>"),
+		"App.csproj":              restoredProject,
 		"bin/App.dll":             appDLL,
 		"bin/Dep.dll":             depDLL,
 		"obj/project.assets.json": depAssetsJSON("Dep/1.0.0"),

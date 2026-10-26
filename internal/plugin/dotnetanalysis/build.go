@@ -36,14 +36,20 @@ const partialReasonRIDUnknown = "reachability_undetermined:runtime_identifier_un
 // build's outputs record more than one runtime.
 const partialReasonRIDAmbiguous = "reachability_undetermined:runtime_identifier_ambiguous"
 
+// partialReasonRestoreUntrusted: the restore output the IL tier loads dependencies from isn't
+// trusted for the project it sits beside (AssetsTrusted), so the dependency bytes may not be
+// the ones the next restore installs.
+const partialReasonRestoreUntrusted = "reachability_undetermined:restore_output_untrusted"
+
 // firstPartyBuild is the first-party program a run analyzes.
 type firstPartyBuild struct {
-	project string             // project file; "" when the build has none
-	fp      *assembly.Assembly // the built assembly; nil when not located or unreadable
-	assets  []byte             // project.assets.json; nil when absent
-	target  string             // the assets targets key fp binds to; "" when unbound or no assets
-	runtime assembly.Runtime   // the runtime fp's copies were built for
-	reasons []string           // run-wide limits from the layout
+	project    string             // project file; "" when the build has none
+	fp         *assembly.Assembly // the built assembly; nil when not located or unreadable
+	assets     []byte             // project.assets.json; nil when absent
+	assetsPath string             // where assets was read from
+	target     string             // the assets targets key fp binds to; "" when unbound or no assets
+	runtime    assembly.Runtime   // the runtime fp's copies were built for
+	reasons    []string           // run-wide limits from the layout
 }
 
 // locateFirstPartyBuild finds the build's project, its built assembly and restore output,
@@ -97,11 +103,11 @@ func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 		b.reasons = append(b.reasons, partialReasonMultipleProjects)
 	}
 
-	data, ok := readAssetsFile(buildDir)
+	path, data, ok := readAssetsFile(buildDir)
 	if !ok {
 		return b
 	}
-	b.assets = data
+	b.assets, b.assetsPath = data, path
 	if t, bound := bindTarget(assetsTargetKeys(data), fpTFM); bound {
 		b.target = t
 	} else {

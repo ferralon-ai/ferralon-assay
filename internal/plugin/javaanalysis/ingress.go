@@ -109,14 +109,36 @@ func ingressPartiality(prog *program) plugin.Partiality {
 }
 
 // ResolveDependencySymbols maps the advisory's vulnerable symbol(s) to concrete
-// declared Java symbols in the build dir. The advisory identifiers are GIVEN
-// (inv.7): this only resolves them against the parsed program, never originates
-// them. Java first-party advisories name the sink method by a dotted display form
-// ("com.example.web.UrlFetcher.fetch", "UrlFetcher.fetch", or just "fetch"); we
-// match each wanted identifier against the symbol's display name, its dotted
-// suffixes, and its last-dot leaf. A no-match is an empty result, not an error; a
-// load failure is a hard error (inv.4).
-func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+// declared Java symbols. The advisory identifiers are GIVEN (inv.7): this only
+// resolves them, never originates them.
+//
+// An advisory on a Maven dependency (req.PURL names a coordinate that is not one of
+// the build's own modules) is resolved inside that dependency's JAR only
+// (depsymbols.go): its symbols are read from the package's bytecode, carry the
+// package as their origin, and no first-party method can stand in for them by
+// sharing a name. An advisory on the project itself, or one with no Maven PURL, is
+// matched against the first-party source.
+func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest, opts ...Option) (plugin.SymbolResolutionResult, error) {
+	g := BuildGraph(opts...)
+	if coordinate, version, ok := CoordinateOfPURL(req.PURL); ok && !isRootCoordinate(g, coordinate) {
+		dep := resolveDependencyJarSymbols(g, req.BuildDir, coordinate, version, req.AdvisorySymbols)
+		part := dep.part
+		// An absent package's reason is bounded to its own advisory; nothing about it is run-wide.
+		if multi, why := multipleProjects(req.BuildDir, opts...); multi && !notInBuild(part) {
+			part = withMultipleProjects(part, why)
+		}
+		return plugin.SymbolResolutionResult{Partiality: part, Resolved: dep.resolved, Origins: dep.origins, Matched: dep.matched}, nil
+	}
+	return resolveFirstPartySymbols(ctx, req)
+}
+
+// resolveFirstPartySymbols matches the advisory identifiers against the parsed
+// first-party program. Java first-party advisories name the sink method by a dotted
+// display form ("com.example.web.UrlFetcher.fetch", "UrlFetcher.fetch", or just
+// "fetch"); we match each wanted identifier against the symbol's display name, its
+// dotted suffixes, and its last-dot leaf. A no-match is an empty result, not an
+// error; a load failure is a hard error (inv.4).
+func resolveFirstPartySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
 	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err

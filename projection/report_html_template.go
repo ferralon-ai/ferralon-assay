@@ -110,6 +110,7 @@ const reportHTMLSource = `<!DOCTYPE html>
   .limit-list > li { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
   .limit-why { display: block; margin-top: 7px; font-size: 13px; line-height: 1.55; }
   .limit-code { margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .limit-scope { margin-top: 4px; font-size: 11px; color: var(--muted); }
   .limit-advisories { list-style: none; padding: 0; margin: 9px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
   .limit-advisories li { font-size: 12px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
   .callpath { margin-top: 6px; padding-left: 0; list-style: none; font-size: 12px; color: var(--muted); }
@@ -166,6 +167,9 @@ const reportHTMLSource = `<!DOCTYPE html>
         <span class="limit-why">{{.Label}}</span>
         {{- if .Ecosystem}}<span class="src">{{.Ecosystem}}</span>{{end}}
         <div class="limit-code mono">{{.Reason}}</div>
+        {{- if or .Package .Path}}
+        <div class="limit-scope mono">{{if .Package}}{{.Package}}{{end}}{{if and .Package .Path}} &middot; {{end}}{{if .Path}}{{.Path}}{{end}}</div>
+        {{- end}}
         {{- if .Advisories}}
         <ul class="limit-advisories">
           {{- range .Advisories}}
@@ -218,9 +222,12 @@ const reportHTMLSource = `<!DOCTYPE html>
         </td>
         <td>
           {{- if .HasPriority}}
-          <span class="epss-label" title="EPSS likelihood: probability this CVE is exploited in the wild (FIRST.org public feed). This is wild-exploitation likelihood context from public feeds — not an exploitability claim for this codebase.">EPSS {{printf "%.3f" .EPSSScore}} / p{{.EPSSPct}}</span>
+          {{- if .HasEPSS}}
+          <span class="epss-label" title="EPSS likelihood: probability this CVE is exploited in the wild (FIRST.org public feed), from the EPSS model of {{.EPSSAsOf}}. This is wild-exploitation likelihood context from public feeds — not an exploitability claim for this codebase.">EPSS {{printf "%.3f" .EPSSScore}}{{if .EPSSPct}} / p{{.EPSSPct}}{{end}}</span>
+          <div class="intel">as of {{.EPSSAsOf}}</div>
+          {{- else}}<span class="epss-label">&mdash;</span>{{end}}
           {{- if .KEVListed}}
-          <div class="intel"><span class="badge kev" title="CISA Known Exploited Vulnerability — active exploitation of this CVE has been recorded in the wild (CISA KEV catalog). This is a wild-exploitation signal, not a claim that this codebase is exploitable.">CISA KEV{{if .KEVDateAdded}} ({{.KEVDateAdded}}){{end}}</span></div>
+          <div class="intel"><span class="badge kev" title="CISA Known Exploited Vulnerability — active exploitation of this CVE has been recorded in the wild (CISA KEV catalog {{.KEVCatalogVersion}}, released {{.KEVDateReleased}}). This is a wild-exploitation signal, not a claim that this codebase is exploitable.">CISA KEV{{if .KEVDateAdded}} ({{.KEVDateAdded}}){{end}}</span> catalog {{.KEVCatalogVersion}}</div>
           {{- end}}
           {{- else}}<span class="epss-label">&mdash;</span>{{end}}
         </td>
@@ -235,7 +242,7 @@ const reportHTMLSource = `<!DOCTYPE html>
     <strong>How to read this:</strong> a <em>reachable candidate</em> means a code path to the advisory symbol was found &mdash; it is a candidate for exploitability, not a proof.
     <em>Not exploitable</em> and <em>disqualified</em> are grounded deterministic refutations. {{.Brand}} never claims a finding is proven exploitable: proof requires observing the vulnerable path actually execute, which this scan does not do.
     <br>This report is self-contained: the data above is rendered from the JSON embedded in this file.
-    <br><strong>EPSS / CISA KEV:</strong> EPSS scores and KEV flags come from the pinned intel snapshot indicated per finding. They are wild-exploitation likelihood signals from public feeds (FIRST.org EPSS, CISA KEV catalog) &mdash; not exploitability verdicts for this codebase.
+    <br><strong>EPSS / CISA KEV:</strong> EPSS scores and KEV flags come from the signals file this scan was given, and each shows the date of its own data: an EPSS score its model date, a KEV flag the CISA catalog version it was read from. They are wild-exploitation likelihood signals from public feeds (FIRST.org EPSS, CISA KEV catalog) &mdash; not exploitability verdicts for this codebase.
   </footer>
 </div>
 

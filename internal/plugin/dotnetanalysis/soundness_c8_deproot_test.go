@@ -25,7 +25,7 @@ func runReachSet(t *testing.T, appDLL, depDLL []byte, sinkSCIP string) plugin.Re
 func runReachSetAssets(t *testing.T, appDLL, depDLL, assets []byte, sinkSCIP string) plugin.ReachabilityResult {
 	t.Helper()
 	dir := composeILBuildDir(t, map[string][]byte{
-		"App.csproj":              []byte("<Project></Project>"),
+		"App.csproj":              restoredProject,
 		"bin/App.dll":             appDLL,
 		"bin/Dep.dll":             depDLL,
 		"obj/project.assets.json": assets,

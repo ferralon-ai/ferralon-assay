@@ -39,7 +39,7 @@
     },
     "CVE-2024-21907": {
       "file": "CVE-2024-21907.json",
-      "digest": "sha256:007127a12bfa22e5ec23b0586aefef0fdb65d47ff11ac405bbd82f06734fc573"
+      "digest": "sha256:a9ca61ede07eae6c686709a4b04c3865ab0bd2a39ca5c7e0a638eba8aacc6fb8"
     },
     "CVE-2024-22195": {
       "file": "CVE-2024-22195.json",
@@ -159,12 +159,12 @@
     },
     "GO-2021-0264": {
       "file": "GO-2021-0264.json",
-      "digest": "sha256:e6b84fb6e394b0203e180a4f3e0a70ec85c4daf4a0d1e9d4372fc10acc8a460e"
+      "digest": "sha256:76fa5f679e8c319a92d624e44f1d18156d91b4d472916127351b170b2f0cbf0a"
     },
     "GO-2022-0322": {
       "file": "GO-2022-0322.json",
       "digest": "sha256:f653515b083786f0d3c84969a2c158b3a2899950f445fc61f25983aa7bedf3e1"
     }
   },
-  "corpus_digest": "sha256:c87c19a40fca54695cfcb1b9f85a124bac2a79dec0248754e17e358cadb6b656"
+  "corpus_digest": "sha256:8c2baa13e2776fcc8c7a7063cf41b1e843d80980881aa9dccff8dd271be18eb2"
 }

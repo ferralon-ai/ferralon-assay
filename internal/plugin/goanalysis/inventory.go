@@ -13,6 +13,7 @@ import (
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -81,7 +82,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 	// (correct for the analyzer's own hygiene), so only this single root is resolved;
 	// declare the rest rather than silently omit it. PLAN-004's WorkspacePlan closes
 	// this in a follow-on (A4).
+	workspace := false
 	if fi, statErr := os.Stat(filepath.Join(req.BuildDir, "go.work")); statErr == nil && !fi.IsDir() {
+		workspace = true
 		graphReasons = append(graphReasons, plugin.PartialReasonUnsupported)
 	}
 
@@ -99,27 +102,6 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 	for _, r := range mf.Require {
 		if !r.Indirect {
 			direct[r.Mod.Path] = true
-		}
-	}
-
-	// replace map: modfile carries what `go mod graph` hides (the redirect target).
-	// Keyed by old path; a versioned old-key ("path v1.2.3") wins over a wildcard.
-	type replaceTarget struct {
-		newPath, newVersion string
-		filesystem          bool
-	}
-	replaces := map[string]replaceTarget{}
-	for _, rep := range mf.Replace {
-		t := replaceTarget{newPath: rep.New.Path, newVersion: rep.New.Version}
-		// A New with no version whose path is a filesystem path (./ ../ or absolute)
-		// is a local replace: the selection is not pinned to a verifiable version.
-		if rep.New.Version == "" && (strings.HasPrefix(rep.New.Path, ".") || strings.HasPrefix(rep.New.Path, "/") || filepath.IsAbs(rep.New.Path)) {
-			t.filesystem = true
-		}
-		if rep.Old.Version != "" {
-			replaces[rep.Old.Path+" "+rep.Old.Version] = t
-		} else {
-			replaces[rep.Old.Path] = t
 		}
 	}
 
@@ -175,10 +157,8 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 
 		// Apply a replace (versioned key first, then wildcard) — the redirect the
 		// graph does not show. A filesystem replace has no verifiable version.
-		if rep, ok := replaces[path+" "+ver]; ok {
-			applyReplace(&n, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
-		} else if rep, ok := replaces[path]; ok {
-			applyReplace(&n, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
+		if rep, ok := gomod.Replacement(mf, path, ver); ok {
+			applyReplace(&n, path, rep, &nodeReasons)
 		}
 
 		n.PURL = goPURL(path, n.Version)
@@ -226,6 +206,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		Nodes:      nodes,
 		Edges:      depEdges,
 	}
+	if !workspace && mainPath != "" {
+		inv.BuildList, inv.MainModule = plugin.BuildListGoModGraph, mainPath
+	}
 	return inv, nil
 }
 
@@ -234,17 +217,19 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 // version; a filesystem replace (`=> ../dir`) is not pinned to a verifiable version,
 // so declare it (source_unpinned) rather than present a fabricated or blank version
 // as resolved. The module PATH remains the requiring coordinate (the require still
-// names it); only the resolved version and its pinnedness change.
-func applyReplace(n *plugin.DependencyNode, newPath, newVersion string, filesystem bool, reasons *[]string) {
-	if filesystem {
+// names it); a replace by another module records that module's path beside it.
+func applyReplace(n *plugin.DependencyNode, path string, rep gomod.Target, reasons *[]string) {
+	if rep.Filesystem {
 		n.Version = ""
 		*reasons = append(*reasons, plugin.PartialReasonSourceUnpinned)
 		return
 	}
-	if newVersion != "" {
-		n.Version = newVersion
+	if rep.Version != "" {
+		n.Version = rep.Version
 	}
-	_ = newPath // a module→module replace keeps the requiring path as identity
+	if rep.Path != path {
+		n.Replace = rep.Path
+	}
 }
 
 // graphNode is one "path@version" (or bare main-module "path") token of a

@@ -77,8 +77,8 @@ func (c fixedCheckout) Fetch(context.Context, string, string) (checkout.Workspac
 	return checkout.WorkspacePlan{Root: c.dir, Projects: []checkout.Project{{Root: c.dir, Language: c.lang}}}, nil
 }
 
-// the four advisories whose disposition this change decides: three carry the explicit go-toolchain
-// version scheme, GO-2021-0264 is a pkg:golang/stdlib advisory whose scheme derives to gomod.
+// the four advisories whose disposition this change decides. runGoBaseline serves GO-2021-0264
+// through stdlibNoRangeSource, so in these tests it is the stdlib advisory with no range to check.
 var goToolchainCorpus = []assessment.VulnRef{
 	{ID: "CVE-2023-39325", Source: "corpus"},
 	{ID: "CVE-2023-45283", Source: "corpus"},
@@ -95,13 +95,28 @@ func writeGoMod(t *testing.T, body string) string {
 	return dir
 }
 
-// runGoBaseline runs the real baseline over the given advisories against a real go.mod tree.
+// stdlibNoRangeSource serves the built-in advisory table with GO-2021-0264's toolchain ranges removed.
+// The toolchain tests use it as a stdlib advisory the version axis can never settle, so that the
+// reachability licence alone decides its disposition.
+type stdlibNoRangeSource struct{}
+
+func (stdlibNoRangeSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
+	f, ok := pipeline.NewTableSource().Lookup(id)
+	if ok && id == "GO-2021-0264" {
+		f.VersionScheme, f.AffectedRanges = "", nil
+	}
+	return f, ok
+}
+
+// runGoBaseline runs the real baseline over the given advisories against a real go.mod tree, with
+// GO-2021-0264 served without its ranges (stdlibNoRangeSource) unless opts supply another source.
 func runGoBaseline(t *testing.T, goMod string, advisories []assessment.VulnRef, opts ...pipeline.AssessOption) *report.Report {
 	t.Helper()
 	buildDir := writeGoMod(t, goMod)
 	opts = append([]pipeline.AssessOption{
 		pipeline.WithCheckout(fixedCheckout{dir: buildDir, lang: "go"}),
 		pipeline.WithPlugin(goManifestPlugin{}),
+		pipeline.WithAdvisorySource(stdlibNoRangeSource{}),
 	}, opts...)
 	rep, err := buildBaselineReport(context.Background(), BaselineRequest{
 		Subject:       Subject{Repo: "example.com/target", Revision: "main", ResolvedCommit: "deadbeef"},
@@ -283,12 +298,28 @@ func TestBaseline_DisqualifiedToolchainAdvisoryIsReported(t *testing.T) {
 			t.Errorf("%s verdict = %q, want %q — the lit version axis proves the floor is past every branch fix", id, verdicts[id], report.VerdictDisqualified)
 		}
 	}
-	// GO-2021-0264 declares no affected range at all, so the version axis has nothing to adjudicate
-	// no matter which toolchain the subject uses — it stays undetermined.
+	// GO-2021-0264, served without a range, gives the version axis nothing to adjudicate no matter
+	// which toolchain the subject uses — it stays undetermined.
 	assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainNotScanned)
 	if got := undeterminedByReason(rep)[report.ReasonGoToolchainNotScanned]; len(got) != 1 || got[0] != "GO-2021-0264" {
 		t.Errorf("undetermined = %v, want [GO-2021-0264] only", got)
 	}
+}
+
+// TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges runs GO-2021-0264 as the built-in table
+// carries it: fixed go1.16.10 and go1.17.3. A floor past both disqualifies it; a floor inside the
+// 1.17.x range leaves it undetermined.
+func TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges(t *testing.T) {
+	stdlib := []assessment.VulnRef{{ID: "GO-2021-0264", Source: "corpus"}}
+	table := pipeline.WithAdvisorySource(pipeline.NewTableSource())
+
+	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.21\n", stdlib, table)
+	if got := verdictByID(rep)["GO-2021-0264"]; got != report.VerdictDisqualified {
+		t.Errorf("go 1.21: GO-2021-0264 verdict = %q, want %q", got, report.VerdictDisqualified)
+	}
+
+	rep = runGoBaseline(t, "module example.com/target\n\ngo 1.17\n", stdlib, table)
+	assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainNotScanned)
 }
 
 // TestBaseline_ShippedActionSurfaceDisposition pins what a real Action run now produces, because that
@@ -300,8 +331,8 @@ func TestBaseline_DisqualifiedToolchainAdvisoryIsReported(t *testing.T) {
 //
 // This is the OPTED-IN one, which the in-repo dogfood workflows use truthfully: the exact fact is past
 // every fix in all three backports, so the version axis derives real disqualifications — the strongest
-// honest outcome, and the one M2's withholding must not eat. GO-2021-0264 has no affected range to
-// compare against, so no toolchain version can settle it and it stays withheld.
+// honest outcome, and the one M2's withholding must not eat. GO-2021-0264, served without a range,
+// has none to compare against, so no toolchain version can settle it and it stays withheld.
 func TestBaseline_ShippedActionSurfaceDisposition_TrustOptedIn(t *testing.T) {
 	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.20\n", goToolchainCorpus,
 		pipeline.WithSubjectToolchain("", "go1.26.4", true))
@@ -313,7 +344,7 @@ func TestBaseline_ShippedActionSurfaceDisposition_TrustOptedIn(t *testing.T) {
 		}
 	}
 	if got := undeterminedByReason(rep)[report.ReasonGoToolchainNotScanned]; len(got) != 1 || got[0] != "GO-2021-0264" {
-		t.Errorf("undetermined = %v, want [GO-2021-0264] — it declares no affected range, so no toolchain version can settle it", got)
+		t.Errorf("undetermined = %v, want [GO-2021-0264] — it is served without a range, so no toolchain version can settle it", got)
 	}
 	assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainNotScanned)
 }

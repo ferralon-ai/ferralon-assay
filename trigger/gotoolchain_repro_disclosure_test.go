@@ -139,7 +139,7 @@ func TestRepro_GO20210264_TheFactItselfIsExactAndHonest(t *testing.T) {
 	if pipeline.SubjectToolchainScanned(store, id) {
 		t.Error("SubjectToolchainScanned = true with no analysis under the subject's toolchain; nothing here is evidence about the subject")
 	}
-	if _, undetermined := undeterminedReason(store, id); !undetermined {
+	if _, undetermined := undeterminedReason(store, id, nil); !undetermined {
 		t.Errorf("undeterminedReason reports an established verdict on an exact-but-unscanned toolchain; basis %q would be emitted unestablished", verdict.BasisSymbolAbsent)
 	}
 }

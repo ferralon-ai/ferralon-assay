@@ -70,6 +70,7 @@ func TestSBOMValidateRejectsDanglingRelationship(t *testing.T) {
 // direct/partial_reason/relationships fields — still decodes and still passes Validate. This literal
 // is authored as the OLD shape, not regenerated from the new code, so it genuinely predates the
 // change: it proves the schema addition is backward-compatible and needs no SchemaVersion bump.
+// The literal keeps the v2 version it was stored with; it still upgrades to the current schema.
 func TestColdPreCycleReportStillDecodes(t *testing.T) {
 	const preCycle = `{
 	  "schema_version": "tegron.report.v2",
@@ -93,6 +94,16 @@ func TestColdPreCycleReportStillDecodes(t *testing.T) {
 	}
 	if r.SBOM.Relationships != nil {
 		t.Fatalf("pre-cycle SBOM should have no relationships, got %+v", r.SBOM.Relationships)
+	}
+	up, err := Upgrade(r)
+	if err != nil {
+		t.Fatalf("a pre-cycle v2 report failed to upgrade: %v", err)
+	}
+	if up.SchemaVersion != SchemaVersion {
+		t.Fatalf("upgraded schema_version = %q, want %q", up.SchemaVersion, SchemaVersion)
+	}
+	if err := up.Validate(); err != nil {
+		t.Fatalf("a pre-cycle v2 report failed Validate after upgrade: %v", err)
 	}
 }
 

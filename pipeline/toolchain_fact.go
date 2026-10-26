@@ -22,6 +22,7 @@
 //
 // The recorded fact drives the U7 version comparator (M3), the withhold-and-disclose predicate,
 // and — via ToolchainScan below — the subject-toolchain reachability gate (M4).
+
 package pipeline
 
 import "fmt"

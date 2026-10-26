@@ -99,6 +99,9 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 
 	pkg := npmPURLName(req.PURL)
 	bp := readBuildPackages(ctx, req.BuildDir)
+	if bp.unread {
+		out.Partiality = mergePartiality(out.Partiality, plugin.Partial(plugin.PartialReasonToolFailure))
+	}
 	firstParty := map[string][]string{}
 	if !bp.isDependency(pkg) {
 		for _, sym := range index.Symbols {
@@ -118,11 +121,11 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		return out, nil
 	}
 
-	graph, _, err := callGraphInternal(req.BuildDir)
+	graph, err := callGraphFor(ctx, req.BuildDir, req.DependencyCache)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
-	resolved, origins, matched := resolveBoundarySymbols(pkg, req.AdvisorySymbols, graph.Edges, bp)
+	resolved, origins, matched := resolveBoundarySymbols(pkg, admittedVersions(req, pkg), req.AdvisorySymbols, graph.Edges, bp)
 	if len(resolved) == 0 {
 		return out, nil
 	}
@@ -132,6 +135,15 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	out.Resolved = append(out.Resolved, resolved...)
 	out.Origins, out.Matched = origins, matched
 	return out, nil
+}
+
+// admittedVersions is the set of pkg's installed versions the advisory's symbols resolve on: the
+// version Package pins, else PackageVersions.
+func admittedVersions(req plugin.ResolveSymbolsRequest, pkg string) []string {
+	if v := purlVersion(req.Package, pkg); v != "" {
+		return []string{v}
+	}
+	return req.PackageVersions
 }
 
 // jsSymbolMatches reports whether sym corresponds to any wanted advisory identifier.

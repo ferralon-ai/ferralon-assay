@@ -135,9 +135,11 @@ func withDeps(t *testing.T, dir string, store artifactcache.Store) plugin.CallGr
 	return res
 }
 
+// hasScoped reports whether p carries an unbounded scoped limit attributed to pkg: the limit of
+// a package whose code is hidden, which may load any installed package.
 func hasScoped(p plugin.Partiality, reason, pkg string) bool {
 	for _, s := range p.Scoped {
-		if s.Reason == reason && s.Package == pkg && slices.Equal(s.Targets, []string{pkg}) {
+		if s.Reason == reason && s.Package == pkg && len(s.Targets) == 0 {
 			return true
 		}
 	}

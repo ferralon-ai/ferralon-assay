@@ -331,15 +331,18 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 	if layout.berry || layout.incomplete {
 		dflags.uninspectable = true
 	}
-	addScoped := func(reason, pkg, target string) {
-		dflags.scoped = append(dflags.scoped, plugin.ScopedReason{Reason: reason, Package: pkg, Targets: []string{target}})
+	// A package whose code is hidden (unread, rewritten by a patch, or compiled) can load any
+	// package Node's walk finds from it, declared or not: npm, yarn classic and pnpm's default
+	// hoisting put every installed package within reach, so its limit is unbounded.
+	addScoped := func(reason, pkg string) {
+		dflags.scoped = append(dflags.scoped, plugin.ScopedReason{Reason: reason, Package: pkg})
 	}
 	d := &depGraph{layout: layout, pkgs: map[string]*depPackage{}}
 	var depFiles []fileParse
 	// An unread package whose lock marks or may mark an install script withholds run-wide: the
 	// script runs at install whether or not anything loads the package.
 	unread := func(reason string, e *depEntry) {
-		addScoped(reason, e.purl, e.purl)
+		addScoped(reason, e.purl)
 		if e.lockInstallScript || e.scriptsUnknown {
 			dflags.uninspectable = true
 		}
@@ -361,7 +364,7 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		case p.pkg.installScript:
 			dflags.uninspectable = true
 		case p.pkg.native:
-			addScoped(plugin.PartialReasonUninspectablePackage, e.purl, e.purl)
+			addScoped(plugin.PartialReasonUninspectablePackage, e.purl)
 		}
 		if e.deps != nil {
 			// A pnpm or yarn classic package: a copy bundled in its tarball is not in the lock,
@@ -373,7 +376,7 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		}
 		if e.patched {
 			// The install rewrites this package's code; only its verified manifest facts hold.
-			addScoped(plugin.PartialReasonUninspectablePackage, e.purl, e.purl)
+			addScoped(plugin.PartialReasonUninspectablePackage, e.purl)
 			continue
 		}
 		d.pkgs[e.path] = p.pkg

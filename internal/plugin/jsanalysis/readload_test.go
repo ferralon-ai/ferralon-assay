@@ -141,20 +141,125 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 			withheld: true,
 		},
 		{
-			// A Create React App build also bundles the module entry, which this load would run.
+			// A Create React App build also bundles the module entry, which the lane does not parse.
 			name: "cra_front_entry_not_read",
 			run: func(t *testing.T) plugin.CallGraphResult {
 				f := newDepFixture(t, map[string]string{"package.json": craManifest, "src/index.js": namespaced},
-					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm/gone.js"}`}))
+					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm/entry"}`, "esm/entry": "export function run() {}\n"}))
 				return withDeps(t, f.dir, f.memStore())
 			},
 			withheld: true,
 		},
 		{
-			name: "cra_subpath_with_front_entry",
+			// A subpath load names a file; no resolver reads the module field for it.
+			name: "subpath_ignores_module_entry",
 			run: func(t *testing.T) plugin.CallGraphResult {
 				f := newDepFixture(t, map[string]string{"package.json": craManifest, "src/index.js": "require('dep/lib');\n"},
 					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm.js"}`, "esm.js": "export function run() {}\n", "lib.js": "module.exports = 1;\n"}))
+				return withDeps(t, f.dir, f.memStore())
+			},
+		},
+		{
+			// A webpack build loads the module entry, not main: both are linked from the load.
+			name: "module_entry_linked",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n", "webpack.config.js": "module.exports = { mode: 'production' };\n"},
+					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm.js"}`, "esm.js": "export function run() {}\n"}))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				if !hasEdge(cg.Edges, appInit, depInit) || !hasEdge(cg.Edges, appInit, "scip-typescript npm dep 1.0.0 esm/`<module-init>`().") {
+					t.Errorf("the load must link main and module entries; edges %+v", cg.Edges)
+				}
+			},
+		},
+		{
+			name:     "module_entry_not_parsed",
+			run:      fixture("require('dep');\n", plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm/entry"}`, "esm/entry": "export function run() {}\n"})),
+			withheld: true,
+		},
+		{
+			// A module entry naming no shipped file loads nothing: every resolver falls back.
+			name: "module_entry_missing",
+			run:  fixture("require('dep');\n", plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","module":"esm/gone.js"}`})),
+		},
+		{
+			// A Vite build swaps node.js for browser.js through the browser map: both are linked.
+			name: "browser_map_linked",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n", "vite.config.js": "export default {};\n"},
+					plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"node.js","browser":{"./node.js":"./browser.js"}}`, "index.js": "", "node.js": "exports.run = function run() {};\n", "browser.js": "exports.run = function run() {};\n"}))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				if !hasEdge(cg.Edges, appInit, "scip-typescript npm dep 1.0.0 node/`<module-init>`().") || !hasEdge(cg.Edges, appInit, "scip-typescript npm dep 1.0.0 browser/`<module-init>`().") {
+					t.Errorf("the load must link main and its browser replacement; edges %+v", cg.Edges)
+				}
+			},
+		},
+		{
+			name:     "browser_map_to_package",
+			run:      fixture("require('dep');\n", plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","browser":{"./index.js":"other"}}`})),
+			withheld: true,
+		},
+		{
+			name:     "browser_entry_not_parsed",
+			run:      fixture("require('dep');\n", plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","browser":"dist/dep.node"}`, "dist/dep.node": "\x7fELF"})),
+			withheld: true,
+		},
+		{
+			name: "bundler_alias",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n", "shim.js": "exports.run = function run() {};\n",
+					"webpack.config.js": "module.exports = { resolve: { alias: { dep: './shim.js' } } };\n"}, plain(nil))
+				return withDeps(t, f.dir, f.memStore())
+			},
+			withheld: true,
+		},
+		{
+			// Node loads sub/package.json's main, never sub/index.js (node v26).
+			name: "subpath_nested_main",
+			run: fixture("require('dep/sub');\n", plain(map[string]string{
+				"sub/package.json": `{"main":"./lib/real.js"}`, "sub/index.js": "exports.run = function run() {};\n", "sub/lib/real.js": "exports.run = function run() {};\n"})),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				if !hasEdge(cg.Edges, appInit, "scip-typescript npm dep 1.0.0 sub/lib/real/`<module-init>`().") || hasEdge(cg.Edges, appInit, "scip-typescript npm dep 1.0.0 sub/index/`<module-init>`().") {
+					t.Errorf("the load must link sub/lib/real.js alone; edges %+v", cg.Edges)
+				}
+			},
+		},
+		{
+			name: "subpath_nested_manifest_unparsed",
+			run: fixture("require('dep/sub');\n", plain(map[string]string{
+				"sub/package.json": `{"main":`, "sub/index.js": "exports.run = function run() {};\n"})),
+			withheld: true,
+		},
+		{
+			// Node loads the extensionless lib/entry, which the lane does not parse (node v26).
+			name:     "main_extensionless_beside_js",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"lib/entry"}`, "lib/entry": "exports.run = function run() {};\n", "lib/entry.js": "exports.run = function run() {};\n"})),
+			withheld: true,
+		},
+		{
+			// Nothing reaches never(), so its call's edge is filtered out and the call stays listed.
+			name: "call_edge_filtered",
+			run:  fixture("const { run } = require('dep');\nfunction never() { run(); }\n", plain(nil)),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				for _, u := range cg.Unresolved {
+					if u.Callee == "run" && u.Reason == plugin.PartialReasonDynamicDispatch {
+						return
+					}
+				}
+				t.Errorf("a call with no edge in the graph must stay listed; unresolved %+v", cg.Unresolved)
+			},
+		},
+		{
+			// A yarn berry lock beside the npm lock: the layout is berry and nothing is retracted.
+			name: "berry_mixed_lock",
+			run: func(t *testing.T) plugin.CallGraphResult {
+				f := newDepFixture(t, map[string]string{"index.js": namespaced, "tools/yarn.lock": "__metadata:\n  version: 6\n"}, plain(nil))
+				if l := buildDepLayout(context.Background(), f.dir); !l.berry {
+					t.Fatalf("fixture: want a berry layout")
+				}
 				return withDeps(t, f.dir, f.memStore())
 			},
 			withheld: true,
@@ -208,8 +313,18 @@ func TestDepGraph_ReadLoad(t *testing.T) {
 			withheld: true,
 		},
 		{
-			name:     "main_names_no_module",
-			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"lib/gone.js"}`})),
+			// Node falls back to index.js when main names no file (node v26).
+			name: "main_missing_falls_back_to_index",
+			run:  fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"lib/gone.js"}`})),
+			check: func(t *testing.T, cg plugin.CallGraphResult) {
+				if !hasEdge(cg.Edges, appInit, depInit) {
+					t.Errorf("the load must link index.js; edges %+v", cg.Edges)
+				}
+			},
+		},
+		{
+			name:     "main_missing_no_index",
+			run:      fixture(namespaced, plain(map[string]string{"package.json": `{"name":"dep","version":"1.0.0","main":"lib/gone.js"}`, "index.js": "", "lib.js": "exports.run = function run() {};\n"})),
 			withheld: true,
 		},
 		{

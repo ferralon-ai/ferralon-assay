@@ -86,9 +86,17 @@ func (rs *resolver) depTargets(fromModule, spec string, viaRequire bool) (*depEn
 }
 
 // entryModules selects the modules a subpath of a read package resolves to: its exports under
-// Node's conditions, else main then index for the package itself, else the file the subpath
-// names.
+// Node's conditions, else Node's LOAD_AS_DIRECTORY for the package itself, else Node's
+// LOAD_AS_FILE then LOAD_AS_DIRECTORY for the path the subpath names. With anyResolver set it is
+// loadCandidates instead, nil when that cannot bound the load.
 func (rs *resolver) entryModules(pkg *depPackage, sub string, viaRequire bool) []string {
+	if rs.anyResolver {
+		mods, ok := rs.loadCandidates(pkg, sub, viaRequire)
+		if !ok {
+			return nil
+		}
+		return mods
+	}
 	dir := pkg.entry.path
 	var out []string
 	add := func(m string) {
@@ -104,26 +112,281 @@ func (rs *resolver) entryModules(pkg *depPackage, sub string, viaRequire bool) [
 			}
 		}
 	case sub == ".":
-		if pkg.manifest.main != "" {
-			add(rs.depModuleAt(dir, pkg.manifest.main))
-		}
-		if len(out) == 0 {
-			add(rs.matchModule(path.Join(dir, "index")))
-		}
+		m, _ := rs.nodeDir(pkg, "")
+		add(m)
 	default:
-		add(rs.matchModule(stripJSExt(path.Join(dir, sub))))
+		if rel, ok := pkgJoin("", sub); ok {
+			m, _ := rs.nodePath(pkg, rel)
+			add(m)
+		}
 	}
 	sort.Strings(out)
 	return out
 }
 
-// depModuleAt resolves a path a read package's manifest names: the file itself when it is parsed
-// as its own module (a dual package's .mjs beside its .js), else the module it resolves to.
+// depModuleAt resolves a path a read package's manifest names: inside a read package, the module
+// of the file Node loads for it (nodeFile, else its index); elsewhere the file itself when it is
+// parsed as its own module, else the module it resolves to.
 func (rs *resolver) depModuleAt(dir, rel string) string {
+	if p, base := rs.prog.deps.readPkgRel(dir); p != nil {
+		r, ok := pkgJoin(base, rel)
+		if !ok {
+			return ""
+		}
+		if m, found := rs.nodeFile(p, r); found {
+			return m
+		}
+		m, _ := rs.nodeFile(p, path.Join(r, "index"))
+		return m
+	}
 	if exact := path.Join(dir, strings.TrimPrefix(rel, "./")); rs.prog.moduleSet[exact] && rs.prog.deps.owns(exact) {
 		return exact
 	}
 	return rs.moduleFromDirRelative(dir, rel)
+}
+
+// readPkgRel returns the read package whose files hold build-root-relative dir, with dir
+// relative to that package's root ("" for the root itself); nil when no read package does.
+func (d *depGraph) readPkgRel(dir string) (*depPackage, string) {
+	if d == nil {
+		return nil, ""
+	}
+	if p := d.pkgs[dir]; p != nil {
+		return p, ""
+	}
+	ip := installPathOf(dir + "/x")
+	if p := d.pkgs[ip]; ip != "" && p != nil {
+		return p, strings.TrimPrefix(dir, ip+"/")
+	}
+	return nil, ""
+}
+
+// pkgJoin joins a package-relative directory and a path a manifest or specifier names, reporting
+// false when the result leaves the package.
+func pkgJoin(base, rel string) (string, bool) {
+	j := path.Join(base, strings.TrimPrefix(rel, "./"))
+	switch {
+	case j == ".":
+		return "", true
+	case j == ".." || strings.HasPrefix(j, "../") || strings.HasPrefix(j, "/"):
+		return "", false
+	}
+	return j, true
+}
+
+// moduleOf is the module read package p's file rel is parsed as, or "" for a file the lane did
+// not parse (JSON, a native addon, an extensionless file, a source a sibling shadows).
+func (rs *resolver) moduleOf(p *depPackage, rel string) string {
+	if m, ok := p.modules[rel]; ok {
+		if id := p.entry.path + "/" + m; rs.prog.moduleSet[id] {
+			return id
+		}
+	}
+	return ""
+}
+
+// nodeFileExts are the extensions Node's LOAD_AS_FILE tries, in order, followed by the source
+// extensions a bundler also tries, which Node-mode resolution falls back to.
+var nodeFileExts = []string{".js", ".json", ".node", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", vueExtension}
+
+// nodeFile is LOAD_AS_FILE over read package p's files for package-relative rel: the exact file
+// first, then rel with each of nodeFileExts. found reports a file it selects; mod is that file's
+// module, "" when the lane did not parse it.
+func (rs *resolver) nodeFile(p *depPackage, rel string) (mod string, found bool) {
+	if rel != "" && p.files[rel] {
+		return rs.moduleOf(p, rel), true
+	}
+	for _, ext := range nodeFileExts {
+		if p.files[rel+ext] {
+			return rs.moduleOf(p, rel+ext), true
+		}
+	}
+	return "", false
+}
+
+// nodePath is LOAD_AS_FILE, then LOAD_AS_DIRECTORY, for package-relative rel.
+func (rs *resolver) nodePath(p *depPackage, rel string) (string, bool) {
+	if rel != "" {
+		if m, found := rs.nodeFile(p, rel); found {
+			return m, true
+		}
+	}
+	return rs.nodeDir(p, rel)
+}
+
+// nodeDir is LOAD_AS_DIRECTORY for package-relative directory rel: the file its package.json main
+// names (or that file's index), else its index. A package.json the lane cannot parse selects a
+// file it cannot name: found with no module.
+func (rs *resolver) nodeDir(p *depPackage, rel string) (string, bool) {
+	m, ok := p.manifestAt(rel)
+	if !ok {
+		return "", true
+	}
+	if m != nil && m.main != "" {
+		if r, inside := pkgJoin(rel, m.main); inside {
+			if mod, found := rs.nodeFile(p, r); found {
+				return mod, true
+			}
+			if mod, found := rs.nodeFile(p, path.Join(r, "index")); found {
+				return mod, true
+			}
+		}
+	}
+	return rs.nodeFile(p, path.Join(rel, "index"))
+}
+
+// manifestAt is the package.json of package-relative directory rel in read package p: nil when
+// the directory has none, ok false when it has one that does not parse.
+func (p *depPackage) manifestAt(rel string) (*pkgManifest, bool) {
+	if rel == "" {
+		return p.manifest, p.manifest != nil
+	}
+	if !p.files[rel+"/package.json"] {
+		return nil, true
+	}
+	m := p.nested[rel]
+	return m, m != nil
+}
+
+// loadExts are the extensions any resolver may append to a path a load names: Node's, and those
+// a bundler's resolve.extensions commonly lists.
+var loadExts = []string{".js", ".json", ".node", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".wasm", vueExtension}
+
+// loadCandidates is every module Node or a bundler may load for a bare load of subpath sub of
+// read package p: the exports targets under the load's conditions, plus what a resolver ignoring
+// exports selects (main, module, a browser string, index, or the file or directory the subpath
+// names, with a directory's own package.json read the same way), plus every path the browser
+// field maps a file to. ok is false when any of those is a file the lane did not parse, a
+// package.json it cannot parse, a browser mapping to another package, a path outside the
+// package, or when nothing at all is selected: what the load runs is then not bounded by what
+// was read.
+func (rs *resolver) loadCandidates(p *depPackage, sub string, viaRequire bool) ([]string, bool) {
+	c := &loadSet{rs: rs, p: p}
+	if ex := p.manifest.exports; ex != nil {
+		targets := exportsTargets(ex, sub, loadConditions(viaRequire))
+		if len(targets) == 0 {
+			return nil, false
+		}
+		for _, t := range targets {
+			r, ok := pkgJoin("", t)
+			if !isRelativeTarget(t) || !ok || !p.files[r] {
+				return nil, false
+			}
+			c.take(r)
+		}
+	}
+	if sub == "." {
+		c.dir("")
+	} else if r, ok := pkgJoin("", sub); ok {
+		c.path(r)
+	} else {
+		c.hidden = true
+	}
+	c.browserMap("", p.manifest)
+	if !c.found || c.hidden {
+		return nil, false
+	}
+	sort.Strings(c.mods)
+	return c.mods, true
+}
+
+// loadSet accumulates loadCandidates.
+type loadSet struct {
+	rs     *resolver
+	p      *depPackage
+	mods   []string
+	found  bool
+	hidden bool
+}
+
+// take adds package-relative file rel: JSON runs no code, and any other file the lane did not
+// parse hides what the load runs.
+func (c *loadSet) take(rel string) {
+	c.found = true
+	if path.Ext(rel) == ".json" {
+		return
+	}
+	m := c.rs.moduleOf(c.p, rel)
+	if m == "" {
+		c.hidden = true
+		return
+	}
+	if !slices.Contains(c.mods, m) {
+		c.mods = append(c.mods, m)
+	}
+}
+
+// file adds what any resolver loads for rel as a file: the exact file, else every file rel names
+// with one of loadExts. It reports whether there was one.
+func (c *loadSet) file(rel string) bool {
+	if rel != "" && c.p.files[rel] {
+		c.take(rel)
+		return true
+	}
+	any := false
+	for _, ext := range loadExts {
+		if c.p.files[rel+ext] {
+			c.take(rel + ext)
+			any = true
+		}
+	}
+	return any
+}
+
+// path adds what any resolver loads for rel: the file, else the directory.
+func (c *loadSet) path(rel string) {
+	if !c.file(rel) {
+		c.dir(rel)
+	}
+}
+
+// entry adds a path a package.json field names, as a file or else that path's index, and reports
+// whether there was one.
+func (c *loadSet) entry(base, t string) bool {
+	r, ok := pkgJoin(base, t)
+	if !ok {
+		c.hidden = true
+		return false
+	}
+	return c.file(r) || c.file(path.Join(r, "index"))
+}
+
+// dir adds what any resolver loads for directory rel: its package.json's main, module and
+// browser entries, and its index unless main selects a file.
+func (c *loadSet) dir(rel string) {
+	m, ok := c.p.manifestAt(rel)
+	if !ok {
+		c.hidden = true
+		return
+	}
+	mainFound := false
+	if m != nil {
+		if m.main != "" {
+			mainFound = c.entry(rel, m.main)
+		}
+		for _, t := range []string{m.module, m.browserMain} {
+			if t != "" {
+				c.entry(rel, t)
+			}
+		}
+		if rel != "" {
+			c.browserMap(rel, m)
+		}
+	}
+	if !mainFound {
+		c.file(path.Join(rel, "index"))
+	}
+}
+
+// browserMap adds every path a browser object field in directory rel maps a file to; one mapping
+// to another package hides what the load runs.
+func (c *loadSet) browserMap(rel string, m *pkgManifest) {
+	if m.browserBare {
+		c.hidden = true
+	}
+	for _, t := range m.browserMap {
+		c.entry(rel, t)
+	}
 }
 
 // frontEntryModules selects the modules a bundler building for the browser may load for a bare
@@ -174,7 +437,7 @@ func (rs *resolver) resolveDepBare(fromModule, spec, imported string, arity int,
 		return base
 	}
 	base.InstanceID = e.purl
-	if rs.prog.deps.pkgs[e.path] == nil {
+	if rs.prog.deps.pkgs[e.path] == nil || rs.anyResolver && len(mods) == 0 {
 		return base
 	}
 	if len(mods) == 1 {
@@ -422,7 +685,7 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 	}
 
 	if !layout.berry && !layout.incomplete {
-		coverReadPackages(prog, g)
+		coverReadPackages(prog, g, rewrite)
 	}
 	flags := mergeFlags(g.flags, dflags)
 	flags.scoped = sortedScoped(flags.scoped)
@@ -442,25 +705,36 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 }
 
 // coverReadPackages retracts the first-party declines that dependency code read into prog
-// covers. A load is covered when it runs only code the program read (readLoad); augment links
-// it to that code. A call is resolved again with dependency code attached: one that now
-// resolves to a function is no longer declined, and one into a read package that names no
-// single function, or that is unconnected, stays declined as dynamic dispatch. Every other
-// site keeps its decline, and g.flags.uninspectable is recomputed from what stays.
-func coverReadPackages(prog *program, g *graphBuild) {
+// covers. A load is covered when every module any resolver may load for it is read (readLoad)
+// and its load edge is in g; augment links each one. A call is resolved again with dependency
+// code attached and every resolver's candidates in play: one that now resolves to a function
+// whose edge is in g is no longer declined, and one into a read package that names no single
+// function, or whose edge is unconnected or absent, stays declined as dynamic dispatch. Every
+// other site keeps its decline, and g.flags.uninspectable is recomputed from what stays.
+func coverReadPackages(prog *program, g *graphBuild, rewrite func(string) string) {
 	rs := prog.resolver()
+	rs.anyResolver = true
+	linked := func(caller, callee string) bool {
+		return g.seen[plugin.CallEdge{Caller: sym(caller), Callee: sym(callee)}] ||
+			g.seen[plugin.CallEdge{Caller: sym(rewrite(caller)), Callee: sym(rewrite(callee))}]
+	}
 	drop := map[int]bool{}
 	for _, s := range g.pkgLoads {
-		if rs.readLoad(s.module, s.spec, s.viaRequire) {
+		mods, ok := rs.readLoad(s.module, s.spec, s.viaRequire)
+		for _, m := range mods {
+			ok = ok && linked(moduleInitSCIP(s.module), moduleInitSCIP(m))
+		}
+		if ok {
 			drop[s.at] = true
 		}
 	}
 	entered := g.entered
 	for _, s := range g.pkgCalls {
 		r := rs.resolveCallSite(s.module, s.cs)
-		_, ok := r.edge()
+		target, ok := r.edge()
+		caller := funcSCIP(s.module, s.cs.callerEnclosing, s.cs.callerName, s.cs.callerArity)
 		switch {
-		case ok && !s.cs.unconnected:
+		case ok && !s.cs.unconnected && linked(caller, target):
 			drop[s.at] = true
 		case ok, r.Kind == resolvePackage && r.Reason == plugin.PartialReasonDynamicDispatch:
 			// Code the program read: the call may land on any of its functions, none listed.
@@ -485,72 +759,41 @@ func coverReadPackages(prog *program, g *graphBuild) {
 	}
 }
 
-// readLoad reports whether a first-party load of bare specifier spec runs only code read into
-// the program: no paths alias, workspace member or self-reference claims it, the layout
-// resolves it to a read package (read, SRI-verified and unpatched: d.pkgs holds no other), and
-// every module that package's entry selects is read. A stock Create React App module also
-// loads the package's module and browser entries, so each of those must be read too.
-func (rs *resolver) readLoad(fromModule, spec string, viaRequire bool) bool {
+// readLoad returns the modules a first-party load of bare specifier spec may run and whether
+// those are all of them: no paths alias, workspace member, self-reference or bundler alias claims
+// it, the layout resolves it to a read package (read, SRI-verified and unpatched: d.pkgs holds no
+// other), and loadCandidates bounds it.
+func (rs *resolver) readLoad(fromModule, spec string, viaRequire bool) ([]string, bool) {
 	if !isDepSpecifier(spec) {
-		return false
+		return nil, false
 	}
 	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
-		return false
+		return nil, false
 	}
 	if _, _, _, ok := rs.workspaceMember(spec); ok {
-		return false
+		return nil, false
 	}
 	name, sub := splitBareSpecifier(spec)
 	if own, _ := rs.governingPackageJSON(fromModule); own != nil && own.name == name && own.exports != nil {
-		return false
+		return nil, false
+	}
+	if rs.bctx != nil {
+		for _, k := range []string{spec, name, name + "$"} {
+			if _, found, _ := rs.bctx.lookupAlias(k); found {
+				return nil, false
+			}
+		}
 	}
 	d := rs.prog.deps
 	e := d.layout.lookup(moduleDir(fromModule), name)
 	if e == nil {
-		return false
+		return nil, false
 	}
 	p := d.pkgs[e.path]
-	if p == nil || p.manifest == nil || !rs.entrySelectionRead(p, sub, viaRequire) {
-		return false
+	if p == nil || p.manifest == nil {
+		return nil, false
 	}
-	if stockCRAPackage(rs.prog.root, fromModule) {
-		if sub != "." && len(p.manifest.frontEntries) > 0 {
-			return false
-		}
-		for _, t := range p.manifest.frontEntries {
-			if rs.depModuleAt(e.path, t) == "" {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// entrySelectionRead reports whether every target a subpath of read package p selects, as
-// entryModules resolves it, is a read module (or JSON, which runs no code). A non-relative or
-// unresolvable target, an exports map selecting nothing, or a main naming no read module
-// leaves code the load may run unread.
-func (rs *resolver) entrySelectionRead(p *depPackage, sub string, viaRequire bool) bool {
-	dir := p.entry.path
-	switch {
-	case p.manifest.exports != nil:
-		targets := exportsTargets(p.manifest.exports, sub, loadConditions(viaRequire))
-		for _, t := range targets {
-			if !isRelativeTarget(t) {
-				return false
-			}
-			if path.Ext(t) != ".json" && rs.depModuleAt(dir, t) == "" {
-				return false
-			}
-		}
-		return len(targets) > 0
-	case sub == ".":
-		if p.manifest.main != "" {
-			return rs.depModuleAt(dir, p.manifest.main) != ""
-		}
-		return rs.matchModule(path.Join(dir, "index")) != ""
-	}
-	return rs.matchModule(stripJSExt(path.Join(dir, sub))) != ""
+	return rs.loadCandidates(p, sub, viaRequire)
 }
 
 // augment adds the edges dependency code contributes to aug: module loads, calls resolved
@@ -559,6 +802,9 @@ func (rs *resolver) entrySelectionRead(p *depPackage, sub string, viaRequire boo
 func augment(ctx context.Context, prog *program, firstParty, depFiles []fileParse, g, aug *graphBuild, flags *partialFlags) bool {
 	rs := prog.resolver()
 	pkgRS := &resolver{prog: prog, bctx: rs.bctx, packageOnly: true}
+	// anyRS links, besides what Node loads, every module a bundler may load for a bare load
+	// (loadCandidates), so coverReadPackages finds each one linked.
+	anyRS := &resolver{prog: prog, bctx: rs.bctx, anyResolver: true}
 	br := newBoundaryResolver(prog, pkgRS)
 	d := prog.deps
 
@@ -612,6 +858,8 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 				continue
 			}
 			_, mods := rs.depTargets(f.module, ls.spec, ls.viaRequire)
+			loadEdges(f, mods, loadAlgo(ls.viaRequire))
+			_, mods = anyRS.depTargets(f.module, ls.spec, ls.viaRequire)
 			loadEdges(f, mods, loadAlgo(ls.viaRequire))
 			if frontend(f.module) {
 				anyFrontend = true

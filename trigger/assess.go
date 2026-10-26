@@ -569,6 +569,20 @@ func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRe
 	b.WithPriority(func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig, claims) })
 }
 
+// withSignals records, on the provenance p a run is about to hand its Builder, which signals file
+// ranked the run's rows: Provenance.Intel.SignalsDigest is sig's Digest, which Load and Parse set only
+// after recomputing it from the file's payload. Every run that ranks with a request's Signals passes
+// its provenance through here, so a library caller's Report names the file as the CLI's does. With no
+// signals p is returned as it came: no Intel block, no digest. Disclosure only (inv. 5): nothing that
+// decides a verdict reads it.
+func withSignals(p report.Provenance, sig *intel.Signals) report.Provenance {
+	if sig == nil || sig.Digest == "" {
+		return p
+	}
+	p.Intel = &report.IntelProvenance{SignalsDigest: sig.Digest}
+	return p
+}
+
 // reachabilityEvidence derives the structured reachability evidence for a candidate
 // from the deterministic discovery artifacts: the strength grade, the ingress at the
 // path head, and the ingress→sink call frames. inv. 5: this is evidence strength, not

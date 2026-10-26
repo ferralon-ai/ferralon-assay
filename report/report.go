@@ -718,6 +718,10 @@ type Provenance struct {
 // from a fresh one. Without this block, "why did this go red with no code change?" — or
 // green — has no answer.
 //
+// The command line fills the whole block. trigger.Run* sets only SignalsDigest, the one input it
+// holds: how the work set was chosen and where the facts came from are known to the entrypoint that
+// resolved them, so on a library run the other fields are zero, meaning not recorded.
+//
 // It is DISCLOSURE, never a verdict (inv. 5). No finding's verdict, grounds, or count
 // depends on it; it narrows what the verdicts above cover, exactly as PartialityNote
 // does.
@@ -757,8 +761,10 @@ type IntelProvenance struct {
 	// bundle handed over without one). It records what was verified, not who should have signed.
 	CorpusSigner *CorpusSigner `json:"corpus_signer,omitempty"`
 	// SignalsDigest is the signals_digest of the EPSS/KEV signals file the pass ranked its findings
-	// with, as the file states it. Empty when the run had no signals, in which case no finding
-	// carries a Priority. Each priority value carries its own age stamp; this names the file.
+	// with: the value the loader recomputed from the file's payload, not the file's unverified
+	// claim. trigger.Run* records it from the request's Signals, so a library run and the command
+	// line name the file alike. Empty when the run had no signals, in which case no finding carries
+	// a Priority. Each priority value carries its own age stamp; this names the file.
 	SignalsDigest string `json:"signals_digest,omitempty"`
 }
 

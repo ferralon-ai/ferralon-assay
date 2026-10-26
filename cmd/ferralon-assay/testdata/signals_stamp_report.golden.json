@@ -1,0 +1,88 @@
+{
+  "schema_version": "tegron.report.v3",
+  "subject": {
+    "repo": "specimen",
+    "revision": "HEAD",
+    "resolved_commit": "0123456789abcdef"
+  },
+  "sbom": {
+    "packages": null
+  },
+  "advisories": [
+    {
+      "advisory": {
+        "id": "CVE-2025-8110",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-mq8m-42gh-wq7r",
+          "GO-2025-4225"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.91,
+        "epss_percentile": 0.99,
+        "epss_as_of": "2026-10-19",
+        "kev_listed": true,
+        "kev_catalog_version": "2026.10.19",
+        "kev_date_released": "2026-10-19T18:00:00Z"
+      }
+    },
+    {
+      "advisory": {
+        "id": "GO-2021-0113",
+        "source": "osv",
+        "aliases": [
+          "CVE-2021-38561",
+          "GHSA-ppp9-7jff-5vj2"
+        ]
+      },
+      "package": {
+        "ecosystem": "Go",
+        "name": "golang.org/x/text",
+        "version": "v0.3.6",
+        "purl": "pkg:golang/golang.org/x/text",
+        "direct": false
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.0123,
+        "epss_percentile": 0.456,
+        "epss_as_of": "2026-09-01"
+      }
+    }
+  ],
+  "partiality": [
+    {
+      "reason": "dynamic_dispatch",
+      "ecosystem": "Go",
+      "class": "inherent_limit"
+    },
+    {
+      "reason": "unsupported_phase1",
+      "ecosystem": "Go",
+      "detail": "dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem",
+      "class": "did_not_run"
+    }
+  ],
+  "provenance": {
+    "commit_sha": "0123456789abcdef",
+    "analyzer_version": "ferralon-assay/dev",
+    "advisory_cursor": "",
+    "timestamp": "2026-10-26T00:00:00Z",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 2,
+      "fact_source": "builtin_table",
+      "signals_digest": "sha256:e4f2193b5cb252760dedfa7c4f3260d6fb99b26256db9bbb7400d0e181c7c220"
+    }
+  }
+}

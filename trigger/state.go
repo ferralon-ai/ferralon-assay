@@ -210,12 +210,12 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// THIS run's work-set limits too. Inheriting findings does not inherit the reason the
 	// PR run's own work set was narrower than intended.
 	b.AddPartiality(req.WorkSetLimits...)
-	b.WithProvenance(report.Provenance{
+	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
 		AdvisoryCursor:  cursorOr(req.Cursor, baseline.Provenance.AdvisoryCursor),
 		Timestamp:       time.Now().UTC(),
-	})
+	}, req.Signals))
 	b.WithBaseline(baselinePointer(baseline, state))
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	rep := b.Build()
@@ -320,12 +320,12 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	b.AddPartiality(notes...)
 	b.AddPartiality(req.WorkSetLimits...)
 
-	b.WithProvenance(report.Provenance{
+	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
 		AdvisoryCursor:  cursorOr(req.Cursor, baseline.Provenance.AdvisoryCursor),
 		Timestamp:       time.Now().UTC(),
-	})
+	}, req.Signals))
 	b.WithBaseline(baselinePointer(baseline, state))
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
@@ -491,12 +491,12 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.AddPartiality(prior.Partiality...)
 	b.AddPartiality(notes...)
 
-	b.WithProvenance(report.Provenance{
+	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       stateCommit(prior, req.Subject.ResolvedCommit),
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
 		AdvisoryCursor:  newCursor,
 		Timestamp:       time.Now().UTC(),
-	})
+	}, req.Signals))
 	if prior.Baseline != nil {
 		b.WithBaseline(*prior.Baseline)
 	}

@@ -55,8 +55,8 @@ func cgoScope(t *testing.T, p plugin.Partiality) (runWide bool, targets []string
 // TestLoadProgram_CgoDisabledBuildDeclaresDroppedCgo: with cgo off, a cgo file vanishes from the
 // build with no runtime/cgo left to trip the call-graph detector, so the load itself must say so.
 // The dropped file is Go code no analysis reads, so it may call anything it can reach; the limit
-// is bounded to the build's modules plus the dropped file's imports, and unbounded when one of
-// those imports is a package the build never loaded.
+// is bounded to the build's modules, the standard library and the dropped file's imports, and
+// unbounded when one of those imports is a package the build never loaded.
 func TestLoadProgram_CgoDisabledBuildDeclaresDroppedCgo(t *testing.T) {
 	t.Setenv("CGO_ENABLED", "0")
 	const pure = "//go:build !cgo\n\npackage m\n\nfunc Run() {}\n"
@@ -72,13 +72,13 @@ func TestLoadProgram_CgoDisabledBuildDeclaresDroppedCgo(t *testing.T) {
 		wantRunWide bool
 		wantTargets []string
 	}{
-		{"cgo variant dropped", map[string]string{"run.go": pure, "run_cgo.go": cgo}, "", false, []string{""}},
+		{"cgo variant dropped", map[string]string{"run.go": pure, "run_cgo.go": cgo}, "", false, []string{"", stdlibPURL}},
 		{"dropped variant imports an unloaded standard-library package", map[string]string{"run.go": pure, "run_cgo.go": cgoStdlib}, "", false, []string{"", stdlibPURL}},
 		{"dropped variant imports a package the build never loaded", map[string]string{"run.go": pure, "run_cgo.go": cgoUnloaded}, "", true, nil},
 		{"cgo file excluded by a tag, not by cgo", map[string]string{"run.go": pure, "gen.go": ignored}, "", false, nil},
 		{"no cgo at all", map[string]string{"run.go": pure}, "", false, nil},
 		{"tagged cgo file, tag not set", map[string]string{"run.go": pure, "prod_cgo.go": prodCgo}, "", false, nil},
-		{"tagged cgo file, tag set in GOFLAGS", map[string]string{"run.go": pure, "prod_cgo.go": prodCgo}, "-tags=prod", false, []string{""}},
+		{"tagged cgo file, tag set in GOFLAGS", map[string]string{"run.go": pure, "prod_cgo.go": prodCgo}, "-tags=prod", false, []string{"", stdlibPURL}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +95,23 @@ func TestLoadProgram_CgoDisabledBuildDeclaresDroppedCgo(t *testing.T) {
 				t.Errorf("complete = %v with cgo declared = %v", res.Partiality.Complete, runWide || targets != nil)
 			}
 		})
+	}
+}
+
+// TestCallGraph_UnboundedDroppedCgoStaysRunWide: a dropped cgo file importing a package the build
+// never loaded could reach anything, so the call graph keeps cgo as a run-wide reason.
+func TestCallGraph_UnboundedDroppedCgoStaysRunWide(t *testing.T) {
+	t.Setenv("CGO_ENABLED", "0")
+	const main = "package main\n\nimport \"example.com/m/c\"\n\nfunc main() { c.Run() }\n"
+	const pure = "//go:build !cgo\n\npackage c\n\nfunc Run() {}\n"
+	const cgo = "//go:build cgo\n\npackage c\n\n// void run(void) {}\nimport \"C\"\nimport \"example.org/absent\"\n\nfunc Run() { C.run(); absent.Do() }\n"
+	dir := writeModule(t, map[string]string{"main.go": main, "c/run.go": pure, "c/run_cgo.go": cgo})
+	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runWide, targets := cgoScope(t, cg.Partiality); !runWide || targets != nil {
+		t.Errorf("cgo run-wide = %v targets = %v, want run-wide only (partiality %+v)", runWide, targets, cg.Partiality)
 	}
 }
 
@@ -134,6 +151,44 @@ func TestCallGraph_CompiledCgoIsScoped(t *testing.T) {
 			}
 			if cg.Partiality.Complete {
 				t.Error("a graph with a scoped limit must not be complete")
+			}
+		})
+	}
+}
+
+// TestCallGraph_StandardLibraryCgoIsNoLimit: the standard library's plugin package compiles with
+// cgo, but its C only calls dlopen, so importing it holds no cgo limit; whether the program loads
+// a plugin is the call graph's plugin_load, declared only when plugin.Open is reached.
+func TestCallGraph_StandardLibraryCgoIsNoLimit(t *testing.T) {
+	t.Setenv("CGO_ENABLED", "1")
+	cc, err := exec.Command("go", "env", "CC").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.LookPath(strings.Fields(string(cc) + " cc")[0]); err != nil {
+		t.Skip("no C compiler")
+	}
+	const head = "package main\n\nimport \"plugin\"\n\nvar _ = plugin.Open\n\n"
+	cases := []struct {
+		name string
+		main string
+		want []string
+	}{
+		{"plugin imported, Open never reached", "func main() {}\n", nil},
+		{"plugin.Open reached", "func main() { _, _ = plugin.Open(\"x.so\") }\n", []string{plugin.PartialReasonPluginLoad}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeModule(t, map[string]string{"main.go": head + tc.main})
+			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runWide, targets := cgoScope(t, cg.Partiality); runWide || targets != nil {
+				t.Errorf("cgo run-wide = %v targets = %v, want no cgo limit (partiality %+v)", runWide, targets, cg.Partiality)
+			}
+			if !reflect.DeepEqual(cg.Partiality.Reasons, tc.want) {
+				t.Errorf("reasons = %v, want %v", cg.Partiality.Reasons, tc.want)
 			}
 		})
 	}

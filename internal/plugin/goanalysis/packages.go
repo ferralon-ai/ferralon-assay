@@ -64,9 +64,10 @@ type LoadResult struct {
 	Packages   []*packages.Package
 	Partiality plugin.Partiality
 
-	// cgo bounds every cgo boundary in the build (cgoLimits); nil when the build has none or no
-	// bound holds, in which case cgo stays a run-wide reason.
-	cgo []plugin.ScopedReason
+	// cgo bounds every cgo boundary in the build (cgoLimits) when cgoBounded; otherwise cgo stays a
+	// run-wide reason.
+	cgo        []plugin.ScopedReason
+	cgoBounded bool
 }
 
 // LoadProgram loads the buildable module rooted at buildDir with full type and
@@ -130,7 +131,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		part.Scoped = cgo
 	}
 
-	return &LoadResult{Packages: pkgs, Partiality: part, cgo: cgo}, nil
+	return &LoadResult{Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded}, nil
 }
 
 // cgoLimits bounds what the cgo boundaries in the build can hide from the analysis, as one
@@ -149,15 +150,18 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 //     the only thing such a limit can exclude. A dropped file importing a package the build did not
 //     load leaves its module unknown, and no bound holds.
 //
-// A compiled standard-library plugin package bounds nothing: plugin.Open loads Go code the build
-// never saw, which may call anything.
+// The standard library's own cgo (the net resolver, os/user lookups, plugin's dlopen) that C cannot
+// call back from holds no cgo module: its C calls only the C library, its Go side is in the graph,
+// and an advisory on the standard library names Go symbols. Whether plugin.Open is reached is
+// declared by the call graph, not here: as plugin_load (runTimeCalls), or, reached reflectively, as
+// reflection:call.
 //
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
 func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, dropped, bounded bool) {
 	tags := goflagsTags(env)
 	cgoMods := map[string]string{} // module PURL -> one cgo package path in it
 	every := map[string]bool{"": true}
-	callbacks, unreadable, pluginLoad := false, false, false
+	callbacks, unreadable := false, false
 	var droppedImports []string
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		every[modulePURL(p)] = true
@@ -165,9 +169,12 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			return
 		}
 		_, compiled := p.Imports["runtime/cgo"]
-		pluginLoad = pluginLoad || (compiled && p.Module == nil && p.PkgPath == "plugin")
 		files := cgoFilesDropped(p, tags)
 		if !compiled && len(files) == 0 {
+			return
+		}
+		callsBack := compiled && (exportsToC(p.GoFiles) || hasForeignObjects(p.OtherFiles))
+		if p.Module == nil && isStdlibPath(p.PkgPath, nil) && !callsBack {
 			return
 		}
 		if mod := modulePURL(p); cgoMods[mod] == "" || p.PkgPath < cgoMods[mod] {
@@ -181,14 +188,12 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 				droppedImports = append(droppedImports, imps...)
 			}
 		}
-		if compiled && (exportsToC(p.GoFiles) || hasForeignObjects(p.OtherFiles)) {
-			callbacks = true
-		}
+		callbacks = callbacks || callsBack
 	})
 	if len(cgoMods) == 0 {
 		return nil, false, true
 	}
-	if unreadable || pluginLoad {
+	if unreadable {
 		return nil, dropped, false
 	}
 
@@ -202,6 +207,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		for mod := range every {
 			targets[mod] = true
 		}
+		targets[stdlibPURL] = true
 		for _, imp := range droppedImports {
 			switch {
 			case imp == "C" || loaded[imp]:

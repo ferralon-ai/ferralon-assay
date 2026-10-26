@@ -73,7 +73,8 @@ func reflectReachOf(res *LoadResult) (reasons []string, reach map[string][]strin
 //   - every function a live function uses as a value, once reflect's Call or CallSlice, or a
 //     template's Execute, is live, and otherwise those whose signature matches a live dynamic call,
 //     which a function value reflection materialized can reach, and those of the signature
-//     reflect's MakeFunc wraps, which reflect calls itself.
+//     reflect's MakeFunc wraps or of a finalizer runtime.SetFinalizer sets, which reflect and the
+//     runtime call themselves.
 //
 // Each of those becomes live in turn, until nothing changes. It returns the reasons runTimeCallees
 // declares for the live functions, and what the roots of those calls reach outside govulncheck's own
@@ -192,6 +193,9 @@ func (f *reflectFixpoint) scan(fn *ssa.Function) {
 					f.addInvoke(c.Method)
 				case c.StaticCallee() != nil:
 					callee = &c.Value
+					if obj, ok := c.StaticCallee().Object().(*types.Func); ok && obj.FullName() == "runtime.SetFinalizer" {
+						f.addFinalizer(c.Args[1])
+					}
 				default:
 					if sig, ok := c.Value.Type().Underlying().(*types.Signature); ok {
 						f.addDynamic(sig)
@@ -205,6 +209,22 @@ func (f *reflectFixpoint) scan(fn *ssa.Function) {
 			}
 		}
 	}
+}
+
+// addFinalizer records the finalizer a live call to runtime.SetFinalizer sets. The runtime calls it
+// from no call site in Go code, so it is reached as a dynamic call of its signature would reach it;
+// a finalizer whose function type the call does not show could be any function value.
+func (f *reflectFixpoint) addFinalizer(v ssa.Value) {
+	if c, ok := v.(*ssa.Const); ok && c.IsNil() {
+		return
+	}
+	if mi, ok := v.(*ssa.MakeInterface); ok {
+		if sig, ok := mi.X.Type().Underlying().(*types.Signature); ok {
+			f.addDynamic(sig)
+			return
+		}
+	}
+	f.openCallGate()
 }
 
 func (f *reflectFixpoint) openMethodGate() {
@@ -328,6 +348,11 @@ func (f *reflectFixpoint) addValued(fn *ssa.Function) {
 	}
 	f.valuedSigs.Set(sig, append(fns, fn))
 	f.valued = append(f.valued, fn)
+	if obj, ok := fn.Object().(*types.Func); ok && obj.FullName() == "runtime.SetFinalizer" {
+		// Called through a function value, SetFinalizer shows no call site whose finalizer the
+		// fixpoint can read, so the finalizer could be any function value.
+		f.openCallGate()
+	}
 	if f.callGate || f.dynamic.At(sig) != nil {
 		f.root(fn)
 	}

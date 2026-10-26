@@ -213,7 +213,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		if len(files) > 0 {
 			dropped, callbacks = true, true
 			for _, f := range files {
-				imps, _, err := fileImports(f)
+				_, imps, _, err := fileImports(f)
 				unreadable = unreadable || err != nil
 				droppedImports = append(droppedImports, imps...)
 			}
@@ -378,8 +378,9 @@ func goflagsTags(env []string) []string {
 // A file may call into a module when it imports a package of module, a loaded package that imports
 // one, or a package the build did not load whose module is module, holds it, or requires it in the
 // module graph. A file that cannot be read counts, as does an unloaded import when the module graph
-// cannot be read or holds no module for it. A file constrained by the ignore tag is never built and does
-// not count.
+// cannot be read or holds no module for it. A file left out of a loaded package that reaches module
+// through the load counts whatever it imports, unless its package clause names another package. A file
+// constrained by the ignore tag is never built and does not count.
 //
 // When module is the standard library, the packages that count are its vulnerable ones (vulnerable,
 // or every standard-library package when that is empty), and a file counts when it imports one
@@ -432,17 +433,21 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		return owner == "" || underModule(module, owner) || graph.requires(owner, module)
 	}
 
-	// leftOut reports whether the non-test Go file at path may call into module.
-	leftOut := func(path string) bool {
+	// leftOutOf reports whether the non-test Go file at path may call into module. A file of package
+	// own, when own reaches module, may whatever it imports: it can call any of that package's
+	// functions, and govulncheck traced only the ones the build calls. A file whose package clause
+	// names another package never compiles into own.
+	leftOutOf := func(path string, own string) bool {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return false
 		}
-		imports, never, err := fileImports(path)
+		name, imports, never, err := fileImports(path)
 		if err != nil {
 			return true
 		}
-		return !never && slices.ContainsFunc(imports, mayCall)
+		return !never && ((own != "" && name == own) || slices.ContainsFunc(imports, mayCall))
 	}
+	leftOut := func(path string) bool { return leftOutOf(path, "") }
 
 	found := false
 	loadedDirs := map[string]bool{}
@@ -459,7 +464,11 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 				loadedDirs[filepath.Dir(f)] = true
 			}
 		}
-		found = slices.ContainsFunc(p.IgnoredFiles, leftOut)
+		own := ""
+		if reach.reachesModule(p) {
+			own = p.Name
+		}
+		found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own) })
 		return !found
 	}, nil)
 	if found {
@@ -627,12 +636,12 @@ func firstPartyLeftOut(root string, loadedDirs map[string]bool, leftOut func(str
 	return found
 }
 
-// fileImports returns the import paths of the Go file at path, and whether the ignore tag
-// constrains it so that no build compiles it.
-func fileImports(path string) (imports []string, never bool, err error) {
+// fileImports returns the package name and import paths of the Go file at path, and whether the
+// ignore tag constrains it so that no build compiles it.
+func fileImports(path string) (name string, imports []string, never bool, err error) {
 	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly|parser.ParseComments)
 	if err != nil {
-		return nil, false, err
+		return "", nil, false, err
 	}
 	for _, g := range f.Comments {
 		if g.Pos() >= f.Package {
@@ -652,11 +661,11 @@ func fileImports(path string) (imports []string, never bool, err error) {
 	for _, imp := range f.Imports {
 		p, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
-			return nil, false, err
+			return "", nil, false, err
 		}
 		imports = append(imports, p)
 	}
-	return imports, never, nil
+	return f.Name.Name, imports, never, nil
 }
 
 // underModule reports whether the import path is module's own path or a package inside it.

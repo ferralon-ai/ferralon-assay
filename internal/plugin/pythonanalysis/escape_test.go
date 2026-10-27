@@ -394,6 +394,15 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			kept:    []string{funcSCIP("n", nil, "target", 3)},
 		},
 		{
+			name: "defaulted callee edged from one site escapes from another",
+			files: map[string]string{
+				"a.py": "def g(x, y=1, z=2):\n    return x\n",
+				"c.py": "from a import g\n\ndef one():\n    return g(1, 2)\n",
+				"d.py": "from a import g\n\ndef two():\n    return g(1)\n",
+			},
+			escaped: []string{funcSCIP("a", nil, "g", 3)},
+		},
+		{
 			name:    "module used as value",
 			files:   map[string]string{"pkg/__init__.py": "", "pkg/handlers.py": "def on_a(x):\n    return x\n", "pkg/wire.py": "from . import handlers\nREG = [handlers]\n"},
 			escaped: []string{funcSCIP("pkg/handlers", nil, "on_a", 1)},

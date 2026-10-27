@@ -242,8 +242,8 @@ func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) 
 // The standard library's own cgo (the net resolver, os/user lookups, plugin's dlopen) that C cannot
 // call back from holds no cgo module: its C calls only the C library, its Go side is in the graph,
 // and an advisory on the standard library names Go symbols. Whether plugin.Open is reached is
-// declared by the call graph, not here: as plugin_load (runTimeCalls), or, reached reflectively, as
-// reflection:call.
+// declared by the call graph, not here: as plugin_load (runTimeCalls), whether it is reached
+// directly or reflectively.
 //
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
 func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, dropped, bounded bool) {

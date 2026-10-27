@@ -36,9 +36,10 @@ import (
 //     attribute name;
 //   - its file reaches names by computed access: getattr, globals(), vars(), locals(),
 //     __dict__, eval/exec, __import__, operator.attrgetter/methodcaller, inspect.getmembers,
-//     sys.modules, or an import whose module the scanner cannot name. A dynamic import or
-//     sys.modules lookup whose module is computed adds dynamic_import, which withholds the
-//     verdict, rather than escaping every module.
+//     sys.modules, or an import whose module the scanner cannot name. Module lookups are
+//     read by an allow-list of literal forms (moduleLookups); any other reference to
+//     sys.modules, import_module or __import__, under whatever name the file binds them to,
+//     adds dynamic_import, which withholds the verdict, rather than escaping every module.
 //
 // Every module's top-level frame outside test code escapes too, since any import may run it.
 // A function that matches none of these can only run through a visible direct call.

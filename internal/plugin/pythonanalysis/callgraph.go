@@ -480,8 +480,9 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // sits under a non-route decorator, or lives in a file that reaches names by computed
 // access. A name an import binds to a first-party function under another name resolves to
 // that function, through any chain of re-exports, but only at a call site whose file holds
-// the binding in scope: a parameter or local of the same name, or a dependency receiver,
-// keeps the edges the name alone gives.
+// the binding in scope. A parameter, local or dependency import that is the deciding
+// scope's only binding of the name, a lambda parameter or comprehension variable in the
+// same statement, or a dependency receiver keeps the edges the name alone gives.
 //
 // The graph is ALWAYS declared Partial(dynamic_dispatch): a lexical Python scanner cannot
 // see dynamic dispatch, getattr, decorator-rewriting, or monkeypatched edges, so it is

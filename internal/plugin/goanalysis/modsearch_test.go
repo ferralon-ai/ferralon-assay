@@ -446,6 +446,12 @@ func vendor(t *testing.T, app string) {
 	}
 }
 
+func TestDependencyHolds_UnreadableBuildList(t *testing.T) {
+	if dependencyHolds(context.Background(), t.TempDir(), "example.com/a") {
+		t.Fatal("a build list that cannot be read holds a dependency path; the advisory would resolve nothing")
+	}
+}
+
 func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 	reader := map[string]string{"app/reader.go": "package main\n\ntype Reader struct{}\n\nfunc (*Reader) Verify() error { return nil }\n\nfunc Verify() bool { return true }\n"}
 	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nvar X = 1\n"}}

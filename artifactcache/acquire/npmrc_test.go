@@ -219,6 +219,11 @@ func TestPolicyForRequireAuth(t *testing.T) {
 			if reg.AuthConfigured != tt.configured {
 				t.Fatalf("AuthConfigured = %v, want %v", reg.AuthConfigured, tt.configured)
 			}
+			// Credentialed is that same resolution, which decides where the bytes may be kept.
+			purl := "pkg:npm/" + strings.Replace(tt.pkg, "@", "%40", 1) + "@1.0.0"
+			if got, err := cfg.PolicyFor(tt.pkg).Credentialed(purl); err != nil || got != tt.configured {
+				t.Fatalf("Credentialed(%s) = %v, %v; want %v", purl, got, err, tt.configured)
+			}
 		})
 	}
 }

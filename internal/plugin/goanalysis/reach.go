@@ -552,7 +552,7 @@ func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult,
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
 	vulnerable := scanned.vulnerablePackages(module)
-	if scanned.wholeModule[module] {
+	if scanned.wholeModule[module] || len(scanned.imports[module]) == 0 {
 		vulnerable = nil
 	}
 	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {

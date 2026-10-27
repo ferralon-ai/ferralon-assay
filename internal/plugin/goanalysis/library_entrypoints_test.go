@@ -32,7 +32,7 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 	moduleFinding := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
 	stdlibFinding := vulnScan{
 		findings: []vulnFinding{{OSV: "GO-2", Trace: []vulnFrame{{Module: "stdlib", Version: "v1.22.0"}}}},
-		imports:  map[string][]string{"stdlib": {"strconv"}},
+		imports:  map[string][]string{"stdlib": {"encoding/xml"}},
 	}
 	const module = "which reach example.com/vulnmod"
 	cases := []struct {
@@ -121,7 +121,7 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		}, moduleFinding, false, "imports example.com/m/a, example.com/m/b, example.com/m/c, example.com/m/d, example.com/m/e, 1 more, " + module,
 			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
 		{"none, standard-library refutation", "none", map[string]string{
-			"lib/lib.go": "package lib\n\nimport \"strconv\"\n\nfunc Itoa(i int) string { return strconv.Itoa(i) }\n",
+			"lib/lib.go": "package lib\n\nimport \"encoding/xml\"\n\nfunc New() *xml.Decoder { return xml.NewDecoder(nil) }\n",
 		}, stdlibFinding, false, "imports example.com/m/lib, which reach a vulnerable standard-library package",
 			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
 		{"auto plus a program path, a test helper that does not type-check", "auto,cmd/tool", map[string]string{

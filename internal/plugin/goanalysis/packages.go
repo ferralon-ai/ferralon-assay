@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -405,10 +404,10 @@ func goflagsTags(env []string) []string {
 	return tags
 }
 
-// leftOutCallers reports whether a non-test Go file the build left out of a non-standard-library
-// package (one for another GOOS or GOARCH, or behind a build tag) may call into module. No
-// package's syntax holds such a file, so govulncheck traced no call from it, yet a build for that
-// platform or with that tag compiles it.
+// leftOutCallers reports whether a non-test Go file the build left out of a package (one for another
+// GOOS or GOARCH, or behind a build tag) may call into module. No package's syntax holds such a
+// file, so govulncheck traced no call from it, yet a build for that platform or with that tag
+// compiles it.
 //
 // A file may call into a module when it imports, directly or through other packages, one of the
 // module's packages that count: the advisory's vulnerable packages (vulnerable), or every package of
@@ -418,17 +417,21 @@ func goflagsTags(env []string) []string {
 // any build configuration that compiles it (sourceImports). An unloaded import counts outright when
 // its directory or one of its files cannot be read, when the module graph cannot be read, or when no
 // module in it holds the import; one from a module that neither is nor requires module does not
-// count. A file that cannot be read counts. A file left out of a loaded package that reaches a package
-// that counts through the load counts whatever it imports, unless its package clause names another
-// package. A file constrained by the ignore tag is never built and does not count, nor, when release
-// is the Go release the build compiles under, is a file whose goN.M build tags alone exclude it from
-// every build under that release (releaseExcluded); the files of an unloaded import are read the same
-// way.
+// count, nor does a standard-library one. A path with no dot in its first element is the standard
+// library's only when no module in the graph holds it. A file that cannot be read counts. A file left
+// out of a loaded package that reaches a package that counts through the load counts whatever it
+// imports, unless its package clause names another package. A file constrained by the ignore tag is
+// never built and does not count, nor, when release is the Go release the build compiles under, is a
+// file whose goN.M build tags alone exclude it from every build under that release
+// (releaseExcluded); the files of an unloaded import are read the same way.
 //
 // When module is the standard library, the packages that count are its vulnerable ones, or every
-// standard-library package when vulnerable is empty. An unloaded standard-library import is followed
-// through the imports `go list` resolves for it under the scan's own GOOS and the common ports, and
-// counts when no port lists it cleanly.
+// standard-library package when vulnerable is empty. Every unloaded import is followed, the standard
+// library's own included, and the files the build left out of the standard library's loaded packages
+// are left-out files too: another platform's file may call what the scan's own platform never
+// reaches. The golang.org/x packages the standard library imports resolve to its vendored copies.
+// Outside a standard-library refutation, the standard library's own files are not checked: it
+// imports no module.
 func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	reach.vulnerableOnly = true
@@ -436,8 +439,6 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 	var graph modGraph
 	var graphErr error
 	graphRead := false
-	deps := importGraph{}
-	listed := map[string]bool{}
 	src := sourceImports{}
 	built := func(expr constraint.Expr) bool {
 		return !ignored(expr) && (release == nil || !releaseExcluded(expr, *release))
@@ -455,17 +456,6 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if imp == "C" {
 			return false, false
 		}
-		if isStdlibPath(imp, reach.modules) {
-			if !stdlib {
-				return false, false
-			}
-			clean, ok := listed[imp]
-			if !ok {
-				clean = deps.list(ctx, buildDir, env, imp)
-				listed[imp] = clean
-			}
-			return !clean || deps.reaches(imp, func(path string) bool { return reach.inModule(path, reach.loaded[path]) }), false
-		}
 		if !stdlib {
 			if !graphRead {
 				graph, graphErr = readModGraph(ctx, buildDir, env)
@@ -474,6 +464,11 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 			if graphErr != nil {
 				return true, false
 			}
+		}
+		if !stdlib && isStdlibPath(imp, reach.modules) && graph.owner(imp, reach.modules) == "" {
+			return false, false
+		}
+		if !stdlib {
 			owner := graph.owner(imp, reach.modules)
 			if owner == "" {
 				return true, false
@@ -514,7 +509,11 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 					v = true
 					break
 				}
+				vendored := stdlib && isStdlibPath(p, reach.modules)
 				for _, next := range imports {
+					if vendored && !isStdlibPath(next, nil) {
+						next = "vendor/" + next
+					}
 					if !seen[next] {
 						seen[next] = true
 						frontier = append(frontier, next)
@@ -530,7 +529,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 	// own, when own reaches a package that counts, may whatever it imports: it can call any of that
 	// package's functions, and govulncheck traced only the ones the build calls. A file whose package
 	// clause names another package never compiles into own.
-	leftOutOf := func(path string, own string) bool {
+	leftOutOf := func(path string, own string, std bool) bool {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return false
 		}
@@ -541,15 +540,33 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if !built(expr) {
 			return false
 		}
+		if std {
+			// The standard library resolves the golang.org/x packages it imports to its own vendor copies.
+			for i, imp := range imports {
+				if !isStdlibPath(imp, nil) {
+					imports[i] = "vendor/" + imp
+				}
+			}
+		}
 		return (own != "" && name == own) || slices.ContainsFunc(imports, mayCall)
 	}
-	leftOut := func(path string) bool { return leftOutOf(path, "") }
+	leftOut := func(path string) bool { return leftOutOf(path, "", false) }
 
 	found := false
 	loadedDirs := map[string]bool{}
 	mainDir := ""
 	packages.Visit(pkgs, func(p *packages.Package) bool {
-		if found || p.Module == nil {
+		if found {
+			return false
+		}
+		if p.Module == nil {
+			if stdlib && isStdlibPath(p.PkgPath, reach.modules) {
+				own := ""
+				if reach.reachesModule(p) {
+					own = p.Name
+				}
+				found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own, true) })
+			}
 			return !found
 		}
 		if p.Module.Main && mainDir == "" {
@@ -564,7 +581,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if reach.reachesModule(p) {
 			own = p.Name
 		}
-		found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own) })
+		found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own, false) })
 		return !found
 	}, nil)
 	if found {
@@ -637,72 +654,6 @@ func (r *moduleReach) reachesModule(p *packages.Package) bool {
 	}
 	r.reaches[p] = v
 	return v
-}
-
-// importGraph is a package import graph `go list -deps` resolves, unioned over every port it ran for.
-type importGraph map[string][]string
-
-// list adds imp and its dependencies, as `go list -deps` resolves them under the scan's own GOOS and
-// each of the common ports, and reports whether any port listed them all without error. A left-out
-// file is most often one for another of those ports, so its imports resolve there.
-func (g importGraph) list(ctx context.Context, buildDir string, env []string, imp string) bool {
-	ports := []string{envOr(env, "GOOS", runtime.GOOS)}
-	for _, goos := range []string{"linux", "darwin", "windows"} {
-		if !slices.Contains(ports, goos) {
-			ports = append(ports, goos)
-		}
-	}
-	clean := false
-	for _, goos := range ports {
-		cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-f", "{{.ImportPath}}{{if or .Error .DepsErrors}} !{{end}}{{range .Imports}} {{.}}{{end}}", imp)
-		cmd.Dir = buildDir
-		cmd.Env = append(slices.Clip(env), "GOOS="+goos)
-		out, err := cmd.Output()
-		if err != nil {
-			continue
-		}
-		port := importGraph{}
-		ok := true
-		for _, line := range strings.Split(string(out), "\n") {
-			f := strings.Fields(line)
-			if len(f) == 0 {
-				continue
-			}
-			if slices.Contains(f[1:], "!") {
-				ok = false
-				break
-			}
-			port[f[0]] = f[1:]
-		}
-		if _, root := port[imp]; !ok || !root {
-			continue
-		}
-		clean = true
-		for p, imps := range port {
-			g[p] = append(g[p], imps...)
-		}
-	}
-	return clean
-}
-
-// reaches reports whether from, or a package it imports directly or through others, satisfies match.
-func (g importGraph) reaches(from string, match func(string) bool) bool {
-	seen := map[string]bool{from: true}
-	queue := []string{from}
-	for len(queue) > 0 {
-		p := queue[0]
-		queue = queue[1:]
-		if match(p) {
-			return true
-		}
-		for _, next := range g[p] {
-			if !seen[next] {
-				seen[next] = true
-				queue = append(queue, next)
-			}
-		}
-	}
-	return false
 }
 
 // sourceImports holds, for each package the build did not load, the imports of every non-test Go

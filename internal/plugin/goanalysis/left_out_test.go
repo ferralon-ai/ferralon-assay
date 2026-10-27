@@ -143,6 +143,9 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 	leftOut := func(constraint, imp string) string {
 		return "//go:build " + constraint + "\n\npackage main\n\nimport _ \"" + imp + "\"\n"
 	}
+	useStd := func(imp, use string) string {
+		return "package main\n\nimport \"" + imp + "\"\n\nfunc main() { _ = " + use + " }\n"
+	}
 	// web is a loaded first-party package that imports the vulnerable package.
 	web := map[string]string{"web/web.go": "package web\n\nimport \"net/http\"\n\nfunc Serve() { _ = http.ListenAndServe(\":0\", nil) }\n"}
 	httpVuln := []string{"net/http"}
@@ -160,6 +163,8 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 		{"a tagged file imports a loaded package that imports the vulnerable package", merge(web, map[string]string{"prod.go": leftOut("prod", "example.com/m/web")}), httpVuln, true},
 		{"a tagged file imports an unloaded standard package that imports the vulnerable package", map[string]string{"prod.go": leftOut("prod", "net/http/httputil")}, httpVuln, true},
 		{"a tagged file imports an unloaded module that imports the vulnerable package", map[string]string{"prod.go": leftOut("prod", "example.com/webdep")}, httpVuln, true},
+		// crypto/tls imports vendored golang.org/x/crypto packages.
+		{"a tagged file imports an unloaded standard package whose imports include vendored ones", map[string]string{"prod.go": leftOut("prod", "crypto/tls")}, httpVuln, false},
 		{"a tagged file imports an unloaded module that reaches the vulnerable package only under the file's own tag", map[string]string{
 			"prod.go": "//go:build prod\n\npackage main\n\nimport \"example.com/tagdep\"\n\nfunc init() { tagdep.Serve() }\n",
 		}, httpVuln, true},
@@ -172,6 +177,11 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 		{"a tagged file imports only an unrelated standard package", map[string]string{"prod.go": leftOut("prod", "strings")}, httpVuln, false},
 		{"the vulnerable packages are unknown, so any standard import counts", map[string]string{"prod.go": leftOut("prod", "strings")}, nil, true},
 		{"an ignore-tagged file is never built", map[string]string{"gen.go": leftOut("ignore", "net/http")}, httpVuln, false},
+		// Only Windows builds of os import internal/syscall/windows; elsewhere os's Windows files are left out.
+		{"another platform's file of a loaded standard package imports the vulnerable package", map[string]string{"main.go": useStd("os", "os.Args")}, []string{"internal/syscall/windows"}, true},
+		{"the vulnerable standard package is loaded and its other platforms' files are left out", map[string]string{"main.go": useStd("crypto/x509", "x509.ParseCertificate")}, []string{"crypto/x509"}, true},
+		// net's other platforms' files import golang.org/x packages, which resolve to the standard library's vendored copies.
+		{"no other platform's file of a loaded standard package reaches the vulnerable package", map[string]string{"main.go": useStd("net", "net.Dial")}, httpVuln, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,8 +212,8 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 // files, do not count. What cannot be read counts.
 func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 	base := map[string]string{
-		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/usesafe v0.0.0\n\texample.com/tagdep v0.0.0\n\texample.com/broken v0.0.0\n)\n\n" +
-			"replace (\n\texample.com/vulnmod => ./_vulnmod\n\texample.com/usesafe => ./_usesafe\n\texample.com/tagdep => ./_tagdep\n\texample.com/broken => ./_broken\n)\n",
+		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/usesafe v0.0.0\n\texample.com/tagdep v0.0.0\n\texample.com/broken v0.0.0\n\tlocaldep v0.0.0\n)\n\n" +
+			"replace (\n\texample.com/vulnmod => ./_vulnmod\n\texample.com/usesafe => ./_usesafe\n\texample.com/tagdep => ./_tagdep\n\texample.com/broken => ./_broken\n\tlocaldep => ./_localdep\n)\n",
 		"main.go":                "package main\n\nimport \"example.com/vulnmod/blake\"\n\nfunc main() { blake.Sum() }\n",
 		"_vulnmod/go.mod":        "module example.com/vulnmod\n\ngo 1.22\n",
 		"_vulnmod/ssh/ssh.go":    "package ssh\n\nfunc Dial() {}\n",
@@ -216,6 +226,9 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 		"_tagdep/tagdep_prod.go": "//go:build prod\n\npackage tagdep\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc init() { ssh.Dial() }\n",
 		"_broken/go.mod":         "module example.com/broken\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n",
 		"_broken/broken.go":      "package broken\n\nimport (\n",
+		// localdep's module path has no dot, like a standard-library path.
+		"_localdep/go.mod":      "module localdep\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n",
+		"_localdep/localdep.go": "package localdep\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc Call() { ssh.Dial() }\n",
 	}
 	leftOut := func(imp string) map[string]string {
 		return map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport _ \"" + imp + "\"\n"}
@@ -242,6 +255,9 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 		{"a tagged file imports a package of the module that does not exist", leftOut("example.com/vulnmod/nosuch"), ssh, false, true},
 		{"the advisory lists no vulnerable package", leftOut("example.com/vulnmod/blake"), nil, false, true},
 		{"the advisory also lists the whole module", leftOut("example.com/vulnmod/blake"), ssh, true, true},
+		{"a tagged file imports a module whose path has no dot and that imports the vulnerable package", leftOut("localdep"), ssh, false, true},
+		{"a tagged file imports an unrelated standard package", leftOut("strings"), ssh, false, false},
+		{"a tagged file imports a path no module holds", leftOut("example.org/nowhere"), ssh, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,6 +279,66 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
+	}
+}
+
+// TestWithholdForLeftOutFiles_UnreadableModuleGraph: without the module graph a dotless import may
+// be a module's, so even a standard-library import counts.
+func TestWithholdForLeftOutFiles_UnreadableModuleGraph(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod/blake\"\n\nfunc main() { blake.Sum() }\n",
+		"prod.go":             "//go:build prod\n\npackage main\n\nimport _ \"strings\"\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/ssh/ssh.go": "package ssh\n\nfunc Dial() {}\n",
+		"_vulnmod/blake/b.go": "package blake\n\nfunc Sum() {}\n",
+	})
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuted := plugin.ReachabilityResult{
+		Partiality: plugin.Complete(),
+		Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
+	}
+	scanned := vulnScan{imports: map[string][]string{"example.com/vulnmod": {"example.com/vulnmod/ssh"}}}
+	for _, tc := range []struct {
+		name     string
+		env      []string
+		withheld bool
+	}{
+		{"graph read", nil, false},
+		{"graph unreadable", []string{"GOFLAGS=-modfile=" + filepath.Join(dir, "nosuch.mod")}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := append(append(os.Environ(), "GOWORK=off"), tc.env...)
+			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, env)
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
+			}
+		})
+	}
+}
+
+// TestSourceImports_ListFails: a package `go list` cannot place stays unread, so it counts.
+func TestSourceImports_ListFails(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":     "module example.com/m\n\ngo 1.22\n",
+		"dep/dep.go": "package dep\n\nimport _ \"strings\"\n",
+	})
+	all := func(constraint.Expr) bool { return true }
+	env := append(os.Environ(), "GOWORK=off")
+
+	src := sourceImports{}
+	src.read(context.Background(), dir, env, []string{"example.com/m/dep"}, all)
+	if got := src["example.com/m/dep"]; !slices.Equal(got, []string{"strings"}) {
+		t.Fatalf("read imports = %v, want [strings]", got)
+	}
+
+	src = sourceImports{}
+	src.read(context.Background(), dir, append(env, "GOFLAGS=-modfile="+filepath.Join(dir, "nosuch.mod")), []string{"example.com/m/dep"}, all)
+	if got, ok := src["example.com/m/dep"]; ok {
+		t.Fatalf("go list failed, yet the package was read: %v", got)
 	}
 }
 

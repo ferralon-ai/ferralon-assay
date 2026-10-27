@@ -185,6 +185,16 @@ inputs:
       undetermined, because that absence describes the scanner's own toolchain, not yours.
     required: false
     default: "false"
+  library-entrypoints:
+    description: >-
+      Which of your packages code outside this build may import, and so call past your build's own
+      entry points. 'auto' infers them (today Go only; a package under cmd/, examples/ or a test
+      directory is not one), 'none' says the build ships programs only, and a list of paths relative
+      to the repository root nominates them, e.g. "pkg/api, !pkg/api/internal"; a '!path' entry takes a path
+      out, and a list of '!path' entries alone keeps 'auto' for the rest. A not_exploitable verdict
+      that holds only because of what you declared carries that on the report as an assumption.
+    required: false
+    default: auto
   out:
     description: "Output directory for report.json / report.html / report.sarif.json / openvex.json."
     required: false
@@ -754,6 +764,8 @@ runs:
         # explicit affirmative ('true') enables it — the ternary yields the literal 'false'
         # otherwise, which envEnabled reads as off.
         ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability == 'true' }}
+        # Read by run.go (-library-entrypoints falls back to it); data, never parsed by the shell.
+        ASSAY_LIBRARY_ENTRYPOINTS: ${{ inputs.library-entrypoints }}
         # JS dependency code. Empty inherits the scanner's default. The directories come from the
         # depcache step; both are left unset for 'off'. Env vars rather than flags, so a scanner
         # release that predates them ignores them: one that predates the uncredentialed cache

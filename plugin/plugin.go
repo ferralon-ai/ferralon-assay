@@ -461,6 +461,11 @@ type ReachabilityRequest struct {
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
 	DependencyCache string `json:"dependency_cache,omitempty"`
+	// LibraryEntrypoints is the caller's statement of which of the build's packages code outside
+	// the build may import. Nil is auto with nothing declared. A lane that withholds a refutation an
+	// importer may contradict resolves its entry points from it and reports them in
+	// ReachabilityResult.LibraryEntrypoints.
+	LibraryEntrypoints *LibraryEntrypoints `json:"library_entrypoints,omitempty"`
 }
 
 // --- result payloads ---
@@ -628,6 +633,9 @@ type ReachabilityResult struct {
 	Searched []string `json:"searched,omitempty"`
 	// Refutation is lane-held positive evidence that the package's vulnerable code cannot run.
 	Refutation *Refutation `json:"refutation,omitempty"`
+	// LibraryEntrypoints is the entry-point set the lane resolved from
+	// ReachabilityRequest.LibraryEntrypoints, when it resolved one.
+	LibraryEntrypoints *ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
 }
 
 // Refutation grounds a not_exploitable verdict without a searched sink. Package is a PURL (version
@@ -637,6 +645,9 @@ type Refutation struct {
 	Basis   string `json:"basis"`
 	Package string `json:"package"`
 	Detail  string `json:"detail"`
+	// Assumptions are the caller's declarations the refutation holds only under, each one
+	// checkable line; the verdict carries them. Empty means it rests on the lane's evidence alone.
+	Assumptions []string `json:"assumptions,omitempty"`
 }
 
 // Refutation bases.

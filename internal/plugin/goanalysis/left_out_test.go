@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -100,6 +99,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			load.buildGoVersion = load.goVersion // the subject's toolchain, known and the load's
 			release := load.buildRelease()
 			if release == nil {
 				t.Fatalf("load not established under the build's toolchain (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
@@ -218,7 +218,7 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 		name    string
 		files   map[string]string
 		scanned vulnScan
-		// buildGoVersion, when set, is the toolchain the build compiles under.
+		// buildGoVersion, when set, is the subject's toolchain; "loaded" names the load's own.
 		buildGoVersion string
 		withheld       bool
 	}{
@@ -226,8 +226,9 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 		{"module refutation, a tagged file calls the module", map[string]string{
 			"prod.go": "//go:build prod\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
 		}, moduleFinding, "", true},
-		{"module refutation, a file only a newer Go release builds calls the module", newRelease, moduleFinding, "", false},
+		{"module refutation, a file only a newer Go release builds calls the module", newRelease, moduleFinding, "loaded", false},
 		{"module refutation, the same file, the build on another Go release", newRelease, moduleFinding, "go1.2", true},
+		{"module refutation, the same file, the subject's toolchain unknown", newRelease, moduleFinding, "", true},
 		{"standard-library refutation, nothing left out", nil, stdlibFinding, "", false},
 		{"standard-library refutation, a tagged file calls the vulnerable package", map[string]string{
 			"prod.go": "//go:build prod\n\npackage main\n\nimport \"net/http\"\n\nfunc init() { _ = http.ListenAndServe(\":0\", nil) }\n",
@@ -240,10 +241,59 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.buildGoVersion != "" {
+			switch tc.buildGoVersion {
+			case "":
+			case "loaded":
+				load.buildGoVersion = load.goVersion
+			default:
 				load.buildGoVersion = tc.buildGoVersion
 			}
-			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
+			}
+			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestReconciledResult_RunnerGoDiffers: a dedicated scan job runs the analyzer under the runner
+// image's Go, not the build's. A go1.21 build scanned on a newer runner compiles a !go1.22 file that
+// the runner's load leaves out, so that file withholds a refutation unless the subject's toolchain
+// is known and is the load's.
+func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "local")
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.21\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"old.go":              "//go:build !go1.22\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.21\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	})
+	runner, ok := parseGoRelease(goEnvVersion(context.Background(), dir, append(os.Environ(), "GOWORK=off")))
+	if !ok || runner.major != 1 || runner.minor < 22 {
+		t.Skipf("runner Go %v builds !go1.22 files", runner)
+	}
+	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
+	cases := []struct {
+		name string
+		// toolchain is the subject's, as the request names it.
+		toolchain string
+		withheld  bool
+	}{
+		{"subject toolchain unknown", "", true},
+		{"subject builds with go1.21", "go1.21.13", true},
+		{"subject builds with the runner's Go", runner.toolchain(), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			load := func() (*LoadResult, error) { return loadForBuild(context.Background(), dir, tc.toolchain) }
+			res, err := reconciledResult(context.Background(), scanned, dir, append(os.Environ(), "GOWORK=off"), load, plugin.LibraryEntrypoints{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -281,15 +331,14 @@ func TestLoadResult_BuildRelease(t *testing.T) {
 }
 
 // TestLoadProgram_Toolchain: the load records the release the go command resolves for the build
-// directory, and does not establish it as the build's when the go command cannot resolve the
-// build's own toolchain there (a go.work requiring a release that does not exist).
+// directory, and never establishes it as the build's: that go command is the analyzer's, which in a
+// dedicated scan job is the runner image's Go, not the one the build compiles under.
 func TestLoadProgram_Toolchain(t *testing.T) {
 	t.Setenv("GOTOOLCHAIN", "auto")
-	files := map[string]string{
+	dir := writeTree(t, map[string]string{
 		"go.mod":  "module example.com/m\n\ngo 1.22\n",
 		"main.go": "package main\n\nfunc main() {}\n",
-	}
-	dir := writeTree(t, files)
+	})
 	load, err := LoadProgram(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
@@ -297,29 +346,13 @@ func TestLoadProgram_Toolchain(t *testing.T) {
 	if want := goEnvVersion(context.Background(), dir, append(os.Environ(), "GOWORK=off")); load.goVersion != want || want == "" {
 		t.Fatalf("loaded under %q, want %q", load.goVersion, want)
 	}
-	if load.buildRelease() == nil {
-		t.Fatalf("toolchain not established (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
-	}
-
-	// The build sees the go.work although the analyzer's own environment may turn workspaces off.
-	var env []string
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "GOWORK=") {
-			env = append(env, kv)
-		}
-	}
-	dir = writeTree(t, merge(files, map[string]string{"go.work": "go 1.999\n\nuse .\n"}))
-	load, err = LoadProgram(WithBuildEnviron(context.Background(), env), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if load.buildRelease() != nil {
-		t.Fatalf("toolchain established although the build's is unresolved (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
+		t.Fatalf("toolchain established without the subject's (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
 	}
 }
 
-// TestLoadForBuild_SubjectToolchain: a known subject toolchain is the build's, so a load under
-// another minor is not established as the build's.
+// TestLoadForBuild_SubjectToolchain: only a known subject toolchain is the build's, so a load with
+// none, or under another minor, is not established as the build's.
 func TestLoadForBuild_SubjectToolchain(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"go.mod":  "module example.com/m\n\ngo 1.22\n",
@@ -329,14 +362,15 @@ func TestLoadForBuild_SubjectToolchain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := load.buildRelease()
-	if r == nil {
-		t.Fatalf("toolchain not established (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
+	r, ok := parseGoRelease(load.goVersion)
+	if !ok {
+		t.Fatalf("loaded under %q", load.goVersion)
 	}
 	for _, tc := range []struct {
 		toolchain   string
 		established bool
 	}{
+		{"", false},
 		{r.toolchain(), true},
 		{fmt.Sprintf("go%d.%d", r.major, r.minor+1), false},
 	} {

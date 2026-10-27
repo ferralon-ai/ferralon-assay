@@ -307,7 +307,7 @@ func deadAxisCases() []deadAxisCase {
 			vulnID: "CVE-2023-39325", // stdlib, fixed go1.20.10 / go1.21.3
 			lang:   "go",
 			files: map[string]string{
-				"go.mod": "module example.com/target\n\ngo 1.21\n",
+				"go.mod": "module example.com/target\n\ngo 1.21.0\n",
 			},
 		},
 	}

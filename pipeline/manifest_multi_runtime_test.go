@@ -55,7 +55,7 @@ func TestCodebaseInventory_BuildManifestFoldsOnPrimaryOnly(t *testing.T) {
 		{
 			name: "single Go runtime still folds go_version/build_command",
 			buildStage: func(t *testing.T) codebaseInventory {
-				dir := writeGoModFixture(t, "module example.com/target\n\ngo 1.21\n")
+				dir := writeGoModFixture(t, "module example.com/target\n\ngo 1.21.0\n")
 				return codebaseInventory{checkout: dirCheckout{dir: dir, lang: "go"}, plugin: goManifestPlugin{}}
 			},
 			wantGoVersion: true,

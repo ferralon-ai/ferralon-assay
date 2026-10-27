@@ -131,8 +131,8 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 	}{
 		{
 			name:          "go directive alone is a floor",
-			goMod:         "module example.com/target\n\ngo 1.21\n",
-			wantGoVersion: "1.21",
+			goMod:         "module example.com/target\n\ngo 1.21.0\n",
+			wantGoVersion: "1.21.0",
 			want:          ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
@@ -316,7 +316,7 @@ func TestCodebaseInventory_NonGoSubjectResolvesNoToolchain(t *testing.T) {
 // covered because both wire the config into the stage independently, so a mistake in one would not
 // show up in the other — and the SBOM slice is what the pr-inherit head resolver runs.
 func TestSubjectToolchainReachesTheStageThroughAssembly(t *testing.T) {
-	buildDir := writeGoModFixture(t, "module example.com/target\n\ngo 1.21\n")
+	buildDir := writeGoModFixture(t, "module example.com/target\n\ngo 1.21.0\n")
 
 	// The trust flag is asserted alongside the versions because it is a THIRD field threaded through
 	// two independent assemblers, and a flag dropped in one of them would silently restore the

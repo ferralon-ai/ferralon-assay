@@ -12,12 +12,13 @@
 // switches UP from them. Nothing inside go.mod is an exact statement about the toolchain that built
 // the artifact.
 //
-// A directive is a floor only for a go command that enforces it, which is Go 1.21 on. An older one
-// builds a module whatever its `go` line says, so `go 1.17` built by go1.16.5 is legal and that go
-// line bounds nothing. The directives bind only when they establish an enforcing go command: a
-// `toolchain` line (older go commands reject it) or a `go` line at 1.21 or later
-// (directivesBindToolchain). Otherwise the go line is no floor, and the toolchain the build's
-// environment resolves stands in for it under the same trust as the CI observation.
+// A directive is a floor only for a go command that enforces it, which is Go 1.21 on. A go command
+// before 1.21 does not enforce the `go` line, so `go 1.17` may have been built by go1.16.5, and so
+// may `go 1.21`. The directives bind only when their syntax excludes such a go command: a
+// `toolchain` line, or a three-part `go` line (`1.21.0`) at 1.21 or later — go commands before 1.21
+// reject both at parse (directivesBindToolchain). Otherwise the go line is no floor, and the
+// toolchain the build's environment resolves stands in for it under the same trust as the CI
+// observation.
 //
 // So the two consumers of this fact can do different things with it:
 //
@@ -34,7 +35,10 @@
 
 package pipeline
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Bound values for ToolchainFact.Bound.
 const (
@@ -132,14 +136,20 @@ type toolchainInputs struct {
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
-// below. A `toolchain` line does: a go command before Go 1.21 rejects it, so any go command that
-// builds the module enforces its directives. A `go` line alone does from 1.21 on; below that it was
-// advisory to the go commands that built such modules.
+// below, which they do only when no go command before 1.21 can build the module. A `toolchain` line
+// does: those go commands reject it at parse. So does a three-part `go` line at 1.21.0 or later
+// ("1.21.0"), which they also reject at parse. A two-part `go` line ("1.21") does not, whatever its
+// version: those go commands do not enforce it. The test is on the raw spelling, because
+// parseGoToolchainVersion reads "1.21" and "1.21.0" alike.
 func directivesBindToolchain(in toolchainInputs) bool {
 	if in.toolchainDirective != "" {
 		return true
 	}
-	v, ok := parseGoToolchainVersion(in.goDirective)
+	raw := strings.TrimSpace(in.goDirective)
+	if strings.Count(raw, ".") != 2 {
+		return false
+	}
+	v, ok := parseGoToolchainVersion(raw)
 	return ok && (v.major > 1 || v.minor >= 21)
 }
 

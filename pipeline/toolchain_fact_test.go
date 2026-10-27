@@ -31,7 +31,7 @@ func TestResolveToolchainFact(t *testing.T) {
 		},
 		{
 			name: "go_directive alone is a floor",
-			in:   toolchainInputs{goDirective: "1.22"},
+			in:   toolchainInputs{goDirective: "1.22.0"},
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
@@ -55,7 +55,7 @@ func TestResolveToolchainFact(t *testing.T) {
 			// toolchain either. A go1.26.3 floor here would disqualify advisories a go1.22 build is
 			// still exposed to.
 			name: "untrusted ci_observed is not demoted to a floor — it must not become the max",
-			in:   toolchainInputs{ciObserved: "go1.26.3", goDirective: "1.22"},
+			in:   toolchainInputs{ciObserved: "go1.26.3", goDirective: "1.22.0"},
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
@@ -78,7 +78,7 @@ func TestResolveToolchainFact(t *testing.T) {
 		},
 		{
 			name: "trust with an unparseable observation still falls to the floor",
-			in:   toolchainInputs{ciObserved: "devel go1.27-abc123", trustCIObserved: true, goDirective: "1.22"},
+			in:   toolchainInputs{ciObserved: "devel go1.27-abc123", trustCIObserved: true, goDirective: "1.22.0"},
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 
@@ -129,15 +129,41 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.16.5", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
 		{
-			name: "1.21 go directive is a floor",
-			in:   toolchainInputs{goDirective: "1.21"},
+			name: "three-part 1.21.0 go directive is a floor",
+			in:   toolchainInputs{goDirective: "1.21.0"},
 			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+		},
+		{
+			// A go command before 1.21 parses a two-part line, and does not enforce it.
+			name: "two-part 1.21 go directive is no floor",
+			in:   toolchainInputs{goDirective: "1.21"},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
+		{
+			name: "two-part 1.22 go directive is no floor",
+			in:   toolchainInputs{goDirective: "1.22"},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
+		{
+			name: "two-part go directive defers to a trusted build-resolved value",
+			in:   toolchainInputs{goDirective: "1.22", buildResolved: "go1.17.13", trustCIObserved: true},
+			want: ToolchainFact{Version: "go1.17.13", Bound: ToolchainBoundExact, Source: ToolchainSourceBuildResolved},
+		},
+		{
+			name: "two-part go directive does not refute a lower declaration",
+			in:   toolchainInputs{subjectDeclared: "go1.20.5", goDirective: "1.21"},
+			want: ToolchainFact{Version: "go1.20.5", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
+		},
+		{
+			name: "three-part pre-1.21 go directive is no floor",
+			in:   toolchainInputs{goDirective: "1.20.0"},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
 			// A binding directive is a statement about the subject; the analyzer's ambient go command
 			// is not consulted in its place.
 			name: "binding go directive ignores a build-resolved value",
-			in:   toolchainInputs{goDirective: "1.22", buildResolved: "go1.26.3", trustCIObserved: true},
+			in:   toolchainInputs{goDirective: "1.22.0", buildResolved: "go1.26.3", trustCIObserved: true},
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
@@ -203,7 +229,7 @@ func TestResolveToolchainFact(t *testing.T) {
 		// Normalization: one spelling reaches the artifact regardless of the source's own.
 		{
 			name: "go directive two-segment form gains an explicit patch 0",
-			in:   toolchainInputs{goDirective: "1.21"},
+			in:   toolchainInputs{goDirective: "1.21", toolchainDirective: "go1.20.0"},
 			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
@@ -304,7 +330,7 @@ func TestResolveToolchainFact_ContradictionGuard(t *testing.T) {
 			// A DECLARATION is refuted the same way. The guard is about the claim's relation to the
 			// manifest, not about which tier made it: an operator can pass a stale value too.
 			name: "a subject declaration below the floor is refuted just the same",
-			in:   toolchainInputs{subjectDeclared: "go1.18.1", goDirective: "1.22"},
+			in:   toolchainInputs{subjectDeclared: "go1.18.1", goDirective: "1.22.0"},
 			want: ToolchainFact{
 				Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective,
 				Contradiction: &ToolchainContradiction{
@@ -393,7 +419,7 @@ func TestToolchainFactVersionEmptyIffUnresolved(t *testing.T) {
 		{subjectDeclared: "go1.21.3"},
 		{ciObserved: "go1.21.3"}, // untrusted ⇒ unresolved
 		{ciObserved: "go1.21.3", trustCIObserved: true}, // trusted ⇒ exact
-		{ciObserved: "go1.21.3", goDirective: "1.21"},   // untrusted ⇒ the floor, not the observation
+		{ciObserved: "go1.21.3", goDirective: "1.21.0"}, // untrusted ⇒ the floor, not the observation
 		{toolchainDirective: "go1.21.3"},
 		{goDirective: "1.21"},
 		{subjectDeclared: "junk"},

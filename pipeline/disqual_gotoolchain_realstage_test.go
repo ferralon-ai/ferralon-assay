@@ -64,7 +64,7 @@ func runRealGoToolchainAxis(t *testing.T, vulnID, goMod, declared, observed stri
 //
 // The floor cases are the soundness argument in executable form: goToolchainVersionOutsideRange
 // is monotone non-decreasing in its version argument, so a floor already past every branch fix proves
-// the true toolchain is past it — disqualifying on `go 1.21` for a CVE fixed at go1.20.10/go1.21.3 is
+// the true toolchain is past it — disqualifying on `go 1.21.0` for a CVE fixed at go1.20.10/go1.21.3 is
 // sound even though the build may have used any go1.21.x or later. The converse never disqualifies: a
 // floor BELOW a fix proves nothing and must fail OPEN.
 func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
@@ -90,7 +90,7 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			// go1.22 floor is at or past BOTH, so it is provably outside the whole disjoint set.
 			name:          "a floor past every branch fix disqualifies",
 			vulnID:        "CVE-2023-39325",
-			goMod:         "module example.com/target\n\ngo 1.22\n",
+			goMod:         "module example.com/target\n\ngo 1.22.0\n",
 			wantFact:      ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 			wantVersion:   "go1.22.0",
 			wantDisqual:   true,
@@ -102,7 +102,7 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			// outside — the axis must proceed, never disqualify.
 			name:          "a floor inside a branch range proceeds",
 			vulnID:        "CVE-2023-39325",
-			goMod:         "module example.com/target\n\ngo 1.21\n",
+			goMod:         "module example.com/target\n\ngo 1.21.0\n",
 			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 			wantVersion:   "go1.21.0",
 			wantDisqual:   false,
@@ -165,7 +165,7 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			// not-affected for a build still exposed. The default now declines to conclude.
 			name:          "the no-config default adjudicates the FLOOR, not the observed runner Go",
 			vulnID:        "CVE-2024-24790",
-			goMod:         "module example.com/target\n\ngo 1.21\n",
+			goMod:         "module example.com/target\n\ngo 1.21.0\n",
 			observed:      "go1.22.4",
 			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 			wantVersion:   "go1.21.0",
@@ -188,10 +188,10 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale: "go1.21.5 < go1.21.11 is still affected",
 		},
 		{
-			// GO-2021-0264 is fixed go1.16.10 and go1.17.3; a go 1.21 floor is past both.
+			// GO-2021-0264 is fixed go1.16.10 and go1.17.3; a go 1.21.0 floor is past both.
 			name:          "a stdlib advisory with toolchain ranges disqualifies on a floor past its fixes",
 			vulnID:        "GO-2021-0264",
-			goMod:         "module example.com/target\n\ngo 1.21\n",
+			goMod:         "module example.com/target\n\ngo 1.21.0\n",
 			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 			wantVersion:   "go1.21.0",
 			wantDisqual:   true,
@@ -320,9 +320,21 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale:  "the analyzer's go command describes the subject only under trust",
 		},
 		{
-			name:           "a 1.21 go directive is trusted over the build toolchain",
+			name:           "a two-part 1.21 go directive without trust is no floor",
 			vulnID:         "GO-2021-0264",
 			goMod:          "module example.com/target\n\ngo 1.21\n",
+			pinBuild:       true,
+			buildToolchain: "go1.16.5",
+			wantFact:       ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+			wantVersion:    "",
+			wantDisqual:    false,
+			wantReason:     ReasonInsufficient,
+			wantRationale:  "a go command before 1.21 builds a two-part go 1.21 module",
+		},
+		{
+			name:           "a three-part 1.21.0 go directive is trusted over the build toolchain",
+			vulnID:         "GO-2021-0264",
+			goMod:          "module example.com/target\n\ngo 1.21.0\n",
 			trust:          true,
 			pinBuild:       true,
 			buildToolchain: "go1.16.5",
@@ -330,7 +342,31 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantVersion:    "go1.21.0",
 			wantDisqual:    true,
 			wantReason:     ReasonVersionNotInRange,
-			wantRationale:  "a go command that builds a go 1.21 module enforces it",
+			wantRationale:  "a go command before 1.21 rejects a three-part go line, so it binds",
+		},
+		{
+			name:           "a two-part 1.22 go directive under trust adjudicates the build toolchain",
+			vulnID:         "GO-2021-0264",
+			goMod:          "module example.com/target\n\ngo 1.22\n",
+			trust:          true,
+			pinBuild:       true,
+			buildToolchain: "go1.16.5",
+			wantFact:       ToolchainFact{Version: "go1.16.5", Bound: ToolchainBoundExact, Source: ToolchainSourceBuildResolved},
+			wantVersion:    "go1.16.5",
+			wantDisqual:    false,
+			wantReason:     ReasonInsufficient,
+			wantRationale:  "go1.16.5 builds a two-part go 1.22 module and is affected",
+		},
+		{
+			name:          "a declaration below a two-part 1.21 go directive is not refuted",
+			vulnID:        "GO-2021-0264",
+			goMod:         "module example.com/target\n\ngo 1.21\n",
+			declared:      "go1.20.5",
+			wantFact:      ToolchainFact{Version: "go1.20.5", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
+			wantVersion:   "go1.20.5",
+			wantDisqual:   true,
+			wantReason:    ReasonVersionNotInRange,
+			wantRationale: "the declared go1.20.5 stands and is past both fixes",
 		},
 		{
 			name:           "a pre-1.21 go directive with a toolchain line is trusted over the build toolchain",

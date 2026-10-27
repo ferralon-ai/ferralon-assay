@@ -126,6 +126,31 @@ func modfileFlagSet(ctx context.Context, buildDir string) bool {
 	return false
 }
 
+// dependencyHolds reports whether a module of buildDir's build list other than the main module
+// holds import path p: the module holding it with the longest path, by its own path or its
+// replacement's, is not the main module. A build list that cannot be listed holds nothing.
+func dependencyHolds(ctx context.Context, buildDir, p string) bool {
+	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
+	defer cancel()
+	mods, err := listModules(ctx, buildDir)
+	if err != nil {
+		return false
+	}
+	held, main := 0, false
+	for _, m := range mods {
+		paths := []string{m.Path}
+		if m.Replace != nil {
+			paths = append(paths, m.Replace.Path)
+		}
+		for _, path := range paths {
+			if len(path) > held && pathHolds(path, p) {
+				held, main = len(path), m.Main
+			}
+		}
+	}
+	return held > 0 && !main
+}
+
 // pathHolds reports whether module path mod holds import path p, ignoring case.
 func pathHolds(mod, p string) bool {
 	return len(p) >= len(mod) && strings.EqualFold(p[:len(mod)], mod) && (len(p) == len(mod) || p[len(mod)] == '/')

@@ -431,3 +431,61 @@ func listAll(t *testing.T, app string) {
 		t.Fatalf("go list -m all: %v\n%s", err, out)
 	}
 }
+
+func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
+	reader := map[string]string{"app/reader.go": "package main\n\ntype Reader struct{}\n\nfunc (*Reader) Verify() error { return nil }\n\nfunc Verify() bool { return true }\n"}
+	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nvar X = 1\n"}}
+	resolve := func(t *testing.T, app, purl string, symbols []string) plugin.SymbolResolutionResult {
+		t.Helper()
+		res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{BuildDir: app, PURL: purl, AdvisorySymbols: symbols})
+		if err != nil {
+			t.Fatalf("ResolveDependencySymbols: %v", err)
+		}
+		return res
+	}
+	wantNone := func(t *testing.T, res plugin.SymbolResolutionResult) {
+		t.Helper()
+		if len(res.Resolved) != 0 || res.ModuleSearch != nil {
+			t.Fatalf("Resolved %v, ModuleSearch %+v; want neither: a first-party symbol is not a dependency's", res.Resolved, res.ModuleSearch)
+		}
+	}
+	wantFirstParty := func(t *testing.T, res plugin.SymbolResolutionResult) {
+		t.Helper()
+		if len(res.Resolved) != 2 {
+			t.Fatalf("Resolved %v, want the app's (*Reader).Verify and Verify", res.Resolved)
+		}
+		for _, s := range res.Resolved {
+			if s.Package != "example.com/app" {
+				t.Fatalf("Resolved %v, want only example.com/app symbols", res.Resolved)
+			}
+		}
+	}
+
+	t.Run("dependency advisories resolve nothing in first-party code", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		for _, purl := range []string{"pkg:golang/example.com/a", "pkg:golang/example.com/a/ssh@v1.0.0"} {
+			t.Run(purl, func(t *testing.T) {
+				wantNone(t, resolve(t, app, purl, []string{"example.com/a/ssh.Certificate.Verify"}))
+			})
+		}
+		t.Run("a path no module holds still resolves by name and searches the modules", func(t *testing.T) {
+			res := resolve(t, app, "pkg:golang/tegron/corpus/x", []string{"main.Verify"})
+			wantFirstParty(t, res)
+			wantSearch(t, res.ModuleSearch, []string{"example.com/a", "example.com/app"}, []string{"example.com/app"})
+		})
+		t.Run("an unloaded path of the scanned module still resolves by name", func(t *testing.T) {
+			wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
+		})
+	})
+	t.Run("a module nested under the scanned module's path is a dependency", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modSub})
+		app := newApp(t, []string{"example.com/app/sub"}, "", reader)
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/app/sub/x", []string{"Verify"}))
+	})
+	t.Run("a dependency held under its replacement's path", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/old"}, "\nrequire example.com/old v1.0.0\n\nreplace example.com/old v1.0.0 => example.com/a v1.0.0\n", reader)
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/a", []string{"example.com/a.Verify"}))
+	})
+}

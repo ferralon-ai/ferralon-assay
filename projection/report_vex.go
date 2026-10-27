@@ -17,7 +17,9 @@
 //	                                                                   subject; none when Evidence.Basis is empty,
 //	                                                                   i.e. no axis was adjudicated at all)
 //	report.VerdictNotExploitable     → OpenVEX "not_affected"        (justification: vulnerable_code_not_present
-//	                                                                   or _not_reachable, by Evidence.Basis)
+//	                                                                   or _not_reachable, by Evidence.Basis;
+//	                                                                   impact_statement: the assumptions it holds
+//	                                                                   under, when it states any)
 //	report.VerdictReachableCandidate → OpenVEX "under_investigation" (NEVER "affected")
 //	report.VerdictUndetermined       → OpenVEX "under_investigation" (no justification)
 //	report.VerdictMaliciousPresent   → OpenVEX "affected"             (action_statement: remove/replace)
@@ -38,6 +40,7 @@ package projection
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -139,16 +142,19 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 		}
 
 	case report.VerdictNotExploitable:
-		// Grounded refutation. The OpenVEX justification follows the Evidence basis.
+		// Grounded refutation. The OpenVEX justification follows the Evidence basis. A
+		// refutation that holds only under a stated assumption says so in the impact
+		// statement, so the not_affected a consumer trusts carries its condition.
+		impact := assumptionsStatement(f.Evidence.Assumptions)
 		switch f.Evidence.Basis {
 		case verdict.BasisSymbolAbsent:
-			return VEXStatusNotAffected, VEXJustNotPresent, "", ""
+			return VEXStatusNotAffected, VEXJustNotPresent, impact, ""
 		case verdict.BasisVersionNotAffected:
-			return VEXStatusNotAffected, VEXJustNotPresent, "", ""
+			return VEXStatusNotAffected, VEXJustNotPresent, impact, ""
 		default:
 			// No structured symbol/version basis recorded → the grounded refutation
 			// is reachability-based.
-			return VEXStatusNotAffected, VEXJustNotReachable, "", ""
+			return VEXStatusNotAffected, VEXJustNotReachable, impact, ""
 		}
 
 	case report.VerdictReachableCandidate:
@@ -212,4 +218,17 @@ func reportDocSlug(r report.Report) string {
 		return r.Provenance.CommitSHA
 	}
 	return "report"
+}
+
+// assumptionsStatement renders the assumptions a not_exploitable holds under as one sentence, empty
+// when it holds unconditionally.
+func assumptionsStatement(assumptions []string) string {
+	switch len(assumptions) {
+	case 0:
+		return ""
+	case 1:
+		return "Holds only under the stated assumption: " + assumptions[0] + "."
+	default:
+		return "Holds only under the stated assumptions: " + strings.Join(assumptions, "; ") + "."
+	}
 }

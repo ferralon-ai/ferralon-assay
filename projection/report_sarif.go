@@ -451,10 +451,14 @@ func reportSARIFMessage(f report.AdvisoryFinding) string {
 				"exploitability, not a proof: proving it requires observing the path execute.",
 			f.Advisory.ID, brand.Name)
 	case report.VerdictNotExploitable:
+		msg := fmt.Sprintf("%s: not exploitable (grounded refutation).", f.Advisory.ID)
 		if f.Evidence.Detail != "" {
-			return fmt.Sprintf("%s: not exploitable. %s", f.Advisory.ID, f.Evidence.Detail)
+			msg = fmt.Sprintf("%s: not exploitable. %s", f.Advisory.ID, f.Evidence.Detail)
 		}
-		return fmt.Sprintf("%s: not exploitable (grounded refutation).", f.Advisory.ID)
+		if a := assumptionsStatement(f.Evidence.Assumptions); a != "" {
+			msg += " " + a
+		}
+		return msg
 	case report.VerdictDisqualified:
 		if f.Evidence.Detail != "" {
 			return fmt.Sprintf("%s: disqualified. %s", f.Advisory.ID, f.Evidence.Detail)

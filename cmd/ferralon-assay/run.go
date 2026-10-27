@@ -18,6 +18,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/internal/resultsink/ferralon"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/resultsink"
@@ -60,6 +61,8 @@ const (
 	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
 	// envSubjectMavenProfiles is the env channel for -subject-maven-profiles.
 	envSubjectMavenProfiles = brand.EnvPrefix + "_SUBJECT_MAVEN_PROFILES"
+	// envLibraryEntrypoints is the env channel for -library-entrypoints.
+	envLibraryEntrypoints = brand.EnvPrefix + "_LIBRARY_ENTRYPOINTS"
 	// envBuildGraphTool is the env channel for -build-graph-tool.
 	envBuildGraphTool = brand.EnvPrefix + "_BUILD_GRAPH_TOOL"
 )
@@ -470,6 +473,7 @@ type runFlags struct {
 	subjectGo        *string
 	subjectJava      *string
 	subjectMvnProf   *string
+	libEntrypoints   *string
 	buildGraph       *string
 	buildGraphTool   *string
 	depCode          *string
@@ -561,6 +565,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		buildGraphTool: fs.String("build-graph-tool", "", "which build tool the build graph comes from: auto, maven or gradle. auto takes the one whose build files are at the repository root, and fails the run when both are; with a graph file, a stated tool must be the one that resolved it; with off it is unused. Overrides "+envBuildGraphTool+" (default: auto)"),
 
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
+		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
 
 		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A fetch that fails, even for one package, reads no dependency code and says so on the report. Overrides "+envDependencyCode+" (default: fetch)"),
 		depCache:       fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
@@ -937,6 +942,24 @@ func (f *runFlags) subjectMavenProfiles() string {
 	return strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
 }
 
+// libraryEntrypointsOption is -library-entrypoints, then envLibraryEntrypoints, as an AssessOption,
+// or nil when neither is set. A statement that does not parse fails the run: it bounds what the scan
+// may refute.
+func (f *runFlags) libraryEntrypointsOption() (pipeline.AssessOption, error) {
+	v := strings.TrimSpace(*f.libEntrypoints)
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv(envLibraryEntrypoints))
+	}
+	if v == "" {
+		return nil, nil
+	}
+	e, err := plugin.ParseLibraryEntrypoints(v)
+	if err != nil {
+		return nil, err
+	}
+	return pipeline.WithLibraryEntrypoints(e), nil
+}
+
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
 // corpus. The subject Go toolchain and its reachability gate
 // stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
@@ -955,6 +978,13 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 	}
 	if depOpt != nil {
 		opts = append(opts, depOpt)
+	}
+	entryOpt, err := f.libraryEntrypointsOption()
+	if err != nil {
+		return nil, err
+	}
+	if entryOpt != nil {
+		opts = append(opts, entryOpt)
 	}
 	return opts, nil
 }
@@ -983,6 +1013,13 @@ func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipelin
 	}
 	if depOpt != nil {
 		opts = append(opts, depOpt)
+	}
+	entryOpt, err := f.libraryEntrypointsOption()
+	if err != nil {
+		return nil, err
+	}
+	if entryOpt != nil {
+		opts = append(opts, entryOpt)
 	}
 	return opts, nil
 }

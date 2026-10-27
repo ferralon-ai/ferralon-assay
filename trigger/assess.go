@@ -184,8 +184,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 		}
 		detail, groundsReason, grounded := "", "", false
+		var assumptions []string
 		if !undetermined {
-			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
+			detail, groundsReason, assumptions, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
 			if !grounded {
 				reason, undetermined = groundsReason, true
 			}
@@ -205,8 +206,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			Package:  pkg,
 			Verdict:  report.VerdictNotExploitable,
 			Evidence: report.EvidenceSummary{
-				Basis:  verdict.BasisSymbolAbsent,
-				Detail: detail,
+				Basis:       verdict.BasisSymbolAbsent,
+				Detail:      detail,
+				Assumptions: assumptions,
 			},
 		}
 	}

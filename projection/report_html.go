@@ -248,6 +248,9 @@ func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 		Path:               f.Evidence.ReachablePath,
 		UndeterminedReason: f.UndeterminedReason,
 	}
+	if out.Detail == "" && (f.Verdict == report.VerdictDisqualified || f.Verdict == report.VerdictNotExploitable) {
+		out.Detail = basisGrounds(f.Evidence.Basis)
+	}
 
 	// Priority: EPSS/KEV exploitation-likelihood context from the run's signals file, each value
 	// with its own stamp. These are NEVER exploitability claims for this codebase (inv. 5).

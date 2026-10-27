@@ -14,12 +14,14 @@
 //
 //	report.VerdictDisqualified       → OpenVEX "not_affected"        (justification: vulnerable_code_not_present
 //	                                                                   when a version/symbol axis adjudicated the
-//	                                                                   subject; none when Evidence.Basis is empty,
-//	                                                                   i.e. no axis was adjudicated at all)
-//	report.VerdictNotExploitable     → OpenVEX "not_affected"        (justification: vulnerable_code_not_present
-//	                                                                   or _not_reachable, by Evidence.Basis;
+//	                                                                   subject; otherwise an impact_statement saying
+//	                                                                   no basis was recorded)
+//	report.VerdictNotExploitable     → OpenVEX "not_affected"        (justification by Evidence.Basis:
+//	                                                                   vulnerable_code_not_present when the symbol
+//	                                                                   is absent, vulnerable_code_not_in_execute_path
+//	                                                                   when it is present and unreachable;
 //	                                                                   impact_statement: the assumptions it holds
-//	                                                                   under, when it states any)
+//	                                                                   under, and the missing basis when there is none)
 //	report.VerdictReachableCandidate → OpenVEX "under_investigation" (NEVER "affected")
 //	report.VerdictUndetermined       → OpenVEX "under_investigation" (no justification)
 //	report.VerdictMaliciousPresent   → OpenVEX "affected"             (action_statement: remove/replace)
@@ -115,7 +117,7 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 	switch f.Verdict {
 	case report.VerdictMaliciousPresent:
 		// The ONE honest OSS "affected" (inv. 5). A known-malicious package is present at a listed
-		// affected version — deterministic presence proof, not a reachability lean. OpenVEX §3.1
+		// affected version — deterministic presence proof, not a reachability lean. The OpenVEX spec
 		// pairs "affected" with an action_statement (remediation), not a justification.
 		msg := brand.Name + " resolved a known-malicious package to a version the advisory lists as affected."
 		if f.Evidence.Detail != "" {
@@ -126,36 +128,29 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 
 	case report.VerdictDisqualified:
 		// A disqualification is not_affected under every axis; the status is verdict-driven
-		// (inv. 5) and does not vary. The JUSTIFICATION follows the Evidence basis, because
-		// only some axes have one. A version or symbol disqualification adjudicated the
-		// subject and cleared it — the vulnerable code is not present in any reachable form.
-		// A disqualification carrying no basis was never adjudicated on either axis (the
-		// advisory belongs to another ecosystem, or its package is absent from the manifest):
-		// there are no grounds for vulnerable_code_not_present, which is a strictly stronger
-		// claim than "not adjudicable here". OpenVEX §3.2 permits not_affected with no
-		// justification, and that is the honest cell.
-		switch f.Evidence.Basis {
-		case verdict.BasisSymbolAbsent, verdict.BasisVersionNotAffected:
-			return VEXStatusNotAffected, VEXJustNotPresent, "", ""
-		default:
-			return VEXStatusNotAffected, "", "", ""
+		// (inv. 5) and does not vary. The justification follows the Evidence basis, because
+		// only some axes have one. A disqualification carrying no basis was never adjudicated on
+		// either axis (the advisory belongs to another ecosystem, or its package is absent from
+		// the manifest): there are no grounds for vulnerable_code_not_present, which is a
+		// strictly stronger claim than "not adjudicable here". The OpenVEX spec requires a
+		// not_affected statement to carry a justification or an impact_statement, so that case
+		// states in the impact_statement that no basis was recorded.
+		just := notAffectedJustification(f.Evidence.Basis)
+		if just == "" {
+			return VEXStatusNotAffected, "", unjustifiedImpact(f.Evidence.Detail), ""
 		}
+		return VEXStatusNotAffected, just, "", ""
 
 	case report.VerdictNotExploitable:
 		// Grounded refutation. The OpenVEX justification follows the Evidence basis. A
 		// refutation that holds only under a stated assumption says so in the impact
 		// statement, so the not_affected a consumer trusts carries its condition.
 		impact := assumptionsStatement(f.Evidence.Assumptions)
-		switch f.Evidence.Basis {
-		case verdict.BasisSymbolAbsent:
-			return VEXStatusNotAffected, VEXJustNotPresent, impact, ""
-		case verdict.BasisVersionNotAffected:
-			return VEXStatusNotAffected, VEXJustNotPresent, impact, ""
-		default:
-			// No structured symbol/version basis recorded → the grounded refutation
-			// is reachability-based.
-			return VEXStatusNotAffected, VEXJustNotReachable, impact, ""
+		just := notAffectedJustification(f.Evidence.Basis)
+		if just == "" {
+			impact = strings.TrimSpace(unjustifiedImpact(f.Evidence.Detail) + " " + impact)
 		}
+		return VEXStatusNotAffected, just, impact, ""
 
 	case report.VerdictReachableCandidate:
 		// A reachable path was found. This is a CANDIDATE, not a proof — the only
@@ -183,6 +178,46 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 		// Unreachable: Report.Validate rejects any other verdict (inv. 5 structural guard).
 		return VEXStatusUnderInvestigation, "", "", ""
 	}
+}
+
+// notAffectedJustification maps a refutation basis to the OpenVEX justification it supports, or ""
+// when it supports none. Only a basis named here earns a justification: an absent, unknown or
+// proof-tier basis gets none rather than a default, since every default is a claim.
+func notAffectedJustification(basis verdict.NonExploitableBasis) string {
+	switch basis {
+	case verdict.BasisSymbolAbsent, verdict.BasisVersionNotAffected:
+		return VEXJustNotPresent
+	case verdict.BasisSymbolUnreachable:
+		return VEXJustNotInExecutePath
+	default:
+		return ""
+	}
+}
+
+// basisGrounds states in words what a refutation basis establishes, or "" for a basis that names
+// nothing. It is the SARIF and HTML fallback when a finding carries no Detail, and it says no more
+// than notAffectedJustification lets the OpenVEX statement say: an unreachable symbol is present.
+func basisGrounds(basis verdict.NonExploitableBasis) string {
+	switch basis {
+	case verdict.BasisVersionNotAffected:
+		return "the resolved version is outside the advisory's affected range"
+	case verdict.BasisSymbolAbsent:
+		return "the vulnerable code is absent from the build"
+	case verdict.BasisSymbolUnreachable:
+		return "the vulnerable code is in the build, and no path from an entry point reaches it"
+	default:
+		return ""
+	}
+}
+
+// unjustifiedImpact is the impact_statement of a not_affected statement that carries no
+// justification: it says no basis was recorded, and gives the finding's grounds when it has any.
+func unjustifiedImpact(detail string) string {
+	msg := brand.Name + " recorded no basis that maps to an OpenVEX justification for this status."
+	if d := strings.TrimSuffix(strings.TrimSpace(detail), "."); d != "" {
+		msg += " Recorded grounds: " + d + "."
+	}
+	return msg
 }
 
 // reportProductID derives the OpenVEX product identifier for a finding. It prefers

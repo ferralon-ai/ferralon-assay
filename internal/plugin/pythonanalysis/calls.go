@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -70,6 +71,9 @@ type callSite struct {
 	calleeChain     []string
 	calleeWritten   string
 	scopes          []string
+	// inner marks a call whose name (or chain head) a lambda parameter or comprehension
+	// variable in the same statement may bind, so no scope's import binding decides it.
+	inner bool
 }
 
 // scopedBinding is a name bound by an import (or by instantiating an imported class) in
@@ -205,12 +209,18 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 	}
 	addCalls := func(text string) {
 		site := frameSite()
+		inner := innerNames(text)
 		for _, ce := range scanCalls(text) {
 			cs := site
 			cs.calleeName = ce.name
 			cs.calleeArity = ce.arity
 			cs.calleeChain = ce.chain
 			cs.calleeWritten = ce.written
+			head := ce.name
+			if len(ce.chain) > 1 {
+				head = ce.chain[0]
+			}
+			cs.inner = slices.Contains(inner, head)
 			fs.calls = append(fs.calls, cs)
 		}
 	}
@@ -234,7 +244,10 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			case "global", "nonlocal":
 				continue
 			}
-			fs.bindLocals(bindScope, localNames(st))
+			// A class body's names are class attributes, not names any function resolves.
+			if len(stack) == 0 || stack[len(stack)-1].className == "" {
+				fs.bindLocals(bindScope, localNames(st))
+			}
 			if local, chain, ok := instanceAssignment(st); ok {
 				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain})
 			}
@@ -449,8 +462,10 @@ func splitTopLevel(s string, sep byte) []string {
 }
 
 // localNames lists the names a simple statement binds in its scope: assignment and
-// augmented-assignment targets, a for loop's targets, "as" names, walrus targets and lambda
-// parameters. Over-reading only withholds an alias edge; the escape scan never narrows on it.
+// augmented-assignment targets, a for loop's targets, "as" names and walrus targets. A
+// lambda's parameters and a comprehension's variables are not: they bind only inside the
+// expression (innerNames). Over-reading only withholds an alias edge; the escape scan never
+// narrows on it.
 func localNames(st string) []string {
 	var out []string
 	idents := func(s string) {
@@ -517,6 +532,14 @@ func localNames(st string) []string {
 			from = i + 1
 		}
 	}
+	return out
+}
+
+// innerNames lists the names a statement binds only inside one of its expressions: lambda
+// parameters and comprehension (or for-header) variables. A call through one of them in the
+// same statement may stand for whatever the expression is handed.
+func innerNames(st string) []string {
+	var out []string
 	for rest := st; ; {
 		i := strings.Index(rest, "lambda")
 		if i < 0 {
@@ -530,6 +553,26 @@ func localNames(st string) []string {
 		if head, _, ok := strings.Cut(after, ":"); ok {
 			for _, p := range splitTopLevel(head, ',') {
 				p = strings.TrimLeft(strings.TrimSpace(p), "*")
+				if name, _ := readIdent(p); name != "" {
+					out = append(out, name)
+				}
+			}
+		}
+		rest = after
+	}
+	for rest := st; ; {
+		i := strings.Index(rest, "for")
+		if i < 0 {
+			break
+		}
+		after := rest[i+len("for"):]
+		if (i > 0 && isIdentPart(rune(rest[i-1]))) || (after != "" && isIdentPart(rune(after[0]))) {
+			rest = after
+			continue
+		}
+		if target, _, ok := strings.Cut(after, " in "); ok {
+			for _, p := range splitTopLevel(target, ',') {
+				p = strings.Trim(strings.TrimSpace(p), "()[]*")
 				if name, _ := readIdent(p); name != "" {
 					out = append(out, name)
 				}

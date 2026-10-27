@@ -512,6 +512,48 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
+			name:   "dependency import beside the binding in the same scope",
+			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as g\nfrom yaml import load as g\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "import fallback to None",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "try:\n    from .impl import f as g\nexcept ImportError:\n    g = None\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "import fallback from a dependency",
+			files:  map[string]string{"requirements.txt": "ujson==5.0\n", "pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "try:\n    from ujson import loads as g\nexcept ImportError:\n    from .impl import f as g\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "class attribute of the same name",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as run\n\nclass Job:\n    run = None\n\ndef go():\n    return run(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "module-level lambda parameter of the same name",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as g\n\nH = lambda g: g\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "module-level comprehension variable of the same name",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as g\n\nM = {g: 1 for g in range(3)}\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "local of the same name in another def",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as g\n\ndef other(xs):\n    for g in xs:\n        pass\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
 			name:   "import cycle ends",
 			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "from a import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
 			caller: funcSCIP("app", nil, "c", 0),
@@ -529,9 +571,10 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 }
 
 // TestCallGraph_AliasNeedsTheCallersBinding: an import alias resolves a call only where
-// the calling code holds the binding. A same-named call through a dependency, a parameter
-// or local that shadows the name, and a file that never imports the alias all keep the
-// edges the name alone gives.
+// the calling code holds the binding. A same-named call through a dependency, a parameter,
+// local or dependency import that alone binds the name in the deciding scope, a lambda
+// parameter or comprehension variable in the same statement, and a file that never imports
+// the alias all keep the edges the name alone gives; the alias they pass up still escapes.
 func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 	impl := funcSCIP("pkg/impl", nil, "f", 1)
 	cases := []struct {
@@ -539,6 +582,8 @@ func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 		files  map[string]string
 		caller string
 		edged  string
+		// escapes: the alias the site does not take is still a frame it may land on.
+		escapes bool
 	}{
 		{
 			name: "dependency receiver",
@@ -555,34 +600,52 @@ func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 			caller: funcSCIP("c", nil, "go", 1),
 		},
 		{
-			name:   "parameter shadows the binding",
-			files:  map[string]string{"pkg/a.py": "from .impl import f as run\n\ndef go(run):\n    return run(1)\n"},
-			caller: funcSCIP("pkg/a", nil, "go", 1),
+			name:    "parameter shadows the binding",
+			files:   map[string]string{"pkg/a.py": "from .impl import f as run\n\ndef go(run):\n    return run(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 1),
+			escapes: true,
 		},
 		{
-			name:   "local shadows the binding",
-			files:  map[string]string{"pkg/a.py": "from .impl import f as run\n\ndef go(make):\n    run = make()\n    return run(1)\n"},
-			caller: funcSCIP("pkg/a", nil, "go", 1),
+			name:    "local shadows the binding",
+			files:   map[string]string{"pkg/a.py": "from .impl import f as run\n\ndef go(make):\n    run = make()\n    return run(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 1),
+			escapes: true,
 		},
 		{
-			name:   "parameter shadows the module binding",
-			files:  map[string]string{"pkg/a.py": "from .impl import f as g\n", "pkg/__init__.py": "from .impl import f as g\n", "e.py": "import pkg\n\ndef go(pkg):\n    return pkg.g(1)\n"},
-			caller: funcSCIP("e", nil, "go", 1),
+			name:    "parameter shadows the module binding",
+			files:   map[string]string{"pkg/a.py": "from .impl import f as g\n", "pkg/__init__.py": "from .impl import f as g\n", "e.py": "import pkg\n\ndef go(pkg):\n    return pkg.g(1)\n"},
+			caller:  funcSCIP("e", nil, "go", 1),
+			escapes: true,
 		},
 		{
-			name:   "dependency import in the def shadows the module binding",
-			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/a.py": "from .impl import f as g\n\ndef go():\n    from yaml import load as g\n    return g(1)\n"},
-			caller: funcSCIP("pkg/a", nil, "go", 0),
+			name:    "dependency import in the def shadows the module binding",
+			files:   map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/a.py": "from .impl import f as g\n\ndef go():\n    from yaml import load as g\n    return g(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 0),
+			escapes: true,
 		},
 		{
-			name:   "dependency module in the def shadows the module binding",
-			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/__init__.py": "from .impl import f as g\n", "e.py": "import pkg\n\ndef go():\n    import yaml as pkg\n    return pkg.g(1)\n"},
-			caller: funcSCIP("e", nil, "go", 0),
+			name:    "dependency module in the def shadows the module binding",
+			files:   map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/__init__.py": "from .impl import f as g\n", "e.py": "import pkg\n\ndef go():\n    import yaml as pkg\n    return pkg.g(1)\n"},
+			caller:  funcSCIP("e", nil, "go", 0),
+			escapes: true,
 		},
 		{
-			name:   "dependency import beside the binding in the same scope",
-			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/a.py": "from .impl import f as g\nfrom yaml import load as g\n\ndef go():\n    return g(1)\n"},
-			caller: funcSCIP("pkg/a", nil, "go", 0),
+			name:    "lambda parameter in the same statement",
+			files:   map[string]string{"pkg/a.py": "from .impl import f as g\n\nH = lambda g: g(1)\n"},
+			caller:  moduleInitSCIP("pkg/a"),
+			escapes: true,
+		},
+		{
+			name:    "comprehension variable in the same statement",
+			files:   map[string]string{"pkg/a.py": "from .impl import f as g\n\nR = [g(1) for g in FS]\n"},
+			caller:  moduleInitSCIP("pkg/a"),
+			escapes: true,
+		},
+		{
+			name:    "comprehension variable as the chain head",
+			files:   map[string]string{"pkg/__init__.py": "from .impl import f as g\n", "c.py": "import pkg as m\n\nR = [m.g(1) for m in MODS]\n"},
+			caller:  moduleInitSCIP("c"),
+			escapes: true,
 		},
 		{
 			name:   "unique declaration elsewhere keeps its edge",
@@ -603,6 +666,9 @@ func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 			}
 			if tc.edged != "" && !hasEdge(res.Edges, tc.caller, tc.edged) {
 				t.Fatalf("missing edge %s -> %s; edges %v", tc.caller, tc.edged, res.Edges)
+			}
+			if tc.escapes && !symbolSet(res.Escaped)[impl] {
+				t.Fatalf("%s must escape; escaped %v", impl, res.Escaped)
 			}
 		})
 	}

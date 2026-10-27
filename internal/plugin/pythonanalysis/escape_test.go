@@ -557,6 +557,12 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
+			name:   "class attribute of the same name in a def",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as run\n\ndef go():\n    class Job:\n        run = None\n    return run(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
 			name:   "local of the same name in another def",
 			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as g\n\ndef other(xs):\n    for g in xs:\n        pass\n\ndef go():\n    return g(1)\n"},
 			caller: funcSCIP("pkg/a", nil, "go", 0),
@@ -724,6 +730,15 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"f-string key", "import sys\n\ndef go(m):\n    return sys.modules[f'plugins.{m}']\n", false, false, true},
 		{"relative import_module computed package", "import importlib\n\ndef go(p):\n    return importlib.import_module('.x', p)\n", false, false, true},
 		{"__import__ with a level", "def go():\n    return __import__('x', globals(), None, [], 1)\n", false, false, true},
+		{"__import__ with a level keyword", "def go():\n    return __import__('x', level=1)\n", false, false, true},
+		{"relative __import__", "def go():\n    return __import__('.x')\n", false, false, true},
+		{"relative import_module without a package", "import importlib\n\ndef go():\n    return importlib.import_module('.x')\n", false, false, true},
+		{"sys.modules as a value", "import sys\n\nM = dict(sys.modules)\n", false, false, true},
+		{"concatenated get key", "import sys\n\ndef go(m):\n    return sys.modules.get('plugins.' + m)\n", false, false, true},
+		{"importlib alias as a value", "import importlib as il\n\nI = il\n", false, false, true},
+		{"attribute named like an alias", "from importlib import import_module as load\n\nclass C:\n    def go(self, m):\n        return self.load(m)\n", false, false, false},
+		{"keyword argument named sys", "import sys\n\ndef go(f):\n    return f(sys=1)\n", false, false, false},
+		{"plain dunder attribute", "import sys\n\nOUT = sys.__stdout__\n", false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

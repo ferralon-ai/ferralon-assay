@@ -1291,9 +1291,10 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	// advisory names one of them. A FIRST-PARTY advisory may carry a synthetic PURL
 	// (pkg:golang/<app>) that is NOT a loaded package path (the repro's module path is its own,
 	// e.g. tegron.corpus/<repro>), so an exact-path filter would drop every candidate. When the
-	// filter matches no loaded package and no dependency module holds the path, drop it and
-	// resolve the advisory symbols by name across the program — AdvisorySymbols are still the
-	// GIVEN ground truth (inv.7); only the package SCOPE is relaxed, never the symbol identity.
+	// filter matches no loaded package and neither the standard library nor a dependency module
+	// holds the path, drop it and resolve the advisory symbols by name across the program —
+	// AdvisorySymbols are still the GIVEN ground truth (inv.7); only the package SCOPE is relaxed,
+	// never the symbol identity.
 	if pkgFilter != "" {
 		present := false
 		for _, sym := range index.Symbols {
@@ -1303,9 +1304,10 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			}
 		}
 		if !present {
-			// A dependency module holds the advisory's package: its code is not in the index, and a
-			// first-party symbol that shares a name with an advisory symbol is not the advisory's.
-			if dependencyHolds(ctx, req.BuildDir, pkgFilter) {
+			// The standard library or a dependency module holds the advisory's package: its code is
+			// not in the index, and a first-party symbol that shares a name with an advisory symbol
+			// is not the advisory's.
+			if strings.EqualFold(pkgFilter, "stdlib") || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
 			// No loaded package is the advisory's: if no module in the build holds it either,

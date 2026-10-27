@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -128,13 +130,16 @@ func modfileFlagSet(ctx context.Context, buildDir string) bool {
 
 // dependencyHolds reports whether a module of buildDir's build list other than the main module
 // holds import path p: the module holding it with the longest path, by its own path or its
-// replacement's, is not the main module. A build list that cannot be listed holds nothing.
+// replacement's, is not the main module. A vendored build, whose build list the go command does not
+// list, is read from vendor/modules.txt. A build list that cannot be read holds nothing.
 func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
 	mods, err := listModules(ctx, buildDir)
 	if err != nil {
-		return false
+		if mods, err = vendoredModules(buildDir); err != nil {
+			return false
+		}
 	}
 	held, main := 0, false
 	for _, m := range mods {
@@ -149,6 +154,46 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 		}
 	}
 	return held > 0 && !main
+}
+
+// vendoredModules reads a vendored build's module list: the main module from go.mod, and every
+// module vendor/modules.txt records, with its replacement.
+func vendoredModules(buildDir string) ([]listedModule, error) {
+	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	main := modfile.ModulePath(data)
+	if main == "" {
+		return nil, fmt.Errorf("%s/go.mod declares no module", buildDir)
+	}
+	txt, err := os.ReadFile(filepath.Join(buildDir, "vendor", "modules.txt"))
+	if err != nil {
+		return nil, err
+	}
+	mods := []listedModule{{Path: main, Main: true}}
+	for _, line := range strings.Split(string(txt), "\n") {
+		// "# path [version] [=> replacement [version]]"; "##" lines annotate the module above.
+		rest, ok := strings.CutPrefix(line, "# ")
+		if !ok {
+			continue
+		}
+		mod, repl, replaced := strings.Cut(rest, " => ")
+		f := strings.Fields(mod)
+		if len(f) == 0 {
+			continue
+		}
+		m := listedModule{Path: f[0]}
+		if rf := strings.Fields(repl); replaced && len(rf) > 0 {
+			m.Replace = &struct {
+				Path    string
+				Version string
+				Dir     string
+			}{Path: rf[0]}
+		}
+		mods = append(mods, m)
+	}
+	return mods, nil
 }
 
 // pathHolds reports whether module path mod holds import path p, ignoring case.

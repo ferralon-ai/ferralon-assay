@@ -488,4 +488,24 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		app := newApp(t, []string{"example.com/old"}, "\nrequire example.com/old v1.0.0\n\nreplace example.com/old v1.0.0 => example.com/a v1.0.0\n", reader)
 		wantNone(t, resolve(t, app, "pkg:golang/example.com/a", []string{"example.com/a.Verify"}))
 	})
+	t.Run("a standard-library advisory", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		wantNone(t, resolve(t, app, "pkg:golang/stdlib", []string{"crypto/x509.Certificate.Verify"}))
+	})
+	t.Run("a vendored build", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		cmd := exec.Command("go", "mod", "vendor")
+		cmd.Dir = app
+		cmd.Env = append(os.Environ(), "GOWORK=off")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("go mod vendor: %v\n%s", err, out)
+		}
+		if _, err := listModules(context.Background(), app); err == nil {
+			t.Fatal("go list -m all listed a vendored build; the vendor fallback is untested")
+		}
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/a/ssh", []string{"example.com/a/ssh.Certificate.Verify"}))
+		wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
+	})
 }

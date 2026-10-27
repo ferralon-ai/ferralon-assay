@@ -631,7 +631,8 @@ type ReachabilityResult struct {
 	// Searched lists the request sinks the lane stands behind as searched: the sink is a node built
 	// from code the lane loaded (never a boundary node), it traced from every ingress it found (at
 	// least one), and no path reached the sink. A lane that lists a sink here must not declare
-	// no_known_ingress on its account.
+	// no_known_ingress on its account. A lane whose call graph omits reflective calls must exclude
+	// sinks those calls can reach.
 	Searched []string `json:"searched,omitempty"`
 	// Refutation is lane-held positive evidence that the package's vulnerable code cannot run.
 	Refutation *Refutation `json:"refutation,omitempty"`

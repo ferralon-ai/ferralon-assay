@@ -125,16 +125,17 @@ func TestNPMComparePrerelease(t *testing.T) {
 	}
 }
 
-// TestNPMDisqualifyOutside_FailsOpenWhereNodeRejects pins the inputs node-semver rejects: a range
-// or version that leans on non-ASCII whitespace, a malformed suffix, a leading zero, or a component,
-// given or derived, beyond 2^53-1 must fail open rather than prove a version outside the affected set.
+// TestNPMDisqualifyOutside_FailsOpenWhereNodeRejects pins the inputs node-semver rejects or that the
+// port cannot mirror: a range or version that leans on non-ASCII whitespace, a malformed suffix or
+// prefix, a leading zero, or a number, given or derived, beyond 2^53-1 must fail open rather than
+// prove a version outside the affected set. Unicode spaces node's \s accepts fail open by choice.
 func TestNPMDisqualifyOutside_FailsOpenWhereNodeRejects(t *testing.T) {
 	cases := []struct {
 		name, ver, bound string
 		wantOutside, ok  bool
 	}{
 		{"NEL between comparators", "3.0.0", ">=1.0.0\u0085<2.0.0", false, false},
-		{"NBSP between comparators", "3.0.0", ">=1.0.0 <2.0.0", false, false},
+		{"NBSP between comparators (node accepts; unmodelled)", "3.0.0", ">=1.0.0\u00a0<2.0.0", false, false},
 		{"NEL around a range", "3.0.0", "\u0085^1.0.0", false, false},
 		{"NEL after a plain bound", "3.0.0", "2.0.0\u0085", false, false},
 		{"NEL after an installed version", "3.0.0\u0085", "^1.0.0", false, false},
@@ -143,6 +144,14 @@ func TestNPMDisqualifyOutside_FailsOpenWhereNodeRejects(t *testing.T) {
 		{"leading zero in a comparator", "0.5.0", ">=01.0.0", false, false},
 		{"leading zero in a partial", "3.0.0", "~01.2", false, false},
 		{"leading zero in a numeric prerelease", "3.0.0", "<2.0.0-01", false, false},
+		{"NEL before an alternative", "3.0.0", "1.0.0\u0085||2.0.0", false, false},
+		{"empty prerelease identifier", "3.0.0", "<2.0.0-a..b", false, false},
+		{"empty build metadata", "3.0.0", "2.0.0+", false, false},
+		{"numeric prerelease past 2^53-1", "1.0.0-9007199254740993", "<=1.0.0-9007199254740992", false, false},
+		{"numeric prerelease past int64", "1.0.0-99999999999999999999", "<1.0.0--a", false, false},
+		{"equals-prefixed exact bound", "1.2.3", "=1.2.3", false, true},
+		{"v= prefixed bound", "1.2.3", "v=1.2.3", false, false},
+		{"hyphen range operand past 2^53-1", "1.0.0", "1.0.0 - 9007199254740992.0.0", false, false},
 		{"given component past 2^53-1", "1.0.0", ">=9007199254740992.0.0", false, false},
 		{"installed component past 2^53-1", "9007199254740992.0.0", "^1.0.0", false, false},
 		{"caret major bound past 2^53-1", "1.0.0", "^9007199254740991.0.0", false, false},
@@ -157,6 +166,13 @@ func TestNPMDisqualifyOutside_FailsOpenWhereNodeRejects(t *testing.T) {
 
 		{"ASCII tab between comparators", "3.0.0", ">=1.0.0\t<2.0.0", true, true},
 		{"ASCII newline around a range", "3.0.0", "\n>=1.0.0 <2.0.0\n", true, true},
+		{"ASCII CR between comparators", "3.0.0", ">=1.0.0\r<2.0.0", true, true},
+		{"ASCII VT between comparators", "3.0.0", ">=1.0.0\v<2.0.0", true, true},
+		{"ASCII FF between comparators", "3.0.0", ">=1.0.0\f<2.0.0", true, true},
+		{"hyphenated prerelease", "3.0.0", "<2.0.0-rc-1", true, true},
+		{"lone zero prerelease", "3.0.0", "<2.0.0-0", true, true},
+		{"numeric prerelease at 2^53-1", "3.0.0", "<2.0.0-9007199254740991", true, true},
+		{"v-prefixed plain bound", "3.0.0", "v2.0.0", true, true},
 		{"caret bound at 2^53-1", "1.0.0", "^9007199254740990.0.0", true, true},
 		{"x-range bound at 2^53-1", "9007199254740991.0.0", "9007199254740990.x", true, true},
 		{"build metadata with a leading zero", "3.0.0", "2.0.0+001", true, true},

@@ -128,7 +128,6 @@ type npmVersion struct {
 func parseNPMVersion(s string) (npmVersion, bool) {
 	s = trimASCIISpace(s)
 	s = strings.TrimPrefix(s, "v")
-	s = strings.TrimPrefix(s, "=")
 	if s == "" {
 		return npmVersion{}, false
 	}
@@ -183,8 +182,15 @@ func validIdentifiers(s string, prerelease bool) bool {
 				return false
 			}
 		}
-		if prerelease && numeric && len(id) > 1 && id[0] == '0' {
-			return false
+		if prerelease && numeric {
+			// node compares numeric identifiers as doubles, which comparePrereleaseID cannot mirror
+			// past 2^53-1.
+			if len(id) > 1 && id[0] == '0' {
+				return false
+			}
+			if n, ok := atoiNonNeg(id); !ok || n > semverMax {
+				return false
+			}
 		}
 	}
 	return true
@@ -227,9 +233,9 @@ func nextComponent(n int) (int, bool) {
 	return n + 1, true
 }
 
-// isASCIISpace reports whether r is whitespace in the range grammar. node-semver splits on JS \s
-// and its comparator regexps admit none of the non-ASCII spaces, so a range that relies on one
-// (U+0085 in particular, which strings.Fields splits on and \s does not) is left unmodelled.
+// isASCIISpace reports whether r is whitespace in the range grammar. node-semver splits on JS \s;
+// only ASCII whitespace is modelled, so NEL, which strings.Fields splits on and \s does not, and the
+// Unicode spaces \s does include both leave a range unmodelled. Kept in step with jsanalysis.
 func isASCIISpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f'
 }

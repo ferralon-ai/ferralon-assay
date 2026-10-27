@@ -168,9 +168,22 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, entry)
+			env := append(os.Environ(), "GOWORK=off")
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, env, func() (*LoadResult, error) { return load, nil }, entry)
 			if err != nil {
 				t.Fatal(err)
+			}
+			illTyped := false
+			packages.Visit(load.Packages, nil, func(p *packages.Package) { illTyped = illTyped || p.IllTyped })
+			if illTyped && !tc.withheld {
+				// What reflection reaches through a package that does not type-check is unknown, so
+				// no refutation stands; the library-escape withhold's own decision is read before it.
+				if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonReflectiveCall) {
+					t.Fatalf("ill-typed load: refutation %+v, partiality %+v, want it withheld as reflection:call", res.Refutation, res.Partiality)
+				}
+				escaped := withholdRefutation(context.Background(), plugin.ReachabilityResult{Refutation: moduleRefutation(tc.scanned.findings, env)},
+					tc.scanned, load.Packages, load.buildRelease(), dir, env, resolveEntrypoints(load.Packages, entry, dir))
+				res.Refutation, res.Partiality = escaped.Refutation, escaped.Partiality
 			}
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)

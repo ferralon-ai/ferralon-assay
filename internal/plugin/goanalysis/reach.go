@@ -202,40 +202,71 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
 	res := evidenceResult(scanned.findings, g.CallGraph, env)
-	if res.Refutation == nil {
-		// Only a refutation is ever withheld.
-		return res, nil
+	if res.Refutation != nil {
+		loaded, err := load()
+		if err != nil {
+			return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
+		}
+		if loaded.cgoUnresolved {
+			res.Refutation = nil
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
+		} else {
+			entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
+			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
+			res.LibraryEntrypoints = entrypoints.record()
+		}
 	}
-	loaded, err := load()
-	if err != nil {
-		return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
-	}
-	if loaded.cgoUnresolved {
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
-		return res, nil
-	}
-	entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
-	res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
-	res.LibraryEntrypoints = entrypoints.record()
+	// Every result passes here: the call graph this lane searches omits reflection's calls, so no
+	// refutation and no Searched sink stands that those calls may contradict.
 	return withholdForReflectReach(res, scanned, g.ReflectReach), nil
 }
 
-// withholdForReflectReach drops a refutation that a call reflection makes may contradict. govulncheck
-// follows no such call, so when what those calls can reach (reflectReach) holds one of the advisory's
-// vulnerable symbols, or that reach is unknown, the search that found no path never covered it. The
-// result then declares reflection:call instead.
+// withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes
+// may contradict. govulncheck follows no such call, so when what those calls can reach (reflectReach)
+// holds one of the advisory's vulnerable symbols, or that reach is unknown, the search that found no
+// path never covered it. The result then declares reflection:call instead.
 func withholdForReflectReach(res plugin.ReachabilityResult, scanned vulnScan, reach map[string][]string) plugin.ReachabilityResult {
-	r := res.Refutation
-	if r == nil {
-		return res
+	if r := res.Refutation; r != nil {
+		module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+		if !ok || reflectMayReach(reach, scanned, module) {
+			res.Refutation = nil
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonReflectiveCall)
+		}
 	}
-	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || reach == nil || reflectReaches(reach, module, scanned.vulnerableSymbols(module)) {
-		res.Refutation = nil
+	if len(res.Searched) > 0 && searchedReflectMayReach(reach, scanned) {
+		res.Searched = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonReflectiveCall)
 	}
 	return res
+}
+
+// reflectMayReach reports whether a call reflection makes may reach one of module's vulnerable
+// symbols: the reach holds one, or it is unknown.
+func reflectMayReach(reach map[string][]string, scanned vulnScan, module string) bool {
+	return reach == nil || reflectReaches(reach, module, scanned.vulnerableSymbols(module))
+}
+
+// searchedReflectMayReach reports whether a call reflection makes may reach a vulnerable symbol of
+// any module the scan names; with none named, which one a sink lies in is unknown, and it may.
+func searchedReflectMayReach(reach map[string][]string, scanned vulnScan) bool {
+	modules := map[string]bool{}
+	for m := range scanned.imports {
+		modules[m] = true
+	}
+	for _, f := range scanned.findings {
+		if len(f.Trace) > 0 && f.Trace[0].Module != "" {
+			modules[f.Trace[0].Module] = true
+		}
+	}
+	if len(modules) == 0 {
+		return true
+	}
+	for m := range modules {
+		if reflectMayReach(reach, scanned, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
@@ -895,7 +926,7 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 		if err != nil {
 			return nil, err
 		}
-		cg, err := callGraphDeclaring(loaded, "vta", reflectReasonOnReconcile)
+		cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
 		if err != nil {
 			return nil, err
 		}
@@ -904,12 +935,9 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 			return nil, err
 		}
 		for _, r := range reasons {
-			if reflectReasonOnReconcile(r) {
+			if declaredRunWide(r) {
 				cg.Partiality = withReason(cg.Partiality, r)
 			}
-		}
-		if reach == nil {
-			reach = map[string][]string{}
 		}
 		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
 	})

@@ -48,7 +48,7 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        uses: ferralon-ai/ferralon-assay@v0.5
+        uses: ferralon-ai/ferralon-assay@v0.6
         with:
           mode: baseline
           target: .
@@ -79,11 +79,11 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
-**`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
+**`@v0.6` floats** to the newest 0.6.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
-`vX.Y.Z` scanner it was cut with, so `@v0.5` fetches the scanner of the patch it currently points at.
+`vX.Y.Z` scanner it was cut with, so `@v0.6` fetches the scanner of the patch it currently points at.
 Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the current
-minor alias. A full tag (`@v0.5.0`) or a commit SHA freezes the Action source and, through it, that
+minor alias. A full tag (`@v0.6.0`) or a commit SHA freezes the Action source and, through it, that
 scanner release. To freeze the exact bytes as well, set
 **`scanner-sha256`** yourself — each release publishes the value as a `.sha256` asset — and the run
 verifies the fetched tarball against your pin, failing loudly on any mismatch. It is off by default and
@@ -536,3 +536,9 @@ bot; you can reply on any of them with questions.
 ## License
 
 Business Source License 1.1. See [LICENSE](LICENSE).
+
+You can run Assay in production on software that you or your organization develop, or operate for
+your organization's own use. That includes commercial software and software you develop for a
+client, and its output is yours to use however you like. The license doesn't cover offering
+analysis, testing, or patching of software as a product or service, or building Assay into a product
+or service you provide to others. For those, write to operators@ferralon.com.

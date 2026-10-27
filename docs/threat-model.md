@@ -60,8 +60,10 @@ tarball except one from a registry the effective `.npmrc` holds an auth entry fo
 fetches those into a directory under the runner's temp directory that is never cached, on every
 run, and never writes them to the cached directory (`-dependency-uncredentialed-cache`). It decides
 which registries hold an auth entry from the same `.npmrc` resolution the fetch uses to present a
-token, fetches every tarball bound for the cached directory without presenting any credential, and
-removes any credentialed tarball it finds there. The cache key carries the scope (`all` or
+token, and fetches every tarball bound for the cached directory without presenting any credential.
+When the lock pins a package from a credentialed registry and a restored cache holds a copy of it,
+the scanner removes that copy. It does not sweep entries the lock no longer pins: an earlier run
+wrote those, and it fetched them without presenting any credential. The cache key carries the scope (`all` or
 `uncredentialed`) and a format version, so a cache saved under one never restores under the other.
 `always` caches every tarball regardless and, on a public repository, exposes cached private
 packages to fork pull requests; `never` caches nothing. A public-repository `offline` run reads the

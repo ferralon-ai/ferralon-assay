@@ -102,7 +102,7 @@ func npmVersionInRangeOpt(ver, rangeExpr string, includePrerelease bool) (inRang
 	sets := strings.Split(rangeExpr, "||")
 	matchedAny := false
 	for _, set := range sets {
-		comps, cok := parseComparatorSet(strings.TrimSpace(set))
+		comps, cok := parseComparatorSet(trimASCIISpace(set))
 		if !cok {
 			return false, false
 		}
@@ -126,7 +126,7 @@ type npmVersion struct {
 // leading 'v'/'='. ok is false on any malformed input (missing components, non-numeric
 // core, empty prerelease identifier) so the caller fails open.
 func parseNPMVersion(s string) (npmVersion, bool) {
-	s = strings.TrimSpace(s)
+	s = trimASCIISpace(s)
 	s = strings.TrimPrefix(s, "v")
 	s = strings.TrimPrefix(s, "=")
 	if s == "" {
@@ -134,6 +134,9 @@ func parseNPMVersion(s string) (npmVersion, bool) {
 	}
 	// Strip build metadata.
 	if i := strings.IndexByte(s, '+'); i >= 0 {
+		if !validIdentifiers(s[i+1:], false) {
+			return npmVersion{}, false
+		}
 		s = s[:i]
 	}
 	core := s
@@ -145,23 +148,46 @@ func parseNPMVersion(s string) (npmVersion, bool) {
 	if len(parts) != 3 {
 		return npmVersion{}, false
 	}
-	major, ok1 := atoiNonNeg(parts[0])
-	minor, ok2 := atoiNonNeg(parts[1])
-	patch, ok3 := atoiNonNeg(parts[2])
+	major, ok1 := versionComponent(parts[0])
+	minor, ok2 := versionComponent(parts[1])
+	patch, ok3 := versionComponent(parts[2])
 	if !ok1 || !ok2 || !ok3 {
 		return npmVersion{}, false
 	}
 	v := npmVersion{major: major, minor: minor, patch: patch}
 	if pre != "" {
-		ids := strings.Split(pre, ".")
-		for _, id := range ids {
-			if id == "" {
-				return npmVersion{}, false
-			}
+		if !validIdentifiers(pre, true) {
+			return npmVersion{}, false
 		}
-		v.prerelease = ids
+		v.prerelease = strings.Split(pre, ".")
 	}
 	return v, true
+}
+
+// validIdentifiers reports whether s is a dot-separated list of non-empty [0-9A-Za-z-] identifiers,
+// node-semver's grammar for a prerelease or build suffix. A numeric prerelease identifier may not
+// have a leading zero; a build identifier may.
+func validIdentifiers(s string, prerelease bool) bool {
+	for _, id := range strings.Split(s, ".") {
+		if id == "" {
+			return false
+		}
+		numeric := true
+		for i := 0; i < len(id); i++ {
+			c := id[i]
+			switch {
+			case c >= '0' && c <= '9':
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '-':
+				numeric = false
+			default:
+				return false
+			}
+		}
+		if prerelease && numeric && len(id) > 1 && id[0] == '0' {
+			return false
+		}
+	}
+	return true
 }
 
 // atoiNonNeg parses a non-negative decimal integer with no leading '+'/'-'.
@@ -174,6 +200,42 @@ func atoiNonNeg(s string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// semverMax is node-semver's MAX_SAFE_INTEGER bound on a version component, given or derived.
+const semverMax = 1<<53 - 1
+
+// versionComponent parses one numeric component of a version core the way node-semver's strict
+// grammar does: no leading zero, and no value beyond semverMax.
+func versionComponent(s string) (int, bool) {
+	if len(s) > 1 && s[0] == '0' {
+		return 0, false
+	}
+	n, ok := atoiNonNeg(s)
+	if !ok || n > semverMax {
+		return 0, false
+	}
+	return n, true
+}
+
+// nextComponent is n+1 for a derived range bound; ok is false past semverMax, where node-semver
+// rejects the range.
+func nextComponent(n int) (int, bool) {
+	if n >= semverMax {
+		return 0, false
+	}
+	return n + 1, true
+}
+
+// isASCIISpace reports whether r is whitespace in the range grammar. node-semver splits on JS \s
+// and its comparator regexps admit none of the non-ASCII spaces, so a range that relies on one
+// (U+0085 in particular, which strings.Fields splits on and \s does not) is left unmodelled.
+func isASCIISpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f'
+}
+
+func trimASCIISpace(s string) string {
+	return strings.TrimFunc(s, isASCIISpace)
 }
 
 // compareNPMVersion compares two parsed versions, returning -1/0/+1 per node-semver
@@ -309,7 +371,7 @@ func parseComparatorSet(set string) ([]comparator, bool) {
 		// "*" matches any release version; model as ">=0.0.0".
 		return []comparator{{op: ">=", v: npmVersion{}}}, true
 	}
-	fields := strings.Fields(set)
+	fields := strings.FieldsFunc(set, isASCIISpace)
 	// Hyphen range "a - b".
 	if i := indexOf(fields, "-"); i >= 0 {
 		if i != 1 || len(fields) != 3 {
@@ -361,7 +423,7 @@ func parseComparator(f string) ([]comparator, bool) {
 
 // opComparator builds a single operator comparator from a strict version operand.
 func opComparator(op, raw string) ([]comparator, bool) {
-	v, ok := parseNPMVersion(strings.TrimSpace(raw))
+	v, ok := parseNPMVersion(trimASCIISpace(raw))
 	if !ok {
 		return nil, false
 	}
@@ -372,7 +434,7 @@ func opComparator(op, raw string) ([]comparator, bool) {
 // an x-range / partial version ("1", "1.2", "1.x", "1.2.*") which expands to a
 // [>=floor, <ceil) pair.
 func exactOrXRange(raw string) ([]comparator, bool) {
-	raw = strings.TrimSpace(raw)
+	raw = trimASCIISpace(raw)
 	if v, ok := parseNPMVersion(raw); ok {
 		return []comparator{{op: "=", v: v}}, true
 	}
@@ -382,7 +444,7 @@ func exactOrXRange(raw string) ([]comparator, bool) {
 // xRange expands a partial version / x-range into a [>=floor, <ceil) comparator pair.
 // "1" or "1.x" → >=1.0.0 <2.0.0; "1.2" or "1.2.x" → >=1.2.0 <1.3.0; "*"/"x" → >=0.0.0.
 func xRange(raw string) ([]comparator, bool) {
-	raw = strings.TrimSpace(raw)
+	raw = trimASCIISpace(raw)
 	if raw == "" || raw == "*" || raw == "x" || raw == "X" {
 		return []comparator{{op: ">=", v: npmVersion{}}}, true
 	}
@@ -390,24 +452,32 @@ func xRange(raw string) ([]comparator, bool) {
 	if len(parts) > 3 {
 		return nil, false
 	}
-	major, mok := atoiNonNeg(parts[0])
+	major, mok := versionComponent(parts[0])
 	if !mok {
 		return nil, false
 	}
 	if len(parts) == 1 || isWildcard(parts[1]) {
+		next, ok := nextComponent(major)
+		if !ok {
+			return nil, false
+		}
 		return []comparator{
 			{op: ">=", v: npmVersion{major: major}},
-			{op: "<", v: npmVersion{major: major + 1}},
+			{op: "<", v: npmVersion{major: next}},
 		}, true
 	}
-	minor, nok := atoiNonNeg(parts[1])
+	minor, nok := versionComponent(parts[1])
 	if !nok {
 		return nil, false
 	}
 	if len(parts) == 2 || isWildcard(parts[2]) {
+		next, ok := nextComponent(minor)
+		if !ok {
+			return nil, false
+		}
 		return []comparator{
 			{op: ">=", v: npmVersion{major: major, minor: minor}},
-			{op: "<", v: npmVersion{major: major, minor: minor + 1}},
+			{op: "<", v: npmVersion{major: major, minor: next}},
 		}, true
 	}
 	return nil, false
@@ -433,27 +503,37 @@ func caretRange(raw string) ([]comparator, bool) {
 	}
 	floor := v
 	var ceil npmVersion
+	var next int
 	switch {
 	case partial == 1:
 		// Only major specified; minor/patch are wildcards → bump major.
-		ceil = npmVersion{major: v.major + 1}
+		next, ok = nextComponent(v.major)
+		ceil = npmVersion{major: next}
 	case partial == 2:
 		// major.minor specified, patch is a wildcard.
 		if v.major == 0 {
-			ceil = npmVersion{minor: v.minor + 1}
+			next, ok = nextComponent(v.minor)
+			ceil = npmVersion{minor: next}
 		} else {
-			ceil = npmVersion{major: v.major + 1}
+			next, ok = nextComponent(v.major)
+			ceil = npmVersion{major: next}
 		}
 	default:
 		// Full version: bump the left-most non-zero component.
 		switch {
 		case v.major != 0:
-			ceil = npmVersion{major: v.major + 1}
+			next, ok = nextComponent(v.major)
+			ceil = npmVersion{major: next}
 		case v.minor != 0:
-			ceil = npmVersion{minor: v.minor + 1}
+			next, ok = nextComponent(v.minor)
+			ceil = npmVersion{minor: next}
 		default:
-			ceil = npmVersion{patch: v.patch + 1}
+			next, ok = nextComponent(v.patch)
+			ceil = npmVersion{patch: next}
 		}
+	}
+	if !ok {
+		return nil, false
 	}
 	return []comparator{{op: ">=", v: floor}, {op: "<", v: ceil}}, true
 }
@@ -467,10 +547,16 @@ func tildeRange(raw string) ([]comparator, bool) {
 	}
 	floor := v
 	var ceil npmVersion
+	var next int
 	if partial >= 2 {
-		ceil = npmVersion{major: v.major, minor: v.minor + 1}
+		next, ok = nextComponent(v.minor)
+		ceil = npmVersion{major: v.major, minor: next}
 	} else {
-		ceil = npmVersion{major: v.major + 1}
+		next, ok = nextComponent(v.major)
+		ceil = npmVersion{major: next}
+	}
+	if !ok {
+		return nil, false
 	}
 	return []comparator{{op: ">=", v: floor}, {op: "<", v: ceil}}, true
 }
@@ -480,7 +566,7 @@ func tildeRange(raw string) ([]comparator, bool) {
 // is treated as absent. Prerelease/build suffixes on the final component are honored only
 // for a full 3-part version.
 func parsePartialVersion(raw string) (npmVersion, int, bool) {
-	raw = strings.TrimSpace(raw)
+	raw = trimASCIISpace(raw)
 	if raw == "" {
 		return npmVersion{}, 0, false
 	}
@@ -497,7 +583,7 @@ func parsePartialVersion(raw string) (npmVersion, int, bool) {
 		if isWildcard(p) {
 			break
 		}
-		n, ok := atoiNonNeg(p)
+		n, ok := versionComponent(p)
 		if !ok {
 			return npmVersion{}, 0, false
 		}

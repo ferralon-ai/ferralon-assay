@@ -1307,7 +1307,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			// The standard library or a dependency module holds the advisory's package: its code is
 			// not in the index, and a first-party symbol that shares a name with an advisory symbol
 			// is not the advisory's.
-			if strings.EqualFold(pkgFilter, "stdlib") || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
+			if strings.EqualFold(pkgFilter, packageFromPURL(stdlibPURL)) || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
 			// No loaded package is the advisory's: if no module in the build holds it either,

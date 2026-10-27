@@ -432,6 +432,20 @@ func listAll(t *testing.T, app string) {
 	}
 }
 
+// vendor vendors app's dependencies, so that go list -m all no longer lists its build.
+func vendor(t *testing.T, app string) {
+	t.Helper()
+	cmd := exec.Command("go", "mod", "vendor")
+	cmd.Dir = app
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod vendor: %v\n%s", err, out)
+	}
+	if _, err := listModules(context.Background(), app); err == nil {
+		t.Fatal("go list -m all listed a vendored build; the vendor fallback is untested")
+	}
+}
+
 func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 	reader := map[string]string{"app/reader.go": "package main\n\ntype Reader struct{}\n\nfunc (*Reader) Verify() error { return nil }\n\nfunc Verify() bool { return true }\n"}
 	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nvar X = 1\n"}}
@@ -493,18 +507,20 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		app := newApp(t, []string{"example.com/a"}, "", reader)
 		wantNone(t, resolve(t, app, "pkg:golang/stdlib", []string{"crypto/x509.Certificate.Verify"}))
 	})
+	t.Run("the scanned module nested under a dependency's path holds its own paths", func(t *testing.T) {
+		parent := srcModule{"example.com", "v1.0.0", map[string]string{"root.go": "package root\n\nvar X = 1\n"}}
+		newSourceProxy(t, []srcModule{parent})
+		app := newApp(t, []string{"example.com"}, "", reader)
+		purl := "pkg:golang/example.com/app/missing"
+		wantFirstParty(t, resolve(t, app, purl, []string{"main.Verify"}))
+		vendor(t, app)
+		wantFirstParty(t, resolve(t, app, purl, []string{"main.Verify"}))
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/x", []string{"example.com/x.Verify"}))
+	})
 	t.Run("a vendored build", func(t *testing.T) {
 		newSourceProxy(t, []srcModule{modA})
 		app := newApp(t, []string{"example.com/a"}, "", reader)
-		cmd := exec.Command("go", "mod", "vendor")
-		cmd.Dir = app
-		cmd.Env = append(os.Environ(), "GOWORK=off")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("go mod vendor: %v\n%s", err, out)
-		}
-		if _, err := listModules(context.Background(), app); err == nil {
-			t.Fatal("go list -m all listed a vendored build; the vendor fallback is untested")
-		}
+		vendor(t, app)
 		wantNone(t, resolve(t, app, "pkg:golang/example.com/a/ssh", []string{"example.com/a/ssh.Certificate.Verify"}))
 		wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
 	})

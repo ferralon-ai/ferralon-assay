@@ -19,8 +19,9 @@ type importBinding struct {
 
 // parseImportStatement parses a cleaned logical line that starts with `import` or `from`
 // into the names it binds. Relative imports (`from . import x`, `from .m import y`) bind
-// first-party names and star imports bind names the scanner cannot list, so neither yields
-// a binding; the call graph's standing dynamic_dispatch partiality covers what they hide.
+// first-party names, so they never yield a binding here (a binding here can name a
+// dependency boundary); parseRelativeImport reads them. Star imports bind names the scanner
+// cannot list; the call graph's standing dynamic_dispatch partiality covers what they hide.
 func parseImportStatement(text string) []importBinding {
 	kw, rest := firstWord(text)
 	switch kw {
@@ -67,6 +68,48 @@ func parseImportStatement(text string) []importBinding {
 		return out
 	}
 	return nil
+}
+
+// parseRelativeImport parses a cleaned `from .m import f as g` statement into the names it
+// binds, each target keeping its leading dots (".m.f", "..pkg.f", ".x" for
+// `from . import x`). A relative target is first-party by construction, so these bindings
+// feed only the first-party alias table and the escape scan, never a dependency boundary.
+// Star imports bind names the scanner cannot list and yield nothing.
+func parseRelativeImport(text string) []importBinding {
+	kw, rest := firstWord(text)
+	if kw != "from" {
+		return nil
+	}
+	rest = strings.TrimSpace(rest)
+	i := strings.Index(rest, " import ")
+	if i < 0 {
+		return nil
+	}
+	from := strings.TrimSpace(rest[:i])
+	dots := len(from) - len(strings.TrimLeft(from, "."))
+	if dots == 0 {
+		return nil
+	}
+	if mod := from[dots:]; mod != "" && !isDottedName(mod) {
+		return nil
+	}
+	prefix := from
+	if dots < len(from) {
+		prefix += "."
+	}
+	var out []importBinding
+	for _, item := range splitImportList(rest[i+len(" import "):]) {
+		name, alias := splitAlias(item)
+		if name == "*" || !isDottedName(name) || strings.Contains(name, ".") {
+			continue
+		}
+		local := name
+		if alias != "" {
+			local = alias
+		}
+		out = append(out, importBinding{local: local, target: prefix + name})
+	}
+	return out
 }
 
 // splitImportList splits an import list ("a, b as c", "(a,\n b)") into its items.

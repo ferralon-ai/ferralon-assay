@@ -44,10 +44,15 @@ var pyCallKeywords = map[string]bool{
 // the receiver is itself a call result ("Environment().from_string(x)") the receiver
 // call's chain is prefixed ([Environment from_string]), so an import binding on the first
 // segment can name the dependency attribute the call reaches.
+//
+// written is the callee as the source writes it, whitespace collapsed and cut at 80 runes. A
+// call through a value the scanner cannot name ("HANDLERS[k](x)", "make()(x)") has an empty
+// name and chain and only written.
 type callExpr struct {
-	name  string
-	arity int
-	chain []string
+	name    string
+	arity   int
+	chain   []string
+	written string
 }
 
 // callSite is one call site: the caller (located by its enclosing class chain + name +
@@ -63,6 +68,7 @@ type callSite struct {
 	calleeName      string
 	calleeArity     int
 	calleeChain     []string
+	calleeWritten   string
 	scopes          []string
 }
 
@@ -83,10 +89,16 @@ func scopeKey(enclosing []string, name string, arity int) string {
 }
 
 // fileScan is everything the call/ingress scanner reads from one file.
+// decorated lists the defs under a decorator other than a route registration: the
+// decorator receives the function as a value. relBindings are the relative imports'
+// bindings, kept apart from bindings so they never name a dependency boundary.
 type fileScan struct {
-	calls     []callSite
-	ingresses []ingressMarker
-	bindings  []scopedBinding
+	calls       []callSite
+	ingresses   []ingressMarker
+	bindings    []scopedBinding
+	relBindings []importBinding
+	decorated   []funcDecl
+	refs        valueRefs
 }
 
 // ingressMarker is one framework entry point discovered lexically: a Flask/FastAPI route
@@ -116,17 +128,20 @@ type pyFrame struct {
 
 // parseCallsAndIngresses scans the logical lines of one cleaned Python source file
 // (already comment/string-stripped, continuations joined) and returns its call sites,
-// framework ingress markers, and import bindings. It is an indentation-scoped, body-aware
-// pass mirroring parseDecls: it tracks the enclosing class chain and the def whose body is
-// currently open, so each call expression attributes to its caller def (or to module init
-// when no def is open), and a Flask/FastAPI route decorator immediately above a def records
-// that def as an ingress NAMING the handler (so the ingress symbol coincides with the
-// handler's call-graph node).
+// framework ingress markers, import bindings, decorated defs, and the names it uses as
+// values. It is an indentation-scoped, body-aware pass mirroring parseDecls: it tracks the
+// enclosing class chain and the def whose body is currently open, so each call expression
+// attributes to its caller def (or to module init when no def is open), and a Flask/FastAPI
+// route decorator immediately above a def records that def as an ingress NAMING the handler
+// (so the ingress symbol coincides with the handler's call-graph node).
+//
+// A decorator expression runs where the def statement runs, so its calls attribute to the
+// enclosing frame, and a bare decorator ("@register") is itself a call with the def as its
+// one argument. A def's or class's header runs there too (parameter defaults, bases); a
+// body written on the header line ("def f(x): return g(x)") runs in the new frame.
 func parseCallsAndIngresses(lines []logicalLine) fileScan {
 	var stack []pyFrame
-	var calls []callSite
-	var ingresses []ingressMarker
-	var bindings []scopedBinding
+	fs := fileScan{refs: newValueRefs()}
 
 	classChain := func() []string {
 		var out []string
@@ -154,12 +169,61 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		}
 		return out
 	}
+	// frameSite is a call site attributed to the open frame: the innermost def, or module
+	// init (callerName "") when no def is open, since module and class bodies run at import.
+	frameSite := func() callSite {
+		site := callSite{scopes: funcScopes()}
+		if m := innermostFunc(); m != nil {
+			site.callerEnclosing = append([]string(nil), m.funcEnclosing...)
+			site.callerName = m.funcName
+			site.callerArity = m.funcArity
+		}
+		return site
+	}
+	addCalls := func(text string) {
+		site := frameSite()
+		for _, ce := range scanCalls(text) {
+			cs := site
+			cs.calleeName = ce.name
+			cs.calleeArity = ce.arity
+			cs.calleeChain = ce.chain
+			cs.calleeWritten = ce.written
+			fs.calls = append(fs.calls, cs)
+		}
+	}
+	statement := func(text string) {
+		for _, st := range splitStatements(text) {
+			kw, _ := firstWord(st)
+			scopes := funcScopes()
+			bindScope := ""
+			if len(scopes) > 0 {
+				bindScope = scopes[len(scopes)-1]
+			}
+			switch kw {
+			case "import", "from":
+				for _, ib := range parseImportStatement(st) {
+					fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target})
+				}
+				fs.relBindings = append(fs.relBindings, parseRelativeImport(st)...)
+				continue
+			case "global", "nonlocal":
+				continue
+			}
+			if local, chain, ok := instanceAssignment(st); ok {
+				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain})
+			}
+			fs.refs.scan(st, false)
+			addCalls(st)
+		}
+	}
 
 	// pendingRoute marks that a route decorator ("@app.route(...)"/"@app.get(...)") has
 	// been seen and the NEXT def is its handler ingress. It persists across stacked
-	// non-route decorators until the def consumes it.
+	// non-route decorators until the def consumes it. pendingDecorated marks that some other
+	// decorator receives the next def.
 	pendingRoute := false
 	pendingSelector := ""
+	pendingDecorated := false
 
 	for _, ll := range lines {
 		for len(stack) > 0 && ll.indent <= stack[len(stack)-1].indent {
@@ -168,10 +232,29 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 
 		text := ll.text
 		if strings.HasPrefix(text, "@") {
+			body := strings.TrimSpace(strings.TrimPrefix(text, "@"))
 			if leaf, ok := routeDecorator(text); ok {
 				pendingRoute = true
 				pendingSelector = leaf
+			} else {
+				pendingDecorated = true
 			}
+			site := frameSite()
+			site.calleeArity = 1
+			if isDottedName(body) {
+				// "@a.deco" calls a.deco with the def: the leaf is in call position.
+				site.calleeChain = strings.Split(body, ".")
+				site.calleeName = site.calleeChain[len(site.calleeChain)-1]
+				site.calleeWritten = body
+				fs.refs.scan(body+"()", false)
+			} else {
+				// "@deco(args)": the calls in the expression run, then its value is called
+				// with the def through a value the scanner cannot name.
+				fs.refs.scan(body, false)
+				addCalls(body)
+				site.calleeWritten = collapseWritten("@" + body)
+			}
+			fs.calls = append(fs.calls, site)
 			continue
 		}
 
@@ -185,16 +268,28 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			if !ok {
 				continue
 			}
+			header, body := splitHeader(rest)
+			_, bases := readIdent(header)
+			fs.refs.scan(bases, false)
+			addCalls(bases)
 			stack = append(stack, pyFrame{indent: ll.indent, className: name})
 			pendingRoute = false
+			pendingDecorated = false
+			if body != "" {
+				statement(body)
+			}
 		case "def":
 			name, arity, ok := parseDefSignature(rest)
 			if !ok {
 				continue
 			}
+			header, body := splitHeader(rest)
+			_, params := readIdent(header)
+			fs.refs.scan(params, true)
+			addCalls(params)
 			enc := classChain()
 			if pendingRoute {
-				ingresses = append(ingresses, ingressMarker{
+				fs.ingresses = append(fs.ingresses, ingressMarker{
 					enclosing: append([]string(nil), enc...),
 					name:      name,
 					arity:     arity,
@@ -202,50 +297,72 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 					selector:  pendingSelector,
 				})
 			}
+			if pendingDecorated {
+				fs.decorated = append(fs.decorated, funcDecl{enclosing: append([]string(nil), enc...), name: name, arity: arity})
+			}
 			pendingRoute = false
+			pendingDecorated = false
 			stack = append(stack, pyFrame{
 				indent:        ll.indent,
 				funcName:      name,
 				funcArity:     arity,
 				funcEnclosing: enc,
 			})
+			if body != "" {
+				statement(body)
+			}
 		default:
 			pendingRoute = false
-			scopes := funcScopes()
-			bindScope := ""
-			if len(scopes) > 0 {
-				bindScope = scopes[len(scopes)-1]
-			}
-			if kw == "import" || kw == "from" {
-				for _, ib := range parseImportStatement(text) {
-					bindings = append(bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target})
-				}
-				continue
-			}
-			if local, chain, ok := instanceAssignment(text); ok {
-				bindings = append(bindings, scopedBinding{scope: bindScope, local: local, inst: chain})
-			}
-			// A call outside any def runs when the module (or class body) executes at
-			// import time; it is attributed to the module-init caller (callerName "").
-			var site callSite
-			if m := innermostFunc(); m != nil {
-				site = callSite{
-					callerEnclosing: append([]string(nil), m.funcEnclosing...),
-					callerName:      m.funcName,
-					callerArity:     m.funcArity,
-				}
-			}
-			for _, ce := range scanCalls(text) {
-				cs := site
-				cs.calleeName = ce.name
-				cs.calleeArity = ce.arity
-				cs.calleeChain = ce.chain
-				cs.scopes = scopes
-				calls = append(calls, cs)
+			pendingDecorated = false
+			statement(text)
+		}
+	}
+	return fs
+}
+
+// splitHeader splits a def or class statement (the text after its keyword) at the colon
+// that ends its header, returning the header and any body written on the same line.
+func splitHeader(rest string) (header, body string) {
+	depth := 0
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case ':':
+			if depth == 0 {
+				return rest[:i], strings.TrimSpace(rest[i+1:])
 			}
 		}
 	}
-	return fileScan{calls: calls, ingresses: ingresses, bindings: bindings}
+	return rest, ""
+}
+
+// splitStatements splits a logical line at its top-level semicolons into the simple
+// statements it holds.
+func splitStatements(text string) []string {
+	var out []string
+	depth, from := 0, 0
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case ';':
+			if depth == 0 {
+				if st := strings.TrimSpace(text[from:i]); st != "" {
+					out = append(out, st)
+				}
+				from = i + 1
+			}
+		}
+	}
+	if st := strings.TrimSpace(text[from:]); st != "" {
+		out = append(out, st)
+	}
+	return out
 }
 
 // routeDecorator reports whether a decorator line is a Flask/FastAPI route registration
@@ -268,22 +385,37 @@ func routeDecorator(text string) (leaf string, ok bool) {
 // identifier run (possibly dotted, "a.b.fn") immediately followed by '(', it records the
 // LEAF name and the top-level argument arity. Scanning continues INSIDE the argument list
 // so nested calls ("foo(bar(x))" → foo and bar) are all found. Python keywords that take a
-// parenthesized clause are excluded so control flow is never a call.
+// parenthesized clause are excluded so control flow is never a call. A '(' that follows a
+// closing bracket calls a value the scanner cannot name ("t[k](x)", "f()(x)"): it is
+// recorded with only its written form.
 func scanCalls(text string) []callExpr {
 	r := []rune(text)
 	n := len(r)
 	var out []callExpr
 	// closeChain maps the index of a recorded call's closing ')' to that call's chain, so
-	// a call on its result (").attr(") inherits it as the receiver prefix.
+	// a call on its result (").attr(") inherits it as the receiver prefix; closeStart maps
+	// it to where that call's written form starts.
 	closeChain := map[int][]string{}
+	closeStart := map[int]int{}
 	for i := 0; i < n; {
+		if r[i] == '(' {
+			if start, ok := calledValueStart(r, i); ok {
+				out = append(out, callExpr{arity: paramArityAt(r, i), written: collapseWritten(string(r[start:i]))})
+			}
+			i++
+			continue
+		}
 		if !isIdentStartRune(r[i]) {
 			i++
 			continue
 		}
 		var segs []string
-		if recv, ok := closeChain[receiverClose(r, i)]; ok {
-			segs = append(segs, recv...)
+		start := i
+		if rc := receiverClose(r, i); rc >= 0 {
+			if recv, ok := closeChain[rc]; ok {
+				segs = append(segs, recv...)
+				start = closeStart[rc]
+			}
 		}
 		last := ""
 		pos := i
@@ -301,9 +433,10 @@ func scanCalls(text string) []callExpr {
 		}
 		p := skipSpaceRunes(r, pos)
 		if last != "" && !pyCallKeywords[last] && p < n && r[p] == '(' {
-			out = append(out, callExpr{name: last, arity: paramArityAt(r, p), chain: segs})
+			out = append(out, callExpr{name: last, arity: paramArityAt(r, p), chain: segs, written: collapseWritten(string(r[start:pos]))})
 			if c := matchingClose(r, p); c >= 0 {
 				closeChain[c] = segs
+				closeStart[c] = start
 			}
 		}
 		if pos > i {
@@ -313,6 +446,85 @@ func scanCalls(text string) []callExpr {
 		}
 	}
 	return out
+}
+
+// calledValueStart reports whether the '(' at r[open] calls the value of a bracketed
+// expression ("t[k](", "f()(", "(g)("), and returns where that callee expression starts.
+func calledValueStart(r []rune, open int) (int, bool) {
+	j := prevSignificantRune(r, open)
+	if j < 0 || (r[j] != ')' && r[j] != ']') {
+		return 0, false
+	}
+	start := j
+	for {
+		if r[j] == ')' || r[j] == ']' {
+			o := matchingOpen(r, j)
+			if o < 0 {
+				return 0, false
+			}
+			start = o
+			p := prevSignificantRune(r, o)
+			if p >= 0 && (isIdentPart(r[p]) || r[p] == ')' || r[p] == ']') {
+				j = p
+				continue
+			}
+			return start, true
+		}
+		s := j
+		for s > 0 && isIdentPart(r[s-1]) {
+			s--
+		}
+		if pyCallKeywords[string(r[s:j+1])] {
+			return start, true
+		}
+		start = s
+		p := prevSignificantRune(r, s)
+		if p < 0 || r[p] != '.' {
+			return start, true
+		}
+		q := prevSignificantRune(r, p)
+		if q < 0 || !(isIdentPart(r[q]) || r[q] == ')' || r[q] == ']') {
+			return start, true
+		}
+		j = q
+	}
+}
+
+// prevSignificantRune returns the index of the last non-space rune before pos, or -1.
+func prevSignificantRune(r []rune, pos int) int {
+	for p := pos - 1; p >= 0; p-- {
+		if !unicode.IsSpace(r[p]) {
+			return p
+		}
+	}
+	return -1
+}
+
+// matchingOpen returns the index of the bracket opening the one closing at r[close], or -1
+// when the text starts first.
+func matchingOpen(r []rune, close int) int {
+	depth := 0
+	for i := close; i >= 0; i-- {
+		switch r[i] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// collapseWritten is a callee's written form: whitespace collapsed, cut at 80 runes.
+func collapseWritten(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > 80 {
+		s = string(r[:80])
+	}
+	return s
 }
 
 // receiverClose returns the index of the ')' that closes a call whose result the

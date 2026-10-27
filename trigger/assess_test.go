@@ -764,7 +764,8 @@ func TestFinding_AliasedDependencyCallIsNotGrounds(t *testing.T) {
 }
 
 // TestScopedLimitCounts pins the failing-wide matches TestFinding_ScopedLimits cannot reach through a
-// dependency fixture: the Go toolchain subject and a Go package-path admission.
+// dependency fixture: the Go toolchain subject, which a limit reaches only by naming it, and a Go
+// package-path admission.
 func TestScopedLimitCounts(t *testing.T) {
 	stdlib := pkgKey{typ: "golang", name: "stdlib"}
 	http2 := pkgKey{typ: "golang", name: "golang.org/x/net/http2"}
@@ -774,10 +775,14 @@ func TestScopedLimitCounts(t *testing.T) {
 		admitted pkgKey
 		want     bool
 	}{
-		{"stdlib: a Go module target counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{"pkg:golang/golang.org/x/text"}}, stdlib, true},
-		{"stdlib: a first-party target counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{""}}, stdlib, true},
-		{"stdlib: a first-party package counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{"pkg:npm/lodash"}}, stdlib, true},
+		{"stdlib: a limit naming the stdlib counts", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"", "pkg:golang/golang.org/x/text", "pkg:golang/stdlib"}}, stdlib, true},
+		{"stdlib: a limit held by the stdlib counts", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/stdlib", Targets: []string{"pkg:golang/golang.org/x/text"}}, stdlib, true},
+		{"stdlib: another Go module's target does not count", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/github.com/mattn/go-sqlite3", Targets: []string{"pkg:golang/github.com/mattn/go-sqlite3", "pkg:golang/golang.org/x/text"}}, stdlib, false},
+		{"stdlib: a first-party target does not count", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{""}}, stdlib, false},
+		{"stdlib: a first-party package does not count", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{"pkg:npm/lodash"}}, stdlib, false},
 		{"stdlib: another ecosystem's targets do not count", artifact.ScopedPartialityFlag{Reason: "tool_failure", Package: "pkg:npm/lodash", Targets: []string{"pkg:npm/lodash"}}, stdlib, false},
+		{"stdlib: a malformed target counts", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"golang.org/x/text"}}, stdlib, true},
+		{"module admitted, a module nested under it targeted", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/tools/gopls", Targets: []string{"pkg:golang/golang.org/x/tools/gopls"}}, pkgKey{typ: "golang", name: "golang.org/x/tools"}, true},
 		{"package path admitted, its module targeted", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/golang.org/x/net"}}, http2, true},
 		{"module paths sharing a prefix but not a path boundary", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/golang.org/x/netx"}}, pkgKey{typ: "golang", name: "golang.org/x/net"}, false},
 		{"a module path in another case", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/github.com/BurntSushi/toml"}}, pkgKey{typ: "golang", name: "github.com/burntsushi/toml"}, true},

@@ -166,7 +166,7 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 
 // pyprojectAll is every pyproject.toml table that declares something to install.
 type pyprojectAll struct {
-	DependencyGroups map[string][]any `toml:"dependency-groups"`
+	DependencyGroups map[string]any `toml:"dependency-groups"`
 	Tool             struct {
 		UV struct {
 			DevDependencies []string `toml:"dev-dependencies"`
@@ -235,21 +235,8 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			return out, false
 		}
 	}
-	for _, g := range slices.Sorted(maps.Keys(all.DependencyGroups)) {
-		for _, e := range all.DependencyGroups[g] {
-			switch v := e.(type) {
-			case string:
-				if !add([]string{v}) {
-					return out, false
-				}
-			case map[string]any:
-				if _, inc := v["include-group"]; !inc || len(v) != 1 {
-					return out, false
-				}
-			default:
-				return out, false
-			}
-		}
+	if groups, ok := dependencyGroupSpecs(all.DependencyGroups); !ok || !add(groups) {
+		return out, false
 	}
 	if !add(all.Tool.UV.DevDependencies) {
 		return out, false
@@ -796,6 +783,18 @@ var noRequireHashesRE = regexp.MustCompile(`(?i)no[-_]require[-_]hashes`)
 // pipConfigDisablesHashes walks root (all but its own .git) for a pip.conf or pip.ini that
 // names no-require-hashes, whatever value it gives it. A walk or read error counts as naming it.
 func pipConfigDisablesHashes(root string) bool {
+	return pipConfigMatches(root, noRequireHashesRE.Match)
+}
+
+// pipConfigInTree reports whether root (all but its own .git) holds any pip.conf or pip.ini.
+// A walk or read error counts as holding one.
+func pipConfigInTree(root string) bool {
+	return pipConfigMatches(root, func([]byte) bool { return true })
+}
+
+// pipConfigMatches walks root (all but its own .git) for a pip.conf or pip.ini whose content
+// match accepts. A walk or read error counts as a match.
+func pipConfigMatches(root string, match func([]byte) bool) bool {
 	found := false
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -812,7 +811,7 @@ func pipConfigDisablesHashes(root string) bool {
 			return nil
 		}
 		data, rerr := readRegular(path)
-		if rerr != nil || noRequireHashesRE.Match(data) {
+		if rerr != nil || match(data) {
 			found = true
 			return filepath.SkipAll
 		}

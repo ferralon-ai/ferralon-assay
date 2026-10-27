@@ -99,6 +99,12 @@ func TestRequireDot_DependencyLoadsResolveAgainstTheDirectory(t *testing.T) {
 			"lib/sub.js":       "exports.go = function go() {};\n",
 			"lib/sub/index.js": callsQs,
 			"lib/a.js":         "require('./sub/');\nmodule.exports = function a() {};\n"}},
+		{"require('..') reads a nested package.json main", "wrap/lib/x/sub", map[string]string{
+			"index.js":         "",
+			"lib/package.json": `{"main":"main.js"}`,
+			"lib/index.js":     "exports.go = function go() {};\n",
+			"lib/main.js":      callsQs,
+			"lib/x/sub.js":     "require('..');\nmodule.exports = function sub() {};\n"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,7 +121,7 @@ func TestRequireDot_DependencyLoadsResolveAgainstTheDirectory(t *testing.T) {
 
 // TestRequireDot_DependencyUndecidableDirectoriesWithhold: a directory load whose target the
 // lane cannot know declares unresolved_module run-wide. ".." from the package root leaves the
-// package; a nested package.json's main is not kept from the tarball; a main that names no
+// package; a nested package.json that does not parse names no main; a main that names no
 // parsed file gives no index fallback.
 func TestRequireDot_DependencyUndecidableDirectoriesWithhold(t *testing.T) {
 	cases := []struct {
@@ -125,9 +131,9 @@ func TestRequireDot_DependencyUndecidableDirectoriesWithhold(t *testing.T) {
 		{"require('..') from the package root", "wrap", map[string]string{
 			"package.json": `{"name":"wrap","version":"1.0.0","main":"index.js"}`,
 			"index.js":     "require('..');\nmodule.exports = function w() {};\n"}},
-		{"nested package.json", "wrap/lib/x/sub", map[string]string{
+		{"nested package.json unparsed", "wrap/lib/x/sub", map[string]string{
 			"index.js":         "",
-			"lib/package.json": `{"main":"index.js"}`,
+			"lib/package.json": `{"main":`,
 			"lib/index.js":     callsQs,
 			"lib/x/sub.js":     "require('..');\nmodule.exports = function sub() {};\n"}},
 		{"unparsed main", "wrap/lib/sub", map[string]string{

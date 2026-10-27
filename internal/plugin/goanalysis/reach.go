@@ -174,7 +174,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 
 	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
 	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
-	load := sync.OnceValues(func() (*LoadResult, error) { return LoadProgram(ctx, req.BuildDir) })
+	load := sync.OnceValues(func() (*LoadResult, error) {
+		return loadForBuild(ctx, req.BuildDir, req.GoToolchain)
+	})
 	res, err := reconciledResult(ctx, scanned, req.BuildDir, env, load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
@@ -185,14 +187,16 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 
 // reconciledResult turns one govulncheck run into the reachability result: it reconciles the
 // findings against the build's call graph and withholds a refutation that files the build left out,
-// exported methods govulncheck never searched, or a library's callers may contradict. load supplies
-// the loaded program, and is asked for it only to build the graph or to withhold a refutation.
+// exported methods govulncheck never searched, a library's callers, or a call reflection makes may
+// contradict, and one for a load that could not tell whether the build has cgo on (cgoPinned). load
+// supplies the loaded program, and is asked for it only to build the graph or to withhold a
+// refutation.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error)) (plugin.ReachabilityResult, error) {
-	cg, err := reconcileCallGraph(ctx, buildDir, load)
+	g, err := reconcileCallGraph(ctx, buildDir, load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res := evidenceResult(scanned.findings, cg, env)
+	res := evidenceResult(scanned.findings, g.CallGraph, env)
 	if res.Refutation == nil {
 		// Only a refutation is ever withheld.
 		return res, nil
@@ -201,13 +205,36 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
 	}
-	return withholdRefutation(ctx, res, scanned, loaded.Packages, buildDir, env), nil
+	if loaded.cgoUnresolved {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
+		return res, nil
+	}
+	return withholdForReflectReach(withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env), scanned, g.ReflectReach), nil
+}
+
+// withholdForReflectReach drops a refutation that a call reflection makes may contradict. govulncheck
+// follows no such call, so when what those calls can reach (reflectReach) holds one of the advisory's
+// vulnerable symbols, or that reach is unknown, the search that found no path never covered it. The
+// result then declares reflection:call instead.
+func withholdForReflectReach(res plugin.ReachabilityResult, scanned vulnScan, reach map[string][]string) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || reach == nil || reflectReaches(reach, module, scanned.vulnerableSymbols(module)) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonReflectiveCall)
+	}
+	return res
 }
 
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
-// govulncheck never searched, or a library's callers may contradict it.
-func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, buildDir string, env []string) plugin.ReachabilityResult {
-	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, buildDir, env)
+// govulncheck never searched, or a library's callers may contradict it. release is the Go release the
+// build compiles under, or nil when the load is not established to have run under it.
+func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
+	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, buildDir, env)
 	res = withholdForUnsearchedMethods(res, scanned, pkgs)
 	return withholdForLibraryEscape(res, scanned, pkgs)
 }
@@ -307,13 +334,13 @@ func isMain(p *packages.Package) bool {
 // for another GOOS or GOARCH, or behind a build tag, that may call into the refuted module was
 // never traced, so the refutation holds only for builds that leave it out. The result then
 // declares excluded_files instead.
-func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, buildDir string, env []string) plugin.ReachabilityResult {
+func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || leftOutCallers(ctx, pkgs, module, scanned.vulnerablePackages(module), buildDir, env) {
+	if !ok || leftOutCallers(ctx, pkgs, module, scanned.vulnerablePackages(module), release, buildDir, env) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 	}
@@ -505,6 +532,16 @@ func goEnvVersion(ctx context.Context, buildDir string, env []string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// loadForBuild loads dir for reconciling its findings. toolchain, when set, is the subject's own
+// Go toolchain and so the build's.
+func loadForBuild(ctx context.Context, dir, toolchain string) (*LoadResult, error) {
+	loaded, err := LoadProgram(ctx, dir)
+	if err == nil && toolchain != "" {
+		loaded.buildGoVersion = toolchain
+	}
+	return loaded, err
+}
+
 // sameGoToolchain reports whether two Go version strings name the same release. It compares
 // NORMALIZED forms because the same release has two spellings in the wild — a pre-1.21 initial
 // release reports "go1.17" where the toolchain fact carries "go1.17.0" — and a string compare
@@ -631,29 +668,49 @@ func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]by
 	return stdout.Bytes(), nil
 }
 
+// reconcileGraph is the call graph Reachability reconciles paths against, with what reflection's
+// calls reach (reflectReach) by package path and symbol name. ReflectReach is nil when it is unknown.
+type reconcileGraph struct {
+	CallGraph    plugin.CallGraphResult `json:"call_graph"`
+	ReflectReach map[string][]string    `json:"reflect_reach"`
+}
+
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
 // once per tree per scan through the run cache. The program load reads the process environment, so
-// that is part of the key.
-func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (plugin.CallGraphResult, error) {
-	b, err := runCached(ctx, "callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+// that is part of the key. Reflection's calls are bounded per advisory (withholdForReflectReach), so
+// the graph does not declare them run-wide.
+func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+	b, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
 		loaded, err := load()
 		if err != nil {
 			return nil, err
 		}
-		cg, err := callGraphOf(loaded, "vta")
+		cg, err := callGraphDeclaring(loaded, "vta", reflectReasonOnReconcile)
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(cg)
+		reasons, reach, err := reflectReachOf(loaded)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range reasons {
+			if reflectReasonOnReconcile(r) {
+				cg.Partiality = withReason(cg.Partiality, r)
+			}
+		}
+		if reach == nil {
+			reach = map[string][]string{}
+		}
+		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
 	})
 	if err != nil {
-		return plugin.CallGraphResult{}, err
+		return reconcileGraph{}, err
 	}
-	var cg plugin.CallGraphResult
-	if err := json.Unmarshal(b, &cg); err != nil {
-		return plugin.CallGraphResult{}, fmt.Errorf("decode cached call graph: %w", err)
+	var g reconcileGraph
+	if err := json.Unmarshal(b, &g); err != nil {
+		return reconcileGraph{}, fmt.Errorf("decode cached call graph: %w", err)
 	}
-	return cg, nil
+	return g, nil
 }
 
 // --- LOCAL structs for govulncheck's -json stream schema ---
@@ -678,16 +735,31 @@ type vulnAffected struct {
 	} `json:"package"`
 	EcosystemSpecific struct {
 		Imports []struct {
-			Path string `json:"path"`
+			Path    string   `json:"path"`
+			Symbols []string `json:"symbols"`
 		} `json:"imports"`
 	} `json:"ecosystem_specific"`
 }
 
-// vulnScan is what one govulncheck run says about an advisory: its findings at every level, and the
-// vulnerable package paths its OSV entries list for each module.
+// vulnScan is what one govulncheck run says about an advisory: its findings at every level, the
+// vulnerable package paths its OSV entries list for each module, and the vulnerable symbols they list
+// for each package (none listed: every function in it).
 type vulnScan struct {
 	findings []vulnFinding
 	imports  map[string][]string
+	symbols  map[string][]string
+}
+
+// vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols
+// the advisory lists for it; a package it lists none for, or knows only from a finding, maps to none,
+// which stands for every function in it.
+func (s vulnScan) vulnerableSymbols(module string) map[string][]string {
+	pkgs := s.vulnerablePackages(module)
+	out := make(map[string][]string, len(pkgs))
+	for _, p := range pkgs {
+		out[p] = s.symbols[p]
+	}
+	return out
 }
 
 // vulnerablePackages returns the advisory's vulnerable packages in module: those its OSV entries
@@ -744,7 +816,8 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 			all = append(all, *msg.Finding)
 		}
 	}
-	scanned := vulnScan{imports: map[string][]string{}}
+	scanned := vulnScan{imports: map[string][]string{}, symbols: map[string][]string{}}
+	everySymbol := map[string]bool{}
 	for _, f := range all {
 		if vulnID == "" || ids[f.OSV] {
 			scanned.findings = append(scanned.findings, f)
@@ -757,8 +830,19 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 		for _, a := range o.Affected {
 			for _, imp := range a.EcosystemSpecific.Imports {
 				scanned.imports[a.Package.Name] = append(scanned.imports[a.Package.Name], imp.Path)
+				if len(imp.Symbols) == 0 {
+					everySymbol[imp.Path] = true
+				}
+				scanned.symbols[imp.Path] = append(scanned.symbols[imp.Path], imp.Symbols...)
 			}
 		}
+	}
+	for p := range everySymbol {
+		delete(scanned.symbols, p)
+	}
+	for p, syms := range scanned.symbols {
+		slices.Sort(syms)
+		scanned.symbols[p] = slices.Compact(syms)
 	}
 	return scanned, nil
 }

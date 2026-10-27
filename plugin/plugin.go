@@ -273,8 +273,10 @@ const (
 	PartialReasonLibraryEscape = "library_escape"
 	// PartialReasonReflectiveCall: the program reaches a call to code picked at run time by a value
 	// or a name (Go's reflect.Value.Call or Method, or a template's Execute), which the call graph
-	// cannot follow. Unlike reflection, which the classifier treats as an inherent limit, this
-	// says the program does it, so it is loud.
+	// cannot follow, and those calls may reach the advisory's vulnerable code. The Go lane declares
+	// it per advisory, when what those calls can reach holds a vulnerable symbol or is unknown.
+	// Unlike reflection, which the classifier treats as an inherent limit, this says the program
+	// does it, so it is loud.
 	PartialReasonReflectiveCall = PartialReasonReflection + ":call"
 	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
 	// (plugin.Open), so none of that code's calls were read.

@@ -337,6 +337,28 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 			mutate: func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonReflection} },
 		},
 		{
+			name: "reflective calls bounded for this advisory, with dynamic dispatch: not exploitable",
+			mutate: func(fx *groundsFixture) {
+				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch}
+			},
+		},
+		{
+			name: "reflective calls reach the advisory, so the lane withheld its refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonReflectiveCall}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "govulncheck has no finding for a program that uses reflection",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonAdvisoryUnknownToAnalyzer}
+			},
+			wantReason: report.ReasonAdvisoryUnknownToAnalyzer,
+		},
+		{
 			name: "a reflective call blocks the refutation",
 			mutate: func(fx *groundsFixture) {
 				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonReflectiveCall}

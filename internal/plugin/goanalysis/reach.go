@@ -895,7 +895,7 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 		if err != nil {
 			return nil, err
 		}
-		cg, err := callGraphDeclaring(loaded, "vta", reflectReasonOnReconcile)
+		cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
 		if err != nil {
 			return nil, err
 		}
@@ -904,12 +904,9 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 			return nil, err
 		}
 		for _, r := range reasons {
-			if reflectReasonOnReconcile(r) {
+			if declaredRunWide(r) {
 				cg.Partiality = withReason(cg.Partiality, r)
 			}
-		}
-		if reach == nil {
-			reach = map[string][]string{}
 		}
 		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
 	})

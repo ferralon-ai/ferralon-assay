@@ -507,8 +507,8 @@ func inRefutedModule(pkg, module string) bool {
 	return pathHolds(module, pkg)
 }
 
-// reflectReasonOnReconcile reports whether a run-time call's reason is declared run-wide on the
-// reconcile path: reflection's calls are bounded per advisory there (withholdForReflectReach).
-func reflectReasonOnReconcile(reason string) bool {
+// declaredRunWide reports whether a run-time call's reason is declared run-wide on a call graph:
+// reflection's calls are bounded per advisory instead (withholdForReflectReach).
+func declaredRunWide(reason string) bool {
 	return reason != plugin.PartialReasonReflectiveCall
 }

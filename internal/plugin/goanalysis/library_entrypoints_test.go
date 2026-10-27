@@ -222,6 +222,7 @@ func TestResolveEntrypoints_Placement(t *testing.T) {
 	lib := pkg("example.com/svc/pkg/lib", filepath.Join(module, "pkg/lib"))
 	nodir := pkg("example.com/svc/gen", "")
 	testdir := pkg("example.com/svc/test/gen", "")
+	nomod := &packages.Package{PkgPath: "example.com/svc/test/fixtures", Name: "x", Dir: filepath.Join(module, "pkg/lib")}
 	outside := pkg("example.com/svc/outside", filepath.Join(root, "outside"))
 	all := []*packages.Package{api, lib, nodir, outside}
 	cases := []struct {
@@ -240,6 +241,8 @@ func TestResolveEntrypoints_Placement(t *testing.T) {
 			[]string{"example.com/svc/gen", "example.com/svc/pkg/api"}, nil},
 		{"an unplaced package auto excludes is an entry point under a path list", "pkg/api", "", []*packages.Package{api, testdir},
 			[]string{"example.com/svc/pkg/api", "example.com/svc/test/gen"}, nil},
+		{"a package with no module to measure from is never auto-excluded", "auto", "", []*packages.Package{api, nomod},
+			[]string{"example.com/svc/pkg/api", "example.com/svc/test/fixtures"}, nil},
 		{"a package outside the root is not placed", "pkg/api", "", []*packages.Package{api, outside},
 			[]string{"example.com/svc/outside", "example.com/svc/pkg/api"}, nil},
 		{"an unplaced package keeps auto's answer under an exclusion", "!.", "", all,

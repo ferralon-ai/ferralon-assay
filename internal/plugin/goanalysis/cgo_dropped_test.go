@@ -311,7 +311,7 @@ func TestReconciledResult_WithholdsWhenCgoUnresolved(t *testing.T) {
 			if declared := slices.Contains(load.Partiality.Reasons, plugin.PartialReasonCgoUnresolved); declared != unresolved {
 				t.Errorf("load declares %s = %v, want %v (partiality %+v)", plugin.PartialReasonCgoUnresolved, declared, unresolved, load.Partiality)
 			}
-			res, err := reconciledResult(context.Background(), scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
+			res, err := reconciledResult(context.Background(), scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
 			if err != nil {
 				t.Fatal(err)
 			}

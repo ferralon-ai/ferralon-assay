@@ -88,7 +88,7 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,7 +204,7 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
 			if err != nil {
 				t.Fatal(err)
 			}

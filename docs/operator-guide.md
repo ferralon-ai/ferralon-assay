@@ -140,7 +140,9 @@ first source that yields a usable version:
    `ASSAY_SUBJECT_GO_VERSION` environment variable. Exact.
 2. **Your `go.mod` directives** — `toolchain goX.Y.Z` and `go X.Y` (read as `goX.Y.0`). Each is a
    **minimum**, not an exact version: `GOTOOLCHAIN=auto` only ever switches up from them. When both
-   are present, the higher one wins.
+   are present, the higher one wins. A `go` line below 1.21 with no `toolchain` line is not a
+   minimum: Go releases before 1.21 build a module whatever its `go` line says, so `go 1.17` may have
+   been built by go1.16.5. Such a `go` line is left out.
 3. Otherwise, unresolved.
 
 A declaration below your own `go.mod` floor is discarded in favor of the floor, because a module
@@ -187,7 +189,9 @@ observed Go is the one your repository builds with: true in a job that ran `acti
 of the scan, false in a dedicated scan workflow where the observed Go is the runner image's. Any
 other value leaves the observation out and resolution falls back to your `go.mod` directives. When
 trusted, it counts as an exact toolchain, ranked after your declaration and above your `go.mod`
-directives. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
+directives. The same assertion lets the scan use the Go its own `go` command resolves for your
+module when your `go.mod` sets no minimum (no `toolchain` line, and a `go` line below 1.21 or none),
+ranked after the observation. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
 like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
 toolchain from `go.mod` alone.
 

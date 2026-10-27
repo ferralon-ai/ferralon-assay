@@ -261,9 +261,10 @@ func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, tok
 // in this same binary, so nothing about the analyzed ref needs to travel through the environment.
 // It is the ONLY thing it is used for here: it selects the delivery channel and changes neither
 // what was analyzed nor what is published on any other sink.
-func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph) error {
+func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph, deps *depCodeRun) error {
 	rep.Provenance.Intel = &intel
 	rep.BuildGraph = graph.record()
+	deps.stamp(rep)
 	res, err := buildResult(rep)
 	if err != nil {
 		return err
@@ -448,6 +449,8 @@ type runConfig struct {
 	analyzeRef string
 	// graph is the JVM scan's build graph; nil for every other language.
 	graph *jvmGraph
+	// deps is the JS scan's dependency code acquisition; nil for every other language.
+	deps *depCodeRun
 }
 
 // runFlags registers the flags common to the pr-inherit / cve-watch modes. It reuses
@@ -475,9 +478,11 @@ type runFlags struct {
 	buildGraphTool   *string
 	depCode          *string
 	depCache         *string
+	depUncredCache   *string
 	depNPMRCEnv      *string
 	depTimeout       *string
-	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
+	depRun           *depCodeRun // set by dependencyCodeOption
+	resolvedFacts    string      // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
 	resolvedSource   pipeline.AdvisorySource // the chain the pass resolves facts through
@@ -562,10 +567,11 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
 
-		depCode:     fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: off; fetch, which fetches each package-lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; or offline, which reads only an operator-seeded -dependency-cache. Overrides "+envDependencyCode+" (default: off)"),
-		depCache:    fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
-		depNPMRCEnv: fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
-		depTimeout:  fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
+		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A fetch that fails, even for one package, reads no dependency code and says so on the report. Overrides "+envDependencyCode+" (default: fetch)"),
+		depCache:       fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
+		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
+		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
+		depTimeout:     fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
 	}
 }
 
@@ -1116,6 +1122,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		cleanup:       acq.cleanup,
 		analyzeRef:    acq.analyzeRef,
 		graph:         acq.graph,
+		deps:          f.depRun.forLanguage(acq.language),
 	}, nil
 }
 
@@ -1190,13 +1197,13 @@ func runPRInherit(args []string) error {
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
 	}
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
 		return err
 	}
 	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
-	return cfg.graph.err()
+	return runExit(cfg.graph, cfg.deps)
 }
 
 // runCVEWatch runs the scheduled `cve-watch` mode: it queries OSV.dev for advisories
@@ -1253,7 +1260,7 @@ func runCVEWatch(args []string) error {
 		fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
 		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
-		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
+		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
 			return err
 		}
 		printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
@@ -1261,7 +1268,7 @@ func runCVEWatch(args []string) error {
 		postScan(ctx, cfg.store, cfg.subject, rescan)
 	}
 	// Heartbeat or earnest, a run without its build graph exits red.
-	return cfg.graph.err()
+	return runExit(cfg.graph, cfg.deps)
 }
 
 // cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
@@ -1274,6 +1281,6 @@ func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchReq
 		AssessOptions: cfg.assessOptions,
 		Signals:       signals,
 		Advisories:    cfg.advisories,
-		HoldCursor:    cfg.graph.err() != nil,
+		HoldCursor:    runExit(cfg.graph, cfg.deps) != nil,
 	}
 }

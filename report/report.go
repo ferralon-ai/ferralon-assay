@@ -1021,6 +1021,55 @@ type Report struct {
 	// outside the build, one per ecosystem, and whether each was inferred or declared. A lane
 	// resolves one only to judge a refutation such a caller may contradict. Sorted by ecosystem.
 	LibraryEntrypoints []plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// DependencyCode records whether a JS scan read its dependencies' code and, when a fetch
+	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
+	// nil for every other language.
+	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
+}
+
+// AddPartiality records notes on a built Report, classified, de-duplicated and sorted as
+// Builder.AddPartiality and Build would have them.
+func (r *Report) AddPartiality(notes ...PartialityNote) {
+	b := Builder{partiality: append([]PartialityNote(nil), r.Partiality...)}
+	b.AddPartiality(notes...)
+	r.Partiality = dedupPartiality(b.partiality)
+}
+
+// Dependency code sources.
+const (
+	// DependencyCodeSourceFetch is a scan that fetches each lock-pinned package and reads its
+	// integrity-verified code.
+	DependencyCodeSourceFetch = "fetch"
+	// DependencyCodeSourceOffline is a scan that reads only an operator-seeded dependency cache.
+	DependencyCodeSourceOffline = "offline"
+	// DependencyCodeSourceOff is a scan the caller ran with dependency code switched off.
+	DependencyCodeSourceOff = "off"
+)
+
+// PartialReasonDependencyCodeUnavailable is the scan-level reason a JS scan carries when a fetch
+// failed and it read no dependency code. It is plugin.PartialReasonToolFailure narrowed the way
+// the JVM lane narrows it to build_graph_absent: the step that did not run is the dependency
+// code read, whatever stopped it (the registry, a credential, the deadline).
+const PartialReasonDependencyCodeUnavailable = plugin.PartialReasonToolFailure + ":dependency_code_unavailable"
+
+// DependencyCode is the provenance of the dependency code a JS scan read.
+type DependencyCode struct {
+	// Source is one of the DependencyCodeSource constants.
+	Source string `json:"source"`
+	// Cause is why a fetch-mode scan read no dependency code. Nil when it read what it fetched,
+	// and for "offline" and "off".
+	Cause *DependencyCodeCause `json:"cause,omitempty"`
+}
+
+// DependencyCodeCause is why a fetch fell back to reading no dependency code.
+type DependencyCodeCause struct {
+	// Kind is inventory_failed, or the reason the first failed package, in PURL order, was not
+	// fetched: fetch_failed, not_served, policy_refused, cancelled, integrity_mismatch or
+	// npmrc_malformed.
+	Kind string `json:"kind"`
+	// Detail names that package and, where there is one, the policy code or the npm
+	// configuration file and line. It never carries a URL, a host or a credential.
+	Detail string `json:"detail,omitempty"`
 }
 
 // Build graph sources.

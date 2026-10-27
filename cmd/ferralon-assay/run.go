@@ -899,8 +899,10 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 }
 
 // subjectToolchainOption resolves the two candidate subject-toolchain sources — the caller's
-// declaration and the CI runner's observation — into an AssessOption, or nil when neither is present — in which case the fact falls back to the
-// target's go.mod floors, which is the normal local-CLI case.
+// declaration and the CI runner's observation — and the observation's trust into an AssessOption, or
+// nil when none is present — in which case the fact falls back to the target's go.mod floors, which
+// is the normal local-CLI case. Trust alone still produces an option: it also admits the toolchain
+// the analyzer resolves for a build whose go.mod does not bound it.
 //
 // The DECLARED value follows this CLI's usual flag > env precedence (-subject-go-version, then
 // envSubjectGoVersion). The OBSERVED value is env-only (envCIGoVersion) on purpose: it
@@ -920,10 +922,11 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 		declared = os.Getenv(envSubjectGoVersion)
 	}
 	observed := os.Getenv(envCIGoVersion)
-	if declared == "" && observed == "" {
+	trust := trustObservedGo()
+	if declared == "" && observed == "" && !trust {
 		return nil
 	}
-	return pipeline.WithSubjectToolchain(declared, observed, trustObservedGo())
+	return pipeline.WithSubjectToolchain(declared, observed, trust)
 }
 
 // subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.

@@ -115,7 +115,9 @@ func AdvisorySourceOf(opts ...AssessOption) AdvisorySource {
 // command returns the hosted runner image's preinstalled Go, unrelated to a build pinned elsewhere.
 // Nothing observable distinguishes the two, so only the caller can assert it — and until they do,
 // observed does not participate in resolution at all (not even as a floor: an unrelated Go is not a
-// lower bound on the subject's toolchain).
+// lower bound on the subject's toolchain). The same assertion admits the toolchain the analyzer
+// resolves for the build directory when the go.mod directives do not bound it, an ambient value of
+// the same kind (ToolchainSourceBuildResolved).
 //
 // Never pass the SCANNER's toolchain here. That value is a property of the analysis environment, and
 // mistaking it for a statement about the subject yields verdicts about the wrong toolchain.
@@ -1819,7 +1821,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		}
 	}
 
-	module, goVersion, buildCommand, toolchainDirective := "", "", "", ""
+	module, goVersion, buildCommand, toolchainDirective, buildToolchain := "", "", "", "", ""
 	if s.plugin != nil && buildDir != "" && s.plugin.Language() == language {
 		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir})
 		if err != nil {
@@ -1829,6 +1831,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		if rt, ok := mani.PrimaryRuntime(); ok {
 			goVersion = rt.Version
 			toolchainDirective = rt.Toolchain
+			buildToolchain = rt.Resolved
 		}
 		if rs, ok := mani.PrimaryResolver(); ok {
 			buildCommand = rs.Command
@@ -1851,6 +1854,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			subjectDeclared:    s.subjectGoVersion,
 			ciObserved:         s.ciGoVersion,
 			trustCIObserved:    s.trustCIGoVersion,
+			buildResolved:      buildToolchain,
 			toolchainDirective: toolchainDirective,
 			goDirective:        goVersion,
 		})
@@ -3215,9 +3219,9 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 
 // requestedToolchain returns the subject's Go toolchain this run must execute under, or "" for
 // "run under the analyzer's own" — which is every case but one: the flag is on and the subject's
-// toolchain resolved EXACT.
+// toolchain resolved EXACT from a source that observed the subject.
 //
-// Three gates, and each is load-bearing rather than defensive:
+// Four gates, and each is load-bearing rather than defensive:
 //
 //   - The flag. Running under the subject's toolchain changes the meaning of a green scan, so it
 //     ships off by default for one release.
@@ -3228,12 +3232,16 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 //     scanning AT the floor would let a symbol missing from go1.20 be reported absent from a subject
 //     that actually builds with go1.24. A consumer that branched on a non-empty Version alone would
 //     reintroduce the defect in a new place.
+//   - The source must not be build_resolved. That value is the analyzer's own go command resolving
+//     the build directory, which in a dedicated scan job is the runner's Go; requested, it would
+//     establish the build's Go release from the analyzer's, and the lane would exclude release-tagged
+//     files on that say-so.
 func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID string) string {
 	if !s.subjectToolchain {
 		return ""
 	}
 	fact, ok := Toolchain(store, caseID)
-	if !ok || fact.Bound != ToolchainBoundExact {
+	if !ok || fact.Bound != ToolchainBoundExact || fact.Source == ToolchainSourceBuildResolved {
 		return ""
 	}
 	return fact.Version

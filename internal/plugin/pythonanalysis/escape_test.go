@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -181,8 +183,65 @@ func TestReachability_HiddenEdgesReachTheSink(t *testing.T) {
 			},
 		},
 		{
-			name:  "computed_getattr",
-			files: map[string]string{"app.py": route + "def handle_a(v):\n    return danger(v)\n\n@app.route('/')\ndef index():\n    import sys\n    return getattr(sys.modules[__name__], \"handle_\" + \"a\")(1)\n"},
+			name: "computed_getattr",
+			files: map[string]string{
+				"wire.py": "import sys\nfrom app import danger\n\ndef handle_a(v):\n    return danger(v)\n\ndef dispatch(name):\n    return getattr(sys.modules[__name__], \"handle_\" + name)(1)\n",
+				"app.py":  route,
+			},
+		},
+		{
+			name: "alias_of_alias_import",
+			files: map[string]string{
+				"pkg/__init__.py":  "from .impl import f as g\n",
+				"pkg/impl.py":      "from app import danger\n\ndef f(x):\n    return danger(x)\n",
+				"pkg2/__init__.py": "from pkg import g as h\n",
+				"app.py":           route + "from pkg2 import h\n\n@app.route('/')\ndef index():\n    return h(1)\n",
+			},
+		},
+		{
+			name: "alias_of_alias_attr",
+			files: map[string]string{
+				"pkg/__init__.py":  "from .impl import f as g\n",
+				"pkg/impl.py":      "from app import danger\n\ndef f(x):\n    return danger(x)\n",
+				"pkg2/__init__.py": "from pkg import g as h\n",
+				"app.py":           route + "import pkg2\n\n@app.route('/')\ndef index():\n    return pkg2.h(1)\n",
+			},
+		},
+		{
+			name: "alias_of_alias_value",
+			files: map[string]string{
+				"pkg/__init__.py":  "from .impl import f as g\n",
+				"pkg/impl.py":      "from app import danger\n\ndef f(x):\n    return danger(x)\n",
+				"pkg2/__init__.py": "from pkg import g as h\n",
+				"app.py":           route + "from pkg2 import h\n\ndef run(cb):\n    return cb(1)\n\n@app.route('/')\ndef index():\n    return run(h)\n",
+			},
+		},
+		{
+			name: "importlib_literal_getattr",
+			files: map[string]string{
+				"plugins/__init__.py": "",
+				"plugins/x.py":        "from app import danger\n\ndef run(v):\n    return danger(v)\n",
+				"wire.py":             "import importlib\n\ndef load():\n    m = importlib.import_module('plugins.x')\n    return getattr(m, 'run')(1)\n",
+				"app.py":              route,
+			},
+		},
+		{
+			name: "sys_modules_literal",
+			files: map[string]string{
+				"plugins/__init__.py": "",
+				"plugins/x.py":        "from app import danger\n\ndef run(v):\n    return danger(v)\n",
+				"wire.py":             "import sys\nimport plugins.x\n\ndef load(name):\n    return getattr(sys.modules['plugins.x'], name)(1)\n",
+				"app.py":              route,
+			},
+		},
+		{
+			name: "module_dunder_dict",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"pkg/handlers.py": "from app import danger\n\ndef on_a(x):\n    return danger(x)\n",
+				"pkg/wire.py":     "from . import handlers\n\ndef dispatch(name):\n    return handlers.__dict__[name](1)\n",
+				"app.py":          route,
+			},
 		},
 	}
 	for _, tc := range cases {
@@ -345,6 +404,17 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			kept:  []string{funcSCIP("pkg/conf", nil, "helper", 1)},
 		},
 		{
+			name:    "unknown module attribute escapes the module",
+			files:   map[string]string{"pkg/__init__.py": "", "pkg/conf.py": "LEVEL = 1\n\ndef helper(x):\n    return x\n", "pkg/wire.py": "from pkg import conf\nX = conf.missing\n"},
+			escaped: []string{funcSCIP("pkg/conf", nil, "helper", 1)},
+		},
+		{
+			name:    "re-exported alias read through the module",
+			files:   map[string]string{"pkg/__init__.py": "from .impl import target as t2\n", "pkg/impl.py": "def target(x):\n    return x\n\ndef other(x):\n    return x\n", "n.py": "import pkg\nX = pkg.t2\n"},
+			escaped: []string{funcSCIP("pkg/impl", nil, "target", 1)},
+			kept:    []string{funcSCIP("pkg/impl", nil, "other", 1)},
+		},
+		{
 			name:    "f-string substitution",
 			files:   map[string]string{"m.py": plain + "def other():\n    return f\"{target}\"\n"},
 			escaped: []string{funcSCIP("m", nil, "target", 1)},
@@ -423,12 +493,158 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			caller: funcSCIP("pkg/sub/use", nil, "c", 0),
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
+		{
+			name:   "alias of an alias",
+			files:  map[string]string{"pkg/__init__.py": "from .impl import f as g\n", "pkg/impl.py": "def f(x):\n    return x\n", "pkg2/__init__.py": "from pkg import g as h\n", "app.py": "from pkg2 import h\n\ndef c():\n    return h(1)\n"},
+			caller: funcSCIP("app", nil, "c", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "alias of an alias through the module",
+			files:  map[string]string{"pkg/__init__.py": "from .impl import f as g\n", "pkg/impl.py": "def f(x):\n    return x\n", "pkg2/__init__.py": "from pkg import g as h\n", "app.py": "import pkg2\n\ndef c():\n    return pkg2.h(1)\n"},
+			caller: funcSCIP("app", nil, "c", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "re-export under the same name",
+			files:  map[string]string{"pkg/__init__.py": "from .impl import f as g\n", "pkg/impl.py": "def f(x):\n    return x\n", "pkg2/__init__.py": "from pkg import g\n", "app.py": "from pkg2 import g\n\ndef c():\n    return g(1)\n"},
+			caller: funcSCIP("app", nil, "c", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "import cycle ends",
+			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "from a import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
+			caller: funcSCIP("app", nil, "c", 0),
+			callee: funcSCIP("impl", nil, "x", 1),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			res := mustCallGraph(t, tc.files)
 			if !hasEdge(res.Edges, tc.caller, tc.callee) {
 				t.Fatalf("missing edge %s -> %s; edges %v", tc.caller, tc.callee, res.Edges)
+			}
+		})
+	}
+}
+
+// TestCallGraph_AliasNeedsTheCallersBinding: an import alias resolves a call only where
+// the calling code holds the binding. A same-named call through a dependency, a parameter
+// or local that shadows the name, and a file that never imports the alias all keep the
+// edges the name alone gives.
+func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
+	impl := funcSCIP("pkg/impl", nil, "f", 1)
+	cases := []struct {
+		name   string
+		files  map[string]string
+		caller string
+		edged  string
+	}{
+		{
+			name: "dependency receiver",
+			files: map[string]string{
+				"requirements.txt": "pyyaml==6.0\n",
+				"pkg/a.py":         "from .impl import f as load\n\ndef use():\n    return load(1)\n",
+				"b.py":             "import yaml\n\ndef parse(s):\n    return yaml.load(s)\n",
+			},
+			caller: funcSCIP("b", nil, "parse", 1),
+		},
+		{
+			name:   "parameter in a file without the binding",
+			files:  map[string]string{"pkg/a.py": "from .impl import f as run\n", "c.py": "def go(run):\n    return run(1)\n"},
+			caller: funcSCIP("c", nil, "go", 1),
+		},
+		{
+			name:   "parameter shadows the binding",
+			files:  map[string]string{"pkg/a.py": "from .impl import f as run\n\ndef go(run):\n    return run(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 1),
+		},
+		{
+			name:   "local shadows the binding",
+			files:  map[string]string{"pkg/a.py": "from .impl import f as run\n\ndef go(make):\n    run = make()\n    return run(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 1),
+		},
+		{
+			name:   "unique declaration elsewhere keeps its edge",
+			files:  map[string]string{"pkg/a.py": "from .impl import f as g\n", "d.py": "def g(x):\n    return x\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("d", nil, "go", 0),
+			edged:  funcSCIP("d", nil, "g", 1),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n"}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			res := mustCallGraph(t, files)
+			if hasEdge(res.Edges, tc.caller, impl) {
+				t.Fatalf("no binding in scope, so no edge %s -> %s; edges %v", tc.caller, impl, res.Edges)
+			}
+			if tc.edged != "" && !hasEdge(res.Edges, tc.caller, tc.edged) {
+				t.Fatalf("missing edge %s -> %s; edges %v", tc.caller, tc.edged, res.Edges)
+			}
+		})
+	}
+}
+
+// TestCallGraph_ModuleLookups: a module a literal dynamic import or sys.modules lookup names
+// is a value, so all of its functions escape; a lookup whose module is computed declares
+// dynamic_import, and a lookup of the file's own module does not.
+func TestCallGraph_ModuleLookups(t *testing.T) {
+	run := funcSCIP("plugins/x", nil, "run", 1)
+	cases := []struct {
+		name    string
+		src     string
+		escaped bool
+		dynamic bool
+	}{
+		{"import_module literal", "import importlib\n\ndef load():\n    return importlib.import_module('plugins.x')\n", true, false},
+		{"__import__ literal", "def load():\n    return __import__('plugins.x')\n", true, false},
+		{"relative import_module literal", "import importlib\n\ndef load():\n    return importlib.import_module('.x', 'plugins')\n", true, false},
+		{"sys.modules literal", "import sys\n\ndef load():\n    return sys.modules['plugins.x']\n", true, false},
+		{"sys.modules.get literal", "import sys\n\ndef load():\n    return sys.modules.get('plugins.x')\n", true, false},
+		{"sys.modules own module", "import sys\n\ndef load():\n    return sys.modules[__name__]\n", false, false},
+		{"sys.modules computed", "import sys\n\ndef load(name):\n    return sys.modules[name]\n", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := mustCallGraph(t, map[string]string{
+				"plugins/__init__.py": "",
+				"plugins/x.py":        "def run(v):\n    return v\n",
+				"plugins/wire.py":     tc.src,
+			})
+			if got := symbolSet(res.Escaped)[run]; got != tc.escaped {
+				t.Fatalf("%s escaped = %v, want %v", run, got, tc.escaped)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != tc.dynamic {
+				t.Fatalf("dynamic_import = %v, want %v; reasons %v", got, tc.dynamic, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// TestCallGraph_HeaderAndClassBodySitesListed: calls in a parameter default, a class base and
+// a one-line class body run in the enclosing frame and are listed there.
+func TestCallGraph_HeaderAndClassBodySitesListed(t *testing.T) {
+	init := sym(moduleInitSCIP("m"))
+	cases := []struct {
+		name   string
+		src    string
+		callee string
+		arity  int
+	}{
+		{"parameter default", "def f(x=g(1)):\n    return x\n", "g", 1},
+		{"class base", "class C(make_base()):\n    pass\n", "make_base", 0},
+		{"one-line class body", "class C: x = g(1)\n", "g", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := mustCallGraph(t, map[string]string{"m.py": tc.src})
+			if !slices.ContainsFunc(res.Unresolved, func(u plugin.UnresolvedCall) bool {
+				return u.Caller == init && u.Callee == tc.callee && u.Arity == tc.arity
+			}) {
+				t.Fatalf("missing Unresolved %s/%d on the module frame; got %+v", tc.callee, tc.arity, res.Unresolved)
 			}
 		})
 	}
@@ -471,6 +687,9 @@ func TestCallGraph_UnlistedSites(t *testing.T) {
 		{"f-string without a call", "def f(x):\n    return f\"{x}\"\n", false},
 		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", true},
 		{"evaluated code", "def f(src):\n    return eval(src)\n", true},
+		{"t-string without a call", "def f(x):\n    return t\"{x}\"\n", false},
+		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", true},
+		{"raw t-string with a call", "def f(x):\n    return rt\"{g(x)}\"\n", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -480,4 +699,17 @@ func TestCallGraph_UnlistedSites(t *testing.T) {
 			}
 		})
 	}
+	t.Run("unread source", func(t *testing.T) {
+		dir := writeTree(t, map[string]string{"m.py": "def f(x):\n    return x\n"})
+		if err := os.Symlink("missing.py", filepath.Join(dir, "gone.py")); err != nil {
+			t.Fatal(err)
+		}
+		res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+		if err != nil {
+			t.Fatalf("CallGraph: %v", err)
+		}
+		if !hasReason(res.Partiality, plugin.PartialReasonUnlistedSites) {
+			t.Fatalf("an unread source's sites are not listed, so unlisted_sites must be set; reasons %v", res.Partiality.Reasons)
+		}
+	})
 }

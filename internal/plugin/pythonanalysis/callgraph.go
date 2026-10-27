@@ -37,22 +37,25 @@ type program struct {
 	// sourceUnread records a .py source the lane could not read, whose call sites are
 	// therefore missing from Unresolved.
 	sourceUnread bool
-	// aliases maps a local name an import binds to a first-party function under another
-	// name ("from .impl import f as g": g → f) to the original leaf names it may stand for.
-	aliases map[string][]string
+	// byModule maps every trailing run of a module's path segments ("src/pkg/m", "pkg/m",
+	// "m") to the files whose module it is, so an import path names its module wherever the
+	// import root sits under the build root. named holds every run of segments some module
+	// path contains: the import paths that name a module or a package directory.
+	byModule map[string][]int
+	named    map[string]bool
+	// leafMemo caches aliasLeaves by import path.
+	leafMemo map[string][]string
 }
 
-// resolveCallee maps a lexical call (leaf name + explicit-argument arity) to the SCIP id
-// of the single declared function it names, or ("", false) when unresolvable. The name
-// stands for every declaration of it and, through the alias table, of each first-party
-// function an import binds to it under another name; the hits are unioned. Arity match
-// is self/cls-tolerant: a method call "obj.method(args)" carries one fewer explicit
-// argument than the declaration "def method(self, args)", so a declaration of arity
-// callArity OR callArity+1 matches. Zero matches (library/import/builtin) or more than one
-// (an ambiguous name the lexer cannot scope-resolve) yields no edge.
-func (p *program) resolveCallee(name string, callArity int) (string, bool) {
+// resolveCallee picks the SCIP id of the single declaration among decls that a call with
+// callArity explicit arguments names, or ("", false) when there is none or more than one.
+// Arity match is self/cls-tolerant: a method call "obj.method(args)" carries one fewer
+// explicit argument than the declaration "def method(self, args)", so a declaration of
+// arity callArity OR callArity+1 matches. Zero matches (library/import/builtin) or more
+// than one (an ambiguous name the lexer cannot scope-resolve) yields no edge.
+func resolveCallee(decls []funcDecl, callArity int) (string, bool) {
 	var matches []string
-	for _, fd := range p.calleeDecls(name) {
+	for _, fd := range decls {
 		if fd.arity == callArity || fd.arity == callArity+1 {
 			matches = append(matches, fd.scip())
 		}
@@ -63,15 +66,14 @@ func (p *program) resolveCallee(name string, callArity int) (string, bool) {
 	return "", false
 }
 
-// calleeDecls is every declaration a callee name can stand for: the functions declared
-// under it plus those an import alias binds to it, each once.
-func (p *program) calleeDecls(name string) []funcDecl {
-	if name == "" {
-		return nil
+// declsNamed is every declaration under any of the leaf names, each once.
+func (p *program) declsNamed(leaves []string) []funcDecl {
+	if len(leaves) == 1 {
+		return p.funcsByName[leaves[0]]
 	}
 	seen := map[string]bool{}
 	var out []funcDecl
-	add := func(leaf string) {
+	for _, leaf := range leaves {
 		for _, fd := range p.funcsByName[leaf] {
 			if s := fd.scip(); !seen[s] {
 				seen[s] = true
@@ -79,11 +81,97 @@ func (p *program) calleeDecls(name string) []funcDecl {
 			}
 		}
 	}
-	add(name)
-	for _, leaf := range p.aliases[name] {
-		add(leaf)
-	}
 	return out
+}
+
+// siteLeaves is the leaf names a call site may stand for. A name always stands for the
+// declarations under it. It stands for a first-party function an import binds to it under
+// another name only where the caller holds that binding (aliasBound): a bare call whose
+// name the caller's scopes bind by import, not shadowed by a parameter or local, or a call
+// through a name bound to a first-party module that re-exports the leaf. escape is the
+// wider set the escape scan uses: every alias the file binds the name to in any scope.
+func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) {
+	name := cs.calleeName
+	if name == "" {
+		return nil, nil
+	}
+	edge = []string{name}
+	if len(cs.calleeChain) <= 1 {
+		if paths, ok := f.aliasBound(name, cs.scopes); ok {
+			edge = p.withAliases(edge, paths)
+		}
+		return edge, p.withAliases(edge, f.anyScopeBinds(name))
+	}
+	head := cs.calleeChain[0]
+	if b, ok := lookupBinding(head, cs.scopes, f.bindings); ok && (b.target == "" || !p.dists.firstParty[firstSegment(b.target)]) {
+		return edge, edge
+	}
+	mid := strings.Join(cs.calleeChain[1:len(cs.calleeChain)-1], "/")
+	via := func(paths []string) []string {
+		var out []string
+		for _, path := range paths {
+			if mid != "" {
+				path += "/" + mid
+			}
+			if p.named[path] {
+				out = append(out, path+"/"+name)
+			}
+		}
+		return out
+	}
+	if paths, ok := f.aliasBound(head, cs.scopes); ok {
+		edge = p.withAliases(edge, via(paths))
+	}
+	return edge, p.withAliases(edge, via(f.anyScopeBinds(head)))
+}
+
+// withAliases adds the leaf names each import path may stand for to leaves.
+func (p *program) withAliases(leaves, paths []string) []string {
+	for _, path := range paths {
+		for _, leaf := range p.aliasLeaves(path) {
+			if !slices.Contains(leaves, leaf) {
+				leaves = append(leaves, leaf)
+			}
+		}
+	}
+	return leaves
+}
+
+// aliasLeaves follows an import path ("pkg/g") through re-exports to a fixpoint: its leaf
+// names a function, and when the module it is imported from binds that leaf by a first-party
+// import itself, the path that import names is followed in turn. Each path is visited once,
+// so an import cycle ends.
+func (p *program) aliasLeaves(path string) []string {
+	if out, ok := p.leafMemo[path]; ok {
+		return out
+	}
+	visited := map[string]bool{}
+	var out []string
+	var walk func(string)
+	walk = func(path string) {
+		if visited[path] {
+			return
+		}
+		visited[path] = true
+		mod, leaf := parentModule(path), path[strings.LastIndexByte(path, '/')+1:]
+		if !slices.Contains(out, leaf) {
+			out = append(out, leaf)
+		}
+		for _, i := range p.byModule[mod] {
+			for _, next := range p.files[i].fpBinds[""][leaf] {
+				walk(next)
+			}
+		}
+	}
+	walk(path)
+	p.leafMemo[path] = out
+	return out
+}
+
+// firstSegment is a dotted path's first segment.
+func firstSegment(dotted string) string {
+	top, _, _ := strings.Cut(dotted, ".")
+	return top
 }
 
 // funcDecl is one declared function located by its module + enclosing class chain + name
@@ -105,21 +193,52 @@ func (d funcDecl) scip() string {
 // dependency boundary nodes). loadRoots are the module names the file imports dynamically
 // by literal (importlib.import_module("yaml") → "yaml"); a relative name keeps its dots.
 //
-// The remaining fields feed the escape scan: the file's declared functions, the defs under a
-// non-route decorator, the names it uses as values, and the slash paths of the first-party
-// modules its import bindings name, keyed by local name. computed records computed-name
-// access, which makes every function in the file escape.
+// The remaining fields feed alias resolution and the escape scan: the file's declared
+// functions and top-level names, the defs under a non-route decorator, the names it uses as
+// values, the slash paths its first-party import bindings name (by scope, then local name),
+// the names its defs bind locally, and the first-party modules a literal dynamic import or
+// sys.modules lookup hands over whole. computed records computed-name access, which makes
+// every function in the file escape.
 type fileParse struct {
-	module      string
-	calls       []callSite
-	ingresses   []ingressMarker
-	bindings    map[string]map[string]scopedBinding
-	loadRoots   []string
-	decls       []funcDecl
-	decorated   []funcDecl
-	refs        valueRefs
-	moduleBinds map[string][]string
-	computed    bool
+	module    string
+	isPackage bool
+	calls     []callSite
+	ingresses []ingressMarker
+	bindings  map[string]map[string]scopedBinding
+	loadRoots []string
+	decls     []funcDecl
+	topNames  map[string]bool
+	decorated []funcDecl
+	refs      valueRefs
+	fpBinds   map[string]map[string][]string
+	locals    map[string]map[string]bool
+	modValues []string
+	computed  bool
+}
+
+// aliasBound returns the first-party import paths a name stands for at a site in the given
+// def scopes: the innermost scope that binds it by import or locally decides, then the
+// module. A local binding (a parameter, an assignment) shadows any import, so ok is false.
+func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
+	for i := len(scopes) - 1; i >= 0; i-- {
+		if paths := f.fpBinds[scopes[i]][name]; len(paths) > 0 {
+			return paths, true
+		}
+		if f.locals[scopes[i]][name] {
+			return nil, false
+		}
+	}
+	paths := f.fpBinds[""][name]
+	return paths, len(paths) > 0
+}
+
+// anyScopeBinds is every first-party import path the file binds name to, in any scope.
+func (f *fileParse) anyScopeBinds(name string) []string {
+	var out []string
+	for _, scope := range f.fpBinds {
+		out = append(out, scope[name]...)
+	}
+	return out
 }
 
 // funcSCIP builds the SCIP id for a function from its module, enclosing class chain, name,
@@ -156,10 +275,10 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
 	}
 
-	prog := &program{funcsByName: map[string][]funcDecl{}, aliases: map[string][]string{}}
+	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}}
 	var rawBindings [][]scopedBinding
-	var relBindings [][]importBinding
-	var packages []bool
+	var relBindings [][]scopedBinding
+	var modRefs [][]string
 	for _, p := range paths {
 		data, readErr := readRegular(p)
 		if readErr != nil {
@@ -175,12 +294,17 @@ func loadProgram(buildDir string) (*program, error) {
 		scan := parseCallsAndIngresses(lines)
 		scan.refs.scanFStrings(clean, lits)
 		roots, opaque := dynamicImports(clean, lits)
-		if opaque {
+		lookups, lookupOpaque := sysModulesLookups(clean, lits)
+		if opaque || lookupOpaque {
 			prog.dynamicImportOpaque = true
 		}
 
 		var fds []funcDecl
+		topNames := map[string]bool{}
 		for _, d := range decls {
+			if len(d.enclosing) == 0 {
+				topNames[d.name] = true
+			}
 			if d.kind != kindFunc {
 				continue
 			}
@@ -188,23 +312,34 @@ func loadProgram(buildDir string) (*program, error) {
 			prog.funcsByName[d.name] = append(prog.funcsByName[d.name], fd)
 			fds = append(fds, fd)
 		}
+		for name := range scan.locals[""] {
+			topNames[name] = true
+		}
+		for _, b := range append(scan.bindings, scan.relBindings...) {
+			if b.scope == "" {
+				topNames[b.local] = true
+			}
+		}
 		for i := range scan.decorated {
 			scan.decorated[i].module = module
 		}
 		prog.files = append(prog.files, fileParse{
 			module:    module,
+			isPackage: strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__",
 			calls:     scan.calls,
 			ingresses: scan.ingresses,
 			bindings:  indexBindings(scan.bindings),
 			loadRoots: roots,
 			decls:     fds,
+			topNames:  topNames,
 			decorated: scan.decorated,
 			refs:      scan.refs,
+			locals:    scan.locals,
 			computed:  scan.refs.computed || opaque,
 		})
 		rawBindings = append(rawBindings, scan.bindings)
 		relBindings = append(relBindings, scan.relBindings)
-		packages = append(packages, strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__")
+		modRefs = append(modRefs, append(roots, lookups...))
 	}
 
 	modules := make([]string, 0, len(prog.files))
@@ -222,40 +357,68 @@ func loadProgram(buildDir string) (*program, error) {
 		python:     buildInterpreter(buildDir),
 	}
 	prog.importUnattributed = !declaredComplete && prog.hasUndeclaredImport()
+	prog.indexModules()
 	for i := range prog.files {
-		prog.bindFirstParty(i, rawBindings[i], relBindings[i], packages[i])
+		prog.bindFirstParty(i, rawBindings[i], relBindings[i], modRefs[i])
 	}
 	return prog, nil
 }
 
-// bindFirstParty records what one file's import bindings say about first-party code: an
-// alias-table entry for each name bound to a first-party function under another name, and
-// the slash path of the first-party module each name may stand for. Relative bindings are
+// indexModules builds byModule and named over the parsed files' module paths.
+func (prog *program) indexModules() {
+	prog.byModule = map[string][]int{}
+	prog.named = map[string]bool{}
+	for i, f := range prog.files {
+		if f.module == "" {
+			continue
+		}
+		segs := strings.Split(f.module, "/")
+		for a := range segs {
+			prog.byModule[strings.Join(segs[a:], "/")] = append(prog.byModule[strings.Join(segs[a:], "/")], i)
+			for b := a + 1; b <= len(segs); b++ {
+				prog.named[strings.Join(segs[a:b], "/")] = true
+			}
+		}
+	}
+}
+
+// bindFirstParty records what one file's import bindings say about first-party code: the
+// slash path each first-party import binds a local name to, by scope, and the first-party
+// modules its literal dynamic imports and sys.modules lookups name. Relative bindings are
 // first-party by construction and stay out of the boundary bindings, so they never name a
 // distribution.
-func (prog *program) bindFirstParty(i int, raw []scopedBinding, rel []importBinding, isPackage bool) {
+func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []string) {
 	f := &prog.files[i]
-	f.moduleBinds = map[string][]string{}
-	bind := func(local, target, path string) {
-		leaf := target[strings.LastIndexByte(target, '.')+1:]
-		if leaf != local && !slices.Contains(prog.aliases[local], leaf) {
-			prog.aliases[local] = append(prog.aliases[local], leaf)
+	f.fpBinds = map[string]map[string][]string{}
+	bind := func(scope, local, path string) {
+		m := f.fpBinds[scope]
+		if m == nil {
+			m = map[string][]string{}
+			f.fpBinds[scope] = m
 		}
-		f.moduleBinds[local] = append(f.moduleBinds[local], path)
+		if !slices.Contains(m[local], path) {
+			m[local] = append(m[local], path)
+		}
 	}
 	for _, b := range raw {
-		if b.target == "" {
+		if b.target == "" || !prog.dists.firstParty[firstSegment(b.target)] {
 			continue
 		}
-		top, _, _ := strings.Cut(b.target, ".")
-		if !prog.dists.firstParty[top] {
-			continue
-		}
-		bind(b.local, b.target, strings.ReplaceAll(b.target, ".", "/"))
+		bind(b.scope, b.local, strings.ReplaceAll(b.target, ".", "/"))
 	}
 	for _, b := range rel {
-		if path, ok := relativeModule(f.module, isPackage, b.target); ok {
-			bind(b.local, b.target, path)
+		if path, ok := relativeModule(f.module, f.isPackage, b.target); ok {
+			bind(b.scope, b.local, path)
+		}
+	}
+	for _, name := range modRefs {
+		switch {
+		case strings.HasPrefix(name, "."):
+			if path, ok := relativeModule(f.module, f.isPackage, name); ok {
+				f.modValues = append(f.modValues, path)
+			}
+		case prog.dists.firstParty[firstSegment(name)]:
+			f.modValues = append(f.modValues, strings.ReplaceAll(name, ".", "/"))
 		}
 	}
 }
@@ -304,8 +467,10 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // code the lane does not read may land on is a root and listed in Escaped (escape.go): each
 // runtime module-init node, and each function whose name escapes, that is a class member,
 // sits under a non-route decorator, or lives in a file that reaches names by computed
-// access. A name an import binds to a first-party function under another name resolves
-// through the alias table.
+// access. A name an import binds to a first-party function under another name resolves to
+// that function, through any chain of re-exports, but only at a call site whose file holds
+// the binding in scope: a parameter or local of the same name, or a dependency receiver,
+// keeps the edges the name alone gives.
 //
 // The graph is ALWAYS declared Partial(dynamic_dispatch): a lexical Python scanner cannot
 // see dynamic dispatch, getattr, decorator-rewriting, or monkeypatched edges, so it is
@@ -340,11 +505,13 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	}
 	unresolvedSeen := map[siteKey]bool{}
 	var unresolved []plugin.UnresolvedCall
-	// mayLand holds the names a runtime call site names without a single edge to a
-	// declaration of them: the call may land on any of those declarations.
-	mayLand := map[string]string{}
+	escapedSet := map[string]bool{}
+	// A runtime call site may land on any declaration its name stands for other than the one
+	// it has an edge to, so each of those escapes; landed dedups the work per name set.
+	landed := map[string]bool{}
 
-	for _, f := range prog.files {
+	for fi := range prog.files {
+		f := &prog.files[fi]
 		for _, cs := range f.calls {
 			caller := f.callerSCIP(cs)
 			// A call through an import binding reaches a dependency attribute: emit a
@@ -354,12 +521,16 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
-			callee, ok := prog.resolveCallee(cs.calleeName, cs.calleeArity)
-			if !isTestModule(f.module) && cs.calleeName != "" {
-				if prev, named := mayLand[cs.calleeName]; !named && ok {
-					mayLand[cs.calleeName] = callee
-				} else if !named || !ok || prev != callee {
-					mayLand[cs.calleeName] = ""
+			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
+			callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity)
+			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
+				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
+					landed[k] = true
+					for _, fd := range prog.declsNamed(escapeLeaves) {
+						if s := fd.scip(); s != callee && !isTestModule(fd.module) {
+							escapedSet[s] = true
+						}
+					}
 				}
 			}
 			if !ok {
@@ -388,7 +559,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 		}
 	}
 
-	escapedSet := prog.escapedFrames(mayLand)
+	prog.escapeFrames(escapedSet)
 	for s := range escapedSet {
 		rootsSet[s] = true
 	}
@@ -420,25 +591,34 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	}
 }
 
-// escapedFrames is the set of frames code the lane does not see may call (escape.go):
+// escapeFrames adds to out the frames code the lane does not see may call (escape.go):
 // every runtime module's top-level frame and every escaping function outside test code.
-// mayLand maps each name a runtime call site names to the declaration a single edge was
-// drawn to, or "" when no single edge was; every other declaration it stands for escapes.
-func (prog *program) escapedFrames(mayLand map[string]string) map[string]bool {
-	out := map[string]bool{}
+// The call sites' own contribution (a declaration a site names without an edge to it) is
+// added by callGraphOf.
+func (prog *program) escapeFrames(out map[string]bool) {
 	escape := func(fd funcDecl) {
 		if !isTestModule(fd.module) {
 			out[fd.scip()] = true
 		}
 	}
-	for name, edged := range mayLand {
-		for _, fd := range prog.calleeDecls(name) {
-			if fd.scip() != edged {
-				escape(fd)
+	modDone := map[string]bool{}
+	// escapeModule escapes every function of the modules an import path names: the module
+	// is a value, so any of its functions can be reached by attribute name.
+	escapeModule := func(path string) {
+		if modDone[path] {
+			return
+		}
+		modDone[path] = true
+		for _, g := range prog.files {
+			if moduleNamedBy(g.module, path) {
+				for _, fd := range g.decls {
+					escape(fd)
+				}
 			}
 		}
 	}
-	for _, f := range prog.files {
+	for fi := range prog.files {
+		f := &prog.files[fi]
 		if isTestModule(f.module) {
 			continue
 		}
@@ -451,28 +631,59 @@ func (prog *program) escapedFrames(mayLand map[string]string) map[string]bool {
 		for _, fd := range f.decorated {
 			escape(fd)
 		}
+		for _, path := range f.modValues {
+			escapeModule(path)
+		}
 		for name := range f.refs.names {
-			for _, fd := range prog.calleeDecls(name) {
+			for _, fd := range prog.declsNamed(prog.withAliases([]string{name}, f.anyScopeBinds(name))) {
 				escape(fd)
 			}
 		}
 		for chain := range f.refs.chains {
-			head, rest, _ := strings.Cut(chain, ".")
-			for _, path := range f.moduleBinds[head] {
-				if rest != "" {
-					path += "/" + strings.ReplaceAll(rest, ".", "/")
-				}
-				for _, g := range prog.files {
-					if moduleNamedBy(g.module, path) {
-						for _, fd := range g.decls {
-							escape(fd)
-						}
-					}
-				}
+			segs := strings.Split(chain, ".")
+			for _, base := range f.anyScopeBinds(segs[0]) {
+				prog.escapeChain(base, segs[1:], escape, escapeModule)
 			}
 		}
 	}
-	return out
+}
+
+// escapeChain handles a dotted value whose head an import binds to the path base. It finds
+// the longest prefix of the chain that names a module. With no attribute after it, the
+// module itself is the value. An attribute the module declares is a function or class
+// handed over by name, which the name scan covers; one the module binds by first-party
+// import is followed through the import; anything else ("handlers.__dict__", an attribute
+// the scanner cannot see) may reach any function of the module.
+func (prog *program) escapeChain(base string, rest []string, escape func(funcDecl), escapeModule func(string)) {
+	for k := len(rest); k >= 0; k-- {
+		path := base
+		if k > 0 {
+			path += "/" + strings.Join(rest[:k], "/")
+		}
+		if !prog.named[path] {
+			continue
+		}
+		if k == len(rest) {
+			escapeModule(path)
+			return
+		}
+		attr := rest[k]
+		declared, bound := false, false
+		for _, i := range prog.byModule[path] {
+			g := &prog.files[i]
+			declared = declared || g.topNames[attr]
+			if paths := g.fpBinds[""][attr]; len(paths) > 0 {
+				bound = true
+				for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
+					escape(fd)
+				}
+			}
+		}
+		if !declared && !bound {
+			escapeModule(path)
+		}
+		return
+	}
 }
 
 // sortedSymbols mints a SCIP id set into a sorted Symbol slice.

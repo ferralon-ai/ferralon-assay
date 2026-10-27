@@ -91,14 +91,37 @@ func scopeKey(enclosing []string, name string, arity int) string {
 // fileScan is everything the call/ingress scanner reads from one file.
 // decorated lists the defs under a decorator other than a route registration: the
 // decorator receives the function as a value. relBindings are the relative imports'
-// bindings, kept apart from bindings so they never name a dependency boundary.
+// bindings (targets keep their leading dots), kept apart from bindings so they never name a
+// dependency boundary.
 type fileScan struct {
 	calls       []callSite
 	ingresses   []ingressMarker
 	bindings    []scopedBinding
-	relBindings []importBinding
+	relBindings []scopedBinding
 	decorated   []funcDecl
 	refs        valueRefs
+	// locals maps a scope to the names its parameters and assignments bind there: in a def
+	// they shadow an import binding of the same name in an enclosing scope; at module and
+	// class level ("") they are attributes another module may read.
+	locals map[string]map[string]bool
+}
+
+// bindLocals records names bound in a def's scope.
+func (fs *fileScan) bindLocals(scope string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if fs.locals == nil {
+		fs.locals = map[string]map[string]bool{}
+	}
+	m := fs.locals[scope]
+	if m == nil {
+		m = map[string]bool{}
+		fs.locals[scope] = m
+	}
+	for _, n := range names {
+		m[n] = true
+	}
 }
 
 // ingressMarker is one framework entry point discovered lexically: a Flask/FastAPI route
@@ -204,11 +227,14 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				for _, ib := range parseImportStatement(st) {
 					fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target})
 				}
-				fs.relBindings = append(fs.relBindings, parseRelativeImport(st)...)
+				for _, ib := range parseRelativeImport(st) {
+					fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target})
+				}
 				continue
 			case "global", "nonlocal":
 				continue
 			}
+			fs.bindLocals(bindScope, localNames(st))
 			if local, chain, ok := instanceAssignment(st); ok {
 				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain})
 			}
@@ -308,6 +334,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				funcArity:     arity,
 				funcEnclosing: enc,
 			})
+			fs.bindLocals(scopeKey(enc, name, arity), paramNames(params))
 			if body != "" {
 				statement(body)
 			}
@@ -361,6 +388,154 @@ func splitStatements(text string) []string {
 	}
 	if st := strings.TrimSpace(text[from:]); st != "" {
 		out = append(out, st)
+	}
+	return out
+}
+
+// paramNames lists the names a parameter list binds ("(self, a: int = 1, *args, **kw)" →
+// self a args kw).
+func paramNames(params string) []string {
+	params = strings.TrimSpace(params)
+	params = strings.TrimPrefix(params, "(")
+	if c := matchingParamClose(params); c >= 0 {
+		params = params[:c]
+	}
+	var out []string
+	for _, p := range splitTopLevel(params, ',') {
+		p = strings.TrimLeft(strings.TrimSpace(p), "*")
+		if name, _ := readIdent(p); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// matchingParamClose returns the index of the ')' closing a parameter list whose '(' has
+// been trimmed, or -1.
+func matchingParamClose(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		}
+	}
+	return -1
+}
+
+// splitTopLevel splits s at each sep outside brackets.
+func splitTopLevel(s string, sep byte) []string {
+	var out []string
+	depth, from := 0, 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case sep:
+			if depth == 0 {
+				out = append(out, s[from:i])
+				from = i + 1
+			}
+		}
+	}
+	return append(out, s[from:])
+}
+
+// localNames lists the names a simple statement binds in its scope: assignment and
+// augmented-assignment targets, a for loop's targets, "as" names, walrus targets and lambda
+// parameters. Over-reading only withholds an alias edge; the escape scan never narrows on it.
+func localNames(st string) []string {
+	var out []string
+	idents := func(s string) {
+		for _, part := range splitTopLevel(s, ',') {
+			part = strings.Trim(strings.TrimSpace(part), "()[]*")
+			if before, _, ok := strings.Cut(part, ":"); ok {
+				part = before
+			}
+			if name, rest := readIdent(part); name != "" && strings.TrimSpace(rest) == "" {
+				out = append(out, name)
+			}
+		}
+	}
+	if kw, rest := firstWord(st); kw == "for" {
+		if target, _, ok := strings.Cut(rest, " in "); ok {
+			idents(target)
+		}
+	}
+	words := strings.Fields(st)
+	for i := 0; i+1 < len(words); i++ {
+		if words[i] == "as" {
+			if name, _ := readIdent(words[i+1]); name != "" {
+				out = append(out, name)
+			}
+		}
+	}
+	depth, from := 0, 0
+	for i := 0; i < len(st); i++ {
+		switch c := st[i]; c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case ':':
+			if i+1 < len(st) && st[i+1] == '=' {
+				j := i
+				for j > 0 && st[j-1] == ' ' {
+					j--
+				}
+				k := j
+				for k > 0 && isIdentPart(rune(st[k-1])) {
+					k--
+				}
+				if k < j {
+					out = append(out, st[k:j])
+				}
+			}
+		case '=':
+			if depth != 0 || (i+1 < len(st) && st[i+1] == '=') {
+				continue
+			}
+			lhs := st[from:i]
+			if i > 0 {
+				switch st[i-1] {
+				case '=', '!', ':':
+					continue
+				case '<', '>':
+					if i < 2 || st[i-2] != st[i-1] {
+						continue
+					}
+				}
+			}
+			idents(strings.TrimRight(lhs, "+-*/%&|^@<> "))
+			from = i + 1
+		}
+	}
+	for rest := st; ; {
+		i := strings.Index(rest, "lambda")
+		if i < 0 {
+			break
+		}
+		after := rest[i+len("lambda"):]
+		if (i > 0 && isIdentPart(rune(rest[i-1]))) || (after != "" && isIdentPart(rune(after[0]))) {
+			rest = after
+			continue
+		}
+		if head, _, ok := strings.Cut(after, ":"); ok {
+			for _, p := range splitTopLevel(head, ',') {
+				p = strings.TrimLeft(strings.TrimSpace(p), "*")
+				if name, _ := readIdent(p); name != "" {
+					out = append(out, name)
+				}
+			}
+		}
+		rest = after
 	}
 	return out
 }

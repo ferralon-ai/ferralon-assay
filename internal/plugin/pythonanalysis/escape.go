@@ -21,18 +21,24 @@ import (
 //   - its name is a dunder (a module-level __getattr__ or __dir__ the interpreter calls);
 //   - it sits under a decorator other than a recognised route registration, which receives
 //     the function as a value;
-//   - its name, or a name bound to it by import alias, appears anywhere other than as the
-//     callee of a direct call, its own def, or an import statement: passed, assigned,
-//     returned, stored, compared, or used inside an f-string substitution. Escape is
-//     name-global, matching resolveCallee;
+//   - its name, or a name some file binds to it by import alias (followed through
+//     re-exports to the original), appears anywhere other than as the callee of a direct
+//     call, its own def, or an import statement: passed, assigned, returned, stored,
+//     compared, or used inside an f- or t-string substitution. Escape is name-global and
+//     ignores shadowing, so it is always at least as wide as the edges resolveCallee draws;
 //   - a call site names it but no single edge was drawn to it: the name matched more than
 //     one declaration, or none with the call's arity (a defaulted parameter), so the call
 //     may land on it;
-//   - its module is used as a value (passed or stored whole), so any of its functions can be
-//     reached by attribute name;
+//   - its module is used as a value: passed or stored whole, named by a literal
+//     importlib.import_module, __import__ or sys.modules lookup, or read for an attribute
+//     the module does not define (handlers.__dict__). A dotted chain is matched to the
+//     module named by its longest prefix, so any of its functions can be reached by
+//     attribute name;
 //   - its file reaches names by computed access: getattr, globals(), vars(), locals(),
 //     __dict__, eval/exec, __import__, operator.attrgetter/methodcaller, inspect.getmembers,
-//     sys.modules, or an import whose module the scanner cannot name.
+//     sys.modules, or an import whose module the scanner cannot name. A dynamic import or
+//     sys.modules lookup whose module is computed adds dynamic_import, which withholds the
+//     verdict, rather than escaping every module.
 //
 // Every module's top-level frame outside test code escapes too, since any import may run it.
 // A function that matches none of these can only run through a visible direct call.
@@ -127,10 +133,11 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 	}
 }
 
-// scanFStrings records the names used inside the substitutions of every f-string literal in
-// a file, given its cleaned source and the literals stripPythonLiterals blanked. The call
-// scanner reads only cleaned text, so a substitution's calls are not sites: every name in one
-// counts as a value use, and a call there marks the file's site list incomplete.
+// scanFStrings records the names used inside the substitutions of every f-string and
+// t-string literal in a file, given its cleaned source and the literals stripPythonLiterals
+// blanked. The call scanner reads only cleaned text, so a substitution's calls are not sites:
+// every name in one counts as a value use, and a call there marks the file's site list
+// incomplete.
 func (vr *valueRefs) scanFStrings(clean string, lits map[int]strLiteral) {
 	r := []rune(clean)
 	for start, lit := range lits {
@@ -160,14 +167,15 @@ func (vr *valueRefs) scanFStrings(clean string, lits map[int]strLiteral) {
 	}
 }
 
-// fStringPrefix reports whether the literal opening at r[start] carries an f prefix
-// (f, F, rf, fR, ...).
+// fStringPrefix reports whether the literal opening at r[start] carries an f prefix or a
+// t prefix (PEP 750 template strings, whose substitutions are evaluated the same way): f,
+// F, rf, fR, t, Tr, ...
 func fStringPrefix(r []rune, start int) bool {
 	j := start - 1
 	f := false
 	for k := 0; k < 2 && j >= 0 && unicode.IsLetter(r[j]); k++ {
 		switch r[j] {
-		case 'f', 'F':
+		case 'f', 'F', 't', 'T':
 			f = true
 		case 'r', 'R', 'b', 'B':
 		default:

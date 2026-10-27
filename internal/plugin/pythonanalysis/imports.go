@@ -520,6 +520,82 @@ func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaq
 	return sortedDedup(roots), opaque
 }
 
+// sysModulesLookups scans one file's cleaned source for module lookups through sys.modules
+// ("sys.modules['pkg.m']", "sys.modules.get('pkg.m')"). It returns the literal module names
+// looked up and whether a lookup names its module by an expression other than __name__ (the
+// file's own module, which the computed-name rule already covers).
+func sysModulesLookups(clean string, lits map[int]strLiteral) (names []string, opaque bool) {
+	r := []rune(clean)
+	n := len(r)
+	for i := 0; i < n; {
+		if !isIdentStartRune(r[i]) || (i > 0 && (isIdentPart(r[i-1]) || r[i-1] == '.')) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if w != "sys" || end+1 >= n || r[end] != '.' {
+			i = end
+			continue
+		}
+		m, mend := readWordRunes(r, end+1)
+		if m != "modules" {
+			i = end
+			continue
+		}
+		p := skipAllSpace(r, mend)
+		arg := -1
+		switch {
+		case p < n && r[p] == '[':
+			arg = p + 1
+		case p < n && r[p] == '.':
+			if g, e := readWordRunes(r, skipAllSpace(r, p+1)); g == "get" {
+				if q := skipAllSpace(r, e); q < n && r[q] == '(' {
+					arg = q + 1
+				}
+			}
+		}
+		if arg >= 0 {
+			if name, ok := literalSubscript(r, arg, lits); ok {
+				if name != "" {
+					names = append(names, name)
+				}
+			} else if !ownModuleArg(r, arg) {
+				opaque = true
+			}
+		}
+		i = mend
+	}
+	return sortedDedup(names), opaque
+}
+
+// ownModuleArg reports whether the argument at r[i] is exactly __name__.
+func ownModuleArg(r []rune, i int) bool {
+	w, e := readWordRunes(r, skipAllSpace(r, i))
+	e = skipAllSpace(r, e)
+	return w == "__name__" && e < len(r) && strings.ContainsRune("]),", r[e])
+}
+
+// literalSubscript is literalArg for a subscript or call argument closed by ']', ')' or ','.
+func literalSubscript(r []rune, i int, lits map[int]strLiteral) (string, bool) {
+	i = skipAllSpace(r, i)
+	if i < len(r) && r[i] != '_' {
+		j := i
+		for j < len(r) && j-i < 2 && strings.ContainsRune("rRbBuU", r[j]) {
+			j++
+		}
+		i = j
+	}
+	lit, ok := lits[i]
+	if !ok {
+		return "", false
+	}
+	k := skipAllSpace(r, lit.end)
+	if k >= len(r) || !strings.ContainsRune("]),", r[k]) {
+		return "", false
+	}
+	return lit.body, true
+}
+
 // precededByDef reports whether the identifier at r[i] is the name in a def statement.
 func precededByDef(r []rune, i int) bool {
 	j := i - 1

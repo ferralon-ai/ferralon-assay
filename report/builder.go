@@ -88,7 +88,7 @@ func (b *Builder) Disqualified(adv Advisory, pkg *Package, basis verdict.NonExpl
 
 // NotExploitable records a grounded-safe advisory: the vulnerable symbol is absent
 // or not reachable. basis distinguishes which (verdict.BasisSymbolAbsent /
-// BasisVersionNotAffected); detail is the neutral one-line grounds.
+// BasisSymbolUnreachable / BasisVersionNotAffected); detail is the neutral one-line grounds.
 func (b *Builder) NotExploitable(adv Advisory, pkg *Package, basis verdict.NonExploitableBasis, detail string) *Builder {
 	return b.AddFinding(AdvisoryFinding{
 		Advisory: adv,

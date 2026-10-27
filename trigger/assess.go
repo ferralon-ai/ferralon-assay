@@ -63,8 +63,9 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
-//   - otherwise (no disqualification, no reach, grounds named) → VerdictNotExploitable,
-//     basis symbol-absent (the vulnerable symbol/path was not found).
+//   - otherwise (no disqualification, no reach, grounds named) → VerdictNotExploitable, on the
+//     basis the grounds name: symbol-unreachable when the code is installed and nothing reaches it
+//     (no path, or no loaded module imports its package), symbol-absent when it is not in the build.
 //
 // The OSS tool stops at reachable_candidate; it never emits exploitable/reasoned_*.
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
@@ -184,9 +185,10 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 		}
 		detail, groundsReason, grounded := "", "", false
+		var basis verdict.NonExploitableBasis
 		var assumptions []string
 		if !undetermined {
-			detail, groundsReason, assumptions, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
+			detail, groundsReason, basis, assumptions, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
 			if !grounded {
 				reason, undetermined = groundsReason, true
 			}
@@ -206,7 +208,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			Package:  pkg,
 			Verdict:  report.VerdictNotExploitable,
 			Evidence: report.EvidenceSummary{
-				Basis:       verdict.BasisSymbolAbsent,
+				Basis:       basis,
 				Detail:      detail,
 				Assumptions: assumptions,
 			},
@@ -948,7 +950,7 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 	// path was found; that absence REFUTES only if the steps which would have found one actually
 	// ran. A did-not-run limit on this assessment says they did not — the analyzer resolved no
 	// dependency version, or resolved no symbol, or had no manifest to read — so
-	// `vulnerable_symbol_absent` would be a refutation asserted on evidence that does not exist.
+	// a not_exploitable basis would be a refutation asserted on evidence that does not exist.
 	//
 	// It is derived from the basis THIS assessment recorded (report.ClassifyPartialityReason over
 	// the limits the run declared), never from the language and never from a per-language table.
@@ -1079,7 +1081,7 @@ func goPathWithin(p, root string) bool {
 //   - The subject's toolchain must NOT have been scanned (M4). This is the clause that LIFTS the
 //     undetermined verdict rather than adding to it: once the analysis has actually run under an
 //     exact subject toolchain, the empty path set IS evidence about the subject, and
-//     not_exploitable/vulnerable_symbol_absent becomes the established claim it always purported
+//     not_exploitable/vulnerable_symbol_unreachable becomes the established claim it always purported
 //     to be.
 //
 // What is left is the empty path set govulncheck produced against the ANALYZER's Go rather than

@@ -107,11 +107,13 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 		mutate     func(*groundsFixture)
 		wantReason string // "" = not_exploitable
 		wantDetail string // substring of the NE detail
+		wantBasis  verdict.NonExploitableBasis
 	}{
 		{
 			name:       "arm A: every advisory symbol searched inside the package",
 			mutate:     func(*groundsFixture) {},
 			wantDetail: "yaml.load in PyYAML@5.3",
+			wantBasis:  verdict.BasisSymbolUnreachable,
 		},
 		{
 			name:       "G0 wins: a did_not_run limit keeps undetermined even with grounds",
@@ -205,6 +207,7 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
 			},
 			wantDetail: "PyYAML@5.3: no runtime-loaded module imports it (package_not_loaded)",
+			wantBasis:  verdict.BasisSymbolUnreachable,
 		},
 		{
 			// A record with only the scalar purl may affect a package it does not name, which
@@ -223,6 +226,7 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 				fx.affected = []string{"pkg:pypi/PyYAML"}
 			},
 			wantDetail: "yaml.load in PyYAML@5.3",
+			wantBasis:  verdict.BasisSymbolUnreachable,
 		},
 		{
 			// Tracker's probe: symbols in two packages, only the admitted one's were searched.
@@ -294,8 +298,8 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 			if f.Verdict != report.VerdictNotExploitable {
 				t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
 			}
-			if f.Evidence.Basis != verdict.BasisSymbolAbsent {
-				t.Errorf("basis = %q, want %q", f.Evidence.Basis, verdict.BasisSymbolAbsent)
+			if f.Evidence.Basis != tc.wantBasis {
+				t.Errorf("basis = %q, want %q", f.Evidence.Basis, tc.wantBasis)
 			}
 			if !strings.Contains(f.Evidence.Detail, tc.wantDetail) {
 				t.Errorf("detail = %q, want it to name %q", f.Evidence.Detail, tc.wantDetail)

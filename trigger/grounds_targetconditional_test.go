@@ -133,9 +133,9 @@ func TestFinding_TargetConditionalSymbols(t *testing.T) {
 				}
 				return
 			}
-			if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != verdict.BasisSymbolAbsent {
+			if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != verdict.BasisSymbolUnreachable {
 				t.Fatalf("verdict = %q basis %q (reason %q), want not_exploitable on %q",
-					f.Verdict, f.Evidence.Basis, f.UndeterminedReason, verdict.BasisSymbolAbsent)
+					f.Verdict, f.Evidence.Basis, f.UndeterminedReason, verdict.BasisSymbolUnreachable)
 			}
 			if f.Evidence.Detail != tt.detail {
 				t.Errorf("detail = %q\nwant     %q", f.Evidence.Detail, tt.detail)

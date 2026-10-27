@@ -924,8 +924,8 @@ const (
 	// reachable path is a fact about the analysis rather than about the codebase.
 	//
 	// It is the code an analyzer that cannot yet resolve a dependency's versions or symbols lands
-	// its findings on. `not_exploitable / vulnerable_symbol_unreachable` asserts that no path in
-	// what this codebase builds reaches the vulnerable symbol; an analysis that never searched has
+	// its findings on. A `not_exploitable` basis asserts that no path in what this codebase builds
+	// reaches the vulnerable symbol; an analysis that never searched has
 	// asserted it on evidence it does not have, which is a false negative — the one outcome this
 	// scanner may never produce.
 	//

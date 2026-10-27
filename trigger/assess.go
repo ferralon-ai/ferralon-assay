@@ -950,7 +950,7 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 	// path was found; that absence REFUTES only if the steps which would have found one actually
 	// ran. A did-not-run limit on this assessment says they did not — the analyzer resolved no
 	// dependency version, or resolved no symbol, or had no manifest to read — so
-	// `vulnerable_symbol_unreachable` would be a refutation asserted on evidence that does not exist.
+	// a not_exploitable basis would be a refutation asserted on evidence that does not exist.
 	//
 	// It is derived from the basis THIS assessment recorded (report.ClassifyPartialityReason over
 	// the limits the run declared), never from the language and never from a per-language table.

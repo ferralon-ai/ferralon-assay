@@ -293,12 +293,12 @@ func TestGoToolchainM4_BasisRequiresASubjectScan(t *testing.T) {
 
 			var sawBasis bool
 			for _, f := range rep.Advisories {
-				if f.Evidence.Basis != verdict.BasisNone {
+				if f.Verdict == report.VerdictNotExploitable && f.Evidence.Basis != verdict.BasisNone {
 					sawBasis = true
 				}
 			}
 			if sawBasis != s.subjectScanned {
-				t.Errorf("basis present = %t, want %t: a basis is a claim about the SUBJECT's toolchain and may only be emitted when that toolchain was scanned",
+				t.Errorf("not_exploitable basis present = %t, want %t: a refutation is a claim about the SUBJECT's toolchain and may only be emitted when that toolchain was scanned",
 					sawBasis, s.subjectScanned)
 			}
 		})

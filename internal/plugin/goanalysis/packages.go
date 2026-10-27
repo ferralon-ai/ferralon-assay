@@ -427,70 +427,126 @@ func goflagsTags(env []string) []string {
 // package's syntax holds such a file, so govulncheck traced no call from it, yet a build for that
 // platform or with that tag compiles it.
 //
-// A file may call into a module when it imports a package of module, a loaded package that imports
-// one, or a package the build did not load whose module is module, holds it, or requires it in the
-// module graph. A file that cannot be read counts, as does an unloaded import when the module graph
-// cannot be read or holds no module for it. A file left out of a loaded package that reaches module
-// through the load counts whatever it imports, unless its package clause names another package. A file
-// constrained by the ignore tag is never built and does not count, nor, when release is the Go
-// release the build compiles under, is a file whose goN.M build tags alone exclude it from every
-// build under that release (releaseExcluded).
+// A file may call into a module when it imports, directly or through other packages, one of the
+// module's packages that count: the advisory's vulnerable packages (vulnerable), or every package of
+// the module when that is empty. A loaded import is followed through the load; the files the build
+// left out of it are left-out files in their own right. An import the build did not load is followed
+// through the imports of every Go file in its directory, whatever their build constraints, so through
+// any build configuration that compiles it (sourceImports). An unloaded import counts outright when
+// its directory or one of its files cannot be read, when the module graph cannot be read, or when no
+// module in it holds the import; one from a module that neither is nor requires module does not
+// count. A file that cannot be read counts. A file left out of a loaded package that reaches a package
+// that counts through the load counts whatever it imports, unless its package clause names another
+// package. A file constrained by the ignore tag is never built and does not count, nor, when release
+// is the Go release the build compiles under, is a file whose goN.M build tags alone exclude it from
+// every build under that release (releaseExcluded); the files of an unloaded import are read the same
+// way.
 //
-// When module is the standard library, the packages that count are its vulnerable ones (vulnerable,
-// or every standard-library package when that is empty), and a file counts when it imports one
-// directly or through other packages. A loaded import is followed through the load. An unloaded
-// standard-library import is followed through the imports `go list` resolves for it under the
-// scan's own GOOS and the common ports, and counts when no port lists it cleanly; an unloaded
-// import from any module counts outright.
+// When module is the standard library, the packages that count are its vulnerable ones, or every
+// standard-library package when vulnerable is empty. An unloaded standard-library import is followed
+// through the imports `go list` resolves for it under the scan's own GOOS and the common ports, and
+// counts when no port lists it cleanly.
 func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
+	reach.vulnerableOnly = true
 	stdlib := module == "stdlib"
 	var graph modGraph
 	var graphErr error
 	graphRead := false
 	deps := importGraph{}
 	listed := map[string]bool{}
-	mayCall := func(imp string) bool {
+	src := sourceImports{}
+	built := func(expr constraint.Expr) bool {
+		return !ignored(expr) && (release == nil || !releaseExcluded(expr, *release))
+	}
+
+	// classify reports whether the import imp counts outright and, when it does not, whether it is a
+	// package the build did not load whose own imports decide.
+	classify := func(imp string) (counts, follow bool) {
 		if p, ok := reach.loaded[imp]; ok {
-			return reach.reachesModule(p)
+			return reach.reachesModule(p), false
 		}
 		if reach.inModule(imp, nil) {
-			return true
+			return true, false
 		}
 		if imp == "C" {
-			return false
+			return false, false
 		}
-		if stdlib {
-			// Which imports a module's package resolves turns on the left-out file's own tags and
-			// GOOS, which no listing here reproduces, so any module the build did not load counts.
-			if !isStdlibPath(imp, reach.modules) {
-				return true
+		if isStdlibPath(imp, reach.modules) {
+			if !stdlib {
+				return false, false
 			}
 			clean, ok := listed[imp]
 			if !ok {
 				clean = deps.list(ctx, buildDir, env, imp)
 				listed[imp] = clean
 			}
-			return !clean || deps.reaches(imp, func(path string) bool { return reach.inModule(path, reach.loaded[path]) })
+			return !clean || deps.reaches(imp, func(path string) bool { return reach.inModule(path, reach.loaded[path]) }), false
 		}
-		if isStdlibPath(imp, reach.modules) {
-			return false
+		if !stdlib {
+			if !graphRead {
+				graph, graphErr = readModGraph(ctx, buildDir, env)
+				graphRead = true
+			}
+			if graphErr != nil {
+				return true, false
+			}
+			owner := graph.owner(imp, reach.modules)
+			if owner == "" {
+				return true, false
+			}
+			if !underModule(module, owner) && !graph.requires(owner, module) {
+				return false, false
+			}
 		}
-		if !graphRead {
-			graph, graphErr = readModGraph(ctx, buildDir, env)
-			graphRead = true
+		return false, true
+	}
+	memo := map[string]bool{}
+	mayCall := func(imp string) bool {
+		if v, ok := memo[imp]; ok {
+			return v
 		}
-		if graphErr != nil {
-			return true
+		v := false
+		seen := map[string]bool{imp: true}
+		for frontier := []string{imp}; len(frontier) > 0 && !v; {
+			var follow []string
+			for _, p := range frontier {
+				counts, f := classify(p)
+				if counts {
+					v = true
+					break
+				}
+				if f {
+					follow = append(follow, p)
+				}
+			}
+			if v {
+				break
+			}
+			src.read(ctx, buildDir, env, follow, built)
+			frontier = nil
+			for _, p := range follow {
+				imports, ok := src[p]
+				if !ok {
+					v = true
+					break
+				}
+				for _, next := range imports {
+					if !seen[next] {
+						seen[next] = true
+						frontier = append(frontier, next)
+					}
+				}
+			}
 		}
-		owner := graph.owner(imp, reach.modules)
-		return owner == "" || underModule(module, owner) || graph.requires(owner, module)
+		memo[imp] = v
+		return v
 	}
 
 	// leftOutOf reports whether the non-test Go file at path may call into module. A file of package
-	// own, when own reaches module, may whatever it imports: it can call any of that package's
-	// functions, and govulncheck traced only the ones the build calls. A file whose package clause
-	// names another package never compiles into own.
+	// own, when own reaches a package that counts, may whatever it imports: it can call any of that
+	// package's functions, and govulncheck traced only the ones the build calls. A file whose package
+	// clause names another package never compiles into own.
 	leftOutOf := func(path string, own string) bool {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return false
@@ -499,7 +555,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if err != nil {
 			return true
 		}
-		if ignored(expr) || (release != nil && releaseExcluded(expr, *release)) {
+		if !built(expr) {
 			return false
 		}
 		return (own != "" && name == own) || slices.ContainsFunc(imports, mayCall)
@@ -543,9 +599,12 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 type moduleReach struct {
 	module     string
 	vulnerable []string
-	loaded     map[string]*packages.Package
-	modules    map[string]bool
-	reaches    map[*packages.Package]bool
+	// vulnerableOnly narrows a module other than the standard library to its vulnerable packages too,
+	// when vulnerable names any.
+	vulnerableOnly bool
+	loaded         map[string]*packages.Package
+	modules        map[string]bool
+	reaches        map[*packages.Package]bool
 }
 
 func newModuleReach(pkgs []*packages.Package, module string, vulnerable []string) *moduleReach {
@@ -569,7 +628,10 @@ func newModuleReach(pkgs []*packages.Package, module string, vulnerable []string
 // refuted module's packages that count.
 func (r *moduleReach) inModule(path string, p *packages.Package) bool {
 	if r.module != "stdlib" {
-		return underModule(path, r.module) || (p != nil && p.Module != nil && p.Module.Path == r.module)
+		if !underModule(path, r.module) && (p == nil || p.Module == nil || p.Module.Path != r.module) {
+			return false
+		}
+		return !r.vulnerableOnly || len(r.vulnerable) == 0 || slices.Contains(r.vulnerable, path)
 	}
 	if (p != nil && p.Module != nil) || !isStdlibPath(path, r.modules) {
 		return false
@@ -658,6 +720,72 @@ func (g importGraph) reaches(from string, match func(string) bool) bool {
 		}
 	}
 	return false
+}
+
+// sourceImports holds, for each package the build did not load, the imports of every non-test Go
+// file in its directory that some build could compile, unioned. A package whose directory, or one of
+// whose files, could not be read is absent.
+type sourceImports map[string][]string
+
+// read adds the packages of paths not yet read. `go list` finds each one's directory the way the
+// build would (the selected module version, a replacement, the vendor directory) without building
+// it, so a package whose files the scan's own configuration excludes is still found. built reports
+// whether a file with that build constraint can compile at all.
+func (s sourceImports) read(ctx context.Context, buildDir string, env []string, paths []string, built func(constraint.Expr) bool) {
+	var todo []string
+	for _, p := range paths {
+		if _, ok := s[p]; !ok && !strings.HasPrefix(p, "-") {
+			todo = append(todo, p)
+		}
+	}
+	if len(todo) == 0 {
+		return
+	}
+	cmd := exec.CommandContext(ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Dir}}"}, todo...)...)
+	cmd.Dir = buildDir
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	dirs := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if p, dir, ok := strings.Cut(line, "\t"); ok && dir != "" {
+			dirs[p] = dir
+		}
+	}
+	for _, p := range todo {
+		if dir, ok := dirs[p]; ok {
+			if imports, ok := dirImports(dir, built); ok {
+				s[p] = imports
+			}
+		}
+	}
+}
+
+// dirImports returns the imports of every non-test Go file in dir that built admits, unioned, and
+// whether dir and each of those files could be read.
+func dirImports(dir string, built func(constraint.Expr) bool) ([]string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, false
+	}
+	imports := []string{}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		_, imps, expr, err := fileImports(filepath.Join(dir, name))
+		if err != nil {
+			return nil, false
+		}
+		if built(expr) {
+			imports = append(imports, imps...)
+		}
+	}
+	slices.Sort(imports)
+	return slices.Compact(imports), true
 }
 
 // firstPartyLeftOut walks the main module's source tree for a package directory the load never

@@ -541,16 +541,21 @@ func isMain(p *packages.Package) bool {
 }
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
-// for another GOOS or GOARCH, or behind a build tag, that may call into the refuted module was
-// never traced, so the refutation holds only for builds that leave it out. The result then
-// declares excluded_files instead.
+// for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
+// packages in the refuted module was never traced, so the refutation holds only for builds that
+// leave it out. The result then declares excluded_files instead. An advisory that lists no vulnerable
+// package in the module, or lists the module once with none, makes every package of it count.
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || leftOutCallers(ctx, pkgs, module, scanned.vulnerablePackages(module), release, buildDir, env) {
+	vulnerable := scanned.vulnerablePackages(module)
+	if scanned.wholeModule[module] {
+		vulnerable = nil
+	}
+	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 	}
@@ -952,12 +957,14 @@ type vulnAffected struct {
 }
 
 // vulnScan is what one govulncheck run says about an advisory: its findings at every level, the
-// vulnerable package paths its OSV entries list for each module, and the vulnerable symbols they list
-// for each package (none listed: every function in it).
+// vulnerable package paths its OSV entries list for each module, the vulnerable symbols they list
+// for each package (none listed: every function in it), and the modules an OSV entry lists with no
+// packages at all, which makes every package of the module vulnerable.
 type vulnScan struct {
-	findings []vulnFinding
-	imports  map[string][]string
-	symbols  map[string][]string
+	findings    []vulnFinding
+	imports     map[string][]string
+	symbols     map[string][]string
+	wholeModule map[string]bool
 }
 
 // vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols
@@ -1026,7 +1033,7 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 			all = append(all, *msg.Finding)
 		}
 	}
-	scanned := vulnScan{imports: map[string][]string{}, symbols: map[string][]string{}}
+	scanned := vulnScan{imports: map[string][]string{}, symbols: map[string][]string{}, wholeModule: map[string]bool{}}
 	everySymbol := map[string]bool{}
 	for _, f := range all {
 		if vulnID == "" || ids[f.OSV] {
@@ -1038,6 +1045,9 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 			continue
 		}
 		for _, a := range o.Affected {
+			if len(a.EcosystemSpecific.Imports) == 0 {
+				scanned.wholeModule[a.Package.Name] = true
+			}
 			for _, imp := range a.EcosystemSpecific.Imports {
 				scanned.imports[a.Package.Name] = append(scanned.imports[a.Package.Name], imp.Path)
 				if len(imp.Symbols) == 0 {

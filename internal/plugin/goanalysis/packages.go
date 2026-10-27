@@ -73,15 +73,16 @@ type LoadResult struct {
 	cgoBounded bool
 	// cgoUnresolved: `go env CGO_ENABLED` failed, so which variant of the build was loaded is unknown.
 	cgoUnresolved bool
-	// goVersion is the Go release the load ran under, and buildGoVersion the one the build compiles
-	// under; either is "" when unknown. buildRelease compares them.
+	// goVersion is the Go release the load ran under; buildGoVersion is the subject's toolchain when
+	// the caller established it (loadForBuild), else "". buildRelease compares them.
 	goVersion      string
 	buildGoVersion string
 }
 
 // buildRelease returns the Go release the load ran under when it is established as the build's:
-// both are known and name the same minor, which alone decides the goN.M build tags a build
-// satisfies. Otherwise it returns nil.
+// the subject's toolchain is known and names the same minor, which alone decides the goN.M build
+// tags a build satisfies. Otherwise it returns nil. The go command on the analyzer's PATH never
+// establishes it: in a dedicated scan job that is the runner's Go, not the build's.
 func (l *LoadResult) buildRelease() *goRelease {
 	loaded, ok := parseGoRelease(l.goVersion)
 	if !ok {
@@ -122,16 +123,14 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		cfg.Env = pinned
 	}
 	// The toolchain is the one the go command resolves here from GOTOOLCHAIN and the go.mod go and
-	// toolchain lines, pinned so every load runs under that one release. The build's is the same
-	// resolution under the build's environment (BuildEnviron), go.work included; a caller that knows
-	// the subject's toolchain sets buildGoVersion instead.
+	// toolchain lines, pinned so every load runs under that one release. It is not the build's: a
+	// caller that knows the subject's toolchain sets buildGoVersion.
 	goVersion := goEnvVersion(ctx, buildDir, cfg.Env)
 	if r, ok := parseGoRelease(goVersion); ok {
 		cfg.Env = append(cfg.Env, "GOTOOLCHAIN="+r.toolchain())
 	} else {
 		goVersion = ""
 	}
-	buildGoVersion := goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go/packages load %q: %w", buildDir, err)
@@ -179,24 +178,8 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 
 	return &LoadResult{
 		Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil,
-		goVersion: goVersion, buildGoVersion: buildGoVersion,
+		goVersion: goVersion,
 	}, nil
-}
-
-type buildEnvironKey struct{}
-
-// WithBuildEnviron returns ctx carrying env as the environment the build runs in: the process's own
-// environment before the analyzer changed it (it forces GOWORK=off, which the build does not).
-func WithBuildEnviron(ctx context.Context, env []string) context.Context {
-	return context.WithValue(ctx, buildEnvironKey{}, env)
-}
-
-// BuildEnviron returns the build's environment ctx carries, or the process's own when it carries none.
-func BuildEnviron(ctx context.Context) []string {
-	if env, ok := ctx.Value(buildEnvironKey{}).([]string); ok {
-		return env
-	}
-	return os.Environ()
 }
 
 // cgoPinned returns env with CGO_ENABLED set to the value `go env CGO_ENABLED` resolves for dir

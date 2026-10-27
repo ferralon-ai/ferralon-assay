@@ -64,6 +64,17 @@ func (p Policy) backendFor(purl string) (RegistryBackend, RegistryConfig, error)
 	return b, p.Registries[eco], nil
 }
 
+// Credentialed reports whether purl's registry has an auth entry in this policy: the same
+// RegistryConfig the fetch consults before it presents a credential, so a caller deciding where
+// the bytes may be kept never re-derives which registries are authenticated.
+func (p Policy) Credentialed(purl string) (bool, error) {
+	_, reg, err := p.backendFor(purl)
+	if err != nil {
+		return false, err
+	}
+	return reg.AuthConfigured, nil
+}
+
 // AcquisitionRecord is the provenance emitted on a verified publish (design §8; PLAN-402
 // reads it). It is emitted ONLY on success, so a record never describes a refused or
 // integrity-failed artifact. It carries NO credential and NO userinfo in Source.

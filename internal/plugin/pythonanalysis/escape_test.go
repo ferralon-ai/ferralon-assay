@@ -565,6 +565,11 @@ func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 			caller: funcSCIP("pkg/a", nil, "go", 1),
 		},
 		{
+			name:   "parameter shadows the module binding",
+			files:  map[string]string{"pkg/a.py": "from .impl import f as g\n", "pkg/__init__.py": "from .impl import f as g\n", "e.py": "import pkg\n\ndef go(pkg):\n    return pkg.g(1)\n"},
+			caller: funcSCIP("e", nil, "go", 1),
+		},
+		{
 			name:   "unique declaration elsewhere keeps its edge",
 			files:  map[string]string{"pkg/a.py": "from .impl import f as g\n", "d.py": "def g(x):\n    return x\n\ndef go():\n    return g(1)\n"},
 			caller: funcSCIP("d", nil, "go", 0),

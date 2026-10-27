@@ -128,8 +128,8 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 // does not count, so another platform's file importing syscall leaves the refutation standing.
 func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 	base := map[string]string{
-		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/webdep v0.0.0\n\texample.com/other v0.0.0\n\texample.com/tagdep v0.0.0\n)\n\n" +
-			"replace (\n\texample.com/webdep => ./_webdep\n\texample.com/other => ./_other\n\texample.com/tagdep => ./_tagdep\n)\n",
+		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/webdep v0.0.0\n\texample.com/other v0.0.0\n\texample.com/tagdep v0.0.0\n\tlocalx v0.0.0\n\tgolang.org/x/net v0.0.0\n)\n\n" +
+			"replace (\n\texample.com/webdep => ./_webdep\n\texample.com/other => ./_other\n\texample.com/tagdep => ./_tagdep\n\tlocalx => ./_localx\n\tgolang.org/x/net => ./_xnet\n)\n",
 		"main.go":           "package main\n\nfunc main() {}\n",
 		"_webdep/go.mod":    "module example.com/webdep\n\ngo 1.22\n",
 		"_webdep/webdep.go": "package webdep\n\nimport \"net/http\"\n\nfunc Serve() { _ = http.ListenAndServe(\":0\", nil) }\n",
@@ -139,6 +139,12 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 		"_tagdep/go.mod":         "module example.com/tagdep\n\ngo 1.22\n",
 		"_tagdep/tagdep.go":      "package tagdep\n\nfunc Serve() {}\n",
 		"_tagdep/tagdep_prod.go": "//go:build prod\n\npackage tagdep\n\nimport \"net/http\"\n\nfunc init() { _ = http.ListenAndServe(\":0\", nil) }\n",
+		// localx's module path has no dot, and it imports the module's own golang.org/x/net/http/httpguts, which
+		// imports the vulnerable package, unlike the standard library's vendored copy.
+		"_localx/go.mod":                  "module localx\n\ngo 1.22\n\nrequire golang.org/x/net v0.0.0\n",
+		"_localx/localx.go":               "package localx\n\nimport \"golang.org/x/net/http/httpguts\"\n\nfunc Call() { httpguts.Serve() }\n",
+		"_xnet/go.mod":                    "module golang.org/x/net\n\ngo 1.22\n",
+		"_xnet/http/httpguts/httpguts.go": "package httpguts\n\nimport \"net/http\"\n\nfunc Serve() { _ = http.ListenAndServe(\":0\", nil) }\n",
 	}
 	leftOut := func(constraint, imp string) string {
 		return "//go:build " + constraint + "\n\npackage main\n\nimport _ \"" + imp + "\"\n"
@@ -168,6 +174,7 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 		{"a tagged file imports an unloaded module that reaches the vulnerable package only under the file's own tag", map[string]string{
 			"prod.go": "//go:build prod\n\npackage main\n\nimport \"example.com/tagdep\"\n\nfunc init() { tagdep.Serve() }\n",
 		}, httpVuln, true},
+		{"a tagged file imports an unloaded module whose path has no dot and whose golang.org/x import reaches the vulnerable package", map[string]string{"prod.go": leftOut("prod", "localx")}, httpVuln, true},
 		{"a tagged file imports an unloaded module that does not import the vulnerable package", map[string]string{"prod.go": leftOut("prod", "example.com/other")}, httpVuln, false},
 		{"a tagged file imports a standard-library path no port lists", map[string]string{"prod.go": leftOut("prod", "net/nosuch")}, httpVuln, true},
 		{"a tagged file imports nothing but its package reaches the vulnerable package", merge(web, map[string]string{
@@ -317,6 +324,32 @@ func TestWithholdForLeftOutFiles_UnreadableModuleGraph(t *testing.T) {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
 		})
+	}
+}
+
+// TestWithholdForLeftOutFiles_NoAdvisoryEntry: findings for a module with no OSV entry listing it name
+// only the packages the build traced, so every package of the module counts.
+func TestWithholdForLeftOutFiles_NoAdvisoryEntry(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nfunc main() {}\n",
+		"prod.go":             "//go:build prod\n\npackage main\n\nimport _ \"example.com/vulnmod/ssh\"\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/ssh/ssh.go": "package ssh\n\nfunc Dial() {}\n",
+		"_vulnmod/blake/b.go": "package blake\n\nfunc Sum() {}\n",
+	})
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuted := plugin.ReachabilityResult{
+		Partiality: plugin.Complete(),
+		Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
+	}
+	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod/blake"}}}}}
+	res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+	if res.Refutation != nil {
+		t.Fatal("refutation stands, want it withheld")
 	}
 }
 

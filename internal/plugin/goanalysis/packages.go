@@ -417,10 +417,10 @@ func goflagsTags(env []string) []string {
 // any build configuration that compiles it (sourceImports). An unloaded import counts outright when
 // its directory or one of its files cannot be read, when the module graph cannot be read, or when no
 // module in it holds the import; one from a module that neither is nor requires module does not
-// count, nor does a standard-library one. A path with no dot in its first element is the standard
-// library's only when no module in the graph holds it. A file that cannot be read counts. A file left
-// out of a loaded package that reaches a package that counts through the load counts whatever it
-// imports, unless its package clause names another package. A file constrained by the ignore tag is
+// count, nor does a standard-library one, where a path with no dot in its first element is the
+// standard library's only when no module in the graph holds it. A file that cannot be read counts. A
+// file left out of a loaded package that reaches a package that counts through the load counts
+// whatever it imports, unless its package clause names another package. A file constrained by the ignore tag is
 // never built and does not count, nor, when release is the Go release the build compiles under, is a
 // file whose goN.M build tags alone exclude it from every build under that release
 // (releaseExcluded); the files of an unloaded import are read the same way.
@@ -509,11 +509,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 					v = true
 					break
 				}
-				vendored := stdlib && isStdlibPath(p, reach.modules)
 				for _, next := range imports {
-					if vendored && !isStdlibPath(next, nil) {
-						next = "vendor/" + next
-					}
 					if !seen[next] {
 						seen[next] = true
 						frontier = append(frontier, next)
@@ -675,7 +671,7 @@ func (s sourceImports) read(ctx context.Context, buildDir string, env []string, 
 	if len(todo) == 0 {
 		return
 	}
-	cmd := exec.CommandContext(ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Dir}}"}, todo...)...)
+	cmd := exec.CommandContext(ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Standard}}\t{{.Dir}}"}, todo...)...)
 	cmd.Dir = buildDir
 	cmd.Env = env
 	out, err := cmd.Output()
@@ -683,14 +679,24 @@ func (s sourceImports) read(ctx context.Context, buildDir string, env []string, 
 		return
 	}
 	dirs := map[string]string{}
+	standard := map[string]bool{}
 	for _, line := range strings.Split(string(out), "\n") {
-		if p, dir, ok := strings.Cut(line, "\t"); ok && dir != "" {
-			dirs[p] = dir
+		if f := strings.SplitN(line, "\t", 3); len(f) == 3 && f[2] != "" {
+			dirs[f[0]] = f[2]
+			standard[f[0]] = f[1] == "true"
 		}
 	}
 	for _, p := range todo {
 		if dir, ok := dirs[p]; ok {
 			if imports, ok := dirImports(dir, built); ok {
+				if standard[p] {
+					// The standard library resolves the golang.org/x packages it imports to its own vendor copies.
+					for i, imp := range imports {
+						if !isStdlibPath(imp, nil) {
+							imports[i] = "vendor/" + imp
+						}
+					}
+				}
 				s[p] = imports
 			}
 		}

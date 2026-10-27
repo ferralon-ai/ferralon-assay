@@ -143,14 +143,17 @@ func TestTrustObservedGoEnvSeam(t *testing.T) {
 	}
 }
 
-// TestTrustObservedGoIsNotAVersionSource pins that asserting trust with nothing observed produces no
-// option at all — trust qualifies a measurement, it is not one.
-func TestTrustObservedGoIsNotAVersionSource(t *testing.T) {
+// TestTrustObservedGoAloneReachesThePipeline pins that trust asserted with nothing observed still
+// reaches the pipeline, carrying no version: it also admits the toolchain the analyzer resolves for a
+// build whose go.mod does not bound it. Trust is still not a version source by itself
+// (pipeline.TestResolveToolchainFact, "trust with no observation resolves nothing").
+func TestTrustObservedGoAloneReachesThePipeline(t *testing.T) {
 	f := runFlagsFor(t)
 	t.Setenv(subjectGoEnv, "")
 	t.Setenv(ciGoEnv, "")
 	t.Setenv(trustGoEnv, "true")
-	if opt := f.subjectToolchainOption(); opt != nil {
-		t.Fatal("expected no option: trust alone establishes nothing about the subject")
+	declared, observed, trust := requireOptionFull(t, f)
+	if declared != "" || observed != "" || !trust {
+		t.Fatalf("declared/observed/trust = %q/%q/%v, want \"\"/\"\"/true", declared, observed, trust)
 	}
 }

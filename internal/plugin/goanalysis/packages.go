@@ -182,6 +182,30 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	}, nil
 }
 
+type buildEnvironKey struct{}
+
+// WithBuildEnviron returns ctx carrying env as the environment the build runs in: the process's own
+// environment before the analyzer changed it (it forces GOWORK=off, which the build does not).
+func WithBuildEnviron(ctx context.Context, env []string) context.Context {
+	return context.WithValue(ctx, buildEnvironKey{}, env)
+}
+
+// BuildEnviron returns the build's environment ctx carries, or the process's own when it carries none.
+func BuildEnviron(ctx context.Context) []string {
+	if env, ok := ctx.Value(buildEnvironKey{}).([]string); ok {
+		return env
+	}
+	return os.Environ()
+}
+
+// buildToolchain is the Go release the analyzer's go command resolves for buildDir under the build's
+// environment (BuildEnviron), from GOTOOLCHAIN, the go.mod go and toolchain lines and any go.work. It
+// is an ambient observation, not the release the build compiles under; see buildRelease. "" when
+// unknown.
+func buildToolchain(ctx context.Context, buildDir string) string {
+	return goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
+}
+
 // cgoPinned returns env with CGO_ENABLED set to the value `go env CGO_ENABLED` resolves for dir
 // under env, or an error when the go command does not resolve it to 0 or 1.
 func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) {

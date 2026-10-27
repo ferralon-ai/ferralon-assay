@@ -116,10 +116,11 @@ func scanJS(t *testing.T, dir, mode, cache, timeout string) (*report.Report, err
 	t.Helper()
 	t.Setenv(envDependencyCode, "")
 	t.Setenv(envDependencyCache, "")
+	t.Setenv(envDependencyUncredCache, "")
 	t.Setenv(envDependencyNPMRCEnv, "")
 	t.Setenv(envDependencyTimeout, "")
 	npmrcEnv := ""
-	f := &runFlags{depCode: &mode, depCache: &cache, depNPMRCEnv: &npmrcEnv, depTimeout: &timeout}
+	f := &runFlags{depCode: &mode, depCache: &cache, depUncredCache: new(string), depNPMRCEnv: &npmrcEnv, depTimeout: &timeout}
 	p := &inProcessJS{}
 	opts := []pipeline.AssessOption{pipeline.WithPlugin(p)}
 	depOpt, err := f.dependencyCodeOption()

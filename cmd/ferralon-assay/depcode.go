@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	envDependencyCode     = brand.EnvPrefix + "_DEPENDENCY_CODE"
-	envDependencyCache    = brand.EnvPrefix + "_DEPENDENCY_CACHE"
-	envDependencyNPMRCEnv = brand.EnvPrefix + "_DEPENDENCY_NPMRC_ENV"
-	envDependencyTimeout  = brand.EnvPrefix + "_DEPENDENCY_TIMEOUT"
+	envDependencyCode        = brand.EnvPrefix + "_DEPENDENCY_CODE"
+	envDependencyCache       = brand.EnvPrefix + "_DEPENDENCY_CACHE"
+	envDependencyUncredCache = brand.EnvPrefix + "_DEPENDENCY_UNCREDENTIALED_CACHE"
+	envDependencyNPMRCEnv    = brand.EnvPrefix + "_DEPENDENCY_NPMRC_ENV"
+	envDependencyTimeout     = brand.EnvPrefix + "_DEPENDENCY_TIMEOUT"
 )
 
 var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -129,7 +130,8 @@ func describeCause(c *report.DependencyCodeCause) string {
 }
 
 // dependencyAcquisitionConfig resolves -dependency-code, -dependency-cache,
-// -dependency-npmrc-env and -dependency-timeout, each overriding its environment variable. An
+// -dependency-uncredentialed-cache, -dependency-npmrc-env and -dependency-timeout, each overriding
+// its environment variable. An
 // unknown mode, a malformed variable name or a malformed duration is an error: a typo must not
 // silently change what the scan reads or which credential it may present.
 //
@@ -172,6 +174,10 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 	if err != nil {
 		return nil, fmt.Errorf("-dependency-cache: %w", err)
 	}
+	uncredDir, err := uncredentialedCacheDir(flagOrEnv(*f.depUncredCache, os.Getenv(envDependencyUncredCache)), abs)
+	if err != nil {
+		return nil, err
+	}
 	var allow []string
 	for _, name := range strings.Split(flagOrEnv(*f.depNPMRCEnv, os.Getenv(envDependencyNPMRCEnv)), ",") {
 		name = strings.TrimSpace(name)
@@ -190,7 +196,31 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 			return nil, fmt.Errorf("-dependency-timeout=%q: want a positive duration such as 15m", v)
 		}
 	}
-	return &pipeline.DependencyAcquisition{Mode: m, CacheDir: abs, LookupEnv: os.LookupEnv, AllowEnv: allow, Timeout: timeout}, nil
+	return &pipeline.DependencyAcquisition{Mode: m, CacheDir: abs, UncredentialedDir: uncredDir, LookupEnv: os.LookupEnv, AllowEnv: allow, Timeout: timeout}, nil
+}
+
+// uncredentialedCacheDir resolves -dependency-uncredentialed-cache against the resolved
+// -dependency-cache. Set, neither directory may contain the other: the point is that a caller can
+// persist the uncredentialed cache without carrying a credentialed tarball, and -dependency-cache
+// inside it would be persisted with it.
+func uncredentialedCacheDir(dir, cache string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("-dependency-uncredentialed-cache: %w", err)
+	}
+	if within(abs, cache) || within(cache, abs) {
+		return "", fmt.Errorf("-dependency-uncredentialed-cache %q and -dependency-cache %q overlap: they must be separate directories", abs, cache)
+	}
+	return abs, nil
+}
+
+// within reports whether path is dir or lies under it. Both are absolute and clean.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // flagOrEnv returns flag when set, else env. Callers read env with os.Getenv on the constant so

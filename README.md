@@ -80,11 +80,12 @@ GitHub issues a read-only token whatever you declare, and every write surface sk
 job summary still lands.
 
 A JavaScript scan reads its dependencies' code by default: it fetches each package the lockfile
-pins and reads it only once it matches the lockfile's integrity hash. On a private or internal
-repository the Action keeps those packages in a cache keyed on your lockfiles, so an unchanged lock
-fetches nothing; on a public repository it keeps no cache and fetches them on every run, unless
-you set `persist-dependency-cache: always`. Set `dependency-code: off` to skip the fetch, or
-`offline` to read only a cache already on the runner.
+pins and reads it only once it matches the lockfile's integrity hash. The Action keeps those
+packages in a cache keyed on your lockfiles, so an unchanged lock fetches them again only where it
+must: on a private or internal repository it caches every package; on a public repository it
+never caches a package from a registry your `.npmrc` holds an auth entry for, and fetches those on
+every run. `persist-dependency-cache` overrides this (`always`, `never`). Set `dependency-code: off`
+to skip the fetch, or `offline` to read only a cache already on the runner.
 If the fetch fails (an unreachable registry, a missing token, a timeout), the scan reports what it
 would with `off` and the Report says why, under `dependency_code` and a
 `tool_failure:dependency_code_unavailable` note. Before a pull-request job exports a registry
@@ -371,9 +372,9 @@ of those tokens the job exports to the host it names. To keep tokens out of a sc
 `dependency-code: off`, or don't export `NODE_AUTH_TOKEN`/`NPM_TOKEN` on pull-request jobs. On a
 private or internal repository the Action saves the fetched tarballs, private packages included, to
 the GitHub Actions cache, where any workflow run allowed to restore it can read them. On a public
-repository it saves nothing by default, because pull-request workflows from forks can restore
-default-branch caches there; `persist-dependency-cache: always` turns the cache on anyway and
-exposes those tarballs to them. What any of this carries is dependency metadata — module paths,
+repository, where pull-request workflows from forks can restore default-branch caches, a tarball
+from a registry the `.npmrc` holds an auth entry for is never written to the cached directory;
+`persist-dependency-cache: always` caches it anyway and exposes it to them. What any of this carries is dependency metadata — module paths,
 versions, package coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 

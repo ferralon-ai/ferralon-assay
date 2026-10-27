@@ -13,6 +13,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
@@ -210,6 +211,8 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// THIS run's work-set limits too. Inheriting findings does not inherit the reason the
 	// PR run's own work set was narrower than intended.
 	b.AddPartiality(req.WorkSetLimits...)
+	// The inherited refutations' assumptions rest on the baseline's entry points.
+	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints)
 	b.WithProvenance(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
@@ -245,6 +248,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	reFindings := make(map[string]report.AdvisoryFinding)
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
+	var entrypoints *plugin.ResolvedLibraryEntrypoints
 	for _, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
@@ -260,6 +264,9 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		// true whether or not the re-run finding replaced the baseline's — and the
 		// commonest limit (no manifest) is itself why pkg comes back nil.
 		notes = append(notes, partialityNotes(st, assessmentID)...)
+		if entrypoints == nil {
+			entrypoints = libraryEntrypoints(st, assessmentID)
+		}
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
@@ -318,6 +325,10 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// to the re-analyzed slice. Build de-duplicates the union.
 	b.AddPartiality(baseline.Partiality...)
 	b.AddPartiality(notes...)
+	// The head's entry points when this pass resolved them, else the baseline's, which the
+	// inherited refutations rest on.
+	b.WithLibraryEntrypoints(entrypoints)
+	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints)
 	b.AddPartiality(req.WorkSetLimits...)
 
 	b.WithProvenance(report.Provenance{
@@ -427,6 +438,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// The pass assesses the newly-relevant advisories, but it is asked about the run's whole work set:
 	// both claim, and so do the prior rows it inherits.
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
+	var entrypoints *plugin.ResolvedLibraryEntrypoints
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
@@ -444,6 +456,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			continue
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
+		if entrypoints == nil {
+			entrypoints = libraryEntrypoints(st, assessmentID)
+		}
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		pkg := a.Package
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
@@ -490,6 +505,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// every inherited finding; the fresh notes cover the newly-relevant advisories.
 	b.AddPartiality(prior.Partiality...)
 	b.AddPartiality(notes...)
+	b.WithLibraryEntrypoints(entrypoints)
+	b.WithLibraryEntrypoints(prior.LibraryEntrypoints)
 
 	b.WithProvenance(report.Provenance{
 		CommitSHA:       stateCommit(prior, req.Subject.ResolvedCommit),

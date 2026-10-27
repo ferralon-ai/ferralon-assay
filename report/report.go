@@ -461,6 +461,10 @@ type EvidenceSummary struct {
 	// HTTP handler reaches the advisory symbol"). Neutral phrasing only — never
 	// asserts exploitability.
 	Detail string `json:"detail,omitempty"`
+	// Assumptions are the caller's declarations a not_exploitable verdict holds only under, each one
+	// checkable line (a library-entrypoints declaration that took a package out of the entry points).
+	// Empty means the verdict rests on the scan's evidence alone. Set only on a not_exploitable.
+	Assumptions []string `json:"assumptions,omitempty"`
 	// ReachablePath, for a reachable_candidate, names the entrypoint→symbol path that
 	// made it a candidate (compact, e.g. "net/http.Handler → pkg.VulnFunc"). Empty
 	// for disqualified / not_exploitable. Framed as a candidate path, never a proof.
@@ -1013,6 +1017,10 @@ type Report struct {
 	// BuildGraph records where a JVM scan's dependency graph came from and, when it could not be
 	// had, the typed cause. Set on every Java and Kotlin scan; nil for every other language.
 	BuildGraph *BuildGraph `json:"build_graph,omitempty"`
+	// LibraryEntrypoints is the set of the build's packages the scan treated as callable by code
+	// outside the build, and whether it was inferred or declared. Set when a lane resolved one,
+	// which it does only to judge a refutation such a caller may contradict.
+	LibraryEntrypoints *plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
 }
 
 // Build graph sources.
@@ -1120,6 +1128,11 @@ func (r Report) Validate() error {
 		if f.Evidence.SymbolConfidence != "" && f.Verdict != VerdictReachableCandidate {
 			return fmt.Errorf("report: advisory %q carries symbol confidence %q but verdict is %q (a derivation-confidence signal qualifies only a reachable_candidate, never an admission or refutation)",
 				f.Advisory.ID, f.Evidence.SymbolConfidence, f.Verdict)
+		}
+		// A declaration only ever lets a refutation stand, so only a not_exploitable rests on one.
+		if len(f.Evidence.Assumptions) > 0 && f.Verdict != VerdictNotExploitable {
+			return fmt.Errorf("report: advisory %q carries assumptions but verdict is %q (an assumption qualifies only a not_exploitable)",
+				f.Advisory.ID, f.Verdict)
 		}
 		// Structural honest-absent gate (inv.5, RFC §4.2): the exploit-precondition qualifier may
 		// describe ONLY a reachable_candidate. Forbidding it on every other verdict is what makes a

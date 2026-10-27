@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -24,6 +25,7 @@ type Builder struct {
 	provenance    Provenance
 	baseline      *BaselineRef
 	priority      func(Advisory) *Priority
+	entrypoints   *plugin.ResolvedLibraryEntrypoints
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -177,6 +179,15 @@ func (b *Builder) WithProvenance(p Provenance) *Builder {
 	return b
 }
 
+// WithLibraryEntrypoints records the library entry points a lane resolved for the build. The first
+// one recorded stands: every advisory of a pass resolves them from the same build and statement.
+func (b *Builder) WithLibraryEntrypoints(e *plugin.ResolvedLibraryEntrypoints) *Builder {
+	if b.entrypoints == nil {
+		b.entrypoints = e
+	}
+	return b
+}
+
 // WithBaseline sets the inherited-baseline pointer (PR-adjacent inherit / diff).
 func (b *Builder) WithBaseline(ref BaselineRef) *Builder {
 	b.baseline = &ref
@@ -288,13 +299,14 @@ func (b *Builder) Build() Report {
 	sortFindings(adv)
 
 	return Report{
-		SchemaVersion: SchemaVersion,
-		Subject:       b.subject,
-		SBOM:          SBOM{Packages: pkgs, Relationships: sortedUniqueRelationships(b.relationships)},
-		Advisories:    adv,
-		Partiality:    dedupPartiality(b.partiality),
-		Provenance:    prov,
-		Baseline:      b.baseline,
+		SchemaVersion:      SchemaVersion,
+		Subject:            b.subject,
+		SBOM:               SBOM{Packages: pkgs, Relationships: sortedUniqueRelationships(b.relationships)},
+		Advisories:         adv,
+		Partiality:         dedupPartiality(b.partiality),
+		Provenance:         prov,
+		Baseline:           b.baseline,
+		LibraryEntrypoints: b.entrypoints,
 	}
 }
 

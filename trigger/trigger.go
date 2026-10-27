@@ -154,6 +154,7 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		// we established nothing". The row is what makes the omission legible at the count.
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes)
 		b.AddFinding(f)
+		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)
 		}

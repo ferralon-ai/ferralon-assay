@@ -298,8 +298,10 @@ func loadProgram(buildDir string) (*program, error) {
 		scan := parseCallsAndIngresses(lines)
 		scan.refs.scanFStrings(clean, lits)
 		roots, opaque := dynamicImports(clean, lits)
-		lookups, lookupOpaque := sysModulesLookups(clean, lits)
-		if opaque || lookupOpaque {
+		lookupRoots, lookups, lookupOpaque := moduleLookups(clean, lits, scan.bindings)
+		roots = sortedDedup(append(roots, lookupRoots...))
+		opaque = opaque || lookupOpaque
+		if opaque {
 			prog.dynamicImportOpaque = true
 		}
 
@@ -343,7 +345,7 @@ func loadProgram(buildDir string) (*program, error) {
 		})
 		rawBindings = append(rawBindings, scan.bindings)
 		relBindings = append(relBindings, scan.relBindings)
-		modRefs = append(modRefs, append(roots, lookups...))
+		modRefs = append(modRefs, append(slices.Clone(roots), lookups...))
 	}
 
 	modules := make([]string, 0, len(prog.files))

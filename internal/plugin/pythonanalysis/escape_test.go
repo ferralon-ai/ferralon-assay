@@ -609,33 +609,59 @@ func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 }
 
 // TestCallGraph_ModuleLookups: a module a literal dynamic import or sys.modules lookup names
-// is a value, so all of its functions escape; a lookup whose module is computed declares
-// dynamic_import, and a lookup of the file's own module does not.
+// is a value, so all of its functions escape (an __import__ call hands over each package on
+// the way down). Only literal forms are read, through whatever name the file binds sys,
+// sys.modules, importlib or import_module to; any other reference to them declares
+// dynamic_import. A lookup of the file's own module, a membership test, a store and a
+// delete hand no module over.
 func TestCallGraph_ModuleLookups(t *testing.T) {
 	run := funcSCIP("plugins/x", nil, "run", 1)
+	boot := funcSCIP("plugins", nil, "boot", 1)
 	cases := []struct {
 		name    string
 		src     string
 		escaped bool
+		pkg     bool
 		dynamic bool
 	}{
-		{"import_module literal", "import importlib\n\ndef load():\n    return importlib.import_module('plugins.x')\n", true, false},
-		{"__import__ literal", "def load():\n    return __import__('plugins.x')\n", true, false},
-		{"relative import_module literal", "import importlib\n\ndef load():\n    return importlib.import_module('.x', 'plugins')\n", true, false},
-		{"sys.modules literal", "import sys\n\ndef load():\n    return sys.modules['plugins.x']\n", true, false},
-		{"sys.modules.get literal", "import sys\n\ndef load():\n    return sys.modules.get('plugins.x')\n", true, false},
-		{"sys.modules own module", "import sys\n\ndef load():\n    return sys.modules[__name__]\n", false, false},
-		{"sys.modules computed", "import sys\n\ndef load(name):\n    return sys.modules[name]\n", false, true},
+		{"import_module literal", "import importlib\n\ndef load():\n    return importlib.import_module('plugins.x')\n", true, false, false},
+		{"__import__ literal", "def load():\n    return __import__('plugins.x')\n", true, true, false},
+		{"relative import_module literal", "import importlib\n\ndef load():\n    return importlib.import_module('.x', 'plugins')\n", true, false, false},
+		{"relative import_module own package", "import importlib\n\ndef load():\n    return importlib.import_module('.x', package=__package__)\n", true, false, false},
+		{"sys.modules literal", "import sys\n\ndef load():\n    return sys.modules['plugins.x']\n", true, false, false},
+		{"sys.modules.get literal", "import sys\n\ndef load():\n    return sys.modules.get('plugins.x')\n", true, false, false},
+		{"sys.modules own module", "import sys\n\ndef load():\n    return sys.modules[__name__]\n", false, false, false},
+		{"from sys import modules literal", "from sys import modules\n\ndef load():\n    return modules['plugins.x']\n", true, false, false},
+		{"import_module renamed literal", "from importlib import import_module as load\n\ndef go():\n    return load('plugins.x')\n", true, false, false},
+		{"membership, store and delete", "import sys\n\ndef reg(name, mod):\n    if name in sys.modules:\n        del sys.modules[name]\n    sys.modules[name] = mod\n", false, false, false},
+		{"import statements alone", "import sys\nimport importlib\nfrom importlib import import_module\nfrom sys import modules\n", false, false, false},
+		{"sys.modules computed", "import sys\n\ndef load(name):\n    return sys.modules[name]\n", false, false, true},
+		{"sys.modules values", "import sys\n\ndef go(n, x):\n    for m in list(sys.modules.values()):\n        fn = getattr(m, n, None)\n        if fn:\n            return fn(x)\n", false, false, true},
+		{"from sys import modules computed", "from sys import modules\n\ndef go(mod, n, x):\n    return getattr(modules[mod], n)(x)\n", false, false, true},
+		{"star import of sys", "from sys import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"sys aliased", "import sys as s\n\ndef go(mod, n, x):\n    return getattr(s.modules[mod], n)(x)\n", false, false, true},
+		{"importlib aliased", "import importlib as il\n\ndef go(mod, n, x):\n    return getattr(il.import_module(mod), n)(x)\n", false, false, true},
+		{"import_module renamed", "from importlib import import_module as load\n\ndef go(mod, n, x):\n    return getattr(load(mod), n)(x)\n", false, false, true},
+		{"import_module as a value", "import importlib\n\nLOAD = importlib.import_module\n", false, false, true},
+		{"sys as a value", "import sys\n\nS = sys\n", false, false, true},
+		{"sys dunder attribute", "import sys\n\nD = sys.__dict__\n", false, false, true},
+		{"concatenated key", "import sys\n\ndef go(m):\n    return sys.modules['plugins.' + m]\n", false, false, true},
+		{"f-string key", "import sys\n\ndef go(m):\n    return sys.modules[f'plugins.{m}']\n", false, false, true},
+		{"relative import_module computed package", "import importlib\n\ndef go(p):\n    return importlib.import_module('.x', p)\n", false, false, true},
+		{"__import__ with a level", "def go():\n    return __import__('x', globals(), None, [], 1)\n", false, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			res := mustCallGraph(t, map[string]string{
-				"plugins/__init__.py": "",
+				"plugins/__init__.py": "def boot(v):\n    return v\n",
 				"plugins/x.py":        "def run(v):\n    return v\n",
 				"plugins/wire.py":     tc.src,
 			})
 			if got := symbolSet(res.Escaped)[run]; got != tc.escaped {
 				t.Fatalf("%s escaped = %v, want %v", run, got, tc.escaped)
+			}
+			if got := symbolSet(res.Escaped)[boot]; got != tc.pkg {
+				t.Fatalf("%s escaped = %v, want %v", boot, got, tc.pkg)
 			}
 			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != tc.dynamic {
 				t.Fatalf("dynamic_import = %v, want %v; reasons %v", got, tc.dynamic, res.Partiality.Reasons)

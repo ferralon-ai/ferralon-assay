@@ -10,7 +10,16 @@
 // semantics make both go.mod directives LOWER BOUNDS: `go X.Y` is a minimum language version,
 // `toolchain goX.Y.Z` a minimum toolchain, and under GOTOOLCHAIN=auto the go command only ever
 // switches UP from them. Nothing inside go.mod is an exact statement about the toolchain that built
-// the artifact. So the two consumers of this fact can do different things with it:
+// the artifact.
+//
+// A directive is a floor only for a go command that enforces it, which is Go 1.21 on. An older one
+// builds a module whatever its `go` line says, so `go 1.17` built by go1.16.5 is legal and that go
+// line bounds nothing. The directives bind only when they establish an enforcing go command: a
+// `toolchain` line (older go commands reject it) or a `go` line at 1.21 or later
+// (directivesBindToolchain). Otherwise the go line is no floor, and the toolchain the build's
+// environment resolves stands in for it under the same trust as the CI observation.
+//
+// So the two consumers of this fact can do different things with it:
 //
 //   - The version axis may consume a FLOOR. goToolchainVersionOutsideRange is monotone
 //     non-decreasing in its version argument, so for a floor f on the true toolchain t (t >= f),
@@ -52,6 +61,12 @@ const (
 	// which is why this tier is OPT-IN (toolchainInputs.trustCIObserved, the Action's
 	// trust-observed-go input). Untrusted, it does not participate in resolution at all.
 	ToolchainSourceCIObserved = "ci_observed"
+	// ToolchainSourceBuildResolved is the release the analyzer's go command resolves for the build
+	// directory under the build's environment, reported only when the go.mod directives do not bound
+	// the toolchain. It is the same ambient quantity the observed tier measures, so it participates
+	// only under the same trust (trustCIObserved), ranked below the observation, and only when the
+	// directives do not bind.
+	ToolchainSourceBuildResolved = "build_resolved"
 	// ToolchainSourceToolchainDirective is the go.mod `toolchain goX.Y.Z` directive: a floor.
 	ToolchainSourceToolchainDirective = "toolchain_directive"
 	// ToolchainSourceGoDirective is the go.mod `go X.Y` directive: a floor, normalized to goX.Y.0.
@@ -97,7 +112,7 @@ type ToolchainContradiction struct {
 	FloorSource  string `json:"floor_source"`
 }
 
-// toolchainInputs are the four candidate sources, raw and unvalidated, in the spellings their
+// toolchainInputs are the candidate sources, raw and unvalidated, in the spellings their
 // origins produce: a bare "1.21" from a `go` directive, a "go1.21.3" from a `toolchain` directive
 // or from `go env GOVERSION`, or whatever a customer typed into subject-go-version.
 type toolchainInputs struct {
@@ -108,9 +123,24 @@ type toolchainInputs struct {
 	// zero value withholds that trust, which is the correct default: a scan job that never ran
 	// actions/setup-go still finds the hosted runner image's preinstalled Go, and the code cannot
 	// tell that case from a same-job build.
-	trustCIObserved    bool
+	trustCIObserved bool
+	// buildResolved is the toolchain the analyzer established for the build when the directives do
+	// not bound it (plugin.RuntimeSpec.Resolved). It is trusted exactly when ciObserved is.
+	buildResolved      string
 	toolchainDirective string
 	goDirective        string
+}
+
+// directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
+// below. A `toolchain` line does: a go command before Go 1.21 rejects it, so any go command that
+// builds the module enforces its directives. A `go` line alone does from 1.21 on; below that it was
+// advisory to the go commands that built such modules.
+func directivesBindToolchain(in toolchainInputs) bool {
+	if in.toolchainDirective != "" {
+		return true
+	}
+	v, ok := parseGoToolchainVersion(in.goDirective)
+	return ok && (v.major > 1 || v.minor >= 21)
 }
 
 // resolveToolchainFact reduces the candidate sources to one fact: the
@@ -134,6 +164,9 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	}
 	if in.trustCIObserved {
 		exactSources = append(exactSources, struct{ raw, source string }{in.ciObserved, ToolchainSourceCIObserved})
+		if !directivesBindToolchain(in) {
+			exactSources = append(exactSources, struct{ raw, source string }{in.buildResolved, ToolchainSourceBuildResolved})
+		}
 	}
 	for _, exact := range exactSources {
 		parsed, ok := parseGoToolchainVersion(exact.raw)
@@ -186,17 +219,21 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 }
 
 // resolveToolchainFloor reduces the two go.mod directives to the tightest sound lower bound: both are
-// minimums on the same quantity, so their MAXIMUM is the strongest floor that remains true. ok is
-// false when neither directive resolves, in which case the returned fact is the explicit unresolved
-// one and no exact claim can be refuted.
+// minimums on the same quantity, so their MAXIMUM is the strongest floor that remains true. A `go`
+// directive that does not bind (directivesBindToolchain) is no floor and is left out. ok is false
+// when no directive resolves, in which case the returned fact is the explicit unresolved one and no
+// exact claim can be refuted.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	best := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	var bestParsed goToolchainVersion
 	var haveFloor bool
-	for _, floor := range []struct{ raw, source string }{
+	floors := []struct{ raw, source string }{
 		{in.toolchainDirective, ToolchainSourceToolchainDirective},
-		{in.goDirective, ToolchainSourceGoDirective},
-	} {
+	}
+	if directivesBindToolchain(in) {
+		floors = append(floors, struct{ raw, source string }{in.goDirective, ToolchainSourceGoDirective})
+	}
+	for _, floor := range floors {
 		parsed, ok := parseGoToolchainVersion(floor.raw)
 		if !ok {
 			continue

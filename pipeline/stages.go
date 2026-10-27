@@ -1808,7 +1808,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		}
 	}
 
-	module, goVersion, buildCommand, toolchainDirective := "", "", "", ""
+	module, goVersion, buildCommand, toolchainDirective, buildToolchain := "", "", "", "", ""
 	if s.plugin != nil && buildDir != "" && s.plugin.Language() == language {
 		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir})
 		if err != nil {
@@ -1818,6 +1818,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		if rt, ok := mani.PrimaryRuntime(); ok {
 			goVersion = rt.Version
 			toolchainDirective = rt.Toolchain
+			buildToolchain = rt.Resolved
 		}
 		if rs, ok := mani.PrimaryResolver(); ok {
 			buildCommand = rs.Command
@@ -1840,6 +1841,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			subjectDeclared:    s.subjectGoVersion,
 			ciObserved:         s.ciGoVersion,
 			trustCIObserved:    s.trustCIGoVersion,
+			buildResolved:      buildToolchain,
 			toolchainDirective: toolchainDirective,
 			goDirective:        goVersion,
 		})

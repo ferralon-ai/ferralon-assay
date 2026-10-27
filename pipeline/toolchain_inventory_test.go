@@ -27,7 +27,16 @@ import (
 // goManifestPlugin is a Go plugin whose BuildManifest is the REAL goanalysis.BuildManifest — a
 // genuine modfile parse of the go.mod on disk. Every other op stays stubbed: the subject of these
 // tests is where the directive values come from, not analysis.
-type goManifestPlugin struct{ plugin.StubPlugin }
+//
+// With pinBuildToolchain set, a build toolchain the real manifest reports (RuntimeSpec.Resolved,
+// present only when go.mod's directives do not bound the toolchain) is replaced by buildToolchain, so
+// a case can name the toolchain the build resolves without depending on the host's Go. An empty
+// buildToolchain stands for one that could not be established.
+type goManifestPlugin struct {
+	plugin.StubPlugin
+	pinBuildToolchain bool
+	buildToolchain    string
+}
 
 // toolchainFactEqual compares two facts by VALUE, dereferencing Contradiction. A bare `!=` on
 // ToolchainFact compares the Contradiction POINTER, so two facts describing the same refuted claim
@@ -48,8 +57,17 @@ func toolchainFactEqual(a, b ToolchainFact) bool {
 
 func (goManifestPlugin) Language() string { return "go" }
 
-func (goManifestPlugin) BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
-	return goanalysis.BuildManifest(ctx, req)
+func (p goManifestPlugin) BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	res, err := goanalysis.BuildManifest(ctx, req)
+	if err != nil || !p.pinBuildToolchain {
+		return res, err
+	}
+	for i := range res.Runtimes {
+		if res.Runtimes[i].Resolved != "" {
+			res.Runtimes[i].Resolved = p.buildToolchain
+		}
+	}
+	return res, nil
 }
 
 // writeGoModFixture materializes a real single-module tree whose go.mod is exactly goMod.
@@ -113,9 +131,17 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 	}{
 		{
 			name:          "go directive alone is a floor",
-			goMod:         "module example.com/target\n\ngo 1.20\n",
-			wantGoVersion: "1.20",
-			want:          ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			goMod:         "module example.com/target\n\ngo 1.21\n",
+			wantGoVersion: "1.21",
+			want:          ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+		},
+		{
+			// Below 1.21 the go directive is advisory to the go commands that build the module, so
+			// it bounds nothing; it is still recorded verbatim.
+			name:          "a pre-1.21 go directive alone resolves nothing",
+			goMod:         "module example.com/target\n\ngo 1.17\n",
+			wantGoVersion: "1.17",
+			want:          ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
 			name:          "toolchain directive outranks the go directive it sits above",
@@ -290,7 +316,7 @@ func TestCodebaseInventory_NonGoSubjectResolvesNoToolchain(t *testing.T) {
 // covered because both wire the config into the stage independently, so a mistake in one would not
 // show up in the other — and the SBOM slice is what the pr-inherit head resolver runs.
 func TestSubjectToolchainReachesTheStageThroughAssembly(t *testing.T) {
-	buildDir := writeGoModFixture(t, "module example.com/target\n\ngo 1.20\n")
+	buildDir := writeGoModFixture(t, "module example.com/target\n\ngo 1.21\n")
 
 	// The trust flag is asserted alongside the versions because it is a THIRD field threaded through
 	// two independent assemblers, and a flag dropped in one of them would silently restore the
@@ -317,7 +343,7 @@ func TestSubjectToolchainReachesTheStageThroughAssembly(t *testing.T) {
 		{
 			name:     "WITHHELD trust survives assembly: the observation is discarded for the floor",
 			observed: "go1.26.3",
-			want:     ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want:     ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

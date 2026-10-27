@@ -23,8 +23,9 @@ import (
 // Those bounds hold only for a go command from Go 1.21 on; an older one does not
 // enforce the `go` line. When the directives do not exclude such a go command (no
 // `toolchain` line, and no three-part `go` line at 1.21.0 or later), the runtime
-// also carries Resolved: the release the build's environment resolves, the same
-// establishment the load records as the build's (buildToolchain).
+// also carries Resolved: the release the analyzer's go command resolves for the
+// build directory under the build's environment (buildToolchain), an ambient
+// observation that never establishes the build's release for the load.
 //
 // Partiality is declared, never overclaimed (inv.5): no go.mod (not a module) is
 // Partial with no fabricated build command; replace/exclude directives that

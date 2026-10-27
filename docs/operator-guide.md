@@ -194,7 +194,9 @@ trusted, it counts as an exact toolchain, ranked after your declaration and abov
 directives. The same assertion lets the scan use the Go its own `go` command resolves for your
 module when your `go.mod` sets no minimum (no `toolchain` line, and no three-part `go` line at 1.21.0
 or later), ranked after the observation; without the assertion that toolchain is left out and the fact
-is unresolved. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
+is unresolved. That resolved toolchain settles which advisory versions apply, but it is never the
+release `subject-toolchain-reachability` runs under: that needs your declaration or the trusted
+observation. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
 like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
 toolchain from `go.mod` alone.
 

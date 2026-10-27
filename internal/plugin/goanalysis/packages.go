@@ -198,9 +198,10 @@ func BuildEnviron(ctx context.Context) []string {
 	return os.Environ()
 }
 
-// buildToolchain is the Go release the build compiles under: the one the go command resolves for
-// buildDir under the build's environment (BuildEnviron), from GOTOOLCHAIN, the go.mod go and toolchain
-// lines and any go.work. "" when unknown.
+// buildToolchain is the Go release the analyzer's go command resolves for buildDir under the build's
+// environment (BuildEnviron), from GOTOOLCHAIN, the go.mod go and toolchain lines and any go.work. It
+// is an ambient observation, not the release the build compiles under; see buildRelease. "" when
+// unknown.
 func buildToolchain(ctx context.Context, buildDir string) string {
 	return goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
 }

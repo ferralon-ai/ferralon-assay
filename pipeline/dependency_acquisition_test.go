@@ -533,6 +533,7 @@ func TestDependencyAcquisitionStageOptIn(t *testing.T) {
 func TestDependencyCacheForRequiresTheStage(t *testing.T) {
 	cache := t.TempDir()
 	acq := &dependencyAcquirer{cfg: DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: cache}}
+	split := &dependencyAcquirer{cfg: DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: cache, UncredentialedDir: t.TempDir()}}
 	ran := &assessment.Assessment{ID: "ran"}
 	store := artifact.NewMemStore()
 	if _, err := PutArtifact(store, ran, "dependency_acquisition", TypeDependencyAcquisition, "", DependencyAcquisitionResult{}); err != nil {
@@ -552,9 +553,207 @@ func TestDependencyCacheForRequiresTheStage(t *testing.T) {
 		{"stage did not run", acq, "other", ""},
 		{"stage ran", acq, "ran", cache},
 		{"stage fell back", acq, "fell", ""},
+		{"split cache reads CacheDir", split, "ran", cache},
+		{"split cache fell back", split, "fell", ""},
 	} {
 		if got := tc.acq.cacheFor(store, tc.caseID); got != tc.want {
 			t.Errorf("%s: cacheFor = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// persistedFiles returns every regular file under root, relative to it.
+func persistedFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(root, func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.Type().IsRegular() {
+			rel, _ := filepath.Rel(root, p)
+			files = append(files, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func entryRel(t *testing.T, digest string) string {
+	t.Helper()
+	p, err := artifactcache.CanonicalPath("", digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.ToSlash(p)
+}
+
+// A split cache physically keeps a tarball from a registry with an auth entry out of the
+// persisted directory, whichever way it arrives, while the lane still reads every package.
+func TestDependencyAcquisitionSplitCache(t *testing.T) {
+	pubBytes, privBytes := []byte("public tarball"), []byte("credentialed tarball")
+	bad := []byte("not the pinned bytes")
+	pub, priv := "pkg:npm/qs@6.5.2", "pkg:npm/%40priv/lib@1.0.0"
+	pubDigest, privDigest := sri512(pubBytes), sri512(privBytes)
+
+	type seed struct {
+		inPersisted bool // else the read directory
+		digest      string
+		bytes       []byte
+	}
+	tests := []struct {
+		name          string
+		mode          DependencyCodeMode
+		split         bool
+		token         bool // NODE_AUTH_TOKEN is set; else the .npmrc reference is unset
+		seeds         []seed
+		wantRead      int
+		wantUnread    map[string]string // purl -> reason
+		wantPersisted []string          // purls whose bytes the persisted directory holds
+		wantPubReqs   int
+		wantPrivReqs  int
+	}{
+		{name: "public repo: mixed registries persist only the public tarball", mode: DependencyCodeFetch, split: true, token: true,
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "private repo: one directory persists everything", mode: DependencyCodeFetch, token: true,
+			wantRead: 2, wantPersisted: []string{pub, priv}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "credentialed tarball restored into the persisted directory is removed and fetched apart", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{true, privDigest, privBytes}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "credentialed refetch after an integrity failure stays out of the persisted directory", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{false, privDigest, bad}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "public refetch after an integrity failure replaces the persisted copy", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{true, pubDigest, bad}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "public tarball already persisted is read without a request", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{true, pubDigest, pubBytes}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 0, wantPrivReqs: 1},
+		{name: "offline split reads the persisted public tarball and never a credentialed one", mode: DependencyCodeOffline, split: true, token: true,
+			seeds:    []seed{{true, pubDigest, pubBytes}, {true, privDigest, privBytes}},
+			wantRead: 1, wantUnread: map[string]string{priv: UnreadNotCached}, wantPersisted: []string{pub}},
+		{name: "offline split with an empty cache reads nothing", mode: DependencyCodeOffline, split: true, token: true,
+			wantUnread: map[string]string{pub: UnreadNotCached, priv: UnreadNotCached}},
+		{name: "offline split with an unreadable npm configuration reads nothing", mode: DependencyCodeOffline, split: true,
+			seeds:      []seed{{true, pubDigest, pubBytes}},
+			wantUnread: map[string]string{pub: UnreadNPMRCMalformed, priv: UnreadNPMRCMalformed}, wantPersisted: []string{pub}},
+		{name: "offline one directory reads a seeded credentialed tarball", mode: DependencyCodeOffline,
+			seeds:    []seed{{true, pubDigest, pubBytes}, {true, privDigest, privBytes}},
+			wantRead: 2, wantPersisted: []string{pub, priv}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regs := newFakeRegistries()
+			regs.serve(t, "registry.test", pubBytes)
+			regs.serve(t, "npm.priv.test", privBytes)
+			build, persisted, readDir := t.TempDir(), t.TempDir(), t.TempDir()
+			npmrc := strings.Join([]string{
+				"registry=https://registry.test/",
+				"@priv:registry=https://npm.priv.test/",
+				"//npm.priv.test/:_authToken=${NODE_AUTH_TOKEN}",
+			}, "\n")
+			if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range tt.seeds {
+				root := readDir
+				if s.inPersisted {
+					root = persisted
+				}
+				seedCache(t, root, s.digest, s.bytes)
+			}
+			env := map[string]string{}
+			if tt.token {
+				env["NODE_AUTH_TOKEN"] = acqSecret
+			}
+			// With a split the persisted directory is UncredentialedDir; without one it is the
+			// one directory, CacheDir.
+			cfg := DependencyAcquisition{Mode: tt.mode, CacheDir: persisted, LookupEnv: envMap(env), Client: regs.client}
+			if tt.split {
+				cfg.CacheDir, cfg.UncredentialedDir = readDir, persisted
+			}
+			d := &dependencyAcquirer{cfg: cfg, byDir: map[string]*acquiredBuild{}}
+			res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{
+				npmNode(pub, pubDigest), npmNode(priv, privDigest),
+			}})
+
+			if res.Read != tt.wantRead {
+				t.Fatalf("Read = %d, want %d (unread %+v)", res.Read, tt.wantRead, res.Unread)
+			}
+			gotUnread := map[string]string{}
+			for _, u := range res.Unread {
+				gotUnread[u.PURL] = u.Reason
+			}
+			if len(gotUnread) != len(tt.wantUnread) {
+				t.Fatalf("unread = %v, want %v", gotUnread, tt.wantUnread)
+			}
+			for p, r := range tt.wantUnread {
+				if gotUnread[p] != r {
+					t.Fatalf("unread = %v, want %v", gotUnread, tt.wantUnread)
+				}
+			}
+			if res.Fallback != nil {
+				t.Fatalf("fallback = %+v, want none", res.Fallback)
+			}
+
+			// The persisted directory's physical contents: each wanted entry with its pinned
+			// bytes, at most its acquisition record beside it, and nothing else at all.
+			want := map[string][]byte{}
+			for _, p := range tt.wantPersisted {
+				switch p {
+				case pub:
+					want[entryRel(t, pubDigest)] = pubBytes
+				case priv:
+					want[entryRel(t, privDigest)] = privBytes
+				}
+			}
+			allowed := map[string]bool{}
+			for f := range want {
+				allowed[f], allowed[f+".record.json"] = true, true
+			}
+			files := persistedFiles(t, persisted)
+			for _, f := range files {
+				if !allowed[f] {
+					t.Fatalf("persisted directory holds unexpected file %s (all: %v)", f, files)
+				}
+				b, err := os.ReadFile(filepath.Join(persisted, f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if exp, ok := want[f]; ok {
+					if string(b) != string(exp) {
+						t.Fatalf("persisted %s holds %q, want the pinned bytes", f, b)
+					}
+					delete(want, f)
+				}
+				if tt.split && (string(b) == string(privBytes) || strings.Contains(string(b), "npm.priv.test")) {
+					t.Fatalf("persisted %s carries the credentialed tarball or its source", f)
+				}
+			}
+			if len(want) != 0 {
+				t.Fatalf("persisted directory lacks %v (all: %v)", want, files)
+			}
+
+			if n := len(regs.seen("registry.test")); n != tt.wantPubReqs {
+				t.Fatalf("public registry requests = %d, want %d", n, tt.wantPubReqs)
+			}
+			for _, a := range regs.seen("registry.test") {
+				if a != "" {
+					t.Fatalf("public registry saw Authorization %q", a)
+				}
+			}
+			privSeen := regs.seen("npm.priv.test")
+			if len(privSeen) != tt.wantPrivReqs {
+				t.Fatalf("credentialed registry requests = %d, want %d", len(privSeen), tt.wantPrivReqs)
+			}
+			for _, a := range privSeen {
+				if a != "Bearer "+acqSecret {
+					t.Fatalf("credentialed registry saw %q, want its token", a)
+				}
+			}
+		})
 	}
 }

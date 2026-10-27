@@ -3219,9 +3219,9 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 
 // requestedToolchain returns the subject's Go toolchain this run must execute under, or "" for
 // "run under the analyzer's own" — which is every case but one: the flag is on and the subject's
-// toolchain resolved EXACT.
+// toolchain resolved EXACT from a source that observed the subject.
 //
-// Three gates, and each is load-bearing rather than defensive:
+// Four gates, and each is load-bearing rather than defensive:
 //
 //   - The flag. Running under the subject's toolchain changes the meaning of a green scan, so it
 //     ships off by default for one release.
@@ -3232,12 +3232,16 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 //     scanning AT the floor would let a symbol missing from go1.20 be reported absent from a subject
 //     that actually builds with go1.24. A consumer that branched on a non-empty Version alone would
 //     reintroduce the defect in a new place.
+//   - The source must not be build_resolved. That value is the analyzer's own go command resolving
+//     the build directory, which in a dedicated scan job is the runner's Go; requested, it would
+//     establish the build's Go release from the analyzer's, and the lane would exclude release-tagged
+//     files on that say-so.
 func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID string) string {
 	if !s.subjectToolchain {
 		return ""
 	}
 	fact, ok := Toolchain(store, caseID)
-	if !ok || fact.Bound != ToolchainBoundExact {
+	if !ok || fact.Bound != ToolchainBoundExact || fact.Source == ToolchainSourceBuildResolved {
 		return ""
 	}
 	return fact.Version

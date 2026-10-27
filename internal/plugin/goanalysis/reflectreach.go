@@ -279,6 +279,12 @@ func (f *reflectFixpoint) addType(t types.Type) {
 		f.addType(t.Elem())
 	case *types.Signature:
 		f.addSignatureTypes(t)
+	case *types.Interface:
+		// reflect hands out an interface's method types (Type.Method(i).Type), unexported and
+		// embedded methods included, so each one's parameters and results can be built and called.
+		for i := range t.NumMethods() {
+			f.addSignatureTypes(t.Method(i).Signature())
+		}
 	}
 }
 

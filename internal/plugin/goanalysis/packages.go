@@ -420,10 +420,10 @@ func goflagsTags(env []string) []string {
 // count, nor does a standard-library one, where a path with no dot in its first element is the
 // standard library's only when no module in the graph holds it. A file that cannot be read counts. A
 // file left out of a loaded package that reaches a package that counts through the load counts
-// whatever it imports, unless its package clause names another package. A file constrained by the ignore tag is
-// never built and does not count, nor, when release is the Go release the build compiles under, is a
-// file whose goN.M build tags alone exclude it from every build under that release
-// (releaseExcluded); the files of an unloaded import are read the same way.
+// whatever it imports, unless its package clause names another package. A file constrained by the
+// ignore tag is never built and does not count, nor, when release is the Go release the build
+// compiles under, is a file whose goN.M build tags alone exclude it from every build under that
+// release (releaseExcluded); the files of an unloaded import are read the same way.
 //
 // When module is the standard library, the packages that count are its vulnerable ones, or every
 // standard-library package when vulnerable is empty. Every unloaded import is followed, the standard

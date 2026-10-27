@@ -64,8 +64,8 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
 //   - otherwise (no disqualification, no reach, grounds named) → VerdictNotExploitable, on the
-//     basis the grounds name: symbol-unreachable when the code is present and no path reaches it,
-//     symbol-absent when it is not in the build or its package never loads.
+//     basis the grounds name: symbol-unreachable when the code is installed and nothing reaches it
+//     (no path, or no loaded module imports its package), symbol-absent when it is not in the build.
 //
 // The OSS tool stops at reachable_candidate; it never emits exploitable/reasoned_*.
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {

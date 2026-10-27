@@ -207,7 +207,7 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
 			},
 			wantDetail: "PyYAML@5.3: no runtime-loaded module imports it (package_not_loaded)",
-			wantBasis:  verdict.BasisSymbolAbsent,
+			wantBasis:  verdict.BasisSymbolUnreachable,
 		},
 		{
 			// A record with only the scalar purl may affect a package it does not name, which

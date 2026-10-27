@@ -28,9 +28,8 @@ import (
 //     The refutation's assumptions come back with the detail: the verdict holds only under them.
 //     Arm A carries them too, since the lane's search started from the same entry points.
 //
-// Arm A, and arm B on any refutation but package_not_loaded, show the code present and unreached:
-// the basis is BasisSymbolUnreachable. package_not_loaded shows the package's code never loads, so
-// it is BasisSymbolAbsent.
+// Both arms show the code present and unreached, so the basis is BasisSymbolUnreachable. That holds
+// for package_not_loaded too: the package is installed, and nothing loaded imports it.
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
 // another package: that package's symbols were never resolved or searched, and it may be installed
@@ -75,9 +74,6 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		!root && pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
 		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
 			basis := verdict.BasisSymbolUnreachable
-			if r.Basis == plugin.RefutationPackageNotLoaded {
-				basis = verdict.BasisSymbolAbsent
-			}
 			if r.Detail == "" {
 				return fmt.Sprintf("%s: %s", label, r.Basis), "", basis, r.Assumptions, true
 			}

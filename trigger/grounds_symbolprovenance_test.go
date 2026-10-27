@@ -120,12 +120,8 @@ func TestFinding_SymbolProvenanceGate(t *testing.T) {
 				}
 				return
 			}
-			// Only a package the build never loads is absent; every other ground leaves the code in
-			// the build, unreached.
+			// Every ground leaves the code installed and unreached.
 			wantBasis := verdict.BasisSymbolUnreachable
-			if tt.record.refutation == notLoaded {
-				wantBasis = verdict.BasisSymbolAbsent
-			}
 			if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != wantBasis {
 				t.Fatalf("verdict = %q basis %q (reason %q), want not_exploitable on %q",
 					f.Verdict, f.Evidence.Basis, f.UndeterminedReason, wantBasis)

@@ -47,8 +47,8 @@ func TestFinding_BasisPerGround(t *testing.T) {
 				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
 				return fx.finding(t)
 			},
-			wantBasis: verdict.BasisSymbolAbsent,
-			wantJust:  projection.VEXJustNotPresent,
+			wantBasis: verdict.BasisSymbolUnreachable,
+			wantJust:  projection.VEXJustNotInExecutePath,
 		},
 		{
 			name: "arm B: a refutation basis this version does not know",

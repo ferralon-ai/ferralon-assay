@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -167,10 +168,11 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// answers it.
 		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
 		// An advisory whose package no module of the build holds rests on a search of every
-		// module's source rather than on a path or a symbol inside a package. It still needs every
-		// step to have run: a run that loads code from outside the build list (plugin_load) can
-		// hold the advisory's code with no module declaring it.
-		if !undetermined {
+		// module's source rather than on a path or a symbol inside a package, so a limit of the
+		// path search does not hold it (outsideBuildExempt). Every other step must have run: a run
+		// that loads code from outside the build list (plugin_load) can hold the advisory's code
+		// with no module declaring it.
+		if !undetermined || !outsideBuildBlocked(store, assessmentID, pkg) {
 			detail, unvetted, ok := outsideBuildGrounds(store, assessmentID, pkg, mods)
 			if ok {
 				f = report.AdvisoryFinding{
@@ -985,9 +987,29 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // The reason is analysis_did_not_run, except when the only did-not-run limit is the analyzer
 // declaring it does not know the advisory: that is the more precise statement of the same fact.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
-	if cg, ok := callGraphResult(store, assessmentID); ok && len(cg.Edges) == 0 && !cg.Partiality.Complete {
+	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
+	reasons := didNotRunReasons(store, assessmentID, pkg)
+	switch {
+	case len(reasons) == 0:
+		return "", false
+	case !slices.ContainsFunc(reasons, func(r string) bool { return r != plugin.PartialReasonAdvisoryUnknownToAnalyzer }):
+		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	}
+	return report.ReasonAnalysisDidNotRun, true
+}
+
+// emptyGraphUncalledComplete reports whether the call graph is empty and the analyzer declined to
+// call it complete: a search that did not happen (see analysisDidNotRun).
+func emptyGraphUncalledComplete(store artifact.Store, assessmentID string) bool {
+	cg, ok := callGraphResult(store, assessmentID)
+	return ok && len(cg.Edges) == 0 && !cg.Partiality.Complete
+}
+
+// didNotRunReasons returns the did-not-run limits analysisDidNotRun weighs for this assessment, in
+// the order they were declared.
+func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Package) []string {
 	reasons := footprintPartialityFlags(store, assessmentID)
 	if len(reasons) == 0 {
 		if inv, ok := inventory(store, assessmentID); ok {
@@ -1007,23 +1029,42 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	if res, err := pipeline.VulnerableSymbols(store, assessmentID); err == nil {
 		absent = len(targetConditionalAbsent(pipeline.AdvisorySymbols(store, assessmentID), pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)) > 0
 	}
-	didNotRun, unknownOnly := false, true
+	var out []string
 	for _, reason := range reasons {
 		if absent && reason == plugin.PartialReasonAdvisorySymbolUnresolved {
 			continue
 		}
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
-			didNotRun = true
-			unknownOnly = unknownOnly && reason == plugin.PartialReasonAdvisoryUnknownToAnalyzer
+			out = append(out, reason)
 		}
 	}
-	switch {
-	case !didNotRun:
-		return "", false
-	case unknownOnly:
-		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	return out
+}
+
+// outsideBuildExempt holds the did-not-run limits that cannot undermine outsideBuildGrounds. Those
+// grounds are not a search for a path: they rest on the build's module list (`go mod graph`, see
+// goModulesOf) and on reading every .go file of every listed module (the Go lane's ModuleSearch,
+// the only producer of one). A limit of the call-graph search leaves both intact. Any limit not
+// listed here, a future one included, blocks the grounds.
+var outsideBuildExempt = map[string]bool{
+	// govulncheck's silence about a module outside the graph it loads; the module search does not
+	// consult govulncheck.
+	plugin.PartialReasonAdvisoryUnknownToAnalyzer: true,
+	// A reflective call runs only code compiled into the build, which comes from a listed module.
+	plugin.PartialReasonReflectiveCall: true,
+	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
+	// every .go file whatever its build constraints.
+	plugin.PartialReasonExcludedFiles: true,
+}
+
+// outsideBuildBlocked reports whether a step outsideBuildGrounds rests on may not have run: the
+// Go toolchain axis is undetermined, the call graph is empty and not called complete, or a
+// did-not-run limit outside outsideBuildExempt was declared.
+func outsideBuildBlocked(store artifact.Store, assessmentID string, pkg *report.Package) bool {
+	if _, ok := toolchainUndetermined(store, assessmentID); ok || emptyGraphUncalledComplete(store, assessmentID) {
+		return true
 	}
-	return report.ReasonAnalysisDidNotRun, true
+	return slices.ContainsFunc(didNotRunReasons(store, assessmentID, pkg), func(r string) bool { return !outsideBuildExempt[r] })
 }
 
 // scopedLimitCounts reports whether a scoped limit counts against an advisory admitted on the given

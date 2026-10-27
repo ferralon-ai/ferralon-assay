@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/mod/modfile"
 
@@ -19,11 +20,11 @@ import (
 // GOTOOLCHAIN=auto only ever switches UP from them. Ordering them into one fact
 // about the subject's toolchain is the caller's job (pipeline.ToolchainFact).
 //
-// Those bounds hold only for a go command from Go 1.21 on; an older one builds a
-// module whatever its `go` line says. When the directives do not establish such a
-// go command (no `toolchain` line, and a `go` line below 1.21 or absent), the
-// runtime also carries Resolved: the release the build's environment resolves,
-// the same establishment the load records as the build's (buildToolchain).
+// Those bounds hold only for a go command from Go 1.21 on; an older one does not
+// enforce the `go` line. When the directives do not exclude such a go command (no
+// `toolchain` line, and no three-part `go` line at 1.21.0 or later), the runtime
+// also carries Resolved: the release the build's environment resolves, the same
+// establishment the load records as the build's (buildToolchain).
 //
 // Partiality is declared, never overclaimed (inv.5): no go.mod (not a module) is
 // Partial with no fabricated build command; replace/exclude directives that
@@ -88,13 +89,18 @@ func BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the toolchain that builds the
-// module from below. A `toolchain` line does whatever it names: a go command before Go 1.21 rejects it
-// as an unknown directive, so any go command that builds the module enforces its directives. A `go`
-// line alone does from 1.21 on; below that it is advisory to the go commands that built such modules.
-// goVersion is the bare `go` directive ("1.17"), toolchain the `toolchain` name ("go1.21.3").
+// module from below, which they do only when no go command before Go 1.21 can build it. A `toolchain`
+// line does whatever it names: those go commands reject it as an unknown directive. So does a
+// three-part `go` line at 1.21.0 or later ("1.21.0"), which they reject at parse. A two-part `go` line
+// ("1.21") does not, whatever its version: those go commands do not enforce it. goVersion is the raw
+// `go` directive, toolchain the `toolchain` name ("go1.21.3"). Kept in step with the pipeline's
+// predicate of the same name.
 func directivesBindToolchain(goVersion, toolchain string) bool {
 	if toolchain != "" {
 		return true
+	}
+	if strings.Count(goVersion, ".") != 2 {
+		return false
 	}
 	r, ok := parseGoRelease("go" + goVersion)
 	return ok && (r.major > 1 || r.minor >= 21)

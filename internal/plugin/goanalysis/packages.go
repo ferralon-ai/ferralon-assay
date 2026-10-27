@@ -131,7 +131,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	} else {
 		goVersion = ""
 	}
-	buildGoVersion := goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
+	buildGoVersion := buildToolchain(ctx, buildDir)
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go/packages load %q: %w", buildDir, err)
@@ -197,6 +197,13 @@ func BuildEnviron(ctx context.Context) []string {
 		return env
 	}
 	return os.Environ()
+}
+
+// buildToolchain is the Go release the build compiles under: the one the go command resolves for
+// buildDir under the build's environment (BuildEnviron), from GOTOOLCHAIN, the go.mod go and toolchain
+// lines and any go.work. "" when unknown.
+func buildToolchain(ctx context.Context, buildDir string) string {
+	return goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
 }
 
 // cgoPinned returns env with CGO_ENABLED set to the value `go env CGO_ENABLED` resolves for dir

@@ -802,6 +802,12 @@ type RuntimeSpec struct {
 	Target    string        `json:"target,omitempty"`    // this toolchain's target platform/architecture ("linux/amd64", "x86_64-linux-gnu")
 	Lang      string        `json:"lang,omitempty"`      // language mode this toolchain compiles ("c", "c++")
 	StdLevel  string        `json:"std_level,omitempty"` // language standard level ("c17", "c++20")
+
+	// Resolved is the toolchain the build's environment resolves for this runtime, when the analyzer
+	// established it (Go: `go env GOVERSION` for the build directory under the build's environment).
+	// It is an ambient observation whatever Source says, and a statement about the subject only when
+	// the caller asserts the analyzer runs where the subject builds. Empty when not established.
+	Resolved string `json:"resolved,omitempty"`
 }
 
 // ResolverSpec is the ecosystem-neutral resolver/build descriptor.

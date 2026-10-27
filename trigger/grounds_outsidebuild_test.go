@@ -69,6 +69,9 @@ func TestFinding_OutsideBuildGrounds(t *testing.T) {
 		{"another step did not run", func(fx *groundsFixture) {
 			fx.footprint = append(fx.footprint, plugin.PartialReasonToolFailure)
 		}, false, ""},
+		{"a call graph that is empty and not called complete", func(fx *groundsFixture) {
+			fx.callGraph = &plugin.CallGraphResult{Partiality: plugin.Partial(plugin.PartialReasonToolFailure)}
+		}, false, report.ReasonAnalysisDidNotRun},
 		{"a scoped limit on the build", func(fx *groundsFixture) {
 			fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonPluginLoad, Package: "pkg:golang/example.com/a"}}
 		}, false, ""},

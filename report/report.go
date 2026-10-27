@@ -452,7 +452,8 @@ type AdvisoryBound struct {
 type EvidenceSummary struct {
 	// Basis is the structured grounds for a not_exploitable / disqualified verdict,
 	// reusing the OSS verdict grammar (verdict.NonExploitableBasis):
-	// "version_not_in_affected_range" or "vulnerable_symbol_absent". Empty for a
+	// "version_not_in_affected_range", "vulnerable_symbol_absent" or, for a not_exploitable
+	// resting on reachability, "vulnerable_symbol_unreachable". Empty for a
 	// reachable_candidate (which has no refutation basis — its grounds are the path) and
 	// for an undetermined finding (which has no grounds at all).
 	Basis verdict.NonExploitableBasis `json:"basis,omitempty"`
@@ -923,8 +924,8 @@ const (
 	// reachable path is a fact about the analysis rather than about the codebase.
 	//
 	// It is the code an analyzer that cannot yet resolve a dependency's versions or symbols lands
-	// its findings on. `not_exploitable / vulnerable_symbol_absent` asserts that the vulnerable
-	// symbol is not present in what this codebase builds; an analysis that never searched has
+	// its findings on. `not_exploitable / vulnerable_symbol_unreachable` asserts that no path in
+	// what this codebase builds reaches the vulnerable symbol; an analysis that never searched has
 	// asserted it on evidence it does not have, which is a false negative — the one outcome this
 	// scanner may never produce.
 	//
@@ -1126,6 +1127,9 @@ type Subject struct {
 //     rejected, so a minimally-populated Report still validates.
 //   - An undetermined finding must NOT carry a Basis (it has no grounds at all) and
 //     MUST carry an UndeterminedReason; no other verdict may carry one.
+//   - The reachability basis (vulnerable_symbol_unreachable) is valid only on a
+//     not_exploitable: a disqualification rests on the version or symbol axis, never on
+//     a path search.
 func (r Report) Validate() error {
 	if r.SchemaVersion == "" {
 		return fmt.Errorf("report: SchemaVersion is required")
@@ -1147,6 +1151,10 @@ func (r Report) Validate() error {
 		if f.Verdict == VerdictUndetermined && f.Evidence.Basis != verdict.BasisNone {
 			return fmt.Errorf("report: advisory %q is undetermined but carries a not-exploitability basis %q (an undetermined finding establishes nothing, so it has no grounds)",
 				f.Advisory.ID, f.Evidence.Basis)
+		}
+		if f.Evidence.Basis == verdict.BasisSymbolUnreachable && f.Verdict != VerdictNotExploitable {
+			return fmt.Errorf("report: advisory %q carries basis %q but verdict is %q (a reachability refutation grounds only a not_exploitable)",
+				f.Advisory.ID, f.Evidence.Basis, f.Verdict)
 		}
 		if f.Verdict == VerdictUndetermined && f.UndeterminedReason == "" {
 			return fmt.Errorf("report: advisory %q is undetermined but carries no undetermined_reason (an unexplained non-verdict is silent suppression)",

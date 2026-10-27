@@ -11,14 +11,17 @@
 package goanalysis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/build"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +73,25 @@ type LoadResult struct {
 	cgoBounded bool
 	// cgoUnresolved: `go env CGO_ENABLED` failed, so which variant of the build was loaded is unknown.
 	cgoUnresolved bool
+	// goVersion is the Go release the load ran under, and buildGoVersion the one the build compiles
+	// under; either is "" when unknown. buildRelease compares them.
+	goVersion      string
+	buildGoVersion string
+}
+
+// buildRelease returns the Go release the load ran under when it is established as the build's:
+// both are known and name the same minor, which alone decides the goN.M build tags a build
+// satisfies. Otherwise it returns nil.
+func (l *LoadResult) buildRelease() *goRelease {
+	loaded, ok := parseGoRelease(l.goVersion)
+	if !ok {
+		return nil
+	}
+	build, ok := parseGoRelease(l.buildGoVersion)
+	if !ok || build.major != loaded.major || build.minor != loaded.minor {
+		return nil
+	}
+	return &loaded
 }
 
 // LoadProgram loads the buildable module rooted at buildDir with full type and
@@ -99,6 +121,17 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	if cgoErr == nil {
 		cfg.Env = pinned
 	}
+	// The toolchain is the one the go command resolves here from GOTOOLCHAIN and the go.mod go and
+	// toolchain lines, pinned so every load runs under that one release. The build's is the same
+	// resolution under the build's environment (BuildEnviron), go.work included; a caller that knows
+	// the subject's toolchain sets buildGoVersion instead.
+	goVersion := goEnvVersion(ctx, buildDir, cfg.Env)
+	if r, ok := parseGoRelease(goVersion); ok {
+		cfg.Env = append(cfg.Env, "GOTOOLCHAIN="+r.toolchain())
+	} else {
+		goVersion = ""
+	}
+	buildGoVersion := goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go/packages load %q: %w", buildDir, err)
@@ -144,7 +177,26 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		part.Scoped = cgo
 	}
 
-	return &LoadResult{Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil}, nil
+	return &LoadResult{
+		Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil,
+		goVersion: goVersion, buildGoVersion: buildGoVersion,
+	}, nil
+}
+
+type buildEnvironKey struct{}
+
+// WithBuildEnviron returns ctx carrying env as the environment the build runs in: the process's own
+// environment before the analyzer changed it (it forces GOWORK=off, which the build does not).
+func WithBuildEnviron(ctx context.Context, env []string) context.Context {
+	return context.WithValue(ctx, buildEnvironKey{}, env)
+}
+
+// BuildEnviron returns the build's environment ctx carries, or the process's own when it carries none.
+func BuildEnviron(ctx context.Context) []string {
+	if env, ok := ctx.Value(buildEnvironKey{}).([]string); ok {
+		return env
+	}
+	return os.Environ()
 }
 
 // cgoPinned returns env with CGO_ENABLED set to the value `go env CGO_ENABLED` resolves for dir
@@ -380,7 +432,9 @@ func goflagsTags(env []string) []string {
 // module graph. A file that cannot be read counts, as does an unloaded import when the module graph
 // cannot be read or holds no module for it. A file left out of a loaded package that reaches module
 // through the load counts whatever it imports, unless its package clause names another package. A file
-// constrained by the ignore tag is never built and does not count.
+// constrained by the ignore tag is never built and does not count, nor, when release is the Go
+// release the build compiles under, is a file whose goN.M build tags alone exclude it from every
+// build under that release (releaseExcluded).
 //
 // When module is the standard library, the packages that count are its vulnerable ones (vulnerable,
 // or every standard-library package when that is empty), and a file counts when it imports one
@@ -388,7 +442,7 @@ func goflagsTags(env []string) []string {
 // standard-library import is followed through the imports `go list` resolves for it under the
 // scan's own GOOS and the common ports, and counts when no port lists it cleanly; an unloaded
 // import from any module counts outright.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, buildDir string, env []string) bool {
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
 	var graph modGraph
@@ -441,11 +495,14 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return false
 		}
-		name, imports, never, err := fileImports(path)
+		name, imports, expr, err := fileImports(path)
 		if err != nil {
 			return true
 		}
-		return !never && ((own != "" && name == own) || slices.ContainsFunc(imports, mayCall))
+		if ignored(expr) || (release != nil && releaseExcluded(expr, *release)) {
+			return false
+		}
+		return (own != "" && name == own) || slices.ContainsFunc(imports, mayCall)
 	}
 	leftOut := func(path string) bool { return leftOutOf(path, "") }
 
@@ -636,36 +693,185 @@ func firstPartyLeftOut(root string, loadedDirs map[string]bool, leftOut func(str
 	return found
 }
 
-// fileImports returns the package name and import paths of the Go file at path, and whether the
-// ignore tag constrains it so that no build compiles it.
-func fileImports(path string) (name string, imports []string, never bool, err error) {
-	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly|parser.ParseComments)
+// fileImports returns the package name, import paths and build constraint of the Go file at path.
+// The constraint is read as go/build reads it (see fileConstraint).
+func fileImports(path string) (name string, imports []string, expr constraint.Expr, err error) {
+	src, err := os.ReadFile(path)
 	if err != nil {
-		return "", nil, false, err
+		return "", nil, nil, err
 	}
-	for _, g := range f.Comments {
-		if g.Pos() >= f.Package {
-			break
-		}
-		for _, c := range g.List {
-			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
-				continue
-			}
-			if x, err := constraint.Parse(c.Text); err == nil {
-				if tag, ok := x.(*constraint.TagExpr); ok && tag.Tag == "ignore" {
-					never = true
-				}
-			}
-		}
+	f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.ImportsOnly)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if expr, err = fileConstraint(src); err != nil {
+		return "", nil, nil, err
 	}
 	for _, imp := range f.Imports {
 		p, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
-			return "", nil, false, err
+			return "", nil, nil, err
 		}
 		imports = append(imports, p)
 	}
-	return f.Name.Name, imports, never, nil
+	return f.Name.Name, imports, expr, nil
+}
+
+// fileConstraint returns the build constraint go/build applies to a Go file with content src:
+// its //go:build line anywhere in the leading run of comments and blank lines, else the
+// plus-build lines of that run that precede its last blank line (which keeps a package doc comment
+// out), together; nil when there is none. A file go/build rejects (two //go:build lines, or one that
+// does not parse) is an error.
+func fileConstraint(src []byte) (constraint.Expr, error) {
+	var goBuild string
+	var plusBuild []string
+	var pending []string // plus-build lines since the last blank line
+	// headed: past the first line that is not a // comment, so no later blank line ends the header.
+	inSlashStar, headed := false, false
+	for p := src; len(p) > 0; {
+		line := p
+		if i := bytes.IndexByte(line, '\n'); i >= 0 {
+			line, p = line[:i], p[i+1:]
+		} else {
+			p = nil
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 && !headed {
+			plusBuild, pending = append(plusBuild, pending...), nil
+			continue
+		}
+		headed = headed || !bytes.HasPrefix(line, []byte("//"))
+		text := string(line)
+		if !inSlashStar && constraint.IsGoBuild(text) {
+			if goBuild != "" {
+				return nil, errors.New("multiple //go:build comments")
+			}
+			goBuild = text
+		}
+		if !headed && constraint.IsPlusBuild(text) {
+			pending = append(pending, text)
+		}
+		ended := false
+		for len(line) > 0 && !ended {
+			switch {
+			case inSlashStar:
+				i := bytes.Index(line, []byte("*/"))
+				if i < 0 {
+					line = nil
+					continue
+				}
+				inSlashStar, line = false, bytes.TrimSpace(line[i+2:])
+			case bytes.HasPrefix(line, []byte("//")):
+				line = nil
+			case bytes.HasPrefix(line, []byte("/*")):
+				inSlashStar, line = true, bytes.TrimSpace(line[2:])
+			default:
+				ended = true
+			}
+		}
+		if ended {
+			break
+		}
+	}
+	if goBuild != "" {
+		return constraint.Parse(goBuild)
+	}
+	var expr constraint.Expr
+	for _, text := range plusBuild {
+		x, err := constraint.Parse(text)
+		switch {
+		case err != nil:
+		case expr == nil:
+			expr = x
+		default:
+			expr = &constraint.AndExpr{X: expr, Y: x}
+		}
+	}
+	return expr, nil
+}
+
+// ignored reports whether the build constraint x is the ignore tag, which no build sets.
+func ignored(x constraint.Expr) bool {
+	tag, ok := x.(*constraint.TagExpr)
+	return ok && tag.Tag == "ignore"
+}
+
+// maxFreeTags bounds the tags releaseExcluded enumerates; a constraint with more is not judged.
+const maxFreeTags = 16
+
+// releaseExcluded reports whether the build constraint x excludes a file only through its goN.M
+// release tags: some assignment of its tags satisfies x, but none does once every release tag takes
+// the value a build under release r gives it. Every other tag (GOOS, GOARCH, cgo, custom tags)
+// ranges freely, so a file that some platform or tag of a build under r selects is not excluded.
+// A tag spelled otherwise than a release tag the go command sets ("go1.05") is not one.
+func releaseExcluded(x constraint.Expr, r goRelease) bool {
+	if x == nil {
+		return false
+	}
+	var tags []string
+	release := map[string]bool{}
+	seen := map[string]bool{}
+	var walk func(constraint.Expr)
+	walk = func(x constraint.Expr) {
+		switch x := x.(type) {
+		case *constraint.TagExpr:
+			if seen[x.Tag] {
+				return
+			}
+			seen[x.Tag] = true
+			if minor, ok := releaseTagMinor(x.Tag); ok {
+				release[x.Tag] = r.major > 1 || minor <= r.minor
+			} else {
+				tags = append(tags, x.Tag)
+			}
+		case *constraint.NotExpr:
+			walk(x.X)
+		case *constraint.AndExpr:
+			walk(x.X)
+			walk(x.Y)
+		case *constraint.OrExpr:
+			walk(x.X)
+			walk(x.Y)
+		}
+	}
+	walk(x)
+	if len(release) == 0 || len(seen) > maxFreeTags {
+		return false
+	}
+	// satisfiable reports whether some assignment of free satisfies x, with fixed for the rest.
+	satisfiable := func(free []string, fixed map[string]bool) bool {
+		for mask := 0; mask < 1<<len(free); mask++ {
+			on := map[string]bool{}
+			for i, tag := range free {
+				on[tag] = mask&(1<<i) != 0
+			}
+			if x.Eval(func(tag string) bool {
+				if v, ok := fixed[tag]; ok {
+					return v
+				}
+				return on[tag]
+			}) {
+				return true
+			}
+		}
+		return false
+	}
+	all := slices.Sorted(maps.Keys(seen))
+	return satisfiable(all, nil) && !satisfiable(tags, release)
+}
+
+// releaseTagMinor returns N for a release tag "go1.N" as the go command spells it (N >= 1, no
+// leading zeros or sign).
+func releaseTagMinor(tag string) (int, bool) {
+	rest, ok := strings.CutPrefix(tag, "go1.")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n < 1 || strconv.Itoa(n) != rest {
+		return 0, false
+	}
+	return n, true
 }
 
 // underModule reports whether the import path is module's own path or a package inside it.

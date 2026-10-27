@@ -35,10 +35,14 @@ type LibraryEntrypoints struct {
 	Mode string `json:"mode,omitempty"`
 	// Include adds the packages under each path to the entry points (auto) or nominates them
 	// (paths). Exclude takes the packages under each path out of either. A path is a directory
-	// relative to the scanned root, slash-separated, and covers the directory and everything below
-	// it; "." is the whole tree.
+	// relative to Base, slash-separated, and covers the directory and everything below it; "." is
+	// the whole tree.
 	Include []string `json:"include,omitempty"`
 	Exclude []string `json:"exclude,omitempty"`
+	// Base is the directory the paths are relative to: the repository root, which for a module
+	// nested in the repository is above the build directory. Empty reads as the build directory.
+	// The host sets it; the input never does.
+	Base string `json:"base,omitempty"`
 }
 
 // ParseLibraryEntrypoints reads the library-entrypoints input: "auto", "none", or a list of paths
@@ -86,7 +90,7 @@ func ParseLibraryEntrypoints(s string) (LibraryEntrypoints, error) {
 	return e, nil
 }
 
-// cleanEntrypointPath canonicalizes one declared path, rejecting one that leaves the scanned root.
+// cleanEntrypointPath canonicalizes one declared path, rejecting one that leaves the repository root.
 func cleanEntrypointPath(p string) (string, error) {
 	p = strings.TrimSuffix(p, "/...")
 	if p == "..." {
@@ -98,13 +102,19 @@ func cleanEntrypointPath(p string) (string, error) {
 	case strings.Contains(p, `\`):
 		return "", fmt.Errorf("use / to separate path elements")
 	case path.IsAbs(p):
-		return "", fmt.Errorf("path must be relative to the scanned root")
+		return "", fmt.Errorf("path must be relative to the repository root")
 	}
 	clean := path.Clean(p)
 	if clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", fmt.Errorf("path leaves the scanned root")
+		return "", fmt.Errorf("path leaves the repository root")
 	}
 	return clean, nil
+}
+
+// Removes reports whether e can take a package auto infers out of the entry points: none, a path
+// list, or an exclusion. auto with paths added only adds.
+func (e LibraryEntrypoints) Removes() bool {
+	return e.Mode == LibraryEntrypointsNone || e.Mode == LibraryEntrypointsPaths || len(e.Exclude) > 0
 }
 
 // Declared reports whether e states anything beyond auto's inference.
@@ -131,13 +141,16 @@ func (e LibraryEntrypoints) String() string {
 	return strings.Join(tokens, ",")
 }
 
-// Under reports whether dir, slash-separated and relative to the scanned root, lies under p.
+// Under reports whether dir, slash-separated and relative to Base, lies under p.
 func Under(dir, p string) bool {
 	return p == "." || dir == p || strings.HasPrefix(dir, p+"/")
 }
 
 // ResolvedLibraryEntrypoints is the entry-point set a lane resolved for the build, and what it rests on.
 type ResolvedLibraryEntrypoints struct {
+	// Ecosystem is the PURL type of the packages the lane resolved ("golang", "maven", "nuget"); a
+	// report holds one record per ecosystem.
+	Ecosystem string `json:"ecosystem"`
 	// Source is LibraryEntrypointsSourceAuto or LibraryEntrypointsSourceDeclared.
 	Source string `json:"source"`
 	// Input is the library-entrypoints statement the set was resolved from, in the input's syntax.

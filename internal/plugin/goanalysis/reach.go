@@ -302,13 +302,20 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 	}
 	vulnerable := scanned.vulnerablePackages(module)
 	incomplete := incompleteLoad(pkgs)
-	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.decl.Declared() ||
+	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.decl.Removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
 		return res
 	}
-	if left := reaching(pkgs, entry.auto, incomplete, module, vulnerable); len(left) > 0 {
+	// With the load complete, auto's own exclusions are the inferred rule and need no statement.
+	// With it incomplete, auto alone withholds, so what stands rests on the declaration for every
+	// importable package outside the entry points.
+	left := entry.auto
+	if incomplete {
+		left = append(slices.Clone(entry.auto), entry.tightened...)
+	}
+	if left := reaching(pkgs, left, incomplete, module, vulnerable); len(left) > 0 {
 		refutation := *r
 		refutation.Assumptions = append(slices.Clone(r.Assumptions), entry.assumption(left, incomplete, module))
 		res.Refutation = &refutation
@@ -346,6 +353,9 @@ type entrypoints struct {
 	// auto are the entry points auto infers with nothing declared, less those in pkgs: the
 	// packages a declaration took out.
 	auto []*packages.Package
+	// tightened are the importable packages neither in pkgs nor auto: those auto's own rule
+	// (autoExcludedElements) leaves out.
+	tightened []*packages.Package
 	// matched holds each declared path, "!" kept on an exclusion, that matched a package.
 	matched map[string]bool
 }
@@ -356,12 +366,20 @@ var autoExcludedElements = []string{"cmd", "example", "examples", "test", "tests
 
 // resolveEntrypoints resolves the caller's statement against the build's packages. Auto's entry
 // points are the importable packages (importable) outside autoExcludedElements. A declared path is
-// matched against the package's directory relative to buildDir. A package whose directory cannot be
-// placed there keeps auto's answer, and is an entry point under a path list.
+// matched against the package's directory relative to decl.Base, or buildDir when that is empty,
+// and counts as matched only when it covers an importable package. A package whose directory cannot
+// be placed there keeps auto's answer, and is an entry point under a path list.
 func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints, buildDir string) entrypoints {
 	e := entrypoints{decl: decl, matched: map[string]bool{}}
-	root, rootErr := filepath.EvalSymlinks(buildDir)
+	base := decl.Base
+	if base == "" {
+		base = buildDir
+	}
+	root, rootErr := filepath.EvalSymlinks(base)
 	for _, p := range pkgs {
+		if !importable(p) {
+			continue
+		}
 		dir, placed := "", false
 		if rootErr == nil {
 			dir, placed = relDir(root, p.Dir)
@@ -378,14 +396,14 @@ func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints
 				}
 			}
 		}
-		if !importable(p) {
-			continue
-		}
 		auto := !autoExcluded(p)
-		if e.isEntrypoint(dir, placed, auto) {
+		switch {
+		case e.isEntrypoint(dir, placed, auto):
 			e.pkgs = append(e.pkgs, p)
-		} else if auto {
+		case auto:
 			e.auto = append(e.auto, p)
+		default:
+			e.tightened = append(e.tightened, p)
 		}
 	}
 	return e
@@ -444,6 +462,7 @@ func (e entrypoints) unmatchedIncludes() []string {
 // record is the resolved set as the result reports it.
 func (e entrypoints) record() *plugin.ResolvedLibraryEntrypoints {
 	rec := &plugin.ResolvedLibraryEntrypoints{
+		Ecosystem: "golang",
 		Source:    plugin.LibraryEntrypointsSourceAuto,
 		Input:     e.decl.String(),
 		Packages:  pkgPaths(e.pkgs),
@@ -461,7 +480,7 @@ func (e entrypoints) record() *plugin.ResolvedLibraryEntrypoints {
 }
 
 // assumption states the declaration a refutation rests on: that code outside the build imports none of
-// left, packages auto counts as entry points that reach module.
+// left, the packages outside the entry points that reach module.
 func (e entrypoints) assumption(left []*packages.Package, incomplete bool, module string) string {
 	names := pkgPaths(left)
 	if len(names) > 5 {

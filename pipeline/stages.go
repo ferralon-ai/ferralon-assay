@@ -3239,6 +3239,22 @@ func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID str
 	return fact.Version
 }
 
+// entrypointsFor is the run's library-entrypoints statement with its paths based at the checkout
+// root, which for a nested module lies above the build directory. A record with no checkout root
+// leaves Base empty, so the lane reads the paths from the build directory.
+func (s reachabilityIngress) entrypointsFor(store artifact.Store, caseID string) (*plugin.LibraryEntrypoints, error) {
+	if s.libraryEntrypoints == nil {
+		return nil, nil
+	}
+	root, err := InventoryCheckoutRoot(store, caseID)
+	if err != nil {
+		return nil, err
+	}
+	e := *s.libraryEntrypoints
+	e.Base = root
+	return &e, nil
+}
+
 func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.Assessment, store artifact.Store, sinkRef artifact.Ref) error {
 	buildDir, err := InventoryBuildDir(store, c.ID)
 	if err != nil {
@@ -3266,6 +3282,10 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
+	entrypoints, err := s.entrypointsFor(store, c.ID)
+	if err != nil {
+		return err
+	}
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
 		BuildDir:           buildDir,
 		VulnID:             vulnID,
@@ -3273,7 +3293,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		GoToolchain:        requestedToolchain,
 		Package:            admittedPackagePURL(store, c.ID),
 		DependencyCache:    depCache,
-		LibraryEntrypoints: s.libraryEntrypoints,
+		LibraryEntrypoints: entrypoints,
 	})
 	if err != nil {
 		return err

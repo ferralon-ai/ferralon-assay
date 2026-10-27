@@ -3,9 +3,12 @@ package goanalysis
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -121,6 +124,20 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 			"lib/lib.go": "package lib\n\nimport \"strconv\"\n\nfunc Itoa(i int) string { return strconv.Itoa(i) }\n",
 		}, stdlibFinding, false, "imports example.com/m/lib, which reach a vulnerable standard-library package",
 			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
+		{"auto plus a program path, a test helper that does not type-check", "auto,cmd/tool", map[string]string{
+			"cmd/tool/main.go":        "package main\n\nfunc main() {}\n",
+			"cmd/tool/flags/flags.go": clean("flags"),
+			"test/helpers/helpers.go": "package helpers\n\nimport \"example.com/vulnmod\"\n\nvar N int = \"x\"\n\nvar F = vulnmod.Bad\n",
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/cmd/tool/flags"}, nil},
+		{"a path list naming only a program", "cmd/tool", map[string]string{
+			"cmd/tool/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/api/api.go":   clean("api"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{}, []string{"cmd/tool"}},
+		{"none, a test helper that does not type-check", "none", map[string]string{
+			"pkg/api/api.go":          clean("api"),
+			"test/helpers/helpers.go": "package helpers\n\nvar N int = \"x\"\n",
+		}, moduleFinding, false, "imports example.com/m/pkg/api, example.com/m/test/helpers, which may reach (the load is incomplete) example.com/vulnmod",
+			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
 		{"none, nothing reaches the module", "none", map[string]string{
 			"lib/lib.go": clean("lib"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
@@ -166,6 +183,63 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 			}
 			if !slices.Equal(rec.Unmatched, tc.unmatched) {
 				t.Errorf("record unmatched = %q, want %q", rec.Unmatched, tc.unmatched)
+			}
+		})
+	}
+}
+
+// TestResolveEntrypoints_Placement: declared paths are read from Base when the host sets it (the
+// checkout root above a nested module), and a package that cannot be placed under it, with no
+// directory or one outside it, keeps auto's answer and is an entry point under a path list.
+func TestResolveEntrypoints_Placement(t *testing.T) {
+	root := t.TempDir()
+	module := filepath.Join(root, "svc")
+	for _, d := range []string{"svc/pkg/api", "svc/pkg/lib", "outside"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mod := &packages.Module{Path: "example.com/svc"}
+	pkg := func(path, dir string) *packages.Package {
+		return &packages.Package{PkgPath: path, Name: "x", Module: mod, Dir: dir}
+	}
+	api := pkg("example.com/svc/pkg/api", filepath.Join(module, "pkg/api"))
+	lib := pkg("example.com/svc/pkg/lib", filepath.Join(module, "pkg/lib"))
+	nodir := pkg("example.com/svc/gen", "")
+	outside := pkg("example.com/svc/outside", filepath.Join(root, "outside"))
+	all := []*packages.Package{api, lib, nodir, outside}
+	cases := []struct {
+		name      string
+		input     string
+		base      string
+		pkgs      []*packages.Package
+		entries   []string
+		unmatched []string
+	}{
+		{"repository-relative path, based at the checkout root", "svc/pkg/api", root, []*packages.Package{api, lib},
+			[]string{"example.com/svc/pkg/api"}, nil},
+		{"repository-relative path, no base, read from the build directory", "svc/pkg/api", "", []*packages.Package{api, lib},
+			[]string{}, []string{"svc/pkg/api"}},
+		{"an unplaced package is an entry point under a path list", "pkg/api", "", []*packages.Package{api, nodir},
+			[]string{"example.com/svc/gen", "example.com/svc/pkg/api"}, nil},
+		{"a package outside the root is not placed", "pkg/api", "", []*packages.Package{api, outside},
+			[]string{"example.com/svc/outside", "example.com/svc/pkg/api"}, nil},
+		{"an unplaced package keeps auto's answer under an exclusion", "!.", "", all,
+			[]string{"example.com/svc/gen", "example.com/svc/outside"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decl, err := plugin.ParseLibraryEntrypoints(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decl.Base = tc.base
+			rec := resolveEntrypoints(tc.pkgs, decl, module).record()
+			if !slices.Equal(rec.Packages, tc.entries) {
+				t.Errorf("entry points = %q, want %q", rec.Packages, tc.entries)
+			}
+			if !slices.Equal(rec.Unmatched, tc.unmatched) {
+				t.Errorf("unmatched = %q, want %q", rec.Unmatched, tc.unmatched)
 			}
 		})
 	}

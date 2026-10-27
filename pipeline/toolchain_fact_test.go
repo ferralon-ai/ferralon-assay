@@ -229,7 +229,7 @@ func TestResolveToolchainFact(t *testing.T) {
 		// Normalization: one spelling reaches the artifact regardless of the source's own.
 		{
 			name: "go directive two-segment form gains an explicit patch 0",
-			in:   toolchainInputs{goDirective: "1.21", toolchainDirective: "go1.20.0"},
+			in:   toolchainInputs{goDirective: "1.21", toolchainDirective: "go1.20"},
 			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{

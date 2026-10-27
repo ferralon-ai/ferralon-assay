@@ -73,7 +73,8 @@ const (
 	ToolchainSourceBuildResolved = "build_resolved"
 	// ToolchainSourceToolchainDirective is the go.mod `toolchain goX.Y.Z` directive: a floor.
 	ToolchainSourceToolchainDirective = "toolchain_directive"
-	// ToolchainSourceGoDirective is the go.mod `go X.Y` directive: a floor, normalized to goX.Y.0.
+	// ToolchainSourceGoDirective is the go.mod `go` directive when it binds (directivesBindToolchain):
+	// a floor, normalized to goX.Y.Z.
 	ToolchainSourceGoDirective = "go_directive"
 	// ToolchainSourceUnresolved means no source produced an orderable version.
 	ToolchainSourceUnresolved = "unresolved"

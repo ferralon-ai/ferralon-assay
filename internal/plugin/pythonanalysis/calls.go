@@ -106,7 +106,7 @@ type fileScan struct {
 	locals map[string]map[string]bool
 }
 
-// bindLocals records names bound in a def's scope.
+// bindLocals records names a scope binds other than by import ("" is the module).
 func (fs *fileScan) bindLocals(scope string, names []string) {
 	if len(names) == 0 {
 		return

@@ -103,9 +103,6 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 		return edge, p.withAliases(edge, f.anyScopeBinds(name))
 	}
 	head := cs.calleeChain[0]
-	if b, ok := lookupBinding(head, cs.scopes, f.bindings); ok && (b.target == "" || !p.dists.firstParty[firstSegment(b.target)]) {
-		return edge, edge
-	}
 	mid := strings.Join(cs.calleeChain[1:len(cs.calleeChain)-1], "/")
 	via := func(paths []string) []string {
 		var out []string
@@ -211,25 +208,32 @@ type fileParse struct {
 	decorated []funcDecl
 	refs      valueRefs
 	fpBinds   map[string]map[string][]string
+	depBinds  map[string]map[string]bool
 	locals    map[string]map[string]bool
 	modValues []string
 	computed  bool
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
-// def scopes: the innermost scope that binds it by import or locally decides, then the
-// module. A local binding (a parameter, an assignment) shadows any import, so ok is false.
+// def scopes: the innermost scope that binds it decides, then the module. ok is true only
+// when that scope binds the name by first-party import and in no other way; a local binding
+// (a parameter, an assignment) or a dependency import or instance in the same scope may be
+// what the name holds at the call, so ok is false.
 func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
-	for i := len(scopes) - 1; i >= 0; i-- {
-		if paths := f.fpBinds[scopes[i]][name]; len(paths) > 0 {
-			return paths, true
+	for i := len(scopes) - 1; i >= -1; i-- {
+		scope := ""
+		if i >= 0 {
+			scope = scopes[i]
 		}
-		if f.locals[scopes[i]][name] {
+		paths := f.fpBinds[scope][name]
+		if f.locals[scope][name] || f.depBinds[scope][name] {
 			return nil, false
 		}
+		if len(paths) > 0 {
+			return paths, true
+		}
 	}
-	paths := f.fpBinds[""][name]
-	return paths, len(paths) > 0
+	return nil, false
 }
 
 // anyScopeBinds is every first-party import path the file binds name to, in any scope.
@@ -400,8 +404,13 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 			m[local] = append(m[local], path)
 		}
 	}
+	f.depBinds = map[string]map[string]bool{}
 	for _, b := range raw {
 		if b.target == "" || !prog.dists.firstParty[firstSegment(b.target)] {
+			if f.depBinds[b.scope] == nil {
+				f.depBinds[b.scope] = map[string]bool{}
+			}
+			f.depBinds[b.scope][b.local] = true
 			continue
 		}
 		bind(b.scope, b.local, strings.ReplaceAll(b.target, ".", "/"))

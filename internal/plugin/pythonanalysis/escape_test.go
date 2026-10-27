@@ -570,6 +570,21 @@ func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 			caller: funcSCIP("e", nil, "go", 1),
 		},
 		{
+			name:   "dependency import in the def shadows the module binding",
+			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/a.py": "from .impl import f as g\n\ndef go():\n    from yaml import load as g\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+		},
+		{
+			name:   "dependency module in the def shadows the module binding",
+			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/__init__.py": "from .impl import f as g\n", "e.py": "import pkg\n\ndef go():\n    import yaml as pkg\n    return pkg.g(1)\n"},
+			caller: funcSCIP("e", nil, "go", 0),
+		},
+		{
+			name:   "dependency import beside the binding in the same scope",
+			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/a.py": "from .impl import f as g\nfrom yaml import load as g\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+		},
+		{
 			name:   "unique declaration elsewhere keeps its edge",
 			files:  map[string]string{"pkg/a.py": "from .impl import f as g\n", "d.py": "def g(x):\n    return x\n\ndef go():\n    return g(1)\n"},
 			caller: funcSCIP("d", nil, "go", 0),

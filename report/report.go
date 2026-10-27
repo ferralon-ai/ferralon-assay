@@ -1017,10 +1017,10 @@ type Report struct {
 	// BuildGraph records where a JVM scan's dependency graph came from and, when it could not be
 	// had, the typed cause. Set on every Java and Kotlin scan; nil for every other language.
 	BuildGraph *BuildGraph `json:"build_graph,omitempty"`
-	// LibraryEntrypoints is the set of the build's packages the scan treated as callable by code
-	// outside the build, and whether it was inferred or declared. Set when a lane resolved one,
-	// which it does only to judge a refutation such a caller may contradict.
-	LibraryEntrypoints *plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// LibraryEntrypoints are the sets of the build's packages the scan treated as callable by code
+	// outside the build, one per ecosystem, and whether each was inferred or declared. A lane
+	// resolves one only to judge a refutation such a caller may contradict. Sorted by ecosystem.
+	LibraryEntrypoints []plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
 }
 
 // Build graph sources.

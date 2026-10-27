@@ -25,6 +25,7 @@ import (
 //     an unvetted one leaves the advisory undetermined unless arm B grounds it.
 //   - G2 arm B: the lane refuted that package on positive evidence (ReachabilityResult.Refutation).
 //     The refutation's assumptions come back with the detail: the verdict holds only under them.
+//     Arm A carries them too, since the lane's search started from the same entry points.
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
 // another package: that package's symbols were never resolved or searched, and it may be installed
@@ -55,11 +56,11 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 				unvetted = true
 			} else if len(absent) == 0 {
 				return fmt.Sprintf("no path from any entry point reaches %s in %s",
-					strings.Join(symbols, ", "), label), "", nil, true
+					strings.Join(symbols, ", "), label), "", refutationAssumptions(reach), true
 			} else {
 				present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
 				return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
-					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", nil, true
+					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", refutationAssumptions(reach), true
 			}
 		}
 	}
@@ -442,11 +443,22 @@ func normalizePackageName(typ, name string) string {
 	}
 }
 
-// libraryEntrypoints reads the library entry points the lane resolved for the assessment, nil when
+// refutationAssumptions are the assumptions the lane's refutation rests on, none without one.
+func refutationAssumptions(reach plugin.ReachabilityResult) []string {
+	if reach.Refutation == nil {
+		return nil
+	}
+	return reach.Refutation.Assumptions
+}
+
+// libraryEntrypoints reads the library entry points the lane resolved for the assessment, none when
 // it resolved none.
-func libraryEntrypoints(store artifact.Store, assessmentID string) *plugin.ResolvedLibraryEntrypoints {
+func libraryEntrypoints(store artifact.Store, assessmentID string) []plugin.ResolvedLibraryEntrypoints {
 	reach, _ := reachabilityResult(store, assessmentID)
-	return reach.LibraryEntrypoints
+	if reach.LibraryEntrypoints == nil {
+		return nil
+	}
+	return []plugin.ResolvedLibraryEntrypoints{*reach.LibraryEntrypoints}
 }
 
 // reachabilityResult reads the reachability stage's result off its artifact.

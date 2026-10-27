@@ -39,17 +39,19 @@ func TestValidateAssumptionsOnlyOnNotExploitable(t *testing.T) {
 	}
 }
 
-// TestBuilderLibraryEntrypoints: the first resolved set recorded stands, and it survives the
-// report's JSON.
+// TestBuilderLibraryEntrypoints: the first resolved set recorded for an ecosystem stands, each
+// ecosystem keeps its own, the list is sorted by ecosystem, and it survives the report's JSON.
 func TestBuilderLibraryEntrypoints(t *testing.T) {
-	first := &plugin.ResolvedLibraryEntrypoints{Source: plugin.LibraryEntrypointsSourceDeclared, Input: "none", Packages: []string{}}
+	golang := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "none", Packages: []string{}}
+	maven := plugin.ResolvedLibraryEntrypoints{Ecosystem: "maven", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"com.example:lib"}}
 	r := NewBuilder(Subject{ResolvedCommit: "c"}).
-		WithLibraryEntrypoints(nil).
-		WithLibraryEntrypoints(first).
-		WithLibraryEntrypoints(&plugin.ResolvedLibraryEntrypoints{Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto"}).
+		WithLibraryEntrypoints().
+		WithLibraryEntrypoints(maven, golang).
+		WithLibraryEntrypoints(plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto"}).
 		Build()
-	if r.LibraryEntrypoints != first {
-		t.Fatalf("LibraryEntrypoints = %+v, want the first recorded %+v", r.LibraryEntrypoints, first)
+	want := []plugin.ResolvedLibraryEntrypoints{golang, maven}
+	if !reflect.DeepEqual(r.LibraryEntrypoints, want) {
+		t.Fatalf("LibraryEntrypoints = %+v, want %+v", r.LibraryEntrypoints, want)
 	}
 	raw, err := json.Marshal(r)
 	if err != nil {
@@ -59,8 +61,8 @@ func TestBuilderLibraryEntrypoints(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(back.LibraryEntrypoints, first) {
-		t.Errorf("round trip = %+v, want %+v", back.LibraryEntrypoints, first)
+	if !reflect.DeepEqual(back.LibraryEntrypoints, want) {
+		t.Errorf("round trip = %+v, want %+v", back.LibraryEntrypoints, want)
 	}
 	if empty := NewBuilder(Subject{ResolvedCommit: "c"}).Build(); empty.LibraryEntrypoints != nil {
 		t.Errorf("no set recorded, got %+v", empty.LibraryEntrypoints)

@@ -88,7 +88,7 @@ func (gotoolchainGuardSource) Lookup(string) (AdvisoryFacts, bool) {
 func writeEmptyGoMod(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	goMod := "module example.com/target\n\ngo 1.21\n"
+	goMod := "module example.com/target\n\ngo 1.21.0\n"
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}

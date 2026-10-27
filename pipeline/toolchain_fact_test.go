@@ -155,6 +155,11 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.20.5", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
 		{
+			name: "three-part go directive past major 1 is a floor",
+			in:   toolchainInputs{goDirective: "2.0.0"},
+			want: ToolchainFact{Version: "go2.0.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+		},
+		{
 			name: "three-part pre-1.21 go directive is no floor",
 			in:   toolchainInputs{goDirective: "1.20.0"},
 			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},

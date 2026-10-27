@@ -141,6 +141,8 @@ func TestBuildManifest_ResolvedBuildToolchain(t *testing.T) {
 		{"go 1.21 two-part is advisory: probed", "module example.com/m\n\ngo 1.21\n", localEnv, true},
 		{"go 1.21.0 binds: not probed", "module example.com/m\n\ngo 1.21.0\n", localEnv, false},
 		{"go 1.22.3 binds: not probed", "module example.com/m\n\ngo 1.22.3\n", localEnv, false},
+		{"go 1.20.0 three-part below 1.21 is advisory: probed", "module example.com/m\n\ngo 1.20.0\n", localEnv, true},
+		{"go 2.0.0 binds: not probed", "module example.com/m\n\ngo 2.0.0\n", localEnv, false},
 		{"a toolchain line binds a pre-1.21 go line: not probed", "module example.com/m\n\ngo 1.17\n\ntoolchain go1.21.3\n", localEnv, false},
 		{"the build's toolchain cannot be established: empty", "module example.com/m\n\ngo 1.17\n", unfetchableEnv, false},
 	}

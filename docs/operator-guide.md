@@ -138,11 +138,13 @@ first source that yields a usable version:
 
 1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), or the
    `ASSAY_SUBJECT_GO_VERSION` environment variable. Exact.
-2. **Your `go.mod` directives** — `toolchain goX.Y.Z` and `go X.Y` (read as `goX.Y.0`). Each is a
-   **minimum**, not an exact version: `GOTOOLCHAIN=auto` only ever switches up from them. When both
-   are present, the higher one wins. A `go` line below 1.21 with no `toolchain` line is not a
-   minimum: Go releases before 1.21 build a module whatever its `go` line says, so `go 1.17` may have
-   been built by go1.16.5. Such a `go` line is left out.
+2. **Your `go.mod` directives** — `toolchain goX.Y.Z` and `go X.Y.Z`. Each is a **minimum**, not an
+   exact version: `GOTOOLCHAIN=auto` only ever switches up from them. When both are present, the
+   higher one wins. A go command before 1.21 does not enforce the `go` line, so `go 1.17` may have
+   been built by go1.16.5. A `go` line is therefore a minimum only when the module also has a
+   `toolchain` line, or when the `go` line is three-part (`go 1.21.0`) at 1.21.0 or later — go
+   commands before 1.21 reject both. A two-part `go` line (`go 1.21`, `go 1.22`) is not a minimum,
+   and neither is a `go` line below 1.21 without a `toolchain` line. Such a `go` line is left out.
 3. Otherwise, unresolved.
 
 A declaration below your own `go.mod` floor is discarded in favor of the floor, because a module
@@ -190,8 +192,9 @@ of the scan, false in a dedicated scan workflow where the observed Go is the run
 other value leaves the observation out and resolution falls back to your `go.mod` directives. When
 trusted, it counts as an exact toolchain, ranked after your declaration and above your `go.mod`
 directives. The same assertion lets the scan use the Go its own `go` command resolves for your
-module when your `go.mod` sets no minimum (no `toolchain` line, and a `go` line below 1.21 or none),
-ranked after the observation. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
+module when your `go.mod` sets no minimum (no `toolchain` line, and no three-part `go` line at 1.21.0
+or later), ranked after the observation; without the assertion that toolchain is left out and the fact
+is unresolved. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
 like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
 toolchain from `go.mod` alone.
 

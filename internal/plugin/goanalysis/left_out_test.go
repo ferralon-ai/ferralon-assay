@@ -2,9 +2,13 @@ package goanalysis
 
 import (
 	"context"
+	"fmt"
+	"go/build"
+	"go/build/constraint"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -51,24 +55,36 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 		return "//go:build " + constraint + "\n\npackage plain\n\nimport _ \"" + imp + "\"\n"
 	}
 	cases := []struct {
-		name     string
-		files    map[string]string
-		withheld bool
+		name  string
+		files map[string]string
+		// unestablished: the load is not established to run under the build's toolchain.
+		unestablished bool
+		withheld      bool
 	}{
-		{"no file left out", nil, false},
-		{"a tagged file imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/vulnmod")}, true},
-		{"another platform's file imports the module", map[string]string{"plain/run_plan9.go": "package plain\n\nimport _ \"example.com/vulnmod\"\n"}, true},
-		{"a tagged file imports a loaded package that imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/m/mid")}, true},
-		{"a tagged file imports an unloaded module that requires the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/dep")}, true},
-		{"a tagged file imports an unloaded module that does not require it", map[string]string{"plain/prod.go": leftOut("prod", "example.com/other")}, false},
-		{"a tagged file imports only the standard library, against a module refutation", map[string]string{"plain/prod.go": leftOut("prod", "net/http")}, false},
-		{"an ignore-tagged file is never built", map[string]string{"plain/gen.go": leftOut("ignore", "example.com/vulnmod")}, false},
-		{"a tagged file imports nothing but its package reaches the module", map[string]string{"mid/mid_prod.go": "//go:build prod\n\npackage mid\n\nfunc init() { Call() }\n"}, true},
-		{"a tagged file names another package than the one that reaches the module", map[string]string{"mid/tools.go": "//go:build tools\n\npackage tools\n"}, false},
-		{"another platform's file of a dependency calls its own package's helper", map[string]string{"_lib/lib_windows.go": "package lib\n\nfunc init() { use() }\n"}, true},
-		{"another platform's file of the module itself", map[string]string{"_vulnmod/vulnmod_windows.go": "package vulnmod\n\nfunc init() { Bad() }\n"}, true},
-		{"a tagged file imports nothing and its package does not reach the module", map[string]string{"plain/plain_prod.go": "//go:build prod\n\npackage plain\n\nfunc init() { Call() }\n"}, false},
-		{"a tagged package wholly left out imports the module", map[string]string{"prodonly/p.go": "//go:build prod\n\npackage prodonly\n\nimport _ \"example.com/vulnmod\"\n"}, true},
+		{"no file left out", nil, false, false},
+		{"a tagged file imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/vulnmod")}, false, true},
+		{"another platform's file imports the module", map[string]string{"plain/run_plan9.go": "package plain\n\nimport _ \"example.com/vulnmod\"\n"}, false, true},
+		{"a tagged file imports a loaded package that imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/m/mid")}, false, true},
+		{"a tagged file imports an unloaded module that requires the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/dep")}, false, true},
+		{"a tagged file imports an unloaded module that does not require it", map[string]string{"plain/prod.go": leftOut("prod", "example.com/other")}, false, false},
+		{"a tagged file imports only the standard library, against a module refutation", map[string]string{"plain/prod.go": leftOut("prod", "net/http")}, false, false},
+		{"an ignore-tagged file is never built", map[string]string{"plain/gen.go": leftOut("ignore", "example.com/vulnmod")}, false, false},
+		{"a tagged file imports nothing but its package reaches the module", map[string]string{"mid/mid_prod.go": "//go:build prod\n\npackage mid\n\nfunc init() { Call() }\n"}, false, true},
+		{"a tagged file names another package than the one that reaches the module", map[string]string{"mid/tools.go": "//go:build tools\n\npackage tools\n"}, false, false},
+		{"another platform's file of a dependency calls its own package's helper", map[string]string{"_lib/lib_windows.go": "package lib\n\nfunc init() { use() }\n"}, false, true},
+		{"another platform's file of the module itself", map[string]string{"_vulnmod/vulnmod_windows.go": "package vulnmod\n\nfunc init() { Bad() }\n"}, false, true},
+		{"a tagged file imports nothing and its package does not reach the module", map[string]string{"plain/plain_prod.go": "//go:build prod\n\npackage plain\n\nfunc init() { Call() }\n"}, false, false},
+		{"a tagged package wholly left out imports the module", map[string]string{"prodonly/p.go": "//go:build prod\n\npackage prodonly\n\nimport _ \"example.com/vulnmod\"\n"}, false, true},
+		{"a file only a newer Go release builds", map[string]string{"plain/new.go": leftOut("go1.999", "example.com/vulnmod")}, false, false},
+		{"a file only an older Go release builds", map[string]string{"plain/old.go": leftOut("!go1.1", "example.com/vulnmod")}, false, false},
+		{"a file only an older Go release builds, toolchain not established", map[string]string{"plain/old.go": leftOut("!go1.1", "example.com/vulnmod")}, true, true},
+		{"a release tag the build satisfies and a platform that could select it", map[string]string{"plain/p.go": leftOut("go1.1 && plan9", "example.com/vulnmod")}, false, true},
+		{"an older release or a platform that could select it", map[string]string{"plain/p.go": leftOut("!go1.1 || plan9", "example.com/vulnmod")}, false, true},
+		{"a newer release on another platform", map[string]string{"plain/p.go": leftOut("go1.999 && plan9", "example.com/vulnmod")}, false, false},
+		{"a tag spelled like a release tag the go command never sets", map[string]string{"plain/p.go": leftOut("plan9 && !go1.01", "example.com/vulnmod")}, false, true},
+		{"a constraint no release satisfies", map[string]string{"plain/p.go": leftOut("go1.1 && !go1.1", "example.com/vulnmod")}, false, true},
+		{"go1.0 is not a release tag the go command sets", map[string]string{"plain/p.go": leftOut("plan9 && !go1.0", "example.com/vulnmod")}, false, true},
+		{"a misplaced plus-build line does not constrain the file", map[string]string{"plain/p_windows.go": "// +build go1.999\npackage plain\n\nimport _ \"example.com/vulnmod\"\n"}, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,11 +100,18 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			release := load.buildRelease()
+			if release == nil {
+				t.Fatalf("load not established under the build's toolchain (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
+			}
+			if tc.unestablished {
+				release = nil
+			}
 			refuted := plugin.ReachabilityResult{
 				Partiality: plugin.Complete(),
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 			}
-			res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, dir, append(os.Environ(), "GOWORK=off"))
+			res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, release, dir, append(os.Environ(), "GOWORK=off"))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -162,7 +185,7 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/stdlib"},
 			}
 			scanned := vulnScan{imports: map[string][]string{"stdlib": tc.vulnerable}}
-			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, dir, append(os.Environ(), "GOWORK=off"))
+			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -188,20 +211,27 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 		findings: []vulnFinding{{OSV: "GO-2", Trace: []vulnFrame{{Module: "stdlib", Version: "v1.22.0"}}}},
 		imports:  map[string][]string{"stdlib": {"net/http"}},
 	}
+	newRelease := map[string]string{
+		"new.go": "//go:build go1.999\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
+	}
 	cases := []struct {
-		name     string
-		files    map[string]string
-		scanned  vulnScan
-		withheld bool
+		name    string
+		files   map[string]string
+		scanned vulnScan
+		// buildGoVersion, when set, is the toolchain the build compiles under.
+		buildGoVersion string
+		withheld       bool
 	}{
-		{"module refutation, nothing left out", nil, moduleFinding, false},
+		{"module refutation, nothing left out", nil, moduleFinding, "", false},
 		{"module refutation, a tagged file calls the module", map[string]string{
 			"prod.go": "//go:build prod\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
-		}, moduleFinding, true},
-		{"standard-library refutation, nothing left out", nil, stdlibFinding, false},
+		}, moduleFinding, "", true},
+		{"module refutation, a file only a newer Go release builds calls the module", newRelease, moduleFinding, "", false},
+		{"module refutation, the same file, the build on another Go release", newRelease, moduleFinding, "go1.2", true},
+		{"standard-library refutation, nothing left out", nil, stdlibFinding, "", false},
 		{"standard-library refutation, a tagged file calls the vulnerable package", map[string]string{
 			"prod.go": "//go:build prod\n\npackage main\n\nimport \"net/http\"\n\nfunc init() { _ = http.ListenAndServe(\":0\", nil) }\n",
-		}, stdlibFinding, true},
+		}, stdlibFinding, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -209,6 +239,9 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 			load, err := LoadProgram(context.Background(), dir)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.buildGoVersion != "" {
+				load.buildGoVersion = tc.buildGoVersion
 			}
 			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
 			if err != nil {
@@ -221,6 +254,184 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
+	}
+}
+
+// TestLoadResult_BuildRelease: the load's release counts as the build's only when both are known and
+// name the same minor.
+func TestLoadResult_BuildRelease(t *testing.T) {
+	cases := []struct {
+		loaded, build string
+		want          *goRelease
+	}{
+		{"go1.25.3", "go1.25.3", &goRelease{1, 25, 3}},
+		{"go1.25.3", "go1.25.0", &goRelease{1, 25, 3}},
+		{"go1.25.3", "go1.24.9", nil},
+		{"go1.25.3", "go2.25.3", nil},
+		{"", "go1.25.3", nil},
+		{"go1.25.3", "", nil},
+		{"go1.25.3", "devel go1.25-abc123", nil},
+	}
+	for _, tc := range cases {
+		got := (&LoadResult{goVersion: tc.loaded, buildGoVersion: tc.build}).buildRelease()
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("buildRelease(%q, %q) = %v, want %v", tc.loaded, tc.build, got, tc.want)
+		}
+	}
+}
+
+// TestLoadProgram_Toolchain: the load records the release the go command resolves for the build
+// directory, and does not establish it as the build's when the go command cannot resolve the
+// build's own toolchain there (a go.work requiring a release that does not exist).
+func TestLoadProgram_Toolchain(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "auto")
+	files := map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	}
+	dir := writeTree(t, files)
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := goEnvVersion(context.Background(), dir, append(os.Environ(), "GOWORK=off")); load.goVersion != want || want == "" {
+		t.Fatalf("loaded under %q, want %q", load.goVersion, want)
+	}
+	if load.buildRelease() == nil {
+		t.Fatalf("toolchain not established (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
+	}
+
+	// The build sees the go.work although the analyzer's own environment may turn workspaces off.
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GOWORK=") {
+			env = append(env, kv)
+		}
+	}
+	dir = writeTree(t, merge(files, map[string]string{"go.work": "go 1.999\n\nuse .\n"}))
+	load, err = LoadProgram(WithBuildEnviron(context.Background(), env), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if load.buildRelease() != nil {
+		t.Fatalf("toolchain established although the build's is unresolved (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
+	}
+}
+
+// TestLoadForBuild_SubjectToolchain: a known subject toolchain is the build's, so a load under
+// another minor is not established as the build's.
+func TestLoadForBuild_SubjectToolchain(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	load, err := loadForBuild(context.Background(), dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := load.buildRelease()
+	if r == nil {
+		t.Fatalf("toolchain not established (loaded %q, build %q)", load.goVersion, load.buildGoVersion)
+	}
+	for _, tc := range []struct {
+		toolchain   string
+		established bool
+	}{
+		{r.toolchain(), true},
+		{fmt.Sprintf("go%d.%d", r.major, r.minor+1), false},
+	} {
+		load, err := loadForBuild(context.Background(), dir, tc.toolchain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := load.buildRelease() != nil; got != tc.established {
+			t.Errorf("subject toolchain %s: established = %v, want %v (loaded %q)", tc.toolchain, got, tc.established, load.goVersion)
+		}
+	}
+}
+
+// TestReleaseExcluded: a constraint is excluded by the release alone when it holds for some tags
+// but for none with the release tags at the build's values, the build's own minor included.
+func TestReleaseExcluded(t *testing.T) {
+	r := goRelease{1, 26, 3}
+	cases := []struct {
+		expr string
+		want bool
+	}{
+		{"go1.26", false},
+		{"!go1.26", true},
+		{"go1.27", true},
+		{"!go1.27", false},
+		{"go1.27 && plan9", true},
+		{"go1.27 || plan9", false},
+		{"go1.1 && !go1.1", false},
+		{"plan9", false},
+	}
+	for _, tc := range cases {
+		x, err := constraint.Parse("//go:build " + tc.expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := releaseExcluded(x, r); got != tc.want {
+			t.Errorf("releaseExcluded(%q, go1.26.3) = %v, want %v", tc.expr, got, tc.want)
+		}
+	}
+}
+
+// TestFileConstraint: the constraint read from a file's header admits the file under exactly the
+// tags go/build admits it under.
+func TestFileConstraint(t *testing.T) {
+	headers := []string{
+		"",
+		"//go:build windows\n\n",
+		"// +build windows\n\n",
+		"// +build windows\n",
+		"// +build windows\n// +build go1.999\n\n",
+		"// +build windows\n\n// +build go1.999\n",
+		"// +build windows linux,x\n\n",
+		"//go:build x\n// +build windows\n\n",
+		"// Copyright\n\n//go:build go1.999 || x\n\n// Package doc.\n",
+		"/* block\n\n*/\n// +build windows\n\n",
+		"/* block */ //go:build windows\n\n",
+		"// doc\n// +build windows\n",
+		"// +build !go1.1\n\n",
+		"// +build windows\n/* block */\n\n",
+	}
+	assignments := []build.Context{
+		{GOOS: "linux", GOARCH: "amd64", ReleaseTags: []string{"go1.1"}},
+		{GOOS: "windows", GOARCH: "amd64", ReleaseTags: []string{"go1.1"}},
+		{GOOS: "windows", GOARCH: "amd64", ReleaseTags: []string{"go1.1", "go1.999"}},
+		{GOOS: "linux", GOARCH: "amd64", BuildTags: []string{"x"}},
+	}
+	for _, h := range headers {
+		src := []byte(h + "package p\n")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "p.go"), src, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		expr, err := fileConstraint(src)
+		if err != nil {
+			t.Fatalf("%q: %v", h, err)
+		}
+		for _, ctxt := range assignments {
+			want, err := ctxt.MatchFile(dir, "p.go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tags := map[string]bool{ctxt.GOOS: true, ctxt.GOARCH: true}
+			for _, tag := range slices.Concat(ctxt.ReleaseTags, ctxt.BuildTags) {
+				tags[tag] = true
+			}
+			got := expr == nil || expr.Eval(func(tag string) bool { return tags[tag] })
+			if got != want {
+				t.Errorf("%q under %s %v %v: admitted = %v, go/build says %v", h, ctxt.GOOS, ctxt.ReleaseTags, ctxt.BuildTags, got, want)
+			}
+		}
+	}
+	for _, h := range []string{"//go:build windows\n//go:build linux\n\n", "//go:build (\n\n"} {
+		if _, err := fileConstraint([]byte(h + "package p\n")); err == nil {
+			t.Errorf("%q: no error, go/build rejects it", h)
+		}
 	}
 }
 

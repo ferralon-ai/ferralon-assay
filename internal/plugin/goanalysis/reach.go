@@ -174,7 +174,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 
 	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
 	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
-	load := sync.OnceValues(func() (*LoadResult, error) { return LoadProgram(ctx, req.BuildDir) })
+	load := sync.OnceValues(func() (*LoadResult, error) {
+		return loadForBuild(ctx, req.BuildDir, req.GoToolchain)
+	})
 	res, err := reconciledResult(ctx, scanned, req.BuildDir, env, load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
@@ -208,7 +210,7 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
 		return res, nil
 	}
-	return withholdForReflectReach(withholdRefutation(ctx, res, scanned, loaded.Packages, buildDir, env), scanned, g.ReflectReach), nil
+	return withholdForReflectReach(withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env), scanned, g.ReflectReach), nil
 }
 
 // withholdForReflectReach drops a refutation that a call reflection makes may contradict. govulncheck
@@ -229,9 +231,10 @@ func withholdForReflectReach(res plugin.ReachabilityResult, scanned vulnScan, re
 }
 
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
-// govulncheck never searched, or a library's callers may contradict it.
-func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, buildDir string, env []string) plugin.ReachabilityResult {
-	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, buildDir, env)
+// govulncheck never searched, or a library's callers may contradict it. release is the Go release the
+// build compiles under, or nil when the load is not established to have run under it.
+func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
+	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, buildDir, env)
 	res = withholdForUnsearchedMethods(res, scanned, pkgs)
 	return withholdForLibraryEscape(res, scanned, pkgs)
 }
@@ -331,13 +334,13 @@ func isMain(p *packages.Package) bool {
 // for another GOOS or GOARCH, or behind a build tag, that may call into the refuted module was
 // never traced, so the refutation holds only for builds that leave it out. The result then
 // declares excluded_files instead.
-func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, buildDir string, env []string) plugin.ReachabilityResult {
+func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || leftOutCallers(ctx, pkgs, module, scanned.vulnerablePackages(module), buildDir, env) {
+	if !ok || leftOutCallers(ctx, pkgs, module, scanned.vulnerablePackages(module), release, buildDir, env) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 	}
@@ -527,6 +530,16 @@ func goEnvVersion(ctx context.Context, buildDir string, env []string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// loadForBuild loads dir for reconciling its findings. toolchain, when set, is the subject's own
+// Go toolchain and so the build's.
+func loadForBuild(ctx context.Context, dir, toolchain string) (*LoadResult, error) {
+	loaded, err := LoadProgram(ctx, dir)
+	if err == nil && toolchain != "" {
+		loaded.buildGoVersion = toolchain
+	}
+	return loaded, err
 }
 
 // sameGoToolchain reports whether two Go version strings name the same release. It compares

@@ -123,7 +123,7 @@ type npmVersion struct {
 }
 
 // parseNPMVersion parses a strict npm version "X.Y.Z[-pre][+build]" with an optional
-// leading 'v'/'='. ok is false on any malformed input (missing components, non-numeric
+// leading 'v'. ok is false on any malformed input (missing components, non-numeric
 // core, empty prerelease identifier) so the caller fails open.
 func parseNPMVersion(s string) (npmVersion, bool) {
 	s = trimASCIISpace(s)

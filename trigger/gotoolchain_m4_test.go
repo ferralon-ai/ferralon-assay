@@ -93,7 +93,7 @@ const (
 
 func TestGoToolchainM4_UndeterminedLiftMatrix(t *testing.T) {
 	const (
-		goFloor       = "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.0\n"
+		goFloor       = "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20\n"
 		goNoDirective = "module example.com/target\n"
 	)
 

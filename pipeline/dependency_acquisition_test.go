@@ -757,3 +757,54 @@ func TestDependencyAcquisitionSplitCache(t *testing.T) {
 		})
 	}
 }
+
+// A tarball bound for UncredentialedDir is fetched without presenting a credential even when its
+// registry redirects onto a host that holds one; without the split the redirect carries it.
+func TestDependencyAcquisitionSplitFetchesUncredentialedAnonymously(t *testing.T) {
+	tarball := []byte("redirected public tarball")
+	for _, tc := range []struct {
+		name     string
+		split    bool
+		wantAuth string
+	}{
+		{"split", true, ""},
+		{"one directory", false, "Bearer " + acqSecret},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			regs := newFakeRegistries()
+			regs.serve(t, "npm.priv.test", tarball)
+			redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				http.Redirect(w, req, "https://npm.priv.test/redirected.tgz", http.StatusFound)
+			}))
+			t.Cleanup(redirect.Close)
+			u, err := url.Parse(redirect.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			regs.backends["registry.test"] = u.Host
+
+			build := t.TempDir()
+			npmrc := strings.Join([]string{
+				"registry=https://registry.test/",
+				"@priv:registry=https://npm.priv.test/",
+				"//npm.priv.test/:_authToken=${NODE_AUTH_TOKEN}",
+			}, "\n")
+			if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := DependencyAcquisition{Mode: DependencyCodeFetch, CacheDir: t.TempDir(), Client: regs.client,
+				LookupEnv: envMap(map[string]string{"NODE_AUTH_TOKEN": acqSecret})}
+			if tc.split {
+				cfg.UncredentialedDir = t.TempDir()
+			}
+			d := &dependencyAcquirer{cfg: cfg, byDir: map[string]*acquiredBuild{}}
+			res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode("pkg:npm/qs@6.5.2", sri512(tarball))}})
+			if res.Read != 1 {
+				t.Fatalf("Read = %d, unread %+v", res.Read, res.Unread)
+			}
+			if got := regs.seen("npm.priv.test"); len(got) != 1 || got[0] != tc.wantAuth {
+				t.Fatalf("redirect target saw %q, want %q", got, tc.wantAuth)
+			}
+		})
+	}
+}

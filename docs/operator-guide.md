@@ -22,6 +22,26 @@ module in the build holds the advisory's package, and none of the build's module
 symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
 `undetermined`, with the missing ground as its reason.
 
+In Go, the call-graph search does not follow calls made through `reflect` or a template's `Execute`,
+so Assay bounds them per advisory. From the build's entry points it collects every type the program
+converts to an interface, closed over the types those are built from (fields, elements, map keys and
+values, and the parameters and results of function and interface method signatures). A method of
+those types counts as callable when a reachable interface call can select it, and every exported one
+does once a reachable reflective or template call can name methods. A function the program uses as a
+value counts as callable when a reachable call of its signature through a function value exists, and
+every one does once a reachable reflective or template call can call functions. Whatever those
+callables reach is followed in turn. When that set reaches one of the
+advisory's vulnerable symbols, or cannot be computed because a package does not type-check, the row
+is `undetermined` and the scan-level notes carry `reflection:call`. The bound holds under these
+assumptions:
+
+- no `unsafe` conversion produces a value of a type the program never converts to an interface;
+- no `//go:linkname` or assembly calls Go functions;
+- no cgo callback calls into Go;
+- the runtime calls no Go function on its own other than finalizers;
+- no `plugin.Open` loads code at run time (a reachable one is declared as `plugin_load`);
+- the analyzed program has the same packages and build configuration as the one govulncheck loads.
+
 ### `undetermined` reasons
 
 An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what

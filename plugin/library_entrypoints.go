@@ -111,12 +111,6 @@ func cleanEntrypointPath(p string) (string, error) {
 	return clean, nil
 }
 
-// Removes reports whether e can take a package auto infers out of the entry points: none, a path
-// list, or an exclusion. auto with paths added only adds.
-func (e LibraryEntrypoints) Removes() bool {
-	return e.Mode == LibraryEntrypointsNone || e.Mode == LibraryEntrypointsPaths || len(e.Exclude) > 0
-}
-
 // Declared reports whether e states anything beyond auto's inference.
 func (e LibraryEntrypoints) Declared() bool {
 	return e.Mode != "" && e.Mode != LibraryEntrypointsAuto || len(e.Include) > 0 || len(e.Exclude) > 0

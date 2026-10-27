@@ -223,8 +223,12 @@ func reportDocSlug(r report.Report) string {
 // assumptionsStatement renders the assumptions a not_exploitable holds under as one sentence, empty
 // when it holds unconditionally.
 func assumptionsStatement(assumptions []string) string {
-	if len(assumptions) == 0 {
+	switch len(assumptions) {
+	case 0:
 		return ""
+	case 1:
+		return "Holds only under the stated assumption: " + assumptions[0] + "."
+	default:
+		return "Holds only under the stated assumptions: " + strings.Join(assumptions, "; ") + "."
 	}
-	return "Holds only under the stated assumption: " + strings.Join(assumptions, "; ") + "."
 }

@@ -302,7 +302,7 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 	}
 	vulnerable := scanned.vulnerablePackages(module)
 	incomplete := incompleteLoad(pkgs)
-	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.decl.Removes() ||
+	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
@@ -451,6 +451,16 @@ func autoExcluded(p *packages.Package) bool {
 		return false
 	}
 	return slices.ContainsFunc(strings.Split(rel, "/"), func(el string) bool { return slices.Contains(autoExcludedElements, el) })
+}
+
+// removes reports whether the declaration took a package auto infers out of the entry points: none,
+// a path list, or an exclusion that matched a package. auto with paths added only adds.
+func (e entrypoints) removes() bool {
+	switch e.decl.Mode {
+	case plugin.LibraryEntrypointsNone, plugin.LibraryEntrypointsPaths:
+		return true
+	}
+	return slices.ContainsFunc(e.decl.Exclude, func(x string) bool { return e.matched["!"+x] })
 }
 
 // unmatchedIncludes returns the declared entry-point paths that matched no package: the caller named

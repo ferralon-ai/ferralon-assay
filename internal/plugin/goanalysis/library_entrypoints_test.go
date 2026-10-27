@@ -133,6 +133,21 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 			"cmd/tool/main.go": "package main\n\nfunc main() {}\n",
 			"pkg/api/api.go":   clean("api"),
 		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{}, []string{"cmd/tool"}},
+		// Only a tightened package is left and it does not type-check: auto's set is empty, but what
+		// the helper imports is unknown, so auto alone withholds.
+		{"auto, only a test helper that does not type-check", "auto", map[string]string{
+			"cmd/tool/main.go":        "package main\n\nfunc main() {}\n",
+			"test/helpers/helpers.go": "package helpers\n\nvar N int = \"x\"\n",
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{}, nil},
+		{"an exclusion that matches nothing removes nothing, a test helper that does not type-check", "!nope", map[string]string{
+			"cmd/tool/main.go":        "package main\n\nfunc main() {}\n",
+			"test/helpers/helpers.go": "package helpers\n\nvar N int = \"x\"\n",
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{}, []string{"!nope"}},
+		{"an exclusion naming the test helper that does not type-check", "!test", map[string]string{
+			"cmd/tool/main.go":        "package main\n\nfunc main() {}\n",
+			"test/helpers/helpers.go": "package helpers\n\nvar N int = \"x\"\n",
+		}, moduleFinding, false, "imports example.com/m/test/helpers, which may reach (the load is incomplete) example.com/vulnmod",
+			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
 		{"none, a test helper that does not type-check", "none", map[string]string{
 			"pkg/api/api.go":          clean("api"),
 			"test/helpers/helpers.go": "package helpers\n\nvar N int = \"x\"\n",
@@ -206,6 +221,7 @@ func TestResolveEntrypoints_Placement(t *testing.T) {
 	api := pkg("example.com/svc/pkg/api", filepath.Join(module, "pkg/api"))
 	lib := pkg("example.com/svc/pkg/lib", filepath.Join(module, "pkg/lib"))
 	nodir := pkg("example.com/svc/gen", "")
+	testdir := pkg("example.com/svc/test/gen", "")
 	outside := pkg("example.com/svc/outside", filepath.Join(root, "outside"))
 	all := []*packages.Package{api, lib, nodir, outside}
 	cases := []struct {
@@ -222,6 +238,8 @@ func TestResolveEntrypoints_Placement(t *testing.T) {
 			[]string{}, []string{"svc/pkg/api"}},
 		{"an unplaced package is an entry point under a path list", "pkg/api", "", []*packages.Package{api, nodir},
 			[]string{"example.com/svc/gen", "example.com/svc/pkg/api"}, nil},
+		{"an unplaced package auto excludes is an entry point under a path list", "pkg/api", "", []*packages.Package{api, testdir},
+			[]string{"example.com/svc/pkg/api", "example.com/svc/test/gen"}, nil},
 		{"a package outside the root is not placed", "pkg/api", "", []*packages.Package{api, outside},
 			[]string{"example.com/svc/outside", "example.com/svc/pkg/api"}, nil},
 		{"an unplaced package keeps auto's answer under an exclusion", "!.", "", all,

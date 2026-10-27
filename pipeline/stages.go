@@ -112,7 +112,9 @@ func AdvisorySourceOf(opts ...AssessOption) AdvisorySource {
 // command returns the hosted runner image's preinstalled Go, unrelated to a build pinned elsewhere.
 // Nothing observable distinguishes the two, so only the caller can assert it — and until they do,
 // observed does not participate in resolution at all (not even as a floor: an unrelated Go is not a
-// lower bound on the subject's toolchain).
+// lower bound on the subject's toolchain). The same assertion admits the toolchain the analyzer
+// resolves for the build directory when the go.mod directives do not bound it, an ambient value of
+// the same kind (ToolchainSourceBuildResolved).
 //
 // Never pass the SCANNER's toolchain here. That value is a property of the analysis environment, and
 // mistaking it for a statement about the subject yields verdicts about the wrong toolchain.

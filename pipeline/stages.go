@@ -59,6 +59,9 @@ type AssessConfig struct {
 	// DependencyAcquisition fills the dependency cache for a JS build. nil leaves the stage out.
 	// See WithDependencyAcquisition.
 	DependencyAcquisition *dependencyAcquirer
+	// LibraryEntrypoints is the caller's statement of which of the build's packages code outside
+	// the build may import; nil is auto. See WithLibraryEntrypoints.
+	LibraryEntrypoints *plugin.LibraryEntrypoints
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -138,6 +141,14 @@ func WithSubjectToolchainReachability(enabled bool) AssessOption {
 	return func(c *AssessConfig) { c.SubjectToolchainReachability = enabled }
 }
 
+// WithLibraryEntrypoints hands reachability_ingress the caller's statement of which of the build's
+// packages code outside the build may import. A lane that withholds a refutation such an importer
+// may contradict resolves its entry points from it, and a refutation that holds only because a
+// declaration left a package out carries that declaration as an assumption.
+func WithLibraryEntrypoints(e plugin.LibraryEntrypoints) AssessOption {
+	return func(c *AssessConfig) { c.LibraryEntrypoints = &e }
+}
+
 // WithSkipDisqualifiedAnalysis lets S4 symbol_mapping and S5 reachability_ingress skip their plugin
 // work for an advisory S3 disqualified, leaving no vulnerable_symbol / reachability / ingress_map /
 // candidate_pair artifact behind. It is only sound for a caller whose verdict for a disqualified
@@ -167,7 +178,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	return append(stages,
 		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints},
 		exposureFootprintStage{},
 	)
 }
@@ -3152,6 +3163,8 @@ type reachabilityIngress struct {
 	subjectToolchain bool
 	skipDisqualified bool
 	deps             *dependencyAcquirer
+	// libraryEntrypoints is handed to the plugin as is; nil is auto.
+	libraryEntrypoints *plugin.LibraryEntrypoints
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3254,12 +3267,13 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
-		BuildDir:        buildDir,
-		VulnID:          vulnID,
-		Symbols:         sinks,
-		GoToolchain:     requestedToolchain,
-		Package:         admittedPackagePURL(store, c.ID),
-		DependencyCache: depCache,
+		BuildDir:           buildDir,
+		VulnID:             vulnID,
+		Symbols:            sinks,
+		GoToolchain:        requestedToolchain,
+		Package:            admittedPackagePURL(store, c.ID),
+		DependencyCache:    depCache,
+		LibraryEntrypoints: s.libraryEntrypoints,
 	})
 	if err != nil {
 		return err

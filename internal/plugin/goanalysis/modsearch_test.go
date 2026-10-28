@@ -531,3 +531,169 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
 	})
 }
+
+// recordGo records each go command a module search runs, then runs it.
+func recordGo(t *testing.T) *[]*exec.Cmd {
+	t.Helper()
+	var cmds []*exec.Cmd
+	orig := modsearchGo
+	modsearchGo = func(cmd *exec.Cmd) ([]byte, error) {
+		cmds = append(cmds, cmd)
+		return orig(cmd)
+	}
+	t.Cleanup(func() { modsearchGo = orig })
+	return &cmds
+}
+
+// goRuns counts the recorded go commands whose arguments start with sub.
+func goRuns(cmds []*exec.Cmd, sub string) int {
+	n := 0
+	for _, c := range cmds {
+		if strings.HasPrefix(strings.Join(c.Args[1:], " "), sub) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestModuleSearchGoRunsOncePerBuild(t *testing.T) {
+	const list, flags, download = "list -m -json all", "env GOFLAGS", "mod download"
+	type step struct {
+		ctx       func(context.Context) context.Context // nil: the scan's context
+		holds     string                                // dependencyHolds this path, want held
+		search    string                                // or searchBuildModules this path
+		want      bool
+		wantFails bool // listModules fails
+	}
+	cancelled := func(ctx context.Context) context.Context {
+		ctx, cancel := context.WithCancel(ctx)
+		cancel()
+		return ctx
+	}
+	tests := []struct {
+		name     string
+		vendored bool
+		noModule bool
+		noCache  bool
+		steps    []step
+		envAfter int // set an extra environment variable after this many steps (0: never)
+		want     map[string]int
+	}{{
+		name: "many advisories against one build list it once",
+		steps: []step{
+			{holds: "example.com/a", want: true},
+			{holds: "example.com/a/sub", want: true},
+			{holds: "example.com/app/x"},
+			{holds: "gogs.io/gogs/internal/db"},
+			{search: gogsDB},
+			{search: "github.com/other/pkg"},
+			{holds: "example.com/a", want: true},
+		},
+		want: map[string]int{list: 1, flags: 1, download: 1},
+	}, {
+		name:    "without a run cache every advisory lists",
+		steps:   []step{{holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}, {search: gogsDB}},
+		noCache: true,
+		want:    map[string]int{list: 3, flags: 1, download: 1},
+	}, {
+		name:     "a changed environment is its own entry",
+		steps:    []step{{holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}},
+		envAfter: 1,
+		want:     map[string]int{list: 2},
+	}, {
+		name:     "a failed listing stays failed",
+		noModule: true,
+		steps:    []step{{wantFails: true}, {wantFails: true}, {holds: "example.com/a"}},
+		want:     map[string]int{list: 1},
+	}, {
+		name:     "a vendored build's failed listing still falls back to vendor/modules.txt",
+		vendored: true,
+		steps:    []step{{holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}, {wantFails: true}},
+		want:     map[string]int{list: 1},
+	}, {
+		name:  "a listing cut short is not kept",
+		steps: []step{{ctx: cancelled, wantFails: true}, {holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}},
+		want:  map[string]int{list: 2},
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newSourceProxy(t, []srcModule{modA})
+			app := newApp(t, []string{"example.com/a"}, "", nil)
+			if tt.vendored {
+				vendor(t, app)
+			}
+			if tt.noModule {
+				app = t.TempDir()
+			}
+			coldCache(t) // the download searchBuildModules issues has modules to fetch
+			scan := context.Background()
+			if !tt.noCache {
+				scan = WithRunCacheDir(scan, t.TempDir())
+			}
+			cmds := recordGo(t)
+			for i, s := range tt.steps {
+				if tt.envAfter != 0 && i == tt.envAfter {
+					t.Setenv("ASSAY_MODLIST_KEY_PROBE", "1")
+				}
+				ctx := scan
+				if s.ctx != nil {
+					ctx = s.ctx(scan)
+				}
+				switch {
+				case s.wantFails:
+					if _, err := listModules(ctx, app); err == nil {
+						t.Fatalf("step %d: listModules succeeded, want the listing's failure", i)
+					}
+				case s.holds != "":
+					if got := dependencyHolds(ctx, app, s.holds); got != s.want {
+						t.Fatalf("step %d: dependencyHolds(%s) = %v, want %v", i, s.holds, got, s.want)
+					}
+				case s.search != "":
+					wantSearch(t, searchBuildModules(ctx, app, s.search, gogsSymbols), []string{"example.com/a", "example.com/app"}, nil)
+				}
+			}
+			for sub, want := range tt.want {
+				if got := goRuns(*cmds, sub); got != want {
+					t.Errorf("go %s ran %d times, want %d", sub, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestModuleSearchRunsUnderTheLoadToolchain(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	coldCache(t)
+	ctx := context.Background()
+	_, loaded, _ := programEnv(ctx, app)
+	r, ok := parseGoRelease(loaded)
+	if !ok {
+		t.Fatalf("the load pins no toolchain (go env GOVERSION %q)", loaded)
+	}
+	cmds := recordGo(t)
+	wantSearch(t, searchBuildModules(ctx, app, gogsDB, gogsSymbols), []string{"example.com/a", "example.com/app"}, nil)
+	for _, sub := range []string{"env GOFLAGS", "list -m -json all", "mod download"} {
+		t.Run(sub, func(t *testing.T) {
+			if goRuns(*cmds, sub) == 0 {
+				t.Fatalf("go %s did not run", sub)
+			}
+			for _, c := range *cmds {
+				if !strings.HasPrefix(strings.Join(c.Args[1:], " "), sub) {
+					continue
+				}
+				// The go command reads the last setting of a variable, which must be the load's pin
+				// rather than the process's GOTOOLCHAIN=local.
+				var toolchain string
+				for _, kv := range c.Env {
+					if v, ok := strings.CutPrefix(kv, "GOTOOLCHAIN="); ok {
+						toolchain = v
+					}
+				}
+				if toolchain != r.toolchain() || !slices.Contains(c.Env, "GOWORK=off") {
+					t.Fatalf("go %s ran with GOTOOLCHAIN=%q (GOWORK=off %v), want the load's %q", sub, toolchain, slices.Contains(c.Env, "GOWORK=off"), r.toolchain())
+				}
+			}
+		})
+	}
+}

@@ -682,6 +682,25 @@ func TestModuleSearchGoRunsOncePerBuild(t *testing.T) {
 	}
 }
 
+func TestModuleSearchKeysOnTheBuild(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	withA := newApp(t, []string{"example.com/a"}, "", nil)
+	without := newApp(t, nil, "", nil)
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	cmds := recordGo(t)
+	for _, tt := range []struct {
+		app  string
+		want bool
+	}{{withA, true}, {without, false}, {withA, true}} {
+		if got := dependencyHolds(ctx, tt.app, "example.com/a"); got != tt.want {
+			t.Fatalf("dependencyHolds(%s, example.com/a) = %v, want %v", tt.app, got, tt.want)
+		}
+	}
+	if got := goRuns(*cmds, "list -m -json all"); got != 2 {
+		t.Errorf("go list -m ran %d times for two builds, want 2", got)
+	}
+}
+
 func TestModuleSearchRunsUnderTheLoadToolchain(t *testing.T) {
 	newSourceProxy(t, []srcModule{modA})
 	app := newApp(t, []string{"example.com/a"}, "", nil)

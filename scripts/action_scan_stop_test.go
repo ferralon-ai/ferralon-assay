@@ -36,7 +36,7 @@ exit 7
 // runner cancels a step: SIGINT to the step's shell, then SIGTERM. The scanner gets TERM once, for
 // the first signal only, the shell waits for it to finish publishing, and the step exits with the
 // scanner's own status, as it also does when nothing stops it. The out-dir and sarif-file outputs
-// are set only when the scanner wrote the files they name.
+// are set only when this run's scanner wrote the files they name, never for ones an earlier run left.
 func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not on PATH")
@@ -46,10 +46,14 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 		name      string
 		signals   []syscall.Signal
 		publishes bool
+		// stale leaves a Report and SARIF from an earlier run in the out dir.
+		stale bool
 	}{
 		{name: "not stopped", publishes: true},
 		{name: "runner cancels", signals: []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}, publishes: true},
 		{name: "scanner fails before writing", signals: []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}},
+		{name: "scanner fails, earlier run's files left", stale: true},
+		{name: "scanner rewrites an earlier run's files", stale: true, publishes: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +70,22 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 				t.Fatal(err)
 			}
 			output := filepath.Join(root, "github_output")
+			if tc.stale {
+				out := filepath.Join(root, "out")
+				if err := os.MkdirAll(out, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				earlier := time.Now().Add(-time.Hour)
+				for _, name := range []string{"report.json", "report.sarif.json"} {
+					path := filepath.Join(out, name)
+					if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chtimes(path, earlier, earlier); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 
 			// A guard against a hang, not a timing assertion: on expiry the whole group is killed,
 			// which closes the pipe the test reads from.

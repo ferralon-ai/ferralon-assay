@@ -937,6 +937,9 @@ runs:
           args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
         fi
 
+        # The marker dates the launch, so the outputs below name only files this run wrote.
+        scan_marker="$(mktemp "$RUNNER_TEMP/scan-start.XXXXXX")"
+
         # On a job timeout or cancellation the runner signals this shell, not the scanner, and
         # bash runs a trap only once its foreground child exits. So the scanner runs in the
         # background and the trap forwards TERM (a background job ignores INT); the scanner then
@@ -955,13 +958,14 @@ runs:
           [ "$signalled" = 1 ] || break
         done
 
-        # Set on every exit, stopped or failed, but only for what the scanner wrote, so an
-        # always() step never gets a path to a missing file.
+        # Set on every exit, stopped or failed, but only for files this run wrote, so an always()
+        # step never gets a path to a missing file or to one an earlier run left in `out`.
         OUT_ABS="$(cd "$IN_OUT" && pwd)"
-        if [ -f "$OUT_ABS/report.json" ]; then
+        if [ -f "$OUT_ABS/report.json" ] && [ ! "$OUT_ABS/report.json" -ot "$scan_marker" ]; then
           echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
         fi
-        if [ -f "$OUT_ABS/report.sarif.json" ]; then
+        if [ -f "$OUT_ABS/report.sarif.json" ] && [ ! "$OUT_ABS/report.sarif.json" -ot "$scan_marker" ]; then
           echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
         fi
+        rm -f "$scan_marker"
         exit "$rc"

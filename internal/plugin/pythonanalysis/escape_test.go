@@ -551,6 +551,18 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
+			name:   "except-as target of the same name",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "try:\n    from .impl import f as g\nexcept ImportError as g:\n    raise\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "guarded class attribute in a def",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as run\n\ndef go():\n    class Job:\n        if True:\n            run = None\n    return run(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
 			name:   "class attribute of the same name",
 			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as run\n\nclass Job:\n    run = None\n\ndef go():\n    return run(1)\n"},
 			caller: funcSCIP("pkg/a", nil, "go", 0),
@@ -792,6 +804,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"modules imported from a re-exported sys", "from os.sys import modules as m\n\ndef go(mod):\n    return m[mod]\n", false, false, true},
 		{"importlib imported from another module", "from pkg import importlib as il\n\ndef go(mod):\n    return il.import_module(mod)\n", false, false, true},
 		{"builtins imported from another module", "from six.moves import builtins as b\n\ndef go(m):\n    return b.__dict__['__import__'](m)\n", false, false, true},
+		{"importlib re-exported as a value", "from pkg import importlib as il\n\nI = il\n", false, false, true},
+		{"sys read from importlib", "from importlib import sys as s\n\ndef go(m):\n    return s.modules[m]\n", false, false, true},
 		{"sys through a module attribute", "import os\n\ndef go(mod, n, x):\n    return getattr(os.sys.modules[mod], n)(x)\n", false, false, true},
 		{"iterating sys.modules keys", "import sys\nimport importlib\n\ndef go(n, x):\n    for k in sys.modules:\n        if k.startswith('plugins'):\n            return getattr(importlib.import_module(k), n)(x)\n", false, false, true},
 		{"sys.modules get by a class module", "import sys\n\ndef owner(cls):\n    return sys.modules.get(cls.__module__)\n", false, false, true},

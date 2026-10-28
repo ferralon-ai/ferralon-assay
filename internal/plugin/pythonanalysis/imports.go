@@ -669,6 +669,11 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				roots = append(roots, name)
 				values = append(values, name)
 			}
+			// The module object it returns reaches every name through sys.modules or
+			// builtins.globals, wherever the value goes next.
+			if ok && (name == "sys" || name == "builtins") {
+				computed = true
+			}
 		case lookupSys, lookupNamespace:
 			attr, aend, ok := attributeAfter(r, end)
 			switch {

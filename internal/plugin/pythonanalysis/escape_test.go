@@ -900,6 +900,27 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			ambiguous: true,
 		},
 		{
+			name:      "sys imported through import_module",
+			src:       "from .impl import f as g\nimport importlib\n\nimportlib.import_module('sys').modules[__name__].g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "sys from import_module assigned to a name",
+			src:       "from .impl import f as g\nimport importlib\n\ns = importlib.import_module('sys')\ns.modules[__name__].g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "builtins imported through import_module",
+			src:       "from .impl import f as g\nimport importlib\n\nimportlib.import_module('builtins').globals()['g'] = vuln\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
 			name:      "first-party decorator named like a cache",
 			src:       "def cache(fn):\n    return fn\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
 			reach:     []string{},

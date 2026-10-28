@@ -174,7 +174,7 @@ func (a *Acquirer) Acquire(ctx context.Context, ref artifactcache.Ref, policy Po
 
 	// 5. FETCH, retrying a transient registry failure within retryWait's bounds.
 	for attempt := 1; ; attempt++ {
-		rec, err := a.fetch(ctx, ref, policy, reg, u, host, creds, algo, raw, canonical, path)
+		rec, err := a.fetch(ctx, ref, policy, u, host, creds, algo, raw, canonical, path)
 		if err == nil {
 			return rec, nil
 		}
@@ -230,7 +230,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // fetch sends one GET for the checked target u and publishes the verified bytes, or returns
 // one typed outcome. The credential is attached ONLY for the bound allowlisted host.
-func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Policy, reg RegistryConfig, u *url.URL, host string, creds RegistryCredentials, algo string, raw []byte, canonical, path string) (AcquisitionRecord, error) {
+func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Policy, u *url.URL, host string, creds RegistryCredentials, algo string, raw []byte, canonical, path string) (AcquisitionRecord, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return AcquisitionRecord{}, err
@@ -255,10 +255,10 @@ func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Poli
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// A registry with configured auth that refuses the request is not evidence the
-		// artifact is absent: either the run had no credential to present, or the one it
-		// presented was refused.
-		if reg.AuthConfigured && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		// A registry that refuses the request is not evidence the artifact is absent: either
+		// the run had no credential to present (no auth entry, or one whose token is unset),
+		// or the one it presented was refused.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			code := artifactcache.PolicyMissingCredential
 			if presented {
 				code = artifactcache.PolicyCredentialRejected
@@ -270,8 +270,7 @@ func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Poli
 			return AcquisitionRecord{}, &artifactcache.FetchReason{PURL: ref.PURL, Host: host, Code: code, Status: resp.StatusCode, RetryAfter: retryAfter(resp.Header.Get("Retry-After"), a.now())}
 		}
 		// Not found / not served: nothing acquired — honest ErrDeclaredAbsent, never an
-		// empty success. (A 401 on a registry that requires auth is pre-empted by the
-		// missing-credential refusal in checkTarget.)
+		// empty success.
 		return AcquisitionRecord{}, artifactcache.ErrDeclaredAbsent
 	}
 

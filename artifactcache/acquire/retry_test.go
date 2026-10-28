@@ -87,6 +87,10 @@ func TestAcquireTransientFailures(t *testing.T) {
 			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyMissingCredential, wantReqs: 1},
 		{name: "403 with an auth entry is a missing credential", statuses: []int{http.StatusForbidden}, auth: true,
 			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyMissingCredential, wantReqs: 1},
+		{name: "401 with no auth entry is a missing credential", statuses: []int{http.StatusUnauthorized},
+			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyMissingCredential, wantReqs: 1},
+		{name: "403 with no auth entry is a missing credential", statuses: []int{http.StatusForbidden},
+			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyMissingCredential, wantReqs: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

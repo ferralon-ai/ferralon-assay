@@ -658,9 +658,10 @@ func readerReaches(res plugin.CallGraphResult, caller, target string) bool {
 // it calls has one binding that can reach it. Beside an import alias, a fallback def, a
 // guarded assignment, an assignment in a def that declares the name global, or a walrus in a
 // guard header is another candidate, so the site keeps its alias edge and is listed, and the
-// alternative's target stays reachable from the caller. A literal None alternative, or a
-// dependency import whose boundary edge the site draws, adds no candidate: the site is
-// complete and unlisted.
+// alternative's target stays reachable from the caller, as it does for a dependency import
+// with no boundary edge and in a file whose computed-name access may rebind the name. A
+// literal None alternative, or a dependency import whose boundary edge the site draws, adds
+// no candidate: the site is complete and unlisted.
 func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 	impl := funcSCIP("pkg/impl", nil, "f", 1)
 	vuln := funcSCIP("pkg/v", nil, "vuln", 1)
@@ -720,6 +721,18 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 		{
 			name:   "class beside the import",
 			src:    "from .impl import f as g\nfrom .v import vuln\n\nif not g:\n    class g:\n        def __init__(self, x):\n            vuln(x)\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "undeclared dependency alternative",
+			src:    "try:\n    from .impl import f as g\nexcept ImportError:\n    from fastlib import load as g\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl},
+			listed: true,
+		},
+		{
+			name:   "computed-name rebinding",
+			src:    "from .impl import f as g\nfrom .v import vuln\n\nglobals()['g'] = vuln\n\ndef go():\n    return g(1)\n",
 			reach:  []string{impl, vuln},
 			listed: true,
 		},
@@ -785,14 +798,17 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 	}
 }
 
-// TestCallGraph_ValueBindingIsListed: a bare call through a name a parameter, assignment
-// or loop target binds may run whatever the value holds, so a same-named declaration's edge
-// is not all it reaches and the site is listed.
+// TestCallGraph_ValueBindingIsListed: a bare call through a name a parameter, assignment,
+// loop target or lambda parameter binds, or that computed-name access may rebind, may run
+// whatever the value holds, so a same-named declaration's edge is not all it reaches and the
+// site is listed.
 func TestCallGraph_ValueBindingIsListed(t *testing.T) {
 	cases := []struct{ name, src string }{
 		{"parameter", "def g(x):\n    return x\n\ndef go(g):\n    return g(1)\n"},
 		{"assignment", "def g(x):\n    return x\n\ndef go(make):\n    g = make()\n    return g(1)\n"},
 		{"loop target", "def g(x):\n    return x\n\ndef go(fs):\n    for g in fs:\n        g(1)\n"},
+		{"lambda parameter", "def g(x):\n    return x\n\nH = lambda g: g(1)\n"},
+		{"computed-name rebinding", "def g(x):\n    return x\n\ndef h(x):\n    return x\n\nglobals()['g'] = h\n\ndef go():\n    return g(1)\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

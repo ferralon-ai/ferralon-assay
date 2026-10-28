@@ -251,9 +251,10 @@ func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
 // the name. A literal None binding is no alternative, and neither is a dependency import
 // whose boundary edge the site draws (depDrawn). A bare call through a name only a value
 // binds (a parameter, assignment or instance) has no edge to that value, so it is never
-// complete; nor is a call through a lambda or comprehension variable.
+// complete; nor is a call through a lambda or comprehension variable, nor any site in a file
+// with computed-name access, which may rebind any name (globals()["g"] = ...).
 func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
-	if cs.inner {
+	if cs.inner || f.computed {
 		return false
 	}
 	head := cs.calleeName

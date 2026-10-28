@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -279,8 +280,9 @@ func TestSearchBuildModules_Timeout(t *testing.T) {
 	app := newApp(t, []string{"example.com/a", "example.com/fork/db"}, "", nil)
 	coldCache(t)
 	files := http.FileServer(http.Dir(proxy))
+	var serveZips atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".zip") {
+		if strings.HasSuffix(r.URL.Path, ".zip") && !serveZips.Load() {
 			<-r.Context().Done()
 			return
 		}
@@ -291,8 +293,9 @@ func TestSearchBuildModules_Timeout(t *testing.T) {
 	listAll(t, app)
 	defer func(d time.Duration) { moduleSearchTimeout = d }(moduleSearchTimeout)
 	moduleSearchTimeout = 3 * time.Second
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
 	start := time.Now()
-	got := search(t, app, gogsDB, gogsSymbols)
+	got := searchBuildModules(ctx, app, gogsDB, gogsSymbols)
 	if d := time.Since(start); d > time.Minute {
 		t.Errorf("search took %v, want it bounded by moduleSearchTimeout", d)
 	}
@@ -301,6 +304,24 @@ func TestSearchBuildModules_Timeout(t *testing.T) {
 	}
 	if slices.Contains(got.Searched, "example.com/a") || slices.Contains(got.Searched, "example.com/fork") {
 		t.Fatalf("Searched = %v, want neither downloaded module", got.Searched)
+	}
+	// The download cut short is not kept for the scan: the next search downloads again.
+	serveZips.Store(true)
+	wantSearch(t, searchBuildModules(ctx, app, gogsDB, gogsSymbols),
+		[]string{"example.com/a", "example.com/app", "example.com/fork"}, []string{"example.com/fork"})
+}
+
+func TestModfileFlagSet_CutShortIsNotKept(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	scan := WithRunCacheDir(context.Background(), t.TempDir())
+	cancelled, cancel := context.WithCancel(scan)
+	cancel()
+	if !modfileFlagSet(cancelled, app) {
+		t.Fatal("GOFLAGS not read counts as naming no -modfile")
+	}
+	if modfileFlagSet(scan, app) {
+		t.Fatal("a GOFLAGS read cut short was kept for the scan")
 	}
 }
 

@@ -433,3 +433,27 @@ func TestAcquireRetryCutByDeadline(t *testing.T) {
 		})
 	}
 }
+
+// A backoff that would end exactly at the deadline is not taken: there would be no time left
+// for the request it waits for.
+func TestRetryWaitEndingAtDeadline(t *testing.T) {
+	data := []byte("hermetic .nupkg fixture bytes")
+	h := newHarness(t)
+	srv := &statusThen{statuses: repeat(http.StatusServiceUnavailable, 3), body: data}
+	h.serve(t, nugetHost, srv)
+	a := NewAcquirer(t.TempDir(), h.client)
+	var waits []time.Duration
+	a.SetRetrySleep(func(_ context.Context, d time.Duration) error { waits = append(waits, d); return nil })
+	dl := time.Now().Add(time.Hour)
+	a.now = func() time.Time { return dl.Add(-retryBackoff) }
+	ctx, cancel := context.WithDeadline(context.Background(), dl)
+	defer cancel()
+
+	_, err := a.Acquire(ctx, nugetRef(data), nugetPolicy(nugetHost, false, RegistryCredentials{}))
+	if !errors.Is(err, artifactcache.ErrRegistryUnavailable) {
+		t.Fatalf("Acquire err = %v, want ErrRegistryUnavailable", err)
+	}
+	if n := srv.requests.Load(); n != 1 || len(waits) != 0 {
+		t.Fatalf("requests = %d, waits = %v; want 1 request and no wait", n, waits)
+	}
+}

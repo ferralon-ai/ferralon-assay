@@ -467,13 +467,31 @@ var dynamicImportLiteralLeafs = map[string]bool{
 	"resolve_name": true, // pkgutil.resolve_name("pkg.mod:attr")
 }
 
-// dynamicImportOpaqueLeafs load modules named only by installed metadata or the
-// filesystem (entry-point groups, package walks), never by the calling code.
+// dynamicImportOpaqueLeafs load or run modules named by installed metadata, a file path or
+// a loader object rather than by a module name the calling code spells out. moduleLookups
+// treats every use of one, called or not, and every name the file's imports bind to one, as
+// opaque.
 var dynamicImportOpaqueLeafs = map[string]bool{
-	"entry_points":      true, // importlib.metadata.entry_points
-	"iter_entry_points": true, // pkg_resources
-	"load_entry_point":  true, // pkg_resources
-	"walk_packages":     true, // pkgutil
+	"entry_points":            true, // importlib.metadata.entry_points
+	"iter_entry_points":       true, // pkg_resources
+	"load_entry_point":        true, // pkg_resources
+	"walk_packages":           true, // pkgutil
+	"iter_modules":            true, // pkgutil
+	"spec_from_file_location": true, // importlib.util
+	"spec_from_loader":        true, // importlib.util
+	"module_from_spec":        true, // importlib.util
+	"exec_module":             true, // a loader's method
+	"load_module":             true, // imp, and a loader's legacy method
+	"load_source":             true, // imp
+	"load_compiled":           true, // imp
+	"SourceFileLoader":        true, // importlib.machinery
+	"SourcelessFileLoader":    true, // importlib.machinery
+	"ExtensionFileLoader":     true, // importlib.machinery
+	"run_path":                true, // runpy
+	"run_module":              true, // runpy
+	"zipimport":               true, // the zipimport module
+	"zipimporter":             true, // zipimport
+	"__loader__":              true, // a module's loader
 }
 
 // dynamicImports scans one file's cleaned source for the dynamic imports moduleLookups does
@@ -529,6 +547,7 @@ const (
 	lookupSys                  // the sys module
 	lookupModules              // sys.modules
 	lookupNamespace            // importlib or builtins, whose attributes include the above
+	lookupLoader               // a dynamicImportOpaqueLeafs loader or a name bound to one
 )
 
 // moduleLookups scans one file's cleaned source for the ways code fetches a module object
@@ -538,13 +557,16 @@ const (
 // module, which the computed-name rule covers), and a sys.modules membership test, store
 // or delete, which hand no module over. Every other reference to these names is opaque: a
 // computed key or argument, iteration, .values() and the like, the name passed or assigned
-// as a value, or a dunder attribute of sys or importlib.
+// as a value, or a dunder attribute of sys or importlib. Any use of a loader that takes no
+// module name (dynamicImportOpaqueLeafs: file-path specs, runpy, imp, zipimport, a
+// module's __loader__, package walks, entry points) is opaque as well.
 //
 // A name counts by what the file's import bindings bind it to, in any scope: "import sys as
 // s" makes s the sys module, "from sys import modules" makes modules sys.modules, "from
-// importlib import import_module as load" makes load import_module. The words sys,
-// importlib, import_module and __import__ always count, since the scanner cannot tell what
-// else they are bound to. It returns the literal module names called for (load roots), the
+// importlib import import_module as load" makes load import_module, "from runpy import
+// run_path as rp" makes rp a loader. The words sys, importlib, import_module, __import__
+// and the loader names always count, since the scanner cannot tell what else they are
+// bound to. It returns the literal module names called for (load roots), the
 // module names whose objects the code receives (an __import__ call receives each package
 // on the way down), and whether any reference is opaque.
 func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque bool) {
@@ -564,6 +586,10 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			names[b.local] = lookupImport
 		case "importlib.__import__", "builtins.__import__":
 			names[b.local] = lookupDunder
+		default:
+			if dynamicImportOpaqueLeafs[b.target[strings.LastIndex(b.target, ".")+1:]] {
+				names[b.local] = lookupLoader
+			}
 		}
 	}
 	if stars["sys"] {
@@ -579,6 +605,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			return lookupSys
 		case "importlib", "builtins", "__builtins__":
 			return lookupNamespace
+		}
+		if dynamicImportOpaqueLeafs[w] {
+			return lookupLoader
 		}
 		if dotted {
 			return lookupNone
@@ -634,6 +663,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				}
 				end = aend
 			}
+		case lookupLoader:
+			opaque = true
 		case lookupModules:
 			name, ok := modulesUse(r, i, end, lits)
 			if !ok {

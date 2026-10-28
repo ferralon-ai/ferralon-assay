@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -127,6 +128,11 @@ func recountCutShort(rows []report.AdvisoryFinding, carried []report.PartialityN
 var priorSBOMNote = report.PartialityNote{
 	Reason: report.ReasonScanCutShort,
 	Detail: "the scan stopped before the dependency inventory was resolved; the SBOM is the previous baseline's, kept so CVE-watch still queries it",
+}
+
+// hasCutShort reports whether notes disclose a scan cut short.
+func hasCutShort(notes []report.PartialityNote) bool {
+	return slices.ContainsFunc(notes, func(n report.PartialityNote) bool { return n.Reason == report.ReasonScanCutShort })
 }
 
 // inventoryCutShort reports whether notes declare an inventory the scan stopped before resolving.

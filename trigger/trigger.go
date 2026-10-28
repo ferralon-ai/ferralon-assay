@@ -354,6 +354,12 @@ type CVEWatchResult struct {
 	NewAdvisories []string
 	// Report is the re-analyzed Report on an earnest run; nil on a heartbeat.
 	Report *report.Report
+	// Truncated is true when the Report left in state discloses a scan cut short: the earnest
+	// Report, or on a heartbeat the stored one, which the heartbeat keeps.
+	Truncated bool
+	// NoInventory is true on a heartbeat over an empty stored SBOM that a baseline stopped before
+	// resolving: there was nothing to query, so the heartbeat says nothing about new advisories.
+	NoInventory bool
 	// Cursor is the new cursor written to state (the full sorted advisory-ID set).
 	Cursor string
 }
@@ -405,7 +411,12 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		if err != nil {
 			return nil, fmt.Errorf("trigger: cve-watch heartbeat: %w", err)
 		}
-		return &CVEWatchResult{Heartbeat: true, Cursor: committed.Cursor}, nil
+		return &CVEWatchResult{
+			Heartbeat:   true,
+			Cursor:      committed.Cursor,
+			Truncated:   hasCutShort(state.Report.Partiality),
+			NoInventory: len(state.SBOM.Packages) == 0 && inventoryCutShort(state.Report.Partiality),
+		}, nil
 	}
 
 	// The Report's provenance carries the cursor too, and a conflicting write merges the
@@ -429,5 +440,6 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		NewAdvisories: newIDs,
 		Report:        committed.Report,
 		Cursor:        committed.Cursor,
+		Truncated:     hasCutShort(committed.Report.Partiality),
 	}, nil
 }

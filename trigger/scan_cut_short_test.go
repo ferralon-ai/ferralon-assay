@@ -294,7 +294,8 @@ func TestCVEWatch_CutShortHoldsCursor(t *testing.T) {
 
 // TestRunBaseline_CutInventoryKeepsStoredSBOM: a baseline stopped during the inventory replaces the
 // stored Report but not the stored SBOM, which CVE-watch queries; with none stored there is nothing
-// to keep.
+// to keep. A CVE-watch heartbeat after it still reports the scan truncated, and says when it had no
+// inventory to query.
 func TestRunBaseline_CutInventoryKeepsStoredSBOM(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -327,6 +328,18 @@ func TestRunBaseline_CutInventoryKeepsStoredSBOM(t *testing.T) {
 			got := slices.ContainsFunc(rep.Partiality, func(n report.PartialityNote) bool { return n.Detail == priorSBOMNote.Detail })
 			if got != (len(tc.wantPkgs) > 0) {
 				t.Errorf("prior-SBOM disclosure present = %v, want %v", got, len(tc.wantPkgs) > 0)
+			}
+
+			watch, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+				Subject:  Subject{Repo: "r", ResolvedCommit: "head-sha"},
+				Codebase: assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			if !watch.Heartbeat || !watch.Truncated || watch.NoInventory != (len(tc.wantPkgs) == 0) {
+				t.Errorf("heartbeat %v, truncated %v, no inventory %v; want a truncated heartbeat, no inventory %v",
+					watch.Heartbeat, watch.Truncated, watch.NoInventory, len(tc.wantPkgs) == 0)
 			}
 		})
 	}

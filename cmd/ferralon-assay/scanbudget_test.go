@@ -17,6 +17,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/statestore"
 	"github.com/ferralon-ai/ferralon-assay/trigger"
 )
 
@@ -410,6 +411,52 @@ func TestMarkIfStopped(t *testing.T) {
 			}
 			got, err := os.ReadFile(out)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("step output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunCVEWatch_HeartbeatScanTruncated: a heartbeat over a stored report sets scan-truncated from
+// that report, true when the scan that stored it was cut short and false when it was not.
+func TestRunCVEWatch_HeartbeatScanTruncated(t *testing.T) {
+	cases := []struct {
+		name  string
+		notes []report.PartialityNote
+		want  string
+	}{
+		{name: "stored scan cut short", notes: []report.PartialityNote{{Reason: report.ReasonScanCutShort, Detail: "test stop"}}, want: "scan-truncated=true\n"},
+		{name: "stored scan complete", want: "scan-truncated=false\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			trapEgress(t)
+			t.Setenv(envLinkToConsole, "")
+			out := filepath.Join(t.TempDir(), "output")
+			t.Setenv(envGitHubOut, out)
+
+			target := t.TempDir()
+			if err := os.WriteFile(filepath.Join(target, "go.mod"), []byte(fixtureGoMod), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stateDir := t.TempDir()
+			if err := gitInitBare(stateDir); err != nil {
+				t.Fatal(err)
+			}
+			// An empty SBOM keeps the heartbeat off the network: there is nothing to query.
+			store := statestore.NewGitRefStore(statestore.Config{GitDir: stateDir})
+			if _, err := store.Write(context.Background(), &statestore.State{Report: &report.Report{SchemaVersion: report.SchemaVersion, Partiality: tc.notes}}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := runCVEWatch([]string{"-target", target, "-plugin-go", "/fake/bin", "-build-graph", "off", "-git-dir", stateDir}); err != nil {
+				t.Fatalf("runCVEWatch = %v", err)
+			}
+			got, err := os.ReadFile(out)
+			if err != nil {
 				t.Fatal(err)
 			}
 			if string(got) != tc.want {

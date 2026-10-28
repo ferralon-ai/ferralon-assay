@@ -345,6 +345,33 @@ func TestRunBaseline_CutInventoryKeepsStoredSBOM(t *testing.T) {
 	}
 }
 
+// TestRunCVEWatch_CompleteBaselineHeartbeat: a heartbeat over a baseline that ran to the end is
+// neither truncated nor short of an inventory.
+func TestRunCVEWatch_CompleteBaselineHeartbeat(t *testing.T) {
+	opts, analysis := stoppingOptions(t, "never", stopAndWait)
+	store := &memStore{}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    cutShortCorpus,
+		AssessOptions: opts,
+		Analysis:      analysis,
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	watch, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:  Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase: assessment.CodebaseRef{Repo: "r", Revision: "main"},
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if !watch.Heartbeat || watch.Truncated || watch.NoInventory {
+		t.Errorf("heartbeat %v, truncated %v, no inventory %v; want a complete heartbeat",
+			watch.Heartbeat, watch.Truncated, watch.NoInventory)
+	}
+}
+
 // TestPRReanalysis_RecountsCutShort: a stored baseline cut short after GO-T-1 leaves GO-T-2 and
 // GO-T-3 unassessed. A PR re-analysis replaces each cut row it re-assesses, even on an unchanged
 // package, and its scan_cut_short note counts the cut rows left, with the baseline's cause, or is

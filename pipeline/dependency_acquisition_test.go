@@ -173,6 +173,8 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "401 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "403 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "throttled on every attempt", mode: DependencyCodeFetch, status: http.StatusTooManyRequests, digest: sri512(tarball), want: UnreadUnavailable, detail: "rate-limited", wantReqs: 3, fallback: UnreadUnavailable},
+		{name: "server error on every attempt", mode: DependencyCodeFetch, status: http.StatusServiceUnavailable, digest: sri512(tarball), want: UnreadUnavailable, detail: "server-error", wantReqs: 3, fallback: UnreadUnavailable},
 		{name: "401 with no auth configured", mode: DependencyCodeFetch, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
 		{name: "transport failure", mode: DependencyCodeFetch, registry: "down.test", served: tarball, digest: sri512(tarball), want: UnreadFetchFailed, fallback: UnreadFetchFailed},
 		{name: "stage deadline passes", mode: DependencyCodeFetch, timeout: time.Nanosecond, served: tarball, digest: sri512(tarball), want: UnreadCancelled, fallback: UnreadCancelled},
@@ -200,8 +202,9 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 				seedCache(t, cache, tt.digest, tt.seed)
 			}
 			d := &dependencyAcquirer{
-				cfg:   DependencyAcquisition{Mode: tt.mode, CacheDir: cache, LookupEnv: envMap(tt.env), Timeout: tt.timeout, Client: regs.client},
-				byDir: map[string]*acquiredBuild{},
+				cfg:        DependencyAcquisition{Mode: tt.mode, CacheDir: cache, LookupEnv: envMap(tt.env), Timeout: tt.timeout, Client: regs.client},
+				byDir:      map[string]*acquiredBuild{},
+				retrySleep: noSleep,
 			}
 			res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode(qs, tt.digest)}})
 			if res.Read != tt.wantRead {
@@ -260,6 +263,9 @@ func TestClassifyAcquireErrorAfterDeadline(t *testing.T) {
 		{name: "malformed pin", err: artifactcache.ErrMalformedRef, want: UnreadMalformedIntegrity},
 		{name: "not served", err: artifactcache.ErrDeclaredAbsent, want: UnreadCancelled},
 		{name: "transport", err: context.DeadlineExceeded, want: UnreadCancelled},
+		{name: "registry answered 503", err: &artifactcache.FetchReason{Code: artifactcache.FetchServerError, Status: http.StatusServiceUnavailable}, want: UnreadUnavailable},
+		{name: "transport timeout", err: &artifactcache.FetchReason{Code: artifactcache.FetchTimeout}, want: UnreadCancelled},
+		{name: "unreachable", err: &artifactcache.FetchReason{Code: artifactcache.FetchConnectFailure}, want: UnreadCancelled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -269,6 +275,34 @@ func TestClassifyAcquireErrorAfterDeadline(t *testing.T) {
 		})
 	}
 }
+
+// A registry that was unavailable or unreachable is named as such, never as not serving the
+// package; only an answer that the package is not there reads as not_served.
+func TestClassifyAcquireErrorRegistryConditions(t *testing.T) {
+	tests := []struct {
+		name, want, detail string
+		err                error
+	}{
+		{name: "429", err: &artifactcache.FetchReason{Code: artifactcache.FetchRateLimited, Status: http.StatusTooManyRequests}, want: UnreadUnavailable, detail: artifactcache.FetchRateLimited},
+		{name: "500", err: &artifactcache.FetchReason{Code: artifactcache.FetchServerError, Status: http.StatusInternalServerError}, want: UnreadUnavailable, detail: artifactcache.FetchServerError},
+		{name: "timeout", err: &artifactcache.FetchReason{Code: artifactcache.FetchTimeout}, want: UnreadUnavailable, detail: artifactcache.FetchTimeout},
+		{name: "connection reset", err: &artifactcache.FetchReason{Code: artifactcache.FetchConnectionReset}, want: UnreadUnavailable, detail: artifactcache.FetchConnectionReset},
+		{name: "dns", err: &artifactcache.FetchReason{Code: artifactcache.FetchDNSFailure}, want: UnreadUnreachable, detail: artifactcache.FetchDNSFailure},
+		{name: "connect", err: fmt.Errorf("fetch: %w", &artifactcache.FetchReason{Code: artifactcache.FetchConnectFailure}), want: UnreadUnreachable, detail: artifactcache.FetchConnectFailure},
+		{name: "404", err: artifactcache.ErrDeclaredAbsent, want: UnreadNotServed},
+		{name: "other", err: errors.New("disk full"), want: UnreadFetchFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := classifyAcquireError(context.Background(), "pkg:npm/qs@6.5.2", tt.err)
+			if u.Reason != tt.want || u.Detail != tt.detail {
+				t.Fatalf("classified %s %q, want %s %q", u.Reason, u.Detail, tt.want, tt.detail)
+			}
+		})
+	}
+}
+
+func noSleep(context.Context, time.Duration) error { return nil }
 
 // slowInventoryPlugin's inventory outlasts any deadline; failingInventoryPlugin's fails at once.
 type slowInventoryPlugin struct{ inventoryPlugin }

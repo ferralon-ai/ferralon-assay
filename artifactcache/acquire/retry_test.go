@@ -457,3 +457,33 @@ func TestRetryWaitEndingAtDeadline(t *testing.T) {
 		t.Fatalf("requests = %d, waits = %v; want 1 request and no wait", n, waits)
 	}
 }
+
+// A retry that fails for its own reason while the caller's context is live reports that
+// failure, not the earlier one: only a retry the deadline cut short defers to the earlier
+// answer.
+func TestAcquireRetryFailsOtherwise(t *testing.T) {
+	h := newHarness(t)
+	var requests atomic.Int32
+	h.serve(t, nugetHost, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = buf.WriteString("not an HTTP response\r\n\r\n")
+		_ = buf.Flush()
+		conn.Close()
+	}))
+	a := NewAcquirer(t.TempDir(), h.client)
+	a.SetRetrySleep(func(context.Context, time.Duration) error { return nil })
+	_, err := a.Acquire(context.Background(), nugetRef([]byte("x")), nugetPolicy(nugetHost, false, RegistryCredentials{}))
+	if err == nil || artifactcache.IsPartiality(err) {
+		t.Fatalf("Acquire err = %v, want the second attempt's own unclassified failure", err)
+	}
+	if n := requests.Load(); n != 2 {
+		t.Fatalf("requests = %d, want 2", n)
+	}
+}

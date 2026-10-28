@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -62,13 +63,63 @@ func cutShortFinding(adv assessment.VulnRef) report.AdvisoryFinding {
 	}
 }
 
-// cutShortNote is the one scan-level disclosure for a pass that left cut of its total advisories
+// cutShortCountSep separates a cut-short note's count from the stop's cause.
+const cutShortCountSep = " advisories were not assessed: "
+
+// cutShortNote is the one scan-level disclosure for a Report holding cut rows of its total
 // unassessed. Its detail carries the stop's cause, which names how to give the scan more time.
-func cutShortNote(analysis context.Context, cut, total int) report.PartialityNote {
+func cutShortNote(cut, total int, cause string) report.PartialityNote {
 	return report.PartialityNote{
 		Reason: report.ReasonScanCutShort,
-		Detail: fmt.Sprintf("%d of %d advisories were not assessed: %v", cut, total, context.Cause(analysis)),
+		Detail: fmt.Sprintf("%d of %d%s%s", cut, total, cutShortCountSep, cause),
 	}
+}
+
+// stopCause is the cause of a stopped analysis, as a cut-short note states it.
+func stopCause(analysis context.Context) string {
+	return context.Cause(analysis).Error()
+}
+
+// isCutShortCount reports whether n is the scan-level count cutShortNote writes, as opposed to an
+// inventory or work set the scan stopped before resolving.
+func isCutShortCount(n report.PartialityNote) bool {
+	return n.Reason == report.ReasonScanCutShort && strings.Contains(n.Detail, cutShortCountSep)
+}
+
+// withoutCutShortCount is notes less their cut-short count. A pass that carries rows forward drops
+// it and states a count of its own (recountCutShort), since a carried row may have been replaced.
+func withoutCutShortCount(notes []report.PartialityNote) []report.PartialityNote {
+	var out []report.PartialityNote
+	for _, n := range notes {
+		if !isCutShortCount(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// recountCutShort is the cut-short count for the rows a pass built, or false when none of them is
+// a scan_cut_short row. cause is the pass's own stop when it cut rows itself, else "", and then the
+// cause the carried notes stated stands.
+func recountCutShort(rows []report.AdvisoryFinding, carried []report.PartialityNote, cause string) (report.PartialityNote, bool) {
+	cut := 0
+	for _, f := range rows {
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			cut++
+		}
+	}
+	if cut == 0 {
+		return report.PartialityNote{}, false
+	}
+	for _, n := range carried {
+		if _, c, ok := strings.Cut(n.Detail, cutShortCountSep); cause == "" && ok && n.Reason == report.ReasonScanCutShort {
+			cause = c
+		}
+	}
+	if cause == "" {
+		cause = "an earlier scan was cut short"
+	}
+	return cutShortNote(cut, len(rows), cause), true
 }
 
 // priorSBOMNote discloses a baseline Report whose SBOM is the one stored before it, because the
@@ -86,4 +137,13 @@ func inventoryCutShort(notes []report.PartialityNote) bool {
 		}
 	}
 	return false
+}
+
+// ownStop is the cause recountCutShort states for a pass that cut rows itself, "" for one that cut
+// none.
+func ownStop(analysis context.Context, cut int) string {
+	if cut == 0 {
+		return ""
+	}
+	return stopCause(analysis)
 }

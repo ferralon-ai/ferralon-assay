@@ -10,6 +10,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
 
 // cutShortCorpus is three advisories that each assess exactly as GO-2021-0113 does under
@@ -326,6 +327,74 @@ func TestRunBaseline_CutInventoryKeepsStoredSBOM(t *testing.T) {
 			got := slices.ContainsFunc(rep.Partiality, func(n report.PartialityNote) bool { return n.Detail == priorSBOMNote.Detail })
 			if got != (len(tc.wantPkgs) > 0) {
 				t.Errorf("prior-SBOM disclosure present = %v, want %v", got, len(tc.wantPkgs) > 0)
+			}
+		})
+	}
+}
+
+// TestPRReanalysis_RecountsCutShort: a stored baseline cut short after GO-T-1 leaves GO-T-2 and
+// GO-T-3 unassessed. A PR re-analysis replaces each cut row it re-assesses, even on an unchanged
+// package, and its scan_cut_short note counts the cut rows left, with the baseline's cause, or is
+// gone when none is left.
+func TestPRReanalysis_RecountsCutShort(t *testing.T) {
+	cases := []struct {
+		name       string
+		advisories []assessment.VulnRef
+		wantCut    []string
+		wantNote   string
+	}{
+		{name: "a complete run clears the note", advisories: cutShortCorpus},
+		{name: "a partial run recounts it", advisories: cutShortCorpus[1:2], wantCut: []string{"GO-T-3"}, wantNote: "1 of 3 advisories were not assessed: test stop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cutOpts, cutAnalysis := stoppingOptions(t, "GO-T-2", stopAndWait)
+			baseline, err := buildBaselineReport(context.Background(), BaselineRequest{
+				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				Advisories:    cutShortCorpus,
+				AssessOptions: cutOpts,
+				Analysis:      cutAnalysis,
+			})
+			if err != nil {
+				t.Fatalf("buildBaselineReport: %v", err)
+			}
+			store := &memStore{state: &statestore.State{Report: baseline, SBOM: baseline.SBOM}}
+
+			opts, analysis := stoppingOptions(t, "never", stopAndWait)
+			head := append(slices.Clone(baseline.SBOM.Packages), report.Package{Ecosystem: "Go", Name: "example.com/other", Version: "v1.0.0"})
+			res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+				Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				PRSBOM:        report.SBOM{Packages: head},
+				Advisories:    tc.advisories,
+				AssessOptions: opts,
+				Analysis:      analysis,
+			})
+			if err != nil {
+				t.Fatalf("RunPRInherit: %v", err)
+			}
+			var cut []string
+			for id, rows := range rowsByID(res.Report) {
+				if len(rows) != 1 {
+					t.Fatalf("%s rows = %+v, want one", id, rows)
+				}
+				if rows[0].UndeterminedReason == report.ReasonScanCutShort {
+					cut = append(cut, id)
+				} else if rows[0].Verdict != report.VerdictNotExploitable {
+					t.Errorf("%s = %q, want not_exploitable", id, rows[0].Verdict)
+				}
+			}
+			slices.Sort(cut)
+			if !slices.Equal(cut, tc.wantCut) {
+				t.Errorf("cut rows = %v, want %v", cut, tc.wantCut)
+			}
+			notes := cutShortNotes(res.Report)
+			switch {
+			case tc.wantNote == "" && len(notes) != 0:
+				t.Errorf("scan_cut_short notes = %+v, want none", notes)
+			case tc.wantNote != "" && (len(notes) != 1 || notes[0].Detail != tc.wantNote):
+				t.Errorf("scan_cut_short notes = %+v, want one %q", notes, tc.wantNote)
 			}
 		})
 	}

@@ -197,7 +197,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		b.AddPartiality(partialityNotes(st, assessmentID)...)
 	}
 	if cut > 0 {
-		b.AddPartiality(cutShortNote(analysis, cut, len(admitted.Admitted)))
+		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))
 	}
 
 	b.WithProvenance(report.Provenance{

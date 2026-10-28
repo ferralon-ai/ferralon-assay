@@ -739,6 +739,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"attribute named like an alias", "from importlib import import_module as load\n\nclass C:\n    def go(self, m):\n        return self.load(m)\n", false, false, false},
 		{"keyword argument named sys", "import sys\n\ndef go(f):\n    return f(sys=1)\n", false, false, false},
 		{"plain dunder attribute", "import sys\n\nOUT = sys.__stdout__\n", false, false, false},
+		{"getattr of a lookup attribute", "import sys\n\ndef go(m):\n    return getattr(sys, 'modules')[m]\n", false, false, true},
+		{"getattr of a plain attribute", "import sys\n\nP = getattr(sys, 'platform')\n", false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

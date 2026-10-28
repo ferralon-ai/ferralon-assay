@@ -172,7 +172,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// path search does not hold it (outsideBuildExempt). Every other step must have run: a run
 		// that loads code from outside the build list (plugin_load) can hold the advisory's code
 		// with no module declaring it.
-		if !undetermined || !outsideBuildBlocked(store, assessmentID, pkg) {
+		if !outsideBuildBlocked(store, assessmentID, pkg) {
 			detail, unvetted, ok := outsideBuildGrounds(store, assessmentID, pkg, mods)
 			if ok {
 				f = report.AdvisoryFinding{

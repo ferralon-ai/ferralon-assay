@@ -124,10 +124,11 @@ func recountCutShort(rows []report.AdvisoryFinding, carried []report.PartialityN
 }
 
 // priorSBOMNote discloses a baseline Report whose SBOM is the one stored before it, because the
-// scan stopped before this commit's dependency inventory resolved.
+// scan stopped before this commit's dependency inventory resolved. A stored SBOM may itself have
+// been carried, so the note names no commit.
 var priorSBOMNote = report.PartialityNote{
 	Reason: report.ReasonScanCutShort,
-	Detail: "the scan stopped before the dependency inventory was resolved; the SBOM is the previous baseline's, kept so CVE-watch still queries it",
+	Detail: "the scan stopped before the dependency inventory was resolved; the SBOM is from the last baseline that resolved it, kept so CVE-watch still queries it",
 }
 
 // hasCutShort reports whether notes disclose a scan cut short.

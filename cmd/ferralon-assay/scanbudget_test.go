@@ -182,20 +182,33 @@ func TestWriteScanTruncated(t *testing.T) {
 	cut := &report.Report{Partiality: []report.PartialityNote{{Reason: report.ReasonScanCutShort}}}
 	other := &report.Report{Partiality: []report.PartialityNote{{Reason: report.ReasonBuildContextNotCompared}}}
 	cases := []struct {
-		name string
-		rep  *report.Report
-		want string
+		name        string
+		rep         *report.Report
+		unwritable  bool
+		want        string
+		wantWarning bool
 	}{
 		{name: "cut short", rep: cut, want: "scan-truncated=true\n"},
 		{name: "another limit", rep: other, want: "scan-truncated=false\n"},
 		{name: "heartbeat", rep: nil, want: "scan-truncated=false\n"},
+		{name: "unwritable output is logged, not returned", rep: cut, unwritable: true, wantWarning: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "output")
+			if tc.unwritable {
+				if err := os.Mkdir(out, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
 			t.Setenv(envGitHubOut, out)
-			if err := writeScanTruncated(scanTruncated(tc.rep)); err != nil {
-				t.Fatal(err)
+			var log strings.Builder
+			writeScanTruncated(scanTruncated(tc.rep), &log)
+			if got := strings.HasPrefix(log.String(), "warning: scan-truncated step output: "); got != tc.wantWarning {
+				t.Fatalf("log = %q, want warning %v", log.String(), tc.wantWarning)
+			}
+			if tc.unwritable {
+				return
 			}
 			got, err := os.ReadFile(out)
 			if err != nil || string(got) != tc.want {

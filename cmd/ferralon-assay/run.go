@@ -1203,9 +1203,7 @@ func runPRInherit(args []string) error {
 		return err
 	}
 	timer.logAdvisories()
-	if err := writeScanTruncated(scanTruncated(res.Report)); err != nil {
-		return err
-	}
+	writeScanTruncated(scanTruncated(res.Report), os.Stderr)
 
 	fmt.Fprintf(os.Stdout, "%s pr-inherit complete\n", brand.Name)
 	if res.Inherited {
@@ -1277,9 +1275,7 @@ func runCVEWatch(args []string) error {
 		return err
 	}
 	timer.logAdvisories()
-	if err := writeScanTruncated(scanTruncated(res.Report)); err != nil {
-		return err
-	}
+	writeScanTruncated(scanTruncated(res.Report), os.Stderr)
 
 	rescan := rescanFromEnv()
 	if res.Heartbeat {

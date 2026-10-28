@@ -232,9 +232,7 @@ func runBaseline(args []string) error {
 		return err
 	}
 	timer.logAdvisories()
-	if err := writeScanTruncated(scanTruncated(rep)); err != nil {
-		return err
-	}
+	writeScanTruncated(scanTruncated(rep), os.Stderr)
 
 	rescan := rescanFromEnv()
 	publishStart := time.Now()

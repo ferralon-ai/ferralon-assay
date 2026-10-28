@@ -131,18 +131,20 @@ func scanTruncated(rep *report.Report) bool {
 }
 
 // writeScanTruncated sets the Action's scan-truncated output when the run is inside GitHub Actions.
-func writeScanTruncated(truncated bool) error {
+// A failed write is logged, never returned: the output must not keep the scan from publishing.
+func writeScanTruncated(truncated bool, log io.Writer) {
 	path := os.Getenv(envGitHubOut)
 	if path == "" {
-		return nil
+		return
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err == nil {
+		_, err = fmt.Fprintf(f, "scan-truncated=%t\n", truncated)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
 	if err != nil {
-		return fmt.Errorf("open step output: %w", err)
+		fmt.Fprintf(log, "warning: scan-truncated step output: %v\n", err)
 	}
-	if _, err := fmt.Fprintf(f, "scan-truncated=%t\n", truncated); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write step output: %w", err)
-	}
-	return f.Close()
 }

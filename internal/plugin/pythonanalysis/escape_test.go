@@ -672,7 +672,8 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 		deps   string
 		reach  []string
 		listed bool
-		// ambiguous: the alias and the def both match the call, so no edge is drawn.
+		// ambiguous: no alias edge to impl is drawn (the alias and a def both match the
+		// call, an unconditional rebinding hides the alias, or the module imports no alias).
 		ambiguous bool
 	}{
 		{
@@ -757,6 +758,66 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			deps:  "pyyaml==6.0\n",
 			src:   "try:\n    from .impl import f as g\nexcept ImportError: from yaml import load as g\n\ndef go():\n    return g(1)\n",
 			reach: []string{impl},
+		},
+		{
+			name:   "sys.modules entry for __name__",
+			src:    "from .impl import f as g\nfrom .v import vuln\nimport sys\nsys.modules[__name__].g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "sys imported under another name",
+			src:    "from .impl import f as g\nfrom .v import vuln\nimport sys as S\nS.modules[__name__].g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "sys.modules imported under another name",
+			src:    "from .impl import f as g\nfrom .v import vuln\nfrom sys import modules as M\nM[__name__].g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "sys.modules get for __name__ through setattr",
+			src:    "from .impl import f as g\nfrom .v import vuln\nfrom sys import modules\nsetattr(modules.get(__name__), 'g', vuln)\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "sys.modules entry for the module's literal name",
+			src:    "from .impl import f as g\nfrom .v import vuln\nimport sys\nsys.modules['pkg.a'].g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "builtins globals",
+			src:    "from .impl import f as g\nfrom .v import vuln\nimport builtins\nbuiltins.globals()['g'] = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "__builtins__ vars",
+			src:    "from .impl import f as g\nfrom .v import vuln\n__builtins__.vars()['g'] = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "builtins globals imported under another name",
+			src:    "from .impl import f as g\nfrom .v import vuln\nfrom builtins import globals as G\nG()['g'] = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "frame globals",
+			src:    "from .impl import f as g\nfrom .v import vuln\nimport sys\nsys._getframe().f_globals['g'] = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "inspect frame globals",
+			src:    "from .impl import f as g\nfrom .v import vuln\nimport inspect\ninspect.currentframe().f_globals['g'] = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
 		},
 		{
 			name:  "one import",

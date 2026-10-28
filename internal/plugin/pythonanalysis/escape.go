@@ -74,6 +74,7 @@ var computedNameCalls = map[string]bool{
 // computedNameAttrs reach names by computed access wherever they appear.
 var computedNameAttrs = map[string]bool{
 	"__dict__": true, "attrgetter": true, "methodcaller": true, "getmembers": true,
+	"f_globals": true, "f_locals": true,
 }
 
 // scan records the value uses and computed-name access in one cleaned statement or header.
@@ -115,8 +116,6 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 				if seg == "eval" || seg == "exec" {
 					vr.evaluated = true
 				}
-			case seg == "modules" && k > 0 && segs[k-1] == "sys":
-				vr.computed = true
 			}
 		}
 		p := skipSpaceRunes(r, pos)

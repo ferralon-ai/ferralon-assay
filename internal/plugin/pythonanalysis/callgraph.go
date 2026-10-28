@@ -347,7 +347,7 @@ func loadProgram(buildDir string) (*program, error) {
 		scan := parseCallsAndIngresses(lines)
 		scan.refs.scanFStrings(clean, lits)
 		roots, opaque := dynamicImports(clean, lits)
-		lookupRoots, lookups, lookupOpaque := moduleLookups(clean, lits, scan.bindings)
+		lookupRoots, lookups, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
 		roots = sortedDedup(append(roots, lookupRoots...))
 		opaque = opaque || lookupOpaque
 		if opaque {
@@ -393,7 +393,7 @@ func loadProgram(buildDir string) (*program, error) {
 			plain:     scan.plain,
 			binders:   scan.binders,
 			defs:      scan.defs,
-			computed:  scan.refs.computed || opaque,
+			computed:  scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
 		})
 		rawBindings = append(rawBindings, scan.bindings)
 		relBindings = append(relBindings, scan.relBindings)

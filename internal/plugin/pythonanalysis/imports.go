@@ -548,6 +548,7 @@ const (
 	lookupModules              // sys.modules
 	lookupNamespace            // importlib or builtins, whose attributes include the above
 	lookupLoader               // a dynamicImportOpaqueLeafs loader or a name bound to one
+	lookupNamer                // builtins.globals, vars or locals bound under another name
 )
 
 // moduleLookups scans one file's cleaned source for the ways code fetches a module object
@@ -569,7 +570,11 @@ const (
 // and the loader names always count, since the scanner cannot tell what else they are
 // bound to. It returns the literal module names called for (load roots), the
 // module names whose objects the code receives (an __import__ call receives each package
-// on the way down), and whether any reference is opaque.
+// on the way down), whether any reference is opaque, and whether the file reaches names by
+// computed access through these modules: a sys.modules use other than a literal key naming
+// another module (the file's own module by __name__ or by its literal name, a membership
+// test, a store or a delete), or globals, vars or locals reached through builtins or
+// __builtins__.
 // lookupTarget reads an import binding's target from its last sys, importlib or builtins
 // segment on, so "from os import sys" binds the sys module and "from os.sys import modules"
 // binds sys.modules: what another module re-exports under those names is that module.
@@ -584,7 +589,7 @@ func lookupTarget(target string) string {
 	return target
 }
 
-func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque bool) {
+func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque, computed bool) {
 	r := []rune(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
@@ -601,6 +606,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			names[b.local] = lookupImport
 		case "importlib.__import__", "builtins.__import__":
 			names[b.local] = lookupDunder
+		case "builtins.globals", "builtins.vars", "builtins.locals":
+			names[b.local] = lookupNamer
 		default:
 			if dynamicImportOpaqueLeafs[b.target[strings.LastIndex(b.target, ".")+1:]] {
 				names[b.local] = lookupLoader
@@ -669,29 +676,42 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				opaque = opaque || !inspectedOnly(r, i, end, lits)
 			case strings.HasPrefix(attr, "__") && !plainDunders[attr]:
 				opaque = true
+			case kind == lookupNamespace && namerAttrs[attr]:
+				computed = true
 			case kind == lookupSys && attr == "modules":
 				name, ok := modulesUse(r, i, aend, lits)
-				if !ok {
+				switch {
+				case !ok:
 					opaque = true
-				} else if name != "" {
+				case name == "":
+					computed = true
+				default:
 					values = append(values, name)
 				}
 				end = aend
 			}
 		case lookupLoader:
 			opaque = true
+		case lookupNamer:
+			computed = true
 		case lookupModules:
 			name, ok := modulesUse(r, i, end, lits)
-			if !ok {
+			switch {
+			case !ok:
 				opaque = true
-			} else if name != "" {
+			case name == "":
+				computed = true
+			default:
 				values = append(values, name)
 			}
 		}
 		i = end
 	}
-	return sortedDedup(roots), sortedDedup(values), opaque
+	return sortedDedup(roots), sortedDedup(values), opaque, computed
 }
+
+// namerAttrs are the builtins that reach a namespace's names by computed access.
+var namerAttrs = map[string]bool{"globals": true, "vars": true, "locals": true}
 
 // plainDunders are the dunder attributes of sys and importlib that hold an ordinary value
 // (the original streams and hooks) or that moduleLookups reads itself (__import__); any

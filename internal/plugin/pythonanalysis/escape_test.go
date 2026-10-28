@@ -593,6 +593,12 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
+			name:   "instance class attribute of the same name",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/h.py": "class Handler:\n    def __call__(self, x):\n        return x\n", "pkg/a.py": "from .impl import f as handler\nfrom .h import Handler\n\nclass C:\n    handler = Handler()\n\ndef go():\n    return handler(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
 			name:   "import cycle ends",
 			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "from a import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
 			caller: funcSCIP("app", nil, "c", 0),

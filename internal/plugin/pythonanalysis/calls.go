@@ -337,9 +337,6 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 			st = kw + " " + header + ":"
 		}
-		if local, chain, ok := instanceAssignment(st); ok {
-			fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain, guarded: guarded})
-		}
 		// A class body's names are class attributes, not names any function resolves.
 		if o := owner(); o != nil && o.className != "" {
 			return
@@ -355,6 +352,9 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				}
 			}
 			fs.countBinders("", st, global)
+		}
+		if local, chain, ok := instanceAssignment(st); ok {
+			fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain, guarded: guarded})
 		}
 	}
 	statement := func(text string, guarded bool) {

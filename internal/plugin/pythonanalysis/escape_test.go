@@ -677,6 +677,8 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 		ambiguous bool
 		// other is pkg/other.py, when the case needs it.
 		other string
+		// helper is pkg/tests/helpers.py, a test module, when the case needs it.
+		helper string
 	}{
 		{
 			name:   "fallback to a first-party def",
@@ -883,6 +885,14 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			other:     "from .v import *\n",
 		},
 		{
+			name:      "star import through a test module",
+			src:       "from .tests.helpers import *\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			helper:    "from ..v import *\n",
+		},
+		{
 			name:      "decorator returning a wrapper",
 			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\n@deco\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
 			reach:     []string{vuln},
@@ -895,6 +905,14 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			reach:     []string{},
 			listed:    true,
 			ambiguous: true,
+		},
+		{
+			name:      "first-party decorator imported under a cache's name",
+			src:       "from .other import cache\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			other:     "from .v import vuln\n\ndef cache(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n",
 		},
 		{
 			name:      "functools cache through its module",
@@ -924,6 +942,9 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			}
 			if tc.other != "" {
 				files["pkg/other.py"] = tc.other
+			}
+			if tc.helper != "" {
+				files["pkg/tests/helpers.py"] = tc.helper
 			}
 			if tc.deps != "" {
 				files["requirements.txt"] = tc.deps

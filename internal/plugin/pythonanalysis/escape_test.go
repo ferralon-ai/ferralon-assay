@@ -745,6 +745,7 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"module from spec renamed", "from importlib.util import module_from_spec as mfs\n\ndef load(spec):\n    return mfs(spec)\n", false, false, true},
 		{"exec_module alone", "def load(spec, mod):\n    spec.loader.exec_module(mod)\n", false, false, true},
 		{"source file loader", "from importlib.machinery import SourceFileLoader\n\ndef load(path):\n    return SourceFileLoader('plugin', path).load_module()\n", false, false, true},
+		{"source file loader without load_module", "from importlib.machinery import SourceFileLoader\n\ndef loader(path):\n    return SourceFileLoader('plugin', path)\n", false, false, true},
 		{"sourceless file loader renamed", "from importlib.machinery import SourcelessFileLoader as SL\n\ndef load(path):\n    return SL('plugin', path)\n", false, false, true},
 		{"runpy run_path", "import runpy\n\ndef go(path):\n    return runpy.run_path(path)\n", false, false, true},
 		{"runpy run_module renamed", "from runpy import run_module as rm\n\ndef go(name):\n    return rm(name)\n", false, false, true},

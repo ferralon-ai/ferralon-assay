@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -64,8 +65,7 @@ func TestIntelProvenanceNamesNoSignals(t *testing.T) {
 }
 
 // signalsFixtureReport is a baseline over a one-file Go tree ranked with a loaded signals file, then
-// stamped the way a published report is, with the timestamp pinned. goldenSignalsReport is what it
-// rendered before trigger.Run* recorded the signals digest and the command line stopped stamping it.
+// stamped the way a published report is, with the timestamp pinned. its contract is pinned by signals_contract.golden.json.
 func signalsFixtureReport(t *testing.T) []byte {
 	t.Helper()
 	trapEgress(t)
@@ -106,21 +106,58 @@ func signalsFixtureReport(t *testing.T) []byte {
 	return append(out, '\n')
 }
 
-// TestPublishedReportIsUnchangedBySignalsStamp: the Report the command line publishes for a run with
-// signals is byte-for-byte what it was when the command line did the stamping itself, and carries
-// the verified digest once.
-func TestPublishedReportIsUnchangedBySignalsStamp(t *testing.T) {
-	got := signalsFixtureReport(t)
-	want, err := os.ReadFile(filepath.Join("testdata", "signals_stamp_report.golden.json"))
+var updateGolden = flag.Bool("update-golden", false, "rewrite signals_contract.golden.json")
+
+// signalsContract is the part of a published Report this stamp is about: the provenance block, and
+// each row's advisory id with its priority. Everything else in the Report belongs to other tests.
+type signalsContract struct {
+	Provenance report.Provenance `json:"provenance"`
+	Rows       []contractRow     `json:"rows"`
+}
+
+type contractRow struct {
+	Advisory string           `json:"advisory"`
+	Priority *report.Priority `json:"priority"`
+}
+
+func contractOf(t *testing.T, rep report.Report) []byte {
+	t.Helper()
+	c := signalsContract{Provenance: rep.Provenance}
+	for _, a := range rep.Advisories {
+		c.Rows = append(c.Rows, contractRow{Advisory: a.Advisory.ID, Priority: a.Priority})
+	}
+	out, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(want) {
-		t.Errorf("the published Report changed.\n--- got\n%s\n--- want\n%s", got, want)
+	return append(out, '\n')
+}
+
+// TestPublishedReportCarriesSignalsContract: the Report the command line publishes for a run with
+// signals has the provenance block and the per-row priorities it had when the command line did the
+// stamping itself, and carries the verified digest once. Run with -update-golden to rewrite the golden.
+func TestPublishedReportCarriesSignalsContract(t *testing.T) {
+	golden, err := filepath.Abs(filepath.Join("testdata", "signals_contract.golden.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	got := signalsFixtureReport(t)
 	var rep report.Report
 	if err := json.Unmarshal(got, &rep); err != nil {
 		t.Fatal(err)
+	}
+	contract := contractOf(t, rep)
+	if *updateGolden {
+		if err := os.WriteFile(golden, contract, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contract) != string(want) {
+		t.Errorf("provenance or row priorities changed.\n--- got\n%s\n--- want\n%s", contract, want)
 	}
 	if in := rep.Provenance.Intel; in == nil || in.SignalsDigest != digestOf(t, signalsDoc("2026-10-19")) {
 		t.Errorf("Provenance.Intel = %+v, want the verified signals digest", in)

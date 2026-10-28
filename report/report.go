@@ -770,6 +770,12 @@ type IntelProvenance struct {
 	// claim. trigger.Run* records it from the request's Signals, so a library run and the command
 	// line name the file alike. Empty when the run had no signals, in which case no finding carries
 	// a Priority. Each priority value carries its own age stamp; this names the file.
+	//
+	// A Report read back from the state ref is not always one run's work, so Priority rows can appear
+	// WITHOUT a digest: statestore.Merge, on a conflicting write, unions rows from two runs and leaves
+	// the digest empty when a row's own Report named a different file (or none) than the one whose
+	// provenance the merge kept; and a Report written before this field existed has rows and no
+	// digest. Empty here means "not known", never "no signals".
 	SignalsDigest string `json:"signals_digest,omitempty"`
 }
 

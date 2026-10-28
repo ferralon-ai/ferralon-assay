@@ -18,6 +18,10 @@ import (
 //     timestamps) keep mine, since mine is the write being retried.
 //   - SBOM / Subject / Provenance: taken from whichever Report has the later
 //     provenance timestamp (the more recent full scan describes the current tree).
+//     The one exception is Provenance.Intel.SignalsDigest: the union can carry a row
+//     ranked by the other Report's signals file, so when any merged row has a Priority
+//     whose own Report recorded a different digest (or none) than the later Report did,
+//     the digest is left empty rather than naming a file that did not rank that row.
 //   - Cursor: the later Report's cursor (it advanced with the newer scan); if the
 //     winner has no Report, mine's cursor is kept.
 //   - VEXLog: append-union — base's log followed by any of mine's entries not
@@ -81,16 +85,19 @@ func mergeReports(base, mine *report.Report) *report.Report {
 
 	type key struct{ id, source string }
 	chosen := make(map[key]report.AdvisoryFinding)
+	from := make(map[key]*report.Report)
 	order := []key{}
-	add := func(f report.AdvisoryFinding, ts func(report.AdvisoryFinding) bool) {
+	add := func(f report.AdvisoryFinding, src *report.Report, ts func(report.AdvisoryFinding) bool) {
 		k := key{f.Advisory.ID, f.Advisory.Source}
 		if prev, ok := chosen[k]; ok {
 			if ts(prev) {
 				chosen[k] = f
+				from[k] = src
 			}
 			return
 		}
 		chosen[k] = f
+		from[k] = src
 		order = append(order, k)
 	}
 	// Seed with the secondary, then let the primary override on equal-or-later
@@ -100,17 +107,24 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	// is strictly later — equal overall keeps base as primary, so base's findings win
 	// ties, matching "the committed winner stands unless mine is newer".
 	for _, f := range secondary.Advisories {
-		add(f, func(report.AdvisoryFinding) bool { return false })
+		add(f, secondary, func(report.AdvisoryFinding) bool { return false })
 	}
 	primaryNewer := primary.Provenance.Timestamp.After(secondary.Provenance.Timestamp) ||
 		primary.Provenance.Timestamp.Equal(secondary.Provenance.Timestamp)
 	for _, f := range primary.Advisories {
-		add(f, func(report.AdvisoryFinding) bool { return primaryNewer })
+		add(f, primary, func(report.AdvisoryFinding) bool { return primaryNewer })
 	}
 
+	prov := primary.Provenance
+	for _, k := range order {
+		if chosen[k].Priority != nil && signalsDigestOf(from[k]) != signalsDigestOf(primary) {
+			prov.Intel = withoutSignalsDigest(prov.Intel)
+			break
+		}
+	}
 	b := report.NewBuilder(primary.Subject).
 		AddPackages(primary.SBOM.Packages...).
-		WithProvenance(primary.Provenance)
+		WithProvenance(prov)
 	if primary.Baseline != nil {
 		b.WithBaseline(*primary.Baseline)
 	}
@@ -142,6 +156,25 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	b.AddPartiality(secondary.Partiality...)
 	merged := b.Build()
 	return &merged
+}
+
+// signalsDigestOf is the signals file r records having ranked its rows with; empty when it records
+// none.
+func signalsDigestOf(r *report.Report) string {
+	if r.Provenance.Intel == nil {
+		return ""
+	}
+	return r.Provenance.Intel.SignalsDigest
+}
+
+// withoutSignalsDigest returns a copy of in with SignalsDigest cleared, leaving in untouched.
+func withoutSignalsDigest(in *report.IntelProvenance) *report.IntelProvenance {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.SignalsDigest = ""
+	return &out
 }
 
 func laterCursor(base, mine *State) string {

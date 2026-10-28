@@ -107,3 +107,51 @@ func TestMergeNilSides(t *testing.T) {
 		t.Errorf("CommitSHA should be base's, got %q", out.CommitSHA)
 	}
 }
+
+// signalsReport is sampleReport with each row ranked by a signals file named digest ("" records none).
+func signalsReport(commit string, ts time.Time, digest string, ids ...string) *report.Report {
+	r := sampleReport(commit, "c", ts, ids...)
+	if digest != "" {
+		r.Provenance.Intel = &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, SignalsDigest: digest}
+	}
+	for i := range r.Advisories {
+		r.Advisories[i].Priority = &report.Priority{KEVCatalogVersion: "v", KEVDateReleased: "2026-10-19T00:00:00Z"}
+	}
+	return r
+}
+
+// TestMergeSignalsDigest: a merged Report names a signals file only when it ranked every
+// row that carries a Priority. A row ranked by the other side's file, or by an unrecorded one, must
+// not be published under the kept provenance's digest.
+func TestMergeSignalsDigest(t *testing.T) {
+	t0 := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	const a, b = "sha256:aaa", "sha256:bbb"
+	for _, c := range []struct {
+		name       string
+		base, mine *report.Report
+		want       string
+	}{
+		{"same file on both sides keeps it", signalsReport("b", t0, a, "GO-A"), signalsReport("m", t0.Add(time.Hour), a, "GO-B"), a},
+		{"a row ranked by another file clears it", signalsReport("b", t0, a, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
+		{"the later side's own rows keep its digest when the older side's rows are all shadowed", signalsReport("b", t0, a, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-A"), b},
+		{"rows from a binary that recorded no digest clear it", signalsReport("b", t0, "", "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
+		{"no priority rows from the other side keeps it", sampleReport("b", "c", t0, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), b},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out := Merge(&State{Report: c.base, CommitSHA: "sha-base"}, &State{Report: c.mine}).Report
+			got := ""
+			if out.Provenance.Intel != nil {
+				got = out.Provenance.Intel.SignalsDigest
+			}
+			if got != c.want {
+				t.Errorf("merged SignalsDigest = %q, want %q", got, c.want)
+			}
+			// The inputs are never edited: a retry re-merges from the same Reports.
+			for _, in := range []*report.Report{c.base, c.mine} {
+				if in.Provenance.Intel != nil && in.Provenance.Intel.SignalsDigest == "" {
+					t.Errorf("Merge cleared the digest on one of its inputs")
+				}
+			}
+		})
+	}
+}

@@ -18,7 +18,7 @@ import (
 type storeHarness struct {
 	store StateStore
 	// plant commits a new state on top of the ref's tip whose tree is the tip's tree
-	// plus one blob named name.
+	// with the blob named name added or replaced.
 	plant func(t *testing.T, name string, data []byte)
 	// dropRef deletes the state ref, so the next CAS against a read token conflicts
 	// and the re-read finds nothing.
@@ -57,8 +57,13 @@ func newGitRefHarness(t *testing.T) storeHarness {
 		plant: func(t *testing.T, name string, data []byte) {
 			tip := git(t, "", "rev-parse", s.cfg.Ref)
 			blob := git(t, string(data), "hash-object", "-w", "--stdin")
-			listing := git(t, "", "ls-tree", tip)
-			tree := git(t, listing+"\n100644 blob "+blob+"\t"+name+"\n", "mktree")
+			var listing strings.Builder
+			for _, line := range strings.Split(git(t, "", "ls-tree", tip), "\n") {
+				if line != "" && !strings.HasSuffix(line, "\t"+name) {
+					listing.WriteString(line + "\n")
+				}
+			}
+			tree := git(t, listing.String()+"100644 blob "+blob+"\t"+name+"\n", "mktree")
 			commit := git(t, "", "-c", "user.name=newer", "-c", "user.email=newer@localhost",
 				"commit-tree", tree, "-p", tip, "-m", "newer writer")
 			git(t, "", "update-ref", s.cfg.Ref, commit, tip)
@@ -110,8 +115,13 @@ func newGitHubHarness(t *testing.T) storeHarness {
 			}
 			blob := mockSHA("blob", data)
 			m.blobs[blob] = data
-			entries := append(append([]ghTreeEntry(nil), m.trees[m.commits[tip].Tree]...),
-				ghTreeEntry{Path: name, Mode: "100644", Type: "blob", SHA: blob})
+			var entries []ghTreeEntry
+			for _, e := range m.trees[m.commits[tip].Tree] {
+				if e.Path != name {
+					entries = append(entries, e)
+				}
+			}
+			entries = append(entries, ghTreeEntry{Path: name, Mode: "100644", Type: "blob", SHA: blob})
 			tree := mockSHA("tree", []byte(base64.StdEncoding.EncodeToString(data)+name+tip))
 			m.trees[tree] = entries
 			commit := mockSHA("commit", []byte(tree+tip))
@@ -224,37 +234,49 @@ func TestUnmodelledEntryCarriedThrough(t *testing.T) {
 	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name string
-		// write performs the write under test against a state read after the plant.
-		write      func(t *testing.T, s StateStore, st *State) *State
+		// write performs the write under test against a state read after the plant. It
+		// returns the committed state and the object SHA the newer file must carry,
+		// or "" for the originally planted one.
+		write      func(t *testing.T, hs storeHarness, st *State) (*State, string)
 		wantRevoke bool
 	}{
 		{
 			name: "cursor heartbeat",
-			write: func(t *testing.T, s StateStore, st *State) *State {
+			write: func(t *testing.T, hs storeHarness, st *State) (*State, string) {
 				st.Cursor = "cur-2"
-				return mustWrite(t, s, st)
+				return mustWrite(t, hs.store, st), ""
 			},
 			wantRevoke: true,
 		},
 		{
 			name: "revoke reset drops the modelled file only",
-			write: func(t *testing.T, s StateStore, st *State) *State {
+			write: func(t *testing.T, hs storeHarness, st *State) (*State, string) {
 				st.RevokeCount = 0
-				return mustWrite(t, s, st)
+				return mustWrite(t, hs.store, st), ""
 			},
 			wantRevoke: false,
 		},
 		{
-			name: "merge retry after a lost CAS",
-			write: func(t *testing.T, s StateStore, st *State) *State {
-				winner, err := s.Read(context.Background())
+			// The winner is the newer writer updating its own file after our read, so
+			// the retry must carry the winner's version, never the one in our stale read.
+			name: "merge retry after a lost CAS carries the winner's version",
+			write: func(t *testing.T, hs storeHarness, st *State) (*State, string) {
+				stale := hs.blobs(t, st.CommitSHA)[newer]
+				hs.plant(t, newer, []byte(`{"registries":{"npm":{}}}`))
+				winner, err := hs.store.Read(context.Background())
 				if err != nil {
 					t.Fatalf("winner read: %v", err)
 				}
-				winner.Cursor = "cur-winner"
-				mustWrite(t, s, winner)
+				want := hs.blobs(t, winner.CommitSHA)[newer]
+				if want == "" || want == stale {
+					t.Fatalf("winner's %s %q does not differ from the stale %q", newer, want, stale)
+				}
 				st.Cursor = "cur-loser"
-				return mustWrite(t, s, st)
+				committed := mustWrite(t, hs.store, st)
+				if hs.parents(t, committed.CommitSHA) != 1 {
+					t.Fatal("loser write did not land on top of the winner")
+				}
+				return committed, want
 			},
 			wantRevoke: true,
 		},
@@ -277,11 +299,14 @@ func TestUnmodelledEntryCarriedThrough(t *testing.T) {
 					t.Fatal("plant did not land")
 				}
 
-				committed := tc.write(t, hs.store, st)
+				committed, want := tc.write(t, hs, st)
+				if want == "" {
+					want = planted
+				}
 
 				after := hs.blobs(t, committed.CommitSHA)
-				if after[newer] != planted {
-					t.Errorf("%s: got object %q want %q (carried through unchanged)", newer, after[newer], planted)
+				if after[newer] != want {
+					t.Errorf("%s: got object %q want %q (carried through unchanged)", newer, after[newer], want)
 				}
 				if _, has := after[fileRevoke]; has != tc.wantRevoke {
 					t.Errorf("revoke blob present=%v want %v", has, tc.wantRevoke)

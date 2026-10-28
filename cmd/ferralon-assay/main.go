@@ -172,9 +172,15 @@ func runBaseline(args []string) error {
 		return err
 	}
 
-	ctx := context.Background()
+	timeout, err := f.scanTimeout()
+	if err != nil {
+		return err
+	}
+	budget := startScanBudget(timeout)
+	defer budget.release()
+	ctx, analysis := budget.flush, budget.analysis
 
-	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
+	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return err
 	}
@@ -199,7 +205,7 @@ func runBaseline(args []string) error {
 	// repository's real dependencies. Resolved AFTER advisoryCorpusOption, which decides the fact
 	// source the widener admits against. Never fails: an unreachable OSV degrades to the floor and
 	// says so on the Report (workset.go).
-	ws, err := f.scanWorkSet(ctx, acq)
+	ws, err := f.scanWorkSet(analysis, acq)
 	if err != nil {
 		return err
 	}
@@ -217,10 +223,14 @@ func runBaseline(args []string) error {
 		WorkSetLimits: ws.partiality,
 		AssessOptions: assessOptions,
 		Signals:       f.resolvedSignals,
+		Analysis:      analysis,
 	}
 
 	rep, err := trigger.RunBaseline(ctx, store, req)
 	if err != nil {
+		return err
+	}
+	if err := writeScanTruncated(scanTruncated(rep)); err != nil {
 		return err
 	}
 

@@ -236,7 +236,8 @@ func (s *GitRefStore) tryWrite(ctx context.Context, st *State) (*State, error) {
 // for identical bytes and writes NO new object, so a write that changes only one
 // file produces exactly one new blob (plus the new tree+commit). Files whose State
 // field is empty are omitted from the tree (a heartbeat with no Report writes only
-// cursor + vex.log).
+// cursor + vex.log). Entries of the parent tree this version does not model are
+// carried through by their existing object SHA.
 func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) {
 	type entry struct {
 		name string
@@ -282,15 +283,52 @@ func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) 
 		if err != nil {
 			return "", fmt.Errorf("statestore: hash-object %s: %w", e.name, err)
 		}
-		// mktree line: "<mode> blob <sha>\t<name>" (100644 = normal file).
-		fmt.Fprintf(&mktree, "100644 blob %s\t%s\n", blobSHA, e.name)
+		// mktree -z record: "<mode> blob <sha>\t<name>\x00" (100644 = normal file).
+		fmt.Fprintf(&mktree, "100644 blob %s\t%s\x00", blobSHA, e.name)
 	}
+	carried, err := s.unmodelledEntries(ctx, st.CommitSHA)
+	if err != nil {
+		return "", err
+	}
+	mktree.Write(carried)
 
-	treeSHA, err := s.gitStdin(ctx, mktree.Bytes(), "mktree")
+	treeSHA, err := s.gitStdin(ctx, mktree.Bytes(), "mktree", "-z")
 	if err != nil {
 		return "", fmt.Errorf("statestore: mktree: %w", err)
 	}
 	return strings.TrimSpace(treeSHA), nil
+}
+
+// unmodelledEntries returns the parent commit's tree entries that this version does
+// not model, as NUL-terminated `ls-tree -z` records ready for `mktree -z`. Blobs and
+// subtrees are carried; anything else (a gitlink) is not a state file and is dropped.
+// A fresh state (no parent) has nothing to carry.
+func (s *GitRefStore) unmodelledEntries(ctx context.Context, commitSHA string) ([]byte, error) {
+	if commitSHA == "" {
+		return nil, nil
+	}
+	out, err := s.gitRaw(ctx, "ls-tree", "-z", commitSHA)
+	if err != nil {
+		return nil, fmt.Errorf("statestore: ls-tree %s: %w", commitSHA, err)
+	}
+	var carried bytes.Buffer
+	for _, rec := range bytes.Split(out, []byte{0}) {
+		// "<mode> <type> <sha>\t<name>"
+		tab := bytes.IndexByte(rec, '\t')
+		if tab < 0 {
+			continue
+		}
+		meta := strings.Fields(string(rec[:tab]))
+		if len(meta) != 3 || (meta[1] != "blob" && meta[1] != "tree") {
+			continue
+		}
+		if modelled(string(rec[tab+1:])) {
+			continue
+		}
+		carried.Write(rec)
+		carried.WriteByte(0)
+	}
+	return carried.Bytes(), nil
 }
 
 // resolveRef returns the commit SHA the ref points at, or "" if the ref does not

@@ -215,6 +215,85 @@ func TestRevokeCountMergeKeepsMax(t *testing.T) {
 	}
 }
 
+// TestUnmodelledEntryCarriedThrough: a file this version does not model (a newer
+// writer's) survives every kind of write by its original object SHA, while modelled
+// files keep their own semantics — a counter reset to 0 still drops the revoke blob
+// even though the parent tree had one.
+func TestUnmodelledEntryCarriedThrough(t *testing.T) {
+	const newer = "depfetch.json"
+	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		// write performs the write under test against a state read after the plant.
+		write      func(t *testing.T, s StateStore, st *State) *State
+		wantRevoke bool
+	}{
+		{
+			name: "cursor heartbeat",
+			write: func(t *testing.T, s StateStore, st *State) *State {
+				st.Cursor = "cur-2"
+				return mustWrite(t, s, st)
+			},
+			wantRevoke: true,
+		},
+		{
+			name: "revoke reset drops the modelled file only",
+			write: func(t *testing.T, s StateStore, st *State) *State {
+				st.RevokeCount = 0
+				return mustWrite(t, s, st)
+			},
+			wantRevoke: false,
+		},
+		{
+			name: "merge retry after a lost CAS",
+			write: func(t *testing.T, s StateStore, st *State) *State {
+				winner, err := s.Read(context.Background())
+				if err != nil {
+					t.Fatalf("winner read: %v", err)
+				}
+				winner.Cursor = "cur-winner"
+				mustWrite(t, s, winner)
+				st.Cursor = "cur-loser"
+				return mustWrite(t, s, st)
+			},
+			wantRevoke: true,
+		},
+	}
+	for _, h := range storeHarnesses {
+		for _, tc := range cases {
+			t.Run(h.name+"/"+tc.name, func(t *testing.T) {
+				hs := h.new(t)
+				ctx := context.Background()
+				if _, err := hs.store.Write(ctx, &State{Report: sampleReport("c0", "cur", ts), Cursor: "cur", RevokeCount: 1}); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+				hs.plant(t, newer, []byte(`{"registries":{}}`))
+				st, err := hs.store.Read(ctx)
+				if err != nil {
+					t.Fatalf("read: %v", err)
+				}
+				planted := hs.blobs(t, st.CommitSHA)[newer]
+				if planted == "" {
+					t.Fatal("plant did not land")
+				}
+
+				committed := tc.write(t, hs.store, st)
+
+				after := hs.blobs(t, committed.CommitSHA)
+				if after[newer] != planted {
+					t.Errorf("%s: got object %q want %q (carried through unchanged)", newer, after[newer], planted)
+				}
+				if _, has := after[fileRevoke]; has != tc.wantRevoke {
+					t.Errorf("revoke blob present=%v want %v", has, tc.wantRevoke)
+				}
+				if after[fileReport] == "" || after[fileCursor] == "" {
+					t.Errorf("modelled files missing after write: %v", after)
+				}
+			})
+		}
+	}
+}
+
 func mustWrite(t *testing.T, s StateStore, st *State) *State {
 	t.Helper()
 	out, err := s.Write(context.Background(), st)

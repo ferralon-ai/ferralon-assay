@@ -71,6 +71,19 @@ const (
 	fileRevoke = "revoke"
 )
 
+// modelled reports whether name is a state file this version reads and writes. Every
+// other entry in a state tree belongs to a different (typically newer) writer, and a
+// write carries it through unchanged rather than dropping it. A modelled file is never
+// carried: its presence in the next tree is decided by its State field alone, so a
+// field cleared on purpose (a revoke counter reset to 0) still drops the file.
+func modelled(name string) bool {
+	switch name {
+	case fileReport, fileSBOM, fileCursor, fileVEXLog, fileRevoke:
+		return true
+	}
+	return false
+}
+
 // decodeRevoke parses the revoke counter file.
 func decodeRevoke(b []byte) (int, error) {
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))

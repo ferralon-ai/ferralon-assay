@@ -9,7 +9,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
-const cutShortTail = "The scan was cut short by its time limit before every advisory was assessed; see below for how to give it more time."
+const cutShortTail = "The scan was cut short before every advisory was assessed; see below for how to give it more time."
 
 // cutShortReport is a scan the time limit stopped after one advisory: one verdict, two rows the
 // scan did not reach, and the scan-level note.

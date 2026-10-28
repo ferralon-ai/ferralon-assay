@@ -296,7 +296,7 @@ const partialHeadlineTail = "This run is not a complete assessment of the codeba
 
 // cutShortHeadlineTail replaces partialHeadlineTail when the scan stopped before it finished, so a
 // reader who stops at the headline learns the cause and that the remedy is below.
-const cutShortHeadlineTail = "The scan was cut short by its time limit before every advisory was assessed; see below for how to give it more time."
+const cutShortHeadlineTail = "The scan was cut short before every advisory was assessed; see below for how to give it more time."
 
 // headlineTail is the qualifier the headline carries: none when the report discloses no step that
 // did not run, the cut-short tail when the scan stopped early, and partialHeadlineTail otherwise.
@@ -457,7 +457,7 @@ func partialityLine(n report.PartialityNote) string {
 		return fmt.Sprintf("No analyzer is available for this codebase's language, so its %s set was not analyzed. The advisories below were not ruled out — they were not assessed.", scope)
 	case report.ReasonScanCutShort:
 		if n.Detail != "" {
-			return fmt.Sprintf("The scan was cut short before it finished (`%s`). Those advisories have no verdict and are counted as not assessed.", mdCell(n.Detail))
+			return fmt.Sprintf("The scan was cut short before it finished (`%s`). Every advisory it did not assess has no verdict and is counted as not assessed.", mdCell(n.Detail))
 		}
 		return "The scan was cut short before it finished, so one or more advisories have no verdict and are counted as not assessed."
 	case plugin.PartialReasonToolFailure:

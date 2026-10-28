@@ -389,10 +389,14 @@ func loadProgram(buildDir string) (*program, error) {
 		for i := range scan.decorated {
 			scan.decorated[i].module = module
 		}
+		_, stars := importStatements([]rune(clean))
+		if len(stars) > 0 {
+			// A star import may bind any decorator's name.
+			scan.wrapped = slices.Clone(scan.decorated)
+		}
 		for i := range scan.wrapped {
 			scan.wrapped[i].module = module
 		}
-		_, stars := importStatements([]rune(clean))
 		prog.files = append(prog.files, fileParse{
 			module:    module,
 			isPackage: strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__",

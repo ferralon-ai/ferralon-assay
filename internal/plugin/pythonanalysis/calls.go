@@ -110,7 +110,7 @@ type fileScan struct {
 	relBindings []scopedBinding
 	decorated   []funcDecl
 	// wrapped lists the decorated defs whose decorators are not all known to hand back the
-	// def itself or a cache that calls it (wrapsDef).
+	// def itself or a cache that calls it (wrapsDef, decided once the whole file is read).
 	wrapped []funcDecl
 	refs    valueRefs
 	// locals maps a scope to the names its parameters and assignments bind there: in a def
@@ -124,7 +124,8 @@ type fileScan struct {
 	// that may hold the name's value at a call: each parameter, assignment, for or with or
 	// except target, walrus and instance (a literal None excepted), and in the module scope
 	// each binding a def makes after declaring the name global. defs marks the names a def
-	// or class statement binds in a scope.
+	// or class statement binds in a scope. A class body's bindings are kept under its
+	// classScopeKey, which no call site resolves through.
 	binders map[string]map[string]int
 	defs    map[string]map[string]bool
 }
@@ -305,6 +306,10 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		}
 		return ""
 	}
+	// classScopeKey names the open class body as a binding scope.
+	classScopeKey := func() string {
+		return "class " + enclosingScope() + "@" + strings.Join(classChain(), ".")
+	}
 	inGuard := func() bool {
 		for i := len(stack) - 1; i >= 0 && stack[i].funcName == ""; i-- {
 			if stack[i].guard {
@@ -391,6 +396,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			for _, n := range names {
 				o.classNames[n] = true
 			}
+			fs.countBinders(classScopeKey(), st, names)
 			return
 		}
 		fs.bindLocals(bindScope, names, guarded)
@@ -438,7 +444,12 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 	pendingRoute := false
 	pendingSelector := ""
 	pendingDecorated := false
-	pendingWrapped := false
+	var pendingDecos []string
+	type decoratedDef struct {
+		decl  funcDecl
+		decos []string
+	}
+	var decoratedDefs []decoratedDef
 
 	for _, ll := range lines {
 		for len(stack) > 0 && ll.indent <= stack[len(stack)-1].indent {
@@ -453,7 +464,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				pendingSelector = leaf
 			} else {
 				pendingDecorated = true
-				pendingWrapped = pendingWrapped || !fs.wrapsDef(body)
+				pendingDecos = append(pendingDecos, body)
 			}
 			site := frameSite()
 			site.calleeArity = 1
@@ -490,11 +501,13 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			addCalls(bases)
 			if o := owner(); o == nil || o.className == "" {
 				addNames(&fs.defs, enclosingScope(), []string{name})
+			} else {
+				addNames(&fs.defs, classScopeKey(), []string{name})
 			}
 			stack = append(stack, pyFrame{indent: ll.indent, className: name})
 			pendingRoute = false
 			pendingDecorated = false
-			pendingWrapped = false
+			pendingDecos = nil
 			if body != "" {
 				statement(body, false)
 			}
@@ -520,15 +533,20 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			if pendingDecorated {
 				fs.decorated = append(fs.decorated, funcDecl{enclosing: append([]string(nil), enc...), name: name, arity: arity})
 			}
-			if pendingWrapped {
-				fs.wrapped = append(fs.wrapped, funcDecl{enclosing: append([]string(nil), enc...), name: name, arity: arity})
+			if len(pendingDecos) > 0 {
+				decoratedDefs = append(decoratedDefs, decoratedDef{
+					decl:  funcDecl{enclosing: append([]string(nil), enc...), name: name, arity: arity},
+					decos: pendingDecos,
+				})
 			}
 			if o := owner(); o == nil || o.className == "" {
 				addNames(&fs.defs, enclosingScope(), []string{name})
+			} else {
+				addNames(&fs.defs, classScopeKey(), []string{name})
 			}
 			pendingRoute = false
 			pendingDecorated = false
-			pendingWrapped = false
+			pendingDecos = nil
 			stack = append(stack, pyFrame{
 				indent:        ll.indent,
 				funcName:      name,
@@ -543,11 +561,16 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		default:
 			pendingRoute = false
 			pendingDecorated = false
-			pendingWrapped = false
+			pendingDecos = nil
 			statement(text, false)
 			if guardKeywords[kw] {
 				stack = append(stack, pyFrame{indent: ll.indent, guard: true})
 			}
+		}
+	}
+	for _, d := range decoratedDefs {
+		if slices.ContainsFunc(d.decos, func(e string) bool { return !fs.wrapsDef(e) }) {
+			fs.wrapped = append(fs.wrapped, d.decl)
 		}
 	}
 	return fs
@@ -744,8 +767,10 @@ var defKeepingDecorators = map[string]map[string]bool{
 }
 
 // wrapsDef reports whether a decorator expression (the text after "@") is one that keeps the
-// def: a builtin by its bare name, a property's setter, getter or deleter, or a standard
-// decorator named through its module or through a name the file imports from it.
+// def: a builtin by its bare name, or a standard decorator named through its module or
+// through a name the file imports from it. The name must not be bound in the file any other
+// way (a def, class or value binding in any scope, a guarded fallback included), and every
+// import of it must name that standard decorator or module.
 func (fs *fileScan) wrapsDef(expr string) bool {
 	if i := strings.IndexByte(expr, '('); i >= 0 {
 		expr = expr[:i]
@@ -755,26 +780,44 @@ func (fs *fileScan) wrapsDef(expr string) bool {
 		return false
 	}
 	segs := strings.Split(expr, ".")
-	leaf := segs[len(segs)-1]
-	switch {
-	case len(segs) == 1 && defKeepingDecorators[""][leaf]:
-		return true
-	case len(segs) == 2 && (leaf == "setter" || leaf == "getter" || leaf == "deleter"):
-		return true
-	case len(segs) == 2:
-		return defKeepingDecorators[segs[0]][leaf]
-	case len(segs) == 1:
-		found := false
-		for _, b := range append(slices.Clone(fs.bindings), fs.relBindings...) {
-			if b.local != leaf {
-				continue
-			}
-			if mod, name, _ := strings.Cut(b.target, "."); !defKeepingDecorators[mod][name] || name != leaf || mod == "" {
+	head, leaf := segs[0], segs[len(segs)-1]
+	if len(segs) > 2 || fs.boundOtherwise(head) {
+		return false
+	}
+	imported := false
+	for _, b := range append(slices.Clone(fs.bindings), fs.relBindings...) {
+		if b.local != head {
+			continue
+		}
+		imported = true
+		if len(segs) == 2 {
+			if b.target != head {
 				return false
 			}
-			found = true
+			continue
 		}
-		return found
+		if mod, name, _ := strings.Cut(b.target, "."); !defKeepingDecorators[mod][name] || name != leaf || mod == "" {
+			return false
+		}
+	}
+	if len(segs) == 2 {
+		return defKeepingDecorators[head][leaf]
+	}
+	return imported || defKeepingDecorators[""][leaf]
+}
+
+// boundOtherwise reports whether any scope of the file binds name other than by import: a
+// def or class statement, or a value binding the binding counter counts.
+func (fs *fileScan) boundOtherwise(name string) bool {
+	for _, m := range fs.defs {
+		if m[name] {
+			return true
+		}
+	}
+	for _, m := range fs.binders {
+		if m[name] > 0 {
+			return true
+		}
 	}
 	return false
 }

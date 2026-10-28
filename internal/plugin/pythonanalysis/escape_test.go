@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -677,8 +678,8 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 		ambiguous bool
 		// other is pkg/other.py, when the case needs it.
 		other string
-		// helper is pkg/tests/helpers.py, a test module, when the case needs it.
-		helper string
+		// extra adds files by path, when the case needs them.
+		extra map[string]string
 	}{
 		{
 			name:   "fallback to a first-party def",
@@ -890,7 +891,7 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			reach:     []string{vuln},
 			listed:    true,
 			ambiguous: true,
-			helper:    "from ..v import *\n",
+			extra:     map[string]string{"pkg/tests/helpers.py": "from ..v import *\n"},
 		},
 		{
 			name:      "decorator returning a wrapper",
@@ -898,6 +899,21 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			reach:     []string{vuln},
 			listed:    true,
 			ambiguous: true,
+		},
+		{
+			name:      "first-party decorator named like a cache",
+			src:       "def cache(fn):\n    return fn\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "first-party decorator imported under a cache's name",
+			src:       "from .other import cache\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			other:     "from .v import vuln\n\ndef cache(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n",
 		},
 		{
 			name:      "sys imported through import_module",
@@ -921,19 +937,47 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			ambiguous: true,
 		},
 		{
-			name:      "first-party decorator named like a cache",
-			src:       "def cache(fn):\n    return fn\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
-			reach:     []string{},
+			name:      "functools cache with a def fallback",
+			src:       "from .v import vuln\n\ntry:\n    from functools import cache\nexcept ImportError:\n    def cache(fn):\n        def wrapper(x):\n            vuln(x)\n            return fn(x)\n        return wrapper\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
 			listed:    true,
 			ambiguous: true,
 		},
 		{
-			name:      "first-party decorator imported under a cache's name",
-			src:       "from .other import cache\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			name:      "functools cache with a value fallback",
+			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\ntry:\n    from functools import cache\nexcept ImportError:\n    cache = deco\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
 			reach:     []string{vuln},
 			listed:    true,
 			ambiguous: true,
-			other:     "from .v import vuln\n\ndef cache(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n",
+		},
+		{
+			name:      "functools cache rebound",
+			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\nfrom functools import cache\n\ncache = deco\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "builtin decorator name rebound",
+			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\nstaticmethod = deco\n\n@staticmethod\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "setter of any object",
+			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\nclass Reg:\n    def setter(self, fn):\n        return deco(fn)\n\n\nreg = Reg()\n\n@reg.setter\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "top-level module exporting a cache",
+			src:       "from mycache import cache\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			extra:     map[string]string{"mycache.py": "from pkg.v import vuln\n\ndef cache(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n"},
 		},
 		{
 			name:      "functools cache through its module",
@@ -964,9 +1008,7 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			if tc.other != "" {
 				files["pkg/other.py"] = tc.other
 			}
-			if tc.helper != "" {
-				files["pkg/tests/helpers.py"] = tc.helper
-			}
+			maps.Copy(files, tc.extra)
 			if tc.deps != "" {
 				files["requirements.txt"] = tc.deps
 			}
@@ -1016,6 +1058,37 @@ func TestCallGraph_ValueBindingIsListed(t *testing.T) {
 				}
 			}
 			t.Fatalf("g(1) must be listed; unresolved %v", res.Unresolved)
+		})
+	}
+}
+
+// TestCallGraph_WrappedMethodReachesWrapper: a method's decorator resolves through the class
+// body and then the module, so a class-body def or a star import that binds the decorator's
+// name may replace the method with a wrapper, whatever the module imports under that name.
+func TestCallGraph_WrappedMethodReachesWrapper(t *testing.T) {
+	wrapping := "def cache(fn):\n    def wrapper(*a):\n        vuln(1)\n        return fn(*a)\n    return wrapper\n"
+	method := "class C:\n    @cache\n    def g(self, x):\n        return x\n\n    def go(self):\n        return self.g(1)\n"
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"class-body def", map[string]string{
+			"pkg/a.py": "from functools import cache\nfrom .v import vuln\n\nclass C:\n    " + strings.ReplaceAll(strings.TrimSuffix(wrapping, "\n"), "\n", "\n    ") + "\n\n    @cache\n    def g(self, x):\n        return x\n\n    def go(self):\n        return self.g(1)\n",
+		}},
+		{"star import", map[string]string{
+			"pkg/a.py":     "from functools import cache\nfrom .other import *\n\n" + method,
+			"pkg/other.py": "from .v import vuln\n\n" + wrapping,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.files["pkg/__init__.py"] = ""
+			tc.files["pkg/v.py"] = "def vuln(x):\n    return x\n"
+			res := mustCallGraph(t, tc.files)
+			goSCIP, vuln := funcSCIP("pkg/a", []string{"C"}, "go", 1), funcSCIP("pkg/v", nil, "vuln", 1)
+			if !readerReaches(res, goSCIP, vuln) {
+				t.Fatalf("%s does not reach %s; edges %v, escaped %v, unresolved %v", goSCIP, vuln, res.Edges, res.Escaped, res.Unresolved)
+			}
 		})
 	}
 }

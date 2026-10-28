@@ -12,6 +12,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/trigger"
 )
 
 const (
@@ -160,4 +161,12 @@ func writeScanTruncated(truncated bool, log io.Writer) {
 	if err != nil {
 		fmt.Fprintf(log, "warning: scan-truncated step output: %v\n", err)
 	}
+}
+
+// warnNoInventory annotates a CVE-watch heartbeat that had no dependency inventory to query.
+func warnNoInventory(w io.Writer, res *trigger.CVEWatchResult) {
+	if !res.NoInventory {
+		return
+	}
+	fmt.Fprintf(w, "::warning title=%s::%s\n", brand.Name, escapeWorkflowData("cve-watch has nothing to query: the last baseline stopped before resolving its dependency inventory, so no stored SBOM exists. New advisories go unnoticed until a baseline completes its inventory; raise its scan-timeout or the job's timeout-minutes."))
 }

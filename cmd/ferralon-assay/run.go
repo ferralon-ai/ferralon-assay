@@ -1281,12 +1281,17 @@ func runCVEWatch(args []string) error {
 		return err
 	}
 	timer.logAdvisories()
-	writeScanTruncated(scanTruncated(res.Report), os.Stderr)
+	writeScanTruncated(res.Truncated, os.Stderr)
 
 	rescan := rescanFromEnv()
 	if res.Heartbeat {
 		fmt.Fprintf(os.Stdout, "%s cve-watch heartbeat\n", brand.Name)
-		fmt.Fprintf(os.Stdout, "  no new advisories affect the stored SBOM; cursor bumped, nothing republished\n")
+		if res.NoInventory {
+			fmt.Fprintf(os.Stdout, "  the stored SBOM is empty; no advisories were queried, nothing republished\n")
+		} else {
+			fmt.Fprintf(os.Stdout, "  no new advisories affect the stored SBOM; cursor bumped, nothing republished\n")
+		}
+		warnNoInventory(os.Stderr, res)
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.

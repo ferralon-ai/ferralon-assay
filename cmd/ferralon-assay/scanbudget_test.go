@@ -17,6 +17,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/trigger"
 )
 
 func TestScanTimeout_FlagOverEnv(t *testing.T) {
@@ -354,6 +355,28 @@ func TestScanWorkSet_Stopped(t *testing.T) {
 			}
 			if !scanTruncated(&report.Report{Partiality: ws.partiality}) {
 				t.Errorf("partiality = %+v, want a scan_cut_short note", ws.partiality)
+			}
+		})
+	}
+}
+
+// TestWarnNoInventory: a heartbeat with nothing to query is annotated; any other is not.
+func TestWarnNoInventory(t *testing.T) {
+	cases := []struct {
+		name string
+		res  trigger.CVEWatchResult
+		want bool
+	}{
+		{name: "heartbeat over an SBOM", res: trigger.CVEWatchResult{Heartbeat: true, Truncated: true}},
+		{name: "heartbeat with no inventory", res: trigger.CVEWatchResult{Heartbeat: true, Truncated: true, NoInventory: true}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var w strings.Builder
+			warnNoInventory(&w, &tc.res)
+			got := strings.HasPrefix(w.String(), "::warning title="+brand.Name+"::cve-watch has nothing to query")
+			if got != tc.want || (!tc.want && w.Len() != 0) {
+				t.Fatalf("output = %q, want warning %v", w.String(), tc.want)
 			}
 		})
 	}

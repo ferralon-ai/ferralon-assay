@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 )
 
 // statusThen answers the first len(statuses) requests with those statuses (and header, when
@@ -310,5 +311,68 @@ func TestRegistryID(t *testing.T) {
 		if got := RegistryID(tt.in); got != tt.want {
 			t.Errorf("RegistryID(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// Only the registry's own 401/403 is a verdict on the credential. A host a redirect reached
+// was never sent it, and a storage host commonly refuses a key it does not hold, so its
+// refusal reads as not served whether or not the registry was sent a token.
+func TestAcquireRedirectTargetRefusal(t *testing.T) {
+	data := []byte("hermetic .nupkg fixture bytes")
+	tests := []struct {
+		name     string
+		token    bool
+		target   string // redirect target host
+		status   int
+		want     error
+		wantCode string
+	}{
+		{name: "token sent, storage host answers 403", token: true, target: hostB, status: http.StatusForbidden, want: artifactcache.ErrDeclaredAbsent},
+		{name: "no auth entry, storage host answers 403", target: hostB, status: http.StatusForbidden, want: artifactcache.ErrDeclaredAbsent},
+		{name: "no auth entry, storage host answers 401", target: hostB, status: http.StatusUnauthorized, want: artifactcache.ErrDeclaredAbsent},
+		{name: "token sent, registry redirects to itself and answers 403", token: true, target: hostA, status: http.StatusForbidden,
+			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyCredentialRejected},
+		{name: "no auth entry, registry redirects to itself and answers 401", target: hostA, status: http.StatusUnauthorized,
+			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyMissingCredential},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			var storageAuth string
+			refuse := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				storageAuth = r.Header.Get("Authorization")
+				w.WriteHeader(tt.status)
+			})
+			registry := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/blob" {
+					refuse(w, r)
+					return
+				}
+				http.Redirect(w, r, "https://"+tt.target+"/blob", http.StatusFound)
+			})
+			h.serve(t, hostA, registry)
+			if tt.target != hostA {
+				h.serve(t, tt.target, refuse)
+			}
+			creds := RegistryCredentials{}
+			if tt.token {
+				creds = NewRegistryCredentials(map[string]checkout.Credential{hostA: checkout.NewCredential(tokenA)})
+			}
+			a := NewAcquirer(t.TempDir(), h.client)
+			a.SetRetrySleep(func(context.Context, time.Duration) error { return nil })
+			_, err := a.Acquire(context.Background(), nugetRef(data), twoHostPolicy(creds, "https://"+hostA))
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Acquire err = %v, want %v", err, tt.want)
+			}
+			if tt.wantCode != "" {
+				var pr *artifactcache.PolicyReason
+				if !errors.As(err, &pr) || pr.Code != tt.wantCode {
+					t.Fatalf("Acquire err = %v, want policy code %q", err, tt.wantCode)
+				}
+			}
+			if tt.target != hostA && storageAuth != "" {
+				t.Fatalf("storage host was sent Authorization %q", storageAuth)
+			}
+		})
 	}
 }

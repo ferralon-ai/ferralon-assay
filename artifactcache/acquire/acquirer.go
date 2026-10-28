@@ -257,8 +257,10 @@ func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Poli
 	if resp.StatusCode != http.StatusOK {
 		// A registry that refuses the request is not evidence the artifact is absent: either
 		// the run had no credential to present (no auth entry, or one whose token is unset),
-		// or the one it presented was refused.
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		// or the one it presented was refused. Only the registry's own refusal says that: a
+		// host a redirect reached was never sent the registry's credential, and a storage host
+		// commonly refuses a key it does not hold, so its 401/403 reads as not served.
+		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && answeredBy(resp, host) {
 			code := artifactcache.PolicyMissingCredential
 			if presented {
 				code = artifactcache.PolicyCredentialRejected
@@ -286,6 +288,16 @@ func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Poli
 		return AcquisitionRecord{}, err
 	}
 	return rec, nil
+}
+
+// answeredBy reports whether resp came from host itself rather than from a host a redirect
+// reached.
+func answeredBy(resp *http.Response, host string) bool {
+	if resp.Request == nil || resp.Request.URL == nil {
+		return false
+	}
+	h, err := canonicalHost(resp.Request.URL)
+	return err == nil && h == host
 }
 
 // unavailableStatus is the Fetch* code for a status that marks the registry, not the

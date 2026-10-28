@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -672,7 +673,8 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 // A taint path names its ingress and its sink but none of the calls between them: its trace
 // is the two frames [ingress, sink], which reads as a direct call even when there is none. So
 // a taint path's frames come from taintFrames, while its entry point is still credited from
-// the taint path's own trace.
+// the taint path's own trace. guardsOnPath matches guards against the frames, so a guard
+// called from a frame inside that chain is listed too; it is evidence, never a verdict.
 func candidateTrace(store artifact.Store, assessmentID string) (frames, credit []report.CallFrame, ingressSym string) {
 	paths := reachPaths(store, assessmentID)
 	if p, ok := firstTaintPath(store, assessmentID); ok {
@@ -686,27 +688,33 @@ func candidateTrace(store artifact.Store, assessmentID string) (frames, credit [
 	return nil, nil, ""
 }
 
-// taintFrames returns the frames shown for taint path tp. When a reachability path ends at
-// tp's sink, they are a call chain from tp's ingress to that sink: the first such path from
-// the ingress on, when the ingress lies on one, else the shortest chain of call-graph edges
-// (edges) from the ingress to the sink. Either is made only of a reachability path's own
-// frames or of call-graph edges, so it never shows a call the graph does not have. tp's own
-// trace stays when no reachability path ends at the sink, or when neither yields a chain.
+// taintFrames returns the frames shown for taint path tp: a real call chain from tp's ingress
+// to its sink, not necessarily the calls the tainted value passed through. It is the shortest
+// suffix, from the ingress on, of a reachability path that ends at the sink and holds the
+// ingress, else the shortest chain of call-graph edges (edges) from the ingress to the sink,
+// which is searched whether or not any reachability path ends at the sink. Either is made only
+// of a reachability path's own frames or of call-graph edges, so it never shows a call the
+// graph does not have. tp's own trace stays only when neither yields a chain.
+//
+// Ties are broken by the symbols themselves, never by the order the paths or edges are
+// stored in, which this package does not control: every lane writes its own.
 func taintFrames(tp plugin.ReachPath, paths []plugin.ReachPath, edges func() []plugin.CallEdge) []plugin.Symbol {
 	ingress, sink := tp.Ingress.SCIP, tp.Sink.SCIP
-	reached := false
+	var best []plugin.Symbol
 	for _, p := range paths {
 		if len(p.Trace) == 0 || p.Trace[len(p.Trace)-1].SCIP != sink {
 			continue
 		}
-		reached = true
-		for i, s := range p.Trace {
-			if s.SCIP == ingress {
-				return p.Trace[i:]
+		if i := slices.IndexFunc(p.Trace, func(s plugin.Symbol) bool { return s.SCIP == ingress }); i >= 0 {
+			if best == nil || compareTraces(p.Trace[i:], best) < 0 {
+				best = p.Trace[i:]
 			}
 		}
 	}
-	if !reached || ingress == "" || ingress == sink {
+	if best != nil {
+		return best
+	}
+	if ingress == "" || ingress == sink {
 		return tp.Trace
 	}
 	if chain := callChain(edges(), tp.Ingress, sink); chain != nil {
@@ -715,10 +723,23 @@ func taintFrames(tp plugin.ReachPath, paths []plugin.ReachPath, edges func() []p
 	return tp.Trace
 }
 
+// compareTraces orders two traces by length, then by their symbols' SCIP ids in turn.
+func compareTraces(a, b []plugin.Symbol) int {
+	if c := cmp.Compare(len(a), len(b)); c != 0 {
+		return c
+	}
+	return slices.CompareFunc(a, b, func(x, y plugin.Symbol) int { return strings.Compare(x.SCIP, y.SCIP) })
+}
+
 // callChain returns the shortest chain of call-graph edges from from to the callee to, both
-// ends included, or nil when the graph holds none. A tie goes to the edge first in the
-// graph's own order, so the chain is the same on every run.
+// ends included, or nil when the graph holds none. The edges are searched sorted by (caller,
+// callee), so a tie goes to the callee that sorts first and the chain is the same whatever
+// order the edges were stored in.
 func callChain(edges []plugin.CallEdge, from plugin.Symbol, to string) []plugin.Symbol {
+	edges = slices.Clone(edges)
+	slices.SortFunc(edges, func(a, b plugin.CallEdge) int {
+		return cmp.Or(strings.Compare(a.Caller.SCIP, b.Caller.SCIP), strings.Compare(a.Callee.SCIP, b.Callee.SCIP))
+	})
 	callees := make(map[string][]plugin.Symbol)
 	for _, e := range edges {
 		callees[e.Caller.SCIP] = append(callees[e.Caller.SCIP], e.Callee)

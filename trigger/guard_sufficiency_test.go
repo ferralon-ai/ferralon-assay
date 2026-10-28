@@ -10,9 +10,11 @@
 package trigger
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
@@ -191,6 +193,54 @@ func TestFinding_CandidateArm_SetsGuardSufficiency(t *testing.T) {
 		}
 		if f.Evidence.GuardSufficiency != nil {
 			t.Errorf("GuardSufficiency = %+v, want nil (absent sufficiency ⇒ candidate reported exactly as today)", f.Evidence.GuardSufficiency)
+		}
+	})
+
+	// A taint path records only [ingress, sink]; the frames shown are the call chain between them
+	// (taintFrames), and guards are matched against those frames. Here the guard is called from
+	// helper2, a frame only the chain has, so it is listed although the taint path's own two
+	// frames would not show it.
+	t.Run("guard called inside a taint-derived chain ⇒ listed and annotated", func(t *testing.T) {
+		const assessmentID = "01900000-0000-7000-8000-0000000000d2"
+		store := artifact.NewMemStore()
+		putJSON(t, store, assessmentID, artifact.TypeCandidatePair, struct{}{})
+		putJSON(t, store, assessmentID, artifact.TypeTaint, struct {
+			Result plugin.TaintResult `json:"result"`
+		}{Result: plugin.TaintResult{Paths: []plugin.ReachPath{{
+			Sink: plugin.Symbol{SCIP: traceSink}, Ingress: plugin.Symbol{SCIP: traceA}, Trace: traceSyms(traceA, traceSink),
+		}}}})
+		putJSON(t, store, assessmentID, artifact.TypeReachability, struct {
+			CallGraph plugin.CallGraphResult `json:"call_graph"`
+		}{plugin.CallGraphResult{Edges: traceEdges(
+			[2]string{traceA, traceHelper}, [2]string{traceHelper, traceHelper2},
+			[2]string{traceHelper2, traceSink}, [2]string{traceHelper2, hasSymlinkInPath},
+		)}})
+		if _, err := store.Put(&artifact.Artifact{AssessmentID: assessmentID, Type: artifact.TypeNormalizedAdvisory, Payload: []byte(ranged(t,
+			`{"advisory_guards":["hasSymlinkInPath"],`+
+				`"guard_sufficiency":[{"symbol":"hasSymlinkInPath","version":"0.13.4","for_bypass":"CVE-2025-8110","sufficient":true}]}`))}); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		if got := guardsOnPath(store, assessmentID, framesOf(traceSyms(traceA, traceSink))); got != nil {
+			t.Fatalf("control: guardsOnPath over the taint path's own two frames = %v, want nil", got)
+		}
+		f := finding(store, assessmentID, report.Advisory{ID: "CVE-2025-8110", Source: "osv"}, nil)
+		if f.Verdict != report.VerdictReachableCandidate {
+			t.Fatalf("verdict = %q, want reachable_candidate", f.Verdict)
+		}
+		var frames []string
+		for _, fr := range f.Evidence.CallPath {
+			frames = append(frames, fr.Symbol)
+		}
+		if want := []string{traceA, traceHelper, traceHelper2, traceSink}; !slices.Equal(frames, want) {
+			t.Fatalf("CallPath = %q, want the chain %q", frames, want)
+		}
+		if want := []string{"hasSymlinkInPath"}; !slices.Equal(f.Evidence.MitigatingGuards, want) {
+			t.Errorf("MitigatingGuards = %v, want %v", f.Evidence.MitigatingGuards, want)
+		}
+		want := []report.GuardSufficiencyNote{{Symbol: "hasSymlinkInPath", ForBypass: "CVE-2025-8110", Sufficiency: report.GuardSufficiencySufficient}}
+		if !slices.Equal(f.Evidence.GuardSufficiency, want) {
+			t.Errorf("GuardSufficiency = %+v, want %+v", f.Evidence.GuardSufficiency, want)
 		}
 	})
 }

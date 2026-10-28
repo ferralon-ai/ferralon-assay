@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
@@ -10,8 +11,9 @@ import (
 )
 
 // The handler → helper → helper2 → sink shape: taint reaches the sink from handlerA, and its
-// path records only [handlerA, sink]. The frames the report shows come from the reachability
-// leg when it reaches the same sink, while the entry point stays the one taint credits.
+// path records only [handlerA, sink]. The frames the report shows come from a reachability path
+// that reaches the same sink, else from the call graph, while the entry point stays the one
+// taint credits.
 const (
 	traceMain    = "scip-go gomod example.com/m . example.com/m/main()."
 	traceA       = "scip-go gomod example.com/m . example.com/m/handlerA()."
@@ -107,11 +109,28 @@ func TestReachabilityEvidence_TaintTraceFrames(t *testing.T) {
 			wantEntry:  "/a", wantGrade: report.GradeAttackerTainted,
 		},
 		{
-			name:       "reachability path ends at another sink: taint's own trace",
+			// The call graph is searched even when no reachability path ends at the sink.
+			name:       "reachability path ends at another sink: call-graph chain from the ingress",
 			taintFrom:  traceA,
 			reach:      [][]string{{traceA, traceHelper, traceOther}},
 			edges:      fullTraceEdges,
+			wantFrames: chain,
+			wantEntry:  "/a", wantGrade: report.GradeAttackerTainted,
+		},
+		{
+			name:       "reachability path ends at another sink, no chain in the call graph: taint's own trace",
+			taintFrom:  traceA,
+			reach:      [][]string{{traceA, traceHelper, traceOther}},
+			edges:      traceEdges([2]string{traceA, traceHelper}, [2]string{traceHelper, traceOther}),
 			wantFrames: []string{traceA, traceSink},
+			wantEntry:  "/a", wantGrade: report.GradeAttackerTainted,
+		},
+		{
+			name:       "two reachability paths hold the ingress: the shorter suffix",
+			taintFrom:  traceA,
+			reach:      [][]string{{traceMain, traceA, traceHelper, traceHelper2, traceSink}, {traceA, traceHelper2, traceSink}},
+			edges:      append(slices.Clone(fullTraceEdges), traceEdges([2]string{traceA, traceHelper2})...),
+			wantFrames: []string{traceA, traceHelper2, traceSink},
 			wantEntry:  "/a", wantGrade: report.GradeAttackerTainted,
 		},
 		{
@@ -174,4 +193,60 @@ func TestReachabilityEvidence_TaintTraceFrames(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTaintFrames_StoredOrderNeverMovesTheFrames feeds taintFrames the same paths and edges in
+// every stored order. Each leg has a tie: two reachability paths whose suffixes from the
+// ingress are the same length, and two call-graph chains of the same length. The frames must be
+// the same in every order, and the tie must go to the symbols that sort first.
+func TestTaintFrames_StoredOrderNeverMovesTheFrames(t *testing.T) {
+	const (
+		x = "scip-go gomod example.com/m . example.com/m/x()."
+		y = "scip-go gomod example.com/m . example.com/m/y()."
+	)
+	tp := plugin.ReachPath{Ingress: plugin.Symbol{SCIP: traceA}, Sink: plugin.Symbol{SCIP: traceSink}, Trace: traceSyms(traceA, traceSink)}
+	edges := traceEdges([2]string{traceA, y}, [2]string{y, traceSink}, [2]string{traceA, x}, [2]string{x, traceSink})
+	paths := []plugin.ReachPath{
+		{Trace: traceSyms(traceB, traceA, y, traceSink)},
+		{Trace: traceSyms(traceMain, traceA, x, traceSink)},
+	}
+	want := []string{traceA, x, traceSink}
+	check := func(what string, got []plugin.Symbol) {
+		t.Helper()
+		var ids []string
+		for _, s := range got {
+			ids = append(ids, s.SCIP)
+		}
+		if !slices.Equal(ids, want) {
+			t.Errorf("%s: frames = %q, want %q", what, ids, want)
+		}
+	}
+	for _, order := range permutations(len(edges)) {
+		shuffled := make([]plugin.CallEdge, len(edges))
+		for i, j := range order {
+			shuffled[i] = edges[j]
+		}
+		check(fmt.Sprintf("call graph in order %v", order), taintFrames(tp, nil, func() []plugin.CallEdge { return shuffled }))
+	}
+	for _, order := range permutations(len(paths)) {
+		shuffled := make([]plugin.ReachPath, len(paths))
+		for i, j := range order {
+			shuffled[i] = paths[j]
+		}
+		check(fmt.Sprintf("reachability paths in order %v", order), taintFrames(tp, shuffled, func() []plugin.CallEdge { return nil }))
+	}
+}
+
+// permutations returns every ordering of the indexes 0..n-1.
+func permutations(n int) [][]int {
+	if n == 0 {
+		return [][]int{{}}
+	}
+	var out [][]int
+	for _, p := range permutations(n - 1) {
+		for i := 0; i <= len(p); i++ {
+			out = append(out, slices.Insert(slices.Clone(p), i, n-1))
+		}
+	}
+	return out
 }

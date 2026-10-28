@@ -521,8 +521,14 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
-			name:   "dependency import beside the binding in the same scope",
-			files:  map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "from .impl import f as g\nfrom yaml import load as g\n\ndef go():\n    return g(1)\n"},
+			name:   "if/else alternative to None",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "import os\n\nif os.environ.get('FAST'):\n    from .impl import f as g\nelse:\n    g = None\n\ndef go():\n    return g(1)\n"},
+			caller: funcSCIP("pkg/a", nil, "go", 0),
+			callee: funcSCIP("pkg/impl", nil, "f", 1),
+		},
+		{
+			name:   "fallback inside a def",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/impl.py": "def f(x):\n    return x\n", "pkg/a.py": "def go():\n    try:\n        from .impl import f as g\n    except ImportError:\n        g = None\n    return g(1)\n"},
 			caller: funcSCIP("pkg/a", nil, "go", 0),
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
@@ -587,7 +593,8 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 
 // TestCallGraph_AliasNeedsTheCallersBinding: an import alias resolves a call only where
 // the calling code holds the binding. A same-named call through a dependency, a parameter,
-// local or dependency import that alone binds the name in the deciding scope, a lambda
+// local or dependency import that alone binds the name in the deciding scope, a parameter
+// or a straight-line rebinding beside the import in that scope, a lambda
 // parameter or comprehension variable in the same statement, and a file that never imports
 // the alias all keep the edges the name alone gives; the alias they pass up still escapes.
 func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
@@ -642,6 +649,36 @@ func TestCallGraph_AliasNeedsTheCallersBinding(t *testing.T) {
 			name:    "dependency module in the def shadows the module binding",
 			files:   map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/__init__.py": "from .impl import f as g\n", "e.py": "import pkg\n\ndef go():\n    import yaml as pkg\n    return pkg.g(1)\n"},
 			caller:  funcSCIP("e", nil, "go", 0),
+			escapes: true,
+		},
+		{
+			name:    "straight-line instance rebinds the module binding",
+			files:   map[string]string{"pkg/h.py": "class Handler:\n    def __call__(self, x):\n        return x\n", "pkg/a.py": "from .impl import f as handler\nfrom .h import Handler\nhandler = Handler()\n\ndef go():\n    return handler(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 0),
+			escapes: true,
+		},
+		{
+			name:    "straight-line dependency import rebinds the module binding",
+			files:   map[string]string{"requirements.txt": "pyyaml==6.0\n", "pkg/a.py": "from .impl import f as g\nfrom yaml import load as g\n\ndef go():\n    return g(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 0),
+			escapes: true,
+		},
+		{
+			name:    "straight-line assignment in a def after a guarded import",
+			files:   map[string]string{"pkg/a.py": "def go(make):\n    try:\n        from .impl import f as g\n    except ImportError:\n        pass\n    g = make()\n    return g(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 1),
+			escapes: true,
+		},
+		{
+			name:    "parameter beside an import in the same def",
+			files:   map[string]string{"pkg/a.py": "def go(g):\n    if g is None:\n        from .impl import f as g\n    return g(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 1),
+			escapes: true,
+		},
+		{
+			name:    "module for target rebinds the module binding",
+			files:   map[string]string{"pkg/a.py": "from .impl import f as g\nfor g in []:\n    pass\n\ndef go():\n    return g(1)\n"},
+			caller:  funcSCIP("pkg/a", nil, "go", 0),
 			escapes: true,
 		},
 		{

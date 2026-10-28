@@ -210,23 +210,28 @@ type fileParse struct {
 	fpBinds   map[string]map[string][]string
 	depBinds  map[string]map[string]bool
 	locals    map[string]map[string]bool
+	// plain holds the names a scope rebinds on every path: parameters, straight-line
+	// assignments and straight-line dependency imports or instances.
+	plain     map[string]map[string]bool
 	modValues []string
 	computed  bool
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
 // def scopes: the innermost scope that binds it decides, then the module. When that scope
-// binds the name by first-party import, the paths stand, beside whatever else the scope
-// binds it to (an import fallback, "try: from .impl import f as g / except ImportError: g
-// = None", binds both). When it binds the name only locally (a parameter, an assignment) or
-// only by a dependency import or instance, ok is false: the name holds something else.
+// binds the name by first-party import, the paths stand beside an alternative binding in an
+// if or try block (an import fallback, "try: from .impl import f as g / except ImportError:
+// g = None", binds both). A parameter, or an assignment, dependency import or instance on
+// the scope's straight-line path, rebinds the name on every path, so ok is false, as it is
+// when the scope binds the name only locally or by a dependency: the name may hold
+// something else. The paths still escape (anyScopeBinds).
 func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
 	for i := len(scopes) - 1; i >= -1; i-- {
 		scope := ""
 		if i >= 0 {
 			scope = scopes[i]
 		}
-		if paths := f.fpBinds[scope][name]; len(paths) > 0 {
+		if paths := f.fpBinds[scope][name]; len(paths) > 0 && !f.plain[scope][name] {
 			return paths, true
 		}
 		if f.locals[scope][name] || f.depBinds[scope][name] {
@@ -341,6 +346,7 @@ func loadProgram(buildDir string) (*program, error) {
 			decorated: scan.decorated,
 			refs:      scan.refs,
 			locals:    scan.locals,
+			plain:     scan.plain,
 			computed:  scan.refs.computed || opaque,
 		})
 		rawBindings = append(rawBindings, scan.bindings)
@@ -413,6 +419,9 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 				f.depBinds[b.scope] = map[string]bool{}
 			}
 			f.depBinds[b.scope][b.local] = true
+			if !b.guarded {
+				addNames(&f.plain, b.scope, []string{b.local})
+			}
 			continue
 		}
 		bind(b.scope, b.local, strings.ReplaceAll(b.target, ".", "/"))

@@ -85,6 +85,9 @@ type scopedBinding struct {
 	local  string
 	target string
 	inst   []string
+	// guarded marks a binding inside an if/elif/else or try/except/else/finally block of
+	// its scope (or on such a header line): an alternative, not a rebinding every path runs.
+	guarded bool
 }
 
 // scopeKey identifies a def's body as a binding scope within one file.
@@ -108,25 +111,39 @@ type fileScan struct {
 	// they shadow an import binding of the same name in an enclosing scope; at module and
 	// class level ("") they are attributes another module may read.
 	locals map[string]map[string]bool
+	// plain is the subset of locals a scope binds outside any if or try block: parameters
+	// and straight-line assignments, which every path through the scope runs.
+	plain map[string]map[string]bool
 }
 
-// bindLocals records names a scope binds other than by import ("" is the module).
-func (fs *fileScan) bindLocals(scope string, names []string) {
+// bindLocals records names a scope binds other than by import ("" is the module). guarded
+// is true inside an if or try block of the scope.
+func (fs *fileScan) bindLocals(scope string, names []string, guarded bool) {
 	if len(names) == 0 {
 		return
 	}
-	if fs.locals == nil {
-		fs.locals = map[string]map[string]bool{}
+	addNames(&fs.locals, scope, names)
+	if !guarded {
+		addNames(&fs.plain, scope, names)
 	}
-	m := fs.locals[scope]
+}
+
+func addNames(into *map[string]map[string]bool, scope string, names []string) {
+	if *into == nil {
+		*into = map[string]map[string]bool{}
+	}
+	m := (*into)[scope]
 	if m == nil {
 		m = map[string]bool{}
-		fs.locals[scope] = m
+		(*into)[scope] = m
 	}
 	for _, n := range names {
 		m[n] = true
 	}
 }
+
+// guardKeywords open a block whose bindings are alternatives to the rest of the scope's.
+var guardKeywords = map[string]bool{"if": true, "elif": true, "else": true, "try": true, "except": true, "finally": true}
 
 // ingressMarker is one framework entry point discovered lexically: a Flask/FastAPI route
 // handler def, located by its enclosing class chain + name + arity so its SCIP id
@@ -151,6 +168,8 @@ type pyFrame struct {
 	funcName      string
 	funcArity     int
 	funcEnclosing []string
+	// guard marks an if/elif/else or try/except/else/finally block.
+	guard bool
 }
 
 // parseCallsAndIngresses scans the logical lines of one cleaned Python source file
@@ -224,7 +243,25 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			fs.calls = append(fs.calls, cs)
 		}
 	}
-	statement := func(text string) {
+	// owner is the innermost def or class frame; inGuard reports a guard block open inside
+	// the innermost def (or anywhere, at module level).
+	owner := func() *pyFrame {
+		for i := len(stack) - 1; i >= 0; i-- {
+			if !stack[i].guard {
+				return &stack[i]
+			}
+		}
+		return nil
+	}
+	inGuard := func() bool {
+		for i := len(stack) - 1; i >= 0 && stack[i].funcName == ""; i-- {
+			if stack[i].guard {
+				return true
+			}
+		}
+		return false
+	}
+	statement := func(text string, guarded bool) {
 		for _, st := range splitStatements(text) {
 			kw, _ := firstWord(st)
 			scopes := funcScopes()
@@ -232,24 +269,25 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			if len(scopes) > 0 {
 				bindScope = scopes[len(scopes)-1]
 			}
+			guarded := guarded || guardKeywords[kw] || inGuard()
 			switch kw {
 			case "import", "from":
 				for _, ib := range parseImportStatement(st) {
-					fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target})
+					fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded})
 				}
 				for _, ib := range parseRelativeImport(st) {
-					fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target})
+					fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded})
 				}
 				continue
 			case "global", "nonlocal":
 				continue
 			}
 			// A class body's names are class attributes, not names any function resolves.
-			if len(stack) == 0 || stack[len(stack)-1].className == "" {
-				fs.bindLocals(bindScope, localNames(st))
+			if o := owner(); o == nil || o.className == "" {
+				fs.bindLocals(bindScope, localNames(st), guarded)
 			}
 			if local, chain, ok := instanceAssignment(st); ok {
-				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain})
+				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain, guarded: guarded})
 			}
 			fs.refs.scan(st, false)
 			addCalls(st)
@@ -315,7 +353,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			pendingRoute = false
 			pendingDecorated = false
 			if body != "" {
-				statement(body)
+				statement(body, false)
 			}
 		case "def":
 			name, arity, ok := parseDefSignature(rest)
@@ -347,14 +385,17 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				funcArity:     arity,
 				funcEnclosing: enc,
 			})
-			fs.bindLocals(scopeKey(enc, name, arity), paramNames(params))
+			fs.bindLocals(scopeKey(enc, name, arity), paramNames(params), false)
 			if body != "" {
-				statement(body)
+				statement(body, false)
 			}
 		default:
 			pendingRoute = false
 			pendingDecorated = false
-			statement(text)
+			statement(text, false)
+			if guardKeywords[kw] {
+				stack = append(stack, pyFrame{indent: ll.indent, guard: true})
+			}
 		}
 	}
 	return fs

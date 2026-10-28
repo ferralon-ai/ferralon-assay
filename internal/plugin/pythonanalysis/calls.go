@@ -768,7 +768,7 @@ var defKeepingDecorators = map[string]map[string]bool{
 
 // wrapsDef reports whether a decorator expression (the text after "@") is one that keeps the
 // def: a builtin by its bare name, or a standard decorator named through its module or
-// through a name the file imports from it. The name must not be bound in the file any other
+// through a name the file imports it as. The name must not be bound in the file any other
 // way (a def, class or value binding in any scope, a guarded fallback included), and every
 // import of it must name that standard decorator or module.
 func (fs *fileScan) wrapsDef(expr string) bool {
@@ -796,7 +796,7 @@ func (fs *fileScan) wrapsDef(expr string) bool {
 			}
 			continue
 		}
-		if mod, name, _ := strings.Cut(b.target, "."); !defKeepingDecorators[mod][name] || name != leaf || mod == "" {
+		if mod, name, _ := strings.Cut(b.target, "."); !defKeepingDecorators[mod][name] || mod == "" {
 			return false
 		}
 	}

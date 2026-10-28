@@ -980,6 +980,44 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			extra:     map[string]string{"mycache.py": "from pkg.v import vuln\n\ndef cache(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n"},
 		},
 		{
+			name:      "module imported under a standard module's name",
+			src:       "import mylib as functools\n\n@functools.lru_cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			extra:     map[string]string{"mylib.py": "from pkg.v import vuln\n\ndef lru_cache(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n"},
+		},
+		{
+			name:      "relative import under a builtin's name",
+			src:       "from . import staticmethod\n\n@staticmethod\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			extra:     map[string]string{"pkg/__init__.py": "from .v import vuln\n\ndef staticmethod(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n"},
+		},
+		{
+			name:      "decorator name injected into builtins",
+			src:       "from . import other\n\n@mydeco\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			extra:     map[string]string{"pkg/other.py": "import builtins\n\nfrom .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\nbuiltins.mydeco = deco\n"},
+		},
+		{
+			name:      "cache over a wrapping decorator",
+			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\nimport functools\n\n@functools.lru_cache\n@deco\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "aliased standard cache over a wrapping decorator",
+			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\nfrom functools import lru_cache as cache\n\n@cache\n@deco\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
 			name:      "functools cache through its module",
 			src:       "import functools\n\n@functools.lru_cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
 			reach:     []string{},
@@ -988,6 +1026,12 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 		{
 			name:      "functools cache imported by name",
 			src:       "from functools import lru_cache\n\n@lru_cache(maxsize=None)\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{},
+			ambiguous: true,
+		},
+		{
+			name:      "functools cache imported under another name",
+			src:       "from functools import lru_cache as cache\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
 			reach:     []string{},
 			ambiguous: true,
 		},
@@ -1074,6 +1118,10 @@ func TestCallGraph_WrappedMethodReachesWrapper(t *testing.T) {
 	}{
 		{"class-body def", map[string]string{
 			"pkg/a.py": "from functools import cache\nfrom .v import vuln\n\nclass C:\n    " + strings.ReplaceAll(strings.TrimSuffix(wrapping, "\n"), "\n", "\n    ") + "\n\n    @cache\n    def g(self, x):\n        return x\n\n    def go(self):\n        return self.g(1)\n",
+		}},
+		{"class-body assignment", map[string]string{
+			"pkg/a.py":     "from functools import cache\nfrom .other import wrap\n\nclass C:\n    cache = wrap\n\n" + strings.TrimPrefix(method, "class C:\n"),
+			"pkg/other.py": "from .v import vuln\n\n" + strings.Replace(wrapping, "def cache", "def wrap", 1),
 		}},
 		{"star import", map[string]string{
 			"pkg/a.py":     "from functools import cache\nfrom .other import *\n\n" + method,

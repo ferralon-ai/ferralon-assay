@@ -1,8 +1,11 @@
 // Command taintflowmod exercises the value-flow shapes taint must survive between a
 // request and a sink: library calls with no SSA body (the net/http read methods,
 // chi.URLParam, strings.TrimSpace), a modeled sanitizer (strconv.Atoi), a store into
-// a struct field, a type assertion and a map lookup. One chi-registered handler hands
-// each shape to its OWN sink, so a test can read each shape's result off its sink.
+// a struct field, a type assertion and a map lookup, and the shapes built through an
+// element or nested field address: a variadic call (fmt.Sprintf, and a sink that is
+// itself variadic, as exec.Command is), a slice literal, and a store into one nested
+// field read back through its sibling. One chi-registered handler hands each shape to
+// its OWN sink, so a test can read each shape's result off its sink.
 //
 // The controls sit beside them: field reads and a first-party call, which were always
 // tainted, and a library call on a value never derived from the request, which must
@@ -11,6 +14,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -37,11 +41,20 @@ func sinkRawQuery(v string)   { sunk = append(sunk, v) }
 func sinkOwnID(v string)      { sunk = append(sunk, v) }
 func sinkUntainted(v string)  { sunk = append(sunk, v) }
 
+func sinkSprintf(v string)          { sunk = append(sunk, v) }
+func sinkVariadic(v ...string)      { sunk = append(sunk, v) }
+func sinkSliceLit(v []string)       { sunk = append(sunk, v) }
+func sinkNestedSibling(v string)    { sunk = append(sunk, v) }
+func sinkVariadicConst(v ...string) { sunk = append(sunk, v) }
+
 // greeting is never derived from the request.
 var greeting = " hello "
 
 // wrap holds the request in a field.
 type wrap struct{ req *http.Request }
+
+// outer holds a struct in a field, so o.in.a is a field address of a field address.
+type outer struct{ in struct{ a, b string } }
 
 // ownID is a first-party transform: its body is built, so taint flows through it.
 func ownID(s string) string { return "id-" + s }
@@ -67,6 +80,16 @@ func flows(w http.ResponseWriter, r *http.Request) {
 	sinkRawQuery(r.URL.RawQuery)
 	sinkOwnID(ownID(r.Method))
 	sinkUntainted(strings.TrimSpace(greeting))
+
+	// Built through an element or nested field address.
+	sinkSprintf(fmt.Sprintf("%s", r.Method))
+	sinkVariadic("sh", "-c", r.Method)
+	sinkSliceLit([]string{"a", r.Method})
+	var o outer
+	o.in.a = r.Method
+	sinkNestedSibling(o.in.b)
+	// Control: a variadic call whose elements never came from the request.
+	sinkVariadicConst("sh", "-c", greeting)
 }
 
 func main() {

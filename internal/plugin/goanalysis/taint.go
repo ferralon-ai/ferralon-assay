@@ -22,7 +22,8 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // value flow (not call-graph path presence). Sources are the parameters of the
 // discovered ingress functions; taint propagates over SSA def-use edges
 // (assignment, phi, field/element access, map lookup, type assertion, extract,
-// conversions, tainted-operand binops, a store into a field to its struct),
+// conversions, tainted-operand binops, a store through a field or element
+// address to every base under it),
 // inter-procedurally from actual arg to callee formal param, and from a tainted
 // argument to the result of a library call with no built body. A
 // modeled sanitizer (sanitizers.go) clears taint on its result, so a value that

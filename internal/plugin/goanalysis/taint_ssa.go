@@ -209,11 +209,18 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 			// later loads of the address observe taint.
 			if in.Val == v {
 				seed(in.Addr, o)
-				// A store into a field also taints the struct base (&w{r: r}
-				// stores through &t0.r), so a later read through another
-				// FieldAddr of the same base observes taint. This is
-				// field-insensitive by design: every field of the base reads
-				// as tainted.
+				// A store through a field or element address also taints the
+				// address's base, and the base's base, down the whole chain of
+				// them (addrBases), so a later read through another field or
+				// element of any of them observes taint. &w{r: r} stores through
+				// &t0.r; o.in.a = x stores through &(&o.in).a, which taints o, so
+				// o.in.b reads as tainted; and a variadic call or a slice literal
+				// builds its argument as alloc, IndexAddr, Store, Slice, so
+				// fmt.Sprintf("%s", x) and exec.Command("sh", "-c", x) receive a
+				// tainted slice. This is field- and element-insensitive by design:
+				// every field and element of a base reads as tainted. The chain
+				// stops at a load: s.p.a = x, with p a pointer field, taints the
+				// struct p points to but not s.
 				//
 				// This deliberately over-approximates, and it partly undoes the
 				// choice not to seed receivers (see runTaint): in a method, s.last
@@ -221,8 +228,8 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 				// (s.db.Query(constQ)) counts as tainted and can be a sink hit. It
 				// only affects which trace and entry point are picked, and the
 				// grade can only rise; no verdict reads it.
-				if fa, ok := in.Addr.(*ssa.FieldAddr); ok {
-					seed(fa.X, o)
+				for _, base := range addrBases(in.Addr) {
+					seed(base, o)
 				}
 			}
 		case *ssa.MapUpdate:
@@ -232,6 +239,24 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 		case ssa.CallInstruction:
 			ta.propagateCall(in, v, o, seed)
 		}
+	}
+}
+
+// addrBases returns the bases under a field or element address, nearest first: for
+// &(&t0.in).a it is &t0.in, then t0; for &t0[i] it is t0. It stops at the first base
+// that is neither a field nor an element address.
+func addrBases(addr ssa.Value) []ssa.Value {
+	var bases []ssa.Value
+	for {
+		switch a := addr.(type) {
+		case *ssa.FieldAddr:
+			addr = a.X
+		case *ssa.IndexAddr:
+			addr = a.X
+		default:
+			return bases
+		}
+		bases = append(bases, addr)
 	}
 }
 

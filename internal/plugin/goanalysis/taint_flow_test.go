@@ -1,6 +1,8 @@
 // Hermetic goanalysis tests for the value-flow shapes taint must survive (taint_ssa.go):
 // library calls with no SSA body, a store into a struct field, a type assertion and a
-// map lookup, and the sanitizer model that body-less forwarding brings into effect.
+// map lookup, the stores through an element or nested field address that a variadic
+// call, a slice literal or a nested struct makes, and the sanitizer model that
+// body-less forwarding brings into effect.
 //
 // They run runTaint over taintflowmod's main.go, type-checked and built in memory
 // against the chimod net/http and chi stubs and two one-line stdlib stand-ins. As in a
@@ -26,6 +28,7 @@ import (
 var taintFlowStdlib = []struct{ path, src string }{
 	{"strconv", "package strconv\nfunc Atoi(s string) (int, error) { return 0, nil }"},
 	{"strings", "package strings\nfunc TrimSpace(s string) string { return s }"},
+	{"fmt", "package fmt\nfunc Sprintf(format string, a ...any) string { return format }"},
 }
 
 // buildTaintModule type-checks a taint fixture's dependencies (the stand-ins, then the
@@ -91,6 +94,14 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 		{"r.URL.RawQuery", "sinkRawQuery", true},
 		{"first-party ownID", "sinkOwnID", true},
 		{"library call on a value not from the request", "sinkUntainted", false},
+		// A store through an element or nested field address taints its base, so the
+		// backing array a variadic call or a slice literal builds, and a sibling field,
+		// read as tainted.
+		{"variadic library call (fmt.Sprintf)", "sinkSprintf", true},
+		{"variadic sink (exec.Command shape)", "sinkVariadic", true},
+		{"slice literal", "sinkSliceLit", true},
+		{"nested field, then its sibling", "sinkNestedSibling", true},
+		{"variadic call on values not from the request", "sinkVariadicConst", false},
 	}
 	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
 	sp := &ssaProgram{prog: app.Prog}

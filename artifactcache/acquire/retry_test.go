@@ -376,3 +376,60 @@ func TestAcquireRedirectTargetRefusal(t *testing.T) {
 		})
 	}
 }
+
+// A retry the caller's deadline cuts short reports what the registry said on the earlier
+// attempt; a first attempt cut short has nothing to report but the deadline.
+func TestAcquireRetryCutByDeadline(t *testing.T) {
+	data := []byte("hermetic .nupkg fixture bytes")
+	tests := []struct {
+		name     string
+		failures []int // statuses answered before requests start hanging
+		want     error
+		wantReqs int
+	}{
+		{name: "retry cut after a 503", failures: []int{http.StatusServiceUnavailable}, want: artifactcache.ErrRegistryUnavailable, wantReqs: 2},
+		{name: "retry cut after two 503s", failures: []int{http.StatusServiceUnavailable, http.StatusServiceUnavailable}, want: artifactcache.ErrRegistryUnavailable, wantReqs: 3},
+		{name: "first attempt cut", want: context.DeadlineExceeded, wantReqs: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			release := make(chan struct{})
+			t.Cleanup(func() { close(release) })
+			var requests atomic.Int32
+			h.serve(t, nugetHost, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := int(requests.Add(1))
+				if n <= len(tt.failures) {
+					w.WriteHeader(tt.failures[n-1])
+					return
+				}
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			a := NewAcquirer(t.TempDir(), h.client)
+			a.SetRetrySleep(func(context.Context, time.Duration) error { return nil })
+			// The deadline is real and short; the clock retryWait reads is pinned well
+			// before it, so the backoff fits and the hanging request is what the deadline cuts.
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			dl, _ := ctx.Deadline()
+			a.now = func() time.Time { return dl.Add(-time.Hour) }
+
+			_, err := a.Acquire(ctx, nugetRef(data), nugetPolicy(nugetHost, false, RegistryCredentials{}))
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Acquire err = %v, want %v", err, tt.want)
+			}
+			if tt.want == artifactcache.ErrRegistryUnavailable {
+				var fr *artifactcache.FetchReason
+				if !errors.As(err, &fr) || fr.Code != artifactcache.FetchServerError || fr.Status != http.StatusServiceUnavailable {
+					t.Fatalf("Acquire err = %#v, want the earlier 503", err)
+				}
+			}
+			if n := int(requests.Load()); n != tt.wantReqs {
+				t.Fatalf("requests = %d, want %d", n, tt.wantReqs)
+			}
+		})
+	}
+}

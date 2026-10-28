@@ -265,7 +265,8 @@ func TestClassifyAcquireErrorAfterDeadline(t *testing.T) {
 		{name: "not served", err: artifactcache.ErrDeclaredAbsent, want: UnreadCancelled},
 		{name: "transport", err: context.DeadlineExceeded, want: UnreadCancelled},
 		{name: "registry answered 503", err: &artifactcache.FetchReason{Code: artifactcache.FetchServerError, Status: http.StatusServiceUnavailable}, want: UnreadUnavailable},
-		{name: "transport timeout", err: &artifactcache.FetchReason{Code: artifactcache.FetchTimeout}, want: UnreadCancelled},
+		{name: "registry timed out before the deadline", err: &artifactcache.FetchReason{Code: artifactcache.FetchTimeout}, want: UnreadUnavailable},
+		{name: "registry dropped the connection before the deadline", err: &artifactcache.FetchReason{Code: artifactcache.FetchConnectionReset}, want: UnreadUnavailable},
 		{name: "unreachable", err: &artifactcache.FetchReason{Code: artifactcache.FetchConnectFailure}, want: UnreadCancelled},
 	}
 	for _, tt := range tests {

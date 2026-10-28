@@ -507,9 +507,9 @@ func registryOf(npmrc acquire.NPMConfig, purl string) string {
 }
 
 // classifyAcquireError names why err left purl unread. A concrete finding (a policy refusal,
-// bytes that do not match the lock, a malformed pin, a status the registry answered with) keeps
-// its reason even when the deadline has since passed; only an error the deadline could itself
-// have caused reads as cancelled. A registry that was unavailable or unreachable is never
+// bytes that do not match the lock, a malformed pin, a registry that answered unavailable or
+// timed out on its own) keeps its reason even when the deadline has since passed; only an
+// error the deadline could itself have caused reads as cancelled. A registry that was unavailable or unreachable is never
 // filed as not serving the package: that would say the package is absent.
 func classifyAcquireError(ctx context.Context, purl string, err error) *UnreadDependency {
 	u := &UnreadDependency{PURL: purl}
@@ -522,14 +522,12 @@ func classifyAcquireError(ctx context.Context, purl string, err error) *UnreadDe
 		u.Reason = UnreadIntegrityMismatch
 	case errors.Is(err, artifactcache.ErrMalformedRef), errors.Is(err, artifactcache.ErrUnpinnedArtifact):
 		u.Reason = UnreadMalformedIntegrity
-	case errors.As(err, &fr) && fr.Status != 0:
+	case errors.As(err, &fr) && errors.Is(fr, artifactcache.ErrRegistryUnavailable):
 		u.Reason, u.Detail = UnreadUnavailable, fr.Code
 	case ctx.Err() != nil:
 		u.Reason = UnreadCancelled
-	case errors.As(err, &fr) && errors.Is(fr, artifactcache.ErrRegistryUnreachable):
-		u.Reason, u.Detail = UnreadUnreachable, fr.Code
 	case errors.As(err, &fr):
-		u.Reason, u.Detail = UnreadUnavailable, fr.Code
+		u.Reason, u.Detail = UnreadUnreachable, fr.Code
 	case errors.Is(err, artifactcache.ErrDeclaredAbsent):
 		u.Reason = UnreadNotServed
 	default:

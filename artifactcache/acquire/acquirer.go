@@ -173,15 +173,22 @@ func (a *Acquirer) Acquire(ctx context.Context, ref artifactcache.Ref, policy Po
 	}
 
 	// 5. FETCH, retrying a transient registry failure within retryWait's bounds.
+	var prev error
 	for attempt := 1; ; attempt++ {
 		rec, err := a.fetch(ctx, ref, policy, u, host, creds, algo, raw, canonical, path)
 		if err == nil {
 			return rec, nil
 		}
+		// A retry the caller's deadline cut short adds nothing to what the registry already
+		// said: the earlier failure is the evidence. A first attempt cut short has none.
+		if prev != nil && ctx.Err() != nil && !artifactcache.IsPartiality(err) {
+			return AcquisitionRecord{}, prev
+		}
 		wait, ok := a.retryWait(ctx, err, attempt)
 		if !ok || a.sleep(ctx, wait) != nil {
 			return AcquisitionRecord{}, err
 		}
+		prev = err
 	}
 }
 

@@ -67,12 +67,12 @@ type InitTriggerKind int
 
 const (
 	InitNewobj      InitTriggerKind = iota // newobj — constructs an instance of the type
-	InitStaticField                        // ldsfld/stsfld — touches a static field of the type
+	InitStaticField                        // ldsfld/ldsflda/stsfld — touches a static field of the type
 	InitStaticCall                         // static call — invokes a static method of the type
 )
 
 // InitTrigger records a .cctor-forcing site for barrier-2's type-init channel.
-// Token names the method (newobj/static call) or field (ldsfld/stsfld) whose
+// Token names the method (newobj/static call) or field (ldsfld/ldsflda/stsfld) whose
 // DECLARING type is initialized. The IL walk only RECORDS these; walking the
 // type-init closure (base-type chain, ECMA-335 §II.10.5.3) is barrier-2.
 type InitTrigger struct {
@@ -281,7 +281,7 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 			edges = append(edges, Edge{Kind: EdgeJmp, Token: tok(code, pc+1), Offset: pc})
 			pc += 5
 			clear()
-		case 0x7E, 0x80: // ldsfld / stsfld — static-field access triggers the field's type .cctor
+		case 0x7E, 0x7F, 0x80: // ldsfld / ldsflda / stsfld — static-field access triggers the field's type .cctor
 			if !need("static field", pc+1, 4) {
 				return nil, nil, err
 			}
@@ -369,7 +369,6 @@ func buildOperandLen() [256]int {
 		0x74, 0x75, // castclass, isinst
 		0x79,             // unbox
 		0x7B, 0x7C, 0x7D, // ldfld, ldflda, stfld
-		0x7F,             // ldsflda
 		0x81,             // stobj
 		0x8C, 0x8D, 0x8F, // box, newarr, ldelema
 		0xA3, 0xA4, 0xA5, // ldelem, stelem, unbox.any

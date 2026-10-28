@@ -37,9 +37,11 @@ func main() {
 	// members). LoadProgram already forces GOWORK=off per-call, but Reachability runs
 	// govulncheck in-process via x/vuln/scan, which reads the ambient GOWORK and would
 	// fail with "directory prefix . does not contain modules listed in go.work". Neutralize
-	// it once at entry so every in-process analyzer is workspace-blind.
+	// it once at entry so every in-process analyzer is workspace-blind. The environment as it was is
+	// still the build's, under which the manifest resolves the build's toolchain, go.work included.
+	ctx := goanalysis.WithBuildEnviron(context.Background(), os.Environ())
 	_ = os.Setenv("GOWORK", "off")
-	if err := run(analyzerContext(context.Background()), os.Stdin, os.Stdout); err != nil {
+	if err := run(analyzerContext(ctx), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

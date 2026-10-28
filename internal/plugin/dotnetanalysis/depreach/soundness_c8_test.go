@@ -117,13 +117,11 @@ func mustCleanNE(t *testing.T, res Result) {
 // =====================================================================================
 // Channel 1b — GENERIC type static-initializer re-entry.
 // A generic type instantiation appears at the call site as a TypeSpec; the type-init
-// trigger cannot resolve the open type through it, so the closure over-approximates to a
-// completeness hazard (undetermined) rather than silently clearing. The resolvable
-// (non-spec) control proves the Gen.cctor->Sink edge is real and only the TypeSpec
-// indirection drives the sound abstention.
+// trigger resolves it to the open generic type, so the Gen.cctor->Sink path is found
+// rather than abstained on. The resolvable (non-spec) control proves the same edge.
 // =====================================================================================
 
-func TestC8_Channel1b_GenericCctor_TypeSpecTrigger_Undetermined(t *testing.T) {
+func TestC8_Channel1b_GenericCctor_TypeSpecTrigger_Reached(t *testing.T) {
 	b := scaffold()
 	extObj := cTypeDefOrRef(xTypeRef, b.extTypeRef("System", "Object"))
 
@@ -145,9 +143,10 @@ func TestC8_Channel1b_GenericCctor_TypeSpecTrigger_Undetermined(t *testing.T) {
 	a := b.finish(t)
 	e := NewEngine([]*assembly.Assembly{a})
 	res := e.Reach(keyByRID(t, e, a, inM[0]), keyByRID(t, e, a, sinkM[0]))
-	// The generic .cctor->Sink path is real; the TypeSpec indirection is unreadable, so the
-	// sound outcome is abstention, never a clean NE.
-	mustAbstain(t, res, "")
+	// The generic .cctor->Sink path is real and the TypeSpec names its generic type.
+	if res.Verdict != ReachableCandidate {
+		t.Fatalf("verdict = %v (%s), want reachable_candidate through Gen`1's .cctor", res.Verdict, res.HazardWhy)
+	}
 }
 
 func TestC8_Channel1b_GenericCctor_Resolvable_Control(t *testing.T) {

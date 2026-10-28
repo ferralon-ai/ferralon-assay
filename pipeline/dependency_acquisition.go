@@ -4,7 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -54,6 +59,12 @@ type DependencyAcquisition struct {
 	// CacheDir is the artifactcache DiskStore root acquisition publishes into and the JS lane
 	// reads from.
 	CacheDir string
+	// UncredentialedDir, when set, is a second artifactcache root that only ever holds tarballs
+	// from a registry with no auth entry in the npm configuration, fetched without presenting
+	// any credential: the directory a caller may persist across runs. Each such tarball is
+	// fetched into it and linked into CacheDir. A tarball from a registry with an auth entry is
+	// never written to it, and one found there is removed. Empty keeps the one directory.
+	UncredentialedDir string
 	// LookupEnv is the environment NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY and .npmrc ${VAR}
 	// references resolve against. Only acquire.DefaultNPMRCEnv and AllowEnv are read through it;
 	// nil reads no variable.
@@ -65,6 +76,9 @@ type DependencyAcquisition struct {
 	Timeout time.Duration
 	// Client supplies the transport; nil uses one with a per-request timeout.
 	Client *http.Client
+	// Observe, when set, receives each build directory's result once, when acquisition for it
+	// finishes.
+	Observe func(DependencyAcquisitionResult)
 }
 
 // WithDependencyAcquisition adds dependency_acquisition between codebase_inventory and
@@ -90,6 +104,62 @@ type DependencyAcquisitionResult struct {
 	// InventoryCancelled marks an inventory failure caused by the stage deadline or the run's
 	// context ending, so a timeout is not read as a plugin defect.
 	InventoryCancelled bool `json:"inventory_cancelled,omitempty"`
+	// Fallback is set when a fetch failed: the JS lane then reads no dependency code at all, as
+	// with dependency code off, and Fallback names why. Only DependencyCodeFetch sets it.
+	Fallback *DependencyCodeCause `json:"fallback,omitempty"`
+}
+
+// DependencyCodeCause is why a fetch-mode acquisition fell back to reading no dependency code.
+type DependencyCodeCause struct {
+	// Kind is FallbackInventoryFailed or the Unread reason of the first package, in PURL order,
+	// whose fetch failed.
+	Kind string `json:"kind"`
+	// Detail names that package and, for UnreadPolicyRefused, the policy code or, for
+	// UnreadNPMRCMalformed, the configuration file and line. It never carries a URL, a host or a
+	// credential.
+	Detail string `json:"detail,omitempty"`
+}
+
+// FallbackInventoryFailed is the DependencyCodeCause kind for an inventory that failed outright,
+// so no package could be fetched.
+const FallbackInventoryFailed = "inventory_failed"
+
+// fetchFailed reports whether reason is a fetch that did not complete: the registry refused,
+// failed or did not serve the tarball, the bytes it served were wrong, the npm configuration
+// could not be read, or the deadline passed. A lock entry with no usable integrity is not one:
+// nothing could have fetched it, and it stays a per-package limit.
+func fetchFailed(reason string) bool {
+	switch reason {
+	case UnreadFetchFailed, UnreadNotServed, UnreadPolicyRefused, UnreadCancelled, UnreadIntegrityMismatch, UnreadNPMRCMalformed:
+		return true
+	}
+	return false
+}
+
+// fallbackCause is why res, a fetch-mode acquisition, falls back to reading no dependency code,
+// or nil. One failed package is enough: a partial fetch is never read as dependency code.
+func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
+	if res.Mode != string(DependencyCodeFetch) {
+		return nil
+	}
+	if slices.Contains(res.InventoryPartial, plugin.PartialReasonToolFailure) {
+		detail := ""
+		if res.InventoryCancelled {
+			detail = UnreadCancelled
+		}
+		return &DependencyCodeCause{Kind: FallbackInventoryFailed, Detail: detail}
+	}
+	for _, u := range res.Unread {
+		if !fetchFailed(u.Reason) {
+			continue
+		}
+		detail := u.PURL
+		if u.Detail != "" {
+			detail += ": " + u.Detail
+		}
+		return &DependencyCodeCause{Kind: u.Reason, Detail: detail}
+	}
+	return nil
 }
 
 // UnreadDependency is one package acquisition left unread, with one of the Unread* reasons and,
@@ -128,7 +198,13 @@ func (d *dependencyAcquirer) result(ctx context.Context, buildDir, checkoutRoot 
 		d.byDir[buildDir] = b
 	}
 	d.mu.Unlock()
-	b.once.Do(func() { b.res = d.acquire(ctx, buildDir, checkoutRoot, p) })
+	b.once.Do(func() {
+		b.res = d.acquire(ctx, buildDir, checkoutRoot, p)
+		b.res.Fallback = fallbackCause(b.res)
+		if d.cfg.Observe != nil {
+			d.cfg.Observe(b.res)
+		}
+	})
 	return b.res
 }
 
@@ -167,16 +243,23 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 		}
 	}
 
+	// A split cache routes on the npm configuration even offline: which registries hold
+	// credentials decides whether a package may be read from UncredentialedDir.
 	var npmrc acquire.NPMConfig
 	var npmrcErr error
-	var fetcher *acquire.Acquirer
-	if d.cfg.Mode == DependencyCodeFetch {
+	if d.cfg.Mode == DependencyCodeFetch || d.split() {
 		npmrc, npmrcErr = acquire.LoadNPMConfig(acquire.NPMRCSources{ProjectDir: buildDir, CheckoutRoot: checkoutRoot, LookupEnv: d.cfg.LookupEnv, AllowEnv: d.cfg.AllowEnv})
+	}
+	var fetchers cacheFetchers
+	if d.cfg.Mode == DependencyCodeFetch {
 		client := d.cfg.Client
 		if client == nil {
 			client = &http.Client{Timeout: fetchTimeout}
 		}
-		fetcher = acquire.NewAcquirer(d.cfg.CacheDir, client)
+		fetchers.read = acquire.NewAcquirer(d.cfg.CacheDir, client)
+		if d.split() {
+			fetchers.uncredentialed = acquire.NewAcquirer(d.cfg.UncredentialedDir, client)
+		}
 	}
 	disk := artifactcache.NewDiskStore(d.cfg.CacheDir)
 
@@ -198,7 +281,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 		go func(i int, pin npmPin) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			outcomes[i] = d.acquireOne(ctx, pin, npmrc, fetcher, disk)
+			outcomes[i] = d.acquireOne(ctx, pin, npmrc, fetchers, disk)
 		}(i, pin)
 	}
 	wg.Wait()
@@ -214,10 +297,24 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 	return res
 }
 
-// acquireOne leaves pin's verified bytes in the cache and returns nil, or says why it could not.
+// cacheFetchers are the Acquirers acquisition publishes through: read is rooted at CacheDir,
+// uncredentialed at UncredentialedDir when the cache is split.
+type cacheFetchers struct {
+	read, uncredentialed *acquire.Acquirer
+}
+
+func (d *dependencyAcquirer) split() bool { return d.cfg.UncredentialedDir != "" }
+
+// viaUncredentialed reports whether a package's bytes go through UncredentialedDir. This is the
+// routing gate: a package from a registry with an auth entry never does.
+func (d *dependencyAcquirer) viaUncredentialed(credentialed bool) bool {
+	return d.split() && !credentialed
+}
+
+// acquireOne leaves pin's verified bytes in CacheDir and returns nil, or says why it could not.
 // Only reason codes leave this function: an error string can carry a URL, and nothing here may
 // echo configuration back.
-func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc acquire.NPMConfig, fetcher *acquire.Acquirer, disk artifactcache.Store) *UnreadDependency {
+func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc acquire.NPMConfig, fetchers cacheFetchers, disk artifactcache.Store) *UnreadDependency {
 	ref := artifactcache.Ref{PURL: pin.purl, Digest: pin.digest}
 	unread := func(reason, detail string) *UnreadDependency {
 		return &UnreadDependency{PURL: pin.purl, Reason: reason, Detail: detail}
@@ -228,28 +325,152 @@ func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc a
 	if _, _, err := artifactcache.DecodeDigest(pin.digest); err != nil {
 		return unread(UnreadMalformedIntegrity, "")
 	}
-	if d.cfg.Mode == DependencyCodeFetch {
+	fetching := d.cfg.Mode == DependencyCodeFetch
+	var policy acquire.Policy
+	credentialed := false
+	if fetching || d.split() {
 		name, err := acquire.NPMNameOf(pin.purl)
 		if err != nil {
 			return unread(UnreadMalformedIntegrity, "")
 		}
-		if _, err := fetcher.Acquire(ctx, ref, npmrc.PolicyFor(name)); err != nil {
+		policy = npmrc.PolicyFor(name)
+		if d.split() {
+			if credentialed, err = policy.Credentialed(pin.purl); err != nil {
+				return classifyAcquireError(ctx, pin.purl, err)
+			}
+		}
+	}
+	shared := d.viaUncredentialed(credentialed)
+	var sharedPath string
+	if d.split() {
+		sharedPath, _ = artifactcache.CanonicalPath(d.cfg.UncredentialedDir, pin.digest)
+	}
+	if d.split() && !shared {
+		// A credentialed package found in UncredentialedDir was put there by something other
+		// than this split: drop it rather than read or keep it.
+		if err := removeEntry(sharedPath); err != nil {
 			return classifyAcquireError(ctx, pin.purl, err)
 		}
 	}
+	if shared {
+		// A tarball bound for UncredentialedDir is fetched without presenting any credential,
+		// so a registry redirect onto an authenticated host cannot carry one.
+		policy.Credentials = acquire.RegistryCredentials{}
+	}
 
-	h, err := disk.Lookup(ctx, ref)
-	switch {
-	case errors.Is(err, artifactcache.ErrDeclaredAbsent):
+	// fill fetches pin into the directory its route names and links a package fetched into
+	// UncredentialedDir into CacheDir.
+	fill := func() *UnreadDependency {
+		if fetching {
+			fetcher := fetchers.read
+			if shared {
+				fetcher = fetchers.uncredentialed
+			}
+			if _, err := fetcher.Acquire(ctx, ref, policy); err != nil {
+				return classifyAcquireError(ctx, pin.purl, err)
+			}
+		}
+		if shared {
+			readPath, _ := artifactcache.CanonicalPath(d.cfg.CacheDir, pin.digest)
+			if err := linkEntry(sharedPath, readPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return classifyAcquireError(ctx, pin.purl, err)
+			}
+		}
+		return nil
+	}
+	if u := fill(); u != nil {
+		return u
+	}
+
+	path, err := verifiedEntry(ctx, disk, ref)
+	if err == nil {
+		return nil
+	}
+	// A cached entry that fails verification in fetch mode is a poisoned or corrupt cache
+	// file, not a registry finding: Acquire treats any published file as a hit, so drop that
+	// one file, and the UncredentialedDir copy it links to, and fetch it once more.
+	// Offline mode has no registry and falls back.
+	if fetching && path != "" && errors.Is(err, artifactcache.ErrIntegrityMismatch) {
+		rmErr := os.Remove(path)
+		if rmErr == nil && shared {
+			rmErr = removeEntry(sharedPath)
+		}
+		if rmErr != nil {
+			return classifyAcquireError(ctx, pin.purl, err)
+		}
+		if u := fill(); u != nil {
+			return u
+		}
+		if _, err = verifiedEntry(ctx, disk, ref); err == nil {
+			return nil
+		}
+	}
+	if errors.Is(err, artifactcache.ErrDeclaredAbsent) {
 		return unread(UnreadNotCached, "")
-	case err != nil:
-		return classifyAcquireError(ctx, pin.purl, err)
+	}
+	return classifyAcquireError(ctx, pin.purl, err)
+}
+
+// removeEntry removes a cache entry and its acquisition record. An entry already absent is not
+// an error.
+func removeEntry(path string) error {
+	for _, p := range []string{path, path + ".record.json"} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkEntry makes the cache entry at src readable at dst: a hard link, or a copy published by
+// rename when the two directories are on different filesystems. An existing dst is kept; the
+// caller verifies whatever dst holds.
+func linkEntry(src, dst string) error {
+	if _, err := os.Stat(src); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	err := os.Link(src, dst)
+	if err == nil || errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".link-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o444); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
+}
+
+// verifiedEntry opens ref's cache entry and verifies it against the lock digest. On a
+// verification failure it returns the entry's path so the caller can discard it.
+func verifiedEntry(ctx context.Context, disk artifactcache.Store, ref artifactcache.Ref) (string, error) {
+	h, err := disk.Lookup(ctx, ref)
+	if err != nil {
+		return "", err
 	}
 	defer h.Close()
 	if err := artifactcache.Verify(h, ref); err != nil {
-		return classifyAcquireError(ctx, pin.purl, err)
+		return h.Path(), err
 	}
-	return nil
+	return "", nil
 }
 
 // classifyAcquireError names why err left purl unread. A concrete finding (a policy refusal,
@@ -328,12 +549,14 @@ func inventoryBuildLanguage(store artifact.Store, caseID string) (string, string
 }
 
 // cacheFor returns the dependency cache the JS lane reads for caseID: set only when
-// dependency_acquisition ran for it.
+// dependency_acquisition ran for it and did not fall back. A fallback hands the lane no cache, so
+// it reads exactly what it reads with dependency code off.
 func (a *dependencyAcquirer) cacheFor(store artifact.Store, caseID string) string {
 	if a == nil {
 		return ""
 	}
-	if _, ok := DependencyAcquisitionOf(store, caseID); !ok {
+	res, ok := DependencyAcquisitionOf(store, caseID)
+	if !ok || res.Fallback != nil {
 		return ""
 	}
 	return a.cfg.CacheDir

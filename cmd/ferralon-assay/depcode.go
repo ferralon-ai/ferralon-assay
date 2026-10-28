@@ -1,38 +1,137 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 const (
-	envDependencyCode     = brand.EnvPrefix + "_DEPENDENCY_CODE"
-	envDependencyCache    = brand.EnvPrefix + "_DEPENDENCY_CACHE"
-	envDependencyNPMRCEnv = brand.EnvPrefix + "_DEPENDENCY_NPMRC_ENV"
-	envDependencyTimeout  = brand.EnvPrefix + "_DEPENDENCY_TIMEOUT"
+	envDependencyCode        = brand.EnvPrefix + "_DEPENDENCY_CODE"
+	envDependencyCache       = brand.EnvPrefix + "_DEPENDENCY_CACHE"
+	envDependencyUncredCache = brand.EnvPrefix + "_DEPENDENCY_UNCREDENTIALED_CACHE"
+	envDependencyNPMRCEnv    = brand.EnvPrefix + "_DEPENDENCY_NPMRC_ENV"
+	envDependencyTimeout     = brand.EnvPrefix + "_DEPENDENCY_TIMEOUT"
 )
 
 var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// fetchFailureFailsRun is the policy for a JS scan whose dependency fetch failed (a registry
+// error, a refused or missing credential, the deadline, or a partial fetch). Either way the scan
+// reads no dependency code, exactly as with -dependency-code=off, and its Report names the cause.
+//
+// THIS IS THE SINGLE LINE THAT DECIDES WHETHER THAT RUN FAILS. false: it exits as the off run
+// would. true: it exits non-zero once its Report is published, and cve-watch holds its cursor,
+// as a JVM scan without its build graph does.
+const fetchFailureFailsRun = false
+
 // dependencyCodeOption resolves the -dependency-* flags into the acquisition option, or nil
-// when it is off, which is the default and leaves a scan unchanged.
+// when they turn it off, and records on f.depRun the handle the Report and the exit status read.
+// Fetch is the default.
 func (f *runFlags) dependencyCodeOption() (pipeline.AssessOption, error) {
 	cfg, err := f.dependencyAcquisitionConfig()
-	if err != nil || cfg == nil {
+	if err != nil {
 		return nil, err
 	}
+	if cfg == nil {
+		f.depRun = &depCodeRun{source: report.DependencyCodeSourceOff}
+		return nil, nil
+	}
+	run := &depCodeRun{source: string(cfg.Mode)}
+	cfg.Observe = run.observe
+	f.depRun = run
 	return pipeline.WithDependencyAcquisition(*cfg), nil
 }
 
+// depCodeRun is what a run's dependency code acquisition came to: the configured source and, when
+// a fetch failed, the cause.
+type depCodeRun struct {
+	source string
+	mu     sync.Mutex
+	fell   *report.DependencyCodeCause
+}
+
+func (d *depCodeRun) observe(res pipeline.DependencyAcquisitionResult) {
+	if res.Fallback == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.fell != nil {
+		return
+	}
+	d.fell = &report.DependencyCodeCause{Kind: res.Fallback.Kind, Detail: res.Fallback.Detail}
+	fmt.Fprintf(os.Stderr, "%s: dependency code not read, scanning as with it off: %s\n", brand.Name, describeCause(d.fell))
+}
+
+// forLanguage is d for a JS scan and nil for every other language, whose Report carries no
+// dependency_code field.
+func (d *depCodeRun) forLanguage(language string) *depCodeRun {
+	if language != checkout.LangJS {
+		return nil
+	}
+	return d
+}
+
+func (d *depCodeRun) cause() *report.DependencyCodeCause {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.fell
+}
+
+// stamp records the run's dependency code on rep: the dependency_code field and, after a
+// fallback, the scan-level tool_failure:dependency_code_unavailable note. Both are disclosure;
+// the verdicts are the ones the scan reached reading no dependency code.
+func (d *depCodeRun) stamp(rep *report.Report) {
+	if d == nil {
+		return
+	}
+	dc := &report.DependencyCode{Source: d.source}
+	if c := d.cause(); c != nil {
+		dc.Cause = c
+		rep.AddPartiality(report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: describeCause(c)})
+	}
+	rep.DependencyCode = dc
+}
+
+// err is the run's exit error once its Report is published. fetchFailureFailsRun decides it.
+func (d *depCodeRun) err() error {
+	c := d.cause()
+	if c == nil || !fetchFailureFailsRun {
+		return nil
+	}
+	return fmt.Errorf("dependency code not read: %s", describeCause(c))
+}
+
+// runExit is a scan's exit status once its Report is published: the JVM build graph's
+// fail-closed error joined with the dependency-code policy's.
+func runExit(graph *jvmGraph, deps *depCodeRun) error {
+	return errors.Join(graph.err(), deps.err())
+}
+
+func describeCause(c *report.DependencyCodeCause) string {
+	if c.Detail == "" {
+		return c.Kind
+	}
+	return c.Kind + ": " + c.Detail
+}
+
 // dependencyAcquisitionConfig resolves -dependency-code, -dependency-cache,
-// -dependency-npmrc-env and -dependency-timeout, each overriding its environment variable. An
+// -dependency-uncredentialed-cache, -dependency-npmrc-env and -dependency-timeout, each overriding
+// its environment variable. An
 // unknown mode, a malformed variable name or a malformed duration is an error: a typo must not
 // silently change what the scan reads or which credential it may present.
 //
@@ -44,16 +143,24 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 	cache := flagOrEnv(*f.depCache, os.Getenv(envDependencyCache))
 	var m pipeline.DependencyCodeMode
 	switch mode {
-	case "", "off":
+	case "off":
 		return nil, nil
-	case string(pipeline.DependencyCodeFetch):
+	case "", string(pipeline.DependencyCodeFetch):
 		m = pipeline.DependencyCodeFetch
 		if cache == "" {
 			base, err := os.UserCacheDir()
-			if err != nil {
+			switch {
+			case err == nil:
+				cache = filepath.Join(base, brand.Name, "artifacts")
+			case mode == "":
+				// The default must not turn a host with no user cache directory into a failed run.
+				// A private per-run directory, not a shared temp path another user could seed.
+				if cache, err = os.MkdirTemp("", brand.Name+"-artifacts-*"); err != nil {
+					return nil, fmt.Errorf("-dependency-code: no user cache directory and no temp directory: %w", err)
+				}
+			default:
 				return nil, fmt.Errorf("-dependency-code=fetch: no -dependency-cache and no user cache directory: %w", err)
 			}
-			cache = filepath.Join(base, brand.Name, "artifacts")
 		}
 	case string(pipeline.DependencyCodeOffline):
 		m = pipeline.DependencyCodeOffline
@@ -66,6 +173,10 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 	abs, err := filepath.Abs(cache)
 	if err != nil {
 		return nil, fmt.Errorf("-dependency-cache: %w", err)
+	}
+	uncredDir, err := uncredentialedCacheDir(flagOrEnv(*f.depUncredCache, os.Getenv(envDependencyUncredCache)), abs)
+	if err != nil {
+		return nil, err
 	}
 	var allow []string
 	for _, name := range strings.Split(flagOrEnv(*f.depNPMRCEnv, os.Getenv(envDependencyNPMRCEnv)), ",") {
@@ -85,7 +196,31 @@ func (f *runFlags) dependencyAcquisitionConfig() (*pipeline.DependencyAcquisitio
 			return nil, fmt.Errorf("-dependency-timeout=%q: want a positive duration such as 15m", v)
 		}
 	}
-	return &pipeline.DependencyAcquisition{Mode: m, CacheDir: abs, LookupEnv: os.LookupEnv, AllowEnv: allow, Timeout: timeout}, nil
+	return &pipeline.DependencyAcquisition{Mode: m, CacheDir: abs, UncredentialedDir: uncredDir, LookupEnv: os.LookupEnv, AllowEnv: allow, Timeout: timeout}, nil
+}
+
+// uncredentialedCacheDir resolves -dependency-uncredentialed-cache against the resolved
+// -dependency-cache. Set, neither directory may contain the other: the point is that a caller can
+// persist the uncredentialed cache without carrying a credentialed tarball, and -dependency-cache
+// inside it would be persisted with it.
+func uncredentialedCacheDir(dir, cache string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("-dependency-uncredentialed-cache: %w", err)
+	}
+	if within(abs, cache) || within(cache, abs) {
+		return "", fmt.Errorf("-dependency-uncredentialed-cache %q and -dependency-cache %q overlap: they must be separate directories", abs, cache)
+	}
+	return abs, nil
+}
+
+// within reports whether path is dir or lies under it. Both are absolute and clean.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // flagOrEnv returns flag when set, else env. Callers read env with os.Getenv on the constant so

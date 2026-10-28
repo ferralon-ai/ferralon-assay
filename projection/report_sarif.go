@@ -451,15 +451,24 @@ func reportSARIFMessage(f report.AdvisoryFinding) string {
 				"exploitability, not a proof: proving it requires observing the path execute.",
 			f.Advisory.ID, brand.Name)
 	case report.VerdictNotExploitable:
+		msg := fmt.Sprintf("%s: not exploitable (grounded refutation).", f.Advisory.ID)
 		if f.Evidence.Detail != "" {
-			return fmt.Sprintf("%s: not exploitable. %s", f.Advisory.ID, f.Evidence.Detail)
+			msg = fmt.Sprintf("%s: not exploitable. %s", f.Advisory.ID, f.Evidence.Detail)
+		} else if g := basisGrounds(f.Evidence.Basis); g != "" {
+			msg = fmt.Sprintf("%s: not exploitable: %s.", f.Advisory.ID, g)
 		}
-		return fmt.Sprintf("%s: not exploitable (grounded refutation).", f.Advisory.ID)
+		if a := assumptionsStatement(f.Evidence.Assumptions); a != "" {
+			msg += " " + a
+		}
+		return msg
 	case report.VerdictDisqualified:
 		if f.Evidence.Detail != "" {
 			return fmt.Sprintf("%s: disqualified. %s", f.Advisory.ID, f.Evidence.Detail)
 		}
-		return fmt.Sprintf("%s: disqualified (resolved version provably outside the affected range).", f.Advisory.ID)
+		if g := basisGrounds(f.Evidence.Basis); g != "" {
+			return fmt.Sprintf("%s: disqualified: %s.", f.Advisory.ID, g)
+		}
+		return fmt.Sprintf("%s: disqualified.", f.Advisory.ID)
 	case report.VerdictUndetermined:
 		// The closing sentence is the load-bearing one and is stated for every reason code: a
 		// reader who takes "no verdict" for "no problem" has made exactly the inference the

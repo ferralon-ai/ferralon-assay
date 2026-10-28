@@ -59,6 +59,9 @@ type AssessConfig struct {
 	// DependencyAcquisition fills the dependency cache for a JS build. nil leaves the stage out.
 	// See WithDependencyAcquisition.
 	DependencyAcquisition *dependencyAcquirer
+	// LibraryEntrypoints is the caller's statement of which of the build's packages code outside
+	// the build may import; nil is auto. See WithLibraryEntrypoints.
+	LibraryEntrypoints *plugin.LibraryEntrypoints
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -112,7 +115,9 @@ func AdvisorySourceOf(opts ...AssessOption) AdvisorySource {
 // command returns the hosted runner image's preinstalled Go, unrelated to a build pinned elsewhere.
 // Nothing observable distinguishes the two, so only the caller can assert it — and until they do,
 // observed does not participate in resolution at all (not even as a floor: an unrelated Go is not a
-// lower bound on the subject's toolchain).
+// lower bound on the subject's toolchain). The same assertion admits the toolchain the analyzer
+// resolves for the build directory when the go.mod directives do not bound it, an ambient value of
+// the same kind (ToolchainSourceBuildResolved).
 //
 // Never pass the SCANNER's toolchain here. That value is a property of the analysis environment, and
 // mistaking it for a statement about the subject yields verdicts about the wrong toolchain.
@@ -136,6 +141,14 @@ func WithSubjectToolchain(declared, observed string, trustObserved bool) AssessO
 // fetched, still yields the disclosed partial (see ReachabilityResult.ScanToolchain).
 func WithSubjectToolchainReachability(enabled bool) AssessOption {
 	return func(c *AssessConfig) { c.SubjectToolchainReachability = enabled }
+}
+
+// WithLibraryEntrypoints hands reachability_ingress the caller's statement of which of the build's
+// packages code outside the build may import. A lane that withholds a refutation such an importer
+// may contradict resolves its entry points from it, and a refutation that holds only because a
+// declaration left a package out carries that declaration as an assumption.
+func WithLibraryEntrypoints(e plugin.LibraryEntrypoints) AssessOption {
+	return func(c *AssessConfig) { c.LibraryEntrypoints = &e }
 }
 
 // WithSkipDisqualifiedAnalysis lets S4 symbol_mapping and S5 reachability_ingress skip their plugin
@@ -167,7 +180,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	return append(stages,
 		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints},
 		exposureFootprintStage{},
 	)
 }
@@ -1808,7 +1821,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		}
 	}
 
-	module, goVersion, buildCommand, toolchainDirective := "", "", "", ""
+	module, goVersion, buildCommand, toolchainDirective, buildToolchain := "", "", "", "", ""
 	if s.plugin != nil && buildDir != "" && s.plugin.Language() == language {
 		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir})
 		if err != nil {
@@ -1818,6 +1831,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		if rt, ok := mani.PrimaryRuntime(); ok {
 			goVersion = rt.Version
 			toolchainDirective = rt.Toolchain
+			buildToolchain = rt.Resolved
 		}
 		if rs, ok := mani.PrimaryResolver(); ok {
 			buildCommand = rs.Command
@@ -1840,6 +1854,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			subjectDeclared:    s.subjectGoVersion,
 			ciObserved:         s.ciGoVersion,
 			trustCIObserved:    s.trustCIGoVersion,
+			buildResolved:      buildToolchain,
 			toolchainDirective: toolchainDirective,
 			goDirective:        goVersion,
 		})
@@ -3152,6 +3167,8 @@ type reachabilityIngress struct {
 	subjectToolchain bool
 	skipDisqualified bool
 	deps             *dependencyAcquirer
+	// libraryEntrypoints is handed to the plugin as is; nil is auto.
+	libraryEntrypoints *plugin.LibraryEntrypoints
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3202,9 +3219,9 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 
 // requestedToolchain returns the subject's Go toolchain this run must execute under, or "" for
 // "run under the analyzer's own" — which is every case but one: the flag is on and the subject's
-// toolchain resolved EXACT.
+// toolchain resolved EXACT from a source that observed the subject.
 //
-// Three gates, and each is load-bearing rather than defensive:
+// Four gates, and each is load-bearing rather than defensive:
 //
 //   - The flag. Running under the subject's toolchain changes the meaning of a green scan, so it
 //     ships off by default for one release.
@@ -3215,15 +3232,35 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 //     scanning AT the floor would let a symbol missing from go1.20 be reported absent from a subject
 //     that actually builds with go1.24. A consumer that branched on a non-empty Version alone would
 //     reintroduce the defect in a new place.
+//   - The source must not be build_resolved. That value is the analyzer's own go command resolving
+//     the build directory, which in a dedicated scan job is the runner's Go; requested, it would
+//     establish the build's Go release from the analyzer's, and the lane would exclude release-tagged
+//     files on that say-so.
 func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID string) string {
 	if !s.subjectToolchain {
 		return ""
 	}
 	fact, ok := Toolchain(store, caseID)
-	if !ok || fact.Bound != ToolchainBoundExact {
+	if !ok || fact.Bound != ToolchainBoundExact || fact.Source == ToolchainSourceBuildResolved {
 		return ""
 	}
 	return fact.Version
+}
+
+// entrypointsFor is the run's library-entrypoints statement with its paths based at the checkout
+// root, which for a nested module lies above the build directory. A record with no checkout root
+// leaves Base empty, so the lane reads the paths from the build directory.
+func (s reachabilityIngress) entrypointsFor(store artifact.Store, caseID string) (*plugin.LibraryEntrypoints, error) {
+	if s.libraryEntrypoints == nil {
+		return nil, nil
+	}
+	root, err := InventoryCheckoutRoot(store, caseID)
+	if err != nil {
+		return nil, err
+	}
+	e := *s.libraryEntrypoints
+	e.Base = root
+	return &e, nil
 }
 
 func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.Assessment, store artifact.Store, sinkRef artifact.Ref) error {
@@ -3253,13 +3290,18 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
+	entrypoints, err := s.entrypointsFor(store, c.ID)
+	if err != nil {
+		return err
+	}
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
-		BuildDir:        buildDir,
-		VulnID:          vulnID,
-		Symbols:         sinks,
-		GoToolchain:     requestedToolchain,
-		Package:         admittedPackagePURL(store, c.ID),
-		DependencyCache: depCache,
+		BuildDir:           buildDir,
+		VulnID:             vulnID,
+		Symbols:            sinks,
+		GoToolchain:        requestedToolchain,
+		Package:            admittedPackagePURL(store, c.ID),
+		DependencyCache:    depCache,
+		LibraryEntrypoints: entrypoints,
 	})
 	if err != nil {
 		return err

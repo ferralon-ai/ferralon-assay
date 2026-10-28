@@ -74,6 +74,9 @@ type callSite struct {
 	// inner marks a call whose name (or chain head) a lambda parameter or comprehension
 	// variable in the same statement may bind, so no scope's import binding decides it.
 	inner bool
+	// shadowed marks a call in a class body whose name (or chain head) that body bound
+	// earlier: the class attribute, not any def scope's binding, decides it.
+	shadowed bool
 }
 
 // scopedBinding is a name bound by an import (or by instantiating an imported class) in
@@ -177,7 +180,7 @@ func addNames(into *map[string]map[string]bool, scope string, names []string) {
 }
 
 // guardKeywords open a block whose bindings are alternatives to the rest of the scope's.
-var guardKeywords = map[string]bool{"if": true, "elif": true, "else": true, "try": true, "except": true, "finally": true}
+var guardKeywords = map[string]bool{"if": true, "elif": true, "else": true, "try": true, "except": true, "finally": true, "case": true}
 
 // ingressMarker is one framework entry point discovered lexically: a Flask/FastAPI route
 // handler def, located by its enclosing class chain + name + arity so its SCIP id
@@ -197,8 +200,10 @@ type ingressMarker struct {
 // class); a function frame records the def whose body is open (so call sites inside it
 // name their caller) plus the class chain enclosing that def (for the caller's SCIP id).
 type pyFrame struct {
-	indent        int
-	className     string
+	indent    int
+	className string
+	// classNames are the names a class frame's body has bound so far.
+	classNames    map[string]bool
 	funcName      string
 	funcArity     int
 	funcEnclosing []string
@@ -260,6 +265,15 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		}
 		return site
 	}
+	// owner is the innermost def or class frame.
+	owner := func() *pyFrame {
+		for i := len(stack) - 1; i >= 0; i-- {
+			if !stack[i].guard {
+				return &stack[i]
+			}
+		}
+		return nil
+	}
 	addCalls := func(text string) {
 		site := frameSite()
 		inner := innerNames(text)
@@ -274,19 +288,14 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				head = ce.chain[0]
 			}
 			cs.inner = slices.Contains(inner, head)
+			if o := owner(); o != nil && o.className != "" {
+				cs.shadowed = o.classNames[head]
+			}
 			fs.calls = append(fs.calls, cs)
 		}
 	}
-	// owner is the innermost def or class frame; inGuard reports a guard block open inside
-	// the innermost def (or anywhere, at module level).
-	owner := func() *pyFrame {
-		for i := len(stack) - 1; i >= 0; i-- {
-			if !stack[i].guard {
-				return &stack[i]
-			}
-		}
-		return nil
-	}
+	// inGuard reports a guard block open inside the innermost def (or anywhere, at module
+	// level).
 	enclosingScope := func() string {
 		if scopes := funcScopes(); len(scopes) > 0 {
 			return scopes[len(scopes)-1]
@@ -301,35 +310,67 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		}
 		return false
 	}
-	// globals holds, per def scope, the names it declares global.
-	var globals map[string]map[string]bool
+	// globals and nonlocals hold, per def scope, the names it declares global or nonlocal.
+	var globals, nonlocals map[string]map[string]bool
+	// carry counts names bound in bindScope that a global or nonlocal declaration there
+	// sends elsewhere: to the module, or to every enclosing def (the nearest one that binds
+	// the name is the one Python picks; counting the others only withholds).
+	carry := func(bindScope, st string, names []string) {
+		if bindScope == "" {
+			return
+		}
+		var global, nonlocal []string
+		for _, n := range names {
+			if globals[bindScope][n] {
+				global = append(global, n)
+			}
+			if nonlocals[bindScope][n] {
+				nonlocal = append(nonlocal, n)
+			}
+		}
+		fs.countBinders("", st, global)
+		if scopes := funcScopes(); len(nonlocal) > 0 && len(scopes) > 1 {
+			for _, outer := range scopes[:len(scopes)-1] {
+				fs.countBinders(outer, st, nonlocal)
+			}
+		}
+	}
 	// bind records the bindings one simple statement makes in bindScope. A compound header
 	// with its body on the same line ("except ImportError: g = None") binds the body's
 	// names too, as alternatives.
 	var bind func(st, bindScope string, guarded bool)
 	bind = func(st, bindScope string, guarded bool) {
 		kw, rest := firstWord(st)
+		if kw == "async" {
+			st = strings.TrimSpace(rest)
+			kw, rest = firstWord(st)
+		}
+		var names []string
 		switch kw {
 		case "import", "from":
-			var global []string
+			var imported []string
 			for _, ib := range parseImportStatement(st) {
 				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded})
-				if globals[bindScope][ib.local] {
-					global = append(global, ib.local)
-				}
+				imported = append(imported, ib.local)
 			}
 			for _, ib := range parseRelativeImport(st) {
 				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded})
-				if globals[bindScope][ib.local] {
-					global = append(global, ib.local)
-				}
+				imported = append(imported, ib.local)
 			}
-			if bindScope != "" {
-				fs.countBinders("", "", global)
-			}
+			carry(bindScope, "", imported)
 			return
 		case "global", "nonlocal":
 			return
+		case "case":
+			header, body := splitHeader(rest)
+			if strings.TrimSpace(header) == "" || header == rest {
+				break
+			}
+			for _, sub := range splitStatements(body) {
+				bind(sub, bindScope, true)
+			}
+			names = captureNames(header)
+			st = kw + " " + header + ":"
 		case "if", "elif", "else", "try", "except", "finally", "while", "for", "with":
 			header, body := splitHeader(rest)
 			for _, sub := range splitStatements(body) {
@@ -337,38 +378,44 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 			st = kw + " " + header + ":"
 		}
-		// A class body's names are class attributes, not names any function resolves.
+		names = append(names, localNames(st)...)
+		// A class body's names are class attributes, not names any function resolves; they
+		// shadow only for the class body's own later calls.
 		if o := owner(); o != nil && o.className != "" {
+			if o.classNames == nil {
+				o.classNames = map[string]bool{}
+			}
+			for _, n := range names {
+				o.classNames[n] = true
+			}
 			return
 		}
-		names := localNames(st)
 		fs.bindLocals(bindScope, names, guarded)
 		fs.countBinders(bindScope, st, names)
-		if bindScope != "" {
-			var global []string
-			for _, n := range names {
-				if globals[bindScope][n] {
-					global = append(global, n)
-				}
-			}
-			fs.countBinders("", st, global)
-		}
+		carry(bindScope, st, names)
 		if local, chain, ok := instanceAssignment(st); ok {
 			fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: local, inst: chain, guarded: guarded})
 		}
 	}
 	statement := func(text string, guarded bool) {
 		for _, st := range splitStatements(text) {
-			kw, _ := firstWord(st)
+			kw, rest := firstWord(st)
+			if kw == "async" {
+				kw, _ = firstWord(strings.TrimSpace(rest))
+			}
 			scopes := funcScopes()
 			bindScope := ""
 			if len(scopes) > 0 {
 				bindScope = scopes[len(scopes)-1]
 			}
 			guarded := guarded || guardKeywords[kw] || inGuard()
-			if kw == "global" {
-				for _, n := range strings.Split(strings.TrimSpace(strings.TrimPrefix(st, "global")), ",") {
-					addNames(&globals, bindScope, []string{strings.TrimSpace(n)})
+			if kw == "global" || kw == "nonlocal" {
+				decl := &globals
+				if kw == "nonlocal" {
+					decl = &nonlocals
+				}
+				for _, n := range strings.Split(strings.TrimSpace(strings.TrimPrefix(st, kw)), ",") {
+					addNames(decl, bindScope, []string{strings.TrimSpace(n)})
 				}
 				continue
 			}
@@ -603,9 +650,14 @@ func splitTopLevel(s string, sep byte) []string {
 // narrows on it.
 func localNames(st string) []string {
 	var out []string
-	idents := func(s string) {
+	var idents func(s string)
+	idents = func(s string) {
 		for _, part := range splitTopLevel(s, ',') {
-			part = strings.Trim(strings.TrimSpace(part), "()[]*")
+			part = strings.TrimLeft(strings.TrimSpace(part), "*")
+			if n := len(part); n >= 2 && (part[0] == '(' || part[0] == '[') && matchingParamClose(part[1:]) == n-2 {
+				idents(part[1 : n-1])
+				continue
+			}
 			if before, _, ok := strings.Cut(part, ":"); ok {
 				part = before
 			}
@@ -666,6 +718,39 @@ func localNames(st string) []string {
 			idents(strings.TrimRight(lhs, "+-*/%&|^@<> "))
 			from = i + 1
 		}
+	}
+	return out
+}
+
+// captureNames lists the names a match statement's case pattern may bind: every name in
+// the pattern before any guard that is not an attribute, a dotted value's head, a class
+// pattern's class or a keyword pattern's attribute. Over-reading only withholds.
+func captureNames(pattern string) []string {
+	r := []rune(pattern)
+	depth := 0
+	var out []string
+	for i := 0; i < len(r); {
+		switch r[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		}
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if w == "if" && depth == 0 {
+			break
+		}
+		p := skipSpaceRunes(r, end)
+		next := p < len(r) && (r[p] == '(' || r[p] == '.' || (r[p] == '=' && !(p+1 < len(r) && r[p+1] == '=')))
+		prev := prevSignificantRune(r, i)
+		if !next && !(prev >= 0 && r[prev] == '.') && w != "_" && w != "as" && w != "None" && w != "True" && w != "False" {
+			out = append(out, w)
+		}
+		i = end
 	}
 	return out
 }

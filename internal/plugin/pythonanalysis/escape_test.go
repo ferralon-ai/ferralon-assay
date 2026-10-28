@@ -820,6 +820,44 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			listed: true,
 		},
 		{
+			name:      "parenthesised unpacking",
+			src:       "from .impl import f as g\nfrom .v import vuln\n(g, h) = (vuln, 1)\n\ndef go():\n    return g(1)\n",
+			reach:     []string{impl, vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "bracketed unpacking",
+			src:       "from .impl import f as g\nfrom .v import vuln\n[g, h] = [vuln, 1]\n\ndef go():\n    return g(1)\n",
+			reach:     []string{impl, vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:   "match capture",
+			src:    "from .impl import f as g\nfrom .v import vuln\nmatch vuln:\n    case g:\n        pass\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "match capture in a class pattern",
+			src:    "from .impl import f as g\nfrom .v import vuln\nmatch vuln:\n    case Box(item=g) if g:\n        pass\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "async loop target under global",
+			src:    "from .impl import f as g\nfrom .v import vuln\nasync def setup():\n    global g\n    async for g in aiter([vuln]):\n        pass\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "nonlocal assignment in an inner def",
+			src:    "from .v import vuln\n\ndef go():\n    from .impl import f as g\n    def inner():\n        nonlocal g\n        g = vuln\n    inner()\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
 			name:  "one import",
 			src:   "from .impl import f as g\n\ndef go():\n    return g(1)\n",
 			reach: []string{impl},
@@ -870,6 +908,8 @@ func TestCallGraph_ValueBindingIsListed(t *testing.T) {
 		{"loop target", "def g(x):\n    return x\n\ndef go(fs):\n    for g in fs:\n        g(1)\n"},
 		{"lambda parameter", "def g(x):\n    return x\n\nH = lambda g: g(1)\n"},
 		{"computed-name rebinding", "def g(x):\n    return x\n\ndef h(x):\n    return x\n\nglobals()['g'] = h\n\ndef go():\n    return g(1)\n"},
+		{"async loop target", "def g(x):\n    return x\n\nasync def go(fs):\n    async for g in fs:\n        pass\n    return g(1)\n"},
+		{"class body binding", "def g(x):\n    return x\n\ndef h(x):\n    return x\n\nclass C:\n    g = h\n    r = g(1)\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

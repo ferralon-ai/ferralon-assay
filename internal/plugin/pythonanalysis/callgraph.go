@@ -254,7 +254,7 @@ func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
 // complete; nor is a call through a lambda or comprehension variable, nor any site in a file
 // with computed-name access, which may rebind any name (globals()["g"] = ...).
 func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
-	if cs.inner || f.computed {
+	if cs.inner || cs.shadowed || f.computed {
 		return false
 	}
 	head := cs.calleeName

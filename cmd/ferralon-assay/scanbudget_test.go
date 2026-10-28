@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -278,6 +280,80 @@ func TestPhaseTimer_Advisories(t *testing.T) {
 			want := brand.Name + ": time: inventory 1.5s\n" + tc.want
 			if w.String() != want {
 				t.Fatalf("stderr = %q, want %q", w.String(), want)
+			}
+		})
+	}
+}
+
+// TestCutWorkSet: the notes a stop causes give way to one scan_cut_short note naming the cause;
+// limits the stop cannot have caused are kept.
+func TestCutWorkSet(t *testing.T) {
+	stop := errors.New("test stop")
+	policy := report.PartialityNote{Reason: reasonWorkSetPolicyNotEnumerable}
+	cut := report.PartialityNote{Reason: report.ReasonScanCutShort, Ecosystem: "Go", Detail: "the scan stopped while choosing advisories, so some it would have assessed may be missing: test stop"}
+	cases := []struct {
+		name string
+		in   []report.PartialityNote
+		want []report.PartialityNote
+	}{
+		{name: "no notes", want: []report.PartialityNote{cut}},
+		{
+			name: "stop-caused notes dropped",
+			in: []report.PartialityNote{
+				{Reason: reasonWorkSetNoInventory, Ecosystem: "Go"},
+				{Reason: reasonWorkSetNotWidened, Ecosystem: "Go"},
+				{Reason: reasonWorkSetDependencyUnreadable, Ecosystem: "Go", Package: "example.com/a"},
+			},
+			want: []report.PartialityNote{cut},
+		},
+		{name: "other limits kept", in: []report.PartialityNote{policy, {Reason: reasonWorkSetNotWidened}}, want: []report.PartialityNote{policy, cut}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cutWorkSet(workSet{ecosystem: "Go", partiality: tc.in, unreadable: []string{"example.com/a"}}, stop)
+			if !reflect.DeepEqual(got.partiality, tc.want) {
+				t.Errorf("partiality = %+v, want %+v", got.partiality, tc.want)
+			}
+			if got.unreadable != nil {
+				t.Errorf("unreadable = %v, want none: the stop, not the reader, failed them", got.unreadable)
+			}
+		})
+	}
+}
+
+// TestScanWorkSet_Stopped: a stop during selection keeps what was chosen and discloses the stop, or,
+// when nothing was chosen, fails naming the stop rather than an empty work set.
+func TestScanWorkSet_Stopped(t *testing.T) {
+	cases := []struct {
+		name    string
+		empty   bool
+		wantErr string
+	}{
+		{name: "floor chosen before the stop"},
+		{name: "nothing chosen", empty: true, wantErr: "the scan stopped while choosing advisories, before any was chosen: test stop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			trapEgress(t)
+			f := runFlagsFor(t)
+			acq := treeFor(t, checkout.LangGo, false)
+			if tc.empty {
+				acq = emptyFloorFor(t, checkout.LangGo, false)
+			}
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(errors.New("test stop"))
+			ws, err := f.scanWorkSet(ctx, acq)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || len(ws.advisories) == 0 {
+				t.Fatalf("scanWorkSet = %d advisories, %v; want the floor", len(ws.advisories), err)
+			}
+			if !scanTruncated(&report.Report{Partiality: ws.partiality}) {
+				t.Errorf("partiality = %+v, want a scan_cut_short note", ws.partiality)
 			}
 		})
 	}

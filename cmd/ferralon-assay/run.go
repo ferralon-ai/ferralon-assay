@@ -646,6 +646,12 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		return workSet{}, err
 	}
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
+	if ctx.Err() != nil {
+		if len(ws.advisories) == 0 {
+			return workSet{}, fmt.Errorf("the scan stopped while choosing advisories, before any was chosen: %w", context.Cause(ctx))
+		}
+		ws = cutWorkSet(ws, context.Cause(ctx))
+	}
 	if len(ws.advisories) == 0 {
 		return workSet{}, errEmptyWorkSet(acq.language)
 	}

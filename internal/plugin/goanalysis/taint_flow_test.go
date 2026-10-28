@@ -1,8 +1,9 @@
 // Hermetic goanalysis tests for the value-flow shapes taint must survive (taint_ssa.go):
 // library calls with no SSA body, a store into a struct field, a type assertion and a
 // map lookup, the stores through an element or nested field address that a variadic
-// call, a slice literal or a nested struct makes, and the sanitizer model that
-// body-less forwarding brings into effect.
+// call, a slice literal or a nested struct makes, a store through a pointer field or a
+// slice view, the append and copy builtins, and the sanitizer model that body-less
+// forwarding brings into effect.
 //
 // They run runTaint over taintflowmod's main.go, type-checked and built in memory
 // against the chimod net/http and chi stubs and two one-line stdlib stand-ins. As in a
@@ -102,6 +103,15 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 		{"slice literal", "sinkSliceLit", true},
 		{"nested field, then its sibling", "sinkNestedSibling", true},
 		{"variadic call on values not from the request", "sinkVariadicConst", false},
+		// The chain of bases continues through a load of a field or element address
+		// and through a slice view.
+		{"store through a pointer field, read back", "sinkPointerField", true},
+		{"store through a slice view, read through the array", "sinkSliceView", true},
+		// The append and copy builtins carry taint from their arguments.
+		{"append(args, x)", "sinkAppend", true},
+		{"copy(dst, tainted)", "sinkCopy", true},
+		{"append on values not from the request", "sinkAppendConst", false},
+		{"copy from values not from the request", "sinkCopyConst", false},
 	}
 	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
 	sp := &ssaProgram{prog: app.Prog}

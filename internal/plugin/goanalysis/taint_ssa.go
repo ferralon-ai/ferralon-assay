@@ -2,6 +2,7 @@ package goanalysis
 
 import (
 	"cmp"
+	"go/token"
 	"sort"
 
 	"golang.org/x/tools/go/ssa"
@@ -219,8 +220,15 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 				// fmt.Sprintf("%s", x) and exec.Command("sh", "-c", x) receive a
 				// tainted slice. This is field- and element-insensitive by design:
 				// every field and element of a base reads as tainted. The chain
-				// stops at a load: s.p.a = x, with p a pointer field, taints the
-				// struct p points to but not s.
+				// continues through a load of a field or element address: s.p.a =
+				// x, with p a pointer field, stores through *(&s.p), and every later
+				// read of s.p is a fresh load of &s.p, so the chain goes on to &s.p
+				// and s, and s.p.a then reads as tainted (as s.p.b does). It also
+				// continues through a slice view, so s := arr[:]; s[0] = x taints
+				// arr. It stops at a load of anything else, such as a global or a
+				// variable a closure captures: g.a = x, with g a global pointer,
+				// taints only the struct g points to, which a later read of g.a
+				// does not observe.
 				//
 				// This deliberately over-approximates, and it partly undoes the
 				// choice not to seed receivers (see runTaint): in a method, s.last
@@ -243,8 +251,11 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 }
 
 // addrBases returns the bases under a field or element address, nearest first: for
-// &(&t0.in).a it is &t0.in, then t0; for &t0[i] it is t0. It stops at the first base
-// that is neither a field nor an element address.
+// &(&t0.in).a it is &t0.in, then t0; for &t0[i] it is t0. It also steps through a
+// slice view to the value it slices (for &t1[i], t1 = t0[:], it is t1, then t0) and
+// through a load of a field or element address to that address (for &t2.a, t2 =
+// *(&t0.p), it is t2, then &t0.p, then t0). It stops at the first base that is none
+// of these.
 func addrBases(addr ssa.Value) []ssa.Value {
 	var bases []ssa.Value
 	for {
@@ -253,11 +264,26 @@ func addrBases(addr ssa.Value) []ssa.Value {
 			addr = a.X
 		case *ssa.IndexAddr:
 			addr = a.X
+		case *ssa.Slice:
+			addr = a.X
+		case *ssa.UnOp:
+			if a.Op != token.MUL || !isFieldOrElemAddr(a.X) {
+				return bases
+			}
+			addr = a.X
 		default:
 			return bases
 		}
 		bases = append(bases, addr)
 	}
+}
+
+func isFieldOrElemAddr(v ssa.Value) bool {
+	switch v.(type) {
+	case *ssa.FieldAddr, *ssa.IndexAddr:
+		return true
+	}
+	return false
 }
 
 // propagateCall handles taint at a call site where v is a tainted argument:
@@ -268,6 +294,11 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	common := in.Common()
 	if fn := in.Parent(); fn != nil {
 		ta.onPath[fn] = true
+	}
+
+	if b, ok := common.Value.(*ssa.Builtin); ok {
+		propagateBuiltin(b, in, common, v, o, seed)
+		return
 	}
 
 	callee := common.StaticCallee()
@@ -291,7 +322,8 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// callee (r.Header.Get, url.Values.Get, strings.TrimSpace) has none: an
 		// unmodeled transform forwards taint from a tainted argument, the receiver
 		// included, to its result. A (T, error) result's tuple carries it to its
-		// Extract. A dynamic call with no static callee forwards nothing.
+		// Extract. A dynamic call with no static callee forwards nothing; the
+		// append and copy builtins are modeled above (propagateBuiltin).
 		// This is also how a context.Context becomes tainted: r.Context() is such
 		// a call on the tainted request, so its result is tainted, and every
 		// callee then receiving that ctx is tainted too (exec.CommandContext(ctx,
@@ -314,6 +346,28 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	// is not a sanitizer (conservative: an unmodeled transform forwards taint).
 	if val, ok := in.(ssa.Value); ok {
 		seed(val, o)
+	}
+}
+
+// propagateBuiltin models the builtins that move data from one argument to another:
+// append's result carries taint from any tainted argument, the slice it extends or the
+// elements it adds (args = append(args, x) builds x into a slice first, which the
+// store case taints); copy taints its destination, and the bases under it
+// (addrBases), when its source is tainted. Every other builtin forwards nothing.
+func propagateBuiltin(b *ssa.Builtin, in ssa.CallInstruction, common *ssa.CallCommon, v ssa.Value, o taintOrigin, seed func(ssa.Value, taintOrigin)) {
+	switch b.Name() {
+	case "append":
+		if val, ok := in.(ssa.Value); ok {
+			seed(val, o)
+		}
+	case "copy":
+		if len(common.Args) == 2 && common.Args[1] == v {
+			dst := common.Args[0]
+			seed(dst, o)
+			for _, base := range addrBases(dst) {
+				seed(base, o)
+			}
+		}
 	}
 }
 

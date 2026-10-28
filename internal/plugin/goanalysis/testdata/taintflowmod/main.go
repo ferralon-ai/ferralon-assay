@@ -3,14 +3,16 @@
 // chi.URLParam, strings.TrimSpace), a modeled sanitizer (strconv.Atoi), a store into
 // a struct field, a type assertion and a map lookup, and the shapes built through an
 // element or nested field address: a variadic call (fmt.Sprintf, and a sink that is
-// itself variadic, as exec.Command is), a slice literal, and a store into one nested
-// field read back through its sibling. One chi-registered handler hands each shape to
-// its OWN sink, so a test can read each shape's result off its sink.
+// itself variadic, as exec.Command is), a slice literal, a store into one nested
+// field read back through its sibling, a store through a pointer field, and a store
+// through a slice view of an array; and the append and copy builtins. One
+// chi-registered handler hands each shape to its OWN sink, so a test can read each
+// shape's result off its sink.
 //
 // The controls sit beside them: field reads and a first-party call, which were always
-// tainted, and a library call on a value never derived from the request, which must
-// stay untainted. (The http types are tegron.test/nethttp's stand-ins; see
-// ../chimod/nethttpstub/http.go.)
+// tainted, and a library call, an append and a copy over values never derived from
+// the request, which must stay untainted. (The http types are tegron.test/nethttp's
+// stand-ins; see ../chimod/nethttpstub/http.go.)
 package main
 
 import (
@@ -47,6 +49,13 @@ func sinkSliceLit(v []string)       { sunk = append(sunk, v) }
 func sinkNestedSibling(v string)    { sunk = append(sunk, v) }
 func sinkVariadicConst(v ...string) { sunk = append(sunk, v) }
 
+func sinkAppend(v []string)      { sunk = append(sunk, v) }
+func sinkCopy(v string)          { sunk = append(sunk, v) }
+func sinkAppendConst(v []string) { sunk = append(sunk, v) }
+func sinkCopyConst(v string)     { sunk = append(sunk, v) }
+func sinkPointerField(v string)  { sunk = append(sunk, v) }
+func sinkSliceView(v string)     { sunk = append(sunk, v) }
+
 // greeting is never derived from the request.
 var greeting = " hello "
 
@@ -55,6 +64,9 @@ type wrap struct{ req *http.Request }
 
 // outer holds a struct in a field, so o.in.a is a field address of a field address.
 type outer struct{ in struct{ a, b string } }
+
+// holder holds a pointer in a field, so h.in.a stores through a load of &h.in.
+type holder struct{ in *struct{ a string } }
 
 // ownID is a first-party transform: its body is built, so taint flows through it.
 func ownID(s string) string { return "id-" + s }
@@ -90,6 +102,29 @@ func flows(w http.ResponseWriter, r *http.Request) {
 	sinkNestedSibling(o.in.b)
 	// Control: a variadic call whose elements never came from the request.
 	sinkVariadicConst("sh", "-c", greeting)
+
+	// The append and copy builtins, and their controls.
+	args := []string{"a"}
+	args = append(args, r.Method)
+	sinkAppend(args)
+	dst := make([]string, 1)
+	copy(dst, []string{r.Method})
+	sinkCopy(dst[0])
+	cargs := append([]string{"a"}, greeting)
+	sinkAppendConst(cargs)
+	cdst := make([]string, 1)
+	copy(cdst, []string{greeting})
+	sinkCopyConst(cdst[0])
+
+	// A store through a pointer field, read straight back, and a store through a
+	// slice view, read through the array under it.
+	h := &holder{in: &struct{ a string }{}}
+	h.in.a = r.Method
+	sinkPointerField(h.in.a)
+	var arr [2]string
+	view := arr[:]
+	view[0] = r.Method
+	sinkSliceView(arr[1])
 }
 
 func main() {

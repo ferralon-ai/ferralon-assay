@@ -95,7 +95,9 @@ type reportHTMLFinding struct {
 	Label    string
 	Severity string // CSS class suffix: affected | ok | info | candidate | notassessed
 	Detail   string
-	Path     string
+	// Assumptions are the stated assumptions a not_exploitable holds under, one line each.
+	Assumptions []string
+	Path        string
 	// UndeterminedReason is the machine-readable code behind a "not assessed" row, rendered
 	// alongside the human sentence so a reader can match it to the coverage limit above and to
 	// the same code in the SARIF and JSON.
@@ -242,8 +244,12 @@ func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 		Label:              label,
 		Severity:           severity,
 		Detail:             f.Evidence.Detail,
+		Assumptions:        f.Evidence.Assumptions,
 		Path:               f.Evidence.ReachablePath,
 		UndeterminedReason: f.UndeterminedReason,
+	}
+	if out.Detail == "" && (f.Verdict == report.VerdictDisqualified || f.Verdict == report.VerdictNotExploitable) {
+		out.Detail = basisGrounds(f.Evidence.Basis)
 	}
 
 	// Priority: EPSS/KEV exploitation-likelihood context from the run's signals file, each value

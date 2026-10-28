@@ -103,7 +103,9 @@ func funcTypePackage(fn *ssa.Function) *types.Package {
 // requested algorithm ("vta" default | "cha" | "rta"), emitting caller->callee
 // edges and root entry points by SCIP id. A load/SSA-build failure is a hard
 // error (inv.4); unresolved interface dispatch, reflection, or cgo degrade the
-// declared Partiality rather than truncating the graph.
+// declared Partiality rather than truncating the graph. The calls reflection
+// makes are not declared run-wide here: Reachability bounds them per advisory
+// (withholdForReflectReach).
 func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
 	algo := req.Algorithm
 	if algo == "" {
@@ -117,15 +119,11 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
-	return callGraphOf(res, algo)
+	return callGraphDeclaring(res, algo, declaredRunWide)
 }
 
-// callGraphOf builds the call graph of an already-loaded program; algo is "vta", "cha" or "rta".
-func callGraphOf(res *LoadResult, algo string) (plugin.CallGraphResult, error) {
-	return callGraphDeclaring(res, algo, func(string) bool { return true })
-}
-
-// callGraphDeclaring is callGraphOf declaring only the run-time calls' reasons that declare keeps.
+// callGraphDeclaring builds the call graph of an already-loaded program, declaring only the run-time
+// calls' reasons that declare keeps; algo is "vta", "cha" or "rta".
 func callGraphDeclaring(res *LoadResult, algo string, declare func(reason string) bool) (plugin.CallGraphResult, error) {
 	sp, err := buildSSA(res)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -177,7 +178,11 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	load := sync.OnceValues(func() (*LoadResult, error) {
 		return loadForBuild(ctx, req.BuildDir, req.GoToolchain)
 	})
-	res, err := reconciledResult(ctx, scanned, req.BuildDir, env, load)
+	var entry plugin.LibraryEntrypoints
+	if req.LibraryEntrypoints != nil {
+		entry = *req.LibraryEntrypoints
+	}
+	res, err := reconciledResult(ctx, scanned, req.BuildDir, env, load, entry)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
@@ -190,53 +195,88 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // exported methods govulncheck never searched, a library's callers, or a call reflection makes may
 // contradict, and one for a load that could not tell whether the build has cgo on (cgoPinned). load
 // supplies the loaded program, and is asked for it only to build the graph or to withhold a
-// refutation.
-func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error)) (plugin.ReachabilityResult, error) {
+// refutation. entry is the caller's statement of the build's library entry points.
+func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	g, err := reconcileCallGraph(ctx, buildDir, load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
 	res := evidenceResult(scanned.findings, g.CallGraph, env)
-	if res.Refutation == nil {
-		// Only a refutation is ever withheld.
-		return res, nil
+	if res.Refutation != nil {
+		loaded, err := load()
+		if err != nil {
+			return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
+		}
+		if loaded.cgoUnresolved {
+			res.Refutation = nil
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
+		} else {
+			entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
+			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
+			res.LibraryEntrypoints = entrypoints.record()
+		}
 	}
-	loaded, err := load()
-	if err != nil {
-		return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
-	}
-	if loaded.cgoUnresolved {
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
-		return res, nil
-	}
-	return withholdForReflectReach(withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env), scanned, g.ReflectReach), nil
+	// Every result passes here: the call graph this lane searches omits reflection's calls, so no
+	// refutation and no Searched sink stands that those calls may contradict.
+	return withholdForReflectReach(res, scanned, g.ReflectReach), nil
 }
 
-// withholdForReflectReach drops a refutation that a call reflection makes may contradict. govulncheck
-// follows no such call, so when what those calls can reach (reflectReach) holds one of the advisory's
-// vulnerable symbols, or that reach is unknown, the search that found no path never covered it. The
-// result then declares reflection:call instead.
+// withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes
+// may contradict. govulncheck follows no such call, so when what those calls can reach (reflectReach)
+// holds one of the advisory's vulnerable symbols, or that reach is unknown, the search that found no
+// path never covered it. The result then declares reflection:call instead.
 func withholdForReflectReach(res plugin.ReachabilityResult, scanned vulnScan, reach map[string][]string) plugin.ReachabilityResult {
-	r := res.Refutation
-	if r == nil {
-		return res
+	if r := res.Refutation; r != nil {
+		module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+		if !ok || reflectMayReach(reach, scanned, module) {
+			res.Refutation = nil
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonReflectiveCall)
+		}
 	}
-	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || reach == nil || reflectReaches(reach, module, scanned.vulnerableSymbols(module)) {
-		res.Refutation = nil
+	if len(res.Searched) > 0 && searchedReflectMayReach(reach, scanned) {
+		res.Searched = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonReflectiveCall)
 	}
 	return res
 }
 
+// reflectMayReach reports whether a call reflection makes may reach one of module's vulnerable
+// symbols: the reach holds one, or it is unknown.
+func reflectMayReach(reach map[string][]string, scanned vulnScan, module string) bool {
+	return reach == nil || reflectReaches(reach, module, scanned.vulnerableSymbols(module))
+}
+
+// searchedReflectMayReach reports whether a call reflection makes may reach a vulnerable symbol of
+// any module the scan names; with none named, which one a sink lies in is unknown, and it may.
+func searchedReflectMayReach(reach map[string][]string, scanned vulnScan) bool {
+	modules := map[string]bool{}
+	for m := range scanned.imports {
+		modules[m] = true
+	}
+	for _, f := range scanned.findings {
+		if len(f.Trace) > 0 && f.Trace[0].Module != "" {
+			modules[f.Trace[0].Module] = true
+		}
+	}
+	if len(modules) == 0 {
+		return true
+	}
+	for m := range modules {
+		if reflectMayReach(reach, scanned, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
 // govulncheck never searched, or a library's callers may contradict it. release is the Go release the
-// build compiles under, or nil when the load is not established to have run under it.
-func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
+// build compiles under, or nil when the load is not established to have run under it. entry is the
+// build's resolved library entry points.
+func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
 	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, buildDir, env)
 	res = withholdForUnsearchedMethods(res, scanned, pkgs)
-	return withholdForLibraryEscape(res, scanned, pkgs)
+	return withholdForLibraryEscape(res, scanned, pkgs, entry)
 }
 
 // withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
@@ -272,40 +312,241 @@ func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []str
 }
 
 // withholdForLibraryEscape drops a refutation an importer of the build's packages may contradict.
-// govulncheck searches only the calls the build's own packages make. A value an importable package
-// hands its importer (a function, an interface value, a struct carrying either, through a result, an
-// exported var or field, or an embedded type) can still run the module's code once the importer
-// calls it, and that call is outside the search, whether or not the build also has a main package.
-// So when any importable package reaches the refuted module (for the standard library, a
-// vulnerable package), or the load cannot say whether one does, the result declares library_escape
-// instead.
-func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+// govulncheck searches only the calls the build's own packages make. A value an entry point hands its
+// importer (a function, an interface value, a struct carrying either, through a result, an exported
+// var or field, or an embedded type) can still run the module's code once the importer calls it, and
+// that call is outside the search, whether or not the build also has a main package. So when any
+// entry point reaches the refuted module (for the standard library, a vulnerable package), or the
+// entry points or their reach are unknown, the result declares library_escape instead. A refutation
+// that stands only because the caller declared a package no entry point carries that declaration
+// as an assumption.
+func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || libraryReaches(pkgs, module, scanned.vulnerablePackages(module)) {
+	if !ok {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+		return res
+	}
+	vulnerable := scanned.vulnerablePackages(module)
+	incomplete := incompleteLoad(pkgs)
+	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
+		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+		return res
+	}
+	// With the load complete, auto's own exclusions are the inferred rule and need no statement.
+	// With it incomplete, auto alone withholds, so what stands rests on the declaration for every
+	// importable package outside the entry points.
+	left := entry.auto
+	if incomplete {
+		left = append(slices.Clone(entry.auto), entry.tightened...)
+	}
+	if left := reaching(pkgs, left, incomplete, module, vulnerable); len(left) > 0 {
+		refutation := *r
+		refutation.Assumptions = append(slices.Clone(r.Assumptions), entry.assumption(left, incomplete, module))
+		res.Refutation = &refutation
 	}
 	return res
 }
 
-// libraryReaches reports whether one of the build's importable packages reaches module, counting a
-// load in which a package failed to load or type-check, since its imports may be incomplete.
-func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string) bool {
+// incompleteLoad reports whether a package failed to load or type-check, so that its imports, and
+// what reaches through them, may be incomplete.
+func incompleteLoad(pkgs []*packages.Package) bool {
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		if p.Types == nil || len(p.Errors) > 0 {
 			incomplete = true
 		}
 	})
-	if incomplete {
-		return true
+	return incomplete
+}
+
+// reaching returns the packages of set that reach module, or all of set when the load is incomplete.
+func reaching(pkgs, set []*packages.Package, incomplete bool, module string, vulnerable []string) []*packages.Package {
+	if incomplete || len(set) == 0 {
+		return set
 	}
 	reach := newModuleReach(pkgs, module, vulnerable)
-	return slices.ContainsFunc(pkgs, func(p *packages.Package) bool { return importable(p) && reach.reachesModule(p) })
+	return slices.DeleteFunc(slices.Clone(set), func(p *packages.Package) bool { return !reach.reachesModule(p) })
+}
+
+// entrypoints is the build's library entry points: the packages code outside the build may import
+// and call, resolved from the caller's statement.
+type entrypoints struct {
+	decl plugin.LibraryEntrypoints
+	// pkgs are the entry points.
+	pkgs []*packages.Package
+	// auto are the entry points auto infers with nothing declared, less those in pkgs: the
+	// packages a declaration took out.
+	auto []*packages.Package
+	// tightened are the importable packages neither in pkgs nor auto: those auto's own rule
+	// (autoExcludedElements) leaves out.
+	tightened []*packages.Package
+	// matched holds each declared path, "!" kept on an exclusion, that matched a package.
+	matched map[string]bool
+}
+
+// autoExcludedElements are the path elements below the module path that put a package outside auto's
+// entry points: programs, examples and tests, which no importer is expected to build on.
+var autoExcludedElements = []string{"cmd", "example", "examples", "test", "tests", "testdata"}
+
+// resolveEntrypoints resolves the caller's statement against the build's packages. Auto's entry
+// points are the importable packages (importable) outside autoExcludedElements. A declared path is
+// matched against the package's directory relative to decl.Base, or buildDir when that is empty,
+// and counts as matched only when it covers an importable package. A package whose directory cannot
+// be placed there keeps auto's answer, and is an entry point under a path list.
+func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints, buildDir string) entrypoints {
+	e := entrypoints{decl: decl, matched: map[string]bool{}}
+	base := decl.Base
+	if base == "" {
+		base = buildDir
+	}
+	root, rootErr := filepath.EvalSymlinks(base)
+	for _, p := range pkgs {
+		if !importable(p) {
+			continue
+		}
+		dir, placed := "", false
+		if rootErr == nil {
+			dir, placed = relDir(root, p.Dir)
+		}
+		if placed {
+			for _, inc := range decl.Include {
+				if plugin.Under(dir, inc) {
+					e.matched[inc] = true
+				}
+			}
+			for _, exc := range decl.Exclude {
+				if plugin.Under(dir, exc) {
+					e.matched["!"+exc] = true
+				}
+			}
+		}
+		auto := !autoExcluded(p)
+		switch {
+		case e.isEntrypoint(dir, placed, auto):
+			e.pkgs = append(e.pkgs, p)
+		case auto:
+			e.auto = append(e.auto, p)
+		default:
+			e.tightened = append(e.tightened, p)
+		}
+	}
+	return e
+}
+
+// isEntrypoint reports whether an importable package in dir is an entry point. auto is auto's answer.
+func (e entrypoints) isEntrypoint(dir string, placed, auto bool) bool {
+	switch {
+	case e.decl.Mode == plugin.LibraryEntrypointsNone:
+		return false
+	case !placed:
+		return auto || e.decl.Mode == plugin.LibraryEntrypointsPaths
+	case slices.ContainsFunc(e.decl.Exclude, func(x string) bool { return plugin.Under(dir, x) }):
+		return false
+	case slices.ContainsFunc(e.decl.Include, func(x string) bool { return plugin.Under(dir, x) }):
+		return true
+	}
+	return auto && e.decl.Mode != plugin.LibraryEntrypointsPaths
+}
+
+// relDir returns dir relative to root, slash-separated, when it lies inside root.
+func relDir(root, dir string) (string, bool) {
+	if dir == "" {
+		return "", false
+	}
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// autoExcluded reports whether an element of p's path below its module path is one of
+// autoExcludedElements. A package with no module to measure from is not excluded.
+func autoExcluded(p *packages.Package) bool {
+	if p.Module == nil {
+		return false
+	}
+	rel, ok := strings.CutPrefix(p.PkgPath, p.Module.Path)
+	if !ok {
+		return false
+	}
+	return slices.ContainsFunc(strings.Split(rel, "/"), func(el string) bool { return slices.Contains(autoExcludedElements, el) })
+}
+
+// removes reports whether the declaration took a package auto infers out of the entry points: none,
+// a path list, or an exclusion that matched a package. auto with paths added only adds.
+func (e entrypoints) removes() bool {
+	switch e.decl.Mode {
+	case plugin.LibraryEntrypointsNone, plugin.LibraryEntrypointsPaths:
+		return true
+	}
+	return slices.ContainsFunc(e.decl.Exclude, func(x string) bool { return e.matched["!"+x] })
+}
+
+// unmatchedIncludes returns the declared entry-point paths that matched no package: the caller named
+// an entry point the build does not hold, so which packages it meant is unknown.
+func (e entrypoints) unmatchedIncludes() []string {
+	return slices.DeleteFunc(slices.Clone(e.decl.Include), func(p string) bool { return e.matched[p] })
+}
+
+// record is the resolved set as the result reports it.
+func (e entrypoints) record() *plugin.ResolvedLibraryEntrypoints {
+	rec := &plugin.ResolvedLibraryEntrypoints{
+		Ecosystem: "golang",
+		Source:    plugin.LibraryEntrypointsSourceAuto,
+		Input:     e.decl.String(),
+		Packages:  pkgPaths(e.pkgs),
+		Unmatched: e.unmatchedIncludes(),
+	}
+	if e.decl.Declared() {
+		rec.Source = plugin.LibraryEntrypointsSourceDeclared
+	}
+	for _, x := range e.decl.Exclude {
+		if !e.matched["!"+x] {
+			rec.Unmatched = append(rec.Unmatched, "!"+x)
+		}
+	}
+	return rec
+}
+
+// assumption states the declaration a refutation rests on: that code outside the build imports none of
+// left, the packages outside the entry points that reach module.
+func (e entrypoints) assumption(left []*packages.Package, incomplete bool, module string) string {
+	names := pkgPaths(left)
+	if len(names) > 5 {
+		names = append(names[:5], fmt.Sprintf("%d more", len(left)-5))
+	}
+	target := module
+	if module == "stdlib" {
+		target = "a vulnerable standard-library package"
+	}
+	verb := "reach"
+	if incomplete {
+		verb = "may reach (the load is incomplete)"
+	}
+	return fmt.Sprintf("library-entrypoints %q: no code outside the build imports %s, which %s %s",
+		e.decl.String(), strings.Join(names, ", "), verb, target)
+}
+
+// pkgPaths returns the sorted import paths of pkgs.
+func pkgPaths(pkgs []*packages.Package) []string {
+	paths := make([]string, 0, len(pkgs))
+	for _, p := range pkgs {
+		paths = append(paths, p.PkgPath)
+	}
+	slices.Sort(paths)
+	return paths
 }
 
 // importable reports whether code outside the build's module can import p: it is not a main
@@ -331,16 +572,21 @@ func isMain(p *packages.Package) bool {
 }
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
-// for another GOOS or GOARCH, or behind a build tag, that may call into the refuted module was
-// never traced, so the refutation holds only for builds that leave it out. The result then
-// declares excluded_files instead.
+// for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
+// packages in the refuted module was never traced, so the refutation holds only for builds that
+// leave it out. The result then declares excluded_files instead. An advisory that lists no vulnerable
+// package in the module, or lists the module once with none, makes every package of it count.
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || leftOutCallers(ctx, pkgs, module, scanned.vulnerablePackages(module), release, buildDir, env) {
+	vulnerable := scanned.vulnerablePackages(module)
+	if scanned.wholeModule[module] || len(scanned.imports[module]) == 0 {
+		vulnerable = nil
+	}
+	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 	}
@@ -685,7 +931,7 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 		if err != nil {
 			return nil, err
 		}
-		cg, err := callGraphDeclaring(loaded, "vta", reflectReasonOnReconcile)
+		cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
 		if err != nil {
 			return nil, err
 		}
@@ -694,12 +940,9 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 			return nil, err
 		}
 		for _, r := range reasons {
-			if reflectReasonOnReconcile(r) {
+			if declaredRunWide(r) {
 				cg.Partiality = withReason(cg.Partiality, r)
 			}
-		}
-		if reach == nil {
-			reach = map[string][]string{}
 		}
 		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
 	})
@@ -742,12 +985,14 @@ type vulnAffected struct {
 }
 
 // vulnScan is what one govulncheck run says about an advisory: its findings at every level, the
-// vulnerable package paths its OSV entries list for each module, and the vulnerable symbols they list
-// for each package (none listed: every function in it).
+// vulnerable package paths its OSV entries list for each module, the vulnerable symbols they list
+// for each package (none listed: every function in it), and the modules an OSV entry lists with no
+// packages at all, which makes every package of the module vulnerable.
 type vulnScan struct {
-	findings []vulnFinding
-	imports  map[string][]string
-	symbols  map[string][]string
+	findings    []vulnFinding
+	imports     map[string][]string
+	symbols     map[string][]string
+	wholeModule map[string]bool
 }
 
 // vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols
@@ -816,7 +1061,7 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 			all = append(all, *msg.Finding)
 		}
 	}
-	scanned := vulnScan{imports: map[string][]string{}, symbols: map[string][]string{}}
+	scanned := vulnScan{imports: map[string][]string{}, symbols: map[string][]string{}, wholeModule: map[string]bool{}}
 	everySymbol := map[string]bool{}
 	for _, f := range all {
 		if vulnID == "" || ids[f.OSV] {
@@ -828,6 +1073,9 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 			continue
 		}
 		for _, a := range o.Affected {
+			if len(a.EcosystemSpecific.Imports) == 0 {
+				scanned.wholeModule[a.Package.Name] = true
+			}
 			for _, imp := range a.EcosystemSpecific.Imports {
 				scanned.imports[a.Package.Name] = append(scanned.imports[a.Package.Name], imp.Path)
 				if len(imp.Symbols) == 0 {

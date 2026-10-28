@@ -38,7 +38,7 @@ func main() {
 	// govulncheck in-process via x/vuln/scan, which reads the ambient GOWORK and would
 	// fail with "directory prefix . does not contain modules listed in go.work". Neutralize
 	// it once at entry so every in-process analyzer is workspace-blind. The environment as it was is
-	// still the build's, which resolves its toolchain through any go.work it has.
+	// still the build's, under which the manifest resolves the build's toolchain, go.work included.
 	ctx := goanalysis.WithBuildEnviron(context.Background(), os.Environ())
 	_ = os.Setenv("GOWORK", "off")
 	if err := run(analyzerContext(ctx), os.Stdin, os.Stdout); err != nil {

@@ -185,6 +185,16 @@ inputs:
       undetermined, because that absence describes the scanner's own toolchain, not yours.
     required: false
     default: "false"
+  library-entrypoints:
+    description: >-
+      Which of your packages code outside this build may import, and so call past your build's own
+      entry points. 'auto' infers them (today Go only; a package under cmd/, examples/ or a test
+      directory is not one), 'none' says the build ships programs only, and a list of paths relative
+      to the repository root nominates them, e.g. "pkg/api, !pkg/api/internal"; a '!path' entry takes a path
+      out, and a list of '!path' entries alone keeps 'auto' for the rest. A not_exploitable verdict
+      that holds only because of what you declared carries that on the report as an assumption.
+    required: false
+    default: auto
   out:
     description: "Output directory for report.json / report.html / report.sarif.json / openvex.json."
     required: false
@@ -233,6 +243,35 @@ inputs:
       scanner-version to a release that carries it.
     required: false
     default: "false"
+  dependency-code:
+    description: >-
+      Whether a JavaScript scan reads its npm dependencies' code, forwarded to the scanner as
+      ASSAY_DEPENDENCY_CODE. 'fetch' downloads each locked package from the registry the
+      repository's .npmrc names and reads it only once its bytes match the lockfile's integrity
+      hash; 'offline' reads only a cache already on the runner; 'off' reads none. Empty (default)
+      leaves the choice to the scanner release's own default. Fetched packages land under the
+      runner's temp directory, which is emptied after the job; persist-dependency-cache decides
+      which of them persist between runs. If the fetch fails, the scan reports what it would with 'off' and names
+      the cause on the Report. The scanned branch's .npmrc chooses which registry host receives
+      NODE_AUTH_TOKEN/NPM_TOKEN, as with npm ci; don't export them on pull-request jobs, or set
+      'off'. VERSION REQUIREMENT: a scanner release that reads ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
+    required: false
+    default: ""
+  persist-dependency-cache:
+    description: >-
+      Which fetched npm packages persist between runs in the GitHub Actions cache, keyed on the
+      repository's lockfiles. 'auto' (default): on a private or internal repository, every
+      package; on a public repository, or when the event payload carries no repository
+      (schedule), every package except those from a registry the .npmrc holds an auth entry for,
+      which are fetched again on every run and never written to the cached directory. 'always'
+      persists every package on any repository; any workflow run allowed to restore the cache can
+      read it, and on a public repository that includes pull-request workflows from forks, which
+      can restore default-branch caches, so 'always' on a public repository exposes private
+      packages to them. 'never' persists nothing, and each run fetches every package again.
+      VERSION REQUIREMENT for 'auto' on a public repository: a scanner release that reads
+      ASSAY_DEPENDENCY_UNCREDENTIALED_CACHE; one that predates it persists nothing.
+    required: false
+    default: "auto"
   issue:
     description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
     required: false
@@ -642,6 +681,67 @@ runs:
         fi
         echo "==> Advisory corpus checked out at $DEST ($CORPUS_REPO@$CORPUS_REF)"
 
+    - name: Resolve the dependency cache
+      id: depcache
+      # scope is what the persisted cache may hold: all, uncredentialed or none. 'auto' persists
+      # everything only when the event payload says the repository is private or internal;
+      # repository.private is a required field of every payload that carries a repository, and a
+      # payload without one (schedule) reads as empty here, so it counts as public. On a public
+      # repository the scanner keeps every tarball from a registry the .npmrc holds an auth
+      # entry for in cache-dir, which is never persisted, and writes only the rest to
+      # uncredentialed-dir, which is.
+      shell: bash
+      env:
+        PERSIST_DEPENDENCY_CACHE: ${{ inputs.persist-dependency-cache }}
+        REPO_PRIVATE: ${{ github.event.repository.private }}
+        REPO_VISIBILITY: ${{ github.event.repository.visibility }}
+      run: |
+        persisted="$RUNNER_TEMP/ferralon-assay-deps"
+        case "$PERSIST_DEPENDENCY_CACHE" in
+          never) scope=none ;;
+          always) scope=all ;;
+          auto)
+            if [ "$REPO_PRIVATE" = "true" ] || [ "$REPO_VISIBILITY" = "private" ] || [ "$REPO_VISIBILITY" = "internal" ]; then
+              scope=all
+            else
+              scope=uncredentialed
+            fi
+            ;;
+          *)
+            echo "::error::ferralon-assay: persist-dependency-cache '$PERSIST_DEPENDENCY_CACHE' is not one of auto, always, never." >&2
+            exit 1
+            ;;
+        esac
+        if [ "$scope" = "uncredentialed" ]; then
+          cache_dir="$RUNNER_TEMP/ferralon-assay-deps-run"
+          uncredentialed_dir="$persisted"
+        else
+          cache_dir="$persisted"
+          uncredentialed_dir=""
+        fi
+        {
+          echo "scope=$scope"
+          echo "cache-dir=$cache_dir"
+          echo "uncredentialed-dir=$uncredentialed_dir"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore the dependency code cache
+      # Keyed on every lockfile the scanner reads, so the same locks restore the same verified
+      # tarballs; restore-keys reuses an earlier cache after a lock changes, and the scanner
+      # re-verifies every file it reads against the lock either way. The key's v1-<scope> segment
+      # keeps a cache saved under one scope, or by an earlier format, from ever restoring under
+      # another: an 'all' cache can hold credentialed tarballs.
+      if: >-
+        inputs.dependency-code != 'off' &&
+        steps.depcache.outputs.scope != 'none' &&
+        hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') != ''
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/ferralon-assay-deps
+        key: ferralon-assay-deps-v1-${{ steps.depcache.outputs.scope }}-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock', '**/pnpm-lock.yaml', '!**/node_modules/**') }}
+        restore-keys: |
+          ferralon-assay-deps-v1-${{ steps.depcache.outputs.scope }}-${{ runner.os }}-
+
     - name: Run the Ferralon Assay
       id: run
       shell: bash
@@ -664,6 +764,15 @@ runs:
         # explicit affirmative ('true') enables it — the ternary yields the literal 'false'
         # otherwise, which envEnabled reads as off.
         ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability == 'true' }}
+        # Read by run.go (-library-entrypoints falls back to it); data, never parsed by the shell.
+        ASSAY_LIBRARY_ENTRYPOINTS: ${{ inputs.library-entrypoints }}
+        # JS dependency code. Empty inherits the scanner's default. The directories come from the
+        # depcache step; both are left unset for 'off'. Env vars rather than flags, so a scanner
+        # release that predates them ignores them: one that predates the uncredentialed cache
+        # writes every tarball to the unpersisted cache-dir and leaves the persisted one empty.
+        ASSAY_DEPENDENCY_CODE: ${{ inputs.dependency-code }}
+        ASSAY_DEPENDENCY_CACHE: ${{ inputs.dependency-code != 'off' && steps.depcache.outputs.cache-dir || '' }}
+        ASSAY_DEPENDENCY_UNCREDENTIALED_CACHE: ${{ inputs.dependency-code != 'off' && steps.depcache.outputs.uncredentialed-dir || '' }}
         GITHUB_TOKEN: ${{ github.token }}
         # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
         # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined

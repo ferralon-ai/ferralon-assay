@@ -279,6 +279,12 @@ func (f *reflectFixpoint) addType(t types.Type) {
 		f.addType(t.Elem())
 	case *types.Signature:
 		f.addSignatureTypes(t)
+	case *types.Interface:
+		// reflect hands out an interface's method types (Type.Method(i).Type), unexported and
+		// embedded methods included, so each one's parameters and results can be built and called.
+		for i := range t.NumMethods() {
+			f.addSignatureTypes(t.Method(i).Signature())
+		}
 	}
 }
 
@@ -501,8 +507,8 @@ func inRefutedModule(pkg, module string) bool {
 	return pathHolds(module, pkg)
 }
 
-// reflectReasonOnReconcile reports whether a run-time call's reason is declared run-wide on the
-// reconcile path: reflection's calls are bounded per advisory there (withholdForReflectReach).
-func reflectReasonOnReconcile(reason string) bool {
+// declaredRunWide reports whether a run-time call's reason is declared run-wide on a call graph:
+// reflection's calls are bounded per advisory instead (withholdForReflectReach).
+func declaredRunWide(reason string) bool {
 	return reason != plugin.PartialReasonReflectiveCall
 }

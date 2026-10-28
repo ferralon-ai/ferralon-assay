@@ -273,8 +273,10 @@ const (
 	PartialReasonLibraryEscape = "library_escape"
 	// PartialReasonReflectiveCall: the program reaches a call to code picked at run time by a value
 	// or a name (Go's reflect.Value.Call or Method, or a template's Execute), which the call graph
-	// cannot follow. Unlike reflection, which the classifier treats as an inherent limit, this
-	// says the program does it, so it is loud.
+	// cannot follow, and those calls may reach the advisory's vulnerable code. The Go lane declares
+	// it per advisory, when what those calls can reach holds a vulnerable symbol or is unknown.
+	// Unlike reflection, which the classifier treats as an inherent limit, this says the program
+	// does it, so it is loud.
 	PartialReasonReflectiveCall = PartialReasonReflection + ":call"
 	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
 	// (plugin.Open), so none of that code's calls were read.
@@ -461,6 +463,11 @@ type ReachabilityRequest struct {
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
 	DependencyCache string `json:"dependency_cache,omitempty"`
+	// LibraryEntrypoints is the caller's statement of which of the build's packages code outside
+	// the build may import. Nil is auto with nothing declared. A lane that withholds a refutation an
+	// importer may contradict resolves its entry points from it and reports them in
+	// ReachabilityResult.LibraryEntrypoints.
+	LibraryEntrypoints *LibraryEntrypoints `json:"library_entrypoints,omitempty"`
 }
 
 // --- result payloads ---
@@ -624,10 +631,14 @@ type ReachabilityResult struct {
 	// Searched lists the request sinks the lane stands behind as searched: the sink is a node built
 	// from code the lane loaded (never a boundary node), it traced from every ingress it found (at
 	// least one), and no path reached the sink. A lane that lists a sink here must not declare
-	// no_known_ingress on its account.
+	// no_known_ingress on its account. A lane whose call graph omits reflective calls must exclude
+	// sinks those calls can reach.
 	Searched []string `json:"searched,omitempty"`
 	// Refutation is lane-held positive evidence that the package's vulnerable code cannot run.
 	Refutation *Refutation `json:"refutation,omitempty"`
+	// LibraryEntrypoints is the entry-point set the lane resolved from
+	// ReachabilityRequest.LibraryEntrypoints, when it resolved one.
+	LibraryEntrypoints *ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
 }
 
 // Refutation grounds a not_exploitable verdict without a searched sink. Package is a PURL (version
@@ -637,6 +648,9 @@ type Refutation struct {
 	Basis   string `json:"basis"`
 	Package string `json:"package"`
 	Detail  string `json:"detail"`
+	// Assumptions are the caller's declarations the refutation holds only under, each one
+	// checkable line; the verdict carries them. Empty means it rests on the lane's evidence alone.
+	Assumptions []string `json:"assumptions,omitempty"`
 }
 
 // Refutation bases.
@@ -802,6 +816,12 @@ type RuntimeSpec struct {
 	Target    string        `json:"target,omitempty"`    // this toolchain's target platform/architecture ("linux/amd64", "x86_64-linux-gnu")
 	Lang      string        `json:"lang,omitempty"`      // language mode this toolchain compiles ("c", "c++")
 	StdLevel  string        `json:"std_level,omitempty"` // language standard level ("c17", "c++20")
+
+	// Resolved is the toolchain the build's environment resolves for this runtime, when the analyzer
+	// established it (Go: `go env GOVERSION` for the build directory under the build's environment).
+	// It is an ambient observation whatever Source says, and a statement about the subject only when
+	// the caller asserts the analyzer runs where the subject builds. Empty when not established.
+	Resolved string `json:"resolved,omitempty"`
 }
 
 // ResolverSpec is the ecosystem-neutral resolver/build descriptor.

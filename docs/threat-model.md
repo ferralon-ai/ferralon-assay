@@ -35,6 +35,40 @@ coordinates — ecosystem, name, version — and nothing else. Enabling subject-
 (`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, also off by default) additionally downloads a Go toolchain
 from the module proxy.
 
+A JavaScript scan fetches each package tarball its lockfile pins, by name and version, from the
+registry the repository's `.npmrc` (or `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`) names. This
+is the default; `-dependency-code=off` or `offline` (`ASSAY_DEPENDENCY_CODE`, the Action's
+`dependency-code` input) turns it off. An `.npmrc` `${VAR}` reference reads only `NODE_AUTH_TOKEN`,
+`NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token is presented only to the
+host the `.npmrc` binds it to. The scanned branch's `.npmrc` chooses that host, as it does for
+`npm ci`: whoever can change the `.npmrc` on a scanned branch can direct any of those tokens the job
+exports to a host they control. Pull-request workflows from forks get no secrets by default, so the exposure is
+to same-repository authors and to workflows that hand a token to fork code (`pull_request_target`,
+a private repository's "send secrets to workflows from fork pull requests" setting, or a token placed
+in the job env). The control is `dependency-code: off`, or not exporting
+`NODE_AUTH_TOKEN`, `NPM_TOKEN` or the named variables on jobs that scan pull requests.
+
+The fetched tarballs land in the runner's temp directory, which is emptied after the job. Which of
+them also persist in the GitHub Actions cache, keyed on the runner OS and the repository's lockfiles,
+is the Action's `persist-dependency-cache` input. Any workflow run allowed to restore the cache can
+read it: a run restores caches from its own branch, its pull request's base branch and the default
+branch, and on a public repository that includes pull-request workflows from forks. The rule is per
+tarball. Under the default, `auto`, a private or internal repository (the event payload's
+`github.event.repository.private`, or `visibility` of `private` or `internal`) caches every tarball.
+A public repository, or an event whose payload carries no repository (`schedule`), caches every
+tarball except one from a registry the effective `.npmrc` holds an auth entry for: the scanner
+fetches those into a directory under the runner's temp directory that is never cached, on every
+run, and never writes them to the cached directory (`-dependency-uncredentialed-cache`). It decides
+which registries hold an auth entry from the same `.npmrc` resolution the fetch uses to present a
+token, and fetches every tarball bound for the cached directory without presenting any credential.
+When the lock pins a package from a credentialed registry and a restored cache holds a copy of it,
+the scanner removes that copy. It does not sweep entries the lock no longer pins: an earlier run
+wrote those, and it fetched them without presenting any credential. The cache key carries the scope (`all` or
+`uncredentialed`) and a format version, so a cache saved under one never restores under the other.
+`always` caches every tarball regardless and, on a public repository, exposes cached private
+packages to fork pull requests; `never` caches nothing. A public-repository `offline` run reads the
+uncredentialed tarballs a restored cache holds and leaves every credentialed package unread.
+
 What all of these carry is dependency metadata — module paths, versions, package coordinates — never
 source, and never analysis results.
 

@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -285,6 +286,46 @@ func TestCVEWatch_CutShortHoldsCursor(t *testing.T) {
 			}
 			if got := len(cutShortNotes(res.Report)) == 1; got != tc.wantCut {
 				t.Errorf("scan_cut_short note present = %v, want %v", got, tc.wantCut)
+			}
+		})
+	}
+}
+
+// TestRunBaseline_CutInventoryKeepsStoredSBOM: a baseline stopped during the inventory replaces the
+// stored Report but not the stored SBOM, which CVE-watch queries; with none stored there is nothing
+// to keep.
+func TestRunBaseline_CutInventoryKeepsStoredSBOM(t *testing.T) {
+	cases := []struct {
+		name     string
+		store    func() *memStore
+		wantPkgs []report.Package
+	}{
+		{name: "stored SBOM kept", store: func() *memStore { s, _ := groundedBaseline(); return s }, wantPkgs: []report.Package{wiringPkg}},
+		{name: "nothing stored", store: func() *memStore { return &memStore{} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, analysis := stoppingOptions(t, "inventory", stopAndWait)
+			store := tc.store()
+			rep, err := RunBaseline(context.Background(), store, BaselineRequest{
+				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				Advisories:    cutShortCorpus,
+				AssessOptions: opts,
+				Analysis:      analysis,
+			})
+			if err != nil {
+				t.Fatalf("RunBaseline: %v", err)
+			}
+			if store.state.Report.Subject.ResolvedCommit != "head-sha" || len(rowsByID(store.state.Report)) != len(cutShortCorpus) {
+				t.Errorf("stored Report = %+v, want this run's", store.state.Report)
+			}
+			if !slices.Equal(store.state.SBOM.Packages, tc.wantPkgs) || !slices.Equal(rep.SBOM.Packages, tc.wantPkgs) {
+				t.Errorf("stored SBOM %+v, Report SBOM %+v; want %+v", store.state.SBOM.Packages, rep.SBOM.Packages, tc.wantPkgs)
+			}
+			got := slices.ContainsFunc(rep.Partiality, func(n report.PartialityNote) bool { return n.Detail == priorSBOMNote.Detail })
+			if got != (len(tc.wantPkgs) > 0) {
+				t.Errorf("prior-SBOM disclosure present = %v, want %v", got, len(tc.wantPkgs) > 0)
 			}
 		})
 	}

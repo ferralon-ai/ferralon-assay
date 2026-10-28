@@ -75,8 +75,17 @@ type BaselineRequest struct {
 // current evaluation, not an accumulation); the StateStore merge unions only across
 // concurrent racers. On a fresh repo Read returns ErrNotFound and the Write creates
 // the ref.
+//
+// A baseline stopped before its dependency inventory resolved keeps the stored SBOM: replacing it
+// with an empty one would leave CVE-watch nothing to query until the next baseline finishes.
 func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineRequest) (*report.Report, error) {
-	rep, err := buildBaselineReport(ctx, req)
+	rep, err := baselineReport(ctx, req, func() (report.SBOM, error) {
+		prior, err := readForUpdate(ctx, store)
+		if err != nil {
+			return report.SBOM{}, err
+		}
+		return prior.SBOM, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +108,12 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 // buildBaselineReport runs S1–S6 per advisory and assembles the Report. It does not
 // touch the StateStore — the offline pipeline test exercises it directly.
 func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Report, error) {
+	return baselineReport(ctx, req, nil)
+}
+
+// baselineReport is buildBaselineReport with priorSBOM, which reads the stored SBOM a baseline
+// stopped before its inventory resolved carries forward. Nil carries nothing forward.
+func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, error) {
 	analyzer := req.AnalyzerVersion
 	if analyzer == "" {
 		analyzer = AnalyzerVersion
@@ -133,6 +148,16 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		return nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
 	sbom, invNotes := sbomFromInventory(inv, ecosystemFor(invLanguage))
+	if inventoryCutShort(invNotes) && priorSBOM != nil {
+		prior, err := priorSBOM()
+		if err != nil {
+			return nil, fmt.Errorf("trigger: read the stored SBOM: %w", err)
+		}
+		if len(prior.Packages) > 0 {
+			sbom = prior
+			b.AddPartiality(priorSBOMNote)
+		}
+	}
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
 	b.AddPartiality(invNotes...)

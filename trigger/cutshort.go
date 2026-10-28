@@ -70,3 +70,20 @@ func cutShortNote(analysis context.Context, cut, total int) report.PartialityNot
 		Detail: fmt.Sprintf("%d of %d advisories were not assessed: %v", cut, total, context.Cause(analysis)),
 	}
 }
+
+// priorSBOMNote discloses a baseline Report whose SBOM is the one stored before it, because the
+// scan stopped before this commit's dependency inventory resolved.
+var priorSBOMNote = report.PartialityNote{
+	Reason: report.ReasonScanCutShort,
+	Detail: "the scan stopped before the dependency inventory was resolved; the SBOM is the previous baseline's, kept so CVE-watch still queries it",
+}
+
+// inventoryCutShort reports whether notes declare an inventory the scan stopped before resolving.
+func inventoryCutShort(notes []report.PartialityNote) bool {
+	for _, n := range notes {
+		if n.Reason == report.ReasonScanCutShort && n.Detail == inventoryLimitDetail {
+			return true
+		}
+	}
+	return false
+}

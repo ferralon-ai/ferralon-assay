@@ -718,6 +718,12 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			ambiguous: true,
 		},
 		{
+			name:   "class beside the import",
+			src:    "from .impl import f as g\nfrom .v import vuln\n\nif not g:\n    class g:\n        def __init__(self, x):\n            vuln(x)\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
 			name:  "None alternative",
 			src:   "try:\n    from .impl import f as g\nexcept ImportError:\n    g = None\n\ndef go():\n    return g(1)\n",
 			reach: []string{impl},
@@ -731,6 +737,12 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			name:  "dependency alternative with its boundary edge",
 			deps:  "pyyaml==6.0\n",
 			src:   "try:\n    from .impl import f as g\nexcept ImportError:\n    from yaml import load as g\n\ndef go():\n    return g(1)\n",
+			reach: []string{impl},
+		},
+		{
+			name:  "dependency alternative on the except line",
+			deps:  "pyyaml==6.0\n",
+			src:   "try:\n    from .impl import f as g\nexcept ImportError: from yaml import load as g\n\ndef go():\n    return g(1)\n",
 			reach: []string{impl},
 		},
 		{
@@ -769,6 +781,28 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 					t.Fatalf("%s does not reach %s; edges %v, escaped %v", goSCIP, want, res.Edges, res.Escaped)
 				}
 			}
+		})
+	}
+}
+
+// TestCallGraph_ValueBindingIsListed: a bare call through a name a parameter, assignment
+// or loop target binds may run whatever the value holds, so a same-named declaration's edge
+// is not all it reaches and the site is listed.
+func TestCallGraph_ValueBindingIsListed(t *testing.T) {
+	cases := []struct{ name, src string }{
+		{"parameter", "def g(x):\n    return x\n\ndef go(g):\n    return g(1)\n"},
+		{"assignment", "def g(x):\n    return x\n\ndef go(make):\n    g = make()\n    return g(1)\n"},
+		{"loop target", "def g(x):\n    return x\n\ndef go(fs):\n    for g in fs:\n        g(1)\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := mustCallGraph(t, map[string]string{"m.py": tc.src})
+			for _, u := range res.Unresolved {
+				if u.Callee == "g" && len(u.Targets) == 0 {
+					return
+				}
+			}
+			t.Fatalf("g(1) must be listed; unresolved %v", res.Unresolved)
 		})
 	}
 }

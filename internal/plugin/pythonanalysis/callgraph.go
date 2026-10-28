@@ -220,6 +220,8 @@ type fileParse struct {
 	depImports map[string]map[string]int
 	modValues  []string
 	computed   bool
+	// wrapped lists the defs under a decorator that may replace them with other code.
+	wrapped []funcDecl
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -378,6 +380,9 @@ func loadProgram(buildDir string) (*program, error) {
 		for i := range scan.decorated {
 			scan.decorated[i].module = module
 		}
+		for i := range scan.wrapped {
+			scan.wrapped[i].module = module
+		}
 		prog.files = append(prog.files, fileParse{
 			module:    module,
 			isPackage: strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__",
@@ -388,6 +393,7 @@ func loadProgram(buildDir string) (*program, error) {
 			decls:     fds,
 			topNames:  topNames,
 			decorated: scan.decorated,
+			wrapped:   scan.wrapped,
 			refs:      scan.refs,
 			locals:    scan.locals,
 			plain:     scan.plain,
@@ -585,6 +591,14 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	// A runtime call site may land on any declaration its name stands for other than the one
 	// it has an edge to, so each of those escapes; landed dedups the work per name set.
 	landed := map[string]bool{}
+	// A call to a def under a decorator that may replace it runs the decorator's result,
+	// which no edge names.
+	wrapped := map[string]bool{}
+	for _, f := range prog.files {
+		for _, fd := range f.wrapped {
+			wrapped[fd.scip()] = true
+		}
+	}
 
 	for fi := range prog.files {
 		f := &prog.files[fi]
@@ -613,7 +627,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			// single edge, so never fabricate one (inv.5). A site whose edge is not provably
 			// all it reaches is listed too. Listed with no Targets, it may reach any escaped
 			// frame.
-			if !ok || !f.siteComplete(cs, len(provides) > 0) {
+			if !ok || wrapped[callee] || !f.siteComplete(cs, len(provides) > 0) {
 				u := plugin.UnresolvedCall{
 					Caller: sym(caller),
 					Callee: cs.calleeWritten,

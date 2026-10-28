@@ -858,6 +858,32 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			listed: true,
 		},
 		{
+			name:      "decorator returning a wrapper",
+			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\n@deco\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "first-party decorator named like a cache",
+			src:       "def cache(fn):\n    return fn\n\n@cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:      "functools cache through its module",
+			src:       "import functools\n\n@functools.lru_cache\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{},
+			ambiguous: true,
+		},
+		{
+			name:      "functools cache imported by name",
+			src:       "from functools import lru_cache\n\n@lru_cache(maxsize=None)\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
+			reach:     []string{},
+			ambiguous: true,
+		},
+		{
 			name:  "one import",
 			src:   "from .impl import f as g\n\ndef go():\n    return g(1)\n",
 			reach: []string{impl},

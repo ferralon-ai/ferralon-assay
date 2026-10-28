@@ -109,7 +109,10 @@ type fileScan struct {
 	bindings    []scopedBinding
 	relBindings []scopedBinding
 	decorated   []funcDecl
-	refs        valueRefs
+	// wrapped lists the decorated defs whose decorators are not all known to hand back the
+	// def itself or a cache that calls it (wrapsDef).
+	wrapped []funcDecl
+	refs    valueRefs
 	// locals maps a scope to the names its parameters and assignments bind there: in a def
 	// they shadow an import binding of the same name in an enclosing scope; at module and
 	// class level ("") they are attributes another module may read.
@@ -435,6 +438,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 	pendingRoute := false
 	pendingSelector := ""
 	pendingDecorated := false
+	pendingWrapped := false
 
 	for _, ll := range lines {
 		for len(stack) > 0 && ll.indent <= stack[len(stack)-1].indent {
@@ -449,6 +453,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				pendingSelector = leaf
 			} else {
 				pendingDecorated = true
+				pendingWrapped = pendingWrapped || !fs.wrapsDef(body)
 			}
 			site := frameSite()
 			site.calleeArity = 1
@@ -489,6 +494,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			stack = append(stack, pyFrame{indent: ll.indent, className: name})
 			pendingRoute = false
 			pendingDecorated = false
+			pendingWrapped = false
 			if body != "" {
 				statement(body, false)
 			}
@@ -514,11 +520,15 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			if pendingDecorated {
 				fs.decorated = append(fs.decorated, funcDecl{enclosing: append([]string(nil), enc...), name: name, arity: arity})
 			}
+			if pendingWrapped {
+				fs.wrapped = append(fs.wrapped, funcDecl{enclosing: append([]string(nil), enc...), name: name, arity: arity})
+			}
 			if o := owner(); o == nil || o.className == "" {
 				addNames(&fs.defs, enclosingScope(), []string{name})
 			}
 			pendingRoute = false
 			pendingDecorated = false
+			pendingWrapped = false
 			stack = append(stack, pyFrame{
 				indent:        ll.indent,
 				funcName:      name,
@@ -533,6 +543,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		default:
 			pendingRoute = false
 			pendingDecorated = false
+			pendingWrapped = false
 			statement(text, false)
 			if guardKeywords[kw] {
 				stack = append(stack, pyFrame{indent: ll.indent, guard: true})
@@ -720,6 +731,52 @@ func localNames(st string) []string {
 		}
 	}
 	return out
+}
+
+// defKeepingDecorators are the standard decorators that hand back the def itself, a
+// descriptor over it, or a cache that calls it, keyed by module ("" for builtins).
+var defKeepingDecorators = map[string]map[string]bool{
+	"":                  {"staticmethod": true, "classmethod": true, "property": true},
+	"functools":         {"wraps": true, "lru_cache": true, "cache": true, "cached_property": true},
+	"abc":               {"abstractmethod": true},
+	"typing":            {"overload": true, "override": true, "final": true},
+	"typing_extensions": {"overload": true, "override": true, "final": true},
+}
+
+// wrapsDef reports whether a decorator expression (the text after "@") is one that keeps the
+// def: a builtin by its bare name, a property's setter, getter or deleter, or a standard
+// decorator named through its module or through a name the file imports from it.
+func (fs *fileScan) wrapsDef(expr string) bool {
+	if i := strings.IndexByte(expr, '('); i >= 0 {
+		expr = expr[:i]
+	}
+	expr = strings.TrimSpace(expr)
+	if !isDottedName(expr) {
+		return false
+	}
+	segs := strings.Split(expr, ".")
+	leaf := segs[len(segs)-1]
+	switch {
+	case len(segs) == 1 && defKeepingDecorators[""][leaf]:
+		return true
+	case len(segs) == 2 && (leaf == "setter" || leaf == "getter" || leaf == "deleter"):
+		return true
+	case len(segs) == 2:
+		return defKeepingDecorators[segs[0]][leaf]
+	case len(segs) == 1:
+		found := false
+		for _, b := range append(slices.Clone(fs.bindings), fs.relBindings...) {
+			if b.local != leaf {
+				continue
+			}
+			if mod, name, _ := strings.Cut(b.target, "."); !defKeepingDecorators[mod][name] || name != leaf || mod == "" {
+				return false
+			}
+			found = true
+		}
+		return found
+	}
+	return false
 }
 
 // captureNames lists the names a match statement's case pattern may bind: every name in

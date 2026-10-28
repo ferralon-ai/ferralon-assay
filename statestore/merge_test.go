@@ -120,9 +120,17 @@ func signalsReport(commit string, ts time.Time, digest string, ids ...string) *r
 	return r
 }
 
-// TestMergeSignalsDigest: a merged Report names a signals file only when it ranked every
-// row that carries a Priority. A row ranked by the other side's file, or by an unrecorded one, must
-// not be published under the kept provenance's digest.
+// unranked is r with every row's Priority removed: the rows a signals file holds no entry for.
+func unranked(r *report.Report) *report.Report {
+	for i := range r.Advisories {
+		r.Advisories[i].Priority = nil
+	}
+	return r
+}
+
+// TestMergeSignalsDigest: a merged Report names a signals file only when that file ranked every
+// row, with or without a Priority. A row from a Report that named another file, or none, must not be
+// published under the kept provenance's digest.
 func TestMergeSignalsDigest(t *testing.T) {
 	t0 := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	const a, b = "sha256:aaa", "sha256:bbb"
@@ -135,7 +143,9 @@ func TestMergeSignalsDigest(t *testing.T) {
 		{"a row ranked by another file clears it", signalsReport("b", t0, a, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
 		{"the later side's own rows keep its digest when the older side's rows are all shadowed", signalsReport("b", t0, a, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-A"), b},
 		{"rows from a binary that recorded no digest clear it", signalsReport("b", t0, "", "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
-		{"no priority rows from the other side keeps it", sampleReport("b", "c", t0, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), b},
+		{"unranked rows from a run with no signals clear it", sampleReport("b", "c", t0, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
+		{"unranked rows from a run with another file clear it", unranked(signalsReport("b", t0, a, "GO-A")), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
+		{"unranked rows from a run with the same file keep it", unranked(signalsReport("b", t0, b, "GO-A")), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), b},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := Merge(&State{Report: c.base, CommitSHA: "sha-base"}, &State{Report: c.mine}).Report
@@ -151,6 +161,37 @@ func TestMergeSignalsDigest(t *testing.T) {
 				if in.Provenance.Intel != nil && in.Provenance.Intel.SignalsDigest == "" {
 					t.Errorf("Merge cleared the digest on one of its inputs")
 				}
+			}
+		})
+	}
+}
+
+// TestWithoutSignalsDigest: the copy drops the digest and keeps the rest of the block, the input is
+// left as it was, and a block that held only the digest becomes no block at all.
+func TestWithoutSignalsDigest(t *testing.T) {
+	const d = "sha256:aaa"
+	for _, c := range []struct {
+		name string
+		in   *report.IntelProvenance
+		want *report.IntelProvenance
+	}{
+		{"no block", nil, nil},
+		{"digest alone, as trigger.Run* writes it", &report.IntelProvenance{SignalsDigest: d}, nil},
+		{"already empty", &report.IntelProvenance{}, nil},
+		{"the rest of the block is kept", &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, WorkSetSize: 2, SignalsDigest: d},
+			&report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, WorkSetSize: 2}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var before report.IntelProvenance
+			if c.in != nil {
+				before = *c.in
+			}
+			got := withoutSignalsDigest(c.in)
+			if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
+				t.Errorf("withoutSignalsDigest(%+v) = %+v, want %+v", c.in, got, c.want)
+			}
+			if c.in != nil && (*c.in != before || got == c.in) {
+				t.Errorf("withoutSignalsDigest edited or returned its input: %+v", c.in)
 			}
 		})
 	}

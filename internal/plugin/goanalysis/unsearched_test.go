@@ -25,7 +25,7 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 	moduleFinding := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
 	stdlibFinding := vulnScan{
 		findings: []vulnFinding{{OSV: "GO-2", Trace: []vulnFrame{{Module: "stdlib", Version: "v1.22.0"}}}},
-		imports:  map[string][]string{"stdlib": {"net/http"}},
+		imports:  map[string][]string{"stdlib": {"encoding/xml"}},
 	}
 	cases := []struct {
 		name     string
@@ -75,7 +75,7 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype A = strings.Builder\n",
 		}, moduleFinding, false},
 		{"standard-library refutation, a generic type's package imports the vulnerable package", map[string]string{
-			"internal/lib/lib.go": "package lib\n\nimport \"net/http\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Serve() error { return http.ListenAndServe(\":0\", nil) }\n",
+			"internal/lib/lib.go": "package lib\n\nimport \"encoding/xml\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Decode() *xml.Decoder { return xml.NewDecoder(nil) }\n",
 		}, stdlibFinding, true},
 		{"standard-library refutation, a generic type's package imports another standard package", map[string]string{
 			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
@@ -121,7 +121,7 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 	moduleFinding := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
 	stdlibFinding := vulnScan{
 		findings: []vulnFinding{{OSV: "GO-2", Trace: []vulnFrame{{Module: "stdlib", Version: "v1.22.0"}}}},
-		imports:  map[string][]string{"stdlib": {"net/http"}},
+		imports:  map[string][]string{"stdlib": {"encoding/xml"}},
 	}
 	cases := []struct {
 		name     string
@@ -191,7 +191,7 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 			"e2e/main_test.go": "package main\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n",
 		}, moduleFinding, false},
 		{"standard-library refutation, a package imports the vulnerable package", map[string]string{
-			"lib/lib.go": "package lib\n\nimport \"net/http\"\n\nfunc Handler() http.Handler { return http.NotFoundHandler() }\n",
+			"lib/lib.go": "package lib\n\nimport \"encoding/xml\"\n\nfunc New() *xml.Decoder { return xml.NewDecoder(nil) }\n",
 		}, stdlibFinding, true},
 		{"standard-library refutation, no package imports the vulnerable package", map[string]string{
 			"lib/lib.go": "package lib\n\nimport \"strings\"\n\nfunc Upper(s string) string { return strings.ToUpper(s) }\n",

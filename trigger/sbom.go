@@ -36,8 +36,10 @@ type ResolveSBOMRequest struct {
 // reanalyze, but an unresolved head inventory can make a changed dependency set look unchanged — so
 // the caller forwards these notes as PRInheritRequest.DiffLimits, disclosed on the fast path (§4.1 /
 // C3). Absent means the inventory resolved cleanly, exactly as it does for buildBaselineReport.
-// When ctx is done before the inventory returns, the head inventory is declared scan_cut_short
-// rather than failing the run.
+//
+// A cancelled ctx is not an error. When ctx is done before the inventory returns, ResolveSBOM
+// returns an empty SBOM, a scan_cut_short partiality note and a nil error, so a library caller must
+// read the notes, not only the error, before trusting an empty package set.
 func ResolveSBOM(ctx context.Context, req ResolveSBOMRequest) (report.SBOM, []report.PartialityNote, error) {
 	inv, language, err := inventoryWithin(ctx, req.Codebase, req.AssessOptions...)
 	if err != nil {

@@ -70,7 +70,7 @@ func TestScanBudget_Split(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.timeout.String(), func(t *testing.T) {
-			b := newScanBudget(tc.timeout, started, nil, signalFlushWindow, io.Discard)
+			b := newScanBudget(tc.timeout, started, nil, signalFlushWindow, io.Discard, noExit(t))
 			defer b.release()
 			ad, aok := b.analysis.Deadline()
 			fd, fok := b.flush.Deadline()
@@ -90,7 +90,12 @@ func TestScanBudget_Split(t *testing.T) {
 	}
 }
 
-// TestScanBudget_Stops: the limit and the runner's signal each end analysis with a cause naming the
+// noExit fails the test if the budget exits the process.
+func noExit(t *testing.T) func(int) {
+	return func(code int) { t.Errorf("exit(%d) called", code) }
+}
+
+// TestScanBudget_Stops: the limit and a signal each end analysis with a cause naming the
 // remedy, and the flush outlives the stop.
 func TestScanBudget_Stops(t *testing.T) {
 	cases := []struct {
@@ -110,25 +115,24 @@ func TestScanBudget_Stops(t *testing.T) {
 			name:      "signal, no limit",
 			started:   time.Now(),
 			signal:    true,
-			wantCause: "the runner stopped the scan (a job timeout or a cancellation); raise the job's timeout-minutes",
+			wantCause: "the scan was stopped before it finished (a job timeout, a cancellation, or an interrupt); if it was a job timeout, raise the job's timeout-minutes",
 		},
 		{
 			name:      "signal inside a limit",
 			timeout:   time.Hour,
 			started:   time.Now(),
 			signal:    true,
-			wantCause: "the runner stopped the scan",
+			wantCause: "the scan was stopped before it finished",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sigs := make(chan os.Signal, 2)
+			sigs := make(chan os.Signal, 1)
 			var log strings.Builder
-			b := newScanBudget(tc.timeout, tc.started, sigs, time.Hour, &log)
+			b := newScanBudget(tc.timeout, tc.started, sigs, time.Hour, &log, noExit(t))
 			defer b.release()
 			if tc.signal {
 				sigs <- syscall.SIGINT
-				sigs <- syscall.SIGTERM
 			}
 			<-b.analysis.Done()
 			if got := context.Cause(b.analysis).Error(); !strings.Contains(got, tc.wantCause) {
@@ -147,12 +151,46 @@ func TestScanBudget_Stops(t *testing.T) {
 // TestScanBudget_SignalFlushWindow: a signal leaves the flush its window, and the window ends it.
 func TestScanBudget_SignalFlushWindow(t *testing.T) {
 	sigs := make(chan os.Signal, 1)
-	b := newScanBudget(0, time.Now(), sigs, 0, io.Discard)
+	b := newScanBudget(0, time.Now(), sigs, 0, io.Discard, noExit(t))
 	defer b.release()
 	sigs <- syscall.SIGTERM
 	<-b.flush.Done()
-	if !errors.Is(context.Cause(b.flush), errRunnerStop) {
-		t.Fatalf("flush cause = %v, want errRunnerStop", context.Cause(b.flush))
+	if !errors.Is(context.Cause(b.flush), errScanStopped) {
+		t.Fatalf("flush cause = %v, want errScanStopped", context.Cause(b.flush))
+	}
+}
+
+// TestScanBudget_SecondSignalExits: a second signal exits at once with the signal's shell code,
+// without waiting for the flush.
+func TestScanBudget_SecondSignalExits(t *testing.T) {
+	cases := []struct {
+		name   string
+		second os.Signal
+		want   int
+	}{
+		{name: "interrupt then terminate", second: syscall.SIGTERM, want: 143},
+		{name: "interrupt twice", second: syscall.SIGINT, want: 130},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sigs := make(chan os.Signal, 1)
+			exited := make(chan int, 1)
+			var log strings.Builder
+			b := newScanBudget(0, time.Now(), sigs, time.Hour, &log, func(code int) { exited <- code })
+			defer b.release()
+			sigs <- syscall.SIGINT
+			<-b.analysis.Done()
+			sigs <- tc.second
+			if got := <-exited; got != tc.want {
+				t.Fatalf("exit code = %d, want %d", got, tc.want)
+			}
+			if b.flush.Err() != nil {
+				t.Errorf("flush ended before the exit: %v", context.Cause(b.flush))
+			}
+			if !strings.Contains(log.String(), "again; exiting without publishing") {
+				t.Errorf("stderr = %q, want the second signal logged", log.String())
+			}
+		})
 	}
 }
 

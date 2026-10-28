@@ -32,7 +32,7 @@ const (
 	maxFlushReserve = 2 * time.Minute
 )
 
-var errRunnerStop = errors.New("the runner stopped the scan (a job timeout or a cancellation); raise the job's timeout-minutes to give it more time")
+var errScanStopped = errors.New("the scan was stopped before it finished (a job timeout, a cancellation, or an interrupt); if it was a job timeout, raise the job's timeout-minutes to give it more time")
 
 // scanTimeout resolves -scan-timeout / ASSAY_SCAN_TIMEOUT. Zero means no time limit: unset, a
 // scan runs until it finishes or the runner stops it.
@@ -62,7 +62,7 @@ type scanBudget struct {
 func startScanBudget(timeout time.Duration) *scanBudget {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	b := newScanBudget(timeout, scanStarted, sigs, signalFlushWindow, os.Stderr)
+	b := newScanBudget(timeout, scanStarted, sigs, signalFlushWindow, os.Stderr, os.Exit)
 	release := b.release
 	b.release = func() {
 		signal.Stop(sigs)
@@ -73,8 +73,8 @@ func startScanBudget(timeout time.Duration) *scanBudget {
 
 // newScanBudget derives the two contexts. With a timeout, analysis ends at started+timeout less the
 // flush reserve and flush at started+timeout. The first value on signals ends analysis and gives
-// flush window more; later ones are absorbed, so the runner's SIGTERM does not cut the flush short.
-func newScanBudget(timeout time.Duration, started time.Time, signals <-chan os.Signal, window time.Duration, log io.Writer) *scanBudget {
+// flush window more; a second one calls exit at once, without publishing.
+func newScanBudget(timeout time.Duration, started time.Time, signals <-chan os.Signal, window time.Duration, log io.Writer, exit func(int)) *scanBudget {
 	analysis, stopAnalysis := context.WithCancelCause(context.Background())
 	flush, stopFlush := context.WithCancelCause(context.Background())
 	cancels := []func(){func() { stopAnalysis(nil) }, func() { stopFlush(nil) }}
@@ -92,11 +92,16 @@ func newScanBudget(timeout time.Duration, started time.Time, signals <-chan os.S
 	go func() {
 		select {
 		case sig := <-signals:
-			fmt.Fprintf(log, "%s: received %s; stopping analysis and publishing what was assessed\n", brand.Name, sig)
-			stopAnalysis(errRunnerStop)
-			t := time.AfterFunc(window, func() { stopFlush(errRunnerStop) })
-			<-done
-			t.Stop()
+			fmt.Fprintf(log, "%s: received %s; stopping analysis and publishing what was assessed (signal again to exit now)\n", brand.Name, sig)
+			stopAnalysis(errScanStopped)
+			t := time.AfterFunc(window, func() { stopFlush(errScanStopped) })
+			defer t.Stop()
+			select {
+			case sig := <-signals:
+				fmt.Fprintf(log, "%s: received %s again; exiting without publishing\n", brand.Name, sig)
+				exit(signalExitCode(sig))
+			case <-done:
+			}
 		case <-done:
 		}
 	}()
@@ -110,6 +115,14 @@ func newScanBudget(timeout time.Duration, started time.Time, signals <-chan os.S
 			}
 		},
 	}
+}
+
+// signalExitCode is the shell's convention for a process ended by sig: 128 plus its number.
+func signalExitCode(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return 128 + int(s)
+	}
+	return 1
 }
 
 // flushReserve is the part of a time limit held back from analysis for publishing.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -230,6 +231,9 @@ func (s *GitHubRefStore) tryWrite(ctx context.Context, st *State) (*State, error
 	st = s.stampStateRef(st)
 
 	treeSHA, err := s.buildTree(ctx, st)
+	if errors.Is(err, errParentGone) {
+		return nil, ErrConflict
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -336,15 +340,25 @@ func (s *GitHubRefStore) buildTree(ctx context.Context, st *State) (string, erro
 // unmodelledEntries returns the parent commit's tree entries that this version does
 // not model, unchanged, so createTree re-links them by SHA. Blobs and subtrees are
 // carried; anything else (a gitlink) is not a state file and is dropped. A fresh
-// state (no parent) has nothing to carry.
+// state (no parent) has nothing to carry; a parent the API answers 404 for is
+// errParentGone. Any other failure is returned as is.
 func (s *GitHubRefStore) unmodelledEntries(ctx context.Context, commitSHA string) ([]ghTreeEntry, error) {
 	if commitSHA == "" {
 		return nil, nil
 	}
-	treeSHA, err := s.commitTree(ctx, commitSHA)
+	var c ghCommit
+	status, err := s.do(ctx, http.MethodGet, "/git/commits/"+commitSHA, nil, &c)
 	if err != nil {
 		return nil, err
 	}
+	switch status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, errParentGone
+	default:
+		return nil, fmt.Errorf("statestore: get commit %s: unexpected status %d", commitSHA, status)
+	}
+	treeSHA := c.Tree.SHA
 	entries, err := s.treeEntries(ctx, treeSHA)
 	if err != nil {
 		return nil, err

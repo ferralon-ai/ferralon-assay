@@ -84,6 +84,11 @@ func modelled(name string) bool {
 	return false
 }
 
+// errParentGone reports that a write's parent commit (the CAS token) no longer
+// exists: the ref was deleted and the commit pruned. A CAS against it cannot succeed,
+// so tryWrite reports it as ErrConflict and Write's re-read takes the re-create path.
+var errParentGone = errors.New("statestore: parent commit not found")
+
 // decodeRevoke parses the revoke counter file.
 func decodeRevoke(b []byte) (int, error) {
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))

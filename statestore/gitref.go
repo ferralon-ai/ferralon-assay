@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -196,6 +197,9 @@ func (s *GitRefStore) Write(ctx context.Context, next *State) (*State, error) {
 // ErrConflict.
 func (s *GitRefStore) tryWrite(ctx context.Context, st *State) (*State, error) {
 	treeSHA, err := s.buildTree(ctx, st)
+	if errors.Is(err, errParentGone) {
+		return nil, ErrConflict
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -302,13 +306,17 @@ func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) 
 // unmodelledEntries returns the parent commit's tree entries that this version does
 // not model, as NUL-terminated `ls-tree -z` records ready for `mktree -z`. Blobs and
 // subtrees are carried; anything else (a gitlink) is not a state file and is dropped.
-// A fresh state (no parent) has nothing to carry.
+// A fresh state (no parent) has nothing to carry; a parent that no longer exists is
+// errParentGone. Any other ls-tree failure is returned as is.
 func (s *GitRefStore) unmodelledEntries(ctx context.Context, commitSHA string) ([]byte, error) {
 	if commitSHA == "" {
 		return nil, nil
 	}
 	out, err := s.gitRaw(ctx, "ls-tree", "-z", commitSHA)
 	if err != nil {
+		if s.commitMissing(ctx, commitSHA) {
+			return nil, errParentGone
+		}
 		return nil, fmt.Errorf("statestore: ls-tree %s: %w", commitSHA, err)
 	}
 	var carried bytes.Buffer
@@ -329,6 +337,15 @@ func (s *GitRefStore) unmodelledEntries(ctx context.Context, commitSHA string) (
 		carried.WriteByte(0)
 	}
 	return carried.Bytes(), nil
+}
+
+// commitMissing reports whether commitSHA is definitely absent from the object
+// store: `rev-parse --verify --quiet` exits 1 with no output for a missing object,
+// and 128 for anything else (an unreadable repo), which is not treated as missing.
+func (s *GitRefStore) commitMissing(ctx context.Context, commitSHA string) bool {
+	out, err := s.gitRaw(ctx, "rev-parse", "--verify", "--quiet", commitSHA+"^{commit}")
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0
 }
 
 // resolveRef returns the commit SHA the ref points at, or "" if the ref does not
@@ -409,7 +426,7 @@ func (s *GitRefStore) runEnv(ctx context.Context, stdin []byte, env []string, ar
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }

@@ -3,8 +3,12 @@ package statestore
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +27,12 @@ type storeHarness struct {
 	// dropRef deletes the state ref, so the next CAS against a read token conflicts
 	// and the re-read finds nothing.
 	dropRef func(t *testing.T)
+	// prune deletes the state ref and every commit it reached, as a GC of the
+	// unreachable history would.
+	prune func(t *testing.T)
+	// failCommitRead makes every later read of commit fail with a transient error
+	// (the commit itself still exists).
+	failCommitRead func(t *testing.T, commit string)
 	// blobs returns the commit's tree entries as name -> object SHA.
 	blobs func(t *testing.T, commit string) map[string]string
 	// parents returns the commit's parent count.
@@ -71,6 +81,31 @@ func newGitRefHarness(t *testing.T) storeHarness {
 		dropRef: func(t *testing.T) {
 			git(t, "", "update-ref", "-d", s.cfg.Ref)
 		},
+		prune: func(t *testing.T) {
+			tip := git(t, "", "rev-parse", s.cfg.Ref)
+			git(t, "", "update-ref", "-d", s.cfg.Ref)
+			git(t, "", "reflog", "expire", "--expire=now", "--all")
+			git(t, "", "gc", "-q", "--prune=now")
+			if err := gittest.Command("-C", dir, "cat-file", "-e", tip).Run(); err == nil {
+				t.Fatalf("prune: commit %s survived gc", tip)
+			}
+		},
+		failCommitRead: func(t *testing.T, commit string) {
+			// Front git with a script that fails `ls-tree -z <commit>` the way an
+			// unreadable object store would, and passes everything else through.
+			real, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			script := filepath.Join(t.TempDir(), "git")
+			body := "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n" +
+				"  if [ \"$prev\" = -z ] && [ \"$a\" = " + commit + " ]; then echo 'transient read failure' >&2; exit 128; fi\n" +
+				"  prev=$a\ndone\nexec " + real + " \"$@\"\n"
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			s.cfg.Bin = script
+		},
 		blobs: func(t *testing.T, commit string) map[string]string {
 			return treeBlobSHAs(t, dir, commit)
 		},
@@ -86,7 +121,15 @@ func newGitHubHarness(t *testing.T) storeHarness {
 	// a write against a dropped ref reaches the store's conflict → re-read → re-create
 	// path, the same path a CAS conflict followed by a vanished ref takes.
 	inner := m.handler()
+	var failCommit string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		fail := failCommit != "" && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/git/commits/"+failCommit)
+		m.mu.Unlock()
+		if fail {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
 		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/git/refs/") {
 			ref := "refs/" + r.URL.Path[strings.Index(r.URL.Path, "/git/refs/")+len("/git/refs/"):]
 			m.mu.Lock()
@@ -132,6 +175,24 @@ func newGitHubHarness(t *testing.T) storeHarness {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			delete(m.refs, s.StateRef())
+		},
+		prune: func(t *testing.T) {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			for c := m.refs[s.StateRef()]; c != ""; {
+				parents := m.commits[c].Parents
+				delete(m.commits, c)
+				c = ""
+				if len(parents) > 0 {
+					c = parents[0]
+				}
+			}
+			delete(m.refs, s.StateRef())
+		},
+		failCommitRead: func(t *testing.T, commit string) {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			failCommit = commit
 		},
 		blobs: func(t *testing.T, commit string) map[string]string {
 			return m.treeBlobsOf(t, commit)
@@ -316,6 +377,60 @@ func TestUnmodelledEntryCarriedThrough(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestWriteParentUnreadable: the carry read of the parent commit separates "the
+// parent is gone" (ref deleted and its history pruned) from any other read failure.
+// Gone takes the re-create path, as a deleted ref with intact history does; any
+// other failure is returned, never read as "nothing to carry".
+func TestWriteParentUnreadable(t *testing.T) {
+	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	for _, h := range storeHarnesses {
+		t.Run(h.name+"/pruned parent re-creates", func(t *testing.T) {
+			hs := h.new(t)
+			ctx := context.Background()
+			mustWrite(t, hs.store, &State{Report: sampleReport("c0", "cur", ts), Cursor: "cur"})
+			st, err := hs.store.Read(ctx)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			hs.prune(t)
+			st.RevokeCount = 1
+			st.Cursor = "cur-2"
+			committed, err := hs.store.Write(ctx, st)
+			if err != nil {
+				t.Fatalf("write over a pruned parent: %v", err)
+			}
+			if hs.parents(t, committed.CommitSHA) != 0 {
+				t.Fatal("write did not take the re-create path")
+			}
+			got, err := hs.store.Read(ctx)
+			if err != nil {
+				t.Fatalf("re-read: %v", err)
+			}
+			if got.RevokeCount != 1 || got.Cursor != "cur-2" || got.Report == nil {
+				t.Errorf("re-created state: revoke %d cursor %q report %v", got.RevokeCount, got.Cursor, got.Report != nil)
+			}
+		})
+		t.Run(h.name+"/transient read failure is returned", func(t *testing.T) {
+			hs := h.new(t)
+			ctx := context.Background()
+			mustWrite(t, hs.store, &State{Report: sampleReport("c0", "cur", ts), Cursor: "cur"})
+			st, err := hs.store.Read(ctx)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			hs.failCommitRead(t, st.CommitSHA)
+			st.Cursor = "cur-2"
+			out, err := hs.store.Write(ctx, st)
+			if err == nil {
+				t.Fatalf("write succeeded as %s over an unreadable parent", out.CommitSHA)
+			}
+			if errors.Is(err, ErrConflict) {
+				t.Fatalf("read failure surfaced as a conflict: %v", err)
+			}
+		})
 	}
 }
 

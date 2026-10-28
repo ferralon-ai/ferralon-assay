@@ -60,6 +60,10 @@ type BaselineRequest struct {
 	// reaches any pipeline/verdict struct (inv.5). A nil map ⇒ every case BandUnknown ⇒ all
 	// admitted (byte-identical to the pre-gate behavior). An absent band never drops a case.
 	Bands map[string]Band
+	// Analysis bounds the inventory and the per-advisory assessments. When it is done, the
+	// advisories not yet assessed get scan_cut_short rows and the run still writes its Report
+	// under ctx. Nil means ctx.
+	Analysis context.Context
 }
 
 // RunBaseline runs the full S1–S6 pipeline for every advisory in the request, builds
@@ -123,7 +127,8 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 	// DECLARED as a scan-level partiality note (C3), never a silently short SBOM that would feed a
 	// later CVE-watch a shrunken query set. Coordinate-specific advisory resolution is RETAINED
 	// unchanged in the loop below (advisoryFromArtifacts still serves the finding path — §4.1 / C5).
-	inv, invLanguage, _, err := pipeline.ResolveCodebaseInventory(ctx, req.Codebase, "", req.AssessOptions...)
+	analysis := analysisOr(req.Analysis, ctx)
+	inv, invLanguage, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
@@ -133,9 +138,15 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 
+	cut := 0
 	for _, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		if stopped {
+			b.AddFinding(cutShortFinding(adv))
+			cut++
+			continue
+		}
 		if err != nil {
 			// One advisory's analysis failing must not abort the scan: a run with no Report
 			// renders downstream as a run with no findings. The advisories that resolved keep
@@ -159,6 +170,9 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 			b.AddPartiality(note)
 		}
 		b.AddPartiality(partialityNotes(st, assessmentID)...)
+	}
+	if cut > 0 {
+		b.AddPartiality(cutShortNote(analysis, cut, len(admitted.Admitted)))
 	}
 
 	b.WithProvenance(report.Provenance{
@@ -213,6 +227,9 @@ type PRInheritRequest struct {
 	// Signals mirrors BaselineRequest.Signals. Every row is ranked by it — inherited rows too, so
 	// none keeps a value from the signals file the baseline run read.
 	Signals *intel.Signals
+	// Analysis bounds the per-advisory re-assessments. When it is done, the advisories not yet
+	// assessed get scan_cut_short rows and the run still returns its Report. Nil means ctx.
+	Analysis context.Context
 }
 
 // PRInheritResult reports the outcome of a PR-inherit run.
@@ -295,6 +312,10 @@ type CVEWatchRequest struct {
 	// again next run. Set it when this run's analysis inputs could not be had (a failed build
 	// graph): the Report is still written, but the advisories it could not assess stay new.
 	HoldCursor bool
+	// Analysis bounds the earnest re-assessments. When it is done, the advisories not yet assessed
+	// get scan_cut_short rows, the stored cursor is held so they stay new, and the run still
+	// writes its Report under ctx. Nil means ctx.
+	Analysis context.Context
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -374,7 +395,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	}
 	state.Report = rep
 	state.SBOM = rep.SBOM
-	state.Cursor = cursor
+	state.Cursor = rep.Provenance.AdvisoryCursor
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)

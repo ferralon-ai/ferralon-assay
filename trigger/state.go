@@ -249,9 +249,17 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	analysis := analysisOr(req.Analysis, ctx)
+	cut := 0
 	for _, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		if stopped {
+			reFindings[adv.ID+"\x00"+adv.Source] = cutShortFinding(adv)
+			freshIDs[adv.ID] = struct{}{}
+			cut++
+			continue
+		}
 		if err != nil {
 			// A failed re-run replaces the baseline's row whatever package that row is on: the
 			// head may select a different package, and the failure resolved none.
@@ -328,6 +336,9 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	b.WithLibraryEntrypoints(entrypoints...)
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
 	b.AddPartiality(req.WorkSetLimits...)
+	if cut > 0 {
+		b.AddPartiality(cutShortNote(analysis, cut, len(req.Advisories)))
+	}
 
 	b.WithProvenance(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
@@ -437,6 +448,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// both claim, and so do the prior rows it inherits.
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	analysis := analysisOr(req.Analysis, ctx)
+	cut, total := 0, 0
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
@@ -446,7 +459,14 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			Codebase:      req.Codebase,
 		}
 		workSet = append(workSet, areq.Vulnerability)
-		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
+		total++
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		if stopped {
+			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = cutShortFinding(areq.Vulnerability)
+			freshIDs[a.ID] = struct{}{}
+			cut++
+			continue
+		}
 		if err != nil {
 			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
 			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = assessFailureFinding(areq.Vulnerability, err)
@@ -503,6 +523,11 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
 	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
+	if cut > 0 {
+		b.AddPartiality(cutShortNote(analysis, cut, total))
+		// The advisories this pass did not assess must stay new, so the next run assesses them.
+		newCursor = state.Cursor
+	}
 
 	b.WithProvenance(report.Provenance{
 		CommitSHA:       stateCommit(prior, req.Subject.ResolvedCommit),

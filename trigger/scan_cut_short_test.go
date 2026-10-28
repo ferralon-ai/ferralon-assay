@@ -1,0 +1,291 @@
+package trigger
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
+)
+
+// cutShortCorpus is three advisories that each assess exactly as GO-2021-0113 does under
+// refutingGoPlugin: a grounded not_exploitable when nothing stops the scan.
+var cutShortCorpus = []assessment.VulnRef{
+	{ID: "GO-T-1", Source: "corpus"},
+	{ID: "GO-T-2", Source: "corpus"},
+	{ID: "GO-T-3", Source: "corpus"},
+}
+
+// clonedSource answers every id with GO-2021-0113's built-in facts.
+type clonedSource struct{}
+
+func (clonedSource) Lookup(string) (pipeline.AdvisoryFacts, bool) {
+	return pipeline.NewTableSource().Lookup(wiringAdvisory.ID)
+}
+
+// stopMode is what stoppingPlugin does once it has stopped the scan.
+type stopMode int
+
+const (
+	// stopAndWait stops the scan and returns the cancellation, as a plugin subprocess killed
+	// mid-call does.
+	stopAndWait stopMode = iota
+	// stopAndSucceed stops the scan and then returns the refutation anyway: a stage that
+	// swallowed the cancellation.
+	stopAndSucceed
+)
+
+// stoppingPlugin is refutingGoPlugin with a stop: Reachability for the advisory stopAt, or the
+// inventory when stopAt is "inventory", cancels the scan's analysis context from inside the call.
+type stoppingPlugin struct {
+	refutingGoPlugin
+	stop   context.CancelFunc
+	stopAt string
+	mode   stopMode
+}
+
+func (p stoppingPlugin) ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+	if p.stopAt != "inventory" {
+		return p.refutingGoPlugin.ResolveInventory(ctx, req)
+	}
+	p.stop()
+	<-ctx.Done()
+	return plugin.DependencyInventory{}, ctx.Err()
+}
+
+func (p stoppingPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if req.VulnID != p.stopAt {
+		return p.refutingGoPlugin.Reachability(ctx, req)
+	}
+	p.stop()
+	if p.mode == stopAndSucceed {
+		return p.refutingGoPlugin.Reachability(ctx, req)
+	}
+	<-ctx.Done()
+	return plugin.ReachabilityResult{}, ctx.Err()
+}
+
+var errTestStop = errors.New("test stop")
+
+// stoppingOptions returns the assess options and the analysis context their plugin stops.
+func stoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pipeline.AssessOption, context.Context) {
+	t.Helper()
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stoppingPlugin{
+		refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()},
+		stop:             func() { cancel(errTestStop) },
+		stopAt:           stopAt,
+		mode:             mode,
+	}
+	return []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+		pipeline.WithPlugin(p),
+		pipeline.WithAdvisorySource(clonedSource{}),
+	}, analysis
+}
+
+func rowsByID(rep *report.Report) map[string][]report.AdvisoryFinding {
+	rows := make(map[string][]report.AdvisoryFinding)
+	for _, f := range rep.Advisories {
+		rows[f.Advisory.ID] = append(rows[f.Advisory.ID], f)
+	}
+	return rows
+}
+
+func cutShortNotes(rep *report.Report) []report.PartialityNote {
+	var notes []report.PartialityNote
+	for _, n := range rep.Partiality {
+		if n.Reason == report.ReasonScanCutShort {
+			notes = append(notes, n)
+		}
+	}
+	return notes
+}
+
+// TestBaseline_CutShort: a scan stopped mid-run keeps the verdicts it finished, gives every
+// advisory it did not finish a scan_cut_short row, and discloses the stop once. The stop lands
+// inside an assessment, in the inventory, or inside an assessment that then returns a refutation
+// anyway; in each case nothing assessed after the stop keeps a verdict.
+func TestBaseline_CutShort(t *testing.T) {
+	cases := []struct {
+		name     string
+		stopAt   string
+		mode     stopMode
+		verdicts map[string]report.Verdict
+		// cutNote is the scan-level note's detail, "" for none.
+		cutNote string
+	}{
+		{
+			name: "control: no stop", stopAt: "never",
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictNotExploitable},
+		},
+		{
+			name: "stopped inside the second assessment", stopAt: "GO-T-2", mode: stopAndWait,
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictUndetermined, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "2 of 3 advisories were not assessed: test stop",
+		},
+		{
+			name: "an assessment that returns a refutation after the stop is discarded", stopAt: "GO-T-2", mode: stopAndSucceed,
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictUndetermined, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "2 of 3 advisories were not assessed: test stop",
+		},
+		{
+			name: "stopped during the inventory", stopAt: "inventory",
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictUndetermined, "GO-T-2": report.VerdictUndetermined, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "3 of 3 advisories were not assessed: test stop",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, analysis := stoppingOptions(t, tc.stopAt, tc.mode)
+			rep, err := buildBaselineReport(context.Background(), BaselineRequest{
+				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				Advisories:    cutShortCorpus,
+				AssessOptions: opts,
+				Analysis:      analysis,
+			})
+			if err != nil {
+				t.Fatalf("buildBaselineReport: %v", err)
+			}
+			if err := rep.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			rows := rowsByID(rep)
+			for _, adv := range cutShortCorpus {
+				got := rows[adv.ID]
+				if len(got) != 1 {
+					t.Fatalf("%d rows for %s, want exactly one: %+v", len(got), adv.ID, got)
+				}
+				f := got[0]
+				if f.Verdict != tc.verdicts[adv.ID] {
+					t.Errorf("%s verdict = %q, want %q", adv.ID, f.Verdict, tc.verdicts[adv.ID])
+				}
+				if f.Verdict != report.VerdictUndetermined {
+					continue
+				}
+				if f.UndeterminedReason != report.ReasonScanCutShort || f.Evidence.Basis != "" || f.Package != nil {
+					t.Errorf("%s = reason %q basis %q package %+v, want scan_cut_short with no basis or package",
+						adv.ID, f.UndeterminedReason, f.Evidence.Basis, f.Package)
+				}
+			}
+			notes := cutShortNotes(rep)
+			var scanNotes []report.PartialityNote
+			for _, n := range notes {
+				if n.Detail != inventoryLimitDetail {
+					scanNotes = append(scanNotes, n)
+				}
+			}
+			switch {
+			case tc.cutNote == "" && len(notes) > 0:
+				t.Errorf("scan_cut_short notes = %+v, want none", notes)
+			case tc.cutNote != "" && (len(scanNotes) != 1 || scanNotes[0].Detail != tc.cutNote):
+				t.Errorf("scan-level scan_cut_short notes = %+v, want one with detail %q", scanNotes, tc.cutNote)
+			case tc.cutNote != "" && scanNotes[0].EffectiveClass() != report.PartialityDidNotRun:
+				t.Errorf("note class = %q, want %q", scanNotes[0].EffectiveClass(), report.PartialityDidNotRun)
+			}
+			if tc.stopAt == "inventory" && len(notes) != 2 {
+				t.Errorf("scan_cut_short notes = %+v, want the inventory disclosure and the scan-level note", notes)
+			}
+		})
+	}
+}
+
+// TestPRReanalysis_CutShort: a PR re-analysis stopped mid-run replaces the baseline's
+// not_exploitable with a scan_cut_short row for every advisory it did not finish.
+func TestPRReanalysis_CutShort(t *testing.T) {
+	opts, analysis := stoppingOptions(t, "GO-T-1", stopAndSucceed)
+	store, _ := groundedBaseline()
+	res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		PRSBOM:        report.SBOM{Packages: []report.Package{{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.5"}}},
+		Advisories:    append([]assessment.VulnRef{wiringAdvisory}, cutShortCorpus...),
+		AssessOptions: opts,
+		Analysis:      analysis,
+	})
+	if err != nil {
+		t.Fatalf("RunPRInherit: %v", err)
+	}
+	want := map[string]report.Verdict{
+		wiringAdvisory.ID: report.VerdictNotExploitable,
+		"GO-T-1":          report.VerdictUndetermined,
+		"GO-T-2":          report.VerdictUndetermined,
+		"GO-T-3":          report.VerdictUndetermined,
+	}
+	rows := rowsByID(res.Report)
+	for id, v := range want {
+		if len(rows[id]) != 1 || rows[id][0].Verdict != v {
+			t.Errorf("%s rows = %+v, want one %q", id, rows[id], v)
+		}
+	}
+	if notes := cutShortNotes(res.Report); len(notes) != 1 || notes[0].Detail != "3 of 4 advisories were not assessed: test stop" {
+		t.Errorf("scan_cut_short notes = %+v, want one naming 3 of 4", notes)
+	}
+}
+
+// TestResolveSBOM_CutShort: a head inventory the stop interrupted is declared, not failed.
+func TestResolveSBOM_CutShort(t *testing.T) {
+	opts, analysis := stoppingOptions(t, "inventory", stopAndWait)
+	sbom, notes, err := ResolveSBOM(analysis, ResolveSBOMRequest{
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: opts,
+	})
+	if err != nil {
+		t.Fatalf("ResolveSBOM: %v", err)
+	}
+	if len(sbom.Packages) != 0 || len(notes) != 1 || notes[0].Reason != report.ReasonScanCutShort {
+		t.Fatalf("ResolveSBOM = %d packages, notes %+v; want none and one scan_cut_short note", len(sbom.Packages), notes)
+	}
+}
+
+// TestCVEWatch_CutShortHoldsCursor: an earnest run the stop cut short keeps the stored cursor, so
+// the advisories it did not assess are new again next run; a run that finished advances it.
+func TestCVEWatch_CutShortHoldsCursor(t *testing.T) {
+	cases := []struct {
+		name       string
+		stopAt     string
+		wantCursor string
+		wantCut    bool
+	}{
+		{name: "finished advances the cursor", stopAt: "never", wantCursor: "GO-2021-0113,GO-T-1,GO-T-2"},
+		{name: "cut short holds the cursor", stopAt: "GO-T-2", wantCursor: wiringAdvisory.ID, wantCut: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, analysis := stoppingOptions(t, tc.stopAt, stopAndSucceed)
+			store := emptyBaseline()
+			osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{
+				{ID: wiringAdvisory.ID, Package: wiringPkg},
+				{ID: "GO-T-1", Package: wiringPkg},
+				{ID: "GO-T-2", Package: wiringPkg},
+			}}}
+			res, err := RunCVEWatch(context.Background(), store, osv, CVEWatchRequest{
+				Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				AssessOptions: opts,
+				Analysis:      analysis,
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			if res.Report == nil {
+				t.Fatal("CVE-watch ran no earnest pass")
+			}
+			if res.Cursor != tc.wantCursor || res.Report.Provenance.AdvisoryCursor != tc.wantCursor {
+				t.Errorf("cursor = %q, provenance cursor = %q, want %q", res.Cursor, res.Report.Provenance.AdvisoryCursor, tc.wantCursor)
+			}
+			rows := rowsByID(res.Report)
+			if got := rows["GO-T-2"]; len(got) != 1 || (got[0].UndeterminedReason == report.ReasonScanCutShort) != tc.wantCut {
+				t.Errorf("GO-T-2 rows = %+v, want one, cut short %v", got, tc.wantCut)
+			}
+			if got := len(cutShortNotes(res.Report)) == 1; got != tc.wantCut {
+				t.Errorf("scan_cut_short note present = %v, want %v", got, tc.wantCut)
+			}
+		})
+	}
+}

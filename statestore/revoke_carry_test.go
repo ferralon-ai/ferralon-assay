@@ -30,8 +30,9 @@ type storeHarness struct {
 	// prune deletes the state ref and every commit it reached, as a GC of the
 	// unreachable history would.
 	prune func(t *testing.T)
-	// failCommitRead makes every later read of commit fail with a transient error
-	// (the commit itself still exists).
+	// failCommitRead makes reads of commit fail with an error other than "not
+	// found" (the commit itself still exists): every git read of it, or the next
+	// API GET of it.
 	failCommitRead func(t *testing.T, commit string)
 	// blobs returns the commit's tree entries as name -> object SHA.
 	blobs func(t *testing.T, commit string) map[string]string
@@ -91,16 +92,17 @@ func newGitRefHarness(t *testing.T) storeHarness {
 			}
 		},
 		failCommitRead: func(t *testing.T, commit string) {
-			// Front git with a script that fails `ls-tree -z <commit>` the way an
-			// unreadable object store would, and passes everything else through.
+			// Front git with a script that fails any command naming the commit with
+			// exit 128, the way an unreadable object store would, and passes
+			// everything else through.
 			real, err := exec.LookPath("git")
 			if err != nil {
 				t.Fatal(err)
 			}
 			script := filepath.Join(t.TempDir(), "git")
-			body := "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n" +
-				"  if [ \"$prev\" = -z ] && [ \"$a\" = " + commit + " ]; then echo 'transient read failure' >&2; exit 128; fi\n" +
-				"  prev=$a\ndone\nexec " + real + " \"$@\"\n"
+			body := "#!/bin/sh\nfor a in \"$@\"; do\n" +
+				"  case \"$a\" in " + commit + "|" + commit + "^{commit}) echo 'read failure' >&2; exit 128;; esac\n" +
+				"done\nexec " + real + " \"$@\"\n"
 			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -125,6 +127,9 @@ func newGitHubHarness(t *testing.T) storeHarness {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		fail := failCommit != "" && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/git/commits/"+failCommit)
+		if fail {
+			failCommit = ""
+		}
 		m.mu.Unlock()
 		if fail {
 			http.Error(w, "server error", http.StatusInternalServerError)

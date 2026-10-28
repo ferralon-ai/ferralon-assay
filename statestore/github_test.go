@@ -173,6 +173,13 @@ func (m *mockGitHub) createCommit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	for _, p := range in.Parents {
+		// GitHub refuses a commit whose parent does not exist.
+		if _, ok := m.commits[p]; !ok {
+			http.Error(w, "parent does not exist", http.StatusUnprocessableEntity)
+			return
+		}
+	}
 	canon, _ := json.Marshal(in)
 	sha := mockSHA("commit", canon)
 	m.commits[sha] = mockCommit{Tree: in.Tree, Parents: in.Parents}

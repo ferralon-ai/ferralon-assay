@@ -522,7 +522,7 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 			"pkg:golang/stdlib@go1.22.1", "pkg:golang/stdlib?type=module", "pkg:golang/stdlib#net/http",
 			"pkg:golang/stdlib@go1.22.1?os=linux#net/http", "pkg:golang/StdLib",
 			"pkg:golang/toolchain", "pkg:golang/toolchain@go1.22.1", "pkg:golang/toolchain?os=linux#cmd/go",
-			"pkg:golang/cmd/go", "pkg:golang/cmd/go/internal/modfetch@go1.22.1", "pkg:GOLANG/stdlib",
+			"pkg:golang/cmd/go", "pkg:golang/cmd/go/internal/modfetch@go1.22.1", "pkg:GOLANG/stdlib", "pkg:golang/Toolchain",
 		} {
 			t.Run(purl, func(t *testing.T) {
 				wantNone(t, resolve(t, app, purl, []string{"Verify"}))

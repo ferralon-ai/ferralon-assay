@@ -562,20 +562,35 @@ const (
 // module's __loader__, package walks, entry points) is opaque as well.
 //
 // A name counts by what the file's import bindings bind it to, in any scope: "import sys as
-// s" makes s the sys module, "from sys import modules" makes modules sys.modules, "from
+// s" (or "from os import sys as s") makes s the sys module, "from sys import modules"
+// makes modules sys.modules, "from
 // importlib import import_module as load" makes load import_module, "from runpy import
 // run_path as rp" makes rp a loader. The words sys, importlib, import_module, __import__
 // and the loader names always count, since the scanner cannot tell what else they are
 // bound to. It returns the literal module names called for (load roots), the
 // module names whose objects the code receives (an __import__ call receives each package
 // on the way down), and whether any reference is opaque.
+// lookupTarget reads an import binding's target from its last sys, importlib or builtins
+// segment on, so "from os import sys" binds the sys module and "from os.sys import modules"
+// binds sys.modules: what another module re-exports under those names is that module.
+func lookupTarget(target string) string {
+	segs := strings.Split(target, ".")
+	for i := len(segs) - 1; i >= 0; i-- {
+		switch segs[i] {
+		case "sys", "importlib", "builtins":
+			return strings.Join(segs[i:], ".")
+		}
+	}
+	return target
+}
+
 func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque bool) {
 	r := []rune(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
 	names := map[string]lookupKind{}
 	for _, b := range bindings {
-		switch b.target {
+		switch lookupTarget(b.target) {
 		case "sys":
 			names[b.local] = lookupSys
 		case "sys.modules":

@@ -178,7 +178,8 @@ func runBaseline(args []string) error {
 	}
 	budget := startScanBudget(timeout)
 	defer budget.release()
-	ctx, analysis := budget.flush, budget.analysis
+	timer := &phaseTimer{w: os.Stderr}
+	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
 
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
@@ -230,14 +231,17 @@ func runBaseline(args []string) error {
 	if err != nil {
 		return err
 	}
+	timer.logAdvisories()
 	if err := writeScanTruncated(scanTruncated(rep)); err != nil {
 		return err
 	}
 
 	rescan := rescanFromEnv()
+	publishStart := time.Now()
 	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph, f.depRun.forLanguage(acq.language)); err != nil {
 		return err
 	}
+	logPhase(os.Stderr, "publish", time.Since(publishStart))
 
 	printSummary(*f.outDir, rep, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)

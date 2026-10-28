@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
@@ -199,6 +200,33 @@ func TestWriteScanTruncated(t *testing.T) {
 			got, err := os.ReadFile(out)
 			if err != nil || string(got) != tc.want {
 				t.Fatalf("step output = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPhaseTimer_Advisories(t *testing.T) {
+	cases := []struct {
+		name  string
+		times []time.Duration
+		want  string
+	}{
+		{name: "none assessed"},
+		{name: "odd", times: []time.Duration{3 * time.Second, time.Second, 2 * time.Second}, want: brand.Name + ": time: advisories 3 assessed, p50 2s, max 3s\n"},
+		{name: "even takes the lower middle", times: []time.Duration{4 * time.Second, time.Second, 2 * time.Second, 3 * time.Second}, want: brand.Name + ": time: advisories 4 assessed, p50 2s, max 4s\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var w strings.Builder
+			p := &phaseTimer{w: &w}
+			p.observe("inventory", 1500*time.Millisecond)
+			for _, d := range tc.times {
+				p.observe("advisory", d)
+			}
+			p.logAdvisories()
+			want := brand.Name + ": time: inventory 1.5s\n" + tc.want
+			if w.String() != want {
+				t.Fatalf("stderr = %q, want %q", w.String(), want)
 			}
 		})
 	}

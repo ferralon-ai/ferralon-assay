@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -28,7 +29,9 @@ func assessWithin(analysis context.Context, areq assessment.Request, opts ...pip
 	if analysis.Err() != nil {
 		return nil, "", true, nil
 	}
+	start := time.Now()
 	st, assessmentID, err := assess(analysis, areq, opts...)
+	observePhase(analysis, "advisory", start)
 	if analysis.Err() != nil {
 		return nil, "", true, nil
 	}
@@ -39,7 +42,9 @@ func assessWithin(analysis context.Context, areq assessment.Request, opts ...pip
 // returned, the inventory is declared unresolved instead, so the Report is still built and every
 // advisory still gets its row.
 func inventoryWithin(analysis context.Context, codebase assessment.CodebaseRef, opts ...pipeline.AssessOption) (plugin.DependencyInventory, string, error) {
+	start := time.Now()
 	inv, language, _, err := pipeline.ResolveCodebaseInventory(analysis, codebase, "", opts...)
+	observePhase(analysis, "inventory", start)
 	if analysis.Err() != nil {
 		return plugin.DependencyInventory{Partiality: plugin.Partial(report.ReasonScanCutShort)}, language, nil
 	}

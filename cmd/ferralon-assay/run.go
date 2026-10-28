@@ -1166,7 +1166,8 @@ func runPRInherit(args []string) error {
 	}
 	budget := startScanBudget(timeout)
 	defer budget.release()
-	ctx, analysis := budget.flush, budget.analysis
+	timer := &phaseTimer{w: os.Stderr}
+	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
 
 	cfg, err := f.resolve(analysis, true)
 	if err != nil {
@@ -1201,6 +1202,7 @@ func runPRInherit(args []string) error {
 	if err != nil {
 		return err
 	}
+	timer.logAdvisories()
 	if err := writeScanTruncated(scanTruncated(res.Report)); err != nil {
 		return err
 	}
@@ -1213,9 +1215,11 @@ func runPRInherit(args []string) error {
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
 	}
 	rescan := rescanFromEnv()
+	publishStart := time.Now()
 	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
 		return err
 	}
+	logPhase(os.Stderr, "publish", time.Since(publishStart))
 	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
@@ -1249,7 +1253,8 @@ func runCVEWatch(args []string) error {
 	}
 	budget := startScanBudget(timeout)
 	defer budget.release()
-	ctx, analysis := budget.flush, budget.analysis
+	timer := &phaseTimer{w: os.Stderr}
+	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
 
 	// widen=false: cve-watch's work set is the OSV query it makes below, against the STORED SBOM and
 	// diffed against a cursor. That mechanism is the one the scan path now borrows; re-widening the
@@ -1271,6 +1276,7 @@ func runCVEWatch(args []string) error {
 	if err != nil {
 		return err
 	}
+	timer.logAdvisories()
 	if err := writeScanTruncated(scanTruncated(res.Report)); err != nil {
 		return err
 	}
@@ -1287,9 +1293,11 @@ func runCVEWatch(args []string) error {
 		fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
 		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
+		publishStart := time.Now()
 		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
 			return err
 		}
+		logPhase(os.Stderr, "publish", time.Since(publishStart))
 		printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 		printRescanContext(rescan)
 		postScan(ctx, cfg.store, cfg.subject, rescan)

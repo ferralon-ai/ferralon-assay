@@ -12,37 +12,43 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 // notExploitableGrounds is the positive-grounds gate of finding()'s default arm. Reaching that arm
 // means no path was found and no step declared it did not run; this decides whether the absence
-// is evidence about the admitted package. It returns the NE detail naming the grounds, or the
-// undetermined reason when there are none:
+// is evidence about the admitted package. It returns the NE detail naming the grounds and the basis
+// they rest on, or the undetermined reason when there are none:
 //
 //   - G1: the advisory was admitted on a package whose installed version resolved.
 //   - G2 arm A: every advisory symbol resolved to code inside that package, and the lane searched
 //     every such sink from its entry points. It grounds only on a vetted symbol set (vettedSymbols);
 //     an unvetted one leaves the advisory undetermined unless arm B grounds it.
 //   - G2 arm B: the lane refuted that package on positive evidence (ReachabilityResult.Refutation).
+//     The refutation's assumptions come back with the detail: the verdict holds only under them.
+//     Arm A carries them too, since the lane's search started from the same entry points.
+//
+// Both arms show the code present and unreached, so the basis is BasisSymbolUnreachable. That holds
+// for package_not_loaded too: the package is installed, and nothing loaded imports it.
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
 // another package: that package's symbols were never resolved or searched, and it may be installed
 // beside the admitted one.
 //
 // A leaf-name hit in first-party code never counts toward arm A: its origin is not the package.
-func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, ok bool) {
+func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, basis verdict.NonExploitableBasis, assumptions []string, ok bool) {
 	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
 	if !ok {
-		return "", report.ReasonPackageVersionUnresolved, false
+		return "", report.ReasonPackageVersionUnresolved, "", nil, false
 	}
 	root := pkg != nil && pkg.Root
 	reach, _ := reachabilityResult(store, assessmentID)
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
 	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods) {
 		if len(symbols) == 0 {
-			return "", report.ReasonAdvisorySymbolAbsent, false
+			return "", report.ReasonAdvisorySymbolAbsent, "", nil, false
 		}
-		return "", report.ReasonVulnerableSymbolUnresolved, false
+		return "", report.ReasonVulnerableSymbolUnresolved, "", nil, false
 	}
 
 	unvetted := false
@@ -54,11 +60,11 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 				unvetted = true
 			} else if len(absent) == 0 {
 				return fmt.Sprintf("no path from any entry point reaches %s in %s",
-					strings.Join(symbols, ", "), label), "", true
+					strings.Join(symbols, ", "), label), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach), true
 			} else {
 				present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
 				return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
-					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", true
+					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach), true
 			}
 		}
 	}
@@ -67,19 +73,20 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded ||
 		!root && pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
 		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
+			basis := verdict.BasisSymbolUnreachable
 			if r.Detail == "" {
-				return fmt.Sprintf("%s: %s", label, r.Basis), "", true
+				return fmt.Sprintf("%s: %s", label, r.Basis), "", basis, r.Assumptions, true
 			}
-			return fmt.Sprintf("%s: %s (%s)", label, r.Detail, r.Basis), "", true
+			return fmt.Sprintf("%s: %s (%s)", label, r.Detail, r.Basis), "", basis, r.Assumptions, true
 		}
 	}
 	if unvetted {
-		return "", report.ReasonAdvisorySymbolsUnvetted, false
+		return "", report.ReasonAdvisorySymbolsUnvetted, "", nil, false
 	}
 	if len(symbols) == 0 {
-		return "", report.ReasonAdvisorySymbolAbsent, false
+		return "", report.ReasonAdvisorySymbolAbsent, "", nil, false
 	}
-	return "", report.ReasonVulnerableSymbolUnresolved, false
+	return "", report.ReasonVulnerableSymbolUnresolved, "", nil, false
 }
 
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the
@@ -439,6 +446,24 @@ func normalizePackageName(typ, name string) string {
 	default:
 		return name
 	}
+}
+
+// refutationAssumptions are the assumptions the lane's refutation rests on, none without one.
+func refutationAssumptions(reach plugin.ReachabilityResult) []string {
+	if reach.Refutation == nil {
+		return nil
+	}
+	return reach.Refutation.Assumptions
+}
+
+// libraryEntrypoints reads the library entry points the lane resolved for the assessment, none when
+// it resolved none.
+func libraryEntrypoints(store artifact.Store, assessmentID string) []plugin.ResolvedLibraryEntrypoints {
+	reach, _ := reachabilityResult(store, assessmentID)
+	if reach.LibraryEntrypoints == nil {
+		return nil
+	}
+	return []plugin.ResolvedLibraryEntrypoints{*reach.LibraryEntrypoints}
 }
 
 // reachabilityResult reads the reachability stage's result off its artifact.

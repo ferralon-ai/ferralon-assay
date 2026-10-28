@@ -43,7 +43,10 @@ func readYarnClassic(prefix, root string, data []byte) (*depRegion, bool) {
 		return nil, false
 	}
 	r := newDepRegion(prefix)
-	blocks := parseYarnClassic(data)
+	blocks, ok := parseYarnClassic(data)
+	if !ok {
+		return nil, false
+	}
 	table := map[string]*depEntry{}
 	entries := make([]*depEntry, len(blocks))
 	for i, b := range blocks {

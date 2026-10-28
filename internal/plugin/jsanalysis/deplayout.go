@@ -611,8 +611,15 @@ type depPackage struct {
 	entry    *depEntry
 	manifest *pkgManifest
 	sources  []depFile
-	// files is every regular file in the package, package-relative.
-	files         map[string]bool
+	// files is every regular file in the package, package-relative, and dirs every directory
+	// holding one.
+	files map[string]bool
+	dirs  map[string]bool
+	// modules maps each source file the lane parses to its module id inside the package.
+	modules map[string]string
+	// nested holds the package.json of each directory below the root, by package-relative
+	// directory; nil for one that does not parse.
+	nested        map[string]*pkgManifest
 	installScript bool
 	native        bool
 }
@@ -675,7 +682,7 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		return nil, errPackageUnread
 	}
 	tr := tar.NewReader(&cappedReader{ctx: ctx, r: zr, left: maxUnpackedBytes + tarSlack})
-	pkg := &depPackage{entry: e, files: map[string]bool{}}
+	pkg := &depPackage{entry: e, files: map[string]bool{}, dirs: map[string]bool{}, modules: map[string]string{}, nested: map[string]*pkgManifest{}}
 	folded := map[string]bool{}
 	byStem := map[string][]depFile{}
 	var manifest []byte
@@ -705,6 +712,9 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 			return nil, errPackageUnread
 		}
 		pkg.files[rel] = true
+		for d := path.Dir(rel); d != "."; d = path.Dir(d) {
+			pkg.dirs[d] = true
+		}
 		folded[strings.ToLower(rel)] = true
 		unpacked += hdr.Size
 		if unpacked > maxUnpackedBytes {
@@ -713,7 +723,8 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		if strings.HasPrefix(rel, "node_modules/") || strings.Contains(rel, "/node_modules/") {
 			continue
 		}
-		keep := rel == "package.json" || depSourceFile(rel)
+		nestedManifest := path.Base(rel) == "package.json" && rel != "package.json"
+		keep := rel == "package.json" || nestedManifest || depSourceFile(rel)
 		if !keep {
 			continue
 		}
@@ -726,6 +737,10 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		}
 		if rel == "package.json" {
 			manifest = body
+			continue
+		}
+		if nestedManifest {
+			pkg.nested[path.Dir(rel)] = parsePkgManifest(body)
 			continue
 		}
 		stem := stripJSExt(rel)
@@ -741,6 +756,9 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 	pkg.installScript, pkg.native = manifestFacts(manifest, pkg.files)
 	for _, stem := range slices.Sorted(maps.Keys(byStem)) {
 		pkg.sources = append(pkg.sources, stemSources(stem, byStem[stem])...)
+	}
+	for _, f := range pkg.sources {
+		pkg.modules[f.rel] = f.module
 	}
 	return pkg, nil
 }

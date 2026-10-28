@@ -289,6 +289,27 @@ type graphBuild struct {
 	// A computed read accepted for its literal receiver holds only while no module of the
 	// build may set a prototype the lane does not see.
 	anyExempt, anyProto bool
+	// pkgLoads and pkgCalls are the first-party sites declined only because a bare specifier
+	// names a package the build has not read; dependency code read afterwards may cover them
+	// (coverReadPackages). entered marks a call into a package-boundary node outside pkgCalls,
+	// whose uninspectable limit nothing retracts.
+	pkgLoads []pkgSite
+	pkgCalls []pkgSite
+	entered  bool
+	// depUnbounded marks a load or call in read dependency code for which some resolver may run
+	// code the graph has no edge to; coverReadPackages then retracts nothing.
+	depUnbounded bool
+}
+
+// pkgSite is a first-party site declined on a bare specifier: the unresolved entry at index at,
+// for a load of spec, or for the call cs.
+type pkgSite struct {
+	at         int
+	module     string
+	spec       string
+	viaRequire bool
+	cs         callSite
+	entered    bool
 }
 
 func newGraphBuild() *graphBuild {
@@ -398,6 +419,7 @@ func buildGraph(prog *program) *graphBuild {
 				loader = "require"
 			}
 			if rs.loadsOutOfTree(f.module, ls.spec, ls.viaRequire) {
+				g.pkgLoads = append(g.pkgLoads, pkgSite{at: len(g.unresolved), module: f.module, spec: ls.spec, viaRequire: ls.viaRequire})
 				load(loader, plugin.PartialReasonUninspectablePackage)
 			}
 			switch {
@@ -484,6 +506,9 @@ func buildGraph(prog *program) *graphBuild {
 			reason := plugin.PartialReasonUninspectablePackage
 			if r.Kind != resolvePackage { // resolveUnresolved (or a first-party module with no unique symbol)
 				reason = contributedReason(r.Reason)
+				g.entered = g.entered || enters
+			} else {
+				g.pkgCalls = append(g.pkgCalls, pkgSite{at: len(g.unresolved), module: f.module, cs: cs, entered: enters})
 			}
 			// A package can call back any function value handed to it, so a call that enters a
 			// package is never bounded; a declined name lists what it can denote (pickFunc), when

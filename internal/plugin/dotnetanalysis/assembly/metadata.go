@@ -394,7 +394,7 @@ func (m *mdTables) parseTableStream(b []byte) error {
 	// its computed width — retained tables keep their values; the rest are dropped.
 	retained := map[int]bool{
 		tModule: true, tTypeRef: true, tTypeDef: true, tField: true, tMethodDef: true,
-		tParam: true, tInterfaceImpl: true, tMemberRef: true, tMethodImpl: true,
+		tParam: true, tInterfaceImpl: true, tMemberRef: true, tMethodImpl: true, tMethodSemantics: true,
 		tTypeSpec: true, tMethodSpec: true, tNestedClass: true, tModuleRef: true,
 		tAssembly: true, tAssemblyRef: true, tCustomAttribute: true,
 	}

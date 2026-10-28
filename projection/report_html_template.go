@@ -200,6 +200,7 @@ const reportHTMLSource = `<!DOCTYPE html>
         <td>
           <span class="badge {{.Severity}}">{{.Label}}</span>
           {{- if .Detail}}<div class="detail">{{.Detail}}</div>{{end}}
+          {{- range .Assumptions}}<div class="detail">Holds only under the stated assumption: {{.}}</div>{{end}}
           {{- if .UndeterminedReason}}<div class="limit-code mono">{{.UndeterminedReason}}</div>{{end}}
           {{- if .Path}}<div class="path"><span class="mono">{{.Path}}</span></div>{{end}}
           {{- if .HasGrade}}

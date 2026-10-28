@@ -3,6 +3,7 @@ package assembly
 import (
 	"encoding/json"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -52,7 +53,7 @@ type AssetsLocator struct {
 	packageFolders []string                       // ordered restore cache roots
 	libPath        map[string]string              // "<id>/<ver>" -> "<id-lower>/<ver>"
 	dlls           map[string]map[string][]string // target -> "<id>/<ver>" -> rel dlls (runtime, else compile); nil => only _._/none
-	framework      map[string]map[string]bool     // target -> "<id>/<ver>" whose runtime is "_._" over a compile dll
+	framework      map[string]map[string][]string // target -> "<id>/<ver>" whose runtime is "_._" over compile dlls -> those compile dlls
 	ridSpecific    map[string]map[string]bool     // target -> "<id>/<ver>" with a runtimeTargets runtime asset
 }
 
@@ -87,7 +88,7 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 		packageFolders: orderedObjectKeys(af.PackageFolders),
 		libPath:        make(map[string]string, len(af.Libraries)),
 		dlls:           make(map[string]map[string][]string, len(af.Targets)),
-		framework:      make(map[string]map[string]bool),
+		framework:      make(map[string]map[string][]string),
 		ridSpecific:    make(map[string]map[string]bool),
 	}
 	for key, lib := range af.Libraries {
@@ -105,9 +106,9 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 					dlls = compile
 				} else if len(compile) > 0 {
 					if a.framework[target] == nil {
-						a.framework[target] = map[string]bool{}
+						a.framework[target] = map[string][]string{}
 					}
-					a.framework[target][pkgKey] = true
+					a.framework[target][pkgKey] = compile
 				}
 			}
 			m[pkgKey] = dlls
@@ -144,7 +145,41 @@ func dllKeys(raw json.RawMessage) []string {
 // implementation at run time, so neither the package's ref nor lib bytes are the code
 // that runs.
 func (a *AssetsLocator) FrameworkSupplied(target, pkgKey string) bool {
-	return a != nil && a.framework[target][pkgKey]
+	return a != nil && len(a.framework[target][pkgKey]) > 0
+}
+
+// FrameworkCompileNames returns the assembly names (file names without ".dll") of the
+// compile dlls a framework-supplied package declares in target: the assemblies the
+// first-party build compiled against and the shared framework supplies at run time. nil
+// when the package is not framework-supplied there.
+func (a *AssetsLocator) FrameworkCompileNames(target, pkgKey string) []string {
+	if a == nil {
+		return nil
+	}
+	return assemblyNames(a.framework[target][pkgKey])
+}
+
+// PackageAssemblyNames returns the assembly names of every dll a package in target
+// supplies itself (its runtime dlls, else its compile dlls). A framework-supplied
+// package's names are not included: the framework, not the package, supplies those.
+func (a *AssetsLocator) PackageAssemblyNames(target string) []string {
+	if a == nil {
+		return nil
+	}
+	var out []string
+	for _, dlls := range a.dlls[target] {
+		out = append(out, assemblyNames(dlls)...)
+	}
+	return out
+}
+
+func assemblyNames(dlls []string) []string {
+	var out []string
+	for _, d := range dlls {
+		base := path.Base(d)
+		out = append(out, base[:len(base)-len(path.Ext(base))])
+	}
+	return out
 }
 
 // RIDSpecific reports whether restore recorded, for this package in target, an
@@ -177,7 +212,7 @@ func (a *AssetsLocator) HasNoAssemblies(target, pkgKey string) bool {
 		return false
 	}
 	dlls, ok := tgt[pkgKey]
-	return ok && len(dlls) == 0 && !a.framework[target][pkgKey]
+	return ok && len(dlls) == 0 && len(a.framework[target][pkgKey]) == 0
 }
 
 // NugetPackageRoots returns the package-cache roots to search, in priority order:

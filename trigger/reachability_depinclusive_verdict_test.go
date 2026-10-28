@@ -72,8 +72,8 @@ func TestFinding_DependencyInclusiveGraphYieldsNotExploitable(t *testing.T) {
 		t.Fatalf("verdict = %q, want %q — a searched COMPLETE-enough graph with no reaching path refutes",
 			f.Verdict, report.VerdictNotExploitable)
 	}
-	if f.Evidence.Basis != verdict.BasisSymbolAbsent {
-		t.Errorf("basis = %q, want %q", f.Evidence.Basis, verdict.BasisSymbolAbsent)
+	if f.Evidence.Basis != verdict.BasisSymbolUnreachable {
+		t.Errorf("basis = %q, want %q", f.Evidence.Basis, verdict.BasisSymbolUnreachable)
 	}
 }
 

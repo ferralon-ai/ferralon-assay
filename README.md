@@ -58,6 +58,15 @@ jobs:
           # Omit it and the scan falls back to a small built-in table (a standalone
           # floor, not coverage).
           advisory-corpus-repo: ferralon-ai/vulnerability-corpus
+          # The policy decides what the scan evaluates: every advisory in it that
+          # affects one of your dependencies. `full` is the whole corpus. With a
+          # policy set, the Action reads the latest signed corpus release, verifies
+          # its signature against the signer below, and ranks findings with that
+          # release's EPSS/KEV signals. The signer values are the ones the corpus
+          # publishes in its CONSUMING.md.
+          advisory-corpus-policy: full
+          corpus-signer-identity: ferralon-intel-publisher@ferralon.iam.gserviceaccount.com
+          corpus-signer-issuer: https://accounts.google.com
 
       # The Action materializes report.sarif.json; the upload to code scanning is this
       # step, so drop it and the `code-scanning` surface produces a file and nothing else.

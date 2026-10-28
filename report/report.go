@@ -1065,11 +1065,13 @@ type DependencyCode struct {
 // DependencyCodeCause is why a fetch fell back to reading no dependency code.
 type DependencyCodeCause struct {
 	// Kind is inventory_failed, or the reason the first failed package, in PURL order, was not
-	// fetched: fetch_failed, not_served, policy_refused, cancelled, integrity_mismatch or
-	// npmrc_malformed.
+	// fetched: registry_unavailable (throttled, server error, timeout or dropped connection),
+	// registry_unreachable (name resolution or connect failure), not_served (the registry
+	// answered that it does not serve the tarball), fetch_failed, policy_refused, cancelled,
+	// integrity_mismatch or npmrc_malformed.
 	Kind string `json:"kind"`
-	// Detail names that package and, where there is one, the policy code or the npm
-	// configuration file and line. It never carries a URL, a host or a credential.
+	// Detail names that package and, where there is one, the policy or fetch-failure code or the
+	// npm configuration file and line. It never carries a URL, a host or a credential.
 	Detail string `json:"detail,omitempty"`
 }
 

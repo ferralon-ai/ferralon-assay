@@ -609,6 +609,164 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 	}
 }
 
+// readerReaches walks the result the way a reader does: from caller along Edges, and from
+// any frame holding an Unresolved entry without Targets to every Escaped frame.
+func readerReaches(res plugin.CallGraphResult, caller, target string) bool {
+	escaped := symbolSet(res.Escaped)
+	open := map[string]bool{}
+	for _, u := range res.Unresolved {
+		if len(u.Targets) == 0 {
+			open[u.Caller.SCIP] = true
+		}
+	}
+	seen := map[string]bool{caller: true}
+	queue := []string{caller}
+	for len(queue) > 0 {
+		at := queue[0]
+		queue = queue[1:]
+		if at == target {
+			return true
+		}
+		var next []string
+		for _, e := range res.Edges {
+			if e.Caller.SCIP == at {
+				next = append(next, e.Callee.SCIP)
+			}
+		}
+		if open[at] {
+			for s := range escaped {
+				next = append(next, s)
+			}
+		}
+		for _, n := range next {
+			if !seen[n] {
+				seen[n] = true
+				queue = append(queue, n)
+			}
+		}
+	}
+	return false
+}
+
+// TestCallGraph_AlternativeBindingsStayListed: a site leaves Unresolved only when the name
+// it calls has one binding that can reach it. Beside an import alias, a fallback def, a
+// guarded assignment, an assignment in a def that declares the name global, or a walrus in a
+// guard header is another candidate, so the site keeps its alias edge and is listed, and the
+// alternative's target stays reachable from the caller. A literal None alternative, or a
+// dependency import whose boundary edge the site draws, adds no candidate: the site is
+// complete and unlisted.
+func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
+	impl := funcSCIP("pkg/impl", nil, "f", 1)
+	vuln := funcSCIP("pkg/v", nil, "vuln", 1)
+	pyG := funcSCIP("pkg/a", nil, "_py_g", 1)
+	cases := []struct {
+		name   string
+		src    string
+		deps   string
+		reach  []string
+		listed bool
+		// ambiguous: the alias and the def both match the call, so no edge is drawn.
+		ambiguous bool
+	}{
+		{
+			name:   "fallback to a first-party def",
+			src:    "from .v import vuln\n\ndef _py_g(x):\n    return vuln(x)\n\ntry:\n    from .impl import f as g\nexcept ImportError:\n    g = _py_g\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, pyG, vuln},
+			listed: true,
+		},
+		{
+			name:   "fallback on the except line",
+			src:    "from .v import vuln\ntry:\n    from .impl import f as g\nexcept ImportError: g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "guarded assignment",
+			src:    "import os\nfrom .impl import f as g\nfrom .v import vuln\nif os.environ.get('X'):\n    g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "global assignment in another def",
+			src:    "from .impl import f as g\nfrom .v import vuln\n\ndef setup():\n    global g\n    g = vuln\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "global import in another def",
+			src:    "from .impl import f as g\n\ndef setup():\n    global g\n    from .v import vuln as g\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:   "walrus in a guard header",
+			src:    "from .impl import f as g\nfrom .v import vuln\n\ndef pick():\n    return vuln\n\nif (g := pick()):\n    pass\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+		},
+		{
+			name:      "def beside the import",
+			src:       "from .impl import f as g\nfrom .v import vuln\n\nif not g:\n    def g(x):\n        return vuln(x)\n\ndef go():\n    return g(1)\n",
+			reach:     []string{impl, vuln},
+			listed:    true,
+			ambiguous: true,
+		},
+		{
+			name:  "None alternative",
+			src:   "try:\n    from .impl import f as g\nexcept ImportError:\n    g = None\n\ndef go():\n    return g(1)\n",
+			reach: []string{impl},
+		},
+		{
+			name:  "None alternative on the except line",
+			src:   "try:\n    from .impl import f as g\nexcept ImportError: g = None\n\ndef go():\n    return g(1)\n",
+			reach: []string{impl},
+		},
+		{
+			name:  "dependency alternative with its boundary edge",
+			deps:  "pyyaml==6.0\n",
+			src:   "try:\n    from .impl import f as g\nexcept ImportError:\n    from yaml import load as g\n\ndef go():\n    return g(1)\n",
+			reach: []string{impl},
+		},
+		{
+			name:  "one import",
+			src:   "from .impl import f as g\n\ndef go():\n    return g(1)\n",
+			reach: []string{impl},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{
+				"pkg/__init__.py": "",
+				"pkg/impl.py":     "def f(x):\n    return x\n",
+				"pkg/v.py":        "def vuln(x):\n    return x\n",
+				"pkg/a.py":        tc.src,
+			}
+			if tc.deps != "" {
+				files["requirements.txt"] = tc.deps
+			}
+			res := mustCallGraph(t, files)
+			goSCIP := funcSCIP("pkg/a", nil, "go", 0)
+			if !tc.ambiguous && !hasEdge(res.Edges, goSCIP, impl) {
+				t.Fatalf("missing alias edge %s -> %s; edges %v", goSCIP, impl, res.Edges)
+			}
+			listed := false
+			for _, u := range res.Unresolved {
+				if u.Caller.SCIP == goSCIP && u.Callee == "g" && len(u.Targets) == 0 {
+					listed = true
+				}
+			}
+			if listed != tc.listed {
+				t.Fatalf("g(1) listed = %v, want %v; unresolved %v", listed, tc.listed, res.Unresolved)
+			}
+			for _, want := range tc.reach {
+				if !readerReaches(res, goSCIP, want) {
+					t.Fatalf("%s does not reach %s; edges %v, escaped %v", goSCIP, want, res.Edges, res.Escaped)
+				}
+			}
+		})
+	}
+}
+
 // TestCallGraph_AliasNeedsTheCallersBinding: an import alias resolves a call only where
 // the calling code holds the binding. A same-named call through a dependency, a parameter,
 // local or dependency import that alone binds the name in the deciding scope, a parameter

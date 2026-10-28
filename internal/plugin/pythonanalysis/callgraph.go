@@ -212,9 +212,14 @@ type fileParse struct {
 	locals    map[string]map[string]bool
 	// plain holds the names a scope rebinds on every path: parameters, straight-line
 	// assignments and straight-line dependency imports or instances.
-	plain     map[string]map[string]bool
-	modValues []string
-	computed  bool
+	plain map[string]map[string]bool
+	// binders, defs and depImports count a name's other bindings per scope (fileScan's
+	// binders and defs, and the dependency imports), for siteComplete.
+	binders    map[string]map[string]int
+	defs       map[string]map[string]bool
+	depImports map[string]map[string]int
+	modValues  []string
+	computed   bool
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -239,6 +244,44 @@ func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
 		}
 	}
 	return nil, false
+}
+
+// siteComplete reports whether a site's edges are all it can reach: the name it calls (a
+// chain's head) has at most one binding that can reach it, in the innermost scope that binds
+// the name. A literal None binding is no alternative, and neither is a dependency import
+// whose boundary edge the site draws (depDrawn). A bare call through a name only a value
+// binds (a parameter, assignment or instance) has no edge to that value, so it is never
+// complete; nor is a call through a lambda or comprehension variable.
+func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
+	if cs.inner {
+		return false
+	}
+	head := cs.calleeName
+	if len(cs.calleeChain) > 1 {
+		head = cs.calleeChain[0]
+	}
+	for i := len(cs.scopes) - 1; i >= -1; i-- {
+		scope := ""
+		if i >= 0 {
+			scope = cs.scopes[i]
+		}
+		fp, vals, dep := len(f.fpBinds[scope][head]), f.binders[scope][head], f.depImports[scope][head]
+		def := 0
+		if f.defs[scope][head] {
+			def = 1
+		}
+		if fp+vals+dep+def == 0 {
+			continue
+		}
+		if depDrawn && dep > 0 {
+			dep--
+		}
+		if vals > 0 && len(cs.calleeChain) <= 1 {
+			return false
+		}
+		return fp+vals+dep+def <= 1
+	}
+	return true
 }
 
 // anyScopeBinds is every first-party import path the file binds name to, in any scope.
@@ -347,6 +390,8 @@ func loadProgram(buildDir string) (*program, error) {
 			refs:      scan.refs,
 			locals:    scan.locals,
 			plain:     scan.plain,
+			binders:   scan.binders,
+			defs:      scan.defs,
 			computed:  scan.refs.computed || opaque,
 		})
 		rawBindings = append(rawBindings, scan.bindings)
@@ -419,6 +464,15 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 				f.depBinds[b.scope] = map[string]bool{}
 			}
 			f.depBinds[b.scope][b.local] = true
+			if b.target != "" {
+				if f.depImports == nil {
+					f.depImports = map[string]map[string]int{}
+				}
+				if f.depImports[b.scope] == nil {
+					f.depImports[b.scope] = map[string]int{}
+				}
+				f.depImports[b.scope][b.local]++
+			}
 			if !b.guarded {
 				addNames(&f.plain, b.scope, []string{b.local})
 			}
@@ -554,10 +608,11 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 					}
 				}
 			}
-			if !ok {
-				// 0 matches (library/import/builtin/unknown) or >1 (unresolvable name):
-				// no sound single edge, so never fabricate one (inv.5). The site is listed
-				// with no Targets: it may reach any escaped frame.
+			// 0 matches (library/import/builtin/unknown) or >1 (unresolvable name): no sound
+			// single edge, so never fabricate one (inv.5). A site whose edge is not provably
+			// all it reaches is listed too. Listed with no Targets, it may reach any escaped
+			// frame.
+			if !ok || !f.siteComplete(cs, len(provides) > 0) {
 				u := plugin.UnresolvedCall{
 					Caller: sym(caller),
 					Callee: cs.calleeWritten,
@@ -568,9 +623,10 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 					unresolvedSeen[k] = true
 					unresolved = append(unresolved, u)
 				}
-				continue
 			}
-			addEdge(caller, callee)
+			if ok {
+				addEdge(caller, callee)
+			}
 		}
 		// Framework ingress handler functions are call-graph roots (static-reachability
 		// entry points), so a reverse BFS can terminate at them even when no caller in the

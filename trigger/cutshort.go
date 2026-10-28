@@ -32,10 +32,10 @@ func assessWithin(analysis context.Context, areq assessment.Request, opts ...pip
 	}
 	start := time.Now()
 	st, assessmentID, err := assess(analysis, areq, opts...)
-	observePhase(analysis, "advisory", start)
 	if analysis.Err() != nil {
 		return nil, "", true, nil
 	}
+	observePhase(analysis, "advisory", start)
 	return st, assessmentID, false, err
 }
 
@@ -45,10 +45,10 @@ func assessWithin(analysis context.Context, areq assessment.Request, opts ...pip
 func inventoryWithin(analysis context.Context, codebase assessment.CodebaseRef, opts ...pipeline.AssessOption) (plugin.DependencyInventory, string, error) {
 	start := time.Now()
 	inv, language, _, err := pipeline.ResolveCodebaseInventory(analysis, codebase, "", opts...)
-	observePhase(analysis, "inventory", start)
 	if analysis.Err() != nil {
 		return plugin.DependencyInventory{Partiality: plugin.Partial(report.ReasonScanCutShort)}, language, nil
 	}
+	observePhase(analysis, "inventory", start)
 	return inv, language, err
 }
 

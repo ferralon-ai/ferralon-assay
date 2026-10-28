@@ -1287,14 +1287,14 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		wanted[s] = true
 	}
 
-	// The PURL package filter only applies when the advisory names a real, loaded
-	// package — the dependency case. A FIRST-PARTY advisory carries a synthetic PURL
-	// (pkg:golang/<app>) that is NOT a loaded package path (the repro's module path is
-	// its own, e.g. tegron.corpus/<repro>), so an exact-path filter would drop every
-	// candidate. When the filter matches no loaded package, drop it and resolve the
-	// advisory symbols by name across the program — sound because AdvisorySymbols are
-	// still the GIVEN ground truth (inv.7); we only relax the package SCOPE, never the
-	// symbol identity.
+	// The index holds the build's own packages only, so the PURL package filter applies when the
+	// advisory names one of them. A FIRST-PARTY advisory may carry a synthetic PURL
+	// (pkg:golang/<app>) that is NOT a loaded package path (the repro's module path is its own,
+	// e.g. tegron.corpus/<repro>), so an exact-path filter would drop every candidate. When the
+	// filter matches no loaded package and neither the standard library nor a dependency module
+	// holds the path, drop it and resolve the advisory symbols by name across the program —
+	// AdvisorySymbols are still the GIVEN ground truth (inv.7); only the package SCOPE is relaxed,
+	// never the symbol identity.
 	if pkgFilter != "" {
 		present := false
 		for _, sym := range index.Symbols {
@@ -1304,6 +1304,12 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			}
 		}
 		if !present {
+			// The standard library or a dependency module holds the advisory's package: its code is
+			// not in the index, and a first-party symbol that shares a name with an advisory symbol
+			// is not the advisory's.
+			if strings.EqualFold(pkgFilter, packageFromPURL(stdlibPURL)) || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
+				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
+			}
 			// No loaded package is the advisory's: if no module in the build holds it either,
 			// search every module's source for the symbols, which is what can show the
 			// advisory's code is not in the build under another path.

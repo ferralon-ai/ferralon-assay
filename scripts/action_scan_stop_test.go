@@ -16,31 +16,40 @@ import (
 )
 
 // stoppableScanner stands in for the scanner: it says "ready", says "TERM" each time it gets
-// SIGTERM, and exits 7 once the test writes to $STUB_RELEASE. Its stdout is the step's.
+// SIGTERM, and once the test writes to $STUB_RELEASE writes its Report and SARIF when
+// $STUB_PUBLISHES is set, says "exit", and exits 7. Its stdout is the step's.
 const stoppableScanner = `#!/usr/bin/env bash
 trap 'echo TERM' TERM
 cat "$STUB_RELEASE" >/dev/null &
 c=$!
 echo ready
 until wait "$c"; do :; done
+if [ -n "$STUB_PUBLISHES" ]; then
+  : > "$IN_OUT/report.json"
+  : > "$IN_OUT/report.sarif.json"
+fi
+echo exit
 exit 7
 `
 
 // TestScanStepForwardsTheRunnersStop runs action.yml's scan step verbatim and stops it the way the
-// runner cancels a step: SIGINT to the step's shell, then SIGTERM. The scanner gets TERM each time,
-// the shell waits for it to finish publishing, and the step exits with the scanner's own status,
-// as it also does when nothing stops it.
+// runner cancels a step: SIGINT to the step's shell, then SIGTERM. The scanner gets TERM once, for
+// the first signal only, the shell waits for it to finish publishing, and the step exits with the
+// scanner's own status, as it also does when nothing stops it. The out-dir and sarif-file outputs
+// are set only when the scanner wrote the files they name.
 func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not on PATH")
 	}
 	step := scanStep(t)
 	cases := []struct {
-		name    string
-		signals []syscall.Signal
+		name      string
+		signals   []syscall.Signal
+		publishes bool
 	}{
-		{name: "not stopped"},
-		{name: "runner cancels", signals: []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}},
+		{name: "not stopped", publishes: true},
+		{name: "runner cancels", signals: []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}, publishes: true},
+		{name: "scanner fails before writing", signals: []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,6 +82,9 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 			cmd.Env = append(cmd.Env,
 				"STUB_RELEASE="+release, "BIN_DIR="+bin, "PLUGIN_PATH_DIR="+bin, "RUNNER_TEMP="+root,
 				"GITHUB_OUTPUT="+output, "IN_MODE=baseline", "IN_TARGET=.", "IN_OUT="+filepath.Join(root, "out"))
+			if tc.publishes {
+				cmd.Env = append(cmd.Env, "STUB_PUBLISHES=1")
+			}
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
 				t.Fatal(err)
@@ -89,11 +101,13 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 			}
 
 			expect("ready")
-			for _, sig := range tc.signals {
+			for i, sig := range tc.signals {
 				if err := cmd.Process.Signal(sig); err != nil {
 					t.Fatal(err)
 				}
-				expect("TERM")
+				if i == 0 {
+					expect("TERM")
+				}
 			}
 			w, err := os.OpenFile(release, os.O_WRONLY, 0)
 			if err != nil {
@@ -103,13 +117,20 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			expect("exit")
+
 			var exit *exec.ExitError
 			if err := cmd.Wait(); !errors.As(err, &exit) || exit.ExitCode() != 7 {
 				t.Fatalf("step ended %v, want the scanner's own exit status 7", err)
 			}
 			got, err := os.ReadFile(output)
-			if err != nil || !strings.Contains(string(got), "out-dir=") {
-				t.Fatalf("step output %q (%v): want out-dir written before the scanner ran", got, err)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"out-dir=", "sarif-file="} {
+				if strings.Contains(string(got), key) != tc.publishes {
+					t.Errorf("step output %q: %s set = %v, want %v", got, key, !tc.publishes, tc.publishes)
+				}
 			}
 		})
 	}

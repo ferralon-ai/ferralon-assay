@@ -937,24 +937,31 @@ runs:
           args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
         fi
 
-        # Written first, so a later always() step can still find the output of a cancelled scan.
-        OUT_ABS="$(cd "$IN_OUT" && pwd)"
-        echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
-        echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
-
         # On a job timeout or cancellation the runner signals this shell, not the scanner, and
         # bash runs a trap only once its foreground child exits. So the scanner runs in the
         # background and the trap forwards TERM (a background job ignores INT); the scanner then
-        # stops analysis and publishes what it has. A trap interrupts wait, so wait again until
-        # the scanner itself has exited, and exit with its status.
+        # stops analysis and publishes what it has. Only the first signal is forwarded: the runner
+        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished. A
+        # trap interrupts wait, so wait again until the scanner itself has exited.
         "$BIN" "${args[@]}" &
         scan_pid=$!
         signalled=0
-        trap 'signalled=1; kill -TERM "$scan_pid" 2>/dev/null || true' INT TERM
+        forwarded=0
+        trap 'signalled=1; if [ "$forwarded" = 0 ]; then forwarded=1; kill -TERM "$scan_pid" 2>/dev/null || true; fi' INT TERM
         while :; do
           signalled=0
           rc=0
           wait "$scan_pid" || rc=$?
           [ "$signalled" = 1 ] || break
         done
+
+        # Set on every exit, stopped or failed, but only for what the scanner wrote, so an
+        # always() step never gets a path to a missing file.
+        OUT_ABS="$(cd "$IN_OUT" && pwd)"
+        if [ -f "$OUT_ABS/report.json" ]; then
+          echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -f "$OUT_ABS/report.sarif.json" ]; then
+          echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
+        fi
         exit "$rc"

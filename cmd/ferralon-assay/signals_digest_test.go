@@ -65,7 +65,7 @@ func TestIntelProvenanceNamesNoSignals(t *testing.T) {
 }
 
 // signalsFixtureReport is a baseline over a one-file Go tree ranked with a loaded signals file, then
-// stamped the way a published report is, with the timestamp pinned. its contract is pinned by signals_contract.golden.json.
+// stamped the way a published report is, with the timestamp pinned. Its contract is pinned by signals_contract.golden.json.
 func signalsFixtureReport(t *testing.T) []byte {
 	t.Helper()
 	trapEgress(t)
@@ -109,7 +109,8 @@ func signalsFixtureReport(t *testing.T) []byte {
 var updateGolden = flag.Bool("update-golden", false, "rewrite signals_contract.golden.json")
 
 // signalsContract is the part of a published Report this stamp is about: the provenance block, and
-// each row's advisory id with its priority. Everything else in the Report belongs to other tests.
+// each row's advisory id with its priority. Everything else in the Report belongs to other tests, and
+// so does the analyzer version, which a release build stamps in (contractOf zeroes it).
 type signalsContract struct {
 	Provenance report.Provenance `json:"provenance"`
 	Rows       []contractRow     `json:"rows"`
@@ -123,6 +124,7 @@ type contractRow struct {
 func contractOf(t *testing.T, rep report.Report) []byte {
 	t.Helper()
 	c := signalsContract{Provenance: rep.Provenance}
+	c.Provenance.AnalyzerVersion = ""
 	for _, a := range rep.Advisories {
 		c.Rows = append(c.Rows, contractRow{Advisory: a.Advisory.ID, Priority: a.Priority})
 	}

@@ -1,7 +1,7 @@
 {
   "provenance": {
     "commit_sha": "0123456789abcdef",
-    "analyzer_version": "ferralon-assay/dev",
+    "analyzer_version": "",
     "advisory_cursor": "",
     "timestamp": "2026-10-26T00:00:00Z",
     "intel": {

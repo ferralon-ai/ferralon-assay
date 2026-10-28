@@ -37,6 +37,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -68,6 +70,15 @@ const (
 	// zero-new-objects heartbeat guarantee.
 	fileRevoke = "revoke"
 )
+
+// decodeRevoke parses the revoke counter file.
+func decodeRevoke(b []byte) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0, fmt.Errorf("statestore: decode %s: %w", fileRevoke, err)
+	}
+	return n, nil
+}
 
 // ErrNotFound is returned by Read when the state ref does not yet exist (a fresh
 // repository with no baseline run). Callers treat it as "no prior state".

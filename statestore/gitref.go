@@ -137,9 +137,9 @@ func (s *GitRefStore) Read(ctx context.Context) (*State, error) {
 	if b, ok, err := s.readFile(ctx, sha, fileRevoke); err != nil {
 		return nil, err
 	} else if ok {
-		n, perr := strconv.Atoi(strings.TrimSpace(string(b)))
-		if perr != nil {
-			return nil, fmt.Errorf("statestore: decode %s: %w", fileRevoke, perr)
+		n, err := decodeRevoke(b)
+		if err != nil {
+			return nil, err
 		}
 		st.RevokeCount = n
 	}
@@ -171,7 +171,9 @@ func (s *GitRefStore) Write(ctx context.Context, next *State) (*State, error) {
 		if rerr == ErrNotFound {
 			// The ref vanished between our failed CAS and the re-read; retry as a
 			// create against an empty expected-old.
-			cur = &State{Report: cur.Report, SBOM: cur.SBOM, Cursor: cur.Cursor, VEXLog: cur.VEXLog}
+			fresh := *cur
+			fresh.CommitSHA = ""
+			cur = &fresh
 		} else {
 			cur = Merge(winner, cur)
 		}

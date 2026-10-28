@@ -1177,7 +1177,7 @@ func runPRInherit(args []string) error {
 
 	cfg, err := f.resolve(analysis, true)
 	if err != nil {
-		return err
+		return markIfStopped(analysis, err)
 	}
 	defer cfg.cleanup()
 
@@ -1265,7 +1265,7 @@ func runCVEWatch(args []string) error {
 	// acquisition here would query OSV twice and change a mode whose behaviour is deliberately fixed.
 	cfg, err := f.resolve(analysis, false)
 	if err != nil {
-		return err
+		return markIfStopped(analysis, err)
 	}
 	defer cfg.cleanup()
 

@@ -381,3 +381,40 @@ func TestWarnNoInventory(t *testing.T) {
 		})
 	}
 }
+
+// TestMarkIfStopped: an error that ends a stopped run sets scan-truncated=true; an error with no
+// stop, or a stopped run that carries on, leaves the output alone.
+func TestMarkIfStopped(t *testing.T) {
+	fail := errors.New("selection failed")
+	cases := []struct {
+		name    string
+		stopped bool
+		err     error
+		want    string
+	}{
+		{name: "stopped and failed", stopped: true, err: fail, want: "scan-truncated=true\n"},
+		{name: "failed without a stop", err: fail},
+		{name: "stopped, no error", stopped: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "output")
+			t.Setenv(envGitHubOut, out)
+			analysis, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.stopped {
+				cancel()
+			}
+			if err := markIfStopped(analysis, tc.err); err != tc.err {
+				t.Fatalf("markIfStopped = %v, want %v", err, tc.err)
+			}
+			got, err := os.ReadFile(out)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("step output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

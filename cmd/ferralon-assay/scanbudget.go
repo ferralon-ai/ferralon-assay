@@ -163,6 +163,15 @@ func writeScanTruncated(truncated bool, log io.Writer) {
 	}
 }
 
+// markIfStopped sets scan-truncated when err ends a run the stop had already cut short, so a run
+// that fails because it was stopped is not left looking complete. It returns err.
+func markIfStopped(analysis context.Context, err error) error {
+	if err != nil && analysis.Err() != nil {
+		writeScanTruncated(true, os.Stderr)
+	}
+	return err
+}
+
 // warnNoInventory annotates a CVE-watch heartbeat that had no dependency inventory to query.
 func warnNoInventory(w io.Writer, res *trigger.CVEWatchResult) {
 	if !res.NoInventory {

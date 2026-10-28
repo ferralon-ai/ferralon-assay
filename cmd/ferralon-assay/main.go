@@ -183,7 +183,7 @@ func runBaseline(args []string) error {
 
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
-		return err
+		return markIfStopped(analysis, err)
 	}
 	defer acq.cleanup()
 
@@ -208,7 +208,7 @@ func runBaseline(args []string) error {
 	// says so on the Report (workset.go).
 	ws, err := f.scanWorkSet(analysis, acq)
 	if err != nil {
-		return err
+		return markIfStopped(analysis, err)
 	}
 	fmt.Fprintf(os.Stdout, "%s baseline — work set: %s\n", brand.Name, ws.describe())
 

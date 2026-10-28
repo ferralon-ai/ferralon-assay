@@ -92,7 +92,7 @@ would with `off` and the Report says why, under `dependency_code` and a
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
 receives it, and what the cache exposes.
 
-**`@v0.6` floats** to the newest 0.5.x release, and no binary is ever committed into your
+**`@v0.6` floats** to the newest 0.6.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
 `vX.Y.Z` scanner it was cut with, so `@v0.6` fetches the scanner of the patch it currently points at.
 Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the current
@@ -295,7 +295,7 @@ declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 
 Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
 onto vulnerable symbols, builds a call graph, and computes reachability, then reports what it found.
-What each of the six languages resolves today is laid out in
+What each of the six languages resolves is laid out in
 [language capability matrix](docs/capabilities/README.md).
 
 It stops at reachability — there is no execution of the target codebase, no exploit synthesis, and no
@@ -319,8 +319,8 @@ and reserved for implementation.
 **Fit:** CI reachability triage — resolving whether a CVE's vulnerable code is actually callable in
 your build, not just present in your dependency tree. Go gets the deepest analysis, dependency-level
 reachability into the code an advisory names. Java and Kotlin reach into dependency JARs, .NET into
-restored NuGet assemblies, and Python and JavaScript trace first-party calls to the dependency
-boundary; all of them resolve dependency versions and disqualify advisories your pinned version is
+restored NuGet assemblies, JavaScript into lock-pinned dependency code it reads and verifies, and
+Python traces first-party calls to the dependency boundary; all of them resolve dependency versions and disqualify advisories your pinned version is
 provably outside. [language capability
 matrix](docs/capabilities/README.md) has the per-language specifics.
 
@@ -559,8 +559,8 @@ bot; you can reply on any of them with questions.
 
 Business Source License 1.1. See [LICENSE](LICENSE).
 
-You can run Assay in production on software that you or your organization develop, or operate for
-your organization's own use. That includes commercial software and software you develop for a
+You can run Assay in production solely to analyze, test and patch software that you or your
+organization develop, or operate for your organization's own use. That includes commercial software and software you develop for a
 client, and its output is yours to use however you like. The license doesn't cover offering
 analysis, testing, or patching of software as a product or service, or building Assay into a product
 or service you provide to others. For those, write to operators@ferralon.com.

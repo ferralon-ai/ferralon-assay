@@ -675,6 +675,8 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 		// ambiguous: no alias edge to impl is drawn (the alias and a def both match the
 		// call, an unconditional rebinding hides the alias, or the module imports no alias).
 		ambiguous bool
+		// other is pkg/other.py, when the case needs it.
+		other string
 	}{
 		{
 			name:   "fallback to a first-party def",
@@ -858,6 +860,29 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 			listed: true,
 		},
 		{
+			name:   "star import beside the alias",
+			src:    "from .impl import f as g\nfrom .other import *\n\ndef go():\n    return g(1)\n",
+			reach:  []string{impl, vuln},
+			listed: true,
+			other:  "from .v import vuln as g\n",
+		},
+		{
+			name:      "star import alone",
+			src:       "from .other import *\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			other:     "from .v import vuln as g\n",
+		},
+		{
+			name:      "star import of a star import",
+			src:       "from .other import *\n\ndef go():\n    return g(1)\n",
+			reach:     []string{vuln},
+			listed:    true,
+			ambiguous: true,
+			other:     "from .v import *\n",
+		},
+		{
 			name:      "decorator returning a wrapper",
 			src:       "from .v import vuln\n\ndef deco(fn):\n    def wrapper(x):\n        vuln(x)\n        return fn(x)\n    return wrapper\n\n@deco\ndef g(x):\n    return x\n\ndef go():\n    return g(1)\n",
 			reach:     []string{vuln},
@@ -896,6 +921,9 @@ func TestCallGraph_AlternativeBindingsStayListed(t *testing.T) {
 				"pkg/impl.py":     "def f(x):\n    return x\n",
 				"pkg/v.py":        "def vuln(x):\n    return x\n",
 				"pkg/a.py":        tc.src,
+			}
+			if tc.other != "" {
+				files["pkg/other.py"] = tc.other
 			}
 			if tc.deps != "" {
 				files["requirements.txt"] = tc.deps

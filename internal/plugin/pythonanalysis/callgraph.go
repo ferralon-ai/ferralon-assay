@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -222,6 +223,9 @@ type fileParse struct {
 	computed   bool
 	// wrapped lists the defs under a decorator that may replace them with other code.
 	wrapped []funcDecl
+	// stars are the modules the file star-imports; starPaths the first-party ones' paths.
+	stars     []string
+	starPaths []string
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -254,7 +258,9 @@ func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
 // whose boundary edge the site draws (depDrawn). A bare call through a name only a value
 // binds (a parameter, assignment or instance) has no edge to that value, so it is never
 // complete; nor is a call through a lambda or comprehension variable, nor any site in a file
-// with computed-name access, which may rebind any name (globals()["g"] = ...).
+// with computed-name access, which may rebind any name (globals()["g"] = ...). A name the
+// module scope decides is never complete in a file with a star import, which may bind any
+// name.
 func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
 	if cs.inner || cs.shadowed || f.computed {
 		return false
@@ -272,6 +278,9 @@ func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
 		def := 0
 		if f.defs[scope][head] {
 			def = 1
+		}
+		if scope == "" && len(f.stars) > 0 {
+			return false
 		}
 		if fp+vals+dep+def == 0 {
 			continue
@@ -383,6 +392,7 @@ func loadProgram(buildDir string) (*program, error) {
 		for i := range scan.wrapped {
 			scan.wrapped[i].module = module
 		}
+		_, stars := importStatements([]rune(clean))
 		prog.files = append(prog.files, fileParse{
 			module:    module,
 			isPackage: strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__",
@@ -394,6 +404,7 @@ func loadProgram(buildDir string) (*program, error) {
 			topNames:  topNames,
 			decorated: scan.decorated,
 			wrapped:   scan.wrapped,
+			stars:     slices.Sorted(maps.Keys(stars)),
 			refs:      scan.refs,
 			locals:    scan.locals,
 			plain:     scan.plain,
@@ -490,6 +501,16 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 	for _, b := range rel {
 		if path, ok := relativeModule(f.module, f.isPackage, b.target); ok {
 			bind(b.scope, b.local, path)
+		}
+	}
+	for _, name := range f.stars {
+		switch {
+		case strings.HasPrefix(name, "."):
+			if path, ok := relativeModule(f.module, f.isPackage, name); ok {
+				f.starPaths = append(f.starPaths, path)
+			}
+		case prog.dists.firstParty[firstSegment(name)]:
+			f.starPaths = append(f.starPaths, strings.ReplaceAll(name, ".", "/"))
 		}
 	}
 	for _, name := range modRefs {
@@ -709,6 +730,28 @@ func (prog *program) escapeFrames(out map[string]bool) {
 			}
 		}
 	}
+	// escapeStar escapes what a star import may bind: every function of the module, what its
+	// own first-party imports bind at module level, and what its star imports bind in turn.
+	starDone := map[string]bool{}
+	var escapeStar func(path string)
+	escapeStar = func(path string) {
+		if starDone[path] {
+			return
+		}
+		starDone[path] = true
+		escapeModule(path)
+		for _, i := range prog.byModule[path] {
+			g := &prog.files[i]
+			for attr, paths := range g.fpBinds[""] {
+				for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
+					escape(fd)
+				}
+			}
+			for _, p := range g.starPaths {
+				escapeStar(p)
+			}
+		}
+	}
 	for fi := range prog.files {
 		f := &prog.files[fi]
 		if isTestModule(f.module) {
@@ -725,6 +768,9 @@ func (prog *program) escapeFrames(out map[string]bool) {
 		}
 		for _, path := range f.modValues {
 			escapeModule(path)
+		}
+		for _, path := range f.starPaths {
+			escapeStar(path)
 		}
 		for name := range f.refs.names {
 			for _, fd := range prog.declsNamed(prog.withAliases([]string{name}, f.anyScopeBinds(name))) {

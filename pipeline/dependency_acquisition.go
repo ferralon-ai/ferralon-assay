@@ -174,10 +174,12 @@ type UnreadDependency struct {
 	PURL   string `json:"purl"`
 	Reason string `json:"reason"`
 	Detail string `json:"detail,omitempty"`
-	// Registry identifies the registry a fetch-mode package was fetched from: its configured
-	// base URL with no userinfo, query or fragment. Empty when nothing was fetched. It stays in
-	// process, for a caller keeping per-registry state through Observe; the artifact names no
-	// registry.
+	// Registry identifies the registry a fetch-mode package resolves to: its configured base
+	// URL with no userinfo, query or fragment. It is set for every fetch-mode unread package,
+	// including one cancelled before its request or refused for a malformed pin, so it names
+	// where the package would have come from, not that a request reached it; Reason says
+	// that. It stays in process, for a caller keeping per-registry state through Observe; the
+	// artifact names no registry.
 	Registry string `json:"-"`
 }
 

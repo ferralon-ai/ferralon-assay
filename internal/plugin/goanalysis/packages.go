@@ -1354,23 +1354,24 @@ func resolutionIndex(ctx context.Context, buildDir string) (plugin.SymbolIndexRe
 }
 
 // isToolchainPackage reports whether a PURL package names the Go distribution rather than a
-// module: "stdlib", or "toolchain" (govulncheck's module for cmd/go and its tools). Neither is
-// held by any listed module, so neither is found by a module search.
+// module: "stdlib", "toolchain" (govulncheck's module for cmd/go and its tools), or a cmd/
+// package. None is held by any listed module, so none is found by a module search.
 func isToolchainPackage(pkg string) bool {
-	return strings.EqualFold(pkg, packageFromPURL(stdlibPURL)) || strings.EqualFold(pkg, "toolchain")
+	return strings.EqualFold(pkg, packageFromPURL(stdlibPURL)) || strings.EqualFold(pkg, "toolchain") ||
+		pkg == "cmd" || strings.HasPrefix(pkg, "cmd/")
 }
 
 // packageFromPURL extracts the import path from a Go PURL of the form
 // pkg:golang/<import-path>[@version][?qualifiers][#subpath]. An empty or non-golang PURL yields ""
-// (no package filter), so resolution falls back to matching by symbol name alone. The optional
-// components are trimmed in the order the grammar appends them, as pipeline's isGoStdlibPURL does
-// (this package cannot import pipeline).
+// (no package filter), so resolution falls back to matching by symbol name alone. The type is
+// matched case-insensitively and the path ends at the first '@', '?' or '#', as pipeline's
+// isGoStdlibPURL reads it (this package cannot import pipeline).
 func packageFromPURL(purl string) string {
 	const prefix = "pkg:golang/"
-	if !strings.HasPrefix(purl, prefix) {
+	if len(purl) < len(prefix) || !strings.EqualFold(purl[:len(prefix)], prefix) {
 		return ""
 	}
-	path := strings.TrimPrefix(purl, prefix)
+	path := purl[len(prefix):]
 	for _, sep := range []byte{'#', '?', '@'} {
 		if i := strings.IndexByte(path, sep); i >= 0 {
 			path = path[:i]

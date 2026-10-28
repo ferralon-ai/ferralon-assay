@@ -485,7 +485,8 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		newSourceProxy(t, []srcModule{modA})
 		app := newApp(t, []string{"example.com/a"}, "", reader)
 		for _, purl := range []string{"pkg:golang/example.com/a", "pkg:golang/example.com/a/ssh@v1.0.0",
-			"pkg:golang/example.com/a/ssh?type=module", "pkg:golang/example.com/a/ssh#sub", "pkg:golang/example.com/a/ssh@v1.0.0?type=module#sub"} {
+			"pkg:golang/example.com/a?type=module", "pkg:golang/example.com/a#ssh", "pkg:golang/example.com/a/ssh@v1.0.0?type=module#sub",
+			"pkg:Golang/example.com/a"} {
 			t.Run(purl, func(t *testing.T) {
 				wantNone(t, resolve(t, app, purl, []string{"example.com/a/ssh.Certificate.Verify"}))
 			})
@@ -521,6 +522,7 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 			"pkg:golang/stdlib@go1.22.1", "pkg:golang/stdlib?type=module", "pkg:golang/stdlib#net/http",
 			"pkg:golang/stdlib@go1.22.1?os=linux#net/http", "pkg:golang/StdLib",
 			"pkg:golang/toolchain", "pkg:golang/toolchain@go1.22.1", "pkg:golang/toolchain?os=linux#cmd/go",
+			"pkg:golang/cmd/go", "pkg:golang/cmd/go/internal/modfetch@go1.22.1", "pkg:GOLANG/stdlib",
 		} {
 			t.Run(purl, func(t *testing.T) {
 				wantNone(t, resolve(t, app, purl, []string{"Verify"}))
@@ -555,6 +557,8 @@ func TestPackageFromPURL(t *testing.T) {
 		{"pkg:golang/example.com/a/ssh@v1.0.0?type=module#sub/dir", "example.com/a/ssh"},
 		{"pkg:golang/stdlib", "stdlib"},
 		{"pkg:golang/toolchain@go1.22.1", "toolchain"},
+		{"pkg:Golang/example.com/a?q=1@x", "example.com/a"},
+		{"pkg:golang/example.com/a#s@x", "example.com/a"},
 		{"pkg:npm/left-pad@1.0.0", ""},
 		{"", ""},
 	} {

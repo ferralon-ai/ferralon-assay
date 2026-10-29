@@ -913,8 +913,10 @@ func govulncheckCached(ctx context.Context, buildDir string, env []string, settl
 }
 
 // govulncheckError is a govulncheck run that failed after it started. settled marks a failure that
-// every later run over the same tree and environment in this scan reproduces byte for byte (see
-// settledLoadFailure), so the run cache may answer those runs with it.
+// every later run over the same tree and environment in this scan reproduces (see
+// settledLoadFailure), so the run cache may answer those runs with it. The text need not repeat
+// exactly — cgo compiles a package's files in parallel and reports whichever fails first — so a
+// replay carries the settling run's text, one of the texts a fresh run could have produced.
 type govulncheckError struct {
 	buildDir string
 	cause    error

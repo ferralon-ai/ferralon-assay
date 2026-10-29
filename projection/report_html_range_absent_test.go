@@ -14,3 +14,12 @@ func TestReportHTMLLimitLabel_RangeAbsent(t *testing.T) {
 		t.Errorf("reportHTMLLimitLabel(%q) = %q, want the range-absent sentence", report.ReasonAdvisoryRangeAbsent, got)
 	}
 }
+
+// TestReportHTMLLimitLabel_DependencyNotFetched: the dependency_not_fetched limit renders a
+// sentence, not the raw code.
+func TestReportHTMLLimitLabel_DependencyNotFetched(t *testing.T) {
+	got := reportHTMLLimitLabel(report.ReasonDependencyNotFetched)
+	if got == report.ReasonDependencyNotFetched || !strings.Contains(got, "withheld") {
+		t.Errorf("reportHTMLLimitLabel(%q) = %q, want the dependency-not-fetched sentence", report.ReasonDependencyNotFetched, got)
+	}
+}

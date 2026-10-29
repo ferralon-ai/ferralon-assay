@@ -27,7 +27,9 @@ func TestCallGraph_ModuleObjectStores(t *testing.T) {
 		// qualified moves the site to c.py, written as callee.
 		qualified bool
 		callee    string
-		listed    bool
+		// noInit makes pkg a namespace package.
+		noInit bool
+		listed bool
 	}{
 		{name: "store from another module", b: "import pkg.a\nfrom pkg.v import vuln\npkg.a.g = vuln\n", listed: true},
 		{name: "store through a from-imported module", b: "from pkg import a\nfrom pkg.v import vuln\na.g = vuln\n", listed: true},
@@ -51,6 +53,11 @@ func TestCallGraph_ModuleObjectStores(t *testing.T) {
 		{name: "submodule reached by getattr on the package", b: "import pkg.a\nimport pkg\nfrom pkg.v import vuln\ngetattr(pkg, 'a').g = vuln\n", listed: true},
 		{name: "module bound by an import of a module passed whole", b: "from pkg import reg\n\ndef reg_all(register):\n    register(reg)\n", extra: map[string]string{"pkg/reg.py": "from . import a as mod\n"}, listed: true},
 		{name: "qualified site after the package is passed whole", b: "import pkg\n\ndef reg(register):\n    register(pkg)\n", qualified: true, callee: "a.g", listed: true},
+		{name: "namespace package bound whole, then stored into a submodule", noInit: true, b: "import pkg.a\nimport pkg\nfrom pkg.v import vuln\nm = pkg\nm.a.g = vuln\n", listed: true},
+		{name: "namespace package passed whole to a patcher", noInit: true, b: "import pkg.a\nimport pkg\nfrom pkg.v import vuln\n\ndef patch(p):\n    p.a.g = vuln\n\npatch(pkg)\n", listed: true},
+		{name: "store through a module re-exported under another name", b: "from pkg import mod\nfrom pkg.v import vuln\nmod.g = vuln\n", extra: map[string]string{"pkg/__init__.py": "from . import a as mod\n"}, listed: true},
+		{name: "module re-exported under another name passed whole", b: "from pkg import mod\n\ndef reg(register):\n    register(mod)\n", extra: map[string]string{"pkg/__init__.py": "from . import a as mod\n"}, listed: true},
+		{name: "qualified site through a stored namespace package attribute", noInit: true, b: "import pkg\nimport pkg.impl\npkg.a = pkg.impl\n", qualified: true, callee: "pkg.a.g", listed: true},
 		{name: "qualified site after a store", b: "from pkg import a\nfrom pkg.v import vuln\na.g = vuln\n", qualified: true, callee: "a.g", listed: true},
 		{name: "qualified site through a stored module", b: "import pkg\npkg.a = object()\n", extra: map[string]string{"pkg/__init__.py": "from . import a\n"}, qualified: true, callee: "pkg.a.g", listed: true},
 		{name: "store of another name", b: "from pkg import a\na.h = 1\n"},
@@ -85,6 +92,9 @@ func TestCallGraph_ModuleObjectStores(t *testing.T) {
 				files["c.py"] = "import pkg.a\nfrom pkg import a\n\ndef go():\n    return " + tc.callee + "(1)\n"
 			}
 			maps.Copy(files, tc.extra)
+			if tc.noInit {
+				delete(files, "pkg/__init__.py")
+			}
 			res := mustCallGraph(t, files)
 			if !hasEdge(res.Edges, caller, impl) {
 				t.Fatalf("missing alias edge %s -> %s; edges %v", caller, impl, res.Edges)

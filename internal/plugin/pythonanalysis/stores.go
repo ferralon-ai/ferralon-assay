@@ -12,7 +12,25 @@ import "strings"
 // code out.
 func (prog *program) markModuleStores() {
 	var exposed []int
+	prog.dirStores = map[string]map[string]bool{}
 	mark := func(path, name string) {
+		if len(prog.byModule[path]) == 0 && prog.named[path] {
+			// A package with no __init__ file: a store lands in its namespace, and handing it
+			// over whole hands over every module under it.
+			if name != "" {
+				if prog.dirStores[path] == nil {
+					prog.dirStores[path] = map[string]bool{}
+				}
+				prog.dirStores[path][name] = true
+				return
+			}
+			for j := range prog.files {
+				if strings.Contains("/"+prog.files[j].module+"/", "/"+path+"/") {
+					exposed = append(exposed, j)
+				}
+			}
+			return
+		}
 		for _, i := range prog.byModule[path] {
 			g := &prog.files[i]
 			if name == "" {
@@ -67,7 +85,9 @@ func (prog *program) markModuleStores() {
 		}
 		for _, paths := range g.fpBinds[""] {
 			for _, p := range paths {
-				exposed = append(exposed, prog.byModule[p]...)
+				for _, q := range prog.modulesAt(p, nil) {
+					exposed = append(exposed, prog.byModule[q]...)
+				}
 			}
 		}
 	}
@@ -75,7 +95,9 @@ func (prog *program) markModuleStores() {
 
 // modulesAt is the parsed modules a dotted chain names whole, given the path base an import
 // binds its head to: the longest prefix of the chain that names a module, followed on
-// through an attribute the module binds by a first-party import.
+// through an attribute the module binds by a first-party import. A base that names no module
+// ("from pkg import mod" where pkg binds mod by import) is read as an attribute chain from
+// its first segment.
 func (prog *program) modulesAt(base string, rest []string) []string {
 	for k := len(rest); k >= 0; k-- {
 		path := base
@@ -83,6 +105,10 @@ func (prog *program) modulesAt(base string, rest []string) []string {
 			path += "/" + strings.Join(rest[:k], "/")
 		}
 		if !prog.named[path] {
+			if k == 0 && strings.Contains(base, "/") {
+				segs := strings.Split(base, "/")
+				return prog.modulesAt(segs[0], append(segs[1:], rest...))
+			}
 			continue
 		}
 		if k == len(rest) {
@@ -107,6 +133,9 @@ func (prog *program) storedThrough(f *fileParse, cs callSite) bool {
 	for k := 1; k < len(chain); k++ {
 		for _, base := range f.anyScopeBinds(chain[0]) {
 			for _, path := range prog.modulesAt(base, chain[1:k]) {
+				if prog.dirStores[path][chain[k]] {
+					return true
+				}
 				for _, i := range prog.byModule[path] {
 					if g := &prog.files[i]; g.storedAny || g.storedNames[chain[k]] {
 						return true

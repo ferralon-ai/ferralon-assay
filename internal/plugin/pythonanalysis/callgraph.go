@@ -44,6 +44,9 @@ type program struct {
 	// path contains: the import paths that name a module or a package directory.
 	byModule map[string][]int
 	named    map[string]bool
+	// dirStores holds the names a store through a module object binds in a package with no
+	// __init__ file (markModuleStores), keyed like named.
+	dirStores map[string]map[string]bool
 	// leafMemo caches aliasLeaves by import path.
 	leafMemo map[string][]string
 }

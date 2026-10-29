@@ -222,6 +222,9 @@ type Class struct {
 	// stereotype markers a framework-ingress layer needs (e.g. Spring @RestController)
 	// live here.
 	Annotations []Annotation
+	// KotlinMetadata is the class's @kotlin.Metadata in full (kotlinmeta.go); nil when the
+	// class carries none, as a javac-compiled class does.
+	KotlinMetadata *KotlinMetadata
 }
 
 // Annotation is one decoded RuntimeVisibleAnnotations entry: the annotation type as a
@@ -267,6 +270,7 @@ type cpEntry struct {
 	ref1  uint16 // class_index / name_index / reference_index / bootstrap_method_attr_index
 	ref2  uint16 // name_and_type_index / descriptor_index
 	kind  uint8  // MethodHandle reference_kind
+	ival  int32  // Integer value
 	valid bool
 }
 
@@ -521,7 +525,7 @@ func ParseClass(data []byte) (Class, error) {
 
 	// Class-level attributes table: the class's RuntimeVisibleAnnotations and its
 	// BootstrapMethods; every other attribute is skipped by length.
-	classAnnos, bootstraps, err := parseClassAttributes(r, cp)
+	classAnnos, kmeta, bootstraps, err := parseClassAttributes(r, cp)
 	if err != nil {
 		return Class{}, err
 	}
@@ -541,6 +545,7 @@ func ParseClass(data []byte) (Class, error) {
 		Abstract: classAcc&(accClassAbstract|accClassInterface) != 0,
 		Public:   classAcc&accClassPublic != 0,
 		Fields:   fields, Methods: methods, Annotations: classAnnos,
+		KotlinMetadata: kmeta,
 	}, nil
 }
 
@@ -656,37 +661,41 @@ func parseParameterAnnotations(cp constPool, body []byte) ([][]Annotation, error
 }
 
 // parseClassAttributes walks the class-level attributes table (which begins at r's
-// current position) and returns any RuntimeVisibleAnnotations and the
-// BootstrapMethods table. A truncated table or a malformed body is a completeness
+// current position) and returns any RuntimeVisibleAnnotations, the @kotlin.Metadata among
+// them, and the BootstrapMethods table. A truncated table or a malformed body is a completeness
 // hazard, not a panic: it surfaces as an error so the caller records the class as
 // Failed (declared partiality). Other attributes are skipped by length.
-func parseClassAttributes(r *reader, cp constPool) ([]Annotation, []*Bootstrap, error) {
+func parseClassAttributes(r *reader, cp constPool) ([]Annotation, *KotlinMetadata, []*Bootstrap, error) {
 	n := int(r.u2())
 	var annos []Annotation
+	var kmeta *KotlinMetadata
 	var bootstraps []*Bootstrap
 	for i := 0; i < n; i++ {
 		attrName := cp.utf8(r.u2())
 		attrLen := int(r.u4())
 		body := r.bytes(attrLen)
 		if r.err != nil {
-			return nil, nil, r.err
+			return nil, nil, nil, r.err
 		}
 		switch attrName {
 		case attrRuntimeVisibleAnnotations:
 			a, err := parseAnnotations(cp, body)
 			if err != nil {
-				return nil, nil, fmt.Errorf("classfile: class annotations: %w", err)
+				return nil, nil, nil, fmt.Errorf("classfile: class annotations: %w", err)
 			}
 			annos = append(annos, a...)
+			if km := parseKotlinMetadata(cp, body); km != nil {
+				kmeta = km
+			}
 		case attrBootstrapMethods:
 			bs, err := parseBootstrapMethods(cp, body)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			bootstraps = bs
 		}
 	}
-	return annos, bootstraps, nil
+	return annos, kmeta, bootstraps, nil
 }
 
 // parseAnnotations decodes a RuntimeVisibleAnnotations attribute body (JVMS §4.7.16)
@@ -801,7 +810,9 @@ func parseConstPool(r *reader) (constPool, error) {
 		case cpUtf8:
 			n := int(r.u2())
 			e.utf8 = string(r.bytes(n))
-		case cpInteger, cpFloat:
+		case cpInteger:
+			e.ival = int32(r.u4())
+		case cpFloat:
 			r.u4()
 		case cpLong, cpDouble:
 			r.u4()

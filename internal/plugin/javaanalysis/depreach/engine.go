@@ -1422,6 +1422,35 @@ func (e *Engine) unlinkable(c string) bool {
 	return out
 }
 
+// Links reports whether each named loaded class can link on a linked classpath (unlinkable),
+// and each lambda site it holds names, as its interface and every marker interface, only
+// loaded types or types the JDK may define. A caller that cannot show its class output covers
+// the sources checks its own classes here before SetLinked: a type the compiler saw but the
+// output lacks leaves the class or site naming it unable to link, and SetLinked would take
+// it for an object the run cannot create. A name not loaded is skipped.
+func (e *Engine) Links(names []string) bool {
+	for _, n := range names {
+		c := e.classes[n]
+		if c == nil {
+			continue
+		}
+		if e.unlinkable(n) {
+			return false
+		}
+		for i := range c.Methods {
+			for _, edge := range c.Methods[i].Edges {
+				_, ifaces := lambdaSiteOf(n, edge)
+				for _, t := range ifaces {
+					if e.classes[t] == nil && !BootOnly(t, 0) {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
 // loadableType reports whether type t can be the static type under which the JDK
 // holds an object it may call: a loaded class that is platformLoadable, an unopened
 // dependency type, or a platform type outside deniedLoadable and the Throwables.

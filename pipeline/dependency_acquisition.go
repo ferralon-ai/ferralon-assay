@@ -106,8 +106,11 @@ type DependencyAcquisitionResult struct {
 	// InventoryCancelled marks an inventory failure caused by the stage deadline or the run's
 	// context ending, so a timeout is not read as a plugin defect.
 	InventoryCancelled bool `json:"inventory_cancelled,omitempty"`
-	// Fallback is set when a fetch failed: the JS lane then reads no dependency code at all, as
-	// with dependency code off, and Fallback names why. Only DependencyCodeFetch sets it.
+	// Fallback is set when a fetch failed and the build cannot be read in part: the JS lane then
+	// reads no dependency code at all, as with dependency code off, and Fallback names why. Only
+	// DependencyCodeFetch sets it. A failure on a registry this build read other packages from
+	// does not set it (see fallbackCause): the lane reads the verified packages and withholds
+	// each unread one.
 	Fallback *DependencyCodeCause `json:"fallback,omitempty"`
 	// Outcomes lists every lock-pinned npm package, read or not, sorted by PURL. It stays in
 	// process, for a caller keeping per-registry state through Observe: it names registries,
@@ -130,6 +133,12 @@ type DependencyOutcome struct {
 	Registry string
 	// Outcome is OutcomeReadNetwork, OutcomeReadCache or the package's Unread* reason.
 	Outcome string
+	// Detail is the unread package's UnreadDependency.Detail: for UnreadPolicyRefused, the
+	// artifactcache policy code.
+	Detail string
+	// UnsetEnv names the variable an auth entry for Registry referenced and the runner left
+	// unset, so the package was fetched with no token. Set only for an unread package.
+	UnsetEnv string
 }
 
 // DependencyCodeCause is why a fetch-mode acquisition fell back to reading no dependency code.
@@ -164,7 +173,12 @@ func FetchFailed(reason string) bool {
 }
 
 // fallbackCause is why res, a fetch-mode acquisition, falls back to reading no dependency code,
-// or nil. One failed package is enough: a partial fetch is never read as dependency code.
+// or nil. A failed package forces the fallback unless its registry served this build at least one
+// verified package and did not reject a token: such a failure is partial, and the JS lane reads
+// the cache, where the unread package is a miss it withholds per package (uninspectable_package,
+// or the whole run when the package has an install script). A registry that served nothing, a
+// rejected token, an npm configuration that failed closed and an inventory that failed are never
+// partial.
 func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
 	if res.Mode != string(DependencyCodeFetch) {
 		return nil
@@ -176,8 +190,21 @@ func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
 		}
 		return &DependencyCodeCause{Kind: FallbackInventoryFailed, Detail: detail}
 	}
+	served := map[string]bool{}
+	rejected := map[string]bool{}
+	for _, o := range res.Outcomes {
+		switch {
+		case o.Outcome == OutcomeReadNetwork || o.Outcome == OutcomeReadCache:
+			served[o.Registry] = true
+		case CredentialRejected(o.Outcome, o.Detail):
+			rejected[o.Registry] = true
+		}
+	}
 	for _, u := range res.Unread {
 		if !FetchFailed(u.Reason) {
+			continue
+		}
+		if u.Registry != "" && served[u.Registry] && !rejected[u.Registry] {
 			continue
 		}
 		detail := u.PURL
@@ -187,6 +214,12 @@ func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
 		return &DependencyCodeCause{Kind: u.Reason, Detail: detail, Registry: u.Registry}
 	}
 	return nil
+}
+
+// CredentialRejected reports whether an unread package's reason and detail are a registry
+// refusing a token this run presented.
+func CredentialRejected(reason, detail string) bool {
+	return reason == UnreadPolicyRefused && detail == artifactcache.PolicyCredentialRejected
 }
 
 // UnreadDependency is one package acquisition left unread, with one of the Unread* reasons and,
@@ -202,6 +235,8 @@ type UnreadDependency struct {
 	// that. It stays in process, for a caller keeping per-registry state through Observe; the
 	// artifact names no registry.
 	Registry string `json:"-"`
+	// UnsetEnv is DependencyOutcome.UnsetEnv. It stays in process.
+	UnsetEnv string `json:"-"`
 }
 
 type dependencyAcquirer struct {
@@ -327,6 +362,9 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 			u, net := d.acquireOne(ctx, pin, npmrc, fetchers, disk)
 			if u != nil && d.cfg.Mode == DependencyCodeFetch {
 				u.Registry = registryOf(npmrc, pin.purl)
+				if name, err := acquire.NPMNameOf(pin.purl); err == nil {
+					u.UnsetEnv = npmrc.UnsetTokenEnv(name)
+				}
 			}
 			outcomes[i], fetched[i] = u, net
 		}(i, pin)
@@ -336,7 +374,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 	for i, o := range outcomes {
 		if o != nil {
 			res.Unread = append(res.Unread, *o)
-			res.Outcomes = append(res.Outcomes, DependencyOutcome{PURL: o.PURL, Registry: o.Registry, Outcome: o.Reason})
+			res.Outcomes = append(res.Outcomes, DependencyOutcome{PURL: o.PURL, Registry: o.Registry, Outcome: o.Reason, Detail: o.Detail, UnsetEnv: o.UnsetEnv})
 			continue
 		}
 		res.Read++

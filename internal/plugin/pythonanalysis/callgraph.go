@@ -104,7 +104,7 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 		if paths, ok := f.aliasBound(name, cs.scopes); ok && !cs.inner {
 			edge = p.withAliases(edge, paths)
 		}
-		return edge, p.withAliases(edge, f.anyScopeBinds(name))
+		return edge, p.withAliases(p.withAliases([]string{name}, edge), f.anyScopeBinds(name))
 	}
 	head := cs.calleeChain[0]
 	mid := strings.Join(cs.calleeChain[1:len(cs.calleeChain)-1], "/")
@@ -123,7 +123,7 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 	if paths, ok := f.aliasBound(head, cs.scopes); ok && !cs.inner {
 		edge = p.withAliases(edge, via(paths))
 	}
-	return edge, p.withAliases(edge, via(f.anyScopeBinds(head)))
+	return edge, p.withAliases(p.withAliases([]string{name}, edge), via(f.anyScopeBinds(head)))
 }
 
 // deciding finds the scope that decides the name a site calls (a chain's head): the
@@ -168,15 +168,15 @@ func (f *fileParse) depOnly(cs callSite) bool {
 		head = cs.calleeChain[0]
 	}
 	return f.depImports[scope][head] > 0 && len(f.fpBinds[scope][head]) == 0 &&
-		f.binders[scope][head] == 0 && !f.defs[scope][head]
+		f.binders[scope][head] == 0 && !f.defs[scope][head] && !f.depNamed[scope][head]
 }
 
 // siteDecls is the declarations a site's edge may name. Where the deciding scope binds the
 // name by first-party import, they are the functions the import path names (declsAt); a
-// chain's head names a module, so the path runs on through the chain to its leaf. Where it
-// binds a bare name by def, they are the file's defs of that name in that scope, beside any
-// import of it there. Otherwise, or when that finds no function, they are every declaration
-// under the leaves (declsNamed).
+// chain's head names a module, so the path runs on through the chain to its leaf. Where the
+// module binds a bare name by def and nothing else (topDefs), they are those defs.
+// Otherwise, or when a path or def finds no function, they are every declaration under the
+// leaves (declsNamed).
 func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDecl {
 	if len(leaves) == 0 {
 		return nil
@@ -186,27 +186,25 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 		return p.declsNamed(leaves)
 	}
 	var out []funcDecl
+	head, rest := cs.calleeName, ""
 	if len(cs.calleeChain) > 1 {
-		if paths, bound := f.aliasBound(cs.calleeChain[0], cs.scopes); bound {
-			rest := strings.Join(cs.calleeChain[1:], "/")
-			for _, path := range paths {
-				out = appendDecls(out, p.declsAt(path+"/"+rest))
+		head, rest = cs.calleeChain[0], "/"+strings.Join(cs.calleeChain[1:], "/")
+	}
+	if paths, bound := f.aliasBound(head, cs.scopes); bound {
+		for _, path := range paths {
+			at := p.declsAt(path + rest)
+			if len(at) == 0 {
+				return p.declsNamed(leaves)
 			}
+			out = appendDecls(out, at)
 		}
-	} else {
-		if paths, bound := f.aliasBound(cs.calleeName, cs.scopes); bound {
-			for _, path := range paths {
-				out = appendDecls(out, p.declsAt(path))
-			}
+	}
+	if len(cs.calleeChain) <= 1 && f.defs[scope][head] {
+		defs := f.topDefs(scope, head)
+		if len(defs) == 0 {
+			return p.declsNamed(leaves)
 		}
-		if f.defs[scope][cs.calleeName] {
-			enclosing := scopeEnclosing(scope)
-			for _, fd := range f.decls {
-				if fd.name == cs.calleeName && slices.Equal(fd.enclosing, enclosing) {
-					out = appendDecls(out, []funcDecl{fd})
-				}
-			}
-		}
+		out = appendDecls(out, defs)
 	}
 	if len(out) == 0 {
 		return p.declsNamed(leaves)
@@ -214,10 +212,27 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 	return out
 }
 
+// topDefs is the module-level defs of name in the file when the module scope binds the name
+// by def alone: not by a class, an import, an assignment or another value binding (a later
+// "f = other.f" replaces the def). A def inside a function body binds the name there, not
+// at module level, and is no candidate.
+func (f *fileParse) topDefs(scope, name string) []funcDecl {
+	if scope != "" || !f.topFuncs[name] || f.binders[""][name] > 0 || f.depImports[""][name] > 0 || len(f.fpBinds[""][name]) > 0 {
+		return nil
+	}
+	var out []funcDecl
+	for _, fd := range f.decls {
+		if fd.name == name && len(fd.enclosing) == 0 && !fd.inDef {
+			out = append(out, fd)
+		}
+	}
+	return out
+}
+
 // declsAt is the top-level functions an import path ("pkg/m/f") names: the defs of f at
-// module level in the modules pkg/m names, and what each such module's own first-party
-// imports and star imports bind f to, followed in turn. Each path is visited once, so an
-// import cycle ends.
+// module level in the modules pkg/m names (topDefs), and what each such module's own
+// first-party imports and star imports bind f to, followed in turn. Each path is visited
+// once, so an import cycle ends.
 func (p *program) declsAt(path string) []funcDecl {
 	visited := map[string]bool{}
 	var out []funcDecl
@@ -233,13 +248,7 @@ func (p *program) declsAt(path string) []funcDecl {
 		}
 		for _, i := range p.byModule[mod] {
 			g := &p.files[i]
-			if g.defs[""][leaf] {
-				for _, fd := range g.decls {
-					if fd.name == leaf && len(fd.enclosing) == 0 {
-						out = appendDecls(out, []funcDecl{fd})
-					}
-				}
-			}
+			out = appendDecls(out, g.topDefs("", leaf))
 			for _, next := range g.fpBinds[""][leaf] {
 				walk(next)
 			}
@@ -261,17 +270,6 @@ func appendDecls(out, add []funcDecl) []funcDecl {
 		}
 	}
 	return out
-}
-
-// scopeEnclosing is the class chain of the defs a binding scope holds: none at module level,
-// else the chain of the def whose body it is (scopeKey), since a nested def records only the
-// classes around it.
-func scopeEnclosing(scope string) []string {
-	i := strings.LastIndexByte(scope, '#')
-	if i <= 0 {
-		return nil
-	}
-	return strings.Split(scope[:i], "#")
 }
 
 // withAliases adds the leaf names each import path may stand for to leaves.
@@ -331,6 +329,7 @@ type funcDecl struct {
 	enclosing []string
 	name      string
 	arity     int
+	inDef     bool
 }
 
 func (d funcDecl) scip() string {
@@ -377,6 +376,11 @@ type fileParse struct {
 	// stars are the modules the file star-imports; starPaths the first-party ones' paths.
 	stars     []string
 	starPaths []string
+	// topFuncs holds the names the file defines by a module-level def and no class of the
+	// same name; depNamed the dependency imports, by scope, whose path a first-party module
+	// path contains (a first-party package the distribution scan does not see as one).
+	topFuncs map[string]bool
+	depNamed map[string]map[string]bool
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -518,16 +522,26 @@ func loadProgram(buildDir string) (*program, error) {
 
 		var fds []funcDecl
 		topNames := map[string]bool{}
+		topFuncs, classNames := map[string]bool{}, map[string]bool{}
 		for _, d := range decls {
 			if len(d.enclosing) == 0 {
 				topNames[d.name] = true
 			}
 			if d.kind != kindFunc {
+				if len(d.enclosing) == 0 {
+					classNames[d.name] = true
+				}
 				continue
 			}
-			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity}
+			if len(d.enclosing) == 0 && !d.inDef {
+				topFuncs[d.name] = true
+			}
+			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity, inDef: d.inDef}
 			prog.funcsByName[d.name] = append(prog.funcsByName[d.name], fd)
 			fds = append(fds, fd)
+		}
+		for name := range classNames {
+			delete(topFuncs, name)
 		}
 		for name := range scan.locals[""] {
 			topNames[name] = true
@@ -557,6 +571,7 @@ func loadProgram(buildDir string) (*program, error) {
 			loadRoots: roots,
 			decls:     fds,
 			topNames:  topNames,
+			topFuncs:  topFuncs,
 			decorated: scan.decorated,
 			wrapped:   scan.wrapped,
 			stars:     slices.Sorted(maps.Keys(stars)),
@@ -645,6 +660,9 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 					f.depImports[b.scope] = map[string]int{}
 				}
 				f.depImports[b.scope][b.local]++
+				if prog.named[strings.ReplaceAll(b.target, ".", "/")] {
+					addNames(&f.depNamed, b.scope, []string{b.local})
+				}
 			}
 			if !b.guarded {
 				addNames(&f.plain, b.scope, []string{b.local})

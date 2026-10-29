@@ -284,6 +284,7 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "import json\n\ndef run(x):\n    return json.loads(x)\n"},
 			caller: funcSCIP("app", nil, "run", 1),
 			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			escape: []string{funcSCIP("util", nil, "loads", 1)},
 			listed: true,
 		},
 		{
@@ -291,6 +292,7 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "from json import loads\n\ndef run(x):\n    return loads(x)\n"},
 			caller: funcSCIP("app", nil, "run", 1),
 			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			escape: []string{funcSCIP("util", nil, "loads", 1)},
 			listed: true,
 		},
 		{
@@ -313,6 +315,67 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			},
 			caller: funcSCIP("app", nil, "index", 0),
 			want:   funcSCIP("c", nil, "f", 1),
+		},
+		{
+			name: "first-party package below a directory the distribution scan reads as the top",
+			files: map[string]string{
+				"backend/app/util.py":  "def loads(s):\n    return s\n",
+				"backend/app/views.py": "from app import util\n\ndef run(x):\n    return util.loads(x)\n",
+			},
+			caller: funcSCIP("backend/app/views", nil, "run", 1),
+			want:   funcSCIP("backend/app/util", nil, "loads", 1),
+		},
+		{
+			name:   "def beside a dependency import of the name",
+			files:  map[string]string{"app.py": "from json import loads\n\ndef loads(s):\n    return s\n\ndef run(x):\n    return loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			want:   funcSCIP("app", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name: "dependency import beside a module star import",
+			files: map[string]string{
+				"pkg/impl.py": "def loads(s):\n    return s\n",
+				"pkg/app.py":  "from json import loads\nfrom .impl import *\n\ndef run(x):\n    return loads(x)\n",
+			},
+			caller: funcSCIP("pkg/app", nil, "run", 1),
+			want:   funcSCIP("pkg/impl", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name:   "dependency import the module rebinds",
+			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "import json\njson = make()\n\ndef run(x):\n    return json.loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			want:   funcSCIP("util", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name: "nested def beside a module-level class of the name",
+			files: map[string]string{
+				"app.py":   "def make():\n    def Loader(x):\n        return x\n    return Loader\n\nclass Loader:\n    def __init__(self, x):\n        self.x = x\n\ndef index():\n    return Loader(1)\n",
+				"other.py": "def Loader(x):\n    return x\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "Loader", 1), funcSCIP("other", nil, "Loader", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a class beside a nested def of the name",
+			files: with(map[string]string{
+				"pkg/impl.py": "class f:\n    def __init__(self, x):\n        self.x = x\n\ndef helper():\n    def f(x):\n        return x\n    return f\n",
+				"app.py":      "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			}),
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{impl, other},
+			listed: true,
+		},
+		{
+			name:   "def the module rebinds to another module's function",
+			files:  with(map[string]string{"app.py": "import other\n\ndef f(x):\n    return x\n\nf = other.f\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			escape: []string{other},
+			listed: true,
 		},
 	}
 	for _, tc := range cases {

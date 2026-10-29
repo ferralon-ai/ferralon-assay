@@ -1315,14 +1315,18 @@ func runCVEWatch(args []string) error {
 
 // cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
 // claim their aliases when the report is ranked. A failed build graph holds the cursor, so the
-// advisories this run assessed without it are assessed again on the next.
+// advisories this run assessed without it are assessed again on the next; it failed before the
+// run, so HoldCursor carries it. The dependency-code policy's hold depends on fetches the
+// re-assessments make, so Hold consults it after them.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
-		Subject:       cfg.subject,
-		Codebase:      cfg.codebase,
-		AssessOptions: cfg.assessOptions,
-		Signals:       signals,
-		Advisories:    cfg.advisories,
-		HoldCursor:    runExit(cfg.graph, cfg.deps) != nil,
+		Subject:         cfg.subject,
+		Codebase:        cfg.codebase,
+		AssessOptions:   cfg.assessOptions,
+		Signals:         signals,
+		Advisories:      cfg.advisories,
+		HoldCursor:      cfg.graph.err() != nil,
+		Hold:            cfg.deps.holds,
+		DependencyFetch: cfg.deps.fetchUpdate(),
 	}
 }

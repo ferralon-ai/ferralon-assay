@@ -3,9 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +16,8 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/statestore"
+	"github.com/ferralon-ai/ferralon-assay/trigger"
 )
 
 const (
@@ -31,8 +35,9 @@ var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // reads no dependency code, exactly as with -dependency-code=off, and its Report names the cause.
 //
 // THIS IS THE SINGLE LINE THAT DECIDES WHETHER THAT RUN FAILS. false: it exits as the off run
-// would. true: it exits non-zero once its Report is published, and cve-watch holds its cursor,
-// as a JVM scan without its build graph does.
+// would. true: it exits non-zero once its Report is published, and a cve-watch earnest run holds
+// its cursor, as a JVM scan without its build graph does. The fetch happens during the
+// re-assessments, so cve-watch decides that hold after them, through CVEWatchRequest.Hold.
 const fetchFailureFailsRun = false
 
 // dependencyCodeOption resolves the -dependency-* flags into the acquisition option, or nil
@@ -47,27 +52,30 @@ func (f *runFlags) dependencyCodeOption() (pipeline.AssessOption, error) {
 		f.depRun = &depCodeRun{source: report.DependencyCodeSourceOff}
 		return nil, nil
 	}
-	run := &depCodeRun{source: string(cfg.Mode)}
+	run := &depCodeRun{source: string(cfg.Mode), failsRun: fetchFailureFailsRun}
 	cfg.Observe = run.observe
 	f.depRun = run
 	return pipeline.WithDependencyAcquisition(*cfg), nil
 }
 
-// depCodeRun is what a run's dependency code acquisition came to: the configured source and, when
-// a fetch failed, the cause.
+// depCodeRun is what a run's dependency code acquisition came to: the configured source, every
+// package outcome the acquisitions observed and, when a fetch failed, the first cause. failsRun
+// is fetchFailureFailsRun, held per run so a test can exercise the policy either way.
 type depCodeRun struct {
-	source string
-	mu     sync.Mutex
-	fell   *report.DependencyCodeCause
+	source   string
+	failsRun bool
+	mu       sync.Mutex
+	observed bool
+	outcomes []pipeline.DependencyOutcome
+	fell     *report.DependencyCodeCause
 }
 
 func (d *depCodeRun) observe(res pipeline.DependencyAcquisitionResult) {
-	if res.Fallback == nil {
-		return
-	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.fell != nil {
+	d.observed = true
+	d.outcomes = append(d.outcomes, res.Outcomes...)
+	if res.Fallback == nil || d.fell != nil {
 		return
 	}
 	d.fell = &report.DependencyCodeCause{Kind: res.Fallback.Kind, Detail: res.Fallback.Detail}
@@ -110,10 +118,100 @@ func (d *depCodeRun) stamp(rep *report.Report) {
 // err is the run's exit error once its Report is published. fetchFailureFailsRun decides it.
 func (d *depCodeRun) err() error {
 	c := d.cause()
-	if c == nil || !fetchFailureFailsRun {
+	if c == nil || !d.failsRun {
 		return nil
 	}
 	return fmt.Errorf("dependency code not read: %s", describeCause(c))
+}
+
+// holds reports whether the dependency-code policy holds a cve-watch cursor. It reads the
+// acquisitions observed so far, so a caller consults it after the re-assessments.
+func (d *depCodeRun) holds() bool {
+	return d.err() != nil
+}
+
+// fetchUpdate is the run's depfetch.json hook, or nil for a scan with no dependency acquisition to
+// record (not JS), which carries the stored record.
+func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
+	if d == nil {
+		return nil
+	}
+	return func(prior *statestore.DepFetch, run trigger.DependencyFetchRun) *statestore.DepFetch {
+		return d.record(prior, run, time.Now().UTC())
+	}
+}
+
+// registryRun is what one run's acquisitions did against one registry.
+type registryRun struct {
+	read, network, failed bool
+}
+
+// record is the depfetch.json a writing run leaves, from the stored record prior, which it does not
+// modify. A run that observed no acquisition (dependency code off, or none reached) carries prior.
+// Otherwise, per registry: a network fetch sets has_served; on a cve-watch earnest run, reading
+// anything from the registry resets its held count, and a held run in which every fetch from it
+// failed counts one more, stamping first_held_at at now on the first. A baseline never touches the
+// held count. A cve-watch earnest run that fell back adds the advisories it assessed to reassess,
+// and a run of either kind that read dependency code without falling back removes them.
+func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFetchRun, now time.Time) *statestore.DepFetch {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.observed {
+		return prior
+	}
+	regs := map[string]*registryRun{}
+	for _, o := range d.outcomes {
+		if o.Registry == "" {
+			continue
+		}
+		r := regs[o.Registry]
+		if r == nil {
+			r = &registryRun{}
+			regs[o.Registry] = r
+		}
+		switch {
+		case o.Outcome == pipeline.OutcomeReadNetwork:
+			r.read, r.network = true, true
+		case o.Outcome == pipeline.OutcomeReadCache:
+			r.read = true
+		case pipeline.FetchFailed(o.Outcome):
+			r.failed = true
+		}
+	}
+
+	next := &statestore.DepFetch{}
+	if prior != nil {
+		next.Registries = maps.Clone(prior.Registries)
+		next.Reassess = slices.Clone(prior.Reassess)
+	}
+	for key, r := range regs {
+		e := next.Registries[key]
+		if r.network {
+			e.HasServed = true
+		}
+		if !run.Baseline {
+			switch {
+			case r.read:
+				e.HeldRuns, e.FirstHeldAt = 0, time.Time{}
+			case r.failed && run.Held:
+				e.HeldRuns++
+				if e.FirstHeldAt.IsZero() {
+					e.FirstHeldAt = now
+				}
+			}
+		}
+		if next.Registries == nil {
+			next.Registries = map[string]statestore.RegistryFetch{}
+		}
+		next.Registries[key] = e
+	}
+	switch {
+	case d.fell != nil && !run.Baseline:
+		next.Reassess = append(next.Reassess, run.Assessed...)
+	case d.fell == nil:
+		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool { return slices.Contains(run.Assessed, id) })
+	}
+	return next
 }
 
 // runExit is a scan's exit status once its Report is published: the JVM build graph's

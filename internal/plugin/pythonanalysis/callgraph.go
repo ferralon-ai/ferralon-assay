@@ -227,8 +227,11 @@ type fileParse struct {
 	binders    map[string]map[string]int
 	defs       map[string]map[string]bool
 	depImports map[string]map[string]int
-	modValues  []string
-	computed   bool
+	// reads and opaque are fileScan's: the names each module-scope assignment's value reads.
+	reads     map[string][]string
+	opaque    map[string]bool
+	modValues []string
+	computed  bool
 	// wrapped lists the defs under a decorator that may replace them with other code.
 	wrapped []funcDecl
 	// stars are the modules the file star-imports; starPaths the first-party ones' paths.
@@ -438,6 +441,8 @@ func loadProgram(buildDir string) (*program, error) {
 			locals:    scan.locals,
 			plain:     scan.plain,
 			binders:   scan.binders,
+			reads:     scan.reads,
+			opaque:    scan.opaque,
 			defs:      scan.defs,
 			computed:  scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
 			settings:  settingsLaunchers(clean, lits),

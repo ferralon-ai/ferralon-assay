@@ -476,6 +476,46 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"http_route", funcSCIP("site/urls", nil, "dash", 1), "d/"}},
 		},
 		{
+			name: "Django view an instance of a first-party class rebinding a dependency import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "class Dash:\n    def __call__(self, request):\n        return None\n",
+				"site/urls.py": "from django.urls import path\nfrom thirdparty import dash\nfrom site.views import Dash\ndash = Dash()\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view a call's result rebinding a dependency import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom thirdparty import dash, wrap\nfrom site import views\ndash = wrap(views.dash)\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view a dependency's instance",
+			files: map[string]string{
+				"site/__init__.py": "",
+				"site/urls.py":     "from django.urls import path\nfrom ninja import NinjaAPI\napi = NinjaAPI()\n\nurlpatterns = [path(\"api/\", api.urls)]\n",
+			},
+		},
+		{
+			name: "Django view a dependency's instance wrapping a first-party view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom deco import Wrap\nfrom site import views\ndash = Wrap(views.dash)\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django class-based view on a base a dependency's factory builds",
+			files: map[string]string{
+				"site/__init__.py": "",
+				"site/views.py":    "from deco import Factory\nBase = Factory()\n\nclass Items(Base):\n    def get(self, request):\n        return None\n",
+				"site/urls.py":     "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", []string{"Items"}, "get", 2), "items/"}},
+		},
+		{
 			name: "Django view behind a wrapper's trailing attribute",
 			files: map[string]string{
 				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",

@@ -532,8 +532,7 @@ func (prog *program) launchTargets() []launchTarget {
 		out = append(out, f.settings...)
 		for _, v := range f.urlViews {
 			if slices.ContainsFunc(v.heads, func(h string) bool {
-				paths, open := prog.starBinds(f, h)
-				return f.definesFirstParty(h) || len(paths) > 0 || open
+				return prog.namesFirstParty(f, h, map[string]bool{})
 			}) {
 				out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
 			}
@@ -545,7 +544,7 @@ func (prog *program) launchTargets() []launchTarget {
 				for _, p := range paths {
 					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
 				}
-			} else if f.definesFirstParty(v.chain[0]) {
+			} else if prog.definesFirstParty(f, v.chain[0]) {
 				bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
 			} else {
 				paths, open := prog.starBinds(f, v.chain[0])
@@ -592,19 +591,38 @@ func (prog *program) starBinds(f *fileParse, name string) (paths []string, open 
 
 // definesFirstParty reports whether the file's module scope binds name to first-party code:
 // by a first-party import; by its own def or class, which may follow an import of the name;
-// by a call's result, which may be first-party code whatever the callee; or by an assignment
-// rather than an import.
-func (f *fileParse) definesFirstParty(name string) bool {
+// by an assignment whose value reads first-party code or that the lane does not read; or by
+// a binding other than an import or assignment.
+func (prog *program) definesFirstParty(f *fileParse, name string) bool {
+	return prog.bindsFirstParty(f, name, map[string]bool{})
+}
+
+// namesFirstParty reports whether name, read at f's module scope, may be first-party code:
+// f binds it so, or a first-party star import may.
+func (prog *program) namesFirstParty(f *fileParse, name string, seen map[string]bool) bool {
+	paths, open := prog.starBinds(f, name)
+	return prog.bindsFirstParty(f, name, seen) || len(paths) > 0 || open
+}
+
+// bindsFirstParty is definesFirstParty; seen ends a cycle of assignments reading each other.
+func (prog *program) bindsFirstParty(f *fileParse, name string, seen map[string]bool) bool {
 	if len(f.fpBinds[""][name]) > 0 {
 		return true
 	}
 	if !f.topNames[name] || f.module == "" {
 		return false
 	}
-	b, bound := f.bindings[""][name]
-	if f.defs[""][name] || bound && len(b.inst) > 0 {
+	if f.defs[""][name] || f.opaque[name] {
 		return true
 	}
+	if reads, assigned := f.reads[name]; assigned {
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		return slices.ContainsFunc(reads, func(h string) bool { return prog.namesFirstParty(f, h, seen) })
+	}
+	_, bound := f.bindings[""][name]
 	return !bound && f.depImports[""][name] == 0
 }
 
@@ -683,7 +701,7 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 		r := []rune(b)
 		segs := dottedSegs(string(r[:dottedEnd(r, 0)]))
 		if len(segs) == 0 {
-			complete = complete && !slices.ContainsFunc(identHeads(r), g.definesFirstParty)
+			complete = complete && !slices.ContainsFunc(identHeads(r), func(n string) bool { return prog.definesFirstParty(g, n) })
 			continue
 		}
 		var next []pathHit
@@ -692,7 +710,7 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 				hs, _, _ := prog.resolvePath(append(strings.Split(p, "/"), segs[1:]...), 0)
 				next = append(next, hs...)
 			}
-		} else if g.definesFirstParty(segs[0]) {
+		} else if prog.definesFirstParty(g, segs[0]) {
 			next = []pathHit{{file: h.file, attrs: segs}}
 		} else if _, bound := g.bindings[""][segs[0]]; bound || g.depImports[""][segs[0]] > 0 {
 			continue // a dependency's base

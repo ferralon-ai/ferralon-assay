@@ -132,6 +132,11 @@ type fileScan struct {
 	// classScopeKey, which no call site resolves through.
 	binders map[string]map[string]int
 	defs    map[string]map[string]bool
+	// reads maps each name a module-scope assignment binds to the names its values read;
+	// opaque marks the names some module-scope binding gives a value the lane does not read
+	// (see recordReads).
+	reads  map[string][]string
+	opaque map[string]bool
 }
 
 // countBinders adds one binding of each name to scope, except a literal None assignment.
@@ -149,6 +154,27 @@ func (fs *fileScan) countBinders(scope, st string, names []string) {
 			m[n]++
 		}
 	}
+}
+
+// recordReads keeps, for each name a module-scope statement binds, the names its value
+// reads: those of the right-hand side of a plain `name = value`. Any other binding (a tuple,
+// chained, augmented or annotated assignment, a for, with or except target) is opaque.
+func (fs *fileScan) recordReads(st string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if fs.reads == nil {
+		fs.reads, fs.opaque = map[string][]string{}, map[string]bool{}
+	}
+	local, rest := readIdent(st)
+	rest = strings.TrimLeft(rest, " \t")
+	if len(names) != 1 || local != names[0] || !strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "==") {
+		for _, n := range names {
+			fs.opaque[n] = true
+		}
+		return
+	}
+	fs.reads[local] = append(fs.reads[local], identHeads([]rune(rest[1:]))...)
 }
 
 // assignsNone reports whether st is "name = None" (or "name: T = None").
@@ -404,6 +430,9 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 			fs.countBinders(classScopeKey(), st, names)
 			return
+		}
+		if bindScope == "" {
+			fs.recordReads(st, names)
 		}
 		fs.bindLocals(bindScope, names, guarded)
 		fs.countBinders(bindScope, st, names)

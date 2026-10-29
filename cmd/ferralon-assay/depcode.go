@@ -151,8 +151,9 @@ type registryRun struct {
 // Otherwise, per registry: a network fetch sets has_served; on a cve-watch earnest run, reading
 // anything from the registry resets its held count, and a held run in which every fetch from it
 // failed counts one more, stamping first_held_at at now on the first. A baseline never touches the
-// held count. A cve-watch earnest run that fell back adds the advisories it assessed to reassess,
-// and a run of either kind that read dependency code without falling back removes them.
+// held count. A cve-watch earnest run that fell back adds the IDs of the advisories it assessed to
+// reassess, and a run of either kind that read dependency code without falling back removes every
+// entry naming one of them by ID or alias.
 func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFetchRun, now time.Time) *statestore.DepFetch {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -207,11 +208,20 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 	}
 	switch {
 	case d.fell != nil && !run.Baseline:
-		next.Reassess = append(next.Reassess, run.Assessed...)
+		for _, a := range run.Assessed {
+			next.Reassess = append(next.Reassess, a.ID)
+		}
 	case d.fell == nil:
-		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool { return slices.Contains(run.Assessed, id) })
+		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool { return namesAny(run.Assessed, id) })
 	}
 	return next
+}
+
+// namesAny reports whether id is the ID or an alias of one of advs.
+func namesAny(advs []report.Advisory, id string) bool {
+	return slices.ContainsFunc(advs, func(a report.Advisory) bool {
+		return a.ID == id || slices.Contains(a.Aliases, id)
+	})
 }
 
 // runExit is a scan's exit status once its Report is published: the JVM build graph's

@@ -157,9 +157,11 @@ func TestRunCVEWatch_DependencyFetchSeesTheRun(t *testing.T) {
 			if _, err := RunCVEWatch(context.Background(), store, osv, req); err != nil {
 				t.Fatalf("RunCVEWatch: %v", err)
 			}
-			wantRun := DependencyFetchRun{Held: tc.wantHeld, Assessed: []string{"GO-2021-0113"}}
-			if len(got) != 1 || got[0].Baseline != wantRun.Baseline || got[0].Held != wantRun.Held || !slices.Equal(got[0].Assessed, wantRun.Assessed) {
-				t.Fatalf("hook runs = %+v, want one %+v", got, wantRun)
+			if len(got) != 1 || got[0].Baseline || got[0].Held != tc.wantHeld || !slices.Equal(assessedIDs(got[0]), []string{"GO-2021-0113"}) {
+				t.Fatalf("hook runs = %+v, want one cve-watch run, held %v, assessing GO-2021-0113", got, tc.wantHeld)
+			}
+			if !slices.Contains(got[0].Assessed[0].Aliases, "GHSA-ppp9-7jff-5vj2") {
+				t.Fatalf("assessed advisory %+v does not carry its advisory record's aliases", got[0].Assessed[0])
 			}
 			if store.lastSeen.DepFetch != want {
 				t.Fatalf("written DepFetch = %+v, want the hook's answer", store.lastSeen.DepFetch)
@@ -207,7 +209,7 @@ func TestRunBaseline_DependencyFetchSeesTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunBaseline: %v", err)
 	}
-	if len(got) != 1 || !got[0].Baseline || got[0].Held || !slices.Equal(got[0].Assessed, []string{wiringAdvisory.ID}) {
+	if len(got) != 1 || !got[0].Baseline || got[0].Held || !slices.Equal(assessedIDs(got[0]), []string{wiringAdvisory.ID}) {
 		t.Fatalf("hook runs = %+v, want one baseline run that assessed %s", got, wiringAdvisory.ID)
 	}
 	if store.lastSeen.DepFetch != want {
@@ -237,4 +239,13 @@ func TestRunBaseline_CutAdvisoryNotAssessed(t *testing.T) {
 	if len(got) != 1 || len(got[0].Assessed) != 0 {
 		t.Fatalf("hook runs = %+v, want one with nothing assessed", got)
 	}
+}
+
+// assessedIDs is the advisory IDs run.Assessed lists, in order.
+func assessedIDs(run DependencyFetchRun) []string {
+	var ids []string
+	for _, a := range run.Assessed {
+		ids = append(ids, a.ID)
+	}
+	return ids
 }

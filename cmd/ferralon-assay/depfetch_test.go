@@ -60,12 +60,20 @@ func TestDepCodeRunRecord(t *testing.T) {
 		return pipeline.DependencyOutcome{PURL: purl, Registry: reg, Outcome: outcome}
 	}
 	fell := &pipeline.DependencyCodeCause{Kind: pipeline.UnreadNotServed}
+	advs := func(ids ...string) []report.Advisory {
+		var out []report.Advisory
+		for _, id := range ids {
+			out = append(out, report.Advisory{ID: id})
+		}
+		return out
+	}
 	watch := func(held bool, ids ...string) trigger.DependencyFetchRun {
-		return trigger.DependencyFetchRun{Held: held, Assessed: ids}
+		return trigger.DependencyFetchRun{Held: held, Assessed: advs(ids...)}
 	}
 	baseline := func(ids ...string) trigger.DependencyFetchRun {
-		return trigger.DependencyFetchRun{Baseline: true, Assessed: ids}
+		return trigger.DependencyFetchRun{Baseline: true, Assessed: advs(ids...)}
 	}
+	aliased := report.Advisory{ID: "CVE-2026-0001", Aliases: []string{"GHSA-aaaa-bbbb-cccc"}}
 	for _, tc := range []struct {
 		name    string
 		prior   *statestore.DepFetch
@@ -182,6 +190,19 @@ func TestDepCodeRunRecord(t *testing.T) {
 			prior:   &statestore.DepFetch{Reassess: []string{"A", "Z"}},
 			results: []pipeline.DependencyAcquisitionResult{{}},
 			run:     watch(false, "A"),
+			want:    &statestore.DepFetch{Reassess: []string{"Z"}},
+		},
+		{
+			name:    "a cve-watch run that fell back adds the advisory's ID",
+			results: []pipeline.DependencyAcquisitionResult{{Fallback: fell}},
+			run:     trigger.DependencyFetchRun{Assessed: []report.Advisory{aliased}},
+			want:    &statestore.DepFetch{Reassess: []string{"CVE-2026-0001"}},
+		},
+		{
+			name:    "a baseline that read clears an entry naming an alias of what it assessed",
+			prior:   &statestore.DepFetch{Reassess: []string{"GHSA-aaaa-bbbb-cccc", "Z"}},
+			results: []pipeline.DependencyAcquisitionResult{{}},
+			run:     trigger.DependencyFetchRun{Baseline: true, Assessed: []report.Advisory{aliased}},
 			want:    &statestore.DepFetch{Reassess: []string{"Z"}},
 		},
 	} {

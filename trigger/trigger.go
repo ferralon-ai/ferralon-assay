@@ -80,9 +80,10 @@ type DependencyFetchRun struct {
 	// Held reports that a cve-watch earnest run kept the stored cursor. Always false for a
 	// baseline, which has no cursor to hold.
 	Held bool
-	// Assessed lists the advisory IDs whose assessment this run completed, sorted: neither cut
-	// short nor failed.
-	Assessed []string
+	// Assessed lists the advisories whose assessment this run completed, sorted by ID: neither
+	// cut short nor failed. Each carries the aliases its advisory record names, so a caller can
+	// match an advisory a different run knew by another ID.
+	Assessed []report.Advisory
 }
 
 // RunBaseline runs the full S1–S6 pipeline for every advisory in the request, builds
@@ -136,8 +137,8 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 
 // baselineReport is buildBaselineReport with priorSBOM, which reads the stored SBOM a baseline
 // stopped before its inventory resolved carries forward. Nil carries nothing forward. It also
-// returns the advisory IDs whose assessment completed, sorted.
-func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, []string, error) {
+// returns the advisories whose assessment completed, sorted by ID.
+func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, []report.Advisory, error) {
 	analyzer := req.AnalyzerVersion
 	if analyzer == "" {
 		analyzer = AnalyzerVersion
@@ -188,7 +189,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	mods := goModulesOf(sbom, invNotes)
 
 	cut := 0
-	var assessed []string
+	var assessed []report.Advisory
 	for _, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
@@ -220,7 +221,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 			b.AddPartiality(note)
 		}
 		b.AddPartiality(partialityNotes(st, assessmentID)...)
-		assessed = append(assessed, adv.ID)
+		assessed = append(assessed, advisory)
 	}
 	if cut > 0 {
 		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))
@@ -238,7 +239,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	if err != nil {
 		return nil, nil, fmt.Errorf("trigger: build baseline report: %w", err)
 	}
-	return &rep, sortedIDs(assessed), nil
+	return &rep, sortedAdvisories(assessed), nil
 }
 
 // PRInheritRequest configures a PR-adjacent run. It diffs the PR's resolved SBOM

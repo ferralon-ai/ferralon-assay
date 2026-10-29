@@ -448,10 +448,10 @@ func canonicalKey(ecosystem, name string) string {
 // findings, and build a Report stamped with the new cursor. The prior Report's SBOM
 // is reused (CVE-watch does not re-resolve dependencies — only advisories changed).
 //
-// It also returns the advisory IDs whose re-assessment completed, sorted. The cursor is held,
+// It also returns the advisories whose re-assessment completed, sorted by ID. The cursor is held,
 // the stored one written to provenance, when newCursor already is the stored one, when an
 // advisory was cut short, or when req.Hold, consulted after every re-assessment, says so.
-func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, newCursor string) (*report.Report, []string, error) {
+func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, newCursor string) (*report.Report, []report.Advisory, error) {
 	prior := state.Report
 
 	newSet := make(map[string]struct{}, len(newIDs))
@@ -468,7 +468,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	analysis := analysisOr(req.Analysis, ctx)
 	cut := 0
-	var assessed []string
+	var assessed []report.Advisory
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
@@ -506,7 +506,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		reFindings[advisory.ID+"\x00"+advisory.Source] = f
 		freshIDs[advisory.ID] = struct{}{}
-		assessed = append(assessed, a.ID)
+		assessed = append(assessed, advisory)
 	}
 
 	b := report.NewBuilder(report.Subject{
@@ -570,15 +570,17 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if err != nil {
 		return nil, nil, err
 	}
-	return &rep, sortedIDs(assessed), nil
+	return &rep, sortedAdvisories(assessed), nil
 }
 
-// sortedIDs is ids sorted with duplicates removed; nil when empty.
-func sortedIDs(ids []string) []string {
-	if len(ids) == 0 {
+// sortedAdvisories is advs sorted by ID, keeping the first of each ID; nil when empty.
+func sortedAdvisories(advs []report.Advisory) []report.Advisory {
+	if len(advs) == 0 {
 		return nil
 	}
-	return slices.Compact(slices.Sorted(slices.Values(ids)))
+	out := slices.Clone(advs)
+	slices.SortStableFunc(out, func(a, b report.Advisory) int { return strings.Compare(a.ID, b.ID) })
+	return slices.CompactFunc(out, func(a, b report.Advisory) bool { return a.ID == b.ID })
 }
 
 // supersededByFresh reports whether an inherited finding must yield to this pass's fresh

@@ -1009,8 +1009,9 @@ func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]by
 // themselves: the package load ran to completion and go/packages reported errors on the loaded
 // packages (a cgo header that is missing, a type error). govulncheck loads before it makes any
 // vulnerability database request, so no database answer is part of such a failure. Excluded are a
-// cancelled or expired ctx, anything killed by a signal, and any load that did not complete — a go
-// command that failed outright reaches govulncheck as a plain error, not as package errors.
+// cancelled or expired ctx, anything killed by a signal or starved of a machine resource, and any
+// load that did not complete — a go command that failed outright reaches govulncheck as a plain
+// error, not as package errors.
 func settledLoadFailure(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return false
@@ -1024,11 +1025,23 @@ func settledLoadFailure(ctx context.Context, err error) bool {
 		return false
 	}
 	for _, pe := range perrs {
-		if strings.Contains(pe.Msg, "signal: ") {
-			return false
+		for _, transient := range transientLoadFaults {
+			if strings.Contains(pe.Msg, transient) {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+// transientLoadFaults are texts in a package error that name a fault of the machine rather than of
+// the packages, so the same load could succeed on a retry.
+var transientLoadFaults = []string{
+	"signal: ",
+	"resource temporarily unavailable",
+	"no space left on device",
+	"too many open files",
+	"cannot allocate memory",
 }
 
 var packageErrorsType = reflect.TypeFor[[]packages.Error]()

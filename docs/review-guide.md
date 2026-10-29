@@ -201,9 +201,9 @@ A release is minted by `.github/workflows/release.yml` from a pushed tag, never 
 ([AGENTS.md](../AGENTS.md), [docs/releases/README.md](releases/README.md)). A review never suggests
 `gh release create`, a hand-made tag or a locally built asset as a way to ship.
 
-- `LICENSE` keeps `Change Date: TBD` on every branch; `license-guard.yml` fails any PR that changes
-  it.
-- `release.yml` is not edited by hand as part of an unrelated change.
+- `LICENSE` keeps `Change Date: TBD` on every branch; `license-guard.yml` fails any push or pull
+  request whose `LICENSE` names a Change Date.
+- `release.yml` is not edited by hand.
 - `action.yml`'s `scanner-version` default stays a `vX.Y` minor alias. A branch moves the alias in
   the change that needs the new minor's scanner, never as a release step.
 
@@ -240,6 +240,7 @@ dependency graph should update that section and say what it measured in the PR b
 
    ```sh
    go install golang.org/x/exp/cmd/apidiff@latest
+   mkdir -p /tmp/assay-base
    git archive <base-ref> | tar -x -C /tmp/assay-base
    (cd /tmp/assay-base && GOWORK=off apidiff -m -w /tmp/old.exp github.com/ferralon-ai/ferralon-assay)
    GOWORK=off apidiff -m -w /tmp/new.exp github.com/ferralon-ai/ferralon-assay

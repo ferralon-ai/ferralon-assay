@@ -2,6 +2,7 @@ package goanalysis
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -143,6 +144,7 @@ func TestPartialRunRecord(t *testing.T) {
 		{name: "an error with no position and no heading", perrs: []packages.Error{{Msg: "something failed"}}, graph: graph, wantErr: true},
 		{name: "a heading naming an unlisted package", perrs: []packages.Error{{Msg: "# example.com/nowhere\nfailed"}}, graph: graph, wantErr: true},
 		{name: "a replayed failure carries no package errors", perrs: nil, graph: graph, wantErr: true},
+		{name: "a heading under a position that does not parse", perrs: []packages.Error{{Pos: "garbled", Msg: cgoListError.Msg}}, graph: graph, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,5 +276,42 @@ func TestUnloadablePackagesResolvesSymlinks(t *testing.T) {
 	got, err := unloadablePackages([]packages.Error{{Pos: filepath.Join(link, "c.go") + ":4:8", Msg: "could not import C"}}, graph)
 	if err != nil || !slices.Equal(got, []string{"example.com/c"}) {
 		t.Errorf("got %v, %v; want example.com/c", got, err)
+	}
+}
+
+// TestWithholdForPartialRunNeverComplete pins that a partial run's result is never complete, even
+// when the paths it stands on are fully corroborated.
+func TestWithholdForPartialRunNeverComplete(t *testing.T) {
+	run := &partialRun{Unloadable: []string{"example.com/dep/olm"}, Excluded: []string{"example.com/m/cmd/a"}}
+	finding := []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/dep", Package: "example.com/dep/x", Function: "Bad"}}}}
+	res := withholdForPartialRun(plugin.ReachabilityResult{Paths: []plugin.ReachPath{{}}, Partiality: plugin.Complete()}, vulnScan{findings: finding, partial: run})
+	if res.Partiality.Complete {
+		t.Errorf("partiality %+v is complete", res.Partiality)
+	}
+}
+
+// TestDecodePartialRun pins that only a marked record naming what it could not load and what it
+// left out is a partial run.
+func TestDecodePartialRun(t *testing.T) {
+	cases := []struct {
+		name string
+		run  partialRun
+		want bool
+	}{
+		{name: "a whole record", run: partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"p"}, Excluded: []string{"r"}}, want: true},
+		{name: "no marker", run: partialRun{Unloadable: []string{"p"}, Excluded: []string{"r"}}},
+		{name: "nothing excluded", run: partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"p"}}},
+		{name: "nothing unloadable", run: partialRun{Marker: govulncheckPartialMarker, Excluded: []string{"r"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := decodePartialRun(b) != nil; got != tc.want {
+				t.Errorf("decoded=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }

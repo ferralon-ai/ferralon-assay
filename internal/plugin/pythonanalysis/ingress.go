@@ -47,7 +47,7 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 		if t.kind == "" {
 			continue
 		}
-		decls, _, _ := prog.launchDecls(t)
+		decls, _, _, _ := prog.launchDecls(t)
 		for _, fd := range decls {
 			scip := fd.scip()
 			key := t.kind + "\x00" + scip + "\x00" + t.selector
@@ -83,7 +83,7 @@ func ingressPartiality(prog *program) plugin.Partiality {
 	if prog.readFailed || prog.launchersUnread {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
-	if prog.skipped || prog.launcherUnresolved() {
+	if prog.skipped || prog.launchersUnsupported || prog.launcherUnresolved() {
 		reasons = append(reasons, plugin.PartialReasonUnsupported)
 	}
 	if len(reasons) == 0 {

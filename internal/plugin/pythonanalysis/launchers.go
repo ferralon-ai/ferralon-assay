@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -20,8 +21,9 @@ import (
 //     "name = module:attr" specs a setup.py passes as entry_points;
 //   - a Django WSGI_APPLICATION or ASGI_APPLICATION setting ("myapp.wsgi.application");
 //   - a Django URL pattern's view: path(), re_path() or url() imported from django, whose
-//     second argument names a view function ("views.index") or a class-based view
-//     ("views.Index.as_view()").
+//     second argument (or view=) names a view function ("views.index"), a class-based view
+//     ("views.Index.as_view()"), or either wrapped in a decorator call
+//     ("login_required(views.index)", "cache_page(60)(views.index)").
 //
 // Every function a launcher names is a call-graph root. A console or GUI script is a
 // "main" ingress, a setting a "http_server" ingress and a URL pattern a "http_route"
@@ -31,31 +33,38 @@ import (
 // attribute set at run time) makes ingress discovery partial and every function of that
 // module a root; one that names a module alone loads it, and every function of the module
 // is a root. A setting naming a value is Django's own handler, which dispatches to the
-// URL patterns, and a class-based view's request methods may be inherited from a
-// dependency, so neither does.
+// URL patterns, so it does not. A class-based view's as_view() dispatches to the methods
+// the class and its first-party bases define (a request method, or a hook such as
+// get_queryset that a dependency base calls), and each is an ingress; a class or base the
+// lane cannot find makes discovery partial. So does a view argument the lane cannot read,
+// or a wrapper, that names first-party code, and a launcher construct it does not model.
 
 // launchTarget is one function a launcher names by dotted path. segs is the path split into
 // segments; mod is how many of them name the module when the launcher says so (an entry
 // point's "module:attr"), else 0 and the longest prefix that names a module is taken.
-// optional marks a target whose absence is expected (see above).
+// optional marks a target whose absence is expected (see above); view one whose path names a
+// class-based view, its methods the functions; unread one the lane cannot read that may
+// name first-party code, which names no function and makes discovery partial.
 type launchTarget struct {
 	segs     []string
 	mod      int
 	kind     string
 	selector string
 	optional bool
+	view     bool
+	unread   bool
 }
 
-// urlView is a Django URL pattern's view as its file writes it: the dotted name, whether it
-// is a class-based view's as_view(), and the route literal when the first argument is one.
+// urlView is a Django URL pattern's view as its file writes it: the dotted name (nil when
+// the argument names no view the lane can read), whether it is a class-based view's
+// as_view(), the route literal when the first argument is one, and the names the argument
+// reads besides the view: a wrapper's, or every name of an argument read as no view.
 type urlView struct {
 	chain    []string
 	asView   bool
 	selector string
+	heads    []string
 }
-
-// djangoViewMethods are the request methods a class-based view's as_view() dispatches to.
-var djangoViewMethods = []string{"get", "post", "put", "patch", "delete", "head", "options", "trace"}
 
 // scriptGroups are the entry-point groups an installer turns into commands.
 var scriptGroups = map[string]bool{"console_scripts": true, "gui_scripts": true}
@@ -97,32 +106,33 @@ func entryKind(group string) string {
 }
 
 // readManifestLaunchers reads the entry points the build's pyproject.toml and setup.cfg
-// files declare. ok is false when one of them cannot be read or parsed.
-func readManifestLaunchers(buildDir string) (targets []launchTarget, ok bool) {
+// files declare. ok is false when one of them cannot be read or parsed, supported false
+// when one declares entry points in a form the reader does not model.
+func readManifestLaunchers(buildDir string) (targets []launchTarget, ok, supported bool) {
+	supported = true
 	manifests, ok := walkManifests(buildDir, func(path string) bool {
 		base := filepath.Base(path)
 		return base == "pyproject.toml" || base == "setup.cfg"
 	})
 	for _, f := range manifests {
-		var read func([]byte) ([]launchTarget, bool)
-		switch filepath.Base(f) {
-		case "pyproject.toml":
-			read = pyprojectLaunchers
-		case "setup.cfg":
-			read = setupCfgLaunchers
-		default:
-			continue
-		}
 		data, err := readRegular(f)
 		if err != nil {
 			ok = false
 			continue
 		}
-		ts, parsed := read(data)
+		var ts []launchTarget
+		parsed, modeled := true, true
+		switch filepath.Base(f) {
+		case "pyproject.toml":
+			ts, parsed = pyprojectLaunchers(data)
+		case "setup.cfg":
+			ts, modeled = setupCfgLaunchers(data)
+		}
 		ok = ok && parsed
+		supported = supported && modeled
 		targets = append(targets, ts...)
 	}
-	return targets, ok
+	return targets, ok, supported
 }
 
 // pyprojectLaunchers reads a pyproject.toml's PEP 621 and Poetry entry points.
@@ -190,11 +200,13 @@ func mapKeys[V any](m map[string]V) func(func(string) bool) {
 }
 
 // setupCfgLaunchers reads a setup.cfg's [options.entry_points] section: each option is a
-// group whose value lines are "name = spec".
+// group whose value lines are "name = spec". ok is false when the file declares the
+// section but readCfg refuses it (an interpolation, a duplicate) or a line is no spec; a
+// refused file that declares no such section declares no entry points.
 func setupCfgLaunchers(data []byte) ([]launchTarget, bool) {
 	sections, ok := readCfg(data)
 	if !ok {
-		return nil, false
+		return nil, !declaresEntryPoints(data)
 	}
 	var out []launchTarget
 	for _, s := range sections {
@@ -208,6 +220,17 @@ func setupCfgLaunchers(data []byte) ([]launchTarget, bool) {
 		}
 	}
 	return out, ok
+}
+
+// declaresEntryPoints reports whether a setup.cfg's text has an [options.entry_points]
+// section header.
+func declaresEntryPoints(data []byte) bool {
+	for _, line := range strings.Split(universalNewlines(string(data)), "\n") {
+		if name, header := cfgHeader(strings.Trim(line, " \t")); header && name == "options.entry_points" {
+			return true
+		}
+	}
+	return false
 }
 
 // entryLines reads the "name = spec" lines of one entry-point group, skipping blank lines.
@@ -232,10 +255,12 @@ func entryLines(group, text string) ([]launchTarget, bool) {
 // setupPyLaunchers reads the entry points a setup.py passes as string literals: a group key
 // ("console_scripts": [...]) followed by its "name = spec" strings, or an ini-style string
 // with [group] headers. A string that is no spec is ignored; setup.py carries many others.
-func setupPyLaunchers(clean string, lits map[int]strLiteral) []launchTarget {
+// supported is false when a spec comes before any group (a list built elsewhere and passed
+// by name): it is a root, but whether it is a script is unknown.
+func setupPyLaunchers(clean string, lits map[int]strLiteral) (out []launchTarget, supported bool) {
 	r := []rune(clean)
 	starts := slices.Sorted(mapIntKeys(lits))
-	var out []launchTarget
+	supported = true
 	group := ""
 	for _, at := range starts {
 		lit := lits[at]
@@ -253,15 +278,17 @@ func setupPyLaunchers(clean string, lits map[int]strLiteral) []launchTarget {
 				}
 				if t, ok := setupPySpec(section, line); ok {
 					out = append(out, t)
+					supported = supported && section != ""
 				}
 			}
 			continue
 		}
 		if t, ok := setupPySpec(group, lit.body); ok {
 			out = append(out, t)
+			supported = supported && group != ""
 		}
 	}
-	return out
+	return out, supported
 }
 
 // setupPySpec reads one "name = module:attr" string. It must name an attribute: a bare
@@ -355,10 +382,24 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 			continue
 		}
 		args, closed := callArgs(r, open)
-		if !closed || len(args) < 2 {
+		if !closed {
 			continue
 		}
-		v, ok := viewRef(strings.TrimSpace(string(r[args[1][0]:args[1][1]])))
+		view, found := "", false
+		for n, a := range args {
+			s := strings.TrimSpace(string(r[a[0]:a[1]]))
+			if k, val, kw := keywordArg(s); kw {
+				if k == "view" {
+					view, found = val, true
+				}
+			} else if n == 1 {
+				view, found = s, true
+			}
+		}
+		if !found {
+			continue
+		}
+		v, ok := viewRef(view)
 		if !ok {
 			continue
 		}
@@ -370,61 +411,243 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 	return out
 }
 
-// viewRef reads a URL pattern's view argument: a dotted name, or a dotted name's
-// as_view() call. include() and any other expression name no view.
+// viewRef reads a URL pattern's view argument: a dotted name, a dotted name's as_view()
+// call, or a call wrapping either (a decorator applied in place, its calls chained), whose
+// first argument that names a view is the view and whose head is kept. include() names a
+// URL module and no view (ok false); any other expression is read as no view, its names
+// kept.
 func viewRef(arg string) (urlView, bool) {
+	arg = strings.TrimSpace(arg)
 	if isDottedName(arg) {
-		return urlView{chain: strings.Split(arg, ".")}, true
+		return urlView{chain: dottedSegs(arg)}, true
 	}
-	head, call, found := strings.Cut(arg, "(")
-	head = strings.TrimSpace(head)
-	if !found || !strings.HasSuffix(head, ".as_view") || !strings.HasSuffix(strings.TrimSpace(call), ")") {
+	r := []rune(arg)
+	opaque := urlView{heads: identHeads(r)}
+	end := dottedEnd(r, 0)
+	open := skipSpaceRunes(r, end)
+	if end == 0 || open >= len(r) || r[open] != '(' {
+		return opaque, true
+	}
+	segs := dottedSegs(string(r[:end]))
+	switch leaf := segs[len(segs)-1]; {
+	case leaf == "include":
 		return urlView{}, false
+	case leaf == "as_view" && len(segs) > 1 && matchingClose(r, open) == len(r)-1:
+		return urlView{chain: segs[:len(segs)-1], asView: true}, true
 	}
-	cls := strings.TrimSuffix(head, ".as_view")
-	if !isDottedName(cls) {
-		return urlView{}, false
+	for open < len(r) && r[open] == '(' {
+		args, closed := callArgs(r, open)
+		if !closed {
+			break
+		}
+		for _, a := range args {
+			if v, ok := viewRef(string(r[a[0]:a[1]])); ok && v.chain != nil {
+				v.heads = append(v.heads, segs[0])
+				return v, true
+			}
+		}
+		open = skipSpaceRunes(r, matchingClose(r, open)+1)
 	}
-	return urlView{chain: strings.Split(cls, "."), asView: true}, true
+	return opaque, true
+}
+
+// dottedEnd returns the end of the dotted name (spaces around the dots allowed) starting at
+// i, or i when none starts there.
+func dottedEnd(r []rune, i int) int {
+	end := i
+	for j := i; j < len(r) && isIdentStartRune(r[j]); {
+		_, end = readWordRunes(r, j)
+		k := skipSpaceRunes(r, end)
+		if k >= len(r) || r[k] != '.' {
+			break
+		}
+		j = skipSpaceRunes(r, k+1)
+	}
+	return end
+}
+
+// identHeads returns the names an expression reads: each identifier that is no attribute.
+func identHeads(r []rune) []string {
+	var out []string
+	for i := 0; i < len(r); i++ {
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if j := lastNonSpace(r, i); j < 0 || r[j] != '.' {
+			out = append(out, w)
+		}
+		i = end - 1
+	}
+	return out
+}
+
+// lastNonSpace returns the index of the last non-space rune before i, or -1.
+func lastNonSpace(r []rune, i int) int {
+	for i--; i >= 0 && unicode.IsSpace(r[i]); i-- {
+	}
+	return i
+}
+
+// keywordArg splits a call argument "name=value" into its name and value; kw is false for a
+// positional argument (including a comparison "a == b").
+func keywordArg(s string) (name, value string, kw bool) {
+	r := []rune(s)
+	if len(r) == 0 || !isIdentStartRune(r[0]) {
+		return "", "", false
+	}
+	name, end := readWordRunes(r, 0)
+	eq := skipSpaceRunes(r, end)
+	if eq >= len(r) || r[eq] != '=' || (eq+1 < len(r) && r[eq+1] == '=') {
+		return "", "", false
+	}
+	return name, strings.TrimSpace(string(r[eq+1:])), true
 }
 
 // launchTargets is every launcher target of the build: the manifests', and each file's
 // settings and URL patterns, its view names read through the file's module-level imports.
-// A view the file neither defines nor imports from first-party code is a dependency's.
+// A view the file neither defines nor imports from first-party code is a dependency's; a
+// wrapper or unread argument naming first-party code is an unread target.
 func (prog *program) launchTargets() []launchTarget {
 	out := slices.Clone(prog.launchers)
-	for _, f := range prog.files {
+	for i := range prog.files {
+		f := &prog.files[i]
 		out = append(out, f.settings...)
 		for _, v := range f.urlViews {
+			if slices.ContainsFunc(v.heads, f.definesFirstParty) {
+				out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+			}
+			if v.chain == nil {
+				continue
+			}
 			var bases [][]string
 			if paths := f.fpBinds[""][v.chain[0]]; len(paths) > 0 {
 				for _, p := range paths {
 					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
 				}
-			} else if f.topNames[v.chain[0]] && f.module != "" {
+			} else if f.definesFirstParty(v.chain[0]) {
 				bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
 			}
 			for _, segs := range bases {
-				if !v.asView {
-					out = append(out, launchTarget{segs: segs, kind: "http_route", selector: v.selector})
-					continue
-				}
-				for _, m := range djangoViewMethods {
-					out = append(out, launchTarget{segs: append(slices.Clone(segs), m), kind: "http_route", selector: v.selector, optional: true})
-				}
+				out = append(out, launchTarget{segs: segs, kind: "http_route", selector: v.selector, view: v.asView})
 			}
 		}
 	}
 	return out
 }
 
+// definesFirstParty reports whether the file's module scope binds name to first-party code:
+// by a first-party import, or by its own def, class or assignment rather than an import.
+func (f *fileParse) definesFirstParty(name string) bool {
+	if len(f.fpBinds[""][name]) > 0 {
+		return true
+	}
+	_, imported := f.bindings[""][name]
+	return f.topNames[name] && f.module != "" && !imported && f.depImports[""][name] == 0
+}
+
+// pathHit is a place a dotted path reaches: a file of the module it names, and the attribute
+// path read in that file.
+type pathHit struct {
+	file  int
+	attrs []string
+}
+
 // launchDecls resolves a target to the functions it names. module is the first-party module
 // the target's path reaches, "" when it reaches none (a dependency's); whole is true when
-// the path names that module and no attribute of it (an entry point that loads a module).
-// The attribute is followed through first-party re-exports of the module it is read from;
-// a path is tried once, so a re-export cycle ends.
-func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module string, whole bool) {
+// the path names that module and no attribute of it (an entry point that loads a module);
+// missing is true when the path reaches first-party code the lane cannot name in full (no
+// function or class by the name, or a class-based view's base it cannot find).
+func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module string, whole, missing bool) {
+	hits, module, whole := prog.resolvePath(t.segs, t.mod)
 	seen := map[string]bool{}
+	add := func(fd funcDecl) {
+		if !seen[fd.scip()] {
+			seen[fd.scip()] = true
+			decls = append(decls, fd)
+		}
+	}
+	found, complete := false, true
+	visited := map[string]bool{}
+	for _, h := range hits {
+		if t.view {
+			f, c := prog.viewMethods(h, add, visited)
+			found, complete = found || f, complete && c
+			continue
+		}
+		if len(h.attrs) == 0 {
+			continue
+		}
+		for _, fd := range prog.files[h.file].decls {
+			if fd.name == h.attrs[len(h.attrs)-1] && !fd.inDef && slices.Equal(fd.enclosing, h.attrs[:len(h.attrs)-1]) {
+				add(fd)
+			}
+		}
+	}
+	sort.Slice(decls, func(i, j int) bool { return decls[i].scip() < decls[j].scip() })
+	if t.view {
+		missing = module != "" && !whole && (!found || !complete)
+	} else {
+		missing = module != "" && !whole && len(decls) == 0
+	}
+	return decls, module, whole, missing
+}
+
+// viewMethods adds the methods a class-based view at h dispatches to: those its class and
+// each first-party base define. found is false when h's file declares no such class;
+// complete false when a base that names first-party code resolves to no class the lane
+// sees. visited ends an inheritance cycle.
+func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[string]bool) (found, complete bool) {
+	g := &prog.files[h.file]
+	cls := strings.Join(h.attrs, ".")
+	bases, ok := g.classes[cls]
+	if len(h.attrs) == 0 || !ok {
+		return false, true
+	}
+	key := g.module + "\x00" + cls
+	if visited[key] {
+		return true, true
+	}
+	visited[key] = true
+	for _, fd := range g.decls {
+		if !fd.inDef && slices.Equal(fd.enclosing, h.attrs) {
+			add(fd)
+		}
+	}
+	complete = true
+	for _, b := range bases {
+		r := []rune(b)
+		segs := dottedSegs(string(r[:dottedEnd(r, 0)]))
+		if len(segs) == 0 {
+			complete = complete && !slices.ContainsFunc(identHeads(r), g.definesFirstParty)
+			continue
+		}
+		var next []pathHit
+		if paths := g.fpBinds[""][segs[0]]; len(paths) > 0 {
+			for _, p := range paths {
+				hs, _, _ := prog.resolvePath(append(strings.Split(p, "/"), segs[1:]...), 0)
+				next = append(next, hs...)
+			}
+		} else if g.definesFirstParty(segs[0]) {
+			next = []pathHit{{file: h.file, attrs: segs}}
+		} else {
+			continue // a dependency's base
+		}
+		baseFound := false
+		for _, nh := range next {
+			f, c := prog.viewMethods(nh, add, visited)
+			baseFound, complete = baseFound || f, complete && c
+		}
+		complete = complete && baseFound
+	}
+	return true, complete
+}
+
+// resolvePath finds the places a dotted path reaches. mod is how many segments name the
+// module, or 0 for the longest prefix that names one; module and whole are as for
+// launchDecls. The attribute is followed through first-party re-exports of the module it
+// is read from; a path is tried once, so a re-export cycle ends.
+func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module string, whole bool) {
 	visited := map[string]bool{}
 	var walk func(segs []string, mod int)
 	walk = func(segs []string, mod int) {
@@ -450,25 +673,19 @@ func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module strin
 			return
 		}
 		for _, i := range prog.byModule[path] {
-			g := &prog.files[i]
-			for _, fd := range g.decls {
-				if fd.name == attrs[len(attrs)-1] && !fd.inDef && slices.Equal(fd.enclosing, attrs[:len(attrs)-1]) && !seen[fd.scip()] {
-					seen[fd.scip()] = true
-					decls = append(decls, fd)
-				}
-			}
-			for _, next := range g.fpBinds[""][attrs[0]] {
+			hits = append(hits, pathHit{file: i, attrs: attrs})
+			for _, next := range prog.files[i].fpBinds[""][attrs[0]] {
 				walk(append(strings.Split(next, "/"), attrs[1:]...), 0)
 			}
 		}
 	}
-	walk(t.segs, t.mod)
-	sort.Slice(decls, func(i, j int) bool { return decls[i].scip() < decls[j].scip() })
-	return decls, module, whole
+	walk(segs, mod)
+	return hits, module, whole
 }
 
-// unresolved reports whether a target that must name a first-party function names none.
+// unresolved reports whether a target that must name first-party code names it only in
+// part, or is a launcher the lane cannot read.
 func (prog *program) unresolved(t launchTarget) bool {
-	decls, module, whole := prog.launchDecls(t)
-	return !t.optional && module != "" && !whole && len(decls) == 0
+	_, _, _, missing := prog.launchDecls(t)
+	return t.unread || !t.optional && missing
 }

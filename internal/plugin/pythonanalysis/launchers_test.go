@@ -178,6 +178,93 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			absent: []string{funcSCIP("site/views", nil, "index", 1)},
 		},
 		{
+			name: "Django view wrapped by dependency decorators, and a keyword view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n\ndef feed(request):\n    return None\n\ndef keyed(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom django.contrib.auth.decorators import login_required\nfrom django.views.decorators.cache import cache_page\nfrom site import views\n\nurlpatterns = [\n    path(\"d/\", login_required(views.dash)),\n    path(\"f/\", cache_page(60)(views.feed)),\n    path(\"k/\", view=views.keyed, name=\"k\"),\n]\n",
+			},
+			want: []ing{
+				{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"},
+				{"http_route", funcSCIP("site/views", nil, "feed", 1), "f/"},
+				{"http_route", funcSCIP("site/views", nil, "keyed", 1), "k/"},
+			},
+		},
+		{
+			name: "Django class-based view overriding a generic view's hook",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "from django.views.generic import ListView\n\nclass Items(ListView):\n    def get_queryset(self):\n        return []\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", []string{"Items"}, "get_queryset", 1), "items/"}},
+		},
+		{
+			name: "Django class-based view inheriting a first-party handler",
+			files: map[string]string{
+				"site/__init__.py": "", "site/base.py": "from django.views import View\n\nclass Base(View):\n    def get(self, request):\n        return None\n",
+				"site/views.py": "from site.base import Base\n\nclass Items(Base):\n    template = \"x\"\n",
+				"site/urls.py":  "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want:  []ing{{"http_route", funcSCIP("site/base", []string{"Base"}, "get", 2), "items/"}},
+			roots: []string{funcSCIP("site/base", []string{"Base"}, "get", 2)},
+		},
+		{
+			name: "Django class-based view of a dependency is no ingress and not partial",
+			files: map[string]string{
+				"site/__init__.py": "",
+				"site/urls.py":     "from django.urls import path\nfrom django.views.generic import RedirectView\n\nurlpatterns = [path(\"old/\", RedirectView.as_view(url=\"/\"))]\n",
+			},
+		},
+		{
+			name: "Django view built by first-party code is partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def build():\n    def view(request):\n        return None\n    return view\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"b/\", views.build())]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view under a first-party wrapper is an ingress and partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/auth.py": "def guard(view):\n    return view\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\nfrom site.auth import guard\n\nurlpatterns = [path(\"d/\", guard(views.dash))]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+			partial: true,
+		},
+		{
+			name: "a path that is not django's names no view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def index(request):\n    return None\n",
+				"site/urls.py": "from os import path\nfrom site import views\n\nP = path(\"x\", views.index)\n",
+			},
+			absent: []string{funcSCIP("site/views", nil, "index", 1)},
+		},
+		{
+			name: "setup.cfg interpolation with no entry points is complete",
+			files: map[string]string{
+				"setup.cfg":        "[metadata]\nname = tool\n\n[flake8]\nformat = %(path)s:%(row)d\n",
+				"tool/__init__.py": "", "tool/cli.py": cli,
+			},
+		},
+		{
+			name: "setup.cfg interpolation inside the entry points is unsupported",
+			files: map[string]string{
+				"setup.cfg":        "[options.entry_points]\nconsole_scripts =\n    %(name)s = tool.cli:main\n",
+				"tool/__init__.py": "", "tool/cli.py": cli,
+			},
+			partial: true,
+		},
+		{
+			name: "setup.py entry points passed by name are roots and unsupported",
+			files: map[string]string{
+				"setup.py":         "from setuptools import setup\n\nSCRIPTS = [\"tool = tool.cli:main\"]\nsetup(name=\"tool\", entry_points={\"console_scripts\": SCRIPTS})\n",
+				"tool/__init__.py": "", "tool/cli.py": cli,
+			},
+			roots:   []string{funcSCIP("tool/cli", nil, "main", 0)},
+			partial: true,
+		},
+		{
 			name: "Django WSGI_APPLICATION naming a function",
 			files: map[string]string{
 				"site/__init__.py": "", "site/settings.py": "WSGI_APPLICATION = \"site.wsgi.app\"\n",
@@ -216,6 +303,9 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			}
 			if got := hasReason(res.Partiality, plugin.PartialReasonUnsupported); got != tc.partial {
 				t.Errorf("unsupported = %v, want %v (partiality %+v)", got, tc.partial, res.Partiality)
+			}
+			if hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("readable launchers must not be a tool failure; got %+v", res.Partiality)
 			}
 			if tc.partial == false && !res.Partiality.Complete {
 				t.Errorf("ingress discovery must be complete; got %+v", res.Partiality)

@@ -48,9 +48,11 @@ type program struct {
 	leafMemo map[string][]string
 	// launchers are the entry points the build's manifests declare (launchers.go);
 	// launchersUnread records a manifest whose entry points could not be read in full, so
-	// ingress discovery may miss a script.
-	launchers       []launchTarget
-	launchersUnread bool
+	// ingress discovery may miss a script; launchersUnsupported one that declares entry
+	// points in a form the readers do not model.
+	launchers            []launchTarget
+	launchersUnread      bool
+	launchersUnsupported bool
 }
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
@@ -236,6 +238,9 @@ type fileParse struct {
 	// application settings and the views its URL patterns register.
 	settings []launchTarget
 	urlViews []urlView
+	// classes maps each class the file declares outside a def, by its dotted class path, to
+	// its base expressions.
+	classes map[string][]string
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -377,9 +382,13 @@ func loadProgram(buildDir string) (*program, error) {
 
 		var fds []funcDecl
 		topNames := map[string]bool{}
+		classes := map[string][]string{}
 		for _, d := range decls {
 			if len(d.enclosing) == 0 {
 				topNames[d.name] = true
+			}
+			if d.kind == kindClass && !d.inDef {
+				classes[strings.Join(append(slices.Clone(d.enclosing), d.name), ".")] = d.bases
 			}
 			if d.kind != kindFunc {
 				continue
@@ -409,7 +418,9 @@ func loadProgram(buildDir string) (*program, error) {
 		}
 		bindings := indexBindings(scan.bindings)
 		if filepath.Base(p) == "setup.py" {
-			prog.launchers = append(prog.launchers, setupPyLaunchers(clean, lits)...)
+			ts, supported := setupPyLaunchers(clean, lits)
+			prog.launchers = append(prog.launchers, ts...)
+			prog.launchersUnsupported = prog.launchersUnsupported || !supported
 		}
 		prog.files = append(prog.files, fileParse{
 			module:    module,
@@ -431,6 +442,7 @@ func loadProgram(buildDir string) (*program, error) {
 			computed:  scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
 			settings:  settingsLaunchers(clean, lits),
 			urlViews:  djangoURLViews(clean, lits, bindings),
+			classes:   classes,
 		})
 		rawBindings = append(rawBindings, scan.bindings)
 		relBindings = append(relBindings, scan.relBindings)
@@ -445,9 +457,10 @@ func loadProgram(buildDir string) (*program, error) {
 	if !read {
 		prog.readFailed = true
 	}
-	manifestLaunchers, launchersRead := readManifestLaunchers(buildDir)
+	manifestLaunchers, launchersRead, launchersModeled := readManifestLaunchers(buildDir)
 	prog.launchers = append(prog.launchers, manifestLaunchers...)
 	prog.launchersUnread = !launchersRead
+	prog.launchersUnsupported = prog.launchersUnsupported || !launchersModeled
 	prog.dists = distResolver{
 		curated:    NewDistImportMap(CuratedContributions()...),
 		declared:   declared,
@@ -808,11 +821,11 @@ func (prog *program) escapeFrames(out map[string]bool) {
 		}
 	}
 	for _, t := range prog.launchTargets() {
-		decls, module, whole := prog.launchDecls(t)
+		decls, module, whole, missing := prog.launchDecls(t)
 		for _, fd := range decls {
 			escape(fd)
 		}
-		if whole || prog.unresolved(t) {
+		if module != "" && (whole || missing) {
 			escapeModule(module)
 		}
 	}

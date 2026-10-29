@@ -1342,6 +1342,7 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"sys dunder attribute", "import sys\n\nD = sys.__dict__\n", false, false, true},
 		{"concatenated key", "import sys\n\ndef go(m):\n    return sys.modules['plugins.' + m]\n", false, false, true},
 		{"f-string key", "import sys\n\ndef go(m):\n    return sys.modules[f'plugins.{m}']\n", false, false, true},
+		{"import_module literal in an f-string substitution", "import importlib\n\ndef load():\n    return f\"{importlib.import_module('plugins.x')}\"\n", true, false, false},
 		{"relative import_module computed package", "import importlib\n\ndef go(p):\n    return importlib.import_module('.x', p)\n", false, false, true},
 		{"__import__ with a level", "def go():\n    return __import__('x', globals(), None, [], 1)\n", false, false, true},
 		{"__import__ with a level keyword", "def go():\n    return __import__('x', level=1)\n", false, false, true},

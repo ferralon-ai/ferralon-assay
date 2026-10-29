@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -20,6 +21,8 @@ type decl struct {
 	name      string
 	enclosing []string // outer→inner class names; empty for a module-level declaration
 	arity     int      // parameter count (kindFunc only; includes self/cls)
+	bases     []string // the positional base expressions of a class (kindClass only)
+	inDef     bool     // declared inside a def body, where enclosing omits the def
 }
 
 // parseResult holds the module-relative path and declarations parsed from one source
@@ -257,6 +260,9 @@ func parseDecls(lines []logicalLine) []decl {
 	var stack []scope
 	var decls []decl
 
+	inDef := func() bool {
+		return slices.ContainsFunc(stack, func(s scope) bool { return s.className == "" })
+	}
 	classChain := func() []string {
 		var out []string
 		for _, s := range stack {
@@ -288,14 +294,14 @@ func parseDecls(lines []logicalLine) []decl {
 			if !ok {
 				continue
 			}
-			decls = append(decls, decl{kind: kindClass, name: name, enclosing: classChain()})
+			decls = append(decls, decl{kind: kindClass, name: name, enclosing: classChain(), bases: classBases(rest), inDef: inDef()})
 			stack = append(stack, scope{indent: ll.indent, className: name})
 		case "def":
 			name, arity, ok := parseDefSignature(rest)
 			if !ok {
 				continue
 			}
-			decls = append(decls, decl{kind: kindFunc, name: name, enclosing: classChain(), arity: arity})
+			decls = append(decls, decl{kind: kindFunc, name: name, enclosing: classChain(), arity: arity, inDef: inDef()})
 			stack = append(stack, scope{indent: ll.indent, className: ""})
 		}
 	}
@@ -311,6 +317,27 @@ func parseClassName(rest string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// classBases reads the positional base expressions of a class header's "Name(bases):",
+// leaving out keyword arguments (metaclass=...).
+func classBases(rest string) []string {
+	r := []rune(strings.TrimSpace(rest))
+	_, end := readWordRunes(r, 0)
+	open := skipSpaceRunes(r, end)
+	if open >= len(r) || r[open] != '(' {
+		return nil
+	}
+	args, _ := callArgs(r, open)
+	var out []string
+	for _, a := range args {
+		s := strings.TrimSpace(string(r[a[0]:a[1]]))
+		if _, _, kw := keywordArg(s); kw || strings.HasPrefix(s, "**") {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // parseDefSignature reads the def's name and parameter arity from the text following

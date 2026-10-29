@@ -14,15 +14,19 @@ import (
 // layer tolerates — an ingress that reaches no sink yields no candidate pair (inv.5 stays
 // on the safe side: an extra candidate, never a false not-affected).
 //
-// M1 scope is the Flask/FastAPI decorator family. Django URLconf (urlpatterns/path()),
-// Celery @task, and raw WSGI/ASGI application callables are recognized frameworks in the
-// Python skill's ingress list but are FOLLOW-ON: they are registration-table / callable
-// shapes, not def decorators, so they need a distinct scanner and are not wired here.
+// Celery task decorators and WSGI/ASGI callables are read here too (taskDecoratorLeafs,
+// serverCallable); Django URL patterns and the entry points manifests and settings name by
+// dotted path are read by launchers.go.
 var routeDecoratorLeafs = map[string]bool{
 	"route": true, "get": true, "post": true, "put": true, "delete": true,
 	"patch": true, "options": true, "head": true, "trace": true,
 	"websocket": true, "api_route": true,
 }
+
+// taskDecoratorLeafs are the Celery task-registration decorator names: "@shared_task",
+// "@app.task(bind=True)". A worker runs the def it receives, so the def is a "task" ingress.
+// Like a route, the decorator is recognized by its leaf alone.
+var taskDecoratorLeafs = map[string]bool{"task": true, "shared_task": true, "periodic_task": true}
 
 // pyCallKeywords are Python keywords that can be immediately followed by a '(' but are
 // NOT call expressions; excluding them keeps control flow ("if (x):", "while (y):",
@@ -128,6 +132,11 @@ type fileScan struct {
 	// classScopeKey, which no call site resolves through.
 	binders map[string]map[string]int
 	defs    map[string]map[string]bool
+	// reads maps each name a module-scope assignment binds to the names its values read;
+	// opaque marks the names some module-scope binding gives a value the lane does not read
+	// (see recordReads).
+	reads  map[string][]string
+	opaque map[string]bool
 }
 
 // countBinders adds one binding of each name to scope, except a literal None assignment.
@@ -144,6 +153,39 @@ func (fs *fileScan) countBinders(scope, st string, names []string) {
 		if !assignsNone(st, n) {
 			m[n]++
 		}
+	}
+}
+
+// recordReads keeps, for each name a module-scope statement binds, the names its value
+// reads: those of the right-hand side of a plain `name = value`. Any other binding (a tuple,
+// chained, augmented or annotated assignment, a for, with or except target) is opaque.
+func (fs *fileScan) recordReads(st string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if fs.reads == nil {
+		fs.reads, fs.opaque = map[string][]string{}, map[string]bool{}
+	}
+	local, rest := readIdent(st)
+	rest = strings.TrimLeft(rest, " \t")
+	if len(names) != 1 || local != names[0] || !strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "==") {
+		fs.markOpaque(names)
+		return
+	}
+	fs.reads[local] = append(fs.reads[local], identHeads([]rune(rest[1:]))...)
+}
+
+// markOpaque marks names as given a module-scope value the lane does not read: by a binding
+// recordReads does not read, or by a def that declares them global.
+func (fs *fileScan) markOpaque(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if fs.reads == nil {
+		fs.reads, fs.opaque = map[string][]string{}, map[string]bool{}
+	}
+	for _, n := range names {
+		fs.opaque[n] = true
 	}
 }
 
@@ -186,11 +228,13 @@ func addNames(into *map[string]map[string]bool, scope string, names []string) {
 // guardKeywords open a block whose bindings are alternatives to the rest of the scope's.
 var guardKeywords = map[string]bool{"if": true, "elif": true, "else": true, "try": true, "except": true, "finally": true, "case": true}
 
-// ingressMarker is one framework entry point discovered lexically: a Flask/FastAPI route
-// handler def, located by its enclosing class chain + name + arity so its SCIP id
-// coincides with the handler function's declaration (and thus its call-graph node). kind
-// is the plugin Ingress kind ("http_route"); selector is the decorator method leaf
-// ("route", "get", …) — the path string is not recoverable after literal-stripping.
+// ingressMarker is one framework entry point discovered lexically at its def: a
+// Flask/FastAPI route handler, a Celery task or a WSGI/ASGI application callable, located by
+// its enclosing class chain + name + arity so its SCIP id coincides with the function's
+// declaration (and thus its call-graph node). kind is the plugin Ingress kind
+// ("http_route", "task", "http_server"); selector is the decorator method leaf ("route",
+// "get", "shared_task", …) or the server protocol ("wsgi", "asgi") — the path string is
+// not recoverable after literal-stripping.
 type ingressMarker struct {
 	enclosing []string
 	name      string
@@ -337,6 +381,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 		}
 		fs.countBinders("", st, global)
+		fs.markOpaque(global)
 		if scopes := funcScopes(); len(nonlocal) > 0 && len(scopes) > 1 {
 			for _, outer := range scopes[:len(scopes)-1] {
 				fs.countBinders(outer, st, nonlocal)
@@ -399,6 +444,9 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			fs.countBinders(classScopeKey(), st, names)
 			return
 		}
+		if bindScope == "" {
+			fs.recordReads(st, names)
+		}
 		fs.bindLocals(bindScope, names, guarded)
 		fs.countBinders(bindScope, st, names)
 		carry(bindScope, st, names)
@@ -443,6 +491,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 	// decorator receives the next def.
 	pendingRoute := false
 	pendingSelector := ""
+	pendingTask := ""
 	pendingDecorated := false
 	var pendingDecos []string
 	type decoratedDef struct {
@@ -465,6 +514,9 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			} else {
 				pendingDecorated = true
 				pendingDecos = append(pendingDecos, body)
+				if leaf, ok := taskDecorator(body); ok {
+					pendingTask = leaf
+				}
 			}
 			site := frameSite()
 			site.calleeArity = 1
@@ -506,6 +558,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 			stack = append(stack, pyFrame{indent: ll.indent, className: name})
 			pendingRoute = false
+			pendingTask = ""
 			pendingDecorated = false
 			pendingDecos = nil
 			if body != "" {
@@ -530,6 +583,24 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 					selector:  pendingSelector,
 				})
 			}
+			if pendingTask != "" {
+				fs.ingresses = append(fs.ingresses, ingressMarker{
+					enclosing: append([]string(nil), enc...),
+					name:      name,
+					arity:     arity,
+					kind:      "task",
+					selector:  pendingTask,
+				})
+			}
+			if selector, ok := serverCallable(paramNames(params)); ok {
+				fs.ingresses = append(fs.ingresses, ingressMarker{
+					enclosing: append([]string(nil), enc...),
+					name:      name,
+					arity:     arity,
+					kind:      "http_server",
+					selector:  selector,
+				})
+			}
 			if pendingDecorated {
 				fs.decorated = append(fs.decorated, funcDecl{enclosing: append([]string(nil), enc...), name: name, arity: arity})
 			}
@@ -545,6 +616,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				addNames(&fs.defs, classScopeKey(), []string{name})
 			}
 			pendingRoute = false
+			pendingTask = ""
 			pendingDecorated = false
 			pendingDecos = nil
 			stack = append(stack, pyFrame{
@@ -560,6 +632,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 		default:
 			pendingRoute = false
+			pendingTask = ""
 			pendingDecorated = false
 			pendingDecos = nil
 			statement(text, false)
@@ -915,6 +988,33 @@ func routeDecorator(text string) (leaf string, ok bool) {
 	}
 	if routeDecoratorLeafs[calls[0].name] {
 		return calls[0].name, true
+	}
+	return "", false
+}
+
+// taskDecorator reports whether a decorator body ("shared_task", "app.task(bind=True)")
+// registers a Celery task, and returns its leaf.
+func taskDecorator(body string) (leaf string, ok bool) {
+	if isDottedName(body) {
+		leaf = body[strings.LastIndexByte(body, '.')+1:]
+	} else if calls := scanCalls(body); len(calls) > 0 {
+		leaf = calls[0].name
+	}
+	return leaf, taskDecoratorLeafs[leaf]
+}
+
+// serverCallable reports whether a def's parameters, after a leading self or cls, are a
+// WSGI application's (environ, start_response) or an ASGI application's (scope, receive,
+// send): the server calls it with each request. selector names the protocol.
+func serverCallable(params []string) (selector string, ok bool) {
+	if len(params) > 0 && (params[0] == "self" || params[0] == "cls") {
+		params = params[1:]
+	}
+	switch {
+	case slices.Equal(params, []string{"environ", "start_response"}):
+		return "wsgi", true
+	case slices.Equal(params, []string{"scope", "receive", "send"}):
+		return "asgi", true
 	}
 	return "", false
 }

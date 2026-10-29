@@ -263,21 +263,22 @@ func TestReachability_HiddenEdgesReachTheSink(t *testing.T) {
 }
 
 // TestCallGraph_AmbiguousSiteIsUnresolvedNotAnEdge: a callee name two first-party
-// declarations share gets no edge, is listed in Unresolved with dynamic_dispatch and no
-// Targets, and both declarations escape so a reader of the listed site can reach them.
+// declarations share, which no binding in the caller's file decides, gets no edge, is
+// listed in Unresolved with dynamic_dispatch and no Targets, and both declarations escape
+// so a reader of the listed site can reach them.
 func TestCallGraph_AmbiguousSiteIsUnresolvedNotAnEdge(t *testing.T) {
 	res := mustCallGraph(t, map[string]string{
 		"pkg/__init__.py": "from .impl import f\n",
 		"pkg/impl.py":     "def f(x):\n    return x\n",
 		"other.py":        "def f(x):\n    return x\n",
-		"app.py":          "import pkg\n\ndef index():\n    return pkg.f(1)\n",
+		"app.py":          "import pkg\n\ndef index():\n    return pkg.g.f(1)\n",
 	})
 	caller := funcSCIP("app", nil, "index", 0)
 	impl, other := funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("other", nil, "f", 1)
 	if hasEdge(res.Edges, caller, impl) || hasEdge(res.Edges, caller, other) {
 		t.Fatalf("an ambiguous callee must get no edge; edges %v", res.Edges)
 	}
-	want := plugin.UnresolvedCall{Caller: sym(caller), Callee: "pkg.f", Arity: 1, Reason: plugin.PartialReasonDynamicDispatch}
+	want := plugin.UnresolvedCall{Caller: sym(caller), Callee: "pkg.g.f", Arity: 1, Reason: plugin.PartialReasonDynamicDispatch}
 	if !slices.ContainsFunc(res.Unresolved, func(u plugin.UnresolvedCall) bool {
 		return u.Caller == want.Caller && u.Callee == want.Callee && u.Arity == want.Arity && u.Reason == want.Reason && u.Targets == nil
 	}) {
@@ -385,7 +386,7 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 		},
 		{
 			name:    "call with no arity match escapes the candidate",
-			files:   map[string]string{"m.py": "def target(x, y=1, z=2):\n    return x\n\ndef caller():\n    return target(1)\n"},
+			files:   map[string]string{"m.py": "def target(x, y=1, z=2):\n    return x\n\ndef caller():\n    return target(1, 2, 3, 4)\n"},
 			escaped: []string{funcSCIP("m", nil, "target", 3)},
 		},
 		{
@@ -395,11 +396,11 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			kept:    []string{funcSCIP("n", nil, "target", 3)},
 		},
 		{
-			name: "defaulted callee edged from one site escapes from another",
+			name: "defaulted callee edged from one site escapes from another that misses its arity",
 			files: map[string]string{
 				"a.py": "def g(x, y=1, z=2):\n    return x\n",
 				"c.py": "from a import g\n\ndef one():\n    return g(1, 2)\n",
-				"d.py": "from a import g\n\ndef two():\n    return g(1)\n",
+				"d.py": "from a import g\n\ndef two():\n    return g(1, 2, 3, 4)\n",
 			},
 			escaped: []string{funcSCIP("a", nil, "g", 3)},
 		},

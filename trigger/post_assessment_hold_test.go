@@ -53,13 +53,13 @@ func TestRunCVEWatch_HoldConsultedAfterAssessment(t *testing.T) {
 		{
 			name: "Hold consulted after the re-assessment holds",
 			set: func(req *CVEWatchRequest, calls *atomic.Int32) {
-				req.Hold = func() bool { return calls.Load() > 0 }
+				req.Hold = func(*statestore.DepFetch) bool { return calls.Load() > 0 }
 			},
 			wantCursor: "GO-2000-0001",
 		},
 		{
 			name:       "Hold false advances",
-			set:        func(req *CVEWatchRequest, _ *atomic.Int32) { req.Hold = func() bool { return false } },
+			set:        func(req *CVEWatchRequest, _ *atomic.Int32) { req.Hold = func(*statestore.DepFetch) bool { return false } },
 			wantCursor: "GO-2021-0113",
 		},
 		{
@@ -76,7 +76,7 @@ func TestRunCVEWatch_HoldConsultedAfterAssessment(t *testing.T) {
 			name: "HoldCursor holds whatever Hold says",
 			set: func(req *CVEWatchRequest, _ *atomic.Int32) {
 				req.HoldCursor = true
-				req.Hold = func() bool { return false }
+				req.Hold = func(*statestore.DepFetch) bool { return false }
 			},
 			wantCursor: "GO-2000-0001",
 		},
@@ -105,13 +105,35 @@ func TestRunCVEWatch_HoldConsultedAfterAssessment(t *testing.T) {
 	}
 }
 
+// TestRunCVEWatch_HoldSeesTheStoredRecord: Hold judges this run against the stored
+// dependency-fetch record (a registry that has served before, a hold already counting), so it is
+// handed that record as read, before the run's own update.
+func TestRunCVEWatch_HoldSeesTheStoredRecord(t *testing.T) {
+	for _, stored := range []*statestore.DepFetch{nil, {Registries: map[string]statestore.RegistryFetch{"https://registry.test": {HasServed: true, HeldRuns: 2}}}} {
+		var calls atomic.Int32
+		store, osv, req := holdFixture(t, &calls)
+		store.state.DepFetch = stored
+		var got []*statestore.DepFetch
+		req.Hold = func(s *statestore.DepFetch) bool { got = append(got, s); return false }
+		req.DependencyFetch = func(*statestore.DepFetch, DependencyFetchRun) *statestore.DepFetch {
+			return &statestore.DepFetch{Reassess: []string{"X"}}
+		}
+		if _, err := RunCVEWatch(context.Background(), store, osv, req); err != nil {
+			t.Fatalf("RunCVEWatch: %v", err)
+		}
+		if len(got) != 1 || got[0] != stored {
+			t.Fatalf("Hold got %v, want the stored record %v once", got, stored)
+		}
+	}
+}
+
 // TestRunCVEWatch_HoldNotConsultedOnHeartbeat: a heartbeat assesses nothing, so it has no
 // re-assessment for Hold to judge and never calls it.
 func TestRunCVEWatch_HoldNotConsultedOnHeartbeat(t *testing.T) {
 	store, _ := seedBaseline(t)
 	osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: "GO-2021-0113", Package: wiringPkg}}}}
 	req := CVEWatchRequest{
-		Hold: func() bool { t.Fatal("Hold consulted on a heartbeat"); return true },
+		Hold: func(*statestore.DepFetch) bool { t.Fatal("Hold consulted on a heartbeat"); return true },
 		DependencyFetch: func(*statestore.DepFetch, DependencyFetchRun) *statestore.DepFetch {
 			t.Fatal("DependencyFetch called on a heartbeat")
 			return nil
@@ -137,7 +159,7 @@ func TestRunCVEWatch_DependencyFetchSeesTheRun(t *testing.T) {
 		wantHeld bool
 	}{
 		{"advanced", func(*CVEWatchRequest) {}, false},
-		{"held by Hold", func(req *CVEWatchRequest) { req.Hold = func() bool { return true } }, true},
+		{"held by Hold", func(req *CVEWatchRequest) { req.Hold = func(*statestore.DepFetch) bool { return true } }, true},
 		{"held by HoldCursor", func(req *CVEWatchRequest) { req.HoldCursor = true }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

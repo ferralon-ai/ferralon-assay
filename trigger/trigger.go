@@ -365,9 +365,10 @@ type CVEWatchRequest struct {
 	// graph): the Report is still written, but the advisories it could not assess stay new.
 	HoldCursor bool
 	// Hold, when set, is consulted on an earnest run after the re-assessments and before the
-	// state write; true holds the cursor as HoldCursor does. It is for a condition the
-	// re-assessments themselves discover, which a value fixed before the run cannot see.
-	Hold func() bool
+	// state write, with the stored dependency-fetch record (nil when there is none); true holds
+	// the cursor as HoldCursor does. It is for a condition the re-assessments themselves
+	// discover, which a value fixed before the run cannot see.
+	Hold func(stored *statestore.DepFetch) bool
 	// Analysis bounds the earnest re-assessments. When it is done, the advisories not yet assessed
 	// get scan_cut_short rows, the stored cursor is held so they stay new, and the run still
 	// writes its Report under ctx. Nil means ctx.

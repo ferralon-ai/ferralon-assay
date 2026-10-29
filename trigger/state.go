@@ -549,7 +549,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
-	if cut > 0 || (req.Hold != nil && req.Hold()) {
+	if cut > 0 || (req.Hold != nil && req.Hold(state.DepFetch)) {
 		// The advisories this pass did not assess, or assessed without inputs it needed, must
 		// stay new, so the next run assesses them.
 		newCursor = state.Cursor

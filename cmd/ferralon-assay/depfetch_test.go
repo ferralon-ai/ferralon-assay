@@ -28,11 +28,11 @@ func TestCVEWatchRequestHoldReadsTheFetchAfterAssessment(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			run := &depCodeRun{source: report.DependencyCodeSourceFetch, failsRun: tc.failsRun}
 			req := cveWatchRequest(&runConfig{deps: run}, nil)
-			if req.HoldCursor || req.Hold == nil || req.Hold() {
+			if req.HoldCursor || req.Hold == nil || req.Hold(nil) {
 				t.Fatalf("before any fetch: HoldCursor %v, Hold set %v; want neither holding", req.HoldCursor, req.Hold != nil)
 			}
 			run.observe(fell)
-			if got := req.Hold(); got != tc.want {
+			if got := req.Hold(nil); got != tc.want {
 				t.Fatalf("Hold() after a fallback = %v, want %v", got, tc.want)
 			}
 			if req.HoldCursor {

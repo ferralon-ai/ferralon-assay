@@ -124,9 +124,10 @@ func (d *depCodeRun) err() error {
 	return fmt.Errorf("dependency code not read: %s", describeCause(c))
 }
 
-// holds reports whether the dependency-code policy holds a cve-watch cursor. It reads the
-// acquisitions observed so far, so a caller consults it after the re-assessments.
-func (d *depCodeRun) holds() bool {
+// holds reports whether the dependency-code policy holds a cve-watch cursor, given the stored
+// dependency-fetch record. It reads the acquisitions observed so far, so a caller consults it
+// after the re-assessments.
+func (d *depCodeRun) holds(*statestore.DepFetch) bool {
 	if d == nil {
 		return false
 	}

@@ -50,8 +50,9 @@ type program struct {
 	// dirStores holds the names a store through a module object binds in a package with no
 	// __init__ file (markModuleStores), keyed like named.
 	dirStores map[string]map[string]bool
-	// leafMemo caches aliasLeaves by import path.
-	leafMemo map[string][]string
+	// leafMemo caches aliasLeaves by import path, reboundMemo aliasRebound.
+	leafMemo    map[string][]string
+	reboundMemo map[string]bool
 }
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
@@ -170,6 +171,115 @@ func (p *program) aliasLeaves(path string) []string {
 	walk(path)
 	p.leafMemo[path] = out
 	return out
+}
+
+// aliasRebound reports whether a module that aliasLeaves follows an import path through may
+// bind the leaf some other way than the import it follows, so the name may hold something
+// else when another module imports it (markModuleStores must have run).
+func (p *program) aliasRebound(path string) bool {
+	if r, ok := p.reboundMemo[path]; ok {
+		return r
+	}
+	visited := map[string]bool{}
+	var walk func(string) bool
+	walk = func(path string) bool {
+		if visited[path] || !strings.Contains(path, "/") {
+			return false
+		}
+		visited[path] = true
+		mod, leaf := parentModule(path), path[strings.LastIndexByte(path, '/')+1:]
+		if p.moduleRebinds(mod, leaf) {
+			return true
+		}
+		for _, i := range p.byModule[mod] {
+			for _, next := range p.files[i].fpBinds[""][leaf] {
+				if walk(next) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	r := walk(path)
+	p.reboundMemo[path] = r
+	return r
+}
+
+// moduleRebinds reports whether module mod's namespace may hold more than one binding of
+// name, or one that is a value: a value or dependency binding at module scope, two
+// first-party imports or defs, a star import that may bind it, computed-name access, or a
+// store through a module object. A literal None binding is no alternative.
+func (p *program) moduleRebinds(mod, name string) bool {
+	segs := strings.Split(mod, "/")
+	for a := range segs {
+		if p.dirStores[strings.Join(segs[a:], "/")][name] {
+			return true
+		}
+	}
+	for _, i := range p.byModule[mod] {
+		g := &p.files[i]
+		if g.computed || g.storedAny || g.storedNames[name] || g.binders[""][name] > 0 || g.depImports[""][name] > 0 {
+			return true
+		}
+		n := len(g.fpBinds[""][name]) + len(g.stars) - len(g.starPaths)
+		if g.defs[""][name] {
+			n++
+		}
+		for _, path := range g.starPaths {
+			if p.starMayBind(path, name) {
+				n++
+			}
+		}
+		if n > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// starMayBind reports whether a star import of a first-party module may bind name: the
+// module declares or imports it at top level, star-imports or computes names itself, or is
+// not a module the lane reads.
+func (p *program) starMayBind(path, name string) bool {
+	if len(p.byModule[path]) == 0 {
+		return true
+	}
+	for _, i := range p.byModule[path] {
+		if g := &p.files[i]; g.topNames[name] || len(g.stars) > 0 || g.computed || g.storedAny || g.storedNames[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// siteRebound reports whether a site's edge follows an import through a module that may
+// bind the name another way (aliasRebound): the name it calls, for a bare call, or the
+// chain's head and the attribute the chain reads through it.
+func (p *program) siteRebound(f *fileParse, cs callSite) bool {
+	if cs.calleeName == "" || cs.inner {
+		return false
+	}
+	head := cs.calleeName
+	if len(cs.calleeChain) > 1 {
+		head = cs.calleeChain[0]
+	}
+	paths, ok := f.aliasBound(head, cs.scopes)
+	if !ok {
+		return false
+	}
+	mid := ""
+	if len(cs.calleeChain) > 2 {
+		mid = "/" + strings.Join(cs.calleeChain[1:len(cs.calleeChain)-1], "/")
+	}
+	for _, path := range paths {
+		if p.aliasRebound(path) {
+			return true
+		}
+		if len(cs.calleeChain) > 1 && p.named[path+mid] && p.aliasRebound(path+mid+"/"+cs.calleeName) {
+			return true
+		}
+	}
+	return false
 }
 
 // firstSegment is a dotted path's first segment.
@@ -349,7 +459,7 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
 	}
 
-	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}}
+	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}, reboundMemo: map[string]bool{}}
 	var rawBindings [][]scopedBinding
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
@@ -675,7 +785,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			// single edge, so never fabricate one (inv.5). A site whose edge is not provably
 			// all it reaches is listed too. Listed with no Targets, it may reach any escaped
 			// frame.
-			if !ok || wrapped[callee] || !f.siteComplete(cs, len(provides) > 0) || prog.storedThrough(f, cs) {
+			if !ok || wrapped[callee] || !f.siteComplete(cs, len(provides) > 0) || prog.storedThrough(f, cs) || prog.siteRebound(f, cs) {
 				u := plugin.UnresolvedCall{
 					Caller: sym(caller),
 					Callee: cs.calleeWritten,

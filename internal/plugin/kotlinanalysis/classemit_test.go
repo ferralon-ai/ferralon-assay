@@ -3,6 +3,7 @@ package kotlinanalysis
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,6 +50,9 @@ type kclassBuilder struct {
 	intern     map[string]uint16
 	methods    []kbuiltMethod
 	classAnnos []kannotation
+	// rawClassAnnos are prebuilt class-level annotation structures, emitted after
+	// classAnnos; their constants are interned when they are built.
+	rawClassAnnos [][]byte
 }
 
 type kbuiltMethod struct {
@@ -172,7 +176,7 @@ func (b *kclassBuilder) build(thisClass, superClass string) []byte {
 	codeAttr := b.utf8("Code")
 	// Intern the RuntimeVisibleAnnotations name only when some entry needs it, so a class
 	// with no annotations emits a byte-for-byte identical constant pool as before.
-	needRVA := len(b.classAnnos) > 0
+	needRVA := len(b.classAnnos)+len(b.rawClassAnnos) > 0
 	for _, m := range b.methods {
 		if len(m.annos) > 0 {
 			needRVA = true
@@ -230,8 +234,12 @@ func (b *kclassBuilder) build(thisClass, superClass string) []byte {
 			buf.Write(body)
 		}
 	}
-	if len(b.classAnnos) > 0 {
+	if len(b.classAnnos)+len(b.rawClassAnnos) > 0 {
 		body := b.encodeAnnotations(b.classAnnos)
+		binary.BigEndian.PutUint16(body, uint16(len(b.classAnnos)+len(b.rawClassAnnos)))
+		for _, a := range b.rawClassAnnos {
+			body = append(body, a...)
+		}
 		buf.Write(be2(1)) // class attributes_count
 		buf.Write(be2(rvaAttr))
 		buf.Write(be4(uint32(len(body))))

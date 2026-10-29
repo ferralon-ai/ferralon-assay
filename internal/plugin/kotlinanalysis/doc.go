@@ -26,7 +26,12 @@
 //
 // The Kotlin symbol identity is JVM-canonical (see symbol.go): the same bytecode a Java
 // caller would see, so a Kotlin-declared symbol resolves EQUAL to its Java-visible form
-// (the interop seam K4/GRANITE rides). @kotlin.Metadata is deliberately NOT read — raw
-// bytecode identity is sufficient for Assess-tier soundness (research R3), and the
-// classfile attributes table is a shared-file coordination point owned elsewhere.
+// (the interop seam K4/GRANITE rides). Symbol identity comes from bytecode alone.
+//
+// @kotlin.Metadata is read for one fact bytecode does not carry: which methods are inline.
+// kotlinc copies an inline function's or inline property accessor's body into each caller,
+// so callers hold no call to it while its declaring class still holds a concrete method.
+// classfile decodes the metadata's Function and Property flags and JVM names (kotlinmeta.go),
+// and a sink its owner declares inline, or whose owner's metadata cannot be read, is never
+// listed Searched.
 package kotlinanalysis

@@ -149,9 +149,10 @@ func TestDepCodeRunRecord(t *testing.T) {
 			want:   &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: earlier}}},
 		},
 		{
-			name:    "a run that advanced does not count",
+			name:    "a run whose cursor advanced does not count",
 			prior:   &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: earlier}}},
 			results: []pipeline.DependencyAcquisitionResult{{Fallback: fell, Outcomes: []pipeline.DependencyOutcome{out("pkg:npm/a@1", npmjs, pipeline.UnreadNotServed)}}},
+			policy:  true,
 			run:     watch(false),
 			want:    &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: earlier}}},
 		},

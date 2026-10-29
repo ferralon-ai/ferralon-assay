@@ -589,6 +589,8 @@ func TestDepCodeRunFetchNotes(t *testing.T) {
 		TokenEnv: acquire.TokenEnv{Name: "NPM_TOKEN", State: acquire.TokenEnvUnset}}
 	down := pipeline.DependencyOutcome{PURL: "pkg:npm/a@1", Registry: npmjs, Outcome: pipeline.UnreadUnavailable}
 	read := pipeline.DependencyOutcome{PURL: "pkg:npm/a@1", Registry: npmjs, Outcome: pipeline.OutcomeReadNetwork}
+	missingHere := missing
+	missingHere.Registry = npmjs
 	for _, tc := range []struct {
 		name     string
 		outcomes []pipeline.DependencyOutcome
@@ -597,6 +599,7 @@ func TestDepCodeRunFetchNotes(t *testing.T) {
 		records  int                         // record calls (a lost CAS retries the hook)
 		want     []string                    // outcome@registry
 		hints    []string
+		nohints  []string
 	}{
 		{name: "all read", outcomes: []pipeline.DependencyOutcome{read}, run: &trigger.DependencyFetchRun{}},
 		{name: "refused token, pr-inherit", outcomes: []pipeline.DependencyOutcome{rejected}, want: []string{"credential_rejected@" + corp},
@@ -606,13 +609,17 @@ func TestDepCodeRunFetchNotes(t *testing.T) {
 		{name: "missing token names the variable", outcomes: []pipeline.DependencyOutcome{missing}, run: &trigger.DependencyFetchRun{Baseline: true},
 			want: []string{"missing_credential@" + corp}, hints: []string{"NPM_TOKEN is unset"}},
 		{name: "held cursor", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0), run: &trigger.DependencyFetchRun{Held: true},
-			want: []string{"held@" + npmjs}, hints: []string{"assessed again on the next run", "3 held runs over 24 hours"}},
+			want: []string{"held@" + npmjs}, hints: []string{"assessed again on the next run", "3 held runs over 24 hours"}, nohints: []string{"needs a token"}},
+		{name: "held while missing a token tells both", outcomes: []pipeline.DependencyOutcome{down, missingHere}, prior: served(0), run: &trigger.DependencyFetchRun{Held: true},
+			want: []string{"held@" + npmjs}, hints: []string{"the run fails. Registry " + npmjs + " needs a token and NPM_TOKEN is unset"}},
+		{name: "stalled while missing a token tells both", outcomes: []pipeline.DependencyOutcome{down, missingHere}, prior: served(2), run: &trigger.DependencyFetchRun{Held: true},
+			want: []string{"dependency_fetch_stalled@" + npmjs}, hints: []string{"stay withheld. Registry " + npmjs + " needs a token"}},
 		{name: "held once across a retried hook", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0), run: &trigger.DependencyFetchRun{Held: true}, records: 2,
 			want: []string{"held@" + npmjs}},
 		{name: "a baseline holds nothing", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0), run: &trigger.DependencyFetchRun{Baseline: true}},
 		{name: "unwritten run holds nothing", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0)},
 		{name: "stalled", outcomes: []pipeline.DependencyOutcome{down}, prior: served(2), run: &trigger.DependencyFetchRun{Held: true},
-			want: []string{"dependency_fetch_stalled@" + npmjs}, hints: []string{"up and reachable from the runner"}},
+			want: []string{"dependency_fetch_stalled@" + npmjs}, hints: []string{"up and reachable from the runner"}, nohints: []string{"needs a token"}},
 		{name: "registries in order", outcomes: []pipeline.DependencyOutcome{down, rejected}, prior: served(0), run: &trigger.DependencyFetchRun{Held: true},
 			want: []string{"credential_rejected@" + corp, "held@" + npmjs}},
 	} {
@@ -642,6 +649,11 @@ func TestDepCodeRunFetchNotes(t *testing.T) {
 			for _, h := range tc.hints {
 				if !strings.Contains(strings.Join(hints, "\n"), h) {
 					t.Errorf("hint %q missing from %q", h, hints)
+				}
+			}
+			for _, h := range tc.nohints {
+				if strings.Contains(strings.Join(hints, "\n"), h) {
+					t.Errorf("hint %q in %q", h, hints)
 				}
 			}
 			for _, n := range notes {

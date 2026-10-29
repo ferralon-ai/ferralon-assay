@@ -71,7 +71,7 @@ func (e *depFetchError) Error() string {
 			"(such as Artifactory curation or a Nexus firewall) may be blocking the package", e.Kind, e.Registry, e.Detail)
 	case kindFetchStalled:
 		return fmt.Sprintf("dependency code not read: %s: registry %s has served nothing on %d cve-watch runs since %s, "+
-			"holding the advisory cursor; the advisories those runs found stay new until a run reads from it",
+			"holding the advisory cursor; any advisories those runs found stay new until a run reads from it",
 			e.Kind, e.Registry, e.HeldRuns, e.Since.UTC().Format(time.RFC3339))
 	}
 	return "dependency code not read: " + e.Kind
@@ -347,6 +347,13 @@ func (d *depCodeRun) fetchNotes() []resultsink.DependencyFetchNote {
 	for _, key := range slices.Sorted(maps.Keys(regs)) {
 		h, wasHeld := held[key]
 		env, wasMissing := missing[key]
+		// A registry that held or stalled the cursor while asking for a token it did not get is
+		// told what would give it the token, as it would be had it not held.
+		var token string
+		if wasMissing {
+			hint := missingTokenHint(key, env)
+			token = " " + strings.ToUpper(hint[:1]) + hint[1:] + "."
+		}
 		switch t := regs[key]; {
 		case t.rejected != "":
 			notes = append(notes, resultsink.DependencyFetchNote{
@@ -356,12 +363,12 @@ func (d *depCodeRun) fetchNotes() []resultsink.DependencyFetchNote {
 		case d.stalled != nil && d.stalled.Registry == key:
 			notes = append(notes, resultsink.DependencyFetchNote{
 				Registry: key, Outcome: resultsink.DependencyFetchStalled, HeldRuns: d.stalled.HeldRuns, Since: d.stalled.Since,
-				Hint: "Check that the registry is up and reachable from the runner. The advisories these runs found stay new until a run reads from it.",
+				Hint: "Check that the registry is up and reachable from the runner. Until a run reads from it, any advisories these runs found stay new and any verdicts they withheld stay withheld." + token,
 			})
 		case wasHeld:
 			notes = append(notes, resultsink.DependencyFetchNote{
 				Registry: key, Outcome: resultsink.DependencyFetchHeld, HeldRuns: h.HeldRuns, Since: h.Since,
-				Hint: fmt.Sprintf("The advisories this run found stay new and are assessed again on the next run. If the registry still serves nothing after %d held runs over %d hours, the run fails.", stallRuns, int(stallAge.Hours())),
+				Hint: fmt.Sprintf("Any advisories this run found stay new, and any verdicts it withheld are assessed again on the next run. If the registry still serves nothing after %d held runs over %d hours, the run fails.", stallRuns, int(stallAge.Hours())) + token,
 			})
 		case wasMissing:
 			notes = append(notes, resultsink.DependencyFetchNote{

@@ -116,7 +116,8 @@ func TestCallGraph_ModuleObjectStores(t *testing.T) {
 }
 
 // TestCallGraph_ModuleStoresSrcLayout: a store into a namespace package and a site reading
-// through it meet whichever root each names the package by.
+// through it meet whichever root each names the package by, even when another root has a
+// regular package at the same path.
 func TestCallGraph_ModuleStoresSrcLayout(t *testing.T) {
 	impl := funcSCIP("src/pkg/impl", nil, "f", 1)
 	cases := []struct {
@@ -128,6 +129,18 @@ func TestCallGraph_ModuleStoresSrcLayout(t *testing.T) {
 			"src/c.py":     "import pkg.ns.a\n\ndef go():\n    return pkg.ns.a.g(1)\n"}},
 		{"absolute store, relative site", "src/pkg/c", "ns.a.g", map[string]string{
 			"src/b.py":     "import pkg.ns\nimport pkg.x\npkg.ns.a = pkg.x\n",
+			"src/pkg/c.py": "from . import ns\nimport pkg.ns.a\n\ndef go():\n    return ns.a.g(1)\n"}},
+		{"absolute store, relative site, regular package mirrored in tests", "src/pkg/c", "ns.a.g", map[string]string{
+			"tests/__init__.py": "", "tests/pkg/__init__.py": "", "tests/pkg/ns/__init__.py": "",
+			"src/b.py":     "import pkg.ns\nimport pkg.x\npkg.ns.a = pkg.x\n",
+			"src/pkg/c.py": "from . import ns\nimport pkg.ns.a\n\ndef go():\n    return ns.a.g(1)\n"}},
+		{"absolute store, relative site, regular package vendored", "src/pkg/c", "ns.a.g", map[string]string{
+			"vendor/pkg/__init__.py": "", "vendor/pkg/ns/__init__.py": "",
+			"src/b.py":     "import pkg.ns\nimport pkg.x\npkg.ns.a = pkg.x\n",
+			"src/pkg/c.py": "from . import ns\nimport pkg.ns.a\n\ndef go():\n    return ns.a.g(1)\n"}},
+		{"passed whole, relative site, regular package vendored", "src/pkg/c", "ns.a.g", map[string]string{
+			"vendor/pkg/__init__.py": "", "vendor/pkg/ns/__init__.py": "",
+			"src/b.py":     "import pkg.ns\n\ndef reg(register):\n    register(pkg.ns)\n",
 			"src/pkg/c.py": "from . import ns\nimport pkg.ns.a\n\ndef go():\n    return ns.a.g(1)\n"}},
 	}
 	for _, tc := range cases {

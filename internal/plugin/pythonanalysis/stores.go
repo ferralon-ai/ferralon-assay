@@ -14,9 +14,11 @@ func (prog *program) markModuleStores() {
 	var exposed []int
 	prog.dirStores = map[string]map[string]bool{}
 	mark := func(path, name string) {
-		if len(prog.byModule[path]) == 0 && prog.named[path] {
-			// A package with no __init__ file: a store lands in its namespace, and handing it
-			// over whole hands over every module under it.
+		if prog.nsDirs[path] {
+			// A package with no __init__ file in some root: a store lands in its namespace,
+			// and handing it over whole hands over every module under it. A regular package
+			// at the same path in another root (tests/pkg/ns/__init__.py beside src/pkg/ns/)
+			// is marked below as well.
 			if name != "" {
 				// Keyed under every trailing segment run, as byModule is, so a store written
 				// through one root (src/pkg/ns) meets a site read through another (pkg/ns).
@@ -28,14 +30,13 @@ func (prog *program) markModuleStores() {
 					}
 					prog.dirStores[run][name] = true
 				}
-				return
-			}
-			for j := range prog.files {
-				if strings.Contains("/"+prog.files[j].module+"/", "/"+path+"/") {
-					exposed = append(exposed, j)
+			} else {
+				for j := range prog.files {
+					if strings.Contains("/"+prog.files[j].module+"/", "/"+path+"/") {
+						exposed = append(exposed, j)
+					}
 				}
 			}
-			return
 		}
 		for _, i := range prog.byModule[path] {
 			g := &prog.files[i]

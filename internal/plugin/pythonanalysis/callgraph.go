@@ -44,6 +44,9 @@ type program struct {
 	// path contains: the import paths that name a module or a package directory.
 	byModule map[string][]int
 	named    map[string]bool
+	// nsDirs holds the paths that name, in some root, a directory with no __init__ file,
+	// keyed like byModule.
+	nsDirs map[string]bool
 	// dirStores holds the names a store through a module object binds in a package with no
 	// __init__ file (markModuleStores), keyed like named.
 	dirStores map[string]map[string]bool
@@ -454,6 +457,11 @@ func loadProgram(buildDir string) (*program, error) {
 func (prog *program) indexModules() {
 	prog.byModule = map[string][]int{}
 	prog.named = map[string]bool{}
+	prog.nsDirs = map[string]bool{}
+	modules := map[string]bool{}
+	for _, f := range prog.files {
+		modules[f.module] = true
+	}
 	for i, f := range prog.files {
 		if f.module == "" {
 			continue
@@ -463,6 +471,13 @@ func (prog *program) indexModules() {
 			prog.byModule[strings.Join(segs[a:], "/")] = append(prog.byModule[strings.Join(segs[a:], "/")], i)
 			for b := a + 1; b <= len(segs); b++ {
 				prog.named[strings.Join(segs[a:b], "/")] = true
+			}
+		}
+		for b := 1; b < len(segs); b++ {
+			if dir := strings.Join(segs[:b], "/"); !modules[dir] {
+				for a := 0; a < b; a++ {
+					prog.nsDirs[strings.Join(segs[a:b], "/")] = true
+				}
 			}
 		}
 	}

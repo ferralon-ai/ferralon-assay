@@ -320,7 +320,7 @@ func parseClassName(rest string) (string, bool) {
 }
 
 // classBases reads the positional base expressions of a class header's "Name(bases):",
-// leaving out keyword arguments (metaclass=...) and star-expanded ones.
+// leaving out keyword arguments (metaclass=...).
 func classBases(rest string) []string {
 	r := []rune(strings.TrimSpace(rest))
 	_, end := readWordRunes(r, 0)
@@ -332,7 +332,7 @@ func classBases(rest string) []string {
 	var out []string
 	for _, a := range args {
 		s := strings.TrimSpace(string(r[a[0]:a[1]]))
-		if _, _, kw := keywordArg(s); kw || strings.HasPrefix(s, "*") {
+		if _, _, kw := keywordArg(s); kw || strings.HasPrefix(s, "**") {
 			continue
 		}
 		out = append(out, s)

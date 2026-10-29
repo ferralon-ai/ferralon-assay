@@ -119,6 +119,15 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"main", funcSCIP("tool/cli", nil, "run", 0), "tool"}},
 		},
 		{
+			name: "setup.py ini-style entry point before any section",
+			files: map[string]string{
+				"setup.py":         "from setuptools import setup\n\nsetup(name=\"tool\", entry_points=\"\"\"\ntool = tool.cli:main\n[console_scripts]\nother = tool.cli:run\n\"\"\")\n",
+				"tool/__init__.py": "", "tool/cli.py": cli,
+			},
+			want:    []ing{{"main", funcSCIP("tool/cli", nil, "run", 0), "other"}},
+			partial: true,
+		},
+		{
 			name: "script through a package re-export",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool:main\"\n",
@@ -188,6 +197,86 @@ func TestFindIngresses_Launchers(t *testing.T) {
 				{"http_route", funcSCIP("site/views", nil, "feed", 1), "f/"},
 				{"http_route", funcSCIP("site/views", nil, "keyed", 1), "k/"},
 			},
+		},
+		{
+			name: "Django view behind a decorator factory configured by a dependency",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n\ndef feed(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom django.conf import settings\nfrom django.views.decorators.cache import cache_page\nfrom limits import TTL\nfrom site import views\n\nurlpatterns = [\n    path(\"d/\", cache_page(settings.TTL)(views.dash)),\n    path(\"f/\", cache_page(TTL)(views.feed)),\n]\n",
+			},
+			want: []ing{
+				{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"},
+				{"http_route", funcSCIP("site/views", nil, "feed", 1), "f/"},
+			},
+		},
+		{
+			name: "Django view behind a decorator factory given a first-party function",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def is_staff(user):\n    return True\n\ndef panel(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom django.contrib.auth.decorators import user_passes_test\nfrom site import views\n\nurlpatterns = [path(\"p/\", user_passes_test(views.is_staff)(views.panel))]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", nil, "panel", 1), "p/"}},
+			absent:  []string{funcSCIP("site/views", nil, "is_staff", 1)},
+			partial: true,
+		},
+		{
+			name: "Django view read through getattr",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"d/\", getattr(views, \"dash\"))]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django class-based view on a base from a first-party star import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/base.py": "class Base:\n    def get(self, request):\n        return None\n",
+				"site/views.py": "from site.base import *\n\nclass Items(Base):\n    pass\n",
+				"site/urls.py":  "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/base", []string{"Base"}, "get", 2), "items/"}},
+		},
+		{
+			name: "Django class-based view on object and a dependency star import's base",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "from django.views.generic import *\n\nclass Mixin(object):\n    def get(self, request):\n        return None\n\nclass Items(Mixin, View):\n    pass\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", []string{"Mixin"}, "get", 2), "items/"}},
+		},
+		{
+			name: "Django class-based view on a base nothing binds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "class Items(Base):\n    def get(self, request):\n        return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", []string{"Items"}, "get", 2), "items/"}},
+			partial: true,
+		},
+		{
+			name: "Django class-based view on star-expanded bases",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "class Mixin:\n    def get(self, request):\n        return None\n\nBASES = (Mixin,)\n\nclass Items(*BASES):\n    pass\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django class-based view on a first-party base that is no class",
+			files: map[string]string{
+				"site/__init__.py": "", "site/base.py": "def make():\n    return object\n\nBase = make()\n",
+				"site/views.py": "from site.base import Base\n\nclass Items(Base):\n    def get(self, request):\n        return None\n",
+				"site/urls.py":  "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django as_view on a name that is no class",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def make_view():\n    return None\n\nItems = make_view()\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			partial: true,
 		},
 		{
 			name: "Django class-based view overriding a generic view's hook",

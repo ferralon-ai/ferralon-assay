@@ -412,10 +412,11 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 }
 
 // viewRef reads a URL pattern's view argument: a dotted name, a dotted name's as_view()
-// call, or a call wrapping either (a decorator applied in place, its calls chained), whose
-// first argument that names a view is the view and whose head is kept. include() names a
-// URL module and no view (ok false); any other expression is read as no view, its names
-// kept.
+// call, or a call wrapping either (a decorator applied in place, its calls chained). The
+// view is the first argument of the chain's last call that names one; the wrapper's head
+// and every other argument's names are kept, since an earlier call's arguments configure
+// a decorator. include() names a URL module and no view (ok false); any other expression
+// is read as no view, its names kept.
 func viewRef(arg string) (urlView, bool) {
 	arg = strings.TrimSpace(arg)
 	if isDottedName(arg) {
@@ -435,18 +436,34 @@ func viewRef(arg string) (urlView, bool) {
 	case leaf == "as_view" && len(segs) > 1 && matchingClose(r, open) == len(r)-1:
 		return urlView{chain: segs[:len(segs)-1], asView: true}, true
 	}
+	heads := []string{segs[0]}
 	for open < len(r) && r[open] == '(' {
 		args, closed := callArgs(r, open)
 		if !closed {
 			break
 		}
-		for _, a := range args {
+		close := matchingClose(r, open)
+		next := skipSpaceRunes(r, close+1)
+		if next < len(r) && r[next] == '(' {
+			heads = append(heads, identHeads(r[open+1:close])...) // a decorator factory's arguments
+			open = next
+			continue
+		}
+		if next < len(r) {
+			break
+		}
+		for i, a := range args {
 			if v, ok := viewRef(string(r[a[0]:a[1]])); ok && v.chain != nil {
-				v.heads = append(v.heads, segs[0])
+				for j, b := range args {
+					if j != i {
+						heads = append(heads, identHeads(r[b[0]:b[1]])...)
+					}
+				}
+				v.heads = append(v.heads, heads...)
 				return v, true
 			}
 		}
-		open = skipSpaceRunes(r, matchingClose(r, open)+1)
+		break
 	}
 	return opaque, true
 }
@@ -585,10 +602,11 @@ func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module strin
 		}
 	}
 	sort.Slice(decls, func(i, j int) bool { return decls[i].scip() < decls[j].scip() })
+	route := whole && t.kind == "http_route" // a module is no view
 	if t.view {
-		missing = module != "" && !whole && (!found || !complete)
+		missing = module != "" && (!whole || route) && (!found || !complete)
 	} else {
-		missing = module != "" && !whole && len(decls) == 0
+		missing = module != "" && (!whole || route) && len(decls) == 0
 	}
 	return decls, module, whole, missing
 }
@@ -596,7 +614,8 @@ func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module strin
 // viewMethods adds the methods a class-based view at h dispatches to: those its class and
 // each first-party base define. found is false when h's file declares no such class;
 // complete false when a base that names first-party code resolves to no class the lane
-// sees. visited ends an inheritance cycle.
+// sees, or that no import, definition or dependency star import binds. visited ends an
+// inheritance cycle.
 func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[string]bool) (found, complete bool) {
 	g := &prog.files[h.file]
 	cls := strings.Join(h.attrs, ".")
@@ -630,8 +649,18 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 			}
 		} else if g.definesFirstParty(segs[0]) {
 			next = []pathHit{{file: h.file, attrs: segs}}
-		} else {
+		} else if _, bound := g.bindings[""][segs[0]]; bound || g.depImports[""][segs[0]] > 0 {
 			continue // a dependency's base
+		} else if len(g.starPaths) > 0 {
+			for _, sp := range g.starPaths {
+				hs, _, _ := prog.resolvePath(append(strings.Split(sp, "/"), segs...), 0)
+				next = append(next, hs...)
+			}
+		} else if segs[0] == "object" || len(g.stars) > 0 {
+			continue // a builtin, or a dependency's star import
+		} else {
+			complete = false
+			continue
 		}
 		baseFound := false
 		for _, nh := range next {

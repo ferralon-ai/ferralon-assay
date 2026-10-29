@@ -111,16 +111,16 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 		},
 		{
 			// The toolchain line's version never reaches the axis: under GOTOOLCHAIN=local or a
-			// pinned GOTOOLCHAIN the go command ignores it. The go line it binds does, and go1.20.0
-			// is inside the 1.20 branch range.
-			name:          "a toolchain line's version does not reach the axis; the go line it binds does",
+			// pinned GOTOOLCHAIN the go command ignores it. Its presence does: no go command before
+			// 1.21 parses the file, so the go line is raised to go1.21.0, inside the 1.21 range.
+			name:          "a toolchain line's version does not reach the axis; the go1.21.0 floor it implies does",
 			vulnID:        "CVE-2023-39325",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
-			wantFact:      ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
-			wantVersion:   "go1.20.0",
+			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			wantVersion:   "go1.21.0",
 			wantDisqual:   false,
 			wantReason:    ReasonInsufficient,
-			wantRationale: "go1.20.0 < go1.20.10 is inside the 1.20 branch range",
+			wantRationale: "go1.21.0 is inside the 1.21 range",
 		},
 		{
 			// ferralon-ai/tracker#609. CVE-2024-24790 is affected below go1.22.4 on the 1.22 branch.
@@ -222,14 +222,16 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale: "go1.21.0 is at or past go1.17.3",
 		},
 		{
-			name:          "a stdlib advisory proceeds on a floor inside a branch range",
+			// A pre-1.21 go line beside a toolchain line cannot be the build: no go command before 1.21
+			// parses the file, so the floor is go1.21.0, past every GO-2021-0264 fix.
+			name:          "a pre-1.21 go line beside a toolchain line floors at go1.21.0, past the fix",
 			vulnID:        "GO-2021-0264",
 			goMod:         "module example.com/target\n\ngo 1.17\n\ntoolchain go1.17.0\n",
-			wantFact:      ToolchainFact{Version: "go1.17.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
-			wantVersion:   "go1.17.0",
-			wantDisqual:   false,
-			wantReason:    ReasonInsufficient,
-			wantRationale: "go1.17.0 < go1.17.3 is still affected",
+			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			wantVersion:   "go1.21.0",
+			wantDisqual:   true,
+			wantReason:    ReasonVersionNotInRange,
+			wantRationale: "go1.21.0 is at or past go1.17.3",
 		},
 
 		// GO-2021-0264's go1.16.x branch: affected below go1.16.10, not at or after it, up to the
@@ -398,11 +400,11 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			trust:          true,
 			pinBuild:       true,
 			buildToolchain: "go1.16.5",
-			wantFact:       ToolchainFact{Version: "go1.17.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
-			wantVersion:    "go1.17.0",
-			wantDisqual:    false,
-			wantReason:     ReasonInsufficient,
-			wantRationale:  "the toolchain line binds the go line; go1.17.0 < go1.17.3 is still affected",
+			wantFact:       ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			wantVersion:    "go1.21.0",
+			wantDisqual:    true,
+			wantReason:     ReasonVersionNotInRange,
+			wantRationale:  "no go command before 1.21 parses a toolchain line, so the floor go1.21.0 is past go1.17.3",
 		},
 		{
 			// No directive, no declaration, no observation: the fact resolves nothing, resolved_version

@@ -63,7 +63,7 @@ func TestResolveToolchainFact(t *testing.T) {
 		{
 			name: "untrusted ci_observed falls through to the go line the toolchain line binds",
 			in:   toolchainInputs{ciObserved: "go1.26.3", toolchainDirective: "go1.20.14", goDirective: "1.20"},
-			want: ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			// Tier 1 is unaffected by the gate either way (ruling 7): a declaration is the subject's
@@ -174,14 +174,14 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			name: "pre-1.21 go directive with a toolchain line binds both",
+			name: "pre-1.21 go directive with a toolchain line binds both, raised to go1.21.0",
 			in:   toolchainInputs{goDirective: "1.17", toolchainDirective: "go1.16.15"},
-			want: ToolchainFact{Version: "go1.17.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			name: "pre-1.21 go directive with a toolchain line ignores a build-resolved value",
 			in:   toolchainInputs{goDirective: "1.17", toolchainDirective: "go1.21.3", buildResolved: "go1.16.5", trustCIObserved: true},
-			want: ToolchainFact{Version: "go1.17.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 
 		// Precedence among the exact sources.
@@ -215,13 +215,13 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
 
-		// The binding go line is the only floor. A toolchain line makes the go line bind (go commands
-		// before 1.21 reject it at parse; from 1.21 on they enforce the go line), but its own version
-		// is ignored outside GOTOOLCHAIN=auto, so it never raises the floor.
+		// The binding go line is the floor. A toolchain line makes the go line bind and raises it to
+		// go1.21.0 (go commands before 1.21 reject the line at parse; from 1.21 on they enforce the go
+		// line), but its own version is ignored outside GOTOOLCHAIN=auto, so it never sets the floor.
 		{
-			name: "a toolchain line above the go line does not raise the floor",
-			in:   toolchainInputs{toolchainDirective: "go1.21.3", goDirective: "1.20"},
-			want: ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			name: "a toolchain line above go1.21.0 does not raise the floor past it",
+			in:   toolchainInputs{toolchainDirective: "go1.23.3", goDirective: "1.20"},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			name: "a toolchain line below the go line leaves the go line the floor",
@@ -246,11 +246,11 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			// A go command that parses the toolchain line is 1.21 or later and enforces `go 1.20`, so
-			// go1.20.0 is a true (if loose) floor.
-			name: "two-part go 1.20 with a toolchain line floors at go1.20.0",
+			// No go command before 1.21 parses a go.mod carrying a toolchain line, so the go line is
+			// raised to go1.21.0 — not to the toolchain line's version.
+			name: "two-part go 1.20 with a toolchain line floors at go1.21.0",
 			in:   toolchainInputs{goDirective: "1.20", toolchainDirective: "go1.22.5"},
-			want: ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			name: "a toolchain line with an unparseable go line resolves nothing",
@@ -406,6 +406,19 @@ func TestResolveToolchainFact_ContradictionGuard(t *testing.T) {
 			// The guard is intact for the go line beside a toolchain line.
 			name: "a declaration below the go line is refuted even beside a toolchain line",
 			in:   toolchainInputs{subjectDeclared: "go1.20.5", goDirective: "1.21.0", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{
+				Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective,
+				Contradiction: &ToolchainContradiction{
+					ClaimedVersion: "go1.20.5", ClaimedSource: ToolchainSourceSubjectDeclared,
+					FloorVersion: "go1.21.0", FloorSource: ToolchainSourceGoDirective,
+				},
+			},
+		},
+		{
+			// A pre-1.21 claim beside a toolchain line is false: no go command before 1.21 parses
+			// the go.mod, so the go1.21.0 floor refutes it even though the go line says 1.20.
+			name: "a pre-1.21 declaration beside a toolchain line is refuted by go1.21.0",
+			in:   toolchainInputs{subjectDeclared: "go1.20.5", goDirective: "1.20", toolchainDirective: "go1.24.0"},
 			want: ToolchainFact{
 				Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective,
 				Contradiction: &ToolchainContradiction{

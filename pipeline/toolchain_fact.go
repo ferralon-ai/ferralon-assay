@@ -16,7 +16,9 @@
 // GOTOOLCHAIN is not visible here (job env, GOENV, a container image). actions/setup-go sets
 // GOTOOLCHAIN=local for the rest of the job, so a build below the toolchain line is the ordinary
 // case, not an edge. The line's version therefore never becomes the floor and never refutes an exact
-// claim; only its presence is read, for what it says about the go line.
+// claim; only its presence is read. Presence says two things: the go line binds (below), and the
+// build ran go1.21.0 or later, because go commands before 1.21 reject the file at parse. So with a
+// `toolchain` line the floor is the go line raised to go1.21.0, whatever the line's own version.
 //
 // The go line is a floor only for a go command that enforces it, which is Go 1.21 on. A go command
 // before 1.21 does not enforce it, so `go 1.17` may have been built by go1.16.5, and so may
@@ -80,7 +82,7 @@ const (
 	// FloorSource, because the go command ignores the line's version outside GOTOOLCHAIN=auto.
 	ToolchainSourceToolchainDirective = "toolchain_directive"
 	// ToolchainSourceGoDirective is the go.mod `go` directive when it binds (directivesBindToolchain):
-	// the floor, normalized to goX.Y.Z.
+	// the floor, normalized to goX.Y.Z and raised to go1.21.0 when a `toolchain` line is present.
 	ToolchainSourceGoDirective = "go_directive"
 	// ToolchainSourceUnresolved means no source produced an orderable version.
 	ToolchainSourceUnresolved = "unresolved"
@@ -161,8 +163,8 @@ func directivesBindToolchain(in toolchainInputs) bool {
 }
 
 // resolveToolchainFact reduces the candidate sources to one fact: the
-// highest-precedence EXACT source wins outright, and absent any exact source the resolved FLOORS
-// combine by maximum. A source that does not parse as an orderable Go release version resolves
+// highest-precedence EXACT source wins outright, and absent any exact source the go.mod floor
+// (resolveToolchainFloor) stands. A source that does not parse as an orderable Go release version resolves
 // nothing and is skipped, so junk degrades to the next source (and ultimately to unresolved)
 // rather than seeding an axis with a value it cannot order.
 //
@@ -171,7 +173,7 @@ func directivesBindToolchain(in toolchainInputs) bool {
 // on a hosted runner whose image happens to ship a Go — the observation bears no relation to the
 // subject's toolchain, so it is not a lower bound on it either. Demoting would have been the
 // tempting half-measure and it is unsound.
-// The floors are resolved FIRST, before any exact source, because they are what can refute one. See
+// The floor is resolved FIRST, before any exact source, because it is what can refute one. See
 // the contradiction guard below.
 func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	floorFact, floorParsed, haveFloor := resolveToolchainFloor(in)
@@ -195,8 +197,10 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 		// mode, so a subject whose go.mod requires at least `floor` provably does not build with
 		// anything less. The claim is therefore false — most often because the observed Go is the
 		// bootstrap toolchain that then switched up, or because a declaration went stale against a
-		// directive bump. The floor is the go line only, so a claim below the `toolchain` line and at
-		// or above the go line stands: that is a build under GOTOOLCHAIN=local.
+		// directive bump. A claim below go1.21.0 beside a `toolchain` line is refuted the same way: no
+		// go command before 1.21 parses that go.mod. The floor never takes the `toolchain` line's
+		// version, so a claim below that version and at or above the floor stands: that is a build
+		// under GOTOOLCHAIN=local.
 		//
 		// Why this matters now and did not before: for the version axis alone the direction is SAFE
 		// (a too-low version only ever withholds disqualifications), which is why it survived review
@@ -237,10 +241,16 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	return floorFact
 }
 
+// firstToolchainLineRelease is the oldest go command that parses a go.mod carrying a `toolchain`
+// line; every earlier one rejects the file.
+var firstToolchainLineRelease = goToolchainVersion{major: 1, minor: 21}
+
 // resolveToolchainFloor is the go.mod floor on the subject's toolchain: the `go` directive when it
-// binds (directivesBindToolchain), and nothing else. The `toolchain` directive's version is not a
-// candidate (see the file comment). ok is false when the go line does not bind or does not parse, in
-// which case the returned fact is the explicit unresolved one and no exact claim can be refuted.
+// binds (directivesBindToolchain), raised to go1.21.0 when a `toolchain` line is present, because no
+// go command before 1.21 can parse the file at all. That holds in every GOTOOLCHAIN mode. The
+// `toolchain` line's version is never a candidate (see the file comment). ok is false when the go
+// line does not bind or does not parse, in which case the returned fact is the explicit unresolved
+// one and no exact claim can be refuted.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	unresolved := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	if !directivesBindToolchain(in) {
@@ -249,6 +259,9 @@ func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersio
 	parsed, ok := parseGoToolchainVersion(in.goDirective)
 	if !ok {
 		return unresolved, goToolchainVersion{}, false
+	}
+	if in.toolchainDirective != "" && compareGoToolchain(parsed, firstToolchainLineRelease) < 0 {
+		parsed = firstToolchainLineRelease
 	}
 	return ToolchainFact{
 		Version: formatGoToolchainVersion(parsed),

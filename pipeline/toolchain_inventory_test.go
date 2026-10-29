@@ -144,10 +144,10 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			want:          ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
-			name:          "a toolchain line binds the go line; its own version is no floor",
+			name:          "a toolchain line raises the go line to go1.21.0; its own version is no floor",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			wantGoVersion: "1.20",
-			want:          ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want:          ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			name:          "a toolchain line below the go line: the go line is the floor",
@@ -176,7 +176,7 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			observed:      "go1.26.4",
 			wantGoVersion: "1.20",
-			want:          ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want:          ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			// Same input, no floors at all: the fact is UNRESOLVED rather than silently adopting the
@@ -199,7 +199,7 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 		},
 		{
 			// The contradiction guard through the REAL stage over a REAL go.mod: a declaration below
-			// the go line the toolchain line binds is refuted by the repo, so the exact claim is
+			// go1.21.0 beside a toolchain line is refuted by the repo (no earlier go command parses it), so the exact claim is
 			// discarded for the floor and the discarded input is recorded. M3 still disqualifies off
 			// the floor; M4's gate is denied because the bound is no longer exact.
 			name:          "a declaration BELOW the manifest floor is refuted and demoted to the floor",
@@ -207,12 +207,12 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			declared:      "go1.19.13",
 			wantGoVersion: "1.20",
 			want: ToolchainFact{
-				Version: "go1.20.0",
+				Version: "go1.21.0",
 				Bound:   ToolchainBoundMinimum,
 				Source:  ToolchainSourceGoDirective,
 				Contradiction: &ToolchainContradiction{
 					ClaimedVersion: "go1.19.13", ClaimedSource: ToolchainSourceSubjectDeclared,
-					FloorVersion: "go1.20.0", FloorSource: ToolchainSourceGoDirective,
+					FloorVersion: "go1.21.0", FloorSource: ToolchainSourceGoDirective,
 				},
 			},
 		},

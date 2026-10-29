@@ -122,7 +122,7 @@ func spliceFStrings(clean string, lits map[int]strLiteral) (spliced string, all 
 		if !fStringPrefix(r, start) || !strings.ContainsRune(lit.body, '{') {
 			continue
 		}
-		unread = append(unread, spliceSubstitutions(r, all, []rune(lit.body), lit.from)...)
+		unread = append(unread, spliceSubstitutions(r, all, []rune(lit.body), lit.from, rawPrefix(r, start))...)
 		for i := start; i < lit.end && i < len(r); i++ {
 			if r[i] == '\n' {
 				r[i] = ' '
@@ -134,13 +134,20 @@ func spliceFStrings(clean string, lits map[int]strLiteral) (spliced string, all 
 
 // spliceSubstitutions writes the substitutions of an f-string body that starts at r[at] into
 // r, adding the literals inside them to lits, and returns the text of those it can't splice.
-func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int) (unread []string) {
+// raw reports a raw prefix, under which \N{...} is text rather than a named escape.
+func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int, raw bool) (unread []string) {
 	for i := 0; i < len(body); i++ {
 		if body[i] != '{' {
 			continue
 		}
 		if i+1 < len(body) && body[i+1] == '{' {
 			i++
+			continue
+		}
+		if !raw && namedEscape(body, i) {
+			for i < len(body) && body[i] != '}' {
+				i++
+			}
 			continue
 		}
 		end := scanField(body, i+1, true)
@@ -172,7 +179,7 @@ func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int)
 			}
 		}
 		if spec < end {
-			unread = append(unread, spliceSubstitutions(r, lits, body[spec+1:end], at+spec+1)...)
+			unread = append(unread, spliceSubstitutions(r, lits, body[spec+1:end], at+spec+1, raw)...)
 		}
 		i = end
 	}
@@ -181,7 +188,8 @@ func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int)
 
 // scanField returns the index in body, from i, of the brace that closes a substitution, or
 // with whole false of the first conversion '!' or format-spec ':' before it, skipping nested
-// brackets and string literals; len(body) when there is none.
+// brackets and string literals; len(body) when there is none. A format spec is text apart
+// from its nested substitutions, so its quotes and brackets open nothing.
 func scanField(body []rune, i int, whole bool) int {
 	depth := 0
 	var sink strings.Builder
@@ -199,12 +207,45 @@ func scanField(body []rune, i int, whole bool) int {
 				return i
 			}
 			depth--
+		case depth == 0 && whole && c == ':':
+			for i++; i < len(body); i++ {
+				switch body[i] {
+				case '{':
+					i = scanField(body, i+1, true)
+				case '}':
+					return i
+				}
+			}
+			return len(body)
 		case depth == 0 && !whole && (c == ':' || c == '!' && !(i+1 < len(body) && body[i+1] == '=')):
 			return i
 		}
 		i++
 	}
 	return len(body)
+}
+
+// namedEscape reports whether the brace at body[i] opens a \N{...} named escape: an N
+// after an odd run of backslashes.
+func namedEscape(body []rune, i int) bool {
+	if i < 2 || body[i-1] != 'N' {
+		return false
+	}
+	n := 0
+	for k := i - 2; k >= 0 && body[k] == '\\'; k-- {
+		n++
+	}
+	return n%2 == 1
+}
+
+// rawPrefix reports whether the literal opening at r[start] carries an r or R prefix.
+func rawPrefix(r []rune, start int) bool {
+	for j := start - 1; j >= 0 && j >= start-2 && unicode.IsLetter(r[j]); j-- {
+		if r[j] == 'r' || r[j] == 'R' {
+			return true
+		}
+	}
+	return false
 }
 
 // trimRightSpace returns the index just past the last non-space rune of body[from:to].

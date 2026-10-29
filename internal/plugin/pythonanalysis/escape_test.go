@@ -431,6 +431,21 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			escaped: []string{funcSCIP("m", nil, "target", 1)},
 		},
 		{
+			name:    "f-string debug substitution",
+			files:   map[string]string{"m.py": plain + "def other():\n    return f\"{target=} {target = !r}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:    "raw f-string brace after \\N",
+			files:   map[string]string{"m.py": plain + "def other():\n    return rf\"\\N{target}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:  "f-string named escape",
+			files: map[string]string{"m.py": plain + "def other():\n    return f\"\\N{target} \\\\N{other}\"\n"},
+			kept:  []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
 			name:  "test module neither escapes nor makes escape",
 			files: map[string]string{"m.py": plain, "tests/test_m.py": "from m import target\n\nclass TestM:\n    def test_x(self):\n        run(target)\n"},
 			kept:  []string{funcSCIP("m", nil, "target", 1), funcSCIP("tests/test_m", []string{"TestM"}, "test_x", 1), moduleInitSCIP("tests/test_m")},
@@ -1454,6 +1469,7 @@ func TestCallGraph_UnlistedSites(t *testing.T) {
 		{"f-string without a call", "def f(x):\n    return f\"{x}\"\n", false},
 		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", false},
 		{"f-string substitution cut short", "def f(d):\n    return f\"{g(d[\"k\"])}\"\n", true},
+		{"f-string cut short before a later call", "def f(d):\n    return f\"{d[\"k\"]}{g(1)}\"\n", true},
 		{"evaluated code", "def f(src):\n    return eval(src)\n", true},
 		{"t-string without a call", "def f(x):\n    return t\"{x}\"\n", false},
 		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", false},

@@ -56,8 +56,8 @@ type valueRefs struct {
 	computed bool
 	// evaluated records eval/exec: the evaluated code's call sites are never seen.
 	evaluated bool
-	// hidden records a call inside an f-string substitution that spliceFStrings could not
-	// splice, which the call scanner therefore does not list as a site.
+	// hidden records an f-string substitution that spliceFStrings could not close: the rest
+	// of its literal, and any call there, goes unread, so no site there is listed.
 	hidden bool
 }
 

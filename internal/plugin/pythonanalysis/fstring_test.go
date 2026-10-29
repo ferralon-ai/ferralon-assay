@@ -79,6 +79,16 @@ func TestCallGraph_FStringCallSites(t *testing.T) {
 			want:  []string{funcSCIP("app", nil, "helper", 1)},
 		},
 		{
+			name:  "an inequality is not a conversion",
+			files: map[string]string{"app.py": helper + "def run(a):\n    return f\"{a != helper(1)}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "a quote or bracket in a format spec is text",
+			files: map[string]string{"app.py": helper + "def run(x):\n    return f\"{x:'>10}{x:(^4}{helper(1)}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
 			name:  "doubled braces are text",
 			files: map[string]string{"app.py": helper + "def run():\n    return f\"{{helper(1)}}\"\n"},
 		},

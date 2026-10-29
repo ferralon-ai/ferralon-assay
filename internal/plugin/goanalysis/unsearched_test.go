@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/tools/go/packages"
+
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -218,5 +220,256 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 				t.Errorf("unsearched_methods declared with no unsearched method reaching the module (partiality %+v)", res.Partiality)
 			}
 		})
+	}
+}
+
+// narrowedModule is a dependency module whose advisory names one vulnerable package, ssh, beside
+// packages that do not reach it (blake, iface) and packages that do (wrap, alias, emb). ssh's type
+// satisfies iface's interface without iface importing ssh, and ssh's init registers a value of it in
+// iface: a value of the vulnerable package's type held by a package that does not reach it.
+var narrowedModule = map[string]string{
+	"go.mod":                "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+	"main.go":               "package main\n\nimport \"example.com/vulnmod/blake\"\n\nfunc main() { blake.Sum() }\n",
+	"_vulnmod/go.mod":       "module example.com/vulnmod\n\ngo 1.22\n",
+	"_vulnmod/ssh/ssh.go":   "package ssh\n\nimport \"example.com/vulnmod/iface\"\n\ntype Client struct{}\n\nfunc (Client) Dial() {}\n\nfunc Dial() {}\n\nfunc init() { iface.Default = Client{} }\n",
+	"_vulnmod/blake/b.go":   "package blake\n\ntype T struct{}\n\nfunc (T) Sum() {}\n\nfunc Sum() {}\n",
+	"_vulnmod/iface/i.go":   "package iface\n\ntype Dialer interface{ Dial() }\n\nvar Default Dialer\n",
+	"_vulnmod/wrap/wrap.go": "package wrap\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc Get() func() { return ssh.Dial }\n",
+	"_vulnmod/alias/a.go":   "package alias\n\nimport \"example.com/vulnmod/ssh\"\n\ntype C = ssh.Client\n",
+	"_vulnmod/emb/emb.go":   "package emb\n\nimport \"example.com/vulnmod/ssh\"\n\ntype T struct{ ssh.Client }\n",
+}
+
+// narrowedScans are the advisory's statements about example.com/vulnmod: one naming ssh as its
+// vulnerable package; one that also lists the module with no packages (wholeModule); and none at all,
+// with only a finding naming ssh. The last two make every package of the module count.
+var narrowedScans = struct{ narrow, wholeModule, noEntry vulnScan }{
+	narrow:      vulnScan{imports: map[string][]string{"example.com/vulnmod": {"example.com/vulnmod/ssh"}}},
+	wholeModule: vulnScan{imports: map[string][]string{"example.com/vulnmod": {"example.com/vulnmod/ssh"}}, wholeModule: map[string]bool{"example.com/vulnmod": true}},
+	noEntry:     vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod/ssh"}}}}},
+}
+
+func narrowedRefutation() plugin.ReachabilityResult {
+	return plugin.ReachabilityResult{
+		Partiality: plugin.Complete(),
+		Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
+	}
+}
+
+// TestWithholdForUnsearchedMethods_VulnerablePackages: when the advisory names the module's vulnerable
+// packages, an unsearched method withholds only when its declaring package reaches one of them; the
+// module's other packages do not count, unless the advisory lists the module whole or not at all.
+// A method promoted from, or named by an alias of, the vulnerable package's type is declared there.
+func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
+	const box = "type Box[T any] struct{ v T }\n\n"
+	s := narrowedScans
+	cases := []struct {
+		name     string
+		lib      string
+		scanned  vulnScan
+		withheld bool
+	}{
+		{"a generic type's package imports another package of the module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\n" + box + "func (Box[T]) Run() { blake.Sum() }\n", s.narrow, false},
+		{"a generic type's package imports the vulnerable package",
+			"package lib\n\nimport \"example.com/vulnmod/ssh\"\n\n" + box + "func (Box[T]) Run() { ssh.Dial() }\n", s.narrow, true},
+		{"a generic type's package reaches the vulnerable package through another package of the module",
+			"package lib\n\nimport \"example.com/vulnmod/wrap\"\n\n" + box + "func (Box[T]) Run() { wrap.Get()() }\n", s.narrow, true},
+		{"the advisory also lists the whole module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\n" + box + "func (Box[T]) Run() { blake.Sum() }\n", s.wholeModule, true},
+		{"no advisory entry lists the module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\n" + box + "func (Box[T]) Run() { blake.Sum() }\n", s.noEntry, true},
+		{"a method promoted from another package's type of the module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\ntype S struct{ blake.T }\n", s.narrow, false},
+		{"a method promoted from the vulnerable package's type",
+			"package lib\n\nimport \"example.com/vulnmod/ssh\"\n\ntype S struct{ ssh.Client }\n", s.narrow, true},
+		{"a method promoted through another package's type that embeds the vulnerable package's type",
+			"package lib\n\nimport \"example.com/vulnmod/emb\"\n\ntype S struct{ emb.T }\n", s.narrow, true},
+		{"an alias to the vulnerable package's type",
+			"package lib\n\nimport \"example.com/vulnmod/ssh\"\n\ntype A = ssh.Client\n", s.narrow, true},
+		{"an alias to another package's alias of the vulnerable package's type",
+			"package lib\n\nimport \"example.com/vulnmod/alias\"\n\ntype A = alias.C\n", s.narrow, true},
+		{"an alias to another package's type of the module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\ntype A = blake.T\n", s.narrow, false},
+		{"a generic method calls an interface the vulnerable package's type satisfies",
+			"package lib\n\nimport \"example.com/vulnmod/iface\"\n\n" + box + "func (Box[T]) Run() { iface.Default.Dial() }\n", s.narrow, false},
+		{"a generic type constrained by an interface the vulnerable package's type satisfies",
+			"package lib\n\nimport \"example.com/vulnmod/iface\"\n\ntype Box[T iface.Dialer] struct{ v T }\n\nfunc (b Box[T]) Run() { b.v.Dial() }\n", s.narrow, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, merge(narrowedModule, map[string]string{"internal/lib/lib.go": tc.lib}))
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if incompleteLoad(load.Packages) {
+				t.Fatal("load incomplete")
+			}
+			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages)
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
+			}
+			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods); declared != tc.withheld {
+				t.Errorf("unsearched_methods declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestWithholdForLibraryEscape_VulnerablePackages: when the advisory names the module's vulnerable
+// packages, an entry point withholds only when it reaches one of them, however a value of the
+// vulnerable package's type would be handed through it; the module's other packages do not count,
+// unless the advisory lists the module whole or not at all. A declaration that takes a package out
+// of the entry points records an assumption only when that package reaches a vulnerable package.
+func TestWithholdForLibraryEscape_VulnerablePackages(t *testing.T) {
+	s := narrowedScans
+	cases := []struct {
+		name       string
+		lib        string
+		decl       string
+		scanned    vulnScan
+		withheld   bool
+		assumption bool
+	}{
+		{"an entry point imports another package of the module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\nfunc Get() func() { return blake.Sum }\n", "auto", s.narrow, false, false},
+		{"an entry point imports the vulnerable package",
+			"package lib\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc Get() func() { return ssh.Dial }\n", "auto", s.narrow, true, false},
+		{"an entry point reaches the vulnerable package through another package of the module",
+			"package lib\n\nimport \"example.com/vulnmod/wrap\"\n\nfunc Get() func() { return wrap.Get() }\n", "auto", s.narrow, true, false},
+		{"the advisory also lists the whole module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\nfunc Get() func() { return blake.Sum }\n", "auto", s.wholeModule, true, false},
+		{"no advisory entry lists the module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\nfunc Get() func() { return blake.Sum }\n", "auto", s.noEntry, true, false},
+		{"an entry point aliases another package's alias of the vulnerable package's type",
+			"package lib\n\nimport \"example.com/vulnmod/alias\"\n\ntype C = alias.C\n", "auto", s.narrow, true, false},
+		{"an entry point embeds another package's type that embeds the vulnerable package's type",
+			"package lib\n\nimport \"example.com/vulnmod/emb\"\n\ntype S struct{ emb.T }\n", "auto", s.narrow, true, false},
+		{"an entry point instantiates a generic type with the vulnerable package's type",
+			"package lib\n\nimport \"example.com/vulnmod/ssh\"\n\ntype Box[T any] struct{ V T }\n\nvar B = Box[ssh.Client]{}\n", "auto", s.narrow, true, false},
+		{"an entry point hands out an interface value the vulnerable package's init registers",
+			"package lib\n\nimport \"example.com/vulnmod/iface\"\n\nfunc Get() iface.Dialer { return iface.Default }\n", "auto", s.narrow, false, false},
+		{"an entry point calls an interface the vulnerable package's type satisfies",
+			"package lib\n\nimport \"example.com/vulnmod/iface\"\n\nfunc Use(d iface.Dialer) { d.Dial() }\n", "auto", s.narrow, false, false},
+		{"an entry point's generic function constrained by an interface the vulnerable package's type satisfies",
+			"package lib\n\nimport \"example.com/vulnmod/iface\"\n\nfunc Use[T iface.Dialer](t T) { t.Dial() }\n", "auto", s.narrow, false, false},
+		{"a declaration takes out a package that imports another package of the module",
+			"package lib\n\nimport \"example.com/vulnmod/blake\"\n\nfunc Get() func() { return blake.Sum }\n", "none", s.narrow, false, false},
+		{"a declaration takes out a package that imports the vulnerable package",
+			"package lib\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc Get() func() { return ssh.Dial }\n", "none", s.narrow, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, merge(narrowedModule, map[string]string{"lib/lib.go": tc.lib}))
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if incompleteLoad(load.Packages) {
+				t.Fatal("load incomplete")
+			}
+			decl, err := plugin.ParseLibraryEntrypoints(tc.decl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := resolveEntrypoints(load.Packages, decl, dir)
+			res := withholdForLibraryEscape(narrowedRefutation(), tc.scanned, load.Packages, entry)
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
+			}
+			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonLibraryEscape); declared != tc.withheld {
+				t.Errorf("library_escape declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
+			}
+			if !tc.withheld {
+				if assumed := len(res.Refutation.Assumptions) > 0; assumed != tc.assumption {
+					t.Errorf("assumption recorded = %v, want %v (%v)", assumed, tc.assumption, res.Refutation.Assumptions)
+				}
+			}
+		})
+	}
+}
+
+// TestNarrowedGates_StandardLibraryWidening: a standard-library refutation widens to every standard
+// package in both gates when the advisory lists the standard library whole or lists none of its
+// packages, even though a finding names the one it traced; otherwise only the listed packages count.
+func TestNarrowedGates_StandardLibraryWidening(t *testing.T) {
+	tree := map[string]string{
+		"go.mod":     "module example.com/m\n\ngo 1.22\n",
+		"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Run() string { return strings.ToUpper(\"x\") }\n\nfunc Get() func(string) string { return strings.ToUpper }\n",
+	}
+	listed := map[string][]string{"stdlib": {"net/http"}}
+	scans := []struct {
+		name     string
+		scanned  vulnScan
+		withheld bool
+	}{
+		{"the advisory lists only a package the build does not reach", vulnScan{imports: listed}, false},
+		{"the advisory also lists the whole standard library", vulnScan{imports: listed, wholeModule: map[string]bool{"stdlib": true}}, true},
+		{"no advisory entry lists a standard package, a finding names one", vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "stdlib", Package: "net/http"}}}}}, true},
+	}
+	gates := []struct {
+		name   string
+		reason string
+		run    func(plugin.ReachabilityResult, vulnScan, []*packages.Package, entrypoints) plugin.ReachabilityResult
+	}{
+		{"unsearched methods", plugin.PartialReasonUnsearchedMethods, func(r plugin.ReachabilityResult, s vulnScan, pkgs []*packages.Package, _ entrypoints) plugin.ReachabilityResult {
+			return withholdForUnsearchedMethods(r, s, pkgs)
+		}},
+		{"library escape", plugin.PartialReasonLibraryEscape, withholdForLibraryEscape},
+	}
+	dir := writeTree(t, tree)
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incompleteLoad(load.Packages) {
+		t.Fatal("load incomplete")
+	}
+	entry := resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir)
+	for _, g := range gates {
+		for _, tc := range scans {
+			t.Run(g.name+"/"+tc.name, func(t *testing.T) {
+				res := g.run(plugin.ReachabilityResult{
+					Partiality: plugin.Complete(),
+					Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/stdlib"},
+				}, tc.scanned, load.Packages, entry)
+				if withheld := res.Refutation == nil; withheld != tc.withheld {
+					t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
+				}
+				if declared := slices.Contains(res.Partiality.Reasons, g.reason); declared != tc.withheld {
+					t.Errorf("%s declared = %v, want %v (partiality %+v)", g.reason, declared, tc.withheld, res.Partiality)
+				}
+			})
+		}
+	}
+}
+
+// TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded: a method whose declaring package the
+// load does not hold withholds, though that package would not reach the vulnerable one. The load is
+// cut by hand: a complete load always holds it.
+func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
+	dir := writeTree(t, merge(narrowedModule, map[string]string{
+		"internal/lib/lib.go": "package lib\n\nimport \"example.com/vulnmod/blake\"\n\ntype S struct{ blake.T }\n",
+	}))
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lib *packages.Package
+	for _, p := range load.Packages {
+		if p.PkgPath == "example.com/m/internal/lib" {
+			lib = p
+		}
+	}
+	if lib == nil {
+		t.Fatal("internal/lib not loaded")
+	}
+	lib.Imports = map[string]*packages.Package{}
+	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, []*packages.Package{lib})
+	if res.Refutation != nil {
+		t.Fatal("refutation stands, want withheld")
+	}
+	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods) {
+		t.Errorf("unsearched_methods not declared (partiality %+v)", res.Partiality)
 	}
 }

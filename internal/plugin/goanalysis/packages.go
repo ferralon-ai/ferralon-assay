@@ -458,7 +458,6 @@ func goflagsTags(env []string) []string {
 // imports no module.
 func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
-	reach.vulnerableOnly = true
 	stdlib := module == "stdlib"
 	var graph modGraph
 	var graphErr error
@@ -614,17 +613,14 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 }
 
 // moduleReach answers, over the load's own import graph, whether a package is or imports one of a
-// refuted module's packages that count. For the standard library those are its vulnerable packages
-// (vulnerable, or every standard-library package when that is empty).
+// refuted module's packages that count: its vulnerable packages (vulnerable), or every package of the
+// module when that is empty.
 type moduleReach struct {
 	module     string
 	vulnerable []string
-	// vulnerableOnly narrows a module other than the standard library to its vulnerable packages too,
-	// when vulnerable names any.
-	vulnerableOnly bool
-	loaded         map[string]*packages.Package
-	modules        map[string]bool
-	reaches        map[*packages.Package]bool
+	loaded     map[string]*packages.Package
+	modules    map[string]bool
+	reaches    map[*packages.Package]bool
 }
 
 func newModuleReach(pkgs []*packages.Package, module string, vulnerable []string) *moduleReach {
@@ -651,7 +647,7 @@ func (r *moduleReach) inModule(path string, p *packages.Package) bool {
 		if !underModule(path, r.module) && (p == nil || p.Module == nil || p.Module.Path != r.module) {
 			return false
 		}
-		return !r.vulnerableOnly || len(r.vulnerable) == 0 || slices.Contains(r.vulnerable, path)
+		return len(r.vulnerable) == 0 || slices.Contains(r.vulnerable, path)
 	}
 	if (p != nil && p.Module != nil) || !isStdlibPath(path, r.modules) {
 		return false

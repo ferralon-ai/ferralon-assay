@@ -281,8 +281,9 @@ func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scan
 
 // withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
 // (unsearchedMethods) may contradict. A caller of the package can still invoke one, so when the
-// package that declares it imports the refuted module (for the standard library, a vulnerable
-// package), directly or through other packages, the search that found no path never covered it.
+// package that declares it imports one of the refuted module's packages that count
+// (countingPackages), directly or through other packages, the search that found no path never
+// covered it.
 // Reach is read off the import graph, never the call graph, which is what misses these methods.
 // The result then declares unsearched_methods instead.
 func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
@@ -291,15 +292,16 @@ func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnSca
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || unsearchedCallers(pkgs, module, scanned.vulnerablePackages(module)) {
+	if !ok || unsearchedCallers(pkgs, module, scanned.countingPackages(module)) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
 	}
 	return res
 }
 
-// unsearchedCallers reports whether an unsearched method may call into module. A method whose
-// declaring package the load does not hold counts.
+// unsearchedCallers reports whether an unsearched method may call into module's packages that count:
+// vulnerable, or every package of module when that is empty. A method whose declaring package the
+// load does not hold counts.
 func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	for _, m := range unsearchedMethods(pkgs) {
@@ -316,7 +318,7 @@ func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []str
 // importer (a function, an interface value, a struct carrying either, through a result, an exported
 // var or field, or an embedded type) can still run the module's code once the importer calls it, and
 // that call is outside the search, whether or not the build also has a main package. So when any
-// entry point reaches the refuted module (for the standard library, a vulnerable package), or the
+// entry point reaches one of the refuted module's packages that count (countingPackages), or the
 // entry points or their reach are unknown, the result declares library_escape instead. A refutation
 // that stands only because the caller declared a package no entry point carries that declaration
 // as an assumption.
@@ -331,7 +333,7 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
 		return res
 	}
-	vulnerable := scanned.vulnerablePackages(module)
+	vulnerable := scanned.countingPackages(module)
 	incomplete := incompleteLoad(pkgs)
 	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
@@ -366,7 +368,8 @@ func incompleteLoad(pkgs []*packages.Package) bool {
 	return incomplete
 }
 
-// reaching returns the packages of set that reach module, or all of set when the load is incomplete.
+// reaching returns the packages of set that reach module's packages that count (vulnerable, or every
+// package of module when that is empty), or all of set when the load is incomplete.
 func reaching(pkgs, set []*packages.Package, incomplete bool, module string, vulnerable []string) []*packages.Package {
 	if incomplete || len(set) == 0 {
 		return set
@@ -573,20 +576,15 @@ func isMain(p *packages.Package) bool {
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
-// packages in the refuted module was never traced, so the refutation holds only for builds that
-// leave it out. The result then declares excluded_files instead. An advisory that lists no vulnerable
-// package in the module, or lists the module once with none, makes every package of it count.
+// packages in the refuted module (countingPackages) was never traced, so the refutation holds only
+// for builds that leave it out. The result then declares excluded_files instead.
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	vulnerable := scanned.vulnerablePackages(module)
-	if scanned.wholeModule[module] || len(scanned.imports[module]) == 0 {
-		vulnerable = nil
-	}
-	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {
+	if !ok || leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), release, buildDir, env) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 	}
@@ -1005,6 +1003,17 @@ func (s vulnScan) vulnerableSymbols(module string) map[string][]string {
 		out[p] = s.symbols[p]
 	}
 	return out
+}
+
+// countingPackages returns the packages of module whose reach withholds a refutation of it: its
+// vulnerable packages (vulnerablePackages), or none, standing for every package of module, when an
+// OSV entry lists module with no packages or no entry lists it at all. Findings alone name only the
+// packages the build traced, never all the vulnerable ones.
+func (s vulnScan) countingPackages(module string) []string {
+	if s.wholeModule[module] || len(s.imports[module]) == 0 {
+		return nil
+	}
+	return s.vulnerablePackages(module)
 }
 
 // vulnerablePackages returns the advisory's vulnerable packages in module: those its OSV entries

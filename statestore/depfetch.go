@@ -17,6 +17,9 @@ import (
 // digest of the report bytes it writes, and a read whose report.json does not hash to it drops
 // the record: a writer that does not model this file carries it unchanged past a report.json it
 // rewrote, and the record would then describe a report that is gone.
+//
+// The format may only grow by adding fields: a reader checks report_sha256 before it decodes the
+// rest, and fails on a record bound to its report whose other fields it cannot decode.
 type DepFetch struct {
 	// ReportSHA256 is the hex SHA-256 of the report.json this record was written beside, or ""
 	// when it was written with none. A store sets it on write; a caller's value is ignored.
@@ -95,14 +98,20 @@ func encodeDepFetch(d *DepFetch, reportJSON []byte) (b []byte, ok bool, err erro
 }
 
 // decodeDepFetch reads depfetch.json bytes b found beside report bytes reportJSON. A record
-// written beside a different report.json is nil.
+// written beside a different report.json is nil, whatever its other fields hold.
 func decodeDepFetch(b, reportJSON []byte) (*DepFetch, error) {
+	var bound struct {
+		ReportSHA256 string `json:"report_sha256"`
+	}
+	if err := json.Unmarshal(b, &bound); err != nil {
+		return nil, fmt.Errorf("statestore: decode %s: %w", fileDepFetch, err)
+	}
+	if bound.ReportSHA256 != reportDigest(reportJSON) {
+		return nil, nil
+	}
 	var d DepFetch
 	if err := json.Unmarshal(b, &d); err != nil {
 		return nil, fmt.Errorf("statestore: decode %s: %w", fileDepFetch, err)
-	}
-	if d.ReportSHA256 != reportDigest(reportJSON) {
-		return nil, nil
 	}
 	return &d, nil
 }

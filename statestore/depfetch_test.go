@@ -287,6 +287,15 @@ func TestDecodeDepFetch(t *testing.T) {
 	if _, err := decodeDepFetch([]byte(`{`), report); err == nil {
 		t.Error("malformed record decoded without error")
 	}
+	foreign := func(digest string) []byte {
+		return []byte(`{"report_sha256":"` + digest + `","reassess":5}`)
+	}
+	if d, err := decodeDepFetch(foreign(reportDigest([]byte(`{"a":2}`))), report); err != nil || d != nil {
+		t.Errorf("undecodable record bound to a different report: got %+v, %v; want nil, nil", d, err)
+	}
+	if _, err := decodeDepFetch(foreign(reportDigest(report)), report); err == nil {
+		t.Error("undecodable record bound to this report decoded without error")
+	}
 	if _, ok, _ := encodeDepFetch(&DepFetch{Registries: map[string]RegistryFetch{"r": {}}}, report); ok {
 		t.Error("an all-zero record was encoded rather than omitted")
 	}

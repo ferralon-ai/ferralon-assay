@@ -821,10 +821,10 @@ func disqualDetail(reason string) string {
 	}
 }
 
-// candidatePath reports whether the reachability_ingress stage recorded at least one
+// candidatePath reports whether the reachability_ingress stage recorded at least one decodable
 // candidate (ingress→sink) pair, and returns a compact path string for the Report. Every pair
-// is read, since Query's order is not stable: the label names an entrypoint when any pair
-// carries one.
+// is read, since Query's order is not stable: the label names an entrypoint when any decodable
+// pair carries one.
 func candidatePath(store artifact.Store, assessmentID string) (string, bool) {
 	arts, err := store.Query(assessmentID, artifact.TypeCandidatePair)
 	if err != nil {

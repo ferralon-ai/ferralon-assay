@@ -212,6 +212,9 @@ func TestRunBaseline_DependencyFetchSeesTheRun(t *testing.T) {
 	if len(got) != 1 || !got[0].Baseline || got[0].Held || !slices.Equal(assessedIDs(got[0]), []string{wiringAdvisory.ID}) {
 		t.Fatalf("hook runs = %+v, want one baseline run that assessed %s", got, wiringAdvisory.ID)
 	}
+	if !slices.Contains(got[0].Assessed[0].Aliases, "GHSA-ppp9-7jff-5vj2") {
+		t.Fatalf("assessed advisory %+v does not carry its advisory record's aliases", got[0].Assessed[0])
+	}
 	if store.lastSeen.DepFetch != want {
 		t.Fatalf("written DepFetch = %+v, want the hook's answer", store.lastSeen.DepFetch)
 	}

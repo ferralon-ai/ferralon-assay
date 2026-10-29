@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -157,7 +158,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	baseEnv := reachBaseEnv()
 	env, scanToolchain, switched := subjectToolchainEnv(ctx, baseEnv, req.BuildDir, req.GoToolchain)
 
-	scanned, err := runGovulncheck(ctx, req, env)
+	scanned, err := runGovulncheck(ctx, req, env, !switched)
 	if err != nil && switched {
 		// The subject's toolchain materialized but could not complete the scan — its stdlib
 		// cannot build this module, or the older go command rejects the go.mod. Fall back to
@@ -167,7 +168,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		// The failed switched run is not cached, so every advisory retries it before reading the
 		// cached fallback stream; that costs time only, and caching the failure would not be safe.
 		env, scanToolchain, switched = baseEnv, goEnvVersion(ctx, req.BuildDir, baseEnv), false
-		scanned, err = runGovulncheck(ctx, req, env)
+		scanned, err = runGovulncheck(ctx, req, env, true)
 	}
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
@@ -871,11 +872,10 @@ func (r goRelease) toolchain() string {
 // runGovulncheck performs one govulncheck run under env and returns what it says about req.VulnID.
 // A govulncheck FAILURE (build broke, non-zero exit, timeout) is a HARD error (inv.4) — never a
 // silent empty result; only the caller may decide that a failure under a switched toolchain is
-// retryable.
-func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string) (vulnScan, error) {
-	// The scan covers every advisory govulncheck knows for the tree; the advisory is selected only
-	// when the stream is parsed. So one stream per tree and environment answers every advisory.
-	out, err := runCached(ctx, "govulncheck", append([]string{req.BuildDir}, env...), func() ([]byte, error) {
+// retryable. settle lets the run cache keep a settled failure; the caller withholds it for a run it
+// may retry.
+func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string, settle bool) (vulnScan, error) {
+	out, err := govulncheckCached(ctx, req.BuildDir, env, settle, func() ([]byte, error) {
 		return govulncheckStream(ctx, req.BuildDir, env)
 	})
 	if err != nil {
@@ -887,6 +887,91 @@ func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []s
 		return vulnScan{}, fmt.Errorf("parse govulncheck json: %w", err)
 	}
 	return scanned, nil
+}
+
+// govulncheckCached returns the govulncheck stream for buildDir under env, running stream only when
+// the run cache holds neither the stream nor, when settle is set, a settled failure. The scan covers
+// every advisory govulncheck knows for the tree; the advisory is selected only when the stream is
+// parsed. So one stream per tree and environment answers every advisory, and a failure that tree and
+// environment reproduce fails every advisory with the same error.
+func govulncheckCached(ctx context.Context, buildDir string, env []string, settle bool, stream func() ([]byte, error)) ([]byte, error) {
+	key := append([]string{buildDir}, env...)
+	return runCached(ctx, "govulncheck", key, func() ([]byte, error) {
+		if !settle {
+			return stream()
+		}
+		if err := replayGovulncheckFailure(ctx, buildDir, key); err != nil {
+			return nil, err
+		}
+		out, err := stream()
+		var failed *govulncheckError
+		if errors.As(err, &failed) && failed.settled {
+			recordGovulncheckFailure(ctx, key, failed)
+		}
+		return out, err
+	})
+}
+
+// govulncheckError is a govulncheck run that failed after it started. settled marks a failure that
+// every later run over the same tree and environment in this scan reproduces byte for byte (see
+// settledLoadFailure), so the run cache may answer those runs with it.
+type govulncheckError struct {
+	buildDir string
+	cause    error
+	stderr   string
+	settled  bool
+}
+
+func (e *govulncheckError) Error() string {
+	return fmt.Sprintf("govulncheck failed (%q): %v: %s", e.buildDir, e.cause, e.stderr)
+}
+
+func (e *govulncheckError) Unwrap() error { return e.cause }
+
+// govulncheckFailureKind names the run cache entry that holds a settled govulncheck failure. It is
+// a separate entry from the stream under the same key, so a stream is never read as a failure nor a
+// failure as a stream.
+const govulncheckFailureKind = "govulncheck-failure"
+
+// govulncheckFailureMarker identifies a settled failure record; an entry without it is no record.
+const govulncheckFailureMarker = "govulncheck-settled-failure/v1"
+
+type govulncheckFailureRecord struct {
+	Marker string `json:"marker"`
+	Cause  string `json:"cause"`
+	Stderr string `json:"stderr"`
+}
+
+// recordGovulncheckFailure stores a settled failure for key. A record that cannot be written only
+// costs the next run its replay.
+func recordGovulncheckFailure(ctx context.Context, key []string, failed *govulncheckError) {
+	dir := RunCacheDir(ctx)
+	if dir == "" {
+		return
+	}
+	b, err := json.Marshal(govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: failed.cause.Error(), Stderr: failed.stderr})
+	if err != nil {
+		return
+	}
+	writeRunCacheEntry(dir, govulncheckFailureKind, runCachePath(dir, govulncheckFailureKind, key), b)
+}
+
+// replayGovulncheckFailure returns the settled failure stored for key, carrying the message of the
+// run that settled it, or nil when none is stored.
+func replayGovulncheckFailure(ctx context.Context, buildDir string, key []string) error {
+	dir := RunCacheDir(ctx)
+	if dir == "" {
+		return nil
+	}
+	b, err := os.ReadFile(runCachePath(dir, govulncheckFailureKind, key))
+	if err != nil {
+		return nil
+	}
+	var rec govulncheckFailureRecord
+	if json.Unmarshal(b, &rec) != nil || rec.Marker != govulncheckFailureMarker {
+		return nil
+	}
+	return &govulncheckError{buildDir: buildDir, cause: errors.New(rec.Cause), stderr: rec.Stderr, settled: true}
 }
 
 // govulncheckStream runs govulncheck over buildDir under env and returns its -json stream.
@@ -907,11 +992,71 @@ func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]by
 		// (inv.4) — never a silent empty result.
 		var ec interface{ ExitCode() int }
 		if !errors.As(err, &ec) || (ec.ExitCode() != 0 && ec.ExitCode() != 3) {
-			return nil, fmt.Errorf("govulncheck failed (%q): %w: %s",
-				buildDir, err, strings.TrimSpace(stderr.String()))
+			return nil, &govulncheckError{
+				buildDir: buildDir,
+				cause:    err,
+				stderr:   strings.TrimSpace(stderr.String()),
+				settled:  settledLoadFailure(ctx, err) && packagesResolveOffline(ctx, buildDir, env),
+			}
 		}
 	}
 	return stdout.Bytes(), nil
+}
+
+// settledLoadFailure reports whether err is a govulncheck failure whose cause lies in the packages
+// themselves: the package load ran to completion and go/packages reported errors on the loaded
+// packages (a cgo header that is missing, a type error). govulncheck loads before it makes any
+// vulnerability database request, so no database answer is part of such a failure. Excluded are a
+// cancelled or expired ctx, anything killed by a signal, and any load that did not complete — a go
+// command that failed outright reaches govulncheck as a plain error, not as package errors.
+func settledLoadFailure(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var ec interface{ ExitCode() int }
+	if errors.As(err, &ec) && ec.ExitCode() == -1 {
+		return false
+	}
+	perrs := loadPackageErrors(err)
+	if len(perrs) == 0 {
+		return false
+	}
+	for _, pe := range perrs {
+		if strings.Contains(pe.Msg, "signal: ") {
+			return false
+		}
+	}
+	return true
+}
+
+var packageErrorsType = reflect.TypeFor[[]packages.Error]()
+
+// loadPackageErrors returns the package errors a failed govulncheck load carries in err's chain.
+// x/vuln reports them in a type it does not export, as its Errors field; nothing else in the chain
+// has that field.
+func loadPackageErrors(err error) []packages.Error {
+	for ; err != nil; err = errors.Unwrap(err) {
+		v := reflect.ValueOf(err)
+		if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		if f := v.Elem().FieldByName("Errors"); f.IsValid() && f.Type() == packageErrorsType && f.CanInterface() {
+			return f.Interface().([]packages.Error)
+		}
+	}
+	return nil
+}
+
+// packagesResolveOffline reports whether every package a govulncheck load of buildDir reads
+// resolves from local files: `go list` of the same packages under env, with module fetching turned
+// off, reports no error. A package error of the failed load then cannot be a module fetch that a
+// later run might complete; what remains (cgo, type checking) reads only files already on disk.
+func packagesResolveOffline(ctx context.Context, buildDir string, env []string) bool {
+	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-f", "{{with .Error}}{{.Err}}{{end}}", "./...")
+	cmd.Dir = buildDir
+	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
+	out, err := cmd.Output()
+	return err == nil && len(bytes.TrimSpace(out)) == 0
 }
 
 // reconcileGraph is the call graph Reachability reconciles paths against, with what reflection's

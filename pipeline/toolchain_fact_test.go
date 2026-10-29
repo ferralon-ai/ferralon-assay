@@ -205,9 +205,14 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.26.3", Bound: ToolchainBoundExact, Source: ToolchainSourceCIObserved},
 		},
 		{
-			name: "exact EQUAL to the floor is consistent, and stays exact",
+			name: "exact EQUAL to the toolchain line is consistent, and stays exact",
 			in:   toolchainInputs{ciObserved: "go1.24.0", toolchainDirective: "go1.24.0", goDirective: "1.23", trustCIObserved: true},
 			want: ToolchainFact{Version: "go1.24.0", Bound: ToolchainBoundExact, Source: ToolchainSourceCIObserved},
+		},
+		{
+			name: "exact EQUAL to the binding go line is consistent, and stays exact",
+			in:   toolchainInputs{subjectDeclared: "go1.21.0", goDirective: "1.21.0", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
 
 		// The binding go line is the only floor. A toolchain line makes the go line bind (go commands

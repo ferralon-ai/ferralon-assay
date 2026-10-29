@@ -110,7 +110,8 @@ func clearSignalsEnv(t *testing.T) {
 }
 
 // TestAdvisorySignals_LoadsFromFlagEnvAndCorpus covers each source of the signals file and their
-// precedence, and that the Report's intel block names the file's digest once.
+// precedence. The Report's intel block names the file's digest once, recorded by trigger.Run*
+// (signals_digest_test.go).
 func TestAdvisorySignals_LoadsFromFlagEnvAndCorpus(t *testing.T) {
 	dir := t.TempDir()
 	plain := writeSignalsFile(t, filepath.Join(dir, "signals.json"), []byte(signalsDoc("2026-10-19")))
@@ -125,9 +126,6 @@ func TestAdvisorySignals_LoadsFromFlagEnvAndCorpus(t *testing.T) {
 		f, err := resolvedFor(t, "-advisory-signals", plain)
 		if err != nil || f.resolvedSignals == nil || f.signalsOrigin != plain {
 			t.Fatalf("resolveSignals = %v, signals %v from %q", err, f.resolvedSignals, f.signalsOrigin)
-		}
-		if got, want := f.intelProvenance(workSet{}).SignalsDigest, digestOf(t, signalsDoc("2026-10-19")); got != want {
-			t.Errorf("intel provenance signals_digest = %q, want the verified %q", got, want)
 		}
 	})
 	t.Run("flag, gz", func(t *testing.T) {
@@ -169,17 +167,13 @@ func TestAdvisorySignals_LoadsFromFlagEnvAndCorpus(t *testing.T) {
 	})
 }
 
-// TestAdvisorySignals_NoSourceMeansNoPriority: with no source the run loads nothing, the intel block
-// names no digest, and the summary says so in one line — including when the corpus tree simply has
-// no signals.json.
+// TestAdvisorySignals_NoSourceMeansNoPriority: with no source the run loads nothing and the summary
+// says so in one line — including when the corpus tree simply has no signals.json.
 func TestAdvisorySignals_NoSourceMeansNoPriority(t *testing.T) {
 	clearSignalsEnv(t)
 	f, err := resolvedFor(t)
 	if err != nil || f.resolvedSignals != nil {
 		t.Fatalf("resolveSignals = %v, %v; want no signals and no error", err, f.resolvedSignals)
-	}
-	if got := f.intelProvenance(workSet{}).SignalsDigest; got != "" {
-		t.Errorf("signals_digest = %q with no signals", got)
 	}
 	line := f.signalsSummary(time.Now())
 	if !strings.HasPrefix(line, "none — no signals source was provided") || !strings.Contains(line, "no finding carries EPSS/KEV priority") || strings.Contains(line, "\n") {

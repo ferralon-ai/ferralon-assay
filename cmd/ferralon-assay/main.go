@@ -241,7 +241,7 @@ func runBaseline(args []string) error {
 	}
 	logPhase(os.Stderr, "publish", time.Since(publishStart))
 
-	printSummary(*f.outDir, rep, f.signalsSummary(time.Now()))
+	printSummary(*f.outDir, rep, f.publishedSignalsSummary(rep, time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, store, req.Subject, rescan)
 	return runExit(acq.graph, f.depRun.forLanguage(acq.language))

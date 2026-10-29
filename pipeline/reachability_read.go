@@ -55,7 +55,10 @@ func (r *ReachabilityRecord) Result() (plugin.ReachabilityResult, error) {
 // CallGraph is the call graph the stage ran on. It is decoded once and shared by every caller,
 // behind a view that hands out only copies.
 func (r *ReachabilityRecord) CallGraph() (CallGraphView, error) {
-	r.cgOnce.Do(func() { r.cgErr = r.leg(r.legs.CallGraph, &r.cg) })
+	r.cgOnce.Do(func() {
+		r.cgErr = r.leg(r.legs.CallGraph, &r.cg)
+		r.legs.CallGraph = nil
+	})
 	if r.cgErr != nil {
 		return CallGraphView{}, r.cgErr
 	}

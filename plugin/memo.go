@@ -77,13 +77,12 @@ func memoized[Req, Res any](ctx context.Context, m *memoPlugin, op string, share
 			res, err := run(ctx, req)
 			if err == nil {
 				if payload, mErr := json.Marshal(res); mErr == nil {
-					c.payload, c.ok = payload, true
-					if share {
+					if !share {
+						c.payload, c.ok = payload, true
+					} else {
 						var dec Res
 						if json.Unmarshal(payload, &dec) == nil {
-							c.shared = dec
-						} else {
-							c.ok = false
+							c.shared, c.ok = dec, true
 						}
 					}
 				}

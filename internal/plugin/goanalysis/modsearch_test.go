@@ -412,6 +412,9 @@ func TestGoflagsBlockSearch(t *testing.T) {
 		{"none", "", "", false},
 		{"harmless", "-trimpath -tags=prod", "", false},
 		{"readonly", "-mod=readonly", "", false},
+		{"-json", "-json", "", false},
+		{"-u before -overlay", "-u -overlay=o.json", "", true},
+		{"-u=false before -overlay", "-u=false -overlay=o.json", "", true},
 		{"-overlay", "-overlay=o.json", "", true},
 		{"--overlay", "--overlay=o.json", "", true},
 		{"-overlay value apart", "-overlay o.json", "", true},
@@ -441,7 +444,7 @@ func TestGoflagsBlockSearch(t *testing.T) {
 		t.Setenv("GOFLAGS", "")
 		orig := modsearchGo
 		modsearchGo = func(cmd *exec.Cmd) ([]byte, error) {
-			if slices.Equal(cmd.Args[1:], []string{"env", "GOFLAGS"}) {
+			if cmd.Args[1] == "env" && cmd.Args[len(cmd.Args)-1] == "GOFLAGS" {
 				return nil, errors.New("go env failed")
 			}
 			return orig(cmd)

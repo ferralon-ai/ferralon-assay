@@ -217,7 +217,9 @@ func buildKey(buildDir string, extra ...string) []string {
 // once per build per scan; a read cut short by ctx is not kept.
 func goflagsBlockSearch(ctx context.Context, buildDir string) bool {
 	b, err := runCached(ctx, "goflagsblock", buildKey(buildDir), func() ([]byte, error) {
-		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "GOFLAGS"))
+		// GOFLAGS applies to go env's own flags too: -u, -w or -json there would print nothing or
+		// something other than GOFLAGS, so they are set on the command line, which overrides it.
+		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "-json=false", "-u=false", "-w=false", "-changed=false", "GOFLAGS"))
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, err

@@ -283,7 +283,7 @@ func TestRevokeCountMergeKeepsMax(t *testing.T) {
 // files keep their own semantics — a counter reset to 0 still drops the revoke blob
 // even though the parent tree had one.
 func TestUnmodelledEntryCarriedThrough(t *testing.T) {
-	const newer = "depfetch.json"
+	const newer = "future.json"
 	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name string

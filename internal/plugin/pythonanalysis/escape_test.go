@@ -263,21 +263,22 @@ func TestReachability_HiddenEdgesReachTheSink(t *testing.T) {
 }
 
 // TestCallGraph_AmbiguousSiteIsUnresolvedNotAnEdge: a callee name two first-party
-// declarations share gets no edge, is listed in Unresolved with dynamic_dispatch and no
-// Targets, and both declarations escape so a reader of the listed site can reach them.
+// declarations share, which no binding in the caller's file decides, gets no edge, is
+// listed in Unresolved with dynamic_dispatch and no Targets, and both declarations escape
+// so a reader of the listed site can reach them.
 func TestCallGraph_AmbiguousSiteIsUnresolvedNotAnEdge(t *testing.T) {
 	res := mustCallGraph(t, map[string]string{
 		"pkg/__init__.py": "from .impl import f\n",
 		"pkg/impl.py":     "def f(x):\n    return x\n",
 		"other.py":        "def f(x):\n    return x\n",
-		"app.py":          "import pkg\n\ndef index():\n    return pkg.f(1)\n",
+		"app.py":          "import pkg\n\ndef index():\n    return pkg.g.f(1)\n",
 	})
 	caller := funcSCIP("app", nil, "index", 0)
 	impl, other := funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("other", nil, "f", 1)
 	if hasEdge(res.Edges, caller, impl) || hasEdge(res.Edges, caller, other) {
 		t.Fatalf("an ambiguous callee must get no edge; edges %v", res.Edges)
 	}
-	want := plugin.UnresolvedCall{Caller: sym(caller), Callee: "pkg.f", Arity: 1, Reason: plugin.PartialReasonDynamicDispatch}
+	want := plugin.UnresolvedCall{Caller: sym(caller), Callee: "pkg.g.f", Arity: 1, Reason: plugin.PartialReasonDynamicDispatch}
 	if !slices.ContainsFunc(res.Unresolved, func(u plugin.UnresolvedCall) bool {
 		return u.Caller == want.Caller && u.Callee == want.Callee && u.Arity == want.Arity && u.Reason == want.Reason && u.Targets == nil
 	}) {
@@ -600,8 +601,8 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
-			name:   "import cycle ends",
-			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "from a import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
+			name:   "re-export through an import cycle",
+			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "import a\nfrom impl import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
 			caller: funcSCIP("app", nil, "c", 0),
 			callee: funcSCIP("impl", nil, "x", 1),
 		},

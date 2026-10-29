@@ -50,14 +50,15 @@ type program struct {
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
 // callArity explicit arguments names, or ("", false) when there is none or more than one.
-// Arity match is self/cls-tolerant: a method call "obj.method(args)" carries one fewer
-// explicit argument than the declaration "def method(self, args)", so a declaration of
-// arity callArity OR callArity+1 matches. Zero matches (library/import/builtin) or more
+// A declaration matches when its parameter list accepts callArity arguments, defaults and
+// *args/**kwargs counted (paramShape), and the match is self/cls-tolerant: a method call
+// "obj.method(args)" carries one fewer explicit argument than the declaration
+// "def method(self, args)", so a list accepting callArity+1 matches too. Zero matches (library/import/builtin) or more
 // than one (an ambiguous name the lexer cannot scope-resolve) yields no edge.
 func resolveCallee(decls []funcDecl, callArity int) (string, bool) {
 	var matches []string
 	for _, fd := range decls {
-		if fd.arity == callArity || fd.arity == callArity+1 {
+		if fd.params.accepts(callArity) || fd.params.accepts(callArity+1) {
 			matches = append(matches, fd.scip())
 		}
 	}
@@ -180,6 +181,7 @@ type funcDecl struct {
 	enclosing []string
 	name      string
 	arity     int
+	params    paramShape // the argument counts a call may pass
 }
 
 func (d funcDecl) scip() string {
@@ -374,7 +376,7 @@ func loadProgram(buildDir string) (*program, error) {
 			if d.kind != kindFunc {
 				continue
 			}
-			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity}
+			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity, params: d.params}
 			prog.funcsByName[d.name] = append(prog.funcsByName[d.name], fd)
 			fds = append(fds, fd)
 		}

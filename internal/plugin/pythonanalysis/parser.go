@@ -20,6 +20,7 @@ type decl struct {
 	name      string
 	enclosing []string // outer→inner class names; empty for a module-level declaration
 	arity     int      // parameter count (kindFunc only; includes self/cls)
+	params    paramShape
 }
 
 // parseResult holds the module-relative path and declarations parsed from one source
@@ -295,7 +296,8 @@ func parseDecls(lines []logicalLine) []decl {
 			if !ok {
 				continue
 			}
-			decls = append(decls, decl{kind: kindFunc, name: name, enclosing: classChain(), arity: arity})
+			_, after := readIdent(strings.TrimSpace(rest))
+			decls = append(decls, decl{kind: kindFunc, name: name, enclosing: classChain(), arity: arity, params: paramShapeOf(strings.TrimSpace(after))})
 			stack = append(stack, scope{indent: ll.indent, className: ""})
 		}
 	}
@@ -329,6 +331,77 @@ func parseDefSignature(rest string) (name string, arity int, ok bool) {
 	}
 	arity = paramArity(after)
 	return name, arity, true
+}
+
+// paramShape is the range of argument counts a parameter list accepts: required counts
+// the parameters with no default (keyword-only ones too, since a call passes them as
+// keyword arguments), max every parameter but the bare "*" and "/" markers, and variadic is
+// set by *args or **kwargs, which take any number more.
+type paramShape struct {
+	required, max int
+	variadic      bool
+}
+
+// accepts reports whether a call with n arguments fits the parameter list.
+func (s paramShape) accepts(n int) bool {
+	return n >= s.required && (s.variadic || n <= s.max)
+}
+
+// paramShapeOf reads the paramShape of a "(...)" list, given a string that begins with '('.
+func paramShapeOf(s string) paramShape {
+	r := []rune(s)
+	var out paramShape
+	depth, start := 0, 1
+	param := func(end int) {
+		p := strings.TrimSpace(string(r[start:end]))
+		switch {
+		case p == "", p == "*", p == "/":
+		case strings.HasPrefix(p, "*"):
+			out.variadic = true
+		default:
+			out.max++
+			if !hasDefault(p) {
+				out.required++
+			}
+		}
+	}
+	for i := 0; i < len(r); i++ {
+		switch r[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				param(i)
+				return out
+			}
+		case ',':
+			if depth == 1 {
+				param(i)
+				start = i + 1
+			}
+		}
+	}
+	return out
+}
+
+// hasDefault reports whether one parameter's text ("x", "x: int", "x=1", "x: int = 1")
+// carries a default: an "=" outside its annotation's brackets.
+func hasDefault(p string) bool {
+	depth := 0
+	for _, c := range p {
+		switch c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '=':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // paramArity counts the top-level comma-separated parameters of a "(...)" list, given a

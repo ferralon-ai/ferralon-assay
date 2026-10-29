@@ -9,19 +9,16 @@ import (
 
 // FindIngresses identifies framework-idiomatic entry points in the Python module at
 // req.BuildDir: Flask (@app.route) and FastAPI/Starlette (@app.get/@router.post/
-// @app.websocket/…) route handlers. Each ingress symbol is the HANDLER def's SCIP id —
-// the SAME id the call graph and symbol resolver emit for that function — so the
-// pipeline's firstPartyReachPaths BFS can connect an ingress to a reachable sink. A
-// missing build dir is a hard error (inv.4).
+// @app.websocket/…) route handlers, Celery task functions (@app.task, @shared_task), WSGI
+// and ASGI application callables, Django URL-pattern views and application settings, and
+// the console and GUI scripts a manifest declares (launchers.go). Each ingress symbol is
+// the HANDLER def's SCIP id — the SAME id the call graph and symbol resolver emit for that
+// function — so the pipeline's firstPartyReachPaths BFS can connect an ingress to a
+// reachable sink. A missing build dir is a hard error (inv.4).
 //
-// Unlike JS route handlers (which name a handler by REFERENCE in a registration call),
-// Python route decorators sit directly above the def, so the handler def — and thus its
-// exact SCIP id — is known at the decorator site; no reference re-resolution is needed.
-//
-// FOLLOW-ON (not wired for M1): Django URLconf (urlpatterns / path() / re_path()
-// registration tables), Celery @task workers, and raw WSGI/ASGI application callables.
-// These are registration-table / callable shapes rather than def decorators and need a
-// distinct scanner. They are named in the Python skill's ingress list.
+// A decorated handler is known at its def. A launcher names its function by dotted path,
+// resolved against the build's modules; one that names a dependency's function is no
+// first-party ingress.
 func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
@@ -46,6 +43,22 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 		}
 	}
 
+	for _, t := range prog.launchTargets() {
+		if t.kind == "" {
+			continue
+		}
+		decls, _, _ := prog.launchDecls(t)
+		for _, fd := range decls {
+			scip := fd.scip()
+			key := t.kind + "\x00" + scip + "\x00" + t.selector
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			ingresses = append(ingresses, plugin.Ingress{Kind: t.kind, Symbol: sym(scip), Selector: t.selector})
+		}
+	}
+
 	sort.Slice(ingresses, func(i, j int) bool {
 		if ingresses[i].Kind != ingresses[j].Kind {
 			return ingresses[i].Kind < ingresses[j].Kind
@@ -61,19 +74,31 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 
 // ingressPartiality declares completeness of ingress discovery. Unlike the call graph
 // (always partial), ingress discovery over a cleanly parsed source IS complete for the
-// decorator idioms the scanner models: the ingresses found are exactly the Flask/FastAPI
-// route handlers present. A read failure or a skipped construct degrades to partial with
-// the matching machine-readable reason.
+// idioms the scanner models. A read failure or a skipped construct degrades to partial with
+// the matching machine-readable reason, as does a launcher whose first-party module
+// declares no function by the name it gives (an instance, a class, an attribute set at run
+// time): its entry point is there but not as a function the lane can name.
 func ingressPartiality(prog *program) plugin.Partiality {
 	var reasons []string
-	if prog.readFailed {
+	if prog.readFailed || prog.launchersUnread {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
-	if prog.skipped {
+	if prog.skipped || prog.launcherUnresolved() {
 		reasons = append(reasons, plugin.PartialReasonUnsupported)
 	}
 	if len(reasons) == 0 {
 		return plugin.Complete()
 	}
 	return plugin.Partial(reasons...)
+}
+
+// launcherUnresolved reports whether a launcher that must name a first-party function
+// names none.
+func (prog *program) launcherUnresolved() bool {
+	for _, t := range prog.launchTargets() {
+		if prog.unresolved(t) {
+			return true
+		}
+	}
+	return false
 }

@@ -547,7 +547,7 @@ func TestReleaseBoundExcludes(t *testing.T) {
 		{"floor 1.22, no release tag", floor(1, 22), "plan9", false},
 		{"floor 1.22, more tags than maxFreeTags", floor(1, 22), "!go1.22 && a && b && c && d && e && f && g && h && i && j && k && l && m && n && o && p", false},
 		{"floor 1.22, go1.05 is no release tag", floor(1, 22), "!go1.05", false},
-		{"floor with major 2", floor(2, 0), "!go1.22", false},
+		{"floor with major 2", floor(2, 30), "!go1.22", false},
 		{"floor with major 0", floor(0, 22), "!go1.22", false},
 		{"exact 1.22, !go1.22", exact, "!go1.22", true},
 		{"exact 1.22, !go1.23", exact, "!go1.23", false},

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -53,7 +54,8 @@ func fallbackRun(t *testing.T, mode DependencyCodeMode, regs *fakeRegistries, np
 	acq := &dependencyAcquirer{
 		cfg: DependencyAcquisition{Mode: mode, CacheDir: cache, Client: regs.client, Timeout: timeout,
 			Observe: func(r DependencyAcquisitionResult) { observed = append(observed, r) }},
-		byDir: map[string]*acquiredBuild{},
+		byDir:      map[string]*acquiredBuild{},
+		retrySleep: noSleep,
 	}
 	store := artifact.NewMemStore()
 	stage := dependencyAcquisition{plugin: p, acq: acq}
@@ -102,7 +104,10 @@ func TestDependencyAcquisitionFallback(t *testing.T) {
 			corp: func(t *testing.T, r *fakeRegistries) { r.serve(t, "corp.test", other) }, wantRead: 2},
 		{name: "registry error on one package", mode: DependencyCodeFetch,
 			corp:     func(t *testing.T, r *fakeRegistries) { r.serveStatus(t, "corp.test", http.StatusBadGateway, nil) },
-			wantKind: UnreadNotServed, wantDetail: lib, wantRead: 1},
+			wantKind: UnreadUnavailable, wantDetail: lib + ": server-error", wantRead: 1},
+		{name: "registry throttles one package", mode: DependencyCodeFetch,
+			corp:     func(t *testing.T, r *fakeRegistries) { r.serveStatus(t, "corp.test", http.StatusTooManyRequests, nil) },
+			wantKind: UnreadUnavailable, wantDetail: lib + ": rate-limited", wantRead: 1},
 		{name: "not served", mode: DependencyCodeFetch,
 			corp:     func(t *testing.T, r *fakeRegistries) { r.serve(t, "corp.test", nil) },
 			wantKind: UnreadNotServed, wantDetail: lib, wantRead: 1},
@@ -118,7 +123,7 @@ func TestDependencyAcquisitionFallback(t *testing.T) {
 			wantKind: UnreadFetchFailed, wantDetail: lib, wantRead: 1},
 		{name: "partial body", mode: DependencyCodeFetch,
 			corp:     func(t *testing.T, r *fakeRegistries) { r.serveHandler(t, "corp.test", truncating(other)) },
-			wantKind: UnreadFetchFailed, wantDetail: lib, wantRead: 1},
+			wantKind: UnreadUnavailable, wantDetail: lib + ": connection-reset", wantRead: 1},
 		{name: "timeout", mode: DependencyCodeFetch, timeout: time.Nanosecond,
 			corp:     func(t *testing.T, r *fakeRegistries) { r.serve(t, "corp.test", other) },
 			plugin:   inventoryPlugin{nodes: both.nodes},
@@ -172,6 +177,17 @@ func TestDependencyAcquisitionFallback(t *testing.T) {
 			if lane != "" {
 				t.Fatalf("lane handed cache %q after a fallback; with dependency code off it gets none", lane)
 			}
+			// Observe names the failed package's registry; the artifact never does.
+			wantRegistry := "https://corp.test"
+			if tt.wantKind == FallbackInventoryFailed {
+				wantRegistry = ""
+			}
+			if got := observed[0].Fallback.Registry; got != wantRegistry {
+				t.Fatalf("Observe fallback registry = %q, want %q", got, wantRegistry)
+			}
+			if b, err := json.Marshal(res); err != nil || strings.Contains(string(b), "corp.test") {
+				t.Fatalf("artifact names the registry: %s (%v)", b, err)
+			}
 		})
 	}
 }
@@ -198,8 +214,8 @@ func TestDependencyAcquisitionPartialBodyNotRead(t *testing.T) {
 			if res.Read != 0 || len(res.Unread) != 1 {
 				t.Fatalf("read %d unread %+v, want the package unread", res.Read, res.Unread)
 			}
-			if r := res.Unread[0].Reason; r != UnreadFetchFailed && r != UnreadIntegrityMismatch {
-				t.Fatalf("unread reason %q, want fetch_failed or integrity_mismatch", r)
+			if r := res.Unread[0].Reason; r != UnreadUnavailable && r != UnreadIntegrityMismatch {
+				t.Fatalf("unread reason %q, want registry_unavailable or integrity_mismatch", r)
 			}
 			if res.Fallback == nil || lane != "" {
 				t.Fatalf("fallback %+v, lane cache %q: a partial fetch must read as off", res.Fallback, lane)

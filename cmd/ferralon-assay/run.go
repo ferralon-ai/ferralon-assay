@@ -481,6 +481,7 @@ type runFlags struct {
 	depUncredCache   *string
 	depNPMRCEnv      *string
 	depTimeout       *string
+	scanTimeoutRaw   *string
 	depRun           *depCodeRun // set by dependencyCodeOption
 	resolvedFacts    string      // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
@@ -572,6 +573,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
 		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
 		depTimeout:     fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
+		scanTimeoutRaw: fs.String("scan-timeout", "", "how long the whole scan may run, counted from start. Analysis stops early enough to publish the report, and every advisory not yet assessed is reported as not assessed. Overrides "+envScanTimeout+" (default: no limit)"),
 	}
 }
 
@@ -644,6 +646,12 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		return workSet{}, err
 	}
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
+	if ctx.Err() != nil {
+		if len(ws.advisories) == 0 {
+			return workSet{}, fmt.Errorf("the scan stopped while choosing advisories, before any was chosen: %w", context.Cause(ctx))
+		}
+		ws = cutWorkSet(ws, context.Cause(ctx))
+	}
 	if len(ws.advisories) == 0 {
 		return workSet{}, errEmptyWorkSet(acq.language)
 	}
@@ -1076,6 +1084,7 @@ func envEnabled(v string) bool {
 // widen selects whether this run's work set is widened by an OSV query over the repository's real
 // dependencies (the scan path) or is the compiled-in floor alone (cve-watch, which drives its own
 // OSV query against the stored SBOM and must be left alone).
+// ctx is the run's analysis context.
 func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) {
 	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
@@ -1157,15 +1166,22 @@ func runPRInherit(args []string) error {
 		return err
 	}
 
-	ctx := context.Background()
-
-	cfg, err := f.resolve(ctx, true)
+	timeout, err := f.scanTimeout()
 	if err != nil {
 		return err
 	}
+	budget := startScanBudget(timeout)
+	defer budget.release()
+	timer := &phaseTimer{w: os.Stderr}
+	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+
+	cfg, err := f.resolve(analysis, true)
+	if err != nil {
+		return markIfStopped(analysis, err)
+	}
 	defer cfg.cleanup()
 
-	prSBOM, sbomLimits, err := trigger.ResolveSBOM(ctx, trigger.ResolveSBOMRequest{
+	prSBOM, sbomLimits, err := trigger.ResolveSBOM(analysis, trigger.ResolveSBOMRequest{
 		Codebase:      cfg.codebase,
 		AssessOptions: cfg.assessOptions,
 	})
@@ -1184,6 +1200,7 @@ func runPRInherit(args []string) error {
 		DiffLimits:    sbomLimits,
 		AssessOptions: cfg.assessOptions,
 		Signals:       f.resolvedSignals,
+		Analysis:      analysis,
 	})
 	if errors.Is(err, trigger.ErrNoBaseline) {
 		return fmt.Errorf("no baseline in state at the selected StateStore — run `%s baseline` against the default branch first", brand.Name)
@@ -1191,6 +1208,8 @@ func runPRInherit(args []string) error {
 	if err != nil {
 		return err
 	}
+	timer.logAdvisories()
+	writeScanTruncated(scanTruncated(res.Report), os.Stderr)
 
 	fmt.Fprintf(os.Stdout, "%s pr-inherit complete\n", brand.Name)
 	if res.Inherited {
@@ -1200,9 +1219,11 @@ func runPRInherit(args []string) error {
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
 	}
 	rescan := rescanFromEnv()
+	publishStart := time.Now()
 	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
 		return err
 	}
+	logPhase(os.Stderr, "publish", time.Since(publishStart))
 	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
@@ -1230,31 +1251,47 @@ func runCVEWatch(args []string) error {
 		return err
 	}
 
-	ctx := context.Background()
+	timeout, err := f.scanTimeout()
+	if err != nil {
+		return err
+	}
+	budget := startScanBudget(timeout)
+	defer budget.release()
+	timer := &phaseTimer{w: os.Stderr}
+	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
 
 	// widen=false: cve-watch's work set is the OSV query it makes below, against the STORED SBOM and
 	// diffed against a cursor. That mechanism is the one the scan path now borrows; re-widening the
 	// acquisition here would query OSV twice and change a mode whose behaviour is deliberately fixed.
-	cfg, err := f.resolve(ctx, false)
+	cfg, err := f.resolve(analysis, false)
 	if err != nil {
-		return err
+		return markIfStopped(analysis, err)
 	}
 	defer cfg.cleanup()
 
 	osv := &trigger.HTTPOSVClient{}
 
-	res, err := trigger.RunCVEWatch(ctx, cfg.store, osv, cveWatchRequest(cfg, f.resolvedSignals))
+	req := cveWatchRequest(cfg, f.resolvedSignals)
+	req.Analysis = analysis
+	res, err := trigger.RunCVEWatch(ctx, cfg.store, osv, req)
 	if errors.Is(err, trigger.ErrNoBaseline) {
 		return fmt.Errorf("no baseline in state at the selected StateStore — run `%s baseline` against the default branch first", brand.Name)
 	}
 	if err != nil {
 		return err
 	}
+	timer.logAdvisories()
+	writeScanTruncated(res.Truncated, os.Stderr)
 
 	rescan := rescanFromEnv()
 	if res.Heartbeat {
 		fmt.Fprintf(os.Stdout, "%s cve-watch heartbeat\n", brand.Name)
-		fmt.Fprintf(os.Stdout, "  no new advisories affect the stored SBOM; cursor bumped, nothing republished\n")
+		if res.NoInventory {
+			fmt.Fprintf(os.Stdout, "  the stored SBOM is empty; no advisories were queried, nothing republished\n")
+		} else {
+			fmt.Fprintf(os.Stdout, "  no new advisories affect the stored SBOM; cursor bumped, nothing republished\n")
+		}
+		warnNoInventory(os.Stderr, res)
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.
@@ -1263,9 +1300,11 @@ func runCVEWatch(args []string) error {
 		fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
 		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
+		publishStart := time.Now()
 		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
 			return err
 		}
+		logPhase(os.Stderr, "publish", time.Since(publishStart))
 		printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 		printRescanContext(rescan)
 		postScan(ctx, cfg.store, cfg.subject, rescan)

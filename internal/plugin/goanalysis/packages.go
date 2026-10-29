@@ -1307,7 +1307,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			// The standard library or a dependency module holds the advisory's package: its code is
 			// not in the index, and a first-party symbol that shares a name with an advisory symbol
 			// is not the advisory's.
-			if strings.EqualFold(pkgFilter, packageFromPURL(stdlibPURL)) || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
+			if isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
 			// No loaded package is the advisory's: if no module in the build holds it either,
@@ -1353,17 +1353,29 @@ func resolutionIndex(ctx context.Context, buildDir string) (plugin.SymbolIndexRe
 	return index, nil
 }
 
+// isToolchainPackage reports whether a PURL package names the Go distribution rather than a
+// module: "stdlib", "toolchain" (govulncheck's module for cmd/go and its tools), or a cmd/
+// package. None is held by any listed module, so none is found by a module search.
+func isToolchainPackage(pkg string) bool {
+	return strings.EqualFold(pkg, packageFromPURL(stdlibPURL)) || strings.EqualFold(pkg, "toolchain") ||
+		pkg == "cmd" || strings.HasPrefix(pkg, "cmd/")
+}
+
 // packageFromPURL extracts the import path from a Go PURL of the form
-// pkg:golang/<import-path>[@version]. An empty or non-golang PURL yields "" (no
-// package filter), so resolution falls back to matching by symbol name alone.
+// pkg:golang/<import-path>[@version][?qualifiers][#subpath]. An empty or non-golang PURL yields ""
+// (no package filter), so resolution falls back to matching by symbol name alone. The type is
+// matched case-insensitively and the path ends at the first '@', '?' or '#', as pipeline's
+// isGoStdlibPURL reads it (this package cannot import pipeline).
 func packageFromPURL(purl string) string {
 	const prefix = "pkg:golang/"
-	if !strings.HasPrefix(purl, prefix) {
+	if len(purl) < len(prefix) || !strings.EqualFold(purl[:len(prefix)], prefix) {
 		return ""
 	}
-	path := strings.TrimPrefix(purl, prefix)
-	if at := strings.IndexByte(path, '@'); at >= 0 {
-		path = path[:at]
+	path := purl[len(prefix):]
+	for _, sep := range []byte{'#', '?', '@'} {
+		if i := strings.IndexByte(path, sep); i >= 0 {
+			path = path[:i]
+		}
 	}
 	return path
 }

@@ -160,7 +160,7 @@ func TestReachability_SplitPackages(t *testing.T) {
 				t.Fatal(err)
 			}
 			return dir
-		}, false, []string{plugin.PartialReasonReachabilityUndetermined, plugin.PartialReasonToolFailure}},
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
 		{"control: every dependency JAR lists, so javax/xml/parsers is the JDK's", func(t *testing.T) string {
 			return withErrorprone(t, callsParsers, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
 		}, true, nil},

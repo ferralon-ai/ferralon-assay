@@ -365,6 +365,8 @@ func paramShapeOf(s string) paramShape {
 			}
 		}
 	}
+	// A lambda default's own parameters run to its ':' and are no parameters of the def.
+	inLambda := false
 	for i := 0; i < len(r); i++ {
 		switch r[i] {
 		case '(', '[', '{':
@@ -375,10 +377,20 @@ func paramShapeOf(s string) paramShape {
 				param(i)
 				return out
 			}
-		case ',':
+		case ':':
 			if depth == 1 {
+				inLambda = false
+			}
+		case ',':
+			if depth == 1 && !inLambda {
 				param(i)
 				start = i + 1
+			}
+		default:
+			if depth == 1 && isIdentStartRune(r[i]) && (i == 0 || !isIdentPart(r[i-1])) {
+				w, end := readWordRunes(r, i)
+				inLambda = inLambda || w == "lambda"
+				i = end - 1
 			}
 		}
 	}

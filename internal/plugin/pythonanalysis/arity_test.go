@@ -24,6 +24,11 @@ func TestParamShapeOf(t *testing.T) {
 		{"(a, *args, **kwargs)", paramShape{required: 1, max: 1, variadic: true}},
 		{"(**kw)", paramShape{variadic: true}},
 		{"(\n    a,\n    b=(1, 2),\n)", paramShape{required: 1, max: 2}},
+		{"(a, key=lambda x, *ys: 0)", paramShape{required: 1, max: 2}},
+		{"(a, key=lambda **kw: 0, b=1)", paramShape{required: 1, max: 3}},
+		{"(a, f=lambda x, y: lambda z, w: 0)", paramShape{required: 1, max: 2}},
+		{"(a: Annotated[int, Field(default=1)])", paramShape{required: 1, max: 1}},
+		{"(lambda_, b)", paramShape{required: 2, max: 2}},
 	}
 	for _, tc := range cases {
 		if got := paramShapeOf(tc.params); got != tc.want {
@@ -67,6 +72,11 @@ func TestCallGraph_DefaultedArity(t *testing.T) {
 			name:  "keyword arguments to **kwargs",
 			files: map[string]string{"app.py": "def f(a, **kw):\n    return a\n\ndef run():\n    return f(1, x=2, y=3)\n"},
 			want:  funcSCIP("app", nil, "f", 2),
+		},
+		{
+			name:   "a lambda default's star parameter is not the def's",
+			files:  map[string]string{"app.py": "def f(a, key=lambda x, *ys: 0):\n    return a\n\ndef run():\n    return f(1, 2, 3, 4, 5)\n"},
+			listed: true,
 		},
 		{
 			name:   "more arguments than the parameters take",

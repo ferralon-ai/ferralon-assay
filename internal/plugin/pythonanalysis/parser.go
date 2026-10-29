@@ -433,6 +433,9 @@ func paramArityAt(r []rune, start int) int {
 	for i := start; i < n; i++ {
 		switch r[i] {
 		case '(', '[', '{':
+			if depth == 1 {
+				seenToken = true // an argument that is only a bracketed literal: "f([x])"
+			}
 			depth++
 		case ')', ']', '}':
 			depth--

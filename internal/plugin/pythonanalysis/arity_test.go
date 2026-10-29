@@ -101,6 +101,26 @@ func TestCallGraph_DefaultedArity(t *testing.T) {
 			listed: true,
 		},
 		{
+			name:   "star-expanded arguments a def with fewer parameters can take",
+			files:  map[string]string{"m.py": "def f(a, b):\n    return a\n", "n.py": "def f():\n    return 0\n", "app.py": "def run():\n    return f(*A)\n"},
+			listed: true,
+		},
+		{
+			name:   "star-expanded arguments a variadic def can take",
+			files:  map[string]string{"m.py": "def f(*args):\n    return 0\n", "n.py": "def f(a, b, c):\n    return a\n", "app.py": "def run():\n    return f(1, 2, *A)\n"},
+			listed: true,
+		},
+		{
+			name:   "a product argument is no star expansion",
+			files:  map[string]string{"app.py": "def f(a, b, c):\n    return a\n\ndef run():\n    return f(X * Y)\n"},
+			listed: true,
+		},
+		{
+			name:   "an argument that is only a bracketed literal counts",
+			files:  map[string]string{"m.py": "def f():\n    return 0\n", "n.py": "def f(a, b, c):\n    return a\n", "app.py": "def run():\n    return f([X])\n"},
+			listed: true,
+		},
+		{
 			name:   "more arguments than the parameters take",
 			files:  map[string]string{"app.py": "def f(a, b=1):\n    return a\n\ndef run():\n    return f(1, 2, 3, 4)\n"},
 			listed: true,

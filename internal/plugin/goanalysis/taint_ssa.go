@@ -225,10 +225,18 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 				// read of s.p is a fresh load of &s.p, so the chain goes on to &s.p
 				// and s, and s.p.a then reads as tainted (as s.p.b does). It also
 				// continues through a slice view, so s := arr[:]; s[0] = x taints
-				// arr. It stops at a load of anything else, such as a global or a
-				// variable a closure captures: g.a = x, with g a global pointer,
-				// taints only the struct g points to, which a later read of g.a
-				// does not observe.
+				// arr. It stops at a load of anything else, such as a global
+				// pointer or a variable a closure captures: g.a = x, with g a global
+				// pointer, taints only the load of g it stores through, which a later
+				// read of g.a, a fresh load of g, does not observe; and a store a
+				// closure makes through a pointer it captures is not seen by the
+				// enclosing function's later read of that pointer. A package-level
+				// struct value is different: cfg.p.a = x, with cfg a package-level
+				// struct, takes &cfg.p straight off the global, so the chain does
+				// reach cfg and seeds it. The seed goes no further, though: go/ssa
+				// records no referrers for a global, so no read of cfg, in this
+				// function or any other, observes it, and a store into package state
+				// in one handler does not taint a read in another.
 				//
 				// This deliberately over-approximates, and it partly undoes the
 				// choice not to seed receivers (see runTaint): in a method, s.last
@@ -255,7 +263,9 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 // slice view to the value it slices (for &t1[i], t1 = t0[:], it is t1, then t0) and
 // through a load of a field or element address to that address (for &t2.a, t2 =
 // *(&t0.p), it is t2, then &t0.p, then t0). It stops at the first base that is none
-// of these.
+// of these. That last base can be a package-level variable (for &cfg.a it is cfg),
+// which propagate cannot follow, since a global has no referrers; a load of a global
+// pointer (for &t1.a, t1 = *g, it is t1) never reaches the global.
 func addrBases(addr ssa.Value) []ssa.Value {
 	var bases []ssa.Value
 	for {
@@ -325,10 +335,16 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// Extract. A dynamic call with no static callee forwards nothing; the
 		// append and copy builtins are modeled above (propagateBuiltin).
 		// This is also how a context.Context becomes tainted: r.Context() is such
-		// a call on the tainted request, so its result is tainted, and every
-		// callee then receiving that ctx is tainted too (exec.CommandContext(ctx,
-		// "const") is a sink hit). Like the field-base seed, this only affects
-		// trace and entry-point selection, never a verdict.
+		// a call on the tainted request, so its result is tainted. The callees that
+		// then receive ctx are not tainted as a whole; ctx spreads three ways. A
+		// sink that takes ctx as any argument is a hit (exec.CommandContext(ctx,
+		// "const")). The result of every call that takes ctx is tainted, whether
+		// or not it depends on ctx: here, a library call's (context.WithTimeout(
+		// ctx, d), db.QueryRowContext(ctx, constQ)), and below, a first-party
+		// call's (lookup(ctx, "const")). And a first-party callee's ctx parameter
+		// is tainted, never its other parameters, so the same holds for every call
+		// it makes with ctx, down the call tree. Like the field-base seed, this
+		// only affects trace and entry-point selection, never a verdict.
 		if forwardsUnbuilt(common, callee, v) {
 			if val, ok := in.(ssa.Value); ok {
 				seed(val, o)

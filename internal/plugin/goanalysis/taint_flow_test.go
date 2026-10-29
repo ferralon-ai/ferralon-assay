@@ -2,8 +2,8 @@
 // library calls with no SSA body, a store into a struct field, a type assertion and a
 // map lookup, the stores through an element or nested field address that a variadic
 // call, a slice literal or a nested struct makes, a store through a pointer field or a
-// slice view, the append and copy builtins, and the sanitizer model that body-less
-// forwarding brings into effect.
+// slice view, the append and copy builtins, the sanitizer model that body-less
+// forwarding brings into effect, and the places the chain of bases stops.
 //
 // They run runTaint over taintflowmod's main.go, type-checked and built in memory
 // against the chimod net/http and chi stubs and two one-line stdlib stand-ins. As in a
@@ -112,6 +112,12 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 		{"copy(dst, tainted)", "sinkCopy", true},
 		{"append on values not from the request", "sinkAppendConst", false},
 		{"copy from values not from the request", "sinkCopyConst", false},
+		// Where taint stops: at a load of a global pointer, at a package-level struct
+		// value (the chain reaches the global, but no read of a global observes it), and
+		// at a pointer a closure captures.
+		{"store through a global pointer, read back", "sinkGlobalPointer", false},
+		{"store through a package-level struct value, read back", "sinkPackageStruct", false},
+		{"store through a closure-captured pointer, read outside", "sinkClosureCapture", false},
 	}
 	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
 	sp := &ssaProgram{prog: app.Prog}

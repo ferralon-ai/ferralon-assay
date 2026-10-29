@@ -11,8 +11,10 @@
 //
 // The controls sit beside them: field reads and a first-party call, which were always
 // tainted, and a library call, an append and a copy over values never derived from
-// the request, which must stay untainted. (The http types are tegron.test/nethttp's
-// stand-ins; see ../chimod/nethttpstub/http.go.)
+// the request, which must stay untainted. So must the places taint stops: a store
+// through a global pointer, through a package-level struct value, and through a
+// pointer a closure captures, each read back afterwards. (The http types are
+// tegron.test/nethttp's stand-ins; see ../chimod/nethttpstub/http.go.)
 package main
 
 import (
@@ -56,6 +58,10 @@ func sinkCopyConst(v string)     { sunk = append(sunk, v) }
 func sinkPointerField(v string)  { sunk = append(sunk, v) }
 func sinkSliceView(v string)     { sunk = append(sunk, v) }
 
+func sinkGlobalPointer(v string)  { sunk = append(sunk, v) }
+func sinkClosureCapture(v string) { sunk = append(sunk, v) }
+func sinkPackageStruct(v string)  { sunk = append(sunk, v) }
+
 // greeting is never derived from the request.
 var greeting = " hello "
 
@@ -67,6 +73,14 @@ type outer struct{ in struct{ a, b string } }
 
 // holder holds a pointer in a field, so h.in.a stores through a load of &h.in.
 type holder struct{ in *struct{ a string } }
+
+// gp is a global pointer: gp.a = x stores through a load of gp, where the chain of
+// bases stops.
+var gp = &struct{ a string }{}
+
+// cfg is a package-level struct value: cfg.p.a = x takes the address of cfg.p straight
+// off the global, so the chain of bases reaches cfg itself.
+var cfg = struct{ p *struct{ a string } }{p: &struct{ a string }{}}
 
 // ownID is a first-party transform: its body is built, so taint flows through it.
 func ownID(s string) string { return "id-" + s }
@@ -125,6 +139,20 @@ func flows(w http.ResponseWriter, r *http.Request) {
 	view := arr[:]
 	view[0] = r.Method
 	sinkSliceView(arr[1])
+
+	// Where taint stops. A store through a global pointer taints only the load of gp it
+	// stores through, which a later read of gp.a, a fresh load of gp, does not observe.
+	// A store through a package-level struct value reaches cfg itself, but no read of a
+	// global observes a seed on it. And a store a closure makes through a pointer it
+	// captures is not seen by the enclosing function's later read of that pointer.
+	gp.a = r.Method
+	sinkGlobalPointer(gp.a)
+	cfg.p.a = r.Method
+	sinkPackageStruct(cfg.p.a)
+	cp := &struct{ a string }{}
+	set := func(s string) { cp.a = s }
+	set(r.Method)
+	sinkClosureCapture(cp.a)
 }
 
 func main() {

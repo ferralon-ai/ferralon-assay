@@ -130,6 +130,11 @@ func graphOption(t *testing.T, modules ...buildgraph.Module) javaanalysis.Option
 // rewritten after the call no longer matches.
 func cacheGraph(t *testing.T, dir string, extra ...graphDep) javaanalysis.Option {
 	t.Helper()
+	return graphOption(t, cacheModule(dir, extra...))
+}
+
+// cacheModule is cacheGraph's one root module.
+func cacheModule(dir string, extra ...graphDep) buildgraph.Module {
 	deps := append([]graphDep(nil), extra...)
 	gradle := filepath.Join(dir, ".gradle", "caches", "modules-2", "files-2.1")
 	m2 := filepath.Join(dir, ".m2", "repository")
@@ -150,5 +155,5 @@ func cacheGraph(t *testing.T, dir string, extra ...graphDep) javaanalysis.Option
 			return nil
 		})
 	}
-	return graphOption(t, graphModule(".", "app", deps...))
+	return graphModule(".", "app", deps...)
 }

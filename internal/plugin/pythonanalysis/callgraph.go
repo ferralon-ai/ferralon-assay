@@ -175,11 +175,12 @@ func (f *fileParse) depOnly(cs callSite) bool {
 // name by first-party import, they are the functions the import path names (declsAt); a
 // chain's head names a module, so the path runs on through the chain to its leaf, and a
 // module on the way that binds the leaf by a class, an assignment or a dependency import
-// names nothing (declsAt's decided). Where the module binds a bare name by def, the
-// module-level defs are candidates beside any import of the name, unless a class or an
-// assignment of the name may replace them (ownDefs); a def inside a function body is never
-// one. Otherwise, or when a path finds no module binding the name, they are every
-// declaration under the leaves (declsNamed).
+// names nothing (declsAt's decided), nor does a path whose modules bind no function by the
+// name. Where the module binds a bare name by def, the module-level defs are candidates
+// beside any import of the name, unless a class or an assignment of the name may replace
+// them (ownDefs); a def inside a function body is never one. Otherwise, or when a path
+// leaves the modules the lane reads (declsAt's open), they are every declaration under the
+// leaves (declsNamed).
 func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDecl {
 	if len(leaves) == 0 {
 		return nil
@@ -195,8 +196,8 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 	}
 	if paths, bound := f.aliasBound(head, cs.scopes); bound {
 		for _, path := range paths {
-			at, decided := p.declsAt(path + rest)
-			if !decided {
+			at, decided, open := p.declsAt(path + rest)
+			if !decided || len(at) == 0 && !open {
 				return nil
 			}
 			if len(at) == 0 {
@@ -246,11 +247,15 @@ func (f *fileParse) topDefs(scope, name string) []funcDecl {
 
 // declsAt is the top-level functions an import path ("pkg/m/f") names: the defs of f at
 // module level in the modules pkg/m names (topDefs), and what each such module's own
-// first-party imports and star imports bind f to, followed in turn. Each path is visited
-// once, so an import cycle ends. decided is false when a module on the way binds f by
-// anything but defs at module level, first-party imports and star imports (bindsOtherwise):
-// what f holds there is not a declaration the walk can name.
-func (p *program) declsAt(path string) (decls []funcDecl, decided bool) {
+// first-party imports and star imports bind f to, followed in turn. A path through a
+// module's attribute ("pkg/x/f", pkg binding x) follows what the module binds x to the same
+// way. Each path is visited once, so an import cycle ends, and a re-export through the cycle
+// is still followed to its def. decided is false when a module on the way binds f, or the
+// attribute, by anything but defs at module level, first-party imports and star imports
+// (bindsOtherwise): what it holds there is not a declaration the walk can name. open is
+// true when the path leaves the modules the lane reads: a module no file is, or a class's
+// member.
+func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 	visited := map[string]bool{}
 	var out []funcDecl
 	decided = true
@@ -262,6 +267,35 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided bool) {
 		visited[path] = true
 		mod, leaf := parentModule(path), path[strings.LastIndexByte(path, '/')+1:]
 		if mod == "" {
+			return
+		}
+		if len(p.byModule[mod]) == 0 {
+			segs := strings.Split(path, "/")
+			k := len(segs) - 2
+			for k > 0 && len(p.byModule[strings.Join(segs[:k], "/")]) == 0 {
+				k--
+			}
+			if k == 0 {
+				open = true
+				return
+			}
+			attr, rest := segs[k], strings.Join(segs[k+1:], "/")
+			for _, i := range p.byModule[strings.Join(segs[:k], "/")] {
+				g := &p.files[i]
+				switch {
+				case g.defs[""][attr] && !g.topFuncs[attr]:
+					open = true // a class's member
+				case g.bindsOtherwise(attr):
+					decided = false
+					return
+				}
+				for _, next := range g.fpBinds[""][attr] {
+					walk(next + "/" + rest)
+				}
+				for _, star := range g.starPaths {
+					walk(star + "/" + attr + "/" + rest)
+				}
+			}
 			return
 		}
 		for _, i := range p.byModule[mod] {
@@ -280,7 +314,7 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided bool) {
 		}
 	}
 	walk(path)
-	return out, decided
+	return out, decided, open
 }
 
 // bindsOtherwise reports whether the module scope binds name by something besides defs

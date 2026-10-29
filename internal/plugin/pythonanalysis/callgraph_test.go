@@ -306,7 +306,19 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			listed: true,
 		},
 		{
-			name: "re-export cycle",
+			name: "re-export through an import cycle",
+			files: map[string]string{
+				"a.py":   "from b import f\n",
+				"b.py":   "import a\nfrom c import f\n",
+				"c.py":   "def f(x):\n    return x\n",
+				"d.py":   "def f(x):\n    return x\n",
+				"app.py": "import a\n\ndef index():\n    return a.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("c", nil, "f", 1), absent: []string{funcSCIP("d", nil, "f", 1)},
+		},
+		{
+			name: "import cycle that binds no def names nothing",
 			files: map[string]string{
 				"a.py":   "from b import f\n",
 				"b.py":   "from a import f\n",
@@ -314,7 +326,59 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 				"app.py": "import a\n\ndef index():\n    return a.f(1)\n",
 			},
 			caller: funcSCIP("app", nil, "index", 0),
-			want:   funcSCIP("c", nil, "f", 1),
+			absent: []string{funcSCIP("c", nil, "f", 1)}, escape: []string{funcSCIP("c", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path whose module does not bind the name",
+			files: map[string]string{
+				"pkg/__init__.py": "", "pkg/impl.py": "X = 1\n",
+				"other.py": "def f(x):\n    return x\n",
+				"app.py":   "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("other", nil, "f", 1)}, escape: []string{funcSCIP("other", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path through a module-level value",
+			files: map[string]string{
+				"app/__init__.py": "db = make_db()\n", "app/auth.py": "def session(x):\n    return x\n",
+				"main.py": "from app import db\n\ndef run():\n    return db.session(1)\n",
+			},
+			caller: funcSCIP("main", nil, "run", 0),
+			absent: []string{funcSCIP("app/auth", nil, "session", 1)}, escape: []string{funcSCIP("app/auth", nil, "session", 1)},
+			listed: true,
+		},
+		{
+			name: "module path through a dependency star import",
+			files: map[string]string{
+				"pkg/__init__.py": "", "pkg/impl.py": "from json import *\n",
+				"util.py": "def loads(s):\n    return s\n",
+				"app.py":  "from pkg import impl\n\ndef run(x):\n    return impl.loads(x)\n",
+			},
+			caller: funcSCIP("app", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "loads", 1)}, escape: []string{funcSCIP("util", nil, "loads", 1)},
+			listed: true,
+		},
+		{
+			name: "module path through a module's first-party attribute",
+			files: map[string]string{
+				"pkg/__init__.py": "from .sub import tools\n", "pkg/sub/__init__.py": "", "pkg/sub/tools.py": "def f(x):\n    return x\n",
+				"other.py": "def f(x):\n    return x\n",
+				"app.py":   "import pkg\n\ndef index():\n    return pkg.tools.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/sub/tools", nil, "f", 1), absent: []string{funcSCIP("other", nil, "f", 1)},
+		},
+		{
+			name: "module path to a class member keeps the name fallback",
+			files: map[string]string{
+				"pkg/__init__.py": "", "pkg/impl.py": "class K:\n    @staticmethod\n    def m(x):\n        return x\n",
+				"app.py": "from pkg import impl\n\ndef index():\n    return impl.K.m(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/impl", []string{"K"}, "m", 1),
 		},
 		{
 			name: "first-party package below a directory the distribution scan reads as the top",

@@ -807,7 +807,7 @@ var identityLeaders = map[string]bool{
 // operator or comparison takes it as its right operand.
 func operandStart(r []rune, i int) bool {
 	j := i - 1
-	for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\\' || r[j] == '\n' && continued(r, j)) {
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\r' || r[j] == '\\' || r[j] == '\n' && continued(r, j)) {
 		j--
 	}
 	if j < 0 {
@@ -849,7 +849,7 @@ func precededByIs(r []rune, i int) bool {
 // it.
 func operandEnd(r []rune, i int) bool {
 	k := skipLineSpace(r, i)
-	for k < len(r) && (r[k] == '\\' || r[k] == '\n' && continued(r, k)) {
+	for k < len(r) && (r[k] == '\r' || r[k] == '\\' || r[k] == '\n' && continued(r, k)) {
 		k = skipLineSpace(r, k+1)
 	}
 	if k >= len(r) || strings.ContainsRune("\n;)]},:", r[k]) {
@@ -945,12 +945,21 @@ func statementEnd(r []rune, i int) int {
 				return i
 			}
 		case '\n':
-			if depth <= 0 && (i == 0 || r[i-1] != '\\') {
+			if depth <= 0 && !lineContinued(r, i) {
 				return i
 			}
 		}
 	}
 	return len(r)
+}
+
+// lineContinued reports whether a line-continuation backslash ends the line the newline at
+// r[i] ends, in LF or CRLF source.
+func lineContinued(r []rune, i int) bool {
+	if i > 0 && r[i-1] == '\r' {
+		i--
+	}
+	return i > 0 && r[i-1] == '\\'
 }
 
 // assignedTo reports whether the word ending at r[end] is the target of a plain assignment

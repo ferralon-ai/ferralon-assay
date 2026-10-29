@@ -3,6 +3,7 @@ package goanalysis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -470,6 +471,82 @@ func vendor(t *testing.T, app string) {
 func TestDependencyHolds_UnreadableBuildList(t *testing.T) {
 	if dependencyHolds(context.Background(), t.TempDir(), "example.com/a") {
 		t.Fatal("a build list that cannot be read holds a dependency path; the advisory would resolve nothing")
+	}
+}
+
+// TestDependencyHolds_VendorMode reads vendor/modules.txt only when the go command reads the build
+// from vendor/. A vendor/ it does not read can be stale: it may name a nested module whose path has
+// since moved into the main module, and taking it would scope a first-party advisory to nothing.
+func TestDependencyHolds_VendorMode(t *testing.T) {
+	// stale names example.com/app/sub, a nested module the main module has since absorbed.
+	const stale = "# example.com/app/sub v1.0.0\n## explicit\nexample.com/app/sub\n"
+	tests := []struct {
+		name       string
+		goLine     string // the go.mod go version, set after vendoring
+		vendor     string // "": no vendor/; "vendor": go mod vendor; else vendor/modules.txt verbatim
+		goflags    string
+		offline    bool // GOPROXY=off over a cold cache, so a listing outside vendor mode fails
+		holds      string
+		want       bool
+		wantVendor bool // listModules answers errVendorMode
+	}{
+		{name: "a vendored build reads vendor/modules.txt", goLine: "1.21", vendor: "vendor", offline: true,
+			holds: "example.com/a/ssh", want: true, wantVendor: true},
+		{name: "a vendored build still holds first-party paths itself", goLine: "1.21", vendor: "vendor", offline: true,
+			holds: "example.com/app/sub/x", wantVendor: true},
+		{name: "a stale vendor/ the go command rejects is not read", goLine: "1.21", vendor: stale,
+			holds: "example.com/app/sub/x"},
+		{name: "a listing failing outside vendor mode does not read a stale vendor/", goLine: "1.21", vendor: stale,
+			goflags: "-mod=mod", offline: true, holds: "example.com/app/sub/x"},
+		{name: "go 1.13 with vendor/ and no -mod=vendor is not vendor mode", goLine: "1.13", vendor: stale,
+			offline: true, holds: "example.com/app/sub/x"},
+		{name: "GOFLAGS=-mod=vendor is vendor mode", goLine: "1.13", vendor: "vendor", goflags: "-mod=vendor",
+			offline: true, holds: "example.com/a/ssh", want: true, wantVendor: true},
+		{name: "GOFLAGS=-mod=mod over a vendored build is not vendor mode", goLine: "1.21", vendor: "vendor",
+			goflags: "-mod=mod", offline: true, holds: "example.com/a/ssh"},
+		{name: "no vendor/", goLine: "1.21", offline: true, holds: "example.com/a/ssh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newSourceProxy(t, []srcModule{modA})
+			app := newApp(t, []string{"example.com/a"}, "", nil)
+			switch tt.vendor {
+			case "":
+			case "vendor":
+				cmd := exec.Command("go", "mod", "vendor")
+				cmd.Dir = app
+				cmd.Env = append(os.Environ(), "GOWORK=off")
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("go mod vendor: %v\n%s", err, out)
+				}
+			default:
+				writeDir(t, app, map[string]string{"vendor/modules.txt": tt.vendor})
+			}
+			gomod := filepath.Join(app, "go.mod")
+			data, err := os.ReadFile(gomod)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gomod, []byte(strings.Replace(string(data), "\ngo 1.21\n", "\ngo "+tt.goLine+"\n", 1)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tt.offline {
+				t.Setenv("GOPROXY", "off")
+				coldCache(t)
+			}
+			t.Setenv("GOFLAGS", tt.goflags)
+			ctx := context.Background()
+			_, err = listModules(ctx, app)
+			if err == nil {
+				t.Fatal("listModules succeeded; the row does not exercise the fallback")
+			}
+			if got := errors.Is(err, errVendorMode); got != tt.wantVendor {
+				t.Fatalf("listModules: %v; vendor mode %v, want %v", err, got, tt.wantVendor)
+			}
+			if got := dependencyHolds(ctx, app, tt.holds); got != tt.want {
+				t.Fatalf("dependencyHolds(%s) = %v, want %v", tt.holds, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -769,7 +769,7 @@ func identityOnly(r []rune, start, end int) bool {
 		return true
 	}
 	if w, _ := readWordRunes(r, skipLineSpace(r, end)); w == "is" {
-		return operandStart(r, start)
+		return operandStart(r, start) || precededByIs(r, start)
 	}
 	return precededByIs(r, start) && operandEnd(r, end)
 }
@@ -807,7 +807,7 @@ var identityLeaders = map[string]bool{
 // operator or comparison takes it as its right operand.
 func operandStart(r []rune, i int) bool {
 	j := i - 1
-	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\\' || r[j] == '\n' && continued(r, j)) {
 		j--
 	}
 	if j < 0 {
@@ -849,6 +849,9 @@ func precededByIs(r []rune, i int) bool {
 // it.
 func operandEnd(r []rune, i int) bool {
 	k := skipLineSpace(r, i)
+	for k < len(r) && (r[k] == '\\' || r[k] == '\n' && continued(r, k)) {
+		k = skipLineSpace(r, k+1)
+	}
 	if k >= len(r) || strings.ContainsRune("\n;)]},:", r[k]) {
 		return true
 	}
@@ -858,6 +861,26 @@ func operandEnd(r []rune, i int) bool {
 		return true
 	}
 	return false
+}
+
+// continued reports whether the newline at r[i] continues the logical line rather than
+// ending it: it lies inside brackets or follows a line-continuation backslash.
+func continued(r []rune, i int) bool {
+	return statementEnd(r, logicalLineStart(r, i)) > i
+}
+
+// logicalLineStart is the index just after the newline or ';' that ends the logical line
+// before the one holding r[i], or 0.
+func logicalLineStart(r []rune, i int) int {
+	start := 0
+	for k := 0; k < i; {
+		end := statementEnd(r, k)
+		if end >= i {
+			break
+		}
+		start, k = end+1, end+1
+	}
+	return start
 }
 
 // skipLineSpace returns the first index at or after i that is not a space or a tab.

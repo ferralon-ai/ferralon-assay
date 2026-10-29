@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -182,6 +183,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		{name: "offline empty cache", mode: DependencyCodeOffline, served: tarball, digest: sri512(tarball), want: UnreadNotCached},
 		{name: "offline seeded cache", mode: DependencyCodeOffline, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "offline tampered cache", mode: DependencyCodeOffline, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
+		{name: "fetch reads a cached entry without a request", mode: DependencyCodeFetch, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "fetch over tampered cache entry refetches it once", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
 		{name: "tampered cache entry and a registry serving bad bytes", mode: DependencyCodeFetch, served: other, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1, fallback: UnreadIntegrityMismatch},
 		{name: "tampered cache entry and a registry that does not serve it", mode: DependencyCodeFetch, seed: other, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
@@ -237,6 +239,22 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 			seen := regs.seen("registry.test")
 			if n := len(seen); n != tt.wantReqs {
 				t.Fatalf("registry requests = %d, want %d", n, tt.wantReqs)
+			}
+			// Every pin has an outcome; a read one says whether this run fetched it, which only a
+			// request to the registry can have done.
+			wantOutcome := tt.want
+			if wantOutcome == "" {
+				wantOutcome = OutcomeReadCache
+				if tt.wantReqs > 0 {
+					wantOutcome = OutcomeReadNetwork
+				}
+			}
+			wantRegistry := ""
+			if tt.mode == DependencyCodeFetch && tt.want != UnreadNoIntegrity && tt.want != UnreadNPMRCMalformed {
+				wantRegistry = "https://" + registry
+			}
+			if want := []DependencyOutcome{{PURL: qs, Registry: wantRegistry, Outcome: wantOutcome}}; !slices.Equal(res.Outcomes, want) {
+				t.Fatalf("outcomes = %+v, want %+v", res.Outcomes, want)
 			}
 			if len(tt.env) == 0 {
 				for _, a := range seen {
@@ -733,6 +751,28 @@ func TestDependencyAcquisitionSplitCache(t *testing.T) {
 			}
 			if res.Fallback != nil {
 				t.Fatalf("fallback = %+v, want none", res.Fallback)
+			}
+			// Each registry serves one of the two packages, so a read package was fetched by this
+			// run exactly when its registry saw a request.
+			var wantOutcomes []DependencyOutcome
+			for _, p := range []struct {
+				purl, registry string
+				reqs           int
+			}{{priv, "https://npm.priv.test", tt.wantPrivReqs}, {pub, "https://registry.test", tt.wantPubReqs}} {
+				o := DependencyOutcome{PURL: p.purl, Outcome: tt.wantUnread[p.purl]}
+				if o.Outcome == "" {
+					o.Outcome = OutcomeReadCache
+					if p.reqs > 0 {
+						o.Outcome = OutcomeReadNetwork
+					}
+				}
+				if tt.mode == DependencyCodeFetch {
+					o.Registry = p.registry
+				}
+				wantOutcomes = append(wantOutcomes, o)
+			}
+			if !slices.Equal(res.Outcomes, wantOutcomes) {
+				t.Fatalf("outcomes = %+v, want %+v", res.Outcomes, wantOutcomes)
 			}
 
 			// The persisted directory's physical contents: each wanted entry with its pinned

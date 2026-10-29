@@ -780,7 +780,7 @@ func goRuns(cmds []*exec.Cmd, sub string) int {
 }
 
 func TestModuleSearchGoRunsOncePerBuild(t *testing.T) {
-	const list, flags, download = "list -m -json all", "env GOFLAGS", "mod download"
+	const list, flags, download = "list -m -json all", "env -json=false -u=false -w=false -changed=false GOFLAGS", "mod download"
 	type step struct {
 		ctx       func(context.Context) context.Context // nil: the scan's context
 		holds     string                                // dependencyHolds this path, want held
@@ -915,7 +915,7 @@ func TestModuleSearchRunsUnderTheLoadToolchain(t *testing.T) {
 	}
 	cmds := recordGo(t)
 	wantSearch(t, searchBuildModules(ctx, app, gogsDB, gogsSymbols), []string{"example.com/a", "example.com/app"}, nil)
-	for _, sub := range []string{"env GOFLAGS", "list -m -json all", "mod download"} {
+	for _, sub := range []string{"env -json=false -u=false -w=false -changed=false GOFLAGS", "list -m -json all", "mod download"} {
 		t.Run(sub, func(t *testing.T) {
 			if goRuns(*cmds, sub) == 0 {
 				t.Fatalf("go %s did not run", sub)

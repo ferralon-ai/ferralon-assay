@@ -222,6 +222,13 @@ func TestDepCodeRunRecord(t *testing.T) {
 			want:    &statestore.DepFetch{Reassess: []string{"CVE-2026-0001"}},
 		},
 		{
+			name:    "a cve-watch run that read keeps an entry naming only an alias of what it assessed",
+			prior:   &statestore.DepFetch{Reassess: []string{"GHSA-aaaa-bbbb-cccc", "Z"}},
+			results: []pipeline.DependencyAcquisitionResult{{}},
+			run:     trigger.DependencyFetchRun{Assessed: []report.Advisory{aliased}},
+			want:    &statestore.DepFetch{Reassess: []string{"GHSA-aaaa-bbbb-cccc", "Z"}},
+		},
+		{
 			name:    "a baseline that read clears an entry naming an alias of what it assessed",
 			prior:   &statestore.DepFetch{Reassess: []string{"GHSA-aaaa-bbbb-cccc", "Z"}},
 			results: []pipeline.DependencyAcquisitionResult{{}},

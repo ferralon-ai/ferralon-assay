@@ -154,8 +154,9 @@ type registryRun struct {
 // fetch the run's deadline cancelled is not a registry failure, and a cursor held for any other
 // reason (the JVM build graph, a cut-short assessment) counts nothing. A baseline never touches the
 // held count. A cve-watch earnest run that fell back adds the IDs of the advisories it assessed to
-// reassess, and a run of either kind that read dependency code without falling back removes every
-// entry naming one of them by ID or alias.
+// reassess, and a run of either kind that read dependency code without falling back removes them:
+// a baseline every entry naming one by ID or alias, since it rebuilds every row, and a cve-watch run
+// only entries naming one by ID, since it replaces only the rows of the IDs it assessed.
 func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFetchRun, now time.Time) *statestore.DepFetch {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -216,7 +217,12 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 			next.Reassess = append(next.Reassess, a.ID)
 		}
 	case d.fell == nil:
-		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool { return namesAny(run.Assessed, id) })
+		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool {
+			if run.Baseline {
+				return namesAny(run.Assessed, id)
+			}
+			return slices.ContainsFunc(run.Assessed, func(a report.Advisory) bool { return a.ID == id })
+		})
 	}
 	return next
 }

@@ -2766,17 +2766,15 @@ func Toolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
 // analyzer's toolchain, and they are all the same thing to a verdict: not established. A reader that
 // wants to tell them apart reads the ToolchainScan block itself.
 func SubjectToolchainScanned(store artifact.Store, caseID string) bool {
-	arts, err := store.Query(caseID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
+	rec, ok, err := Reachability(store, caseID)
+	if err != nil || !ok {
 		return false
 	}
-	var payload struct {
-		ToolchainScan ToolchainScan `json:"toolchain_scan"`
-	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
+	ts, err := rec.ToolchainScan()
+	if err != nil {
 		return false
 	}
-	return payload.ToolchainScan.Subject
+	return ts.Subject
 }
 
 // ToolchainSubject reports whether the advisory under assessment is keyed to the Go
@@ -3723,13 +3721,9 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 		}
 	}
 
-	if arts, err := store.Query(c.ID, artifact.TypeReachability); err != nil {
+	if rec, ok, err := Reachability(store, c.ID); err != nil {
 		return err
-	} else if len(arts) > 0 {
-		var full struct {
-			Reachability plugin.ReachabilityResult `json:"reachability"`
-			CallGraph    plugin.CallGraphResult    `json:"call_graph"`
-		}
+	} else if ok {
 		// Partiality is harvested whether or not any path was found, and BEFORE the
 		// path-count branch. Harvesting it only on len(Paths) > 0 dropped the disclosure
 		// on precisely the case it exists for: a reachability pass that resolved nothing
@@ -3739,22 +3733,20 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 		// The call graph's limits are harvested beside reachability's: a lane may declare a
 		// step that did not run only on its graph, and that limit must hold the verdict
 		// whether or not the graph has edges.
-		unmarshalled := json.Unmarshal(arts[0].Payload, &full) == nil
+		reach, reachErr := rec.Result()
+		cg, cgErr := rec.CallGraph()
+		unmarshalled := reachErr == nil && cgErr == nil
 		if unmarshalled {
-			payload.PartialityFlags = append(payload.PartialityFlags, full.Reachability.Partiality.Reasons...)
-			payload.PartialityFlags = append(payload.PartialityFlags, full.CallGraph.Partiality.Reasons...)
-			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.Reachability.Partiality.Scoped)
-			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.CallGraph.Partiality.Scoped)
+			cgPartiality := cg.Partiality()
+			payload.PartialityFlags = append(payload.PartialityFlags, reach.Partiality.Reasons...)
+			payload.PartialityFlags = append(payload.PartialityFlags, cgPartiality.Reasons...)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, reach.Partiality.Scoped)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, cgPartiality.Scoped)
 		}
-		if unmarshalled && len(full.Reachability.Paths) > 0 {
-			payload.ReachablePathCount = len(full.Reachability.Paths)
-		} else {
-			var stub struct {
-				Reachable bool `json:"reachable"`
-			}
-			if json.Unmarshal(arts[0].Payload, &stub) == nil && stub.Reachable {
-				payload.ReachablePathCount = 1
-			}
+		if unmarshalled && len(reach.Paths) > 0 {
+			payload.ReachablePathCount = len(reach.Paths)
+		} else if reachable, err := rec.StubReachable(); err == nil && reachable {
+			payload.ReachablePathCount = 1
 		}
 	}
 

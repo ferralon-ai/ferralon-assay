@@ -231,11 +231,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 // the Prove tier settles. Returns guards in the advisory's declared order.
 //
 // Guards are matched against the one chain shown (frames), never against other chains
-// from the ingress to the sink. When chains of the same length tie, the one shown is
-// picked by symbol (see taintFrames), so a guard called only on a tied chain that is
-// not shown is not listed: which guards are listed can then follow the symbols' names,
-// never the verdict. A guard on one chain does not cover another, so listing it beside
-// frames that never call it would claim more than the evidence shows.
+// from the ingress to the sink. For a taint finding, when chains of the same length tie,
+// the one shown is picked by symbol (see taintFrames), so a guard called only on a tied
+// chain that is not shown is not listed: which guards are listed can then follow the
+// symbols' names, never the verdict. A reachability-only candidate (no taint path) shows
+// its first stored reachability path, with no length or symbol comparison, so its guard
+// list follows the order the lane stored its paths in. A guard on one chain does not
+// cover another, so listing it beside frames that never call it would claim more than
+// the evidence shows.
 func guardsOnPath(store artifact.Store, assessmentID string, frames []report.CallFrame) []string {
 	declared := advisoryGuards(store, assessmentID)
 	if len(declared) == 0 || len(frames) == 0 {

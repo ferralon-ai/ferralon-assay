@@ -21,6 +21,7 @@ type groundsFixture struct {
 	dropped         []string // dropped_affected_packages: elements that failed validation
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
+	callGraph       *plugin.CallGraphResult // nil = a complete graph with one edge
 	footprint       []string
 	mods            goModules // the build's Go modules
 	scoped          []artifact.ScopedPartialityFlag
@@ -52,10 +53,11 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, adv)
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
-	seedReachArtifact(t, store, aid, plugin.CallGraphResult{
-		Partiality: plugin.Complete(),
-		Edges:      []plugin.CallEdge{depEdge("main", "lib")},
-	}, fx.reach)
+	cg := plugin.CallGraphResult{Partiality: plugin.Complete(), Edges: []plugin.CallEdge{depEdge("main", "lib")}}
+	if fx.callGraph != nil {
+		cg = *fx.callGraph
+	}
+	seedReachArtifact(t, store, aid, cg, fx.reach)
 	if fx.footprint != nil || fx.scoped != nil {
 		putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{
 			PartialityFlags: fx.footprint, ScopedPartiality: fx.scoped,

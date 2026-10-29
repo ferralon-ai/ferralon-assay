@@ -23,8 +23,8 @@ import (
 //     Report that recorded a different digest (or none) than the later Report did, the
 //     digest is left empty rather than naming a file that did not rank that row. This
 //     holds for unranked rows too: a row with no Priority under a named file reads as
-//     "the file holds nothing for this advisory", which only the file that ranked it
-//     can say.
+//     "the file holds no usable signal for this advisory (no record, or a refused
+//     join)", which only the file that ranked it can say.
 //   - Cursor: the later Report's cursor (it advanced with the newer scan); if the
 //     winner has no Report, mine's cursor is kept.
 //   - VEXLog: append-union — base's log followed by any of mine's entries not

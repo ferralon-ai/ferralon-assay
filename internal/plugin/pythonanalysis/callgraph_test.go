@@ -377,6 +377,69 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			escape: []string{other},
 			listed: true,
 		},
+		{
+			name:   "nested def beside a module-level class, the only def of the name",
+			files:  map[string]string{"app.py": "def make():\n    def Loader(x):\n        return x\n    return Loader\n\nclass Loader:\n    def __init__(self, x):\n        self.x = x\n\ndef index():\n    return Loader(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "Loader", 1)},
+			listed: true,
+		},
+		{
+			name:   "def a later class of the name replaces",
+			files:  map[string]string{"app.py": "def f(x):\n    return x\n\nclass f:\n    def __init__(self, x):\n        self.x = x\n\ndef index():\n    return f(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name:   "def the module rebinds through a wrapper, the only def of the name",
+			files:  map[string]string{"app.py": "def wrap(g):\n    return g\n\ndef f(x):\n    return x\n\nf = wrap(f)\n\ndef index():\n    return f(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name:   "module-level def whose arity misses beside a nested def that fits",
+			files:  map[string]string{"app.py": "def f(x, y, z):\n    return x\n\ndef make():\n    def f(x):\n        return x\n    return f\n\ndef index():\n    return f(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a name the module rebinds over a star import",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"pkg/x.py":        "def f(x):\n    return x\n",
+				"pkg/impl.py":     "from .x import *\n\ndef wrap(g):\n    return g\n\ndef f(x):\n    return x\n\nf = wrap(f)\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/x", nil, "f", 1), funcSCIP("pkg/impl", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "standard-library module beside a first-party module of its name",
+			files: map[string]string{
+				"util.py": "def loads(s):\n    return s\n", "app/__init__.py": "", "app/json.py": "X = 1\n",
+				"run.py": "import json\n\ndef run(x):\n    return json.loads(x)\n",
+			},
+			caller: funcSCIP("run", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			escape: []string{funcSCIP("util", nil, "loads", 1)},
+			listed: true,
+		},
+		{
+			name: "declared dependency beside a first-party module of its name",
+			files: map[string]string{
+				"pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"redis\"]\n",
+				"util.py":        "def get(k):\n    return k\n", "app/__init__.py": "", "app/redis.py": "X = 1\n",
+				"run.py": "import redis\n\ndef run(k):\n    return redis.get(k)\n",
+			},
+			caller: funcSCIP("run", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "get", 1)},
+			escape: []string{funcSCIP("util", nil, "get", 1)},
+			listed: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

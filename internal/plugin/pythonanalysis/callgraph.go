@@ -173,10 +173,13 @@ func (f *fileParse) depOnly(cs callSite) bool {
 
 // siteDecls is the declarations a site's edge may name. Where the deciding scope binds the
 // name by first-party import, they are the functions the import path names (declsAt); a
-// chain's head names a module, so the path runs on through the chain to its leaf. Where the
-// module binds a bare name by def and nothing else (topDefs), they are those defs.
-// Otherwise, or when a path or def finds no function, they are every declaration under the
-// leaves (declsNamed).
+// chain's head names a module, so the path runs on through the chain to its leaf, and a
+// module on the way that binds the leaf by a class, an assignment or a dependency import
+// names nothing (declsAt's decided). Where the module binds a bare name by def, the
+// module-level defs are candidates beside any import of the name, unless a class or an
+// assignment of the name may replace them (ownDefs); a def inside a function body is never
+// one. Otherwise, or when a path finds no module binding the name, they are every
+// declaration under the leaves (declsNamed).
 func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDecl {
 	if len(leaves) == 0 {
 		return nil
@@ -192,7 +195,10 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 	}
 	if paths, bound := f.aliasBound(head, cs.scopes); bound {
 		for _, path := range paths {
-			at := p.declsAt(path + rest)
+			at, decided := p.declsAt(path + rest)
+			if !decided {
+				return nil
+			}
 			if len(at) == 0 {
 				return p.declsNamed(leaves)
 			}
@@ -200,11 +206,10 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 		}
 	}
 	if len(cs.calleeChain) <= 1 && f.defs[scope][head] {
-		defs := f.topDefs(scope, head)
-		if len(defs) == 0 {
-			return p.declsNamed(leaves)
+		if scope == "" {
+			return appendDecls(out, f.ownDefs(head))
 		}
-		out = appendDecls(out, defs)
+		return p.declsNamed(leaves)
 	}
 	if len(out) == 0 {
 		return p.declsNamed(leaves)
@@ -212,12 +217,11 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 	return out
 }
 
-// topDefs is the module-level defs of name in the file when the module scope binds the name
-// by def alone: not by a class, an import, an assignment or another value binding (a later
-// "f = other.f" replaces the def). A def inside a function body binds the name there, not
-// at module level, and is no candidate.
-func (f *fileParse) topDefs(scope, name string) []funcDecl {
-	if scope != "" || !f.topFuncs[name] || f.binders[""][name] > 0 || f.depImports[""][name] > 0 || len(f.fpBinds[""][name]) > 0 {
+// ownDefs is the module-level defs of name in the file when the module scope binds the name
+// by no class and no assignment; an import of the name beside them is a further candidate
+// the caller adds. A def inside a function body is no candidate.
+func (f *fileParse) ownDefs(name string) []funcDecl {
+	if !f.topFuncs[name] || f.binders[""][name] > 0 {
 		return nil
 	}
 	var out []funcDecl
@@ -229,13 +233,27 @@ func (f *fileParse) topDefs(scope, name string) []funcDecl {
 	return out
 }
 
+// topDefs is the module-level defs of name in the file when the module scope binds the name
+// by def alone: not by a class, an import, an assignment or another value binding (a later
+// "f = other.f" replaces the def). A def inside a function body binds the name there, not
+// at module level, and is no candidate.
+func (f *fileParse) topDefs(scope, name string) []funcDecl {
+	if scope != "" || f.depImports[""][name] > 0 || len(f.fpBinds[""][name]) > 0 {
+		return nil
+	}
+	return f.ownDefs(name)
+}
+
 // declsAt is the top-level functions an import path ("pkg/m/f") names: the defs of f at
 // module level in the modules pkg/m names (topDefs), and what each such module's own
 // first-party imports and star imports bind f to, followed in turn. Each path is visited
-// once, so an import cycle ends.
-func (p *program) declsAt(path string) []funcDecl {
+// once, so an import cycle ends. decided is false when a module on the way binds f by
+// anything but defs at module level, first-party imports and star imports (bindsOtherwise):
+// what f holds there is not a declaration the walk can name.
+func (p *program) declsAt(path string) (decls []funcDecl, decided bool) {
 	visited := map[string]bool{}
 	var out []funcDecl
+	decided = true
 	var walk func(string)
 	walk = func(path string) {
 		if visited[path] {
@@ -248,6 +266,10 @@ func (p *program) declsAt(path string) []funcDecl {
 		}
 		for _, i := range p.byModule[mod] {
 			g := &p.files[i]
+			if g.bindsOtherwise(leaf) {
+				decided = false
+				return
+			}
 			out = appendDecls(out, g.topDefs("", leaf))
 			for _, next := range g.fpBinds[""][leaf] {
 				walk(next)
@@ -258,7 +280,15 @@ func (p *program) declsAt(path string) []funcDecl {
 		}
 	}
 	walk(path)
-	return out
+	return out, decided
+}
+
+// bindsOtherwise reports whether the module scope binds name by something besides defs
+// topDefs names, first-party imports and star imports: an assignment, a dependency import, a
+// class, or a def beside an import of the name.
+func (f *fileParse) bindsOtherwise(name string) bool {
+	return f.binders[""][name] > 0 || f.depImports[""][name] > 0 ||
+		(f.defs[""][name] && len(f.topDefs("", name)) == 0)
 }
 
 // appendDecls adds each of add not already in out.
@@ -660,7 +690,7 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 					f.depImports[b.scope] = map[string]int{}
 				}
 				f.depImports[b.scope][b.local]++
-				if prog.named[strings.ReplaceAll(b.target, ".", "/")] {
+				if prog.named[strings.ReplaceAll(b.target, ".", "/")] && !prog.dists.knownTop(b.target) {
 					addNames(&f.depNamed, b.scope, []string{b.local})
 				}
 			}

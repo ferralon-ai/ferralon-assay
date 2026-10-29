@@ -447,7 +447,11 @@ func canonicalKey(ecosystem, name string) string {
 // advisories OSV.dev flagged, merge the fresh findings over the prior Report's
 // findings, and build a Report stamped with the new cursor. The prior Report's SBOM
 // is reused (CVE-watch does not re-resolve dependencies — only advisories changed).
-func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, newCursor string) (*report.Report, error) {
+//
+// It also returns the advisory IDs whose re-assessment completed, sorted. The cursor is held,
+// the stored one written to provenance, when newCursor already is the stored one, when an
+// advisory was cut short, or when req.Hold, consulted after every re-assessment, says so.
+func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, newCursor string) (*report.Report, []string, error) {
 	prior := state.Report
 
 	newSet := make(map[string]struct{}, len(newIDs))
@@ -464,6 +468,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	analysis := analysisOr(req.Analysis, ctx)
 	cut := 0
+	var assessed []string
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
@@ -501,6 +506,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		reFindings[advisory.ID+"\x00"+advisory.Source] = f
 		freshIDs[advisory.ID] = struct{}{}
+		assessed = append(assessed, a.ID)
 	}
 
 	b := report.NewBuilder(report.Subject{
@@ -543,8 +549,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
-	if cut > 0 {
-		// The advisories this pass did not assess must stay new, so the next run assesses them.
+	if cut > 0 || (req.Hold != nil && req.Hold()) {
+		// The advisories this pass did not assess, or assessed without inputs it needed, must
+		// stay new, so the next run assesses them.
 		newCursor = state.Cursor
 	}
 
@@ -561,9 +568,17 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 
 	rep, err := b.BuildValidated()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &rep, nil
+	return &rep, sortedIDs(assessed), nil
+}
+
+// sortedIDs is ids sorted with duplicates removed; nil when empty.
+func sortedIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	return slices.Compact(slices.Sorted(slices.Values(ids)))
 }
 
 // supersededByFresh reports whether an inherited finding must yield to this pass's fresh

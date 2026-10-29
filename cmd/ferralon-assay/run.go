@@ -251,10 +251,11 @@ func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, tok
 // publishResult renders the projections once and publishes the Result to every sink
 // the selector composed for the current environment.
 //
-// intel is stamped onto the Report first, so every sink and every projection carries the
-// disclosure of which work set and which advisory facts this pass actually used. It is stamped HERE
-// rather than inside the trigger because the trigger knows nothing about how the entrypoint resolved
-// its sources — this is the only place both facts are in hand.
+// intel is stamped onto the Report first (stampIntel), so every sink and every projection carries
+// the disclosure of which work set and which advisory facts this pass actually used. It is stamped
+// HERE rather than inside the trigger because the trigger knows nothing about how the entrypoint
+// resolved its sources — this is the only place both facts are in hand. The one input the trigger
+// does hold, the signals file it ranked with, it records itself; stampIntel keeps that.
 //
 // analyzeRef is the resolved .github/ferralon.yml analyze.ref (acquired.analyzeRef; empty on the
 // default path). It reaches the delivery gate IN PROCESS — the redirect is decided by acquireTarget
@@ -262,7 +263,7 @@ func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, tok
 // It is the ONLY thing it is used for here: it selects the delivery channel and changes neither
 // what was analyzed nor what is published on any other sink.
 func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph, deps *depCodeRun) error {
-	rep.Provenance.Intel = &intel
+	stampIntel(rep, intel)
 	rep.BuildGraph = graph.record()
 	deps.stamp(rep)
 	res, err := buildResult(rep)
@@ -273,6 +274,17 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	refs := deliveryRefs{refName: os.Getenv(envRefName), defaultBranch: os.Getenv(envDefaultBranch), analyzeRef: analyzeRef}
 	env := github.DetectEnv(surfaceToggles())
 	return publishAll(ctx, composeSinks(env, outDir, runsURL, refs, resolveOIDCToken), res, env.StepSummaryPath, os.Stderr)
+}
+
+// stampIntel sets rep's Provenance.Intel to intel, the entrypoint's disclosure block. Its
+// SignalsDigest is not the entrypoint's to set: trigger.Run* recorded which signals file ranked the
+// rows when it built rep, so that value is carried over rather than stamped a second time here.
+func stampIntel(rep *report.Report, intel report.IntelProvenance) {
+	intel.SignalsDigest = ""
+	if ranked := rep.Provenance.Intel; ranked != nil {
+		intel.SignalsDigest = ranked.SignalsDigest
+	}
+	rep.Provenance.Intel = &intel
 }
 
 // Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in
@@ -875,6 +887,9 @@ func (f *runFlags) advisoryCorpusRequired() (bool, error) {
 // resolved them through (f). The two are deliberately separate — even when a declared policy makes
 // the corpus choose the work set, the set is the corpus advisories that match the repository, not
 // the corpus, and conflating them is what let "72 records" read as "72 advisories evaluated".
+//
+// The signals file is not recorded here: trigger.Run* stamps its digest on the Report it returns,
+// and stampIntel keeps it.
 func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 	p := report.IntelProvenance{
 		WorkSetSource: ws.source,
@@ -896,9 +911,6 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 		}
 	}
 	p.CorpusPolicy = f.resolvedPolicy
-	if f.resolvedSignals != nil {
-		p.SignalsDigest = f.resolvedSignals.Digest
-	}
 	if f.resolvedCorpusOK && f.resolvedSigner != nil {
 		signer := *f.resolvedSigner
 		p.CorpusSigner = &signer
@@ -1224,7 +1236,7 @@ func runPRInherit(args []string) error {
 		return err
 	}
 	logPhase(os.Stderr, "publish", time.Since(publishStart))
-	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
+	printSummary(cfg.outDir, res.Report, f.publishedSignalsSummary(res.Report, time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
 	return runExit(cfg.graph, cfg.deps)
@@ -1305,7 +1317,7 @@ func runCVEWatch(args []string) error {
 			return err
 		}
 		logPhase(os.Stderr, "publish", time.Since(publishStart))
-		printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
+		printSummary(cfg.outDir, res.Report, f.publishedSignalsSummary(res.Report, time.Now()))
 		printRescanContext(rescan)
 		postScan(ctx, cfg.store, cfg.subject, rescan)
 	}

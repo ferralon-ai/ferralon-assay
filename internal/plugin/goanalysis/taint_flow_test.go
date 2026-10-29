@@ -2,8 +2,9 @@
 // library calls with no SSA body, a store into a struct field, a type assertion and a
 // map lookup, the stores through an element or nested field address that a variadic
 // call, a slice literal or a nested struct makes, a store through a pointer field or a
-// slice view, the append and copy builtins, the sanitizer model that body-less
-// forwarding brings into effect, and the places the chain of bases stops.
+// slice view, the append and copy builtins, the spread of a request's context, the
+// sanitizer model that body-less forwarding brings into effect, and the places taint
+// stops: where the chain of bases ends, and at a pointer a call writes through.
 //
 // They run runTaint over taintflowmod's main.go, type-checked and built in memory
 // against the chimod net/http and chi stubs and two one-line stdlib stand-ins. As in a
@@ -30,6 +31,7 @@ var taintFlowStdlib = []struct{ path, src string }{
 	{"strconv", "package strconv\nfunc Atoi(s string) (int, error) { return 0, nil }"},
 	{"strings", "package strings\nfunc TrimSpace(s string) string { return s }"},
 	{"fmt", "package fmt\nfunc Sprintf(format string, a ...any) string { return format }"},
+	{"encoding/json", "package json\nfunc Unmarshal(data []byte, v any) error { return nil }"},
 }
 
 // buildTaintModule type-checks a taint fixture's dependencies (the stand-ins, then the
@@ -118,6 +120,16 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 		{"store through a global pointer, read back", "sinkGlobalPointer", false},
 		{"store through a package-level struct value, read back", "sinkPackageStruct", false},
 		{"store through a closure-captured pointer, read outside", "sinkClosureCapture", false},
+		// ...and at a pointer a call writes through, read back after the call: a
+		// body-less callee taints only its result, and a first-party callee's store
+		// taints only its own parameter.
+		{"json.Unmarshal(b, &v), v read back", "sinkOutArgLibrary", false},
+		{"first-party fill(&v, x), v read back", "sinkOutArgOwn", false},
+		// r.Context() taints ctx, and ctx taints the result of a first-party call that
+		// takes it, though the result does not depend on it; a ctx passed to an
+		// interface method, a call with no static callee, leaves the result clean.
+		{"first-party lookup(ctx, const)", "sinkCtxOwn", true},
+		{"interface method st.Get(ctx, const)", "sinkCtxIface", false},
 	}
 	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
 	sp := &ssaProgram{prog: app.Prog}

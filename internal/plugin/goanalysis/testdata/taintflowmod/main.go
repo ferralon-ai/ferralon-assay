@@ -5,21 +5,25 @@
 // element or nested field address: a variadic call (fmt.Sprintf, and a sink that is
 // itself variadic, as exec.Command is), a slice literal, a store into one nested
 // field read back through its sibling, a store through a pointer field, and a store
-// through a slice view of an array; and the append and copy builtins. One
+// through a slice view of an array; the append and copy builtins; and the spread of
+// the request's context to the result of a first-party call that takes it. One
 // chi-registered handler hands each shape to its OWN sink, so a test can read each
 // shape's result off its sink.
 //
 // The controls sit beside them: field reads and a first-party call, which were always
 // tainted, and a library call, an append and a copy over values never derived from
-// the request, which must stay untainted. Apart from them sit the places taint
-// stops: a store through a global pointer, through a package-level struct value,
-// and through a pointer a closure captures, each read back afterwards. Those reads
-// do receive the request at run time, so they are known misses, not clean
-// controls, pinned so a change to them is deliberate. (The http types are
-// tegron.test/nethttp's stand-ins; see ../chimod/nethttpstub/http.go.)
+// the request, and a context passed to an interface method, which must stay
+// untainted. Apart from them sit the places taint stops: a store through a global
+// pointer, through a package-level struct value, and through a pointer a closure
+// captures, each read back afterwards, and a pointer a call writes through, library
+// (json.Unmarshal) or first-party, read back after the call. Those reads do receive
+// the request at run time, so they are known misses, not clean controls, pinned so a
+// change to them is deliberate. (The http types are tegron.test/nethttp's stand-ins;
+// see ../chimod/nethttpstub/http.go.)
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -63,6 +67,11 @@ func sinkSliceView(v string)     { sunk = append(sunk, v) }
 func sinkGlobalPointer(v string)  { sunk = append(sunk, v) }
 func sinkClosureCapture(v string) { sunk = append(sunk, v) }
 func sinkPackageStruct(v string)  { sunk = append(sunk, v) }
+func sinkOutArgLibrary(v string)  { sunk = append(sunk, v) }
+func sinkOutArgOwn(v string)      { sunk = append(sunk, v) }
+
+func sinkCtxOwn(v string)   { sunk = append(sunk, v) }
+func sinkCtxIface(v string) { sunk = append(sunk, v) }
 
 // greeting is never derived from the request.
 var greeting = " hello "
@@ -86,6 +95,25 @@ var cfg = struct{ p *struct{ a string } }{p: &struct{ a string }{}}
 
 // ownID is a first-party transform: its body is built, so taint flows through it.
 func ownID(s string) string { return "id-" + s }
+
+// lookup is a first-party call that takes a context and returns a value that does not
+// depend on it.
+func lookup(ctx http.Context, key string) string { return "v-" + key }
+
+// store is called through an interface, so a call to Get has no static callee.
+type store interface {
+	Get(ctx http.Context, key string) string
+}
+
+type memStore struct{}
+
+func (memStore) Get(ctx http.Context, key string) string { return "v-" + key }
+
+// named is the struct a call writes a request value into through a pointer.
+type named struct{ Name string }
+
+// fill is a first-party call that writes through the pointer it is passed.
+func fill(dst *named, s string) { dst.Name = s }
 
 func flows(w http.ResponseWriter, r *http.Request) {
 	sinkHeaderGet(r.Header.Get("X-A"))
@@ -155,6 +183,22 @@ func flows(w http.ResponseWriter, r *http.Request) {
 	set := func(s string) { cp.a = s }
 	set(r.Method)
 	sinkClosureCapture(cp.a)
+	// A call never taints a pointer it writes through: json.Unmarshal's result is
+	// tainted, but the struct it decodes into is not, and fill's store taints its own
+	// parameter, which does not flow back to the caller's struct.
+	var req named
+	_ = json.Unmarshal([]byte(r.Method), &req)
+	sinkOutArgLibrary(req.Name)
+	var own named
+	fill(&own, r.Method)
+	sinkOutArgOwn(own.Name)
+
+	// The request's context taints the result of a first-party call that takes it,
+	// whether or not the result depends on it; through an interface method it does not.
+	ctx := r.Context()
+	sinkCtxOwn(lookup(ctx, "const"))
+	var st store = memStore{}
+	sinkCtxIface(st.Get(ctx, "const"))
 }
 
 func main() {

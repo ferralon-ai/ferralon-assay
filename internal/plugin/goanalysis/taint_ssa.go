@@ -236,7 +236,9 @@ func (ta *taintAnalysis) propagate(v ssa.Value, seed func(ssa.Value, taintOrigin
 				// reach cfg and seeds it. The seed goes no further, though: go/ssa
 				// records no referrers for a global, so no read of cfg, in this
 				// function or any other, observes it, and a store into package state
-				// in one handler does not taint a read in another.
+				// in one handler does not taint a read in another. Nor does a store a
+				// call makes through a pointer it is passed reach the caller (see
+				// propagateCall).
 				//
 				// This deliberately over-approximates, and it partly undoes the
 				// choice not to seed receivers (see runTaint): in a method, s.last
@@ -334,6 +336,17 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// included, to its result. A (T, error) result's tuple carries it to its
 		// Extract. A dynamic call with no static callee forwards nothing; the
 		// append and copy builtins are modeled above (propagateBuiltin).
+		// Only the result is tainted, never a pointer argument the callee writes
+		// through: json.Unmarshal(body, &v) and json.NewDecoder(r.Body).Decode(&req)
+		// leave v and req clean, so a sink that reads them is not a taint hit. This
+		// is a known miss, like the stop points in propagate's store case, and a
+		// first-party callee misses it too: a store through its pointer parameter
+		// taints that parameter and its bases inside the callee, never the caller's
+		// argument. Seeding a call's pointer arguments would have to see through the
+		// interface or variadic slice they are usually passed in, and would taint
+		// the receiver of every call made with a tainted ctx (a *sql.DB after one
+		// db.ExecContext(ctx, q)), so every later call on it would count. The miss
+		// can only leave a grade at control_flow_only; it never moves a verdict.
 		// This is also how a context.Context becomes tainted: r.Context() is such
 		// a call on the tainted request, so its result is tainted. The callees that
 		// then receive ctx are not tainted as a whole; ctx spreads three ways. A

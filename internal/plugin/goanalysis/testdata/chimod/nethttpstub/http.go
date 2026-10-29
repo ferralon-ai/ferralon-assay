@@ -2,8 +2,8 @@
 // surface uses (ResponseWriter, Request, Handler, HandlerFunc), so the chi stubs and
 // the fixture read exactly as they would against net/http, with only the import path
 // changed. taintflowmod also calls the request read methods (Header.Get,
-// URL.Query().Get, FormValue): as a dependency, this package gets no SSA bodies, so
-// those calls are body-less exactly as real net/http's are.
+// URL.Query().Get, FormValue, Context): as a dependency, this package gets no SSA
+// bodies, so those calls are body-less exactly as real net/http's are.
 //
 // Why not net/http itself: the goanalysis loader type-checks every dependency from
 // source, and net/http's import graph alone costs ~300ms per load, more than the
@@ -59,6 +59,15 @@ type Request struct {
 
 // FormValue mirrors (*net/http.Request).FormValue.
 func (r *Request) FormValue(key string) string { return r.Form.Get(key) }
+
+// Context mirrors (*net/http.Request).Context.
+func (r *Request) Context() Context { return nil }
+
+// Context stands in for context.Context, here so the stub needs no import: taint
+// treats a context like any other value and never keys on its package.
+type Context interface {
+	Value(key any) any
+}
 
 // Handler mirrors net/http.Handler.
 type Handler interface {

@@ -464,6 +464,53 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			escape: []string{funcSCIP("util", nil, "get", 1)},
 			listed: true,
 		},
+		{
+			name: "curated dependency beside a first-party module of its name",
+			files: map[string]string{
+				"util.py": "def safe_load(s):\n    return s\n", "app/__init__.py": "", "app/yaml.py": "X = 1\n",
+				"run.py": "import yaml\n\ndef run(s):\n    return yaml.safe_load(s)\n",
+			},
+			caller: funcSCIP("run", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "safe_load", 1)},
+			escape: []string{funcSCIP("util", nil, "safe_load", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a def the module imports over its own",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"pkg/x.py":        "def f(x):\n    return x\n",
+				"pkg/impl.py":     "from .x import f\n\ndef f(x, y, z):\n    return x\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/x", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a name the module assigns",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"lib.py":          "def f(x):\n    return x\n",
+				"pkg/impl.py":     "import lib\n\nf = lib.f\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("lib", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a name the module imports from a dependency",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"lib.py":          "def dumps(x):\n    return x\n",
+				"pkg/impl.py":     "from json import dumps\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.dumps(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("lib", nil, "dumps", 1)},
+			listed: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

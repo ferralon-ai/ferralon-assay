@@ -89,6 +89,21 @@ func TestCallGraph_FStringCallSites(t *testing.T) {
 			want:  []string{funcSCIP("app", nil, "helper", 1)},
 		},
 		{
+			name:  "a brace after an escaped backslash and N is a substitution",
+			files: map[string]string{"app.py": helper + "def run():\n    return f\"\\\\N{helper(1)}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "a brace after \\N in a raw f-string is a substitution",
+			files: map[string]string{"app.py": helper + "def run():\n    return fR\"\\N{helper(1)}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "a raw f-string's format spec keeps its substitutions",
+			files: map[string]string{"app.py": helper + "def run(x):\n    return rf\"{x:\\N{helper(1)}}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
 			name:  "doubled braces are text",
 			files: map[string]string{"app.py": helper + "def run():\n    return f\"{{helper(1)}}\"\n"},
 		},

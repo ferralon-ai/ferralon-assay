@@ -170,3 +170,59 @@ func TestMemStorePutSetsCreatedAt(t *testing.T) {
 		t.Errorf("CreatedAt %v not in expected range [%v, %v]", a.CreatedAt, before, after)
 	}
 }
+
+func TestViewDecodesOncePerArtifactAndKey(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000040"
+	fs, err := artifact.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		store artifact.Store
+		// wantDecodes is how many times decode runs over the steps below.
+		wantDecodes int
+	}{
+		// Two reads of key a share one decode, key b gets its own, and replacing the artifact's
+		// payload under the same id decodes the new payload once more.
+		{"mem store shares", artifact.NewMemStore(), 3},
+		// A store that keeps no views decodes on every read.
+		{"other store decodes each read", fs, 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			decodes := 0
+			decode := func(p []byte) any { decodes++; return string(p) }
+			read := func(key string) (any, bool) {
+				t.Helper()
+				v, ok, err := artifact.View(tc.store, aid, artifact.TypeReachability, key, decode)
+				if err != nil {
+					t.Fatalf("View: %v", err)
+				}
+				return v, ok
+			}
+
+			if _, ok := read("a"); ok {
+				t.Fatal("View found an artifact in an empty store")
+			}
+			a := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":1}`)}
+			if _, err := tc.store.Put(a); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"a", "a", "b"} {
+				if v, ok := read(key); !ok || v != `{"v":1}` {
+					t.Fatalf("View(%q) = %v, %v; want the stored payload", key, v, ok)
+				}
+			}
+			if _, err := tc.store.Put(&artifact.Artifact{ID: a.ID, AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":2}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if v, ok := read("a"); !ok || v != `{"v":2}` {
+				t.Fatalf("View after replacing the payload = %v, %v; want the new payload", v, ok)
+			}
+			if decodes != tc.wantDecodes {
+				t.Errorf("decode ran %d times; want %d", decodes, tc.wantDecodes)
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package goanalysis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -311,18 +312,203 @@ func TestSearchBuildModules_Timeout(t *testing.T) {
 		[]string{"example.com/a", "example.com/app", "example.com/fork"}, []string{"example.com/fork"})
 }
 
-func TestModfileFlagSet_CutShortIsNotKept(t *testing.T) {
+func TestGoflagsBlockSearch_CutShortIsNotKept(t *testing.T) {
 	newSourceProxy(t, []srcModule{modA})
 	app := newApp(t, []string{"example.com/a"}, "", nil)
 	scan := WithRunCacheDir(context.Background(), t.TempDir())
 	cancelled, cancel := context.WithCancel(scan)
 	cancel()
-	if !modfileFlagSet(cancelled, app) {
-		t.Fatal("GOFLAGS not read counts as naming no -modfile")
+	if !goflagsBlockSearch(cancelled, app) {
+		t.Fatal("GOFLAGS not read lets the search run")
 	}
-	if modfileFlagSet(scan, app) {
+	if goflagsBlockSearch(scan, app) {
 		t.Fatal("a GOFLAGS read cut short was kept for the scan")
 	}
+}
+
+// TestGoflagsBlock: a GOFLAGS entry that may change the module list or the source the build
+// compiles blocks the module search, in every spelling the go command accepts or rejects; a flag
+// shown harmless does not.
+func TestGoflagsBlock(t *testing.T) {
+	tests := []struct {
+		goflags string
+		want    bool
+	}{
+		{"", false},
+		{"  \n", false},
+		{"-trimpath", false},
+		{"--trimpath", false},
+		{"-trimpath=true", false},
+		{"-mod=readonly", false},
+		{"--mod=readonly", false},
+		{"-tags=prod,netgo -race -count=1 -modcacherw", false},
+		{"-ldflags=-s -buildvcs=false", false},
+		{"'-gcflags=all=-N -l' -trimpath", false},
+		{"\"-ldflags=-X main.v=1\"\t-p=4\n", false},
+		{"-cover -coverpkg=./... -pgo=off -buildmode=pie -v", false},
+
+		{"-modfile=other.mod", true},
+		{"--modfile=other.mod", true},
+		{"-modfile other.mod", true},
+		{"--modfile other.mod", true},
+		{"-modfile", true},
+		{"'-modfile=other.mod'", true},
+		{"\"--modfile=a b.mod\"", true},
+		{"-overlay=overlay.json", true},
+		{"--overlay=overlay.json", true},
+		{"-overlay overlay.json", true},
+		{"--overlay overlay.json", true},
+		{"-mod=mod", true},
+		{"--mod=mod", true},
+		{"-mod mod", true},
+		{"--mod mod", true},
+		{"-mod=vendor", true},
+		{"--mod=vendor", true},
+		{"-mod vendor", true},
+		{"-mod readonly", true},
+		{"-mod", true},
+		{"-mod=", true},
+		{"-mod=Readonly", true},
+		{"-toolexec=wrap", true},
+		{"--toolexec=wrap", true},
+		{"-toolexec wrap", true},
+		{"'-toolexec=wrap -v'", true},
+		{"-linkshared", true},
+		{"--linkshared", true},
+		{"-pkgdir=/tmp/p", true},
+		{"-pkgdir /tmp/p", true},
+		{"-C=dir", true},
+		{"-trimpath -overlay=o.json", true},
+		{"-overlay=o.json -trimpath", true},
+		{"-trimpath --mod=mod -race", true},
+
+		{"-nosuchflag", true},
+		{"---trimpath", true},
+		{"-", true},
+		{"--", true},
+		{"-=x", true},
+		{"trimpath", true},
+		{"-tags prod", true},
+		{"-trimpath x", true},
+		{"'-trimpath", true},
+		{"\"-trimpath", true},
+	}
+	for _, tc := range tests {
+		if got := goflagsBlock(tc.goflags); got != tc.want {
+			t.Errorf("goflagsBlock(%q) = %v, want %v", tc.goflags, got, tc.want)
+		}
+	}
+}
+
+// TestGoflagsBlockSearch reads GOFLAGS the way the go command does, from the environment and the
+// go env file, and blocks on any GOFLAGS it cannot read.
+func TestGoflagsBlockSearch(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	tests := []struct {
+		name, env, file string
+		want            bool
+	}{
+		{"none", "", "", false},
+		{"harmless", "-trimpath -tags=prod", "", false},
+		{"readonly", "-mod=readonly", "", false},
+		{"-json", "-json", "", false},
+		{"-u before -overlay", "-u -overlay=o.json", "", true},
+		{"-u=false before -overlay", "-u=false -overlay=o.json", "", true},
+		{"-overlay", "-overlay=o.json", "", true},
+		{"--overlay", "--overlay=o.json", "", true},
+		{"-overlay value apart", "-overlay o.json", "", true},
+		{"-mod=mod", "-mod=mod", "", true},
+		{"--mod mod", "--mod mod", "", true},
+		{"-mod=vendor", "-mod=vendor", "", true},
+		{"-modfile", "-modfile=x.mod", "", true},
+		{"-toolexec", "-toolexec=wrap", "", true},
+		{"go env file -overlay", "", "-overlay=o.json", true},
+		{"go env file --mod=mod", "", "--mod=mod", true},
+		{"go env file harmless", "", "-trimpath", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			goenv := filepath.Join(t.TempDir(), "env")
+			if err := os.WriteFile(goenv, []byte("GOFLAGS="+tc.file+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GOENV", goenv)
+			t.Setenv("GOFLAGS", tc.env) // an empty GOFLAGS leaves the go env file's in force
+			if got := goflagsBlockSearch(context.Background(), app); got != tc.want {
+				t.Fatalf("goflagsBlockSearch = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	t.Run("unreadable", func(t *testing.T) {
+		t.Setenv("GOFLAGS", "")
+		orig := modsearchGo
+		modsearchGo = func(cmd *exec.Cmd) ([]byte, error) {
+			if cmd.Args[1] == "env" && cmd.Args[len(cmd.Args)-1] == "GOFLAGS" {
+				return nil, errors.New("go env failed")
+			}
+			return orig(cmd)
+		}
+		t.Cleanup(func() { modsearchGo = orig })
+		if !goflagsBlockSearch(context.Background(), app) {
+			t.Fatal("GOFLAGS that cannot be read lets the search run")
+		}
+		if got := search(t, app, gogsDB, gogsSymbols); got != nil {
+			t.Fatalf("searchBuildModules = %+v, want nil", got)
+		}
+	})
+}
+
+// TestSearchBuildModules_GoflagsBlock: a GOFLAGS flag that may change the module list or the source
+// the build compiles leaves the advisory with no module search, though the go command lists the
+// build under it, and so with no outside-build ground (trigger's "no module search" row).
+func TestSearchBuildModules_GoflagsBlock(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	overlay := filepath.Join(t.TempDir(), "overlay.json")
+	if err := os.WriteFile(overlay, []byte(`{"Replace":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		goflags string
+		block   bool
+	}{
+		{"-trimpath", false},
+		{"-overlay=" + overlay, true},
+		{"--overlay=" + overlay, true},
+		{"-mod=mod", true},
+		{"-toolexec=/nonexistent/wrap", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.goflags, func(t *testing.T) {
+			t.Setenv("GOFLAGS", tc.goflags)
+			if _, err := listModules(context.Background(), app); err != nil {
+				t.Fatalf("go list -m all under GOFLAGS=%s: %v", tc.goflags, err)
+			}
+			got := search(t, app, gogsDB, gogsSymbols)
+			if tc.block {
+				if got != nil {
+					t.Fatalf("searchBuildModules = %+v, want nil", got)
+				}
+				return
+			}
+			wantSearch(t, got, []string{"example.com/a", "example.com/app"}, nil)
+		})
+	}
+	t.Run("ResolveDependencySymbols", func(t *testing.T) {
+		for _, goflags := range []string{"", "-mod=mod"} {
+			t.Setenv("GOFLAGS", goflags)
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir: app, PURL: "pkg:golang/" + gogsDB, AdvisorySymbols: gogsSymbols,
+			})
+			if err != nil {
+				t.Fatalf("ResolveDependencySymbols under GOFLAGS=%q: %v", goflags, err)
+			}
+			if (res.ModuleSearch == nil) != (goflags != "") {
+				t.Fatalf("ModuleSearch under GOFLAGS=%q = %+v", goflags, res.ModuleSearch)
+			}
+		}
+	})
 }
 
 func TestResolveDependencySymbols_ModuleSearch(t *testing.T) {
@@ -594,7 +780,7 @@ func goRuns(cmds []*exec.Cmd, sub string) int {
 }
 
 func TestModuleSearchGoRunsOncePerBuild(t *testing.T) {
-	const list, flags, download = "list -m -json all", "env GOFLAGS", "mod download"
+	const list, flags, download = "list -m -json all", "env -json=false -u=false -w=false -changed=false GOFLAGS", "mod download"
 	type step struct {
 		ctx       func(context.Context) context.Context // nil: the scan's context
 		holds     string                                // dependencyHolds this path, want held
@@ -729,7 +915,7 @@ func TestModuleSearchRunsUnderTheLoadToolchain(t *testing.T) {
 	}
 	cmds := recordGo(t)
 	wantSearch(t, searchBuildModules(ctx, app, gogsDB, gogsSymbols), []string{"example.com/a", "example.com/app"}, nil)
-	for _, sub := range []string{"env GOFLAGS", "list -m -json all", "mod download"} {
+	for _, sub := range []string{"env -json=false -u=false -w=false -changed=false GOFLAGS", "list -m -json all", "mod download"} {
 		t.Run(sub, func(t *testing.T) {
 			if goRuns(*cmds, sub) == 0 {
 				t.Fatalf("go %s did not run", sub)

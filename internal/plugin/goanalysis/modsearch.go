@@ -42,8 +42,9 @@ type listedModule struct {
 
 // searchBuildModules searches the source of every module in buildDir's build list for a
 // declaration named like one of symbols, for an advisory on pkgPath. It returns nil when the
-// search does not apply or cannot start: no symbols, a module in the build holds pkgPath, or the
-// build list cannot be listed (a vendored build, for one).
+// search does not apply or cannot start: no symbols, a module in the build holds pkgPath, GOFLAGS
+// may change the module list or the source the build compiles (goflagsBlock), or the build list
+// cannot be listed (a vendored build, for one).
 //
 // A module whose source is not in the module cache is downloaded the way the go command would,
 // honoring the caller's GOPROXY, GOPRIVATE, GONOSUMDB and GOFLAGS, and verified against go.sum
@@ -56,7 +57,7 @@ func searchBuildModules(ctx context.Context, buildDir, pkgPath string, symbols [
 	}
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
-	if modfileFlagSet(ctx, buildDir) {
+	if goflagsBlockSearch(ctx, buildDir) {
 		return nil
 	}
 	mods, err := listModules(ctx, buildDir)
@@ -109,6 +110,88 @@ func symbolNames(symbols []string) map[string]bool {
 	return names
 }
 
+// searchSafeGoflags are the go command flags GOFLAGS may set without changing what the module
+// search reads for the build: the module list `go list -m all` answers, and every .go file of
+// each module whatever its build constraints (declaresName). Build tags, platform, compiler,
+// instrumentation (-race, -cover, -asan, -msan), PGO and linker or compiler options pick among or
+// compile that source, and test flags only run what was built; neither changes the list or the
+// files. Every other flag blocks the search, so a flag the go command adds later fails closed.
+// Left out on purpose: -modfile (another module list), -overlay (other file contents), -toolexec
+// (a wrapper that can rewrite or add source as it compiles), -linkshared and -pkgdir (packages
+// built from source the build does not show), and -C. -mod is decided by its value (goflagsBlock).
+var searchSafeGoflags = map[string]bool{
+	// build
+	"a": true, "asan": true, "asmflags": true, "buildmode": true, "buildvcs": true,
+	"compiler": true, "cover": true, "covermode": true, "coverpkg": true, "gccgoflags": true,
+	"gcflags": true, "installsuffix": true, "json": true, "ldflags": true, "modcacherw": true,
+	"msan": true, "n": true, "p": true, "pgo": true, "race": true, "tags": true, "trimpath": true,
+	"v": true, "work": true, "x": true,
+	// test
+	"bench": true, "benchmem": true, "benchtime": true, "count": true, "cpu": true,
+	"failfast": true, "fullpath": true, "parallel": true, "run": true, "short": true,
+	"shuffle": true, "skip": true, "timeout": true, "vet": true,
+}
+
+// goflagsBlock reports whether goflags, a GOFLAGS value, may make the build compile a module list
+// or file contents the module search does not read: it names a flag searchSafeGoflags does not
+// list, or -mod with any value but readonly. -mod=mod lets the build add modules `go list -m all`
+// did not list, and -mod=vendor compiles vendor/, which the search does not read. GOFLAGS is split
+// as the go command splits it, quotes included; one it would reject (a value set apart from its
+// flag, as in "-mod mod", or an unterminated quote) blocks.
+func goflagsBlock(goflags string) bool {
+	fields, ok := splitGoflags(goflags)
+	if !ok {
+		return true
+	}
+	for _, f := range fields {
+		name, ok := strings.CutPrefix(f, "-")
+		if !ok {
+			return true
+		}
+		name = strings.TrimPrefix(name, "-")
+		name, value, hasValue := strings.Cut(name, "=")
+		if name == "mod" {
+			if !hasValue || value != "readonly" {
+				return true
+			}
+		} else if !searchSafeGoflags[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// splitGoflags splits GOFLAGS into fields the way the go command does (cmd/internal/quoted.Split):
+// on spaces, tabs and newlines, a field that opens with a single or double quote running to the
+// matching quote. It reports false for an unterminated quote.
+func splitGoflags(s string) ([]string, bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	var fields []string
+	for {
+		for len(s) > 0 && isSpace(s[0]) {
+			s = s[1:]
+		}
+		if len(s) == 0 {
+			return fields, true
+		}
+		if q := s[0]; q == '"' || q == '\'' {
+			i := strings.IndexByte(s[1:], q)
+			if i < 0 {
+				return nil, false
+			}
+			fields = append(fields, s[1:1+i])
+			s = s[2+i:]
+			continue
+		}
+		i := 0
+		for i < len(s) && !isSpace(s[i]) {
+			i++
+		}
+		fields = append(fields, s[:i])
+		s = s[i:]
+	}
+}
+
 // modsearchGo runs a go command and returns its standard output. Tests replace it to observe the
 // commands a module search issues.
 var modsearchGo = func(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
@@ -128,23 +211,23 @@ func buildKey(buildDir string, extra ...string) []string {
 	return append(append([]string{buildDir}, extra...), os.Environ()...)
 }
 
-// modfileFlagSet reports whether the GOFLAGS the go command uses in buildDir, from the
-// environment or the go env file, names a -modfile, which the download below replaces with its
-// own copy and so would not honor. GOFLAGS that cannot be read counts as naming one. It is read
-// once per build per scan.
-func modfileFlagSet(ctx context.Context, buildDir string) bool {
-	b, err := runCached(ctx, "modfileflag", buildKey(buildDir), func() ([]byte, error) {
-		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "GOFLAGS"))
+// goflagsBlockSearch reports whether the GOFLAGS the go command uses in buildDir, from the
+// environment or the go env file, may make the build compile a module list or file contents the
+// search does not read (goflagsBlock). GOFLAGS that cannot be read blocks the search. It is read
+// once per build per scan; a read cut short by ctx is not kept.
+func goflagsBlockSearch(ctx context.Context, buildDir string) bool {
+	b, err := runCached(ctx, "goflagsblock", buildKey(buildDir), func() ([]byte, error) {
+		// GOFLAGS applies to go env's own flags too: -u, -w or -json there would print nothing or
+		// something other than GOFLAGS, so they are set on the command line, which overrides it.
+		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "-json=false", "-u=false", "-w=false", "-changed=false", "GOFLAGS"))
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, err
 			}
 			return []byte("true"), nil
 		}
-		for _, f := range strings.Fields(string(out)) {
-			if strings.HasPrefix(strings.TrimLeft(f, "-"), "modfile") {
-				return []byte("true"), nil
-			}
+		if goflagsBlock(string(out)) {
+			return []byte("true"), nil
 		}
 		return []byte("false"), nil
 	})

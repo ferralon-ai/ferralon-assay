@@ -30,7 +30,9 @@ import (
 // JDK code, so a field the merged class hides from a java/ ancestor loses no application
 // target. Private methods, constructors and static initializers are never resolved through
 // an ancestor, so they are always admitted. A class whose two bodies disagree on the
-// super class, the interfaces, or a shared method's flags cannot be merged at all.
+// super class, the interfaces, or a shared method's flags cannot be merged at all. Two bodies
+// whose @kotlin.Metadata differ leave the merged class with metadata that answers nothing,
+// since either body's inline set may be the one that runs.
 
 // ReleaseMerge accumulates the override bodies of one class set.
 type ReleaseMerge struct {
@@ -140,6 +142,7 @@ func (m *ReleaseMerge) Merge(v VersionedClass) error {
 	}
 	base.Methods = append(base.Methods, added...)
 	base.Fields = append(base.Fields, addedFields...)
+	base.KotlinMetadata = mergeKotlinMetadata(base.KotlinMetadata, o.KotlinMetadata)
 	base.Abstract = base.Abstract && o.Abstract
 	base.Public = base.Public || o.Public
 	m.oneSided[base.Name] = append(m.oneSided[base.Name], sided...)

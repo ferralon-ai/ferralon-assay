@@ -812,6 +812,8 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 		{"f-string", "import importlib\n\ndef load(n):\n    return importlib.import_module(f\"plugins.{n}\")\n", nil, true},
 		{"concatenation", "import importlib\n\ndef load(n):\n    return importlib.import_module(\"plugins.\" + n)\n", nil, true},
 		{"entry points", "from importlib.metadata import entry_points\n\nfor ep in entry_points(group='acme.plugins'):\n    ep.load()\n", nil, true},
+		{"file-path loader through an alias", "from importlib.util import spec_from_file_location as sffl\n\ndef load(p):\n    return sffl('plugin', p)\n", nil, true},
+		{"runpy as a value", "import runpy\n\nRUN = runpy.run_path\n", nil, true},
 		{"comment and string only", "# importlib.import_module(name)\ns = 'import_module(name)'\n", nil, false},
 		{"def named import_module", "def import_module(name):\n    return name\n", nil, false},
 	}

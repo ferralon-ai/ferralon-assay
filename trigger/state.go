@@ -189,8 +189,11 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	b.SetRelationships(baseline.SBOM.Relationships)
 	// The head's inventory limits apply to the inherited rows as to fresh ones: a package the head
 	// could not inventory may be installed where the baseline's analysis never looked.
+	rows := make([]report.AdvisoryFinding, 0, len(baseline.Advisories))
 	for i := range baseline.Advisories {
-		b.AddFinding(withInventoryLimits(baseline.Advisories[i], req.DiffLimits))
+		f := withInventoryLimits(baseline.Advisories[i], req.DiffLimits)
+		rows = append(rows, f)
+		b.AddFinding(f)
 	}
 	// Disclose, on the inherited fast path, what the head-SBOM resolution could not
 	// resolve — so a diff that inherited because a lane's inventory was unavailable is
@@ -207,7 +210,10 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// The inherited verdicts were not re-derived, so the baseline's coverage limits
 	// are still exactly the limits of what this Report asserts. Dropping them here
 	// would make an inherited partial scan render clean on the PR surface.
-	b.AddPartiality(baseline.Partiality...)
+	b.AddPartiality(withoutCutShortCount(baseline.Partiality)...)
+	if note, ok := recountCutShort(rows, baseline.Partiality, ""); ok {
+		b.AddPartiality(note)
+	}
 	// THIS run's work-set limits too. Inheriting findings does not inherit the reason the
 	// PR run's own work set was narrower than intended.
 	b.AddPartiality(req.WorkSetLimits...)
@@ -238,8 +244,12 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	}
 	// The advisories the baseline holds a row for, by merge key and, for a migrated v1 row
 	// with no source, by id (supersededByFresh's shape). Only those have a row to inherit.
+	// A scan_cut_short row says nothing, so it has no claim to stand over a fresh finding.
 	baselineRows := make(map[string]struct{}, len(baseline.Advisories))
 	for _, f := range baseline.Advisories {
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			continue
+		}
 		baselineRows[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
 	}
 
@@ -249,9 +259,17 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	analysis := analysisOr(req.Analysis, ctx)
+	cut := 0
 	for _, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		if stopped {
+			reFindings[adv.ID+"\x00"+adv.Source] = cutShortFinding(adv)
+			freshIDs[adv.ID] = struct{}{}
+			cut++
+			continue
+		}
 		if err != nil {
 			// A failed re-run replaces the baseline's row whatever package that row is on: the
 			// head may select a different package, and the failure resolved none.
@@ -303,6 +321,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// the stored head SBOM stays a whole graph and the next diff has edges to compare.
 	b.SetRelationships(req.PRSBOM.Relationships)
 
+	var rows []report.AdvisoryFinding
 	for i := range baseline.Advisories {
 		f := baseline.Advisories[i]
 		if supersededByFresh(f, freshIDs) {
@@ -310,24 +329,30 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		}
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
 		if re, ok := reFindings[key]; ok {
-			b.AddFinding(re)
+			rows = append(rows, re)
 			delete(reFindings, key)
 			continue
 		}
-		b.AddFinding(withInventoryLimits(f, req.DiffLimits))
+		rows = append(rows, withInventoryLimits(f, req.DiffLimits))
 	}
 	for _, re := range reFindings {
-		b.AddFinding(re)
+		rows = append(rows, re)
+	}
+	for _, f := range rows {
+		b.AddFinding(f)
 	}
 	// Baseline limits apply to the findings inherited verbatim; the fresh notes apply
 	// to the re-analyzed slice. Build de-duplicates the union.
-	b.AddPartiality(baseline.Partiality...)
+	b.AddPartiality(withoutCutShortCount(baseline.Partiality)...)
 	b.AddPartiality(notes...)
 	// The head's entry points for each ecosystem this pass resolved them on, else the baseline's,
 	// which the inherited refutations rest on.
 	b.WithLibraryEntrypoints(entrypoints...)
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
 	b.AddPartiality(req.WorkSetLimits...)
+	if note, ok := recountCutShort(rows, baseline.Partiality, ownStop(analysis, cut)); ok {
+		b.AddPartiality(note)
+	}
 
 	b.WithProvenance(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
@@ -437,6 +462,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// both claim, and so do the prior rows it inherits.
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	analysis := analysisOr(req.Analysis, ctx)
+	cut := 0
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
@@ -446,7 +473,13 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			Codebase:      req.Codebase,
 		}
 		workSet = append(workSet, areq.Vulnerability)
-		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		if stopped {
+			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = cutShortFinding(areq.Vulnerability)
+			freshIDs[a.ID] = struct{}{}
+			cut++
+			continue
+		}
 		if err != nil {
 			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
 			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = assessFailureFinding(areq.Vulnerability, err)
@@ -481,6 +514,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// across scheduled watches.
 	b.SetRelationships(prior.SBOM.Relationships)
 
+	var rows []report.AdvisoryFinding
 	for i := range prior.Advisories {
 		f := prior.Advisories[i]
 		if supersededByFresh(f, freshIDs) {
@@ -488,21 +522,31 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
 		if re, ok := reFindings[key]; ok {
-			b.AddFinding(re)
+			rows = append(rows, re)
 			delete(reFindings, key)
 			continue
 		}
-		b.AddFinding(f)
+		rows = append(rows, f)
 	}
 	for _, re := range reFindings {
-		b.AddFinding(re)
+		rows = append(rows, re)
+	}
+	for _, f := range rows {
+		b.AddFinding(f)
 	}
 	// CVE-watch re-resolves no dependencies, so the prior pass's limits still bound
 	// every inherited finding; the fresh notes cover the newly-relevant advisories.
-	b.AddPartiality(prior.Partiality...)
+	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
 	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
+	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
+		b.AddPartiality(note)
+	}
+	if cut > 0 {
+		// The advisories this pass did not assess must stay new, so the next run assesses them.
+		newCursor = state.Cursor
+	}
 
 	b.WithProvenance(report.Provenance{
 		CommitSHA:       stateCommit(prior, req.Subject.ResolvedCommit),

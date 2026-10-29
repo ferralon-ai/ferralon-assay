@@ -331,6 +331,9 @@ func reportHTMLLimitLabel(reason string) string {
 	case report.ReasonAdvisoryRangeAbsent:
 		return "Some advisories record no affected version range that can be checked against the installed " +
 			"version, so a path to their code is reported as evidence without a verdict."
+	case report.ReasonScanCutShort:
+		return "The scan was cut short before every advisory was assessed, so no verdict is reported for " +
+			"the advisories it did not finish."
 	default:
 		return reason
 	}

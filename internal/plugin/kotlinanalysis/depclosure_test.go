@@ -383,9 +383,8 @@ func buildAbstractMethodClass(b *kclassBuilder, name string) []byte {
 
 // TestReachability_UnreadableJarScopedTargets: a graph JAR that is gone, or whose bytes changed
 // since the build resolved it, is a scoped tool_failure bounded by first-party code ("") and
-// every package of each module that resolved it. Each scoped reason is also declared run-wide.
-// Alone it leaves an unrelated sink Searched: the scoped reasons are the gate's to apply per
-// advisory.
+// every package of each module that resolved it, and never declared run-wide. Alone it leaves an
+// unrelated sink Searched: the scoped reasons are the gate's to apply per advisory.
 //
 // The fixture graph: app resolves a, b and c; b holds the sink, and main never calls it.
 func TestReachability_UnreadableJarScopedTargets(t *testing.T) {
@@ -435,9 +434,8 @@ func TestReachability_UnreadableJarScopedTargets(t *testing.T) {
 			if !reflect.DeepEqual(res.Partiality.Scoped, tt.want) {
 				t.Fatalf("Scoped = %+v\nwant     %+v", res.Partiality.Scoped, tt.want)
 			}
-			if mirrored := hasReason(res.Partiality, plugin.PartialReasonToolFailure); mirrored != (len(tt.want) > 0) {
-				t.Errorf("run-wide %s declared = %v, want %v (every scoped reason is mirrored run-wide): %v",
-					plugin.PartialReasonToolFailure, mirrored, len(tt.want) > 0, res.Partiality.Reasons)
+			if hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("run-wide %s declared: a scoped reason stays scoped: %v", plugin.PartialReasonToolFailure, res.Partiality.Reasons)
 			}
 			if len(tt.want) > 0 && res.Partiality.Complete {
 				t.Error("a result carrying scoped reasons must not be Complete")
@@ -446,6 +444,49 @@ func TestReachability_UnreadableJarScopedTargets(t *testing.T) {
 				t.Errorf("Searched = %v, want %v (%v)", res.Searched, want, res.Partiality.Reasons)
 			}
 		})
+	}
+}
+
+// TestReachability_UnreadableJarOutsideItsClosure: a JAR that cannot be read is bounded by the
+// modules that resolved it. A sink in a package only another module resolved is outside that
+// bound: the limit stays in Scoped with Targets that exclude the sink's package, nothing is
+// declared run-wide, and the sink is Searched, so the gate (trigger scopedLimitCounts) can clear
+// an advisory on it while one on the unreadable JAR's own module still withholds.
+func TestReachability_UnreadableJarOutsideItsClosure(t *testing.T) {
+	dir := t.TempDir()
+	jar := func(group, artifact, version, class string) graphDep {
+		b := newKClassBuilder()
+		b.addMethod("sink", "()V", []byte{opReturn})
+		p := m2Path(dir, group, artifact, version, "jar")
+		writeJar(t, p, map[string][]byte{class: b.build(class, "java/lang/Object")})
+		return graphDep{group: group, artifact: artifact, version: version, jar: p}
+	}
+	a := jar("org.a", "a", "1.0", "org/a/A")
+	graph := graphOption(t, graphModule(".", "app", a), graphModule("lib", "lib", jar("org.b", "b", "2.0", "org/b/B")))
+	if err := os.Remove(a.jar); err != nil {
+		t.Fatal(err)
+	}
+	writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
+
+	res := reachWith(t, dir, graph, "org/b/B.sink()V")
+	want := []plugin.ScopedReason{{
+		Reason:  plugin.PartialReasonToolFailure,
+		Package: "pkg:maven/org.a/a",
+		Path:    "org.a:a:1.0: a-1.0.jar unreadable or changed since the build resolved it",
+		Targets: []string{"", "pkg:maven/org.a/a"},
+	}}
+	if !reflect.DeepEqual(res.Partiality.Scoped, want) {
+		t.Fatalf("Scoped = %+v\nwant     %+v", res.Partiality.Scoped, want)
+	}
+	if hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
+		t.Errorf("run-wide %s declared: the limit must not reach an advisory outside its Targets: %v",
+			plugin.PartialReasonToolFailure, res.Partiality.Reasons)
+	}
+	if res.Partiality.Complete {
+		t.Error("a result carrying scoped reasons must not be Complete")
+	}
+	if want := []string{"org/b/B.sink()V"}; !reflect.DeepEqual(res.Searched, want) {
+		t.Errorf("Searched = %v, want %v (%v)", res.Searched, want, res.Partiality.Reasons)
 	}
 }
 
@@ -472,8 +513,8 @@ dependencies {
 	if len(res.Partiality.Scoped) != 1 {
 		t.Fatalf("want one scoped reason, got %+v", res.Partiality.Scoped)
 	}
-	if !hasReason(res.Partiality, partialReasonDuplicateClass) {
-		t.Errorf("a scoped blind spot must also be declared run-wide, got %v", res.Partiality.Reasons)
+	if hasReason(res.Partiality, partialReasonDuplicateClass) {
+		t.Errorf("a scoped blind spot must not be declared run-wide, got %v", res.Partiality.Reasons)
 	}
 	got := res.Partiality.Scoped[0]
 	if got.Reason != partialReasonDuplicateClass || got.Package != "pkg:maven/org.two/two" {
@@ -553,8 +594,8 @@ func versionedJacksonBuild(t *testing.T, scope298, scope299 string) (dir string,
 
 // TestReachability_RuntimeVersion: the closure loads the version on a module's runtime
 // classpath, never one the graph resolved only for tests. A coordinate the modules resolved at
-// more than one runtime version loads nothing: a named scoped miss (mirrored run-wide), and its
-// package is never Searched.
+// more than one runtime version loads nothing: a named scoped miss (not declared run-wide), and
+// its package is never Searched.
 func TestReachability_RuntimeVersion(t *testing.T) {
 	const ga = jacksonGroup + ":" + jacksonArtifact
 	tests := []struct {
@@ -601,8 +642,8 @@ func TestReachability_RuntimeVersion(t *testing.T) {
 			if !reflect.DeepEqual(res.Partiality.Scoped, tt.wantScoped) {
 				t.Errorf("Scoped = %+v\nwant     %+v", res.Partiality.Scoped, tt.wantScoped)
 			}
-			if mirrored := hasReason(res.Partiality, partialReasonRuntimeVersionAmbiguous); mirrored != (len(tt.wantScoped) > 0) {
-				t.Errorf("run-wide %s declared = %v, want %v: %v", partialReasonRuntimeVersionAmbiguous, mirrored, len(tt.wantScoped) > 0, res.Partiality.Reasons)
+			if hasReason(res.Partiality, partialReasonRuntimeVersionAmbiguous) {
+				t.Errorf("run-wide %s declared: a scoped reason stays scoped: %v", partialReasonRuntimeVersionAmbiguous, res.Partiality.Reasons)
 			}
 		})
 	}

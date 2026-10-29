@@ -72,7 +72,7 @@ type reachClosure struct {
 	// engine.
 	releaseReasons []string
 	// Listed is set when the loaded classes are every class the build's runtime classpath
-	// defines: the graph lists the runtime classpath (runtimeListed), every entry was listed,
+	// defines: the graph lists the runtime classpath (RuntimeListed), every entry was listed,
 	// every class each JAR holds was read, no two JARs define one class (the copy kept is not
 	// the one first on the classpath), and the runtime is a recorded JDK after 8, whose
 	// extension directories add to the classpath. The launch is the caller's to check.
@@ -143,7 +143,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	var cp depreach.Classpath
 	cp.Merge(fpClasspath)
 	fp := sha256.New()
-	whole := g != nil && runtimeListed(g, buildDir) && g.RuntimeJDK() > 8
+	whole := g != nil && RuntimeListed(g, buildDir) && g.RuntimeJDK() > 8
 	if g == nil {
 		cp.Unlisted = true
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)

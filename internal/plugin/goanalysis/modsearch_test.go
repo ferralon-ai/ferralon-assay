@@ -484,7 +484,9 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 	t.Run("dependency advisories resolve nothing in first-party code", func(t *testing.T) {
 		newSourceProxy(t, []srcModule{modA})
 		app := newApp(t, []string{"example.com/a"}, "", reader)
-		for _, purl := range []string{"pkg:golang/example.com/a", "pkg:golang/example.com/a/ssh@v1.0.0"} {
+		for _, purl := range []string{"pkg:golang/example.com/a", "pkg:golang/example.com/a/ssh@v1.0.0",
+			"pkg:golang/example.com/a?type=module", "pkg:golang/example.com/a#ssh", "pkg:golang/example.com/a/ssh@v1.0.0?type=module#sub",
+			"pkg:Golang/example.com/a"} {
 			t.Run(purl, func(t *testing.T) {
 				wantNone(t, resolve(t, app, purl, []string{"example.com/a/ssh.Certificate.Verify"}))
 			})
@@ -513,6 +515,20 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		app := newApp(t, []string{"example.com/a"}, "", reader)
 		wantNone(t, resolve(t, app, "pkg:golang/stdlib", []string{"crypto/x509.Certificate.Verify"}))
 	})
+	t.Run("a standard-library or toolchain advisory resolves nothing in first-party code", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		for _, purl := range []string{
+			"pkg:golang/stdlib@go1.22.1", "pkg:golang/stdlib?type=module", "pkg:golang/stdlib#net/http",
+			"pkg:golang/stdlib@go1.22.1?os=linux#net/http", "pkg:golang/StdLib",
+			"pkg:golang/toolchain", "pkg:golang/toolchain@go1.22.1", "pkg:golang/toolchain?os=linux#cmd/go",
+			"pkg:golang/cmd/go", "pkg:golang/cmd/go/internal/modfetch@go1.22.1", "pkg:GOLANG/stdlib", "pkg:golang/Toolchain",
+		} {
+			t.Run(purl, func(t *testing.T) {
+				wantNone(t, resolve(t, app, purl, []string{"Verify"}))
+			})
+		}
+	})
 	t.Run("the scanned module nested under a dependency's path holds its own paths", func(t *testing.T) {
 		parent := srcModule{"example.com", "v1.0.0", map[string]string{"root.go": "package root\n\nvar X = 1\n"}}
 		newSourceProxy(t, []srcModule{parent})
@@ -530,4 +546,24 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		wantNone(t, resolve(t, app, "pkg:golang/example.com/a/ssh", []string{"example.com/a/ssh.Certificate.Verify"}))
 		wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
 	})
+}
+
+func TestPackageFromPURL(t *testing.T) {
+	for _, tc := range []struct{ purl, want string }{
+		{"pkg:golang/example.com/a/ssh", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh@v1.0.0", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh?type=module", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh#sub/dir", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh@v1.0.0?type=module#sub/dir", "example.com/a/ssh"},
+		{"pkg:golang/stdlib", "stdlib"},
+		{"pkg:golang/toolchain@go1.22.1", "toolchain"},
+		{"pkg:Golang/example.com/a?q=1@x", "example.com/a"},
+		{"pkg:golang/example.com/a#s@x", "example.com/a"},
+		{"pkg:npm/left-pad@1.0.0", ""},
+		{"", ""},
+	} {
+		if got := packageFromPURL(tc.purl); got != tc.want {
+			t.Errorf("packageFromPURL(%q) = %q, want %q", tc.purl, got, tc.want)
+		}
+	}
 }

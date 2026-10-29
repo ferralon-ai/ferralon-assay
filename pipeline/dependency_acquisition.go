@@ -41,15 +41,17 @@ const (
 
 // Reasons an npm package stays unread, recorded on DependencyAcquisitionResult.Unread.
 const (
-	UnreadNoIntegrity        = "no_integrity"        // the lock records no SRI (file:, link:, git+ or an unpinned entry)
-	UnreadMalformedIntegrity = "malformed_integrity" // the SRI does not decode to a supported digest
-	UnreadIntegrityMismatch  = "integrity_mismatch"  // the bytes do not hash to the lock SRI
-	UnreadPolicyRefused      = "policy_refused"      // the fetch target or a redirect failed the registry policy
-	UnreadNotServed          = "not_served"          // the registry did not serve the tarball
-	UnreadFetchFailed        = "fetch_failed"        // transport failure
-	UnreadNotCached          = "not_cached"          // offline, and the cache does not hold it
-	UnreadNPMRCMalformed     = "npmrc_malformed"     // the npm configuration failed closed; nothing was fetched
-	UnreadCancelled          = "cancelled"           // the run's context ended first
+	UnreadNoIntegrity        = "no_integrity"         // the lock records no SRI (file:, link:, git+ or an unpinned entry)
+	UnreadMalformedIntegrity = "malformed_integrity"  // the SRI does not decode to a supported digest
+	UnreadIntegrityMismatch  = "integrity_mismatch"   // the bytes do not hash to the lock SRI
+	UnreadPolicyRefused      = "policy_refused"       // the fetch target or a redirect failed the registry policy
+	UnreadNotServed          = "not_served"           // the registry answered that it does not serve the tarball
+	UnreadUnavailable        = "registry_unavailable" // throttled, a server error, a timeout or a dropped connection: transient
+	UnreadUnreachable        = "registry_unreachable" // the registry host did not resolve or refused the connection
+	UnreadFetchFailed        = "fetch_failed"         // any other transport or cache write failure
+	UnreadNotCached          = "not_cached"           // offline, and the cache does not hold it
+	UnreadNPMRCMalformed     = "npmrc_malformed"      // the npm configuration failed closed; nothing was fetched
+	UnreadCancelled          = "cancelled"            // the run's context ended first
 )
 
 // DependencyAcquisition configures dependency_acquisition. Absent the option the stage is not in
@@ -114,10 +116,14 @@ type DependencyCodeCause struct {
 	// Kind is FallbackInventoryFailed or the Unread reason of the first package, in PURL order,
 	// whose fetch failed.
 	Kind string `json:"kind"`
-	// Detail names that package and, for UnreadPolicyRefused, the policy code or, for
+	// Detail names that package and, for UnreadPolicyRefused, the policy code, for
+	// UnreadUnavailable and UnreadUnreachable, the artifactcache Fetch* code or, for
 	// UnreadNPMRCMalformed, the configuration file and line. It never carries a URL, a host or a
 	// credential.
 	Detail string `json:"detail,omitempty"`
+	// Registry is that package's UnreadDependency.Registry. It stays in process: the artifact
+	// names no registry.
+	Registry string `json:"-"`
 }
 
 // FallbackInventoryFailed is the DependencyCodeCause kind for an inventory that failed outright,
@@ -130,7 +136,7 @@ const FallbackInventoryFailed = "inventory_failed"
 // nothing could have fetched it, and it stays a per-package limit.
 func fetchFailed(reason string) bool {
 	switch reason {
-	case UnreadFetchFailed, UnreadNotServed, UnreadPolicyRefused, UnreadCancelled, UnreadIntegrityMismatch, UnreadNPMRCMalformed:
+	case UnreadFetchFailed, UnreadNotServed, UnreadUnavailable, UnreadUnreachable, UnreadPolicyRefused, UnreadCancelled, UnreadIntegrityMismatch, UnreadNPMRCMalformed:
 		return true
 	}
 	return false
@@ -157,7 +163,7 @@ func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
 		if u.Detail != "" {
 			detail += ": " + u.Detail
 		}
-		return &DependencyCodeCause{Kind: u.Reason, Detail: detail}
+		return &DependencyCodeCause{Kind: u.Reason, Detail: detail, Registry: u.Registry}
 	}
 	return nil
 }
@@ -168,12 +174,21 @@ type UnreadDependency struct {
 	PURL   string `json:"purl"`
 	Reason string `json:"reason"`
 	Detail string `json:"detail,omitempty"`
+	// Registry identifies the registry a fetch-mode package resolves to: its configured base
+	// URL with no userinfo, query or fragment. It is set for every fetch-mode unread package,
+	// including one cancelled before its request or refused for a malformed pin, so it names
+	// where the package would have come from, not that a request reached it; Reason says
+	// that. It stays in process, for a caller keeping per-registry state through Observe; the
+	// artifact names no registry.
+	Registry string `json:"-"`
 }
 
 type dependencyAcquirer struct {
 	cfg   DependencyAcquisition
 	mu    sync.Mutex
 	byDir map[string]*acquiredBuild
+	// retrySleep, when set, replaces how the fetchers wait between attempts.
+	retrySleep func(context.Context, time.Duration) error
 }
 
 type acquiredBuild struct {
@@ -260,6 +275,12 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 		if d.split() {
 			fetchers.uncredentialed = acquire.NewAcquirer(d.cfg.UncredentialedDir, client)
 		}
+		if d.retrySleep != nil {
+			fetchers.read.SetRetrySleep(d.retrySleep)
+			if fetchers.uncredentialed != nil {
+				fetchers.uncredentialed.SetRetrySleep(d.retrySleep)
+			}
+		}
 	}
 	disk := artifactcache.NewDiskStore(d.cfg.CacheDir)
 
@@ -281,7 +302,11 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 		go func(i int, pin npmPin) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			outcomes[i] = d.acquireOne(ctx, pin, npmrc, fetchers, disk)
+			u := d.acquireOne(ctx, pin, npmrc, fetchers, disk)
+			if u != nil && d.cfg.Mode == DependencyCodeFetch {
+				u.Registry = registryOf(npmrc, pin.purl)
+			}
+			outcomes[i] = u
 		}(i, pin)
 	}
 	wg.Wait()
@@ -473,12 +498,25 @@ func verifiedEntry(ctx context.Context, disk artifactcache.Store, ref artifactca
 	return "", nil
 }
 
+// registryOf is the Registry the npm configuration routes purl to, or "" when purl names no
+// npm package.
+func registryOf(npmrc acquire.NPMConfig, purl string) string {
+	name, err := acquire.NPMNameOf(purl)
+	if err != nil {
+		return ""
+	}
+	return acquire.RegistryID(npmrc.RegistryFor(name))
+}
+
 // classifyAcquireError names why err left purl unread. A concrete finding (a policy refusal,
-// bytes that do not match the lock, a malformed pin) keeps its reason even when the deadline has
-// since passed; only an error the deadline could itself have caused reads as cancelled.
+// bytes that do not match the lock, a malformed pin, a registry that answered unavailable or
+// timed out on its own) keeps its reason even when the deadline has since passed; only an
+// error the deadline could itself have caused reads as cancelled. A registry that was unavailable or unreachable is never
+// filed as not serving the package: that would say the package is absent.
 func classifyAcquireError(ctx context.Context, purl string, err error) *UnreadDependency {
 	u := &UnreadDependency{PURL: purl}
 	var pr *artifactcache.PolicyReason
+	var fr *artifactcache.FetchReason
 	switch {
 	case errors.As(err, &pr):
 		u.Reason, u.Detail = UnreadPolicyRefused, pr.Code
@@ -486,8 +524,12 @@ func classifyAcquireError(ctx context.Context, purl string, err error) *UnreadDe
 		u.Reason = UnreadIntegrityMismatch
 	case errors.Is(err, artifactcache.ErrMalformedRef), errors.Is(err, artifactcache.ErrUnpinnedArtifact):
 		u.Reason = UnreadMalformedIntegrity
+	case errors.As(err, &fr) && errors.Is(fr, artifactcache.ErrRegistryUnavailable):
+		u.Reason, u.Detail = UnreadUnavailable, fr.Code
 	case ctx.Err() != nil:
 		u.Reason = UnreadCancelled
+	case errors.As(err, &fr):
+		u.Reason, u.Detail = UnreadUnreachable, fr.Code
 	case errors.Is(err, artifactcache.ErrDeclaredAbsent):
 		u.Reason = UnreadNotServed
 	default:

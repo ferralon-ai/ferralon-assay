@@ -30,8 +30,10 @@ import (
 // A sink is Searched only when the class output covers the sources, the launch entry
 // licenses it (a build-named first-party main, no unmapped entry shape), every mapped root's search is empty and hazard-free, every ingress mapped to
 // compiled code, the closure declares no run-wide reason (reachClosure.Reasons: an inventory
-// graph reason, an unmodeled launch option, an unmodeled Gradle dependency form), and the sink
-// has a concrete body in loaded code. Otherwise a sink with no path carries no_known_ingress +
+// graph reason, an unmodeled launch option, an unmodeled Gradle dependency form), the sink
+// has a concrete body in loaded code, and its owner's @kotlin.Metadata (if any) was read and
+// does not declare it inline: a Kotlin library's inline function or accessor is copied into
+// its callers, which then hold no call to it. Otherwise a sink with no path carries no_known_ingress +
 // reachability_undetermined, plus no_whole_program_root when there is no main.
 //
 // Every scoped reason is also listed run-wide in Reasons until the gate reads Scoped.
@@ -114,7 +116,8 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 				reasons[plugin.PartialReasonNoIngress] = true // reached from a main, not an attacker-facing ingress
 			}
 			paths = append(paths, *found)
-		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 && rc.concrete(sink):
+		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 && rc.concrete(sink) &&
+			!classfile.KotlinInlineWithheld(sink, rc.class):
 			searched = append(searched, id)
 		default:
 			reasons[plugin.PartialReasonNoIngress] = true

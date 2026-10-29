@@ -163,6 +163,28 @@ type workSet struct {
 	ecosystem string
 }
 
+// cutWorkSet discloses a work set the scan stopped choosing. The stop, not the repository, is why
+// the inventory read, the per-dependency reads or the OSV query failed, so their notes give way to
+// one scan_cut_short note: advisories the widening or the policy would have added may be missing,
+// and the cut-short count covers only the advisories chosen before the stop.
+func cutWorkSet(ws workSet, cause error) workSet {
+	kept := make([]report.PartialityNote, 0, len(ws.partiality)+1)
+	for _, n := range ws.partiality {
+		switch n.Reason {
+		case reasonWorkSetNoInventory, reasonWorkSetNotWidened, reasonWorkSetDependencyUnreadable:
+			continue
+		}
+		kept = append(kept, n)
+	}
+	ws.partiality = append(kept, report.PartialityNote{
+		Reason:    report.ReasonScanCutShort,
+		Ecosystem: ws.ecosystem,
+		Detail:    "the scan stopped while choosing advisories, so some it would have assessed may be missing: " + cause.Error(),
+	})
+	ws.unreadable = nil
+	return ws
+}
+
 // selectWorkSet resolves the work set for a scan-path run from what the run configured.
 //
 // corpus is the configured advisory corpus's own reader (nil when none is configured) — NOT the

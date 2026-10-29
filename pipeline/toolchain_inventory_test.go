@@ -144,13 +144,13 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			want:          ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
-			name:          "toolchain directive outranks the go directive it sits above",
+			name:          "a toolchain line binds the go line; its own version is no floor",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			wantGoVersion: "1.20",
-			want:          ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want:          ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			name:          "the higher floor wins even when it is the go directive",
+			name:          "a toolchain line below the go line: the go line is the floor",
 			goMod:         "module example.com/target\n\ngo 1.22\n\ntoolchain go1.20.14\n",
 			wantGoVersion: "1.22",
 			want:          ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
@@ -159,7 +159,7 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			// The observation must be AT OR ABOVE the floor to outrank it. Below it, the repo's own
 			// directive refutes the claim and the contradiction guard takes over — covered by
 			// TestResolveToolchainFact's contradiction cases and by the case below.
-			name:          "a TRUSTED observed runner toolchain is exact and outranks both floors",
+			name:          "a TRUSTED observed runner toolchain is exact and outranks the floor",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			observed:      "go1.21.0",
 			trust:         true,
@@ -169,14 +169,14 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 		{
 			// THE SHIPPED NO-CONFIG DEFAULT, produced by the real stage off a real go.mod: an
 			// observation is present (the Action always samples it) and trust-observed-go is unset, so
-			// resolution ignores it and lands on the tighter go.mod floor. This is what a customer who
+			// resolution ignores it and lands on the go.mod floor. This is what a customer who
 			// merges the scaffolded workflow and configures nothing gets — floors only, so M3
 			// disqualifies solely when a floor is past the fix and M4 will not refute from absence.
 			name:          "the no-config default ignores the observation and resolves the floor",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			observed:      "go1.26.4",
 			wantGoVersion: "1.20",
-			want:          ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want:          ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			// Same input, no floors at all: the fact is UNRESOLVED rather than silently adopting the
@@ -199,7 +199,7 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 		},
 		{
 			// The contradiction guard through the REAL stage over a REAL go.mod: a declaration below
-			// the manifest's own toolchain directive is refuted by the repo, so the exact claim is
+			// the go line the toolchain line binds is refuted by the repo, so the exact claim is
 			// discarded for the floor and the discarded input is recorded. M3 still disqualifies off
 			// the floor; M4's gate is denied because the bound is no longer exact.
 			name:          "a declaration BELOW the manifest floor is refuted and demoted to the floor",
@@ -207,14 +207,23 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			declared:      "go1.19.13",
 			wantGoVersion: "1.20",
 			want: ToolchainFact{
-				Version: "go1.24.0",
+				Version: "go1.20.0",
 				Bound:   ToolchainBoundMinimum,
-				Source:  ToolchainSourceToolchainDirective,
+				Source:  ToolchainSourceGoDirective,
 				Contradiction: &ToolchainContradiction{
 					ClaimedVersion: "go1.19.13", ClaimedSource: ToolchainSourceSubjectDeclared,
-					FloorVersion: "go1.24.0", FloorSource: ToolchainSourceToolchainDirective,
+					FloorVersion: "go1.20.0", FloorSource: ToolchainSourceGoDirective,
 				},
 			},
+		},
+		{
+			// A declaration below the toolchain line but at or above the go line is a build under
+			// GOTOOLCHAIN=local, and the real stage keeps it exact.
+			name:          "a declaration between the go line and the toolchain line stays exact",
+			goMod:         "module example.com/target\n\ngo 1.21.0\n\ntoolchain go1.22.5\n",
+			declared:      "go1.21.13",
+			wantGoVersion: "1.21.0",
+			want:          ToolchainFact{Version: "go1.21.13", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
 		{
 			name:          "a go.mod with no version directive at all resolves nothing",

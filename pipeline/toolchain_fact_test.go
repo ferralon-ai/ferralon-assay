@@ -1,8 +1,8 @@
 // toolchain_fact_test.go
 //
 // The toolchain-fact precedence lattice, exhaustively: each single source alone, exact beating a
-// floor regardless of which names the higher version, floors combining by maximum, normalization,
-// and every junk shape degrading to the next source rather than into the fact.
+// floor regardless of which names the higher version, the binding go line as the only floor,
+// normalization, and every junk shape degrading to the next source rather than into the fact.
 package pipeline
 
 import "testing"
@@ -25,9 +25,11 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.20.10", Bound: ToolchainBoundExact, Source: ToolchainSourceCIObserved},
 		},
 		{
-			name: "toolchain_directive alone is a floor",
+			// The go command ignores the toolchain line's version under GOTOOLCHAIN=local or a
+			// pinned GOTOOLCHAIN, so the line alone bounds nothing.
+			name: "toolchain_directive alone is no floor",
 			in:   toolchainInputs{toolchainDirective: "go1.21.3"},
-			want: ToolchainFact{Version: "go1.21.3", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
 			name: "go_directive alone is a floor",
@@ -59,9 +61,9 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			name: "untrusted ci_observed falls through to the toolchain directive floor",
+			name: "untrusted ci_observed falls through to the go line the toolchain line binds",
 			in:   toolchainInputs{ciObserved: "go1.26.3", toolchainDirective: "go1.20.14", goDirective: "1.20"},
-			want: ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want: ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			// Tier 1 is unaffected by the gate either way (ruling 7): a declaration is the subject's
@@ -179,7 +181,7 @@ func TestResolveToolchainFact(t *testing.T) {
 		{
 			name: "pre-1.21 go directive with a toolchain line ignores a build-resolved value",
 			in:   toolchainInputs{goDirective: "1.17", toolchainDirective: "go1.21.3", buildResolved: "go1.16.5", trustCIObserved: true},
-			want: ToolchainFact{Version: "go1.21.3", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want: ToolchainFact{Version: "go1.17.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 
 		// Precedence among the exact sources.
@@ -208,22 +210,54 @@ func TestResolveToolchainFact(t *testing.T) {
 			want: ToolchainFact{Version: "go1.24.0", Bound: ToolchainBoundExact, Source: ToolchainSourceCIObserved},
 		},
 
-		// Floors combine by maximum — both are lower bounds on the same quantity, so the larger is
-		// the tightest sound bound, whichever directive it came from.
+		// The binding go line is the only floor. A toolchain line makes the go line bind (go commands
+		// before 1.21 reject it at parse; from 1.21 on they enforce the go line), but its own version
+		// is ignored outside GOTOOLCHAIN=auto, so it never raises the floor.
 		{
-			name: "max of floors: toolchain directive is higher",
+			name: "a toolchain line above the go line does not raise the floor",
 			in:   toolchainInputs{toolchainDirective: "go1.21.3", goDirective: "1.20"},
-			want: ToolchainFact{Version: "go1.21.3", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want: ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			name: "max of floors: go directive is higher",
+			name: "a toolchain line below the go line leaves the go line the floor",
 			in:   toolchainInputs{toolchainDirective: "go1.20.5", goDirective: "1.22"},
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			name: "equal floors tie to the toolchain directive",
+			name: "a toolchain line equal to the go line: the go line is the floor",
 			in:   toolchainInputs{toolchainDirective: "go1.21.0", goDirective: "1.21"},
-			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+		},
+		{
+			// The ferralon-ai/tracker#609 go.mod: the build may run go1.21.x under GOTOOLCHAIN=local.
+			name: "go 1.21.0 with toolchain go1.22.5 floors at the go line",
+			in:   toolchainInputs{goDirective: "1.21.0", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+		},
+		{
+			// A two-part go line binds only because of the toolchain line beside it.
+			name: "two-part go 1.21 with a toolchain line floors at go1.21.0",
+			in:   toolchainInputs{goDirective: "1.21", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+		},
+		{
+			// A go command that parses the toolchain line is 1.21 or later and enforces `go 1.20`, so
+			// go1.20.0 is a true (if loose) floor.
+			name: "two-part go 1.20 with a toolchain line floors at go1.20.0",
+			in:   toolchainInputs{goDirective: "1.20", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{Version: "go1.20.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+		},
+		{
+			name: "a toolchain line with an unparseable go line resolves nothing",
+			in:   toolchainInputs{goDirective: "1.21rc1", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
+		{
+			// The toolchain line still binds the directives, so the build-resolved value stays out
+			// even when the go line yields no floor.
+			name: "a toolchain line with an unparseable go line ignores a build-resolved value",
+			in:   toolchainInputs{goDirective: "1.21rc1", toolchainDirective: "go1.22.5", buildResolved: "go1.22.5", trustCIObserved: true},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
 			name: "unparseable toolchain directive leaves the go directive as the floor",
@@ -305,8 +339,9 @@ func TestResolveToolchainFact(t *testing.T) {
 // TestResolveToolchainFact_ContradictionGuard covers the boundary at which an exact claim stops being
 // believable: strictly below the subject's own go.mod floor.
 //
-// `GOTOOLCHAIN=auto` switches only UP from a directive, so a repo requiring at least `floor` provably
-// does not build with less. An exact claim below it is refuted BY THE REPO — the observed Go was the
+// A go command that enforces a binding go line refuses to build below it in every GOTOOLCHAIN mode, so
+// a repo requiring at least `floor` provably does not build with less. An exact claim below it is
+// refuted BY THE REPO — the observed Go was the
 // bootstrap that then switched up, or a declaration went stale against a directive bump. The claim is
 // dropped and the floor resolves instead, which keeps M3's disqualification (a floor is all it needed)
 // and denies M4's gate structurally, since the bound is no longer exact.
@@ -321,13 +356,13 @@ func TestResolveToolchainFact_ContradictionGuard(t *testing.T) {
 		want ToolchainFact
 	}{
 		{
-			name: "exact BELOW the toolchain directive is refuted, resolves as the floor",
+			name: "exact BELOW the binding go line is refuted, resolves as the floor",
 			in:   toolchainInputs{ciObserved: "go1.19.0", toolchainDirective: "go1.24.0", goDirective: "1.23", trustCIObserved: true},
 			want: ToolchainFact{
-				Version: "go1.24.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective,
+				Version: "go1.23.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective,
 				Contradiction: &ToolchainContradiction{
 					ClaimedVersion: "go1.19.0", ClaimedSource: ToolchainSourceCIObserved,
-					FloorVersion: "go1.24.0", FloorSource: ToolchainSourceToolchainDirective,
+					FloorVersion: "go1.23.0", FloorSource: ToolchainSourceGoDirective,
 				},
 			},
 		},
@@ -345,23 +380,38 @@ func TestResolveToolchainFact_ContradictionGuard(t *testing.T) {
 			},
 		},
 		{
-			// Multiple floors: the claim is tested against the MAXIMUM, which is the only sound
-			// comparison — a claim above the weaker floor can still be refuted by the stronger one.
-			name: "refuted by the MAXIMUM of the floors, not the first one",
+			// A claim between the go line and the toolchain line is a build under GOTOOLCHAIN=local
+			// or a pinned GOTOOLCHAIN. The toolchain line does not refute it.
+			name: "a claim between the go line and the toolchain line stands",
 			in:   toolchainInputs{subjectDeclared: "go1.21.0", goDirective: "1.20", toolchainDirective: "go1.24.3"},
+			want: ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
+		},
+		{
+			// The ferralon-ai/tracker#609 scenario: a correct declaration of the go1.21.x build is kept.
+			name: "a declaration below the toolchain line and above the go line stays exact",
+			in:   toolchainInputs{subjectDeclared: "go1.21.13", goDirective: "1.21.0", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{Version: "go1.21.13", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
+		},
+		{
+			name: "a trusted observation below the toolchain line and above the go line stays exact",
+			in:   toolchainInputs{ciObserved: "go1.21.13", trustCIObserved: true, goDirective: "1.21.0", toolchainDirective: "go1.22.5"},
+			want: ToolchainFact{Version: "go1.21.13", Bound: ToolchainBoundExact, Source: ToolchainSourceCIObserved},
+		},
+		{
+			// The guard is intact for the go line beside a toolchain line.
+			name: "a declaration below the go line is refuted even beside a toolchain line",
+			in:   toolchainInputs{subjectDeclared: "go1.20.5", goDirective: "1.21.0", toolchainDirective: "go1.22.5"},
 			want: ToolchainFact{
-				Version: "go1.24.3", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective,
+				Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective,
 				Contradiction: &ToolchainContradiction{
-					ClaimedVersion: "go1.21.0", ClaimedSource: ToolchainSourceSubjectDeclared,
-					FloorVersion: "go1.24.3", FloorSource: ToolchainSourceToolchainDirective,
+					ClaimedVersion: "go1.20.5", ClaimedSource: ToolchainSourceSubjectDeclared,
+					FloorVersion: "go1.21.0", FloorSource: ToolchainSourceGoDirective,
 				},
 			},
 		},
 		{
-			// The discriminating max-of-floors case: the higher floor is the SECOND source in
-			// precedence order, and the claim sits BETWEEN the two. Comparing against the first floor
-			// found (go1.20.1) would accept the claim; only the maximum refutes it.
-			name: "refuted by a lower-precedence floor that is nonetheless the maximum",
+			// The toolchain line is below the claim and the go line above it: only the go line refutes.
+			name: "refuted by the go line when the toolchain line is lower",
 			in:   toolchainInputs{subjectDeclared: "go1.21.0", toolchainDirective: "go1.20.1", goDirective: "1.23"},
 			want: ToolchainFact{
 				Version: "go1.23.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective,
@@ -372,12 +422,12 @@ func TestResolveToolchainFact_ContradictionGuard(t *testing.T) {
 			},
 		},
 		{
-			name: "exact equal to the maximum floor is NOT a contradiction",
+			name: "exact equal to the toolchain line is NOT a contradiction",
 			in:   toolchainInputs{subjectDeclared: "go1.24.3", goDirective: "1.20", toolchainDirective: "go1.24.3"},
 			want: ToolchainFact{Version: "go1.24.3", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
 		{
-			name: "exact above the maximum floor is NOT a contradiction",
+			name: "exact above both lines is NOT a contradiction",
 			in:   toolchainInputs{subjectDeclared: "go1.26.4", goDirective: "1.20", toolchainDirective: "go1.24.3"},
 			want: ToolchainFact{Version: "go1.26.4", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
@@ -393,15 +443,15 @@ func TestResolveToolchainFact_ContradictionGuard(t *testing.T) {
 			// entirely, so there is no claim to refute and no contradiction to record. The fact is an
 			// ordinary floor, indistinguishable from a scan that passed no observation at all.
 			name: "an untrusted observation below the floor records no contradiction",
-			in:   toolchainInputs{ciObserved: "go1.19.0", toolchainDirective: "go1.24.0"},
-			want: ToolchainFact{Version: "go1.24.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			in:   toolchainInputs{ciObserved: "go1.19.0", toolchainDirective: "go1.24.0", goDirective: "1.23"},
+			want: ToolchainFact{Version: "go1.23.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			// A refuted claim is still a resolved FLOOR, so the version-empty-iff-unresolved invariant
 			// holds and M3's axis is unaffected.
 			name: "an unparseable claim is skipped, not treated as a contradiction",
-			in:   toolchainInputs{subjectDeclared: "latest", toolchainDirective: "go1.24.0"},
-			want: ToolchainFact{Version: "go1.24.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			in:   toolchainInputs{subjectDeclared: "latest", toolchainDirective: "go1.24.0", goDirective: "1.23"},
+			want: ToolchainFact{Version: "go1.23.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 	}
 

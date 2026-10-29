@@ -1844,7 +1844,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// resolved BEFORE dependency-version resolution because the version axis consumes it: for a
 	// go-toolchain-scheme advisory this fact IS resolved_version.
 	//
-	// Go-only by construction. Both floors are go.mod directives and both exact tiers are statements
+	// Go-only by construction. The floor is a go.mod directive and the exact tiers are statements
 	// about a Go build environment, so resolving this for a JS/Java/Python/.NET subject would label
 	// the RUNNER's Go as the subject's — the same category error the fact exists to close. Other
 	// ecosystems' runtime versions (e.g. a node engine range) live in RuntimeSpec{Name:"node"}, not here.

@@ -6,17 +6,23 @@
 // path could say which of them was a statement about the SUBJECT. This resolves them into a single
 // value that carries its own strength.
 //
-// The strength is load-bearing, and it is why the fact is a struct and not a string. Go's own
-// semantics make both go.mod directives LOWER BOUNDS: `go X.Y` is a minimum language version,
-// `toolchain goX.Y.Z` a minimum toolchain, and under GOTOOLCHAIN=auto the go command only ever
-// switches UP from them. Nothing inside go.mod is an exact statement about the toolchain that built
-// the artifact.
+// The strength is load-bearing, and it is why the fact is a struct and not a string. The go.mod
+// `go` directive is a LOWER BOUND: a go command that enforces it refuses to build the module with
+// an older release, whatever GOTOOLCHAIN says. Nothing inside go.mod is an exact statement about the
+// toolchain that built the artifact.
 //
-// A directive is a floor only for a go command that enforces it, which is Go 1.21 on. A go command
-// before 1.21 does not enforce the `go` line, so `go 1.17` may have been built by go1.16.5, and so
-// may `go 1.21`. The directives bind only when their syntax excludes such a go command: a
-// `toolchain` line, or a three-part `go` line (`1.21.0`) at 1.21 or later — go commands before 1.21
-// reject both at parse (directivesBindToolchain). Otherwise the go line is no floor, and the
+// The `toolchain` directive is no bound at all. The go command honours its version only under
+// GOTOOLCHAIN=auto; under GOTOOLCHAIN=local or a pinned GOTOOLCHAIN it ignores it, and the subject's
+// GOTOOLCHAIN is not visible here (job env, GOENV, a container image). actions/setup-go sets
+// GOTOOLCHAIN=local for the rest of the job, so a build below the toolchain line is the ordinary
+// case, not an edge. The line's version therefore never becomes the floor and never refutes an exact
+// claim; only its presence is read, for what it says about the go line.
+//
+// The go line is a floor only for a go command that enforces it, which is Go 1.21 on. A go command
+// before 1.21 does not enforce it, so `go 1.17` may have been built by go1.16.5, and so may
+// `go 1.21`. The go line binds only when the go.mod syntax excludes such a go command: a `toolchain`
+// line of any version, or a three-part `go` line (`1.21.0`) at 1.21 or later — go commands before
+// 1.21 reject both at parse (directivesBindToolchain). Otherwise the go line is no floor, and the
 // toolchain the build's environment resolves stands in for it under the same trust as the CI
 // observation.
 //
@@ -51,10 +57,8 @@ const (
 	ToolchainBoundNone = "none"
 )
 
-// Source values for ToolchainFact.Source, in descending precedence. The two exact sources
-// outrank both floors; among the floors the higher VERSION wins (they are both lower bounds on
-// the same quantity, so their maximum is the tightest sound bound), ties going to the
-// toolchain directive.
+// Source values for ToolchainFact.Source, in descending precedence. The exact sources outrank the
+// one floor, the binding go directive.
 const (
 	// ToolchainSourceSubjectDeclared is the subject's own statement of its build toolchain (the
 	// Action's subject-go-version input). Nothing overrides a declaration.
@@ -71,10 +75,12 @@ const (
 	// only under the same trust (trustCIObserved), ranked below the observation, and only when the
 	// directives do not bind.
 	ToolchainSourceBuildResolved = "build_resolved"
-	// ToolchainSourceToolchainDirective is the go.mod `toolchain goX.Y.Z` directive: a floor.
+	// ToolchainSourceToolchainDirective names the go.mod `toolchain goX.Y.Z` directive. It is an
+	// input, not a bound: resolution never selects it as a fact's Source or a contradiction's
+	// FloorSource, because the go command ignores the line's version outside GOTOOLCHAIN=auto.
 	ToolchainSourceToolchainDirective = "toolchain_directive"
 	// ToolchainSourceGoDirective is the go.mod `go` directive when it binds (directivesBindToolchain):
-	// a floor, normalized to goX.Y.Z.
+	// the floor, normalized to goX.Y.Z.
 	ToolchainSourceGoDirective = "go_directive"
 	// ToolchainSourceUnresolved means no source produced an orderable version.
 	ToolchainSourceUnresolved = "unresolved"
@@ -185,10 +191,12 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 			continue
 		}
 		// THE CONTRADICTION GUARD. An exact claim BELOW the repo's own floor is refuted by the repo:
-		// `GOTOOLCHAIN=auto` switches only UP from a directive, so a subject whose go.mod requires at
-		// least `floor` provably does not build with anything less. The claim is therefore false —
-		// most often because the observed Go is the bootstrap toolchain that then switched up, or
-		// because a declaration went stale against a directive bump.
+		// a go command that enforces a binding go line refuses to build below it in every GOTOOLCHAIN
+		// mode, so a subject whose go.mod requires at least `floor` provably does not build with
+		// anything less. The claim is therefore false — most often because the observed Go is the
+		// bootstrap toolchain that then switched up, or because a declaration went stale against a
+		// directive bump. The floor is the go line only, so a claim below the `toolchain` line and at
+		// or above the go line stands: that is a build under GOTOOLCHAIN=local.
 		//
 		// Why this matters now and did not before: for the version axis alone the direction is SAFE
 		// (a too-low version only ever withholds disqualifications), which is why it survived review
@@ -229,39 +237,24 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	return floorFact
 }
 
-// resolveToolchainFloor reduces the two go.mod directives to the tightest sound lower bound: both are
-// minimums on the same quantity, so their MAXIMUM is the strongest floor that remains true. A `go`
-// directive that does not bind (directivesBindToolchain) is no floor and is left out. ok is false
-// when no directive resolves, in which case the returned fact is the explicit unresolved one and no
-// exact claim can be refuted.
+// resolveToolchainFloor is the go.mod floor on the subject's toolchain: the `go` directive when it
+// binds (directivesBindToolchain), and nothing else. The `toolchain` directive's version is not a
+// candidate (see the file comment). ok is false when the go line does not bind or does not parse, in
+// which case the returned fact is the explicit unresolved one and no exact claim can be refuted.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
-	best := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
-	var bestParsed goToolchainVersion
-	var haveFloor bool
-	floors := []struct{ raw, source string }{
-		{in.toolchainDirective, ToolchainSourceToolchainDirective},
+	unresolved := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
+	if !directivesBindToolchain(in) {
+		return unresolved, goToolchainVersion{}, false
 	}
-	if directivesBindToolchain(in) {
-		floors = append(floors, struct{ raw, source string }{in.goDirective, ToolchainSourceGoDirective})
+	parsed, ok := parseGoToolchainVersion(in.goDirective)
+	if !ok {
+		return unresolved, goToolchainVersion{}, false
 	}
-	for _, floor := range floors {
-		parsed, ok := parseGoToolchainVersion(floor.raw)
-		if !ok {
-			continue
-		}
-		// Strictly-greater keeps the earlier (higher-precedence) source on a tie.
-		if haveFloor && compareGoToolchain(parsed, bestParsed) <= 0 {
-			continue
-		}
-		best = ToolchainFact{
-			Version: formatGoToolchainVersion(parsed),
-			Bound:   ToolchainBoundMinimum,
-			Source:  floor.source,
-		}
-		bestParsed = parsed
-		haveFloor = true
-	}
-	return best, bestParsed, haveFloor
+	return ToolchainFact{
+		Version: formatGoToolchainVersion(parsed),
+		Bound:   ToolchainBoundMinimum,
+		Source:  ToolchainSourceGoDirective,
+	}, parsed, true
 }
 
 func formatGoToolchainVersion(v goToolchainVersion) string {

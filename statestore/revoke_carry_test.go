@@ -119,9 +119,6 @@ func newGitRefHarness(t *testing.T) storeHarness {
 
 func newGitHubHarness(t *testing.T) storeHarness {
 	m := newMockGitHub("acme", "widget")
-	// The mock answers a PATCH on a missing ref with 404; this harness answers 422 so
-	// a write against a dropped ref reaches the store's conflict → re-read → re-create
-	// path, the same path a CAS conflict followed by a vanished ref takes.
 	inner := m.handler()
 	var failCommit string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -134,16 +131,6 @@ func newGitHubHarness(t *testing.T) storeHarness {
 		if fail {
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
-		}
-		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/git/refs/") {
-			ref := "refs/" + r.URL.Path[strings.Index(r.URL.Path, "/git/refs/")+len("/git/refs/"):]
-			m.mu.Lock()
-			_, ok := m.refs[ref]
-			m.mu.Unlock()
-			if !ok {
-				http.Error(w, "reference does not exist", http.StatusUnprocessableEntity)
-				return
-			}
 		}
 		inner.ServeHTTP(w, r)
 	}))

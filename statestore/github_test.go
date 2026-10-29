@@ -239,7 +239,8 @@ func (m *mockGitHub) patchRef(w http.ResponseWriter, r *http.Request, ref string
 	}
 	cur, ok := m.refs[ref]
 	if !ok {
-		http.Error(w, "no ref", http.StatusNotFound)
+		// Live GitHub answers a PATCH on a missing ref with 422, not 404.
+		http.Error(w, "Reference does not exist", http.StatusUnprocessableEntity)
 		return
 	}
 	if !in.Force {

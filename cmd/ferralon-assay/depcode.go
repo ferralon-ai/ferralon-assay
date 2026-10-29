@@ -18,6 +18,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/resultsink"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 	"github.com/ferralon-ai/ferralon-assay/trigger"
 )
@@ -197,6 +198,8 @@ type depCodeRun struct {
 	fell     *report.DependencyCodeCause
 	hinted   map[string]bool
 	stalled  *depFetchError
+	// held is the registries record counted one more held run against, stalled ones included.
+	held []depFetchError
 }
 
 func (d *depCodeRun) observe(res pipeline.DependencyAcquisitionResult) {
@@ -315,6 +318,61 @@ func (d *depCodeRun) err() error {
 	return nil
 }
 
+// fetchNotes is what the run's dependency code fetch needs from the operator, per registry, for the
+// job summary: a refused token, a token the run did not have, a cursor record held or a hold that
+// stalled. A registry appears once, under the outcome that decides the run: refused, then stalled,
+// then held, then missing a token. It reads what record left, so a caller consults it after the
+// state write.
+func (d *depCodeRun) fetchNotes() []resultsink.DependencyFetchNote {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	held := map[string]depFetchError{}
+	for _, h := range d.held {
+		held[h.Registry] = h
+	}
+	missing := map[string]acquire.TokenEnv{}
+	for _, o := range d.outcomes {
+		if o.Registry == "" || o.Outcome != pipeline.UnreadPolicyRefused || o.Detail != artifactcache.PolicyMissingCredential {
+			continue
+		}
+		if _, ok := missing[o.Registry]; !ok {
+			missing[o.Registry] = o.TokenEnv
+		}
+	}
+	regs := d.tallyLocked()
+	var notes []resultsink.DependencyFetchNote
+	for _, key := range slices.Sorted(maps.Keys(regs)) {
+		h, wasHeld := held[key]
+		env, wasMissing := missing[key]
+		switch t := regs[key]; {
+		case t.rejected != "":
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchCredentialRejected, Package: t.rejected,
+				Hint: "Renew the token or give it read access to the package. If a curation proxy such as Artifactory curation or a Nexus firewall fronts the registry, check whether it blocks the package.",
+			})
+		case d.stalled != nil && d.stalled.Registry == key:
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchStalled, HeldRuns: d.stalled.HeldRuns, Since: d.stalled.Since,
+				Hint: "Check that the registry is up and reachable from the runner. The advisories these runs found stay new until a run reads from it.",
+			})
+		case wasHeld:
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchHeld, HeldRuns: h.HeldRuns, Since: h.Since,
+				Hint: fmt.Sprintf("The advisories this run found stay new and are assessed again on the next run. If the registry still serves nothing after %d held runs over %d hours, the run fails.", stallRuns, int(stallAge.Hours())),
+			})
+		case wasMissing:
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchMissingCredential,
+				Hint: missingTokenHint(key, env) + ".",
+			})
+		}
+	}
+	return notes
+}
+
 // holds reports whether the dependency-code policy holds a cve-watch cursor, given the stored
 // dependency-fetch record: whether any registry it fetched from holds. It reads the acquisitions
 // observed so far, so a caller consults it after the re-assessments.
@@ -376,7 +434,7 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 	if !d.observed {
 		return prior
 	}
-	d.stalled = nil
+	d.stalled, d.held = nil, nil
 	next := &statestore.DepFetch{}
 	if prior != nil {
 		next.Registries = maps.Clone(prior.Registries)
@@ -396,6 +454,7 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 				if e.FirstHeldAt.IsZero() {
 					e.FirstHeldAt = now
 				}
+				d.held = append(d.held, depFetchError{Kind: kindFetchStalled, Registry: key, HeldRuns: e.HeldRuns, Since: e.FirstHeldAt})
 				if d.stalled == nil && e.HeldRuns >= stallRuns && now.Sub(e.FirstHeldAt) >= stallAge {
 					d.stalled = &depFetchError{Kind: kindFetchStalled, Registry: key, HeldRuns: e.HeldRuns, Since: e.FirstHeldAt}
 				}

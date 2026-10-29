@@ -546,3 +546,101 @@ func TestDepCodeRunOnlyRejectedAndStalledFail(t *testing.T) {
 		}
 	}
 }
+
+// fetchNotes names, per registry, the one outcome that decides the run, with its fix, for the job
+// summary: a refused token, a stalled hold, a held cursor, a token the run did not have. A registry
+// that held is reported only from what record counted, so a run that wrote no hold reports none.
+func TestDepCodeRunFetchNotes(t *testing.T) {
+	const npmjs, corp = "https://registry.npmjs.org", "https://npm.corp.example"
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	first := now.Add(-30 * time.Hour)
+	served := func(runs int) *statestore.DepFetch {
+		e := statestore.RegistryFetch{HasServed: true, HeldRuns: runs}
+		if runs > 0 {
+			e.FirstHeldAt = first
+		}
+		return &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: e}}
+	}
+	rejected := pipeline.DependencyOutcome{PURL: "pkg:npm/@corp/b@1", Registry: corp, Outcome: pipeline.UnreadPolicyRefused, Detail: artifactcache.PolicyCredentialRejected}
+	missing := pipeline.DependencyOutcome{PURL: "pkg:npm/@corp/c@1", Registry: corp, Outcome: pipeline.UnreadPolicyRefused, Detail: artifactcache.PolicyMissingCredential,
+		TokenEnv: acquire.TokenEnv{Name: "NPM_TOKEN", State: acquire.TokenEnvUnset}}
+	down := pipeline.DependencyOutcome{PURL: "pkg:npm/a@1", Registry: npmjs, Outcome: pipeline.UnreadUnavailable}
+	read := pipeline.DependencyOutcome{PURL: "pkg:npm/a@1", Registry: npmjs, Outcome: pipeline.OutcomeReadNetwork}
+	for _, tc := range []struct {
+		name     string
+		outcomes []pipeline.DependencyOutcome
+		prior    *statestore.DepFetch
+		run      *trigger.DependencyFetchRun // nil: the run writes no state
+		records  int                         // record calls (a lost CAS retries the hook)
+		want     []string                    // outcome@registry
+		hints    []string
+	}{
+		{name: "all read", outcomes: []pipeline.DependencyOutcome{read}, run: &trigger.DependencyFetchRun{}},
+		{name: "refused token, pr-inherit", outcomes: []pipeline.DependencyOutcome{rejected}, want: []string{"credential_rejected@" + corp},
+			hints: []string{"Renew the token", "curation proxy"}},
+		{name: "refused outranks missing on one registry", outcomes: []pipeline.DependencyOutcome{missing, rejected}, run: &trigger.DependencyFetchRun{Baseline: true},
+			want: []string{"credential_rejected@" + corp}},
+		{name: "missing token names the variable", outcomes: []pipeline.DependencyOutcome{missing}, run: &trigger.DependencyFetchRun{Baseline: true},
+			want: []string{"missing_credential@" + corp}, hints: []string{"NPM_TOKEN is unset"}},
+		{name: "held cursor", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0), run: &trigger.DependencyFetchRun{Held: true},
+			want: []string{"held@" + npmjs}, hints: []string{"assessed again on the next run", "3 held runs over 24 hours"}},
+		{name: "held once across a retried hook", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0), run: &trigger.DependencyFetchRun{Held: true}, records: 2,
+			want: []string{"held@" + npmjs}},
+		{name: "a baseline holds nothing", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0), run: &trigger.DependencyFetchRun{Baseline: true}},
+		{name: "unwritten run holds nothing", outcomes: []pipeline.DependencyOutcome{down}, prior: served(0)},
+		{name: "stalled", outcomes: []pipeline.DependencyOutcome{down}, prior: served(2), run: &trigger.DependencyFetchRun{Held: true},
+			want: []string{"dependency_fetch_stalled@" + npmjs}, hints: []string{"up and reachable from the runner"}},
+		{name: "registries in order", outcomes: []pipeline.DependencyOutcome{down, rejected}, prior: served(0), run: &trigger.DependencyFetchRun{Held: true},
+			want: []string{"credential_rejected@" + corp, "held@" + npmjs}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &depCodeRun{source: report.DependencyCodeSourceFetch}
+			run.observe(pipeline.DependencyAcquisitionResult{Mode: "fetch", Outcomes: tc.outcomes})
+			if tc.run != nil {
+				for i := 0; i < max(tc.records, 1); i++ {
+					run.record(tc.prior, *tc.run, now)
+				}
+			}
+			notes := run.fetchNotes()
+			var got []string
+			for _, n := range notes {
+				got = append(got, n.Outcome+"@"+n.Registry)
+				if n.Hint == "" {
+					t.Errorf("%s: no hint", n.Outcome)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("notes = %v, want %v", got, tc.want)
+			}
+			var hints []string
+			for _, n := range notes {
+				hints = append(hints, n.Hint)
+			}
+			for _, h := range tc.hints {
+				if !strings.Contains(strings.Join(hints, "\n"), h) {
+					t.Errorf("hint %q missing from %q", h, hints)
+				}
+			}
+			for _, n := range notes {
+				switch n.Outcome {
+				case "credential_rejected":
+					if n.Package != rejected.PURL {
+						t.Errorf("package = %q", n.Package)
+					}
+				case "held":
+					if n.HeldRuns != 1 || !n.Since.Equal(now) {
+						t.Errorf("held = %d since %v", n.HeldRuns, n.Since)
+					}
+				case "dependency_fetch_stalled":
+					if n.HeldRuns != 3 || !n.Since.Equal(first) {
+						t.Errorf("stalled = %d since %v", n.HeldRuns, n.Since)
+					}
+				}
+			}
+		})
+	}
+	var none *depCodeRun
+	if none.fetchNotes() != nil {
+		t.Error("a non-JS run has fetch notes")
+	}
+}

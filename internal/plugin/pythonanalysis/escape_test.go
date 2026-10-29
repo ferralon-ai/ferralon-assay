@@ -431,6 +431,26 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			escaped: []string{funcSCIP("m", nil, "target", 1)},
 		},
 		{
+			name:    "f-string substitution cut short",
+			files:   map[string]string{"m.py": plain + "def other(d):\n    return f\"{target(d[\"k\"])}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:    "f-string debug substitution",
+			files:   map[string]string{"m.py": plain + "def other():\n    return f\"{target=} {target = !r}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:    "raw f-string brace after \\N",
+			files:   map[string]string{"m.py": plain + "def other():\n    return rf\"\\N{target}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:  "f-string named escape",
+			files: map[string]string{"m.py": plain + "def other():\n    return f\"\\N{target} \\\\N{other}\"\n"},
+			kept:  []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
 			name:  "test module neither escapes nor makes escape",
 			files: map[string]string{"m.py": plain, "tests/test_m.py": "from m import target\n\nclass TestM:\n    def test_x(self):\n        run(target)\n"},
 			kept:  []string{funcSCIP("m", nil, "target", 1), funcSCIP("tests/test_m", []string{"TestM"}, "test_x", 1), moduleInitSCIP("tests/test_m")},
@@ -1322,6 +1342,7 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"sys dunder attribute", "import sys\n\nD = sys.__dict__\n", false, false, true},
 		{"concatenated key", "import sys\n\ndef go(m):\n    return sys.modules['plugins.' + m]\n", false, false, true},
 		{"f-string key", "import sys\n\ndef go(m):\n    return sys.modules[f'plugins.{m}']\n", false, false, true},
+		{"import_module literal in an f-string substitution", "import importlib\n\ndef load():\n    return f\"{importlib.import_module('plugins.x')}\"\n", true, false, false},
 		{"relative import_module computed package", "import importlib\n\ndef go(p):\n    return importlib.import_module('.x', p)\n", false, false, true},
 		{"__import__ with a level", "def go():\n    return __import__('x', globals(), None, [], 1)\n", false, false, true},
 		{"__import__ with a level keyword", "def go():\n    return __import__('x', level=1)\n", false, false, true},
@@ -1368,6 +1389,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"imp load_compiled", "import imp\n\ndef go(path):\n    return imp.load_compiled('plugin', path)\n", false, false, true},
 		{"extension file loader", "from importlib.machinery import ExtensionFileLoader\n\ndef load(path):\n    return ExtensionFileLoader('plugin', path)\n", false, false, true},
 		{"zipimport module as a value", "import zipimport\n\nZI = zipimport\n", false, false, true},
+		{"lookup inside an f-string substitution", "import sys\n\ndef go(m):\n    return f\"{sys.modules[m].run()}\"\n", false, false, true},
+		{"lookup inside a multi-line f-string substitution", "import sys\n\ndef go(m):\n    return f'''x\n{sys.modules[m]}'''\n", false, false, true},
 		{"loader imports alone", "import runpy\nimport zipimport\nfrom importlib.util import spec_from_file_location\nfrom importlib.machinery import SourceFileLoader as SFL\n", false, false, false},
 		{"def named like a loader", "def run_path(p):\n    return p\n", false, false, false},
 	}
@@ -1452,11 +1475,15 @@ func TestCallGraph_UnlistedSites(t *testing.T) {
 	}{
 		{"every site listed", "def f(x):\n    return g(x)\n", false},
 		{"f-string without a call", "def f(x):\n    return f\"{x}\"\n", false},
-		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", true},
+		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", false},
+		{"f-string substitution cut short", "def f(d):\n    return f\"{g(d[\"k\"])}\"\n", true},
+		{"f-string cut short before a later call", "def f(d):\n    return f\"{d[\"k\"]}{g(1)}\"\n", true},
+		{"f-string nested in a substitution cut short", "def f(d):\n    return f\"{f'{g(d['k'])}'}\"\n", true},
+		{"f-string nested in a format spec cut short", "def f(x, d):\n    return f\"{x:{f'{g(d['k'])}'}}\"\n", true},
 		{"evaluated code", "def f(src):\n    return eval(src)\n", true},
 		{"t-string without a call", "def f(x):\n    return t\"{x}\"\n", false},
-		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", true},
-		{"raw t-string with a call", "def f(x):\n    return rt\"{g(x)}\"\n", true},
+		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", false},
+		{"raw t-string with a call", "def f(x):\n    return rt\"{g(x)}\"\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

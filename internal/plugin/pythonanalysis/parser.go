@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"unicode"
@@ -67,10 +68,12 @@ func stripPython(src string) string {
 }
 
 // strLiteral is one string literal blanked by stripPythonLiterals: the rune index just past
-// it in the cleaned text and its raw body between the quotes (escapes left unprocessed).
+// it in the cleaned text, its raw body between the quotes (escapes left unprocessed), and the
+// rune index the body starts at.
 type strLiteral struct {
 	end  int
 	body string
+	from int
 }
 
 // stripPythonLiterals is stripPython that also returns every blanked string literal keyed
@@ -95,7 +98,8 @@ func stripPythonLiterals(src string) (string, map[int]strLiteral) {
 		case c == '"' || c == '\'':
 			start := i
 			i = stripStringLiteral(&b, r, i)
-			lits[start] = strLiteral{end: i, body: literalBody(r, start, i)}
+			body, from := literalBody(r, start, i)
+			lits[start] = strLiteral{end: i, body: body, from: from}
 		default:
 			b.WriteRune(c)
 			i++
@@ -104,10 +108,152 @@ func stripPythonLiterals(src string) (string, map[int]strLiteral) {
 	return b.String(), lits
 }
 
-// literalBody returns the runes between a literal's opening and closing quotes, given the
-// opening quote index and the index just past the literal. An unterminated literal yields
-// everything after the opening quote(s).
-func literalBody(r []rune, start, end int) string {
+// spliceFStrings returns clean with each f-string and t-string substitution written back at
+// its own offset as a bracketed expression, so the call scanner reads a substitution's calls
+// as sites and its names as uses. A substitution's own literals are blanked; its conversion,
+// debug '=' and format spec stay blank, apart from the substitutions nested in the spec. A
+// spliced literal's newlines become spaces, which keeps its substitutions on the logical line
+// the literal opens. The returned literals add those blanked inside substitutions. unread
+// holds the text of each substitution with no closing brace, which is not spliced.
+func spliceFStrings(clean string, lits map[int]strLiteral) (spliced string, all map[int]strLiteral, unread []string) {
+	r := []rune(clean)
+	all = maps.Clone(lits)
+	for start, lit := range lits {
+		if !fStringPrefix(r, start) || !strings.ContainsRune(lit.body, '{') {
+			continue
+		}
+		unread = append(unread, spliceSubstitutions(r, all, []rune(lit.body), lit.from, rawPrefix(r, start))...)
+		for i := start; i < lit.end && i < len(r); i++ {
+			if r[i] == '\n' {
+				r[i] = ' '
+			}
+		}
+	}
+	return string(r), all, unread
+}
+
+// spliceSubstitutions writes the substitutions of an f-string body that starts at r[at] into
+// r, adding the literals inside them to lits, and returns the text of those it can't splice.
+// raw reports a raw prefix, under which \N{...} is text rather than a named escape.
+func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int, raw bool) (unread []string) {
+	for i := 0; i < len(body); i++ {
+		if body[i] != '{' {
+			continue
+		}
+		if i+1 < len(body) && body[i+1] == '{' {
+			i++
+			continue
+		}
+		if !raw && namedEscape(body, i) {
+			for i < len(body) && body[i] != '}' {
+				i++
+			}
+			continue
+		}
+		end := scanField(body, i+1, true)
+		if end >= len(body) {
+			return append(unread, string(body[i+1:]))
+		}
+		exprEnd := scanField(body, i+1, false)
+		code := exprEnd
+		if k := trimRightSpace(body, i+1, code); k > i+1 && body[k-1] == '=' {
+			code = k - 1
+		}
+		c, clits := stripPythonLiterals(string(body[i+1 : code]))
+		c, clits, cunread := spliceFStrings(c, clits)
+		unread = append(unread, cunread...)
+		off := at + i + 1
+		copy(r[off:], []rune(c))
+		for k, l := range clits {
+			l.end += off
+			l.from += off
+			lits[k+off] = l
+		}
+		r[at+i] = '['
+		r[at+end] = ']'
+		// A conversion holds no brace, so the spec's substitutions are those after exprEnd.
+		if exprEnd < end {
+			unread = append(unread, spliceSubstitutions(r, lits, body[exprEnd+1:end], at+exprEnd+1, raw)...)
+		}
+		i = end
+	}
+	return unread
+}
+
+// scanField returns the index in body, from i, of the brace that closes a substitution, or
+// with whole false of the first conversion '!' or format-spec ':' before it, skipping nested
+// brackets and string literals; len(body) when there is none. A format spec is text apart
+// from its nested substitutions, so its quotes and brackets open nothing.
+func scanField(body []rune, i int, whole bool) int {
+	depth := 0
+	var sink strings.Builder
+	for i < len(body) {
+		switch c := body[i]; {
+		case c == '"' || c == '\'':
+			i = stripStringLiteral(&sink, body, i)
+			continue
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case (c == ')' || c == ']') && depth > 0:
+			depth--
+		case c == '}':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		case depth == 0 && whole && c == ':':
+			for i++; i < len(body); i++ {
+				switch body[i] {
+				case '{':
+					i = scanField(body, i+1, true)
+				case '}':
+					return i
+				}
+			}
+			return len(body)
+		case depth == 0 && !whole && (c == ':' || c == '!' && !(i+1 < len(body) && body[i+1] == '=')):
+			return i
+		}
+		i++
+	}
+	return len(body)
+}
+
+// namedEscape reports whether the brace at body[i] opens a \N{...} named escape: an N
+// after an odd run of backslashes.
+func namedEscape(body []rune, i int) bool {
+	if i < 2 || body[i-1] != 'N' {
+		return false
+	}
+	n := 0
+	for k := i - 2; k >= 0 && body[k] == '\\'; k-- {
+		n++
+	}
+	return n%2 == 1
+}
+
+// rawPrefix reports whether the literal opening at r[start] carries an r or R prefix.
+func rawPrefix(r []rune, start int) bool {
+	for j := start - 1; j >= 0 && j >= start-2 && unicode.IsLetter(r[j]); j-- {
+		if r[j] == 'r' || r[j] == 'R' {
+			return true
+		}
+	}
+	return false
+}
+
+// trimRightSpace returns the index just past the last non-space rune of body[from:to].
+func trimRightSpace(body []rune, from, to int) int {
+	for to > from && unicode.IsSpace(body[to-1]) {
+		to--
+	}
+	return to
+}
+
+// literalBody returns the runes between a literal's opening and closing quotes and the index
+// they start at, given the opening quote index and the index just past the literal. An
+// unterminated literal yields everything after the opening quote(s).
+func literalBody(r []rune, start, end int) (string, int) {
 	q := 1
 	if start+2 < len(r) && r[start+1] == r[start] && r[start+2] == r[start] {
 		q = 3
@@ -118,9 +264,9 @@ func literalBody(r []rune, start, end int) string {
 		to -= q
 	}
 	if from > to {
-		return ""
+		return "", from
 	}
-	return string(r[from:to])
+	return string(r[from:to]), from
 }
 
 // stripStringLiteral blanks a Python string literal starting at the quote rune r[i]

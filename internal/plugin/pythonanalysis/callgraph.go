@@ -641,11 +641,16 @@ func loadProgram(buildDir string) (*program, error) {
 		}
 		module := moduleOf(buildDir, p)
 		clean, lits := stripPythonLiterals(string(data))
+		clean, lits, unread := spliceFStrings(clean, lits)
 		lines := logicalLines(clean)
 
 		decls := parseDecls(lines)
 		scan := parseCallsAndIngresses(lines)
-		scan.refs.scanFStrings(clean, lits)
+		for _, text := range unread {
+			scan.refs.scanRunes([]rune(text), false, true)
+			// The literal's text after an unclosed substitution goes unread, whatever it holds.
+			scan.refs.hidden = true
+		}
 		roots, opaque := dynamicImports(clean, lits)
 		lookupRoots, lookups, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
 		roots = sortedDedup(append(roots, lookupRoots...))

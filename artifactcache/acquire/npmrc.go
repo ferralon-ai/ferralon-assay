@@ -57,6 +57,7 @@ type NPMConfig struct {
 	scopes          map[string]string // "@scope" -> registry base URL
 	requireAuth     map[string]bool   // canonical host -> an anonymous fetch must be refused
 	authConfigured  map[string]bool   // canonical host -> an auth key names it, though it may present nothing
+	unsetAuthEnv    map[string]string // canonical host -> the variable its empty auth value referenced
 	creds           RegistryCredentials
 	allow           Allowlist
 }
@@ -95,6 +96,7 @@ func (e *npmrcError) Unwrap() error { return ErrMalformedNPMRC }
 type npmrcEntry struct {
 	value  string
 	raw    string
+	unset  string // the first referenced variable the environment left unset
 	source string
 	line   int
 }
@@ -109,7 +111,7 @@ const (
 // npm's: NPM_CONFIG_REGISTRY over the project file over the user config file. Any
 // malformed source fails the whole load with an error wrapping ErrMalformedNPMRC.
 func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
-	lookup := allowedEnv(src.LookupEnv, src.AllowEnv)
+	env := allowedEnv(src.LookupEnv, src.AllowEnv)
 	read := src.readFile
 	if read == nil {
 		read = os.ReadFile
@@ -134,7 +136,7 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 		if err != nil {
 			return &npmrcError{source: source, reason: "unreadable"}
 		}
-		entries, err := parseNPMRC(string(b), source, lookup)
+		entries, err := parseNPMRC(string(b), source, env)
 		if err != nil {
 			return err
 		}
@@ -144,7 +146,7 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 		return nil
 	}
 
-	if p, ok := lookup("NPM_CONFIG_USERCONFIG"); ok && p != "" {
+	if p, ok := env.get("NPM_CONFIG_USERCONFIG"); ok && p != "" {
 		if !filepath.IsAbs(p) {
 			return NPMConfig{}, &npmrcError{source: sourceUserConfig, reason: "path is not absolute"}
 		}
@@ -161,7 +163,7 @@ func LoadNPMConfig(src NPMRCSources) (NPMConfig, error) {
 			return NPMConfig{}, err
 		}
 	}
-	if r, ok := lookup("NPM_CONFIG_REGISTRY"); ok && r != "" {
+	if r, ok := env.get("NPM_CONFIG_REGISTRY"); ok && r != "" {
 		merged["registry"] = npmrcEntry{value: r, source: sourceEnv}
 	}
 	return buildNPMConfig(merged)
@@ -220,11 +222,14 @@ func readNoFollow(name string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// allowedEnv restricts lookup to DefaultNPMRCEnv and extra. Any other name reads as unset.
-func allowedEnv(lookup func(string) (string, bool), extra []string) func(string) (string, bool) {
-	if lookup == nil {
-		return func(string) (string, bool) { return "", false }
-	}
+// npmrcEnv is the environment a .npmrc reference reads: DefaultNPMRCEnv and the operator's
+// extra names. Any other name reads as unset.
+type npmrcEnv struct {
+	lookup  func(string) (string, bool)
+	allowed map[string]bool
+}
+
+func allowedEnv(lookup func(string) (string, bool), extra []string) npmrcEnv {
 	allowed := map[string]bool{}
 	for _, n := range DefaultNPMRCEnv {
 		allowed[n] = true
@@ -234,37 +239,81 @@ func allowedEnv(lookup func(string) (string, bool), extra []string) func(string)
 			allowed[n] = true
 		}
 	}
-	return func(name string) (string, bool) {
-		if !allowed[name] {
-			return "", false
-		}
-		return lookup(name)
+	return npmrcEnv{lookup: lookup, allowed: allowed}
+}
+
+func (e npmrcEnv) get(name string) (string, bool) {
+	if e.lookup == nil || !e.allowed[name] {
+		return "", false
 	}
+	return e.lookup(name)
 }
 
 // envRef matches npm's ${NAME} and ${NAME?} references. A plain reference to an unset
 // variable is an error, as it is in npm; the "?" form expands to "".
 var envRef = regexp.MustCompile(`\$\{([^${}?]+)(\?)?\}`)
 
-func expandEnv(s, source string, line int, lookup func(string) (string, bool)) (string, error) {
-	var missing string
-	out := envRef.ReplaceAllStringFunc(s, func(m string) string {
-		sub := envRef.FindStringSubmatch(m)
-		v, ok := lookup(sub[1])
-		if !ok && sub[2] == "" && missing == "" {
-			missing = sub[1]
-		}
-		return v
-	})
+func expandEnv(s, source string, line int, env npmrcEnv) (string, error) {
+	out, missing := expandRefs(s, env)
 	if missing != "" {
 		return "", &npmrcError{source: source, line: line, reason: "references unset environment variable " + strconv.Quote(missing)}
 	}
 	return out, nil
 }
 
+// expandRefs expands s and returns the first plain reference to an unset variable, if any.
+func expandRefs(s string, env npmrcEnv) (out, missing string) {
+	out = envRef.ReplaceAllStringFunc(s, func(m string) string {
+		sub := envRef.FindStringSubmatch(m)
+		v, ok := env.get(sub[1])
+		if !ok && sub[2] == "" && missing == "" {
+			missing = sub[1]
+		}
+		return v
+	})
+	return out, missing
+}
+
+// expandAuthValue expands an auth value. A plain reference to an allowlisted variable the
+// runner left unset (a workflow that never exported NODE_AUTH_TOKEN) is a missing token, not a
+// malformed file: the whole value reads as "", so the registry is fetched anonymously and a
+// 401/403 reads as missing_credential, and unset names the variable. A partially expanded
+// value is never kept, so no fragment of a token is presented. A plain reference to a variable
+// outside the allowlist still fails the load: the operator has not let the scan read it.
+func expandAuthValue(s, source string, line int, env npmrcEnv) (value, unset string, err error) {
+	for _, sub := range envRef.FindAllStringSubmatch(s, -1) {
+		if _, ok := env.get(sub[1]); ok {
+			continue
+		}
+		if sub[2] == "" && !env.allowed[sub[1]] {
+			return "", "", &npmrcError{source: source, line: line, reason: "references unset environment variable " + strconv.Quote(sub[1])}
+		}
+		if unset == "" {
+			unset = sub[1]
+		}
+	}
+	out, missing := expandRefs(s, env)
+	if missing != "" {
+		return "", missing, nil
+	}
+	return out, unset, nil
+}
+
+// authField reports whether k, a top-level or //host/ key, holds a credential.
+func authField(k string) bool {
+	if strings.HasPrefix(k, "//") {
+		k = k[strings.LastIndex(k, ":")+1:]
+	}
+	switch k {
+	case "_authToken", "_auth", "_password", "username":
+		return true
+	}
+	return false
+}
+
 // parseNPMRC parses npm's ini dialect: key=value lines, ';' and '#' comments, optional
 // quoting. A section header is refused rather than guessed at.
-func parseNPMRC(text, source string, lookup func(string) (string, bool)) (map[string]npmrcEntry, error) {
+func parseNPMRC(text, source string, env npmrcEnv) (map[string]npmrcEntry, error) {
 	out := map[string]npmrcEntry{}
 	for i, raw := range strings.Split(text, "\n") {
 		line := i + 1
@@ -293,14 +342,19 @@ func parseNPMRC(text, source string, lookup func(string) (string, bool)) (map[st
 		if source == sourceProject && (envRef.MatchString(k) || (urlBearingKey(k) && envRef.MatchString(v))) {
 			return nil, &npmrcError{source: source, line: line, reason: "environment reference in a registry host or URL"}
 		}
-		if k, err = expandEnv(k, source, line, lookup); err != nil {
+		if k, err = expandEnv(k, source, line, env); err != nil {
 			return nil, err
 		}
-		raw := v
-		if v, err = expandEnv(v, source, line, lookup); err != nil {
+		raw, unset := v, ""
+		if authField(k) {
+			v, unset, err = expandAuthValue(v, source, line, env)
+		} else {
+			v, err = expandEnv(v, source, line, env)
+		}
+		if err != nil {
 			return nil, err
 		}
-		out[k] = npmrcEntry{value: v, raw: raw, source: source, line: line}
+		out[k] = npmrcEntry{value: v, raw: raw, unset: unset, source: source, line: line}
 	}
 	return out, nil
 }
@@ -335,6 +389,7 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 		scopes:          map[string]string{},
 		requireAuth:     map[string]bool{},
 		authConfigured:  map[string]bool{},
+		unsetAuthEnv:    map[string]string{},
 	}
 	if e, ok := entries["registry"]; ok {
 		r, err := registryBase(e)
@@ -356,11 +411,14 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 	// as missing_credential rather than fetched anonymously and misread as not served. An
 	// optional ${VAR?} reference that expanded to "" presents nothing, as in npm, so it
 	// fetches anonymously.
-	defaultAuth, defaultAuthOptional := false, false
+	defaultAuth, defaultAuthOptional, defaultUnset := false, false, ""
 	for _, k := range []string{"_auth", "_authToken", "username", "_password"} {
 		if e, ok := entries[k]; ok {
 			if emptyOptional(e) {
 				defaultAuthOptional = true
+				if defaultUnset == "" {
+					defaultUnset = e.unset
+				}
 			} else {
 				defaultAuth = true
 			}
@@ -392,6 +450,9 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 				return NPMConfig{}, &npmrcError{source: e.source, line: e.line, reason: "per-registry key has a malformed host"}
 			}
 			host := canonicalizeHostString(u.Hostname())
+			if authField(k) && emptyOptional(e) && e.unset != "" && cfg.unsetAuthEnv[host] == "" {
+				cfg.unsetAuthEnv[host] = e.unset
+			}
 			switch field {
 			case "_authToken":
 				if prev, dup := tokenPath[host]; dup && prev != prefix {
@@ -431,6 +492,9 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 		cfg.authConfigured[h] = true
 		if defaultAuth {
 			cfg.requireAuth[h] = true
+		}
+		if defaultUnset != "" && cfg.unsetAuthEnv[h] == "" {
+			cfg.unsetAuthEnv[h] = defaultUnset
 		}
 	}
 	registries := []string{cfg.defaultRegistry}
@@ -498,6 +562,16 @@ func (c NPMConfig) RegistryFor(name string) string {
 		}
 	}
 	return c.defaultRegistry
+}
+
+// UnsetTokenEnv names the environment variable the auth entry for name's registry referenced
+// and the runner left unset, so that registry was fetched with no token; "" when there is none.
+func (c NPMConfig) UnsetTokenEnv(name string) string {
+	u, err := url.Parse(c.RegistryFor(name))
+	if err != nil {
+		return ""
+	}
+	return c.unsetAuthEnv[canonicalizeHostString(u.Hostname())]
 }
 
 // RegistryID identifies the registry at base URL raw for keeping per-registry state: the

@@ -153,19 +153,25 @@ func modfileFlagSet(ctx context.Context, buildDir string) bool {
 
 // dependencyHolds reports whether a module of buildDir's build list other than the main module
 // holds import path p: the module holding it with the longest path, by its own path or its
-// replacement's, is not the main module. A vendored build, whose build list the go command does not
-// list, is read from vendor/modules.txt. A build list that cannot be read holds nothing.
+// replacement's, is not the main module. A build the go command reads from vendor/, whose build
+// list it does not list, is read from vendor/modules.txt; a vendor/ the go command does not read
+// is not. A build list that cannot be read holds nothing.
 func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
 	mods, err := listModules(ctx, buildDir)
-	if err != nil {
-		if mods, err = vendoredModules(buildDir); err != nil {
-			return false
-		}
+	vendored := errors.Is(err, errVendorMode)
+	if vendored {
+		mods, err = vendoredModules(buildDir)
 	}
-	held, main := 0, false
+	if err != nil {
+		return false
+	}
+	held, main, mainPath := 0, false, ""
 	for _, m := range mods {
+		if m.Main {
+			mainPath = m.Path
+		}
 		paths := []string{m.Path}
 		if m.Replace != nil {
 			paths = append(paths, m.Replace.Path)
@@ -176,7 +182,49 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 			}
 		}
 	}
-	return held > 0 && !main
+	// The go command does not check every vendor/modules.txt entry against go.mod, so a stale one
+	// can name a module whose path the main module has since absorbed. In vendor mode the go
+	// command still loads such a path from the main module's own tree.
+	return held > 0 && !main && !(vendored && mainTreeHolds(buildDir, mainPath, p))
+}
+
+// mainTreeHolds reports whether the main module mainPath, rooted at buildDir, has a directory for
+// import path p with no go.mod between them, as the go command requires of a path it loads from the
+// main module. A directory without Go files still holds p, so that a module path that is not itself
+// a package stays first-party, unless vendor/<p> has Go files: the go command then loads p from
+// vendor/.
+func mainTreeHolds(buildDir, mainPath, p string) bool {
+	if mainPath == "" || !pathHolds(mainPath, p) {
+		return false
+	}
+	buildDir = filepath.Clean(buildDir)
+	dir := filepath.Join(buildDir, filepath.FromSlash(strings.TrimPrefix(p[len(mainPath):], "/")))
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return false
+	}
+	if !hasGoFiles(dir) && hasGoFiles(filepath.Join(buildDir, "vendor", filepath.FromSlash(p))) {
+		return false
+	}
+	for d := dir; len(d) > len(buildDir); d = filepath.Dir(d) {
+		if fi, err := os.Stat(filepath.Join(d, "go.mod")); err == nil && !fi.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// hasGoFiles reports whether dir directly holds a .go file.
+func hasGoFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+			return true
+		}
+	}
+	return false
 }
 
 // vendoredModules reads a vendored build's module list: the main module from go.mod, and every
@@ -225,15 +273,29 @@ func pathHolds(mod, p string) bool {
 }
 
 // moduleListing is what `go list -m -json all` answered for a build: its modules, or why it
-// listed none.
+// listed none, and whether that was the go command's vendor-mode refusal.
 type moduleListing struct {
 	Modules []listedModule
 	Err     string
+	Vendor  bool
+}
+
+// errVendorMode is listModules' answer for a build the go command reads from vendor/: in vendor
+// mode it knows only the modules vendor/modules.txt records, so it refuses to compute 'all'.
+var errVendorMode = errors.New("go list -m all: the go command reads the build from vendor/")
+
+// vendorRefusal reports whether err is the go command refusing `go list -m all` because it is in
+// vendor mode, as it resolved that from -mod in GOFLAGS, the go.mod go version and vendor/
+// itself. Releases print the refusal prefixed "go list -m: " or "go: ".
+func vendorRefusal(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && bytes.Contains(ee.Stderr, []byte("can't compute 'all' using the vendor directory"))
 }
 
 // listModules lists buildDir's build list once per build per scan, through the run cache: every
 // advisory resolved against the build reads the same list. A listing the go command refused is
-// kept as that refusal; one cut short by ctx is not kept, so a later advisory lists again.
+// kept as that refusal, errVendorMode when it refused because it is in vendor mode; one cut short
+// by ctx is not kept, so a later advisory lists again.
 func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 	b, err := runCached(ctx, "modlist", buildKey(buildDir), func() ([]byte, error) {
 		var l moduleListing
@@ -245,7 +307,7 @@ func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			l.Err = err.Error()
+			l.Err, l.Vendor = err.Error(), vendorRefusal(err)
 		}
 		return json.Marshal(l)
 	})
@@ -255,6 +317,9 @@ func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 	var l moduleListing
 	if err := json.Unmarshal(b, &l); err != nil {
 		return nil, fmt.Errorf("decode cached module list: %w", err)
+	}
+	if l.Vendor {
+		return nil, errVendorMode
 	}
 	if l.Err != "" {
 		return nil, errors.New(l.Err)

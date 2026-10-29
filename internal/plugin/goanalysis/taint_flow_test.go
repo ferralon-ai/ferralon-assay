@@ -7,10 +7,10 @@
 // stops: where the chain of bases ends, and at a pointer a call writes through.
 //
 // They run runTaint over taintflowmod's main.go, type-checked and built in memory
-// against the chimod net/http and chi stubs and two one-line stdlib stand-ins. As in a
-// real load, only the fixture's own package gets SSA bodies; every dependency is
-// body-less, exactly as real net/http is. Building in memory skips go/packages, whose
-// load alone is over the per-test time limit.
+// against the chimod net/http and chi stubs and four one-function stdlib stand-ins
+// (taintFlowStdlib). As in a real load, only the fixture's own package gets SSA bodies;
+// every dependency is body-less, exactly as real net/http is. Building in memory skips
+// go/packages, whose load alone is over the per-test time limit.
 package goanalysis
 
 import (

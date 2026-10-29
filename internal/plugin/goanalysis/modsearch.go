@@ -160,14 +160,18 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
 	mods, err := listModules(ctx, buildDir)
-	if errors.Is(err, errVendorMode) {
+	vendored := errors.Is(err, errVendorMode)
+	if vendored {
 		mods, err = vendoredModules(buildDir)
 	}
 	if err != nil {
 		return false
 	}
-	held, main := 0, false
+	held, main, mainPath := 0, false, ""
 	for _, m := range mods {
+		if m.Main {
+			mainPath = m.Path
+		}
 		paths := []string{m.Path}
 		if m.Replace != nil {
 			paths = append(paths, m.Replace.Path)
@@ -178,7 +182,29 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 			}
 		}
 	}
-	return held > 0 && !main
+	// The go command does not check every vendor/modules.txt entry against go.mod, so a stale one
+	// can name a module whose path the main module has since absorbed. In vendor mode the go
+	// command still loads such a path from the main module's own tree.
+	return held > 0 && !main && !(vendored && mainTreeHolds(buildDir, mainPath, p))
+}
+
+// mainTreeHolds reports whether the main module mainPath, rooted at buildDir, has a directory for
+// import path p with no go.mod between them, as the go command requires of a path it loads from the
+// main module.
+func mainTreeHolds(buildDir, mainPath, p string) bool {
+	if mainPath == "" || !pathHolds(mainPath, p) {
+		return false
+	}
+	dir := filepath.Join(buildDir, filepath.FromSlash(strings.TrimPrefix(p[len(mainPath):], "/")))
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return false
+	}
+	for d := dir; len(d) > len(buildDir); d = filepath.Dir(d) {
+		if fi, err := os.Stat(filepath.Join(d, "go.mod")); err == nil && !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // vendoredModules reads a vendored build's module list: the main module from go.mod, and every

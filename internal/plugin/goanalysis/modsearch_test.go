@@ -480,10 +480,19 @@ func TestDependencyHolds_UnreadableBuildList(t *testing.T) {
 func TestDependencyHolds_VendorMode(t *testing.T) {
 	// stale names example.com/app/sub, a nested module the main module has since absorbed.
 	const stale = "# example.com/app/sub v1.0.0\n## explicit\nexample.com/app/sub\n"
+	// own is a main module whose example.com/app/sub/x is its own package.
+	own := map[string]string{"app/sub/x/x.go": "package x\n"}
+	// nested is a module of the main module's tree, example.com/app/sub, replaced by its directory.
+	nested := map[string]string{"app/sub/go.mod": "module example.com/app/sub\n\ngo 1.21\n", "app/sub/x/x.go": "package x\n"}
+	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"x/x.go": "package x\n"}}
 	tests := []struct {
 		name       string
-		goLine     string // the go.mod go version, set after vendoring
-		vendor     string // "": no vendor/; "vendor": go mod vendor; else vendor/modules.txt verbatim
+		proxied    []srcModule       // nil: modA
+		imports    []string          // nil: example.com/a
+		gomodTail  string            // appended to go.mod before go mod tidy
+		files      map[string]string // written beside go.mod's directory before go mod tidy
+		goLine     string            // the go.mod go version, set after vendoring
+		vendor     string            // "": no vendor/; "vendor": go mod vendor; else vendor/modules.txt verbatim
 		goflags    string
 		offline    bool // GOPROXY=off over a cold cache, so a listing outside vendor mode fails
 		holds      string
@@ -505,20 +514,40 @@ func TestDependencyHolds_VendorMode(t *testing.T) {
 		{name: "GOFLAGS=-mod=mod over a vendored build is not vendor mode", goLine: "1.21", vendor: "vendor",
 			goflags: "-mod=mod", offline: true, holds: "example.com/a/ssh"},
 		{name: "no vendor/", goLine: "1.21", offline: true, holds: "example.com/a/ssh"},
+		// The go command checks only "## explicit" entries against go.mod: up to go 1.16 it takes a
+		// stale package entry, and later a stale entry with no packages.
+		{name: "a stale non-explicit entry on go 1.16 does not hold the main module's own path",
+			imports: []string{"example.com/app/sub/x"}, files: own, goLine: "1.16",
+			vendor: "# example.com/app/sub v1.0.0\nexample.com/app/sub/x\n", holds: "example.com/app/sub/x", wantVendor: true},
+		{name: "a stale non-explicit entry on go 1.16 does not hold the main module's own module path",
+			imports: []string{"example.com/app/sub/x"}, files: own, goLine: "1.16",
+			vendor: "# example.com/app/sub v1.0.0\nexample.com/app/sub/x\n", holds: "example.com/app/sub", wantVendor: true},
+		{name: "a stale module-only entry on go 1.21 does not hold the main module's own path",
+			imports: []string{"example.com/app/sub/x"}, files: own, goLine: "1.21",
+			vendor: "# example.com/app/sub v1.0.0\n", holds: "example.com/app/sub", wantVendor: true},
+		{name: "a vendored module nested in the main module's tree under its own go.mod is a dependency",
+			imports: []string{"example.com/app/sub/x"}, gomodTail: "\nrequire example.com/app/sub v0.0.0\n\nreplace example.com/app/sub => ./sub\n",
+			files: nested, goLine: "1.21", vendor: "vendor", offline: true, holds: "example.com/app/sub/x", want: true, wantVendor: true},
+		{name: "a vendored module nested under the main module's path, outside its tree, is a dependency",
+			proxied: []srcModule{modSub}, imports: []string{"example.com/app/sub/x"}, goLine: "1.21", vendor: "vendor",
+			offline: true, holds: "example.com/app/sub/x", want: true, wantVendor: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			newSourceProxy(t, []srcModule{modA})
-			app := newApp(t, []string{"example.com/a"}, "", nil)
+			proxied := tt.proxied
+			if proxied == nil {
+				proxied = []srcModule{modA}
+			}
+			newSourceProxy(t, proxied)
+			imports := tt.imports
+			if imports == nil {
+				imports = []string{"example.com/a"}
+			}
+			app := newApp(t, imports, tt.gomodTail, tt.files)
 			switch tt.vendor {
 			case "":
 			case "vendor":
-				cmd := exec.Command("go", "mod", "vendor")
-				cmd.Dir = app
-				cmd.Env = append(os.Environ(), "GOWORK=off")
-				if out, err := cmd.CombinedOutput(); err != nil {
-					t.Fatalf("go mod vendor: %v\n%s", err, out)
-				}
+				vendor(t, app)
 			default:
 				writeDir(t, app, map[string]string{"vendor/modules.txt": tt.vendor})
 			}
@@ -601,6 +630,9 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 	t.Run("a module nested under the scanned module's path is a dependency", func(t *testing.T) {
 		newSourceProxy(t, []srcModule{modSub})
 		app := newApp(t, []string{"example.com/app/sub"}, "", reader)
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/app/sub/x", []string{"Verify"}))
+		// Outside vendor mode the build list decides, whatever directories the main module's tree has.
+		writeDir(t, app, map[string]string{"sub/x/README": ""})
 		wantNone(t, resolve(t, app, "pkg:golang/example.com/app/sub/x", []string{"Verify"}))
 	})
 	t.Run("a dependency held under its replacement's path", func(t *testing.T) {

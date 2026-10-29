@@ -78,6 +78,7 @@ func TestDepCodeRunRecord(t *testing.T) {
 		name    string
 		prior   *statestore.DepFetch
 		results []pipeline.DependencyAcquisitionResult // nil: no acquisition observed
+		policy  bool                                   // fetch failures fail the run, so the dependency policy holds
 		run     trigger.DependencyFetchRun
 		want    *statestore.DepFetch
 	}{
@@ -115,17 +116,37 @@ func TestDepCodeRunRecord(t *testing.T) {
 			want: &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HasServed: true}}},
 		},
 		{
-			name:    "a held run with every fetch failing counts and stamps the first",
+			name:    "a policy-held run with every fetch failing counts and stamps the first",
 			results: []pipeline.DependencyAcquisitionResult{{Fallback: fell, Outcomes: []pipeline.DependencyOutcome{out("pkg:npm/a@1", npmjs, pipeline.UnreadNotServed)}}},
+			policy:  true,
 			run:     watch(true),
 			want:    &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: now}}},
 		},
 		{
-			name:    "a later held run counts and keeps the first time",
+			name:    "a later policy-held run counts and keeps the first time",
 			prior:   &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HasServed: true, HeldRuns: 1, FirstHeldAt: earlier}}},
 			results: []pipeline.DependencyAcquisitionResult{{Fallback: fell, Outcomes: []pipeline.DependencyOutcome{out("pkg:npm/a@1", npmjs, pipeline.UnreadUnreachable)}}},
+			policy:  true,
 			run:     watch(true),
 			want:    &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HasServed: true, HeldRuns: 2, FirstHeldAt: earlier}}},
+		},
+		{
+			name:    "a cursor the JVM build graph held does not count",
+			prior:   &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: earlier}}},
+			results: []pipeline.DependencyAcquisitionResult{{Fallback: fell, Outcomes: []pipeline.DependencyOutcome{out("pkg:npm/a@1", npmjs, pipeline.UnreadNotServed)}}},
+			run:     watch(true),
+			want:    &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: earlier}}},
+		},
+		{
+			name:  "a deadline-cancelled fetch is not a registry failure",
+			prior: &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: earlier}}},
+			results: []pipeline.DependencyAcquisitionResult{{
+				Fallback: &pipeline.DependencyCodeCause{Kind: pipeline.UnreadCancelled},
+				Outcomes: []pipeline.DependencyOutcome{out("pkg:npm/a@1", npmjs, pipeline.UnreadCancelled), out("pkg:npm/b@1", npmjs, pipeline.UnreadCancelled)},
+			}},
+			policy: true,
+			run:    watch(true),
+			want:   &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 1, FirstHeldAt: earlier}}},
 		},
 		{
 			name:    "a run that advanced does not count",
@@ -153,6 +174,7 @@ func TestDepCodeRunRecord(t *testing.T) {
 			want: &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{
 				npmjs: {HasServed: true}, corp: {HeldRuns: 1, FirstHeldAt: now}, "https://other.example/": {},
 			}},
+			policy: true,
 		},
 		{
 			name:  "outcomes accumulate across acquisitions",
@@ -207,7 +229,7 @@ func TestDepCodeRunRecord(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			run := &depCodeRun{source: report.DependencyCodeSourceFetch}
+			run := &depCodeRun{source: report.DependencyCodeSourceFetch, failsRun: tc.policy}
 			for _, r := range tc.results {
 				run.observe(r)
 			}

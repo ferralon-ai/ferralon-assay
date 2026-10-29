@@ -149,8 +149,10 @@ type registryRun struct {
 // record is the depfetch.json a writing run leaves, from the stored record prior, which it does not
 // modify. A run that observed no acquisition (dependency code off, or none reached) carries prior.
 // Otherwise, per registry: a network fetch sets has_served; on a cve-watch earnest run, reading
-// anything from the registry resets its held count, and a held run in which every fetch from it
-// failed counts one more, stamping first_held_at at now on the first. A baseline never touches the
+// anything from the registry resets its held count, and a run the dependency-code policy held in
+// which every fetch from it failed counts one more, stamping first_held_at at now on the first. A
+// fetch the run's deadline cancelled is not a registry failure, and a cursor held for any other
+// reason (the JVM build graph, a cut-short assessment) counts nothing. A baseline never touches the
 // held count. A cve-watch earnest run that fell back adds the IDs of the advisories it assessed to
 // reassess, and a run of either kind that read dependency code without falling back removes every
 // entry naming one of them by ID or alias.
@@ -175,11 +177,13 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 			r.read, r.network = true, true
 		case o.Outcome == pipeline.OutcomeReadCache:
 			r.read = true
+		case o.Outcome == pipeline.UnreadCancelled: // the run ran out of time, not the registry
 		case pipeline.FetchFailed(o.Outcome):
 			r.failed = true
 		}
 	}
 
+	policyHeld := run.Held && d.failsRun && d.fell != nil
 	next := &statestore.DepFetch{}
 	if prior != nil {
 		next.Registries = maps.Clone(prior.Registries)
@@ -194,7 +198,7 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 			switch {
 			case r.read:
 				e.HeldRuns, e.FirstHeldAt = 0, time.Time{}
-			case r.failed && run.Held:
+			case r.failed && policyHeld:
 				e.HeldRuns++
 				if e.FirstHeldAt.IsZero() {
 					e.FirstHeldAt = now

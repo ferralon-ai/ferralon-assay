@@ -972,6 +972,12 @@ const (
 	// the row says nothing about the codebase. As a scan-level note it names the cause, how many
 	// advisories were not assessed, and how to give the scan more time.
 	ReasonScanCutShort = "scan_cut_short"
+	// ReasonDependencyNotFetched: the advisory was last assessed on a run that read less of the
+	// dependency code its lock pins (the fetch fell back, or a registry failed some packages),
+	// and no run that read it has assessed the advisory since. The verdict that run reached rests
+	// on code it did not read, so it is not kept. As a scan-level note, scoped to the package
+	// ecosystem, it says that rows were withheld for this reason.
+	ReasonDependencyNotFetched = "dependency_not_fetched"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is
@@ -1031,6 +1037,12 @@ type Report struct {
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
 	// nil for every other language.
 	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
+}
+
+// SetAdvisories replaces the findings of a built Report, ordered as Build orders them.
+func (r *Report) SetAdvisories(adv []AdvisoryFinding) {
+	r.Advisories = append([]AdvisoryFinding(nil), adv...)
+	sortFindings(r.Advisories)
 }
 
 // AddPartiality records notes on a built Report, classified, de-duplicated and sorted as

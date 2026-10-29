@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -124,9 +125,9 @@ func (s *MemStore) List(t Type) ([]*Artifact, error) {
 type Viewer interface {
 	// View picks an artifact of type t for assessmentID, as Query(assessmentID, t)[0] does, and
 	// returns decode applied to its payload, running decode at most once per artifact and key for
-	// the store's lifetime. decode receives the stored payload itself and must neither modify nor
-	// retain it. Every caller of the same artifact and key gets the same value, so callers must not
-	// modify it either. ok is false when no artifact matches.
+	// the store's lifetime. decode receives its own copy of the payload. Every caller of the same
+	// artifact and key gets the same value, so callers must not modify it. ok is false when no
+	// artifact matches.
 	View(assessmentID string, t Type, key string, decode func(payload []byte) any) (v any, ok bool)
 }
 
@@ -170,7 +171,7 @@ func (s *MemStore) View(assessmentID string, t Type, key string, decode func(pay
 	}
 	s.mu.Unlock()
 	// a is never modified once stored: Put replaces the map entry with a new copy.
-	v.once.Do(func() { v.value = decode(a.Payload) })
+	v.once.Do(func() { v.value = decode(bytes.Clone(a.Payload)) })
 	return v.value, true
 }
 

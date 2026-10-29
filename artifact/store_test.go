@@ -1,6 +1,8 @@
 package artifact_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -222,6 +224,51 @@ func TestViewDecodesOncePerArtifactAndKey(t *testing.T) {
 			}
 			if decodes != tc.wantDecodes {
 				t.Errorf("decode ran %d times; want %d", decodes, tc.wantDecodes)
+			}
+		})
+	}
+}
+
+// TestViewDecodeCannotChangeStoredPayload pins that a decode which writes into or keeps its input
+// cannot change what Query returns or desynchronise the payload from its hash.
+func TestViewDecodeCannotChangeStoredPayload(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000042"
+	tests := []struct {
+		name   string
+		decode func(p []byte) any
+	}{
+		{"overwrites in place", func(p []byte) any {
+			for i := range p {
+				p[i] = 'x'
+			}
+			return nil
+		}},
+		{"retains and truncates", func(p []byte) any { return p[:0] }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			put := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":1}`)}
+			if _, err := store.Put(put); err != nil {
+				t.Fatal(err)
+			}
+			v, _, err := artifact.View(store, aid, artifact.TypeReachability, "k", tc.decode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept, ok := v.([]byte); ok {
+				_ = append(kept, "mutated"...)
+			}
+			arts, err := store.Query(aid, artifact.TypeReachability)
+			if err != nil || len(arts) != 1 {
+				t.Fatalf("Query = %d artifacts, %v", len(arts), err)
+			}
+			if string(arts[0].Payload) != `{"v":1}` {
+				t.Errorf("stored payload = %q, want it unchanged", arts[0].Payload)
+			}
+			sum := sha256.Sum256(arts[0].Payload)
+			if got := "sha256:" + hex.EncodeToString(sum[:]); got != arts[0].ContentHash || got != put.ContentHash {
+				t.Errorf("payload hash %s disagrees with stored %s / Put %s", got, arts[0].ContentHash, put.ContentHash)
 			}
 		})
 	}

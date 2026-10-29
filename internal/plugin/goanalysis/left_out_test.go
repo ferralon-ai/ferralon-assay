@@ -471,7 +471,7 @@ func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			load := func() (*LoadResult, error) { return loadForBuild(context.Background(), dir, tc.toolchain) }
+			load := func() (*LoadResult, error) { return loadForBuild(context.Background(), dir, tc.toolchain, "") }
 			res, err := reconciledResult(context.Background(), scanned, dir, append(os.Environ(), "GOWORK=off"), load, plugin.LibraryEntrypoints{})
 			if err != nil {
 				t.Fatal(err)
@@ -648,7 +648,7 @@ func TestLoadForBuild_SubjectToolchain(t *testing.T) {
 		"go.mod":  "module example.com/m\n\ngo 1.22\n",
 		"main.go": "package main\n\nfunc main() {}\n",
 	})
-	load, err := loadForBuild(context.Background(), dir, "")
+	load, err := loadForBuild(context.Background(), dir, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +664,7 @@ func TestLoadForBuild_SubjectToolchain(t *testing.T) {
 		{r.toolchain(), true},
 		{fmt.Sprintf("go%d.%d", r.major, r.minor+1), false},
 	} {
-		load, err := loadForBuild(context.Background(), dir, tc.toolchain)
+		load, err := loadForBuild(context.Background(), dir, tc.toolchain, "")
 		if err != nil {
 			t.Fatal(err)
 		}

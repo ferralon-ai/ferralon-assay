@@ -176,7 +176,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
 	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
 	load := sync.OnceValues(func() (*LoadResult, error) {
-		return loadForBuild(ctx, req.BuildDir, req.GoToolchain)
+		return loadForBuild(ctx, req.BuildDir, req.GoToolchain, req.GoToolchainFloor)
 	})
 	var entry plugin.LibraryEntrypoints
 	if req.LibraryEntrypoints != nil {
@@ -777,11 +777,12 @@ func goEnvVersion(ctx context.Context, buildDir string, env []string) string {
 }
 
 // loadForBuild loads dir for reconciling its findings. toolchain, when set, is the subject's own
-// Go toolchain and so the build's.
-func loadForBuild(ctx context.Context, dir, toolchain string) (*LoadResult, error) {
+// Go toolchain and so the build's; floor, when set, is a release no build of the subject is below.
+func loadForBuild(ctx context.Context, dir, toolchain, floor string) (*LoadResult, error) {
 	loaded, err := LoadProgram(ctx, dir)
-	if err == nil && toolchain != "" {
+	if err == nil {
 		loaded.buildGoVersion = toolchain
+		loaded.buildGoFloor = floor
 	}
 	return loaded, err
 }

@@ -533,8 +533,8 @@ type EvidenceSummary struct {
 // can always say how old each one is. Which signals file the values came from is recorded once, as
 // Provenance.Intel.SignalsDigest.
 //
-// A nil Priority means the run had no signals, or the file had no stamped value for the advisory's
-// id or aliases. It never means "not exploited".
+// A nil Priority means the run had no signals, the file had no stamped value for the advisory's id
+// or aliases, or the join to its record was refused. It never means "not exploited".
 type Priority struct {
 	// EPSSScore is FIRST.org's 0..1 probability the CVE is exploited in the wild in the 30 days
 	// after EPSSAsOf. Set only with EPSSAsOf. Not omitempty: 0 is a real score, so it serializes

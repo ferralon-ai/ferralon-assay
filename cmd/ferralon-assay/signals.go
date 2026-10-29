@@ -112,8 +112,9 @@ func (f *runFlags) signalsSummary(now time.Time) string {
 // merged Report then names no file when a kept row came from a run that did not share this one's,
 // or the other run's file when that file ranked every kept row. Either way the line says so rather
 // than reading as "the published findings were ranked with this run's file". When this run loaded no
-// file but the published Report names the other run's, the published rows were ranked with that
-// file, so the line drops its "no finding carries EPSS/KEV priority" tail.
+// file but a published row carries a Priority, that row was ranked by another run's file — named by
+// the Report, or not when the merge cleared it — so the line drops its "no finding carries EPSS/KEV
+// priority" tail.
 func (f *runFlags) publishedSignalsSummary(rep *report.Report, now time.Time) string {
 	line := f.signalsSummary(now)
 	var loaded, published string
@@ -123,17 +124,26 @@ func (f *runFlags) publishedSignalsSummary(rep *report.Report, now time.Time) st
 	if rep.Provenance.Intel != nil {
 		published = rep.Provenance.Intel.SignalsDigest
 	}
-	switch {
-	case published == loaded:
+	if published == loaded && (loaded != "" || !anyPriority(rep)) {
 		return line
-	case published == "":
-		return line + "; merged with another run's rows on a conflicting write, so the published Report names no signals file"
-	default:
-		if loaded == "" {
-			line = strings.TrimSuffix(line, noSignalsPriority)
-		}
-		return line + "; merged with another run's rows on a conflicting write, so the published Report names that run's signals file instead (" + published + ")"
 	}
+	if loaded == "" {
+		line = strings.TrimSuffix(line, noSignalsPriority)
+	}
+	if published == "" {
+		return line + "; merged with another run's rows on a conflicting write, so the published Report names no signals file"
+	}
+	return line + "; merged with another run's rows on a conflicting write, so the published Report names that run's signals file instead (" + published + ")"
+}
+
+// anyPriority reports whether any of rep's findings carries a Priority.
+func anyPriority(rep *report.Report) bool {
+	for i := range rep.Advisories {
+		if rep.Advisories[i].Priority != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // formatBound renders a max-age bound in whole days when it is one ("7d"), else as a duration.

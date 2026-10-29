@@ -57,14 +57,18 @@ type program struct {
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
 // callArity explicit arguments names, or ("", false) when there is none or more than one.
-// Arity match is self/cls-tolerant: a method call "obj.method(args)" carries one fewer
-// explicit argument than the declaration "def method(self, args)", so a declaration of
-// arity callArity OR callArity+1 matches. Zero matches (library/import/builtin) or more
-// than one (an ambiguous name the lexer cannot scope-resolve) yields no edge.
-func resolveCallee(decls []funcDecl, callArity int) (string, bool) {
+// A declaration matches when its parameter list accepts callArity arguments, defaults and
+// *args/**kwargs counted (paramShape), and the match is self/cls-tolerant: a method call
+// "obj.method(args)" carries one fewer explicit argument than the declaration
+// "def method(self, args)", so a list accepting callArity+1 matches too. Zero matches (library/import/builtin) or more
+// than one (an ambiguous name the lexer cannot scope-resolve) yields no edge. star of the
+// callArity arguments expand into any number, so with star > 0 a declaration matches when
+// it takes at least the other callArity-star.
+func resolveCallee(decls []funcDecl, callArity, star int) (string, bool) {
 	var matches []string
 	for _, fd := range decls {
-		if fd.arity == callArity || fd.arity == callArity+1 {
+		if star > 0 && (fd.params.variadic || fd.params.max >= callArity-star) ||
+			star == 0 && (fd.params.accepts(callArity) || fd.params.accepts(callArity+1)) {
 			matches = append(matches, fd.scip())
 		}
 	}
@@ -448,6 +452,7 @@ type funcDecl struct {
 	enclosing []string
 	name      string
 	arity     int
+	params    paramShape // the argument counts a call may pass
 	inDef     bool
 }
 
@@ -669,7 +674,7 @@ func loadProgram(buildDir string) (*program, error) {
 			if len(d.enclosing) == 0 && !d.inDef {
 				topFuncs[d.name] = true
 			}
-			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity, inDef: d.inDef}
+			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity, params: d.params, inDef: d.inDef}
 			prog.funcsByName[d.name] = append(prog.funcsByName[d.name], fd)
 			fds = append(fds, fd)
 		}
@@ -873,11 +878,11 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // CallGraph builds the source-level call graph for the Python module at req.BuildDir. It
 // is a pure-Go, source-only lexical graph: caller and callee are both declared functions,
 // and a call site is connected to its callee ONLY when its candidates hold EXACTLY ONE
-// declared function of the call's arity. A name the deciding scope binds by first-party
-// import names the functions that import path reaches, through its module's re-exports and
-// star imports (`pkg.f(1)` after `import pkg` is pkg's f, never another module's); a bare
-// name it binds by def names that scope's def; otherwise the candidates are every function
-// of the name in the program. When a callee is ambiguous (a name declared by multiple
+// declared function that accepts the call's arguments. A name the deciding scope binds by
+// first-party import names the functions that import path reaches, through its module's
+// re-exports and star imports (`pkg.f(1)` after `import pkg` is pkg's f, never another
+// module's); a bare name it binds by def names that scope's def; otherwise the candidates
+// are every function of the name in the program. When a callee is ambiguous (a name declared by multiple
 // functions the lexer cannot scope-resolve) or unknown (a library/imported/builtin function
 // with no source declaration), NO edge is fabricated and the partiality carries
 // dynamic_dispatch — the inv.5 honesty boundary.
@@ -960,7 +965,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
-			callee, ok := resolveCallee(prog.siteDecls(f, cs, edgeLeaves), cs.calleeArity)
+			callee, ok := resolveCallee(prog.siteDecls(f, cs, edgeLeaves), cs.calleeArity, cs.calleeStar)
 			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true

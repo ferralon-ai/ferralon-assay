@@ -52,8 +52,10 @@ type BaselineRequest struct {
 	AssessOptions []pipeline.AssessOption
 	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
 	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.
-	// A caller outside this module sets it with signals.Feed. The Report the run returns records
+	// A caller outside this module sets it with signals.Feed. The Report the run builds records
 	// the file's verified digest as Provenance.Intel.SignalsDigest; with none it records nothing.
+	// The Report it returns is the committed one: after a conflicting write that is
+	// statestore.Merge's, which may name no file, or the other run's.
 	Signals *intel.Signals
 	// Bands is the OPTIONAL scheduler-only prioritization hint: advisory id → Band. It is
 	// read ONLY by the admission gate (admitAdvisories), above S1, to decide whether/when a

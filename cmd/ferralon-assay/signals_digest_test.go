@@ -64,6 +64,48 @@ func TestIntelProvenanceNamesNoSignals(t *testing.T) {
 	}
 }
 
+// TestPublishedSignalsSummary: the run summary's signals line agrees with the Report as published.
+// After a conflicting write the published Report is the merge, which may name no file or the other
+// run's; the line then says so instead of reading as a ranking by this run's file.
+func TestPublishedSignalsSummary(t *testing.T) {
+	clearSignalsEnv(t)
+	path := writeSignalsFile(t, filepath.Join(t.TempDir(), "signals.json"), []byte(signalsDoc("2026-10-19")))
+	withFile, err := resolvedFor(t, "-advisory-signals", path)
+	if err != nil || withFile.resolvedSignals == nil {
+		t.Fatalf("resolveSignals = %v, %v", err, withFile.resolvedSignals)
+	}
+	none, err := resolvedFor(t)
+	if err != nil || none.resolvedSignals != nil {
+		t.Fatalf("resolveSignals = %v, %v; want no signals", err, none.resolvedSignals)
+	}
+	loaded := withFile.resolvedSignals.Digest
+	const other = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	const noFile = "; merged with another run's rows on a conflicting write, so the published Report names no signals file"
+	const otherFile = "; merged with another run's rows on a conflicting write, so the published Report names that run's signals file instead (" + other + ")"
+	now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name      string
+		f         *runFlags
+		published *report.IntelProvenance
+		clause    string // appended to signalsSummary's line; "" when the two agree
+	}{
+		{"the Report names the run's file", withFile, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, SignalsDigest: loaded}, ""},
+		{"no file, no intel block", none, nil, ""},
+		{"no file, a block without a digest", none, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery}, ""},
+		{"a merge cleared the run's file", withFile, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery}, noFile},
+		{"a merge cleared the run's file and the block", withFile, nil, noFile},
+		{"a merge kept another run's file", withFile, &report.IntelProvenance{SignalsDigest: other}, otherFile},
+		{"a merge kept another run's file over a run with none", none, &report.IntelProvenance{SignalsDigest: other}, otherFile},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rep := &report.Report{Provenance: report.Provenance{Intel: c.published}}
+			if got, want := c.f.publishedSignalsSummary(rep, now), c.f.signalsSummary(now)+c.clause; got != want {
+				t.Errorf("summary line = %q\nwant         %q", got, want)
+			}
+		})
+	}
+}
+
 // signalsFixtureReport is a baseline over a one-file Go tree ranked with a loaded signals file, then
 // stamped the way a published report is, with the timestamp pinned. Its contract is pinned by signals_contract.golden.json.
 func signalsFixtureReport(t *testing.T) []byte {

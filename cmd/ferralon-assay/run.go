@@ -1236,7 +1236,7 @@ func runPRInherit(args []string) error {
 		return err
 	}
 	logPhase(os.Stderr, "publish", time.Since(publishStart))
-	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
+	printSummary(cfg.outDir, res.Report, f.publishedSignalsSummary(res.Report, time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
 	return runExit(cfg.graph, cfg.deps)
@@ -1317,7 +1317,7 @@ func runCVEWatch(args []string) error {
 			return err
 		}
 		logPhase(os.Stderr, "publish", time.Since(publishStart))
-		printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
+		printSummary(cfg.outDir, res.Report, f.publishedSignalsSummary(res.Report, time.Now()))
 		printRescanContext(rescan)
 		postScan(ctx, cfg.store, cfg.subject, rescan)
 	}

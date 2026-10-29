@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // defaultSignalsMaxAge is the age past which the run summary warns that the newest EPSS value in
@@ -100,6 +101,30 @@ func (f *runFlags) signalsSummary(now time.Time) string {
 		line += " — WARNING: stale, over half the EPSS values are older than the " + bound + " bound" + loaded
 	}
 	return line
+}
+
+// publishedSignalsSummary is signalsSummary checked against rep, the Report as published. The two
+// name the same file unless a conflicting write merged this run's rows with another run's: the
+// merged Report then names no file when a kept row came from a run that did not share this one's,
+// or the other run's file when that file ranked every kept row. Either way the line says so rather
+// than reading as "the published findings were ranked with this run's file".
+func (f *runFlags) publishedSignalsSummary(rep *report.Report, now time.Time) string {
+	line := f.signalsSummary(now)
+	var loaded, published string
+	if f.resolvedSignals != nil {
+		loaded = f.resolvedSignals.Digest
+	}
+	if rep.Provenance.Intel != nil {
+		published = rep.Provenance.Intel.SignalsDigest
+	}
+	switch {
+	case published == loaded:
+		return line
+	case published == "":
+		return line + "; merged with another run's rows on a conflicting write, so the published Report names no signals file"
+	default:
+		return line + "; merged with another run's rows on a conflicting write, so the published Report names that run's signals file instead (" + published + ")"
+	}
 }
 
 // formatBound renders a max-age bound in whole days when it is one ("7d"), else as a duration.

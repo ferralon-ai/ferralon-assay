@@ -452,6 +452,30 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "Django view an instance assignment binds beside a first-party star import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n\nclass Dash:\n    def __call__(self, request):\n        return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site.views import *\ndash = Dash()\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view an instance of a first-party class",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "class Dash:\n    def __call__(self, request):\n        return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site.views import Dash\ndash = Dash()\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view a local def binds beside a dependency import",
+			files: map[string]string{
+				"site/__init__.py": "",
+				"site/urls.py":     "from django.urls import path\nfrom thirdparty import dash\n\ndef dash(request):\n    return None\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/urls", nil, "dash", 1), "d/"}},
+		},
+		{
 			name: "Django view behind a wrapper's trailing attribute",
 			files: map[string]string{
 				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",

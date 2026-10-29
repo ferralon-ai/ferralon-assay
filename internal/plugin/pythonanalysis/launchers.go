@@ -564,14 +564,11 @@ func (prog *program) launchTargets() []launchTarget {
 	return out
 }
 
-// starBinds is the first-party modules whose star import into f binds name, when nothing
-// else in f's module scope does but a dependency import, which a later star may rebind. open is true when a star import may bind it in a way the
-// lane does not follow: a module it does not read, or one that star-imports first-party
-// code without binding the name itself.
+// starBinds is the first-party modules whose star import into f binds name, whatever else f
+// binds it to, since a later star import rebinds it. open is true when a star import may bind
+// it in a way the lane does not follow: a module it does not read, or one that star-imports
+// first-party code without binding the name itself.
 func (prog *program) starBinds(f *fileParse, name string) (paths []string, open bool) {
-	if _, bound := f.bindings[""][name]; (bound || f.topNames[name]) && f.depImports[""][name] == 0 {
-		return nil, false
-	}
 	for _, sp := range f.starPaths {
 		if len(prog.byModule[sp]) == 0 {
 			open = true
@@ -594,13 +591,21 @@ func (prog *program) starBinds(f *fileParse, name string) (paths []string, open 
 }
 
 // definesFirstParty reports whether the file's module scope binds name to first-party code:
-// by a first-party import, or by its own def, class or assignment rather than an import.
+// by a first-party import; by its own def or class, which may follow an import of the name;
+// by a call's result, which may be first-party code whatever the callee; or by an assignment
+// rather than an import.
 func (f *fileParse) definesFirstParty(name string) bool {
 	if len(f.fpBinds[""][name]) > 0 {
 		return true
 	}
-	_, imported := f.bindings[""][name]
-	return f.topNames[name] && f.module != "" && !imported && f.depImports[""][name] == 0
+	if !f.topNames[name] || f.module == "" {
+		return false
+	}
+	b, bound := f.bindings[""][name]
+	if f.defs[""][name] || bound && len(b.inst) > 0 {
+		return true
+	}
+	return !bound && f.depImports[""][name] == 0
 }
 
 // pathHit is a place a dotted path reaches: a file of the module it names, and the attribute

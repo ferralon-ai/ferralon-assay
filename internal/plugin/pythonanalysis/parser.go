@@ -156,8 +156,7 @@ func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int,
 		}
 		exprEnd := scanField(body, i+1, false)
 		code := exprEnd
-		if k := trimRightSpace(body, i+1, code); k > i+1 && body[k-1] == '=' &&
-			(k-1 == i+1 || !strings.ContainsRune("=!<>", body[k-2])) {
+		if k := trimRightSpace(body, i+1, code); k > i+1 && body[k-1] == '=' {
 			code = k - 1
 		}
 		c, clits := stripPythonLiterals(string(body[i+1 : code]))
@@ -172,14 +171,9 @@ func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int,
 		}
 		r[at+i] = '['
 		r[at+end] = ']'
-		spec := exprEnd
-		if spec < end && body[spec] == '!' {
-			for spec < end && body[spec] != ':' {
-				spec++
-			}
-		}
-		if spec < end {
-			unread = append(unread, spliceSubstitutions(r, lits, body[spec+1:end], at+spec+1, raw)...)
+		// A conversion holds no brace, so the spec's substitutions are those after exprEnd.
+		if exprEnd < end {
+			unread = append(unread, spliceSubstitutions(r, lits, body[exprEnd+1:end], at+exprEnd+1, raw)...)
 		}
 		i = end
 	}

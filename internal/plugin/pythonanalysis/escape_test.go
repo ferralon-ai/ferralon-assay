@@ -431,6 +431,11 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			escaped: []string{funcSCIP("m", nil, "target", 1)},
 		},
 		{
+			name:    "f-string substitution cut short",
+			files:   map[string]string{"m.py": plain + "def other(d):\n    return f\"{target(d[\"k\"])}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
 			name:    "f-string debug substitution",
 			files:   map[string]string{"m.py": plain + "def other():\n    return f\"{target=} {target = !r}\"\n"},
 			escaped: []string{funcSCIP("m", nil, "target", 1)},
@@ -1470,6 +1475,8 @@ func TestCallGraph_UnlistedSites(t *testing.T) {
 		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", false},
 		{"f-string substitution cut short", "def f(d):\n    return f\"{g(d[\"k\"])}\"\n", true},
 		{"f-string cut short before a later call", "def f(d):\n    return f\"{d[\"k\"]}{g(1)}\"\n", true},
+		{"f-string nested in a substitution cut short", "def f(d):\n    return f\"{f'{g(d['k'])}'}\"\n", true},
+		{"f-string nested in a format spec cut short", "def f(x, d):\n    return f\"{x:{f'{g(d['k'])}'}}\"\n", true},
 		{"evaluated code", "def f(src):\n    return eval(src)\n", true},
 		{"t-string without a call", "def f(x):\n    return t\"{x}\"\n", false},
 		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", false},

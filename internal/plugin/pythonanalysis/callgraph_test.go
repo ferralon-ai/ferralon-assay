@@ -464,6 +464,35 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			listed: true,
 		},
 		{
+			name: "src layout package importing its own submodule absolutely",
+			files: map[string]string{
+				"pyproject.toml":      "[project]\nname = \"pkg\"\n",
+				"src/pkg/__init__.py": "from pkg import sub\n", "src/pkg/sub.py": "def f(x):\n    return x\n",
+				"src/app.py": "import pkg\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("src/app", nil, "index", 0),
+			want:   funcSCIP("src/pkg/sub", nil, "f", 1),
+		},
+		{
+			name: "module path to a submodule its package rebinds by star-importing a subpackage's own",
+			files: map[string]string{
+				"pkg/__init__.py": "from .x import *\n", "pkg/x/__init__.py": "from . import sub\n", "pkg/x/sub.py": "def f(x):\n    return x\n", "pkg/sub.py": "def f(x):\n    return x\n",
+				"app.py": "import pkg\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/sub", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path through a package whose star imports form a cycle",
+			files: map[string]string{
+				"pkg/__init__.py": "from .a import *\n", "pkg/a.py": "from .b import *\n", "pkg/b.py": "from .a import *\n", "pkg/sub.py": "def f(x):\n    return x\n",
+				"app.py": "import pkg\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/sub", nil, "f", 1),
+		},
+		{
 			name: "module path to a submodule its grandparent package rebinds",
 			files: map[string]string{
 				"a/__init__.py": "from . import b\n\nb = make()\n", "a/b/__init__.py": "", "a/b/c.py": "def f(x):\n    return x\n",

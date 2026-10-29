@@ -272,6 +272,18 @@ inputs:
       ASSAY_DEPENDENCY_UNCREDENTIALED_CACHE; one that predates it persists nothing.
     required: false
     default: "auto"
+  scan-timeout:
+    description: >-
+      How long the scan may run, as a duration such as 30m, forwarded to the scanner as
+      ASSAY_SCAN_TIMEOUT. Analysis stops early enough to publish the report (the last tenth of the
+      limit, at most 2m), and every advisory it did not reach is reported as not assessed, never as
+      safe. Set it below the job's timeout-minutes so the scan ends itself before the runner does.
+      Empty (default) sets no limit. Either way, a job timeout or cancellation stops analysis and
+      gives the scan a few seconds to publish what it assessed; the scan-truncated output says
+      whether it was cut short. VERSION REQUIREMENT: a scanner release that reads
+      ASSAY_SCAN_TIMEOUT; one that predates it ignores the variable.
+    required: false
+    default: ""
   issue:
     description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
     required: false
@@ -434,6 +446,9 @@ outputs:
   sarif-file:
     description: "Path to the materialized SARIF file (for a codeql-action upload step)."
     value: ${{ steps.run.outputs.sarif-file }}
+  scan-truncated:
+    description: "'true' when the scan stopped before assessing every advisory (scan-timeout, a job timeout or a cancellation), 'false' when it assessed them all; empty when the scanner exited before writing its Report."
+    value: ${{ steps.run.outputs.scan-truncated }}
 
 runs:
   using: composite
@@ -773,6 +788,8 @@ runs:
         ASSAY_DEPENDENCY_CODE: ${{ inputs.dependency-code }}
         ASSAY_DEPENDENCY_CACHE: ${{ inputs.dependency-code != 'off' && steps.depcache.outputs.cache-dir || '' }}
         ASSAY_DEPENDENCY_UNCREDENTIALED_CACHE: ${{ inputs.dependency-code != 'off' && steps.depcache.outputs.uncredentialed-dir || '' }}
+        # Empty sets no limit. An env var, so a scanner release that predates it ignores it.
+        ASSAY_SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
         GITHUB_TOKEN: ${{ github.token }}
         # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
         # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined
@@ -920,8 +937,35 @@ runs:
           args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
         fi
 
-        "$BIN" "${args[@]}"
+        # The marker dates the launch, so the outputs below name only files this run wrote.
+        scan_marker="$(mktemp "$RUNNER_TEMP/scan-start.XXXXXX")"
 
+        # On a job timeout or cancellation the runner signals this shell, not the scanner, and
+        # bash runs a trap only once its foreground child exits. So the scanner runs in the
+        # background and the trap forwards TERM (a background job ignores INT); the scanner then
+        # stops analysis and publishes what it has. Only the first signal is forwarded: the runner
+        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished. A
+        # trap interrupts wait, so wait again until the scanner itself has exited.
+        "$BIN" "${args[@]}" &
+        scan_pid=$!
+        signalled=0
+        forwarded=0
+        trap 'signalled=1; if [ "$forwarded" = 0 ]; then forwarded=1; kill -TERM "$scan_pid" 2>/dev/null || true; fi' INT TERM
+        while :; do
+          signalled=0
+          rc=0
+          wait "$scan_pid" || rc=$?
+          [ "$signalled" = 1 ] || break
+        done
+
+        # Set on every exit, stopped or failed, but only for files this run wrote, so an always()
+        # step never gets a path to a missing file or to one an earlier run left in `out`.
         OUT_ABS="$(cd "$IN_OUT" && pwd)"
-        echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
-        echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
+        if [ -f "$OUT_ABS/report.json" ] && [ ! "$OUT_ABS/report.json" -ot "$scan_marker" ]; then
+          echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -f "$OUT_ABS/report.sarif.json" ] && [ ! "$OUT_ABS/report.sarif.json" -ot "$scan_marker" ]; then
+          echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
+        fi
+        rm -f "$scan_marker"
+        exit "$rc"

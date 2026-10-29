@@ -42,7 +42,7 @@ func renderTier1Body(r report.Report) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headline(c, hasCoverageGap(r)))
+	b.WriteString(headline(c, headlineTail(r)))
 	b.WriteString("\n\n")
 
 	// Same placement rationale as the Tier-0 panel: the disclosure qualifies the

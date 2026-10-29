@@ -967,6 +967,11 @@ const (
 	// without asserting anything about this run's verdicts. A follow-on that persists build context
 	// into the compared state closes it.
 	ReasonBuildContextNotCompared = "build_context_not_compared"
+	// ReasonScanCutShort: the scan stopped before this advisory's assessment finished, at its time
+	// limit or because the runner stopped it. Nothing the advisory's analysis produced is kept, so
+	// the row says nothing about the codebase. As a scan-level note it names the cause, how many
+	// advisories were not assessed, and how to give the scan more time.
+	ReasonScanCutShort = "scan_cut_short"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is

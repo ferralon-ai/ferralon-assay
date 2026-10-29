@@ -229,6 +229,13 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 // narrows attention, but the finding stays reachable_candidate because presence ≠
 // sufficiency — whether the guard actually closes the hole is a runtime question only
 // the Prove tier settles. Returns guards in the advisory's declared order.
+//
+// Guards are matched against the one chain shown (frames), never against other chains
+// from the ingress to the sink. When chains of the same length tie, the one shown is
+// picked by symbol (see taintFrames), so a guard called only on a tied chain that is
+// not shown is not listed: which guards are listed can then follow the symbols' names,
+// never the verdict. A guard on one chain does not cover another, so listing it beside
+// frames that never call it would claim more than the evidence shows.
 func guardsOnPath(store artifact.Store, assessmentID string, frames []report.CallFrame) []string {
 	declared := advisoryGuards(store, assessmentID)
 	if len(declared) == 0 || len(frames) == 0 {
@@ -674,7 +681,8 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 // is the two frames [ingress, sink], which reads as a direct call even when there is none. So
 // a taint path's frames come from taintFrames, while its entry point is still credited from
 // the taint path's own trace. guardsOnPath matches guards against the frames, so a guard
-// called from a frame inside that chain is listed too; it is evidence, never a verdict.
+// called from a frame inside that chain is listed too, and a guard called only on another
+// chain, even one of the same length, is not; it is evidence, never a verdict.
 func candidateTrace(store artifact.Store, assessmentID string) (frames, credit []report.CallFrame, ingressSym string) {
 	paths := reachPaths(store, assessmentID)
 	if p, ok := firstTaintPath(store, assessmentID); ok {
@@ -697,7 +705,9 @@ func candidateTrace(store artifact.Store, assessmentID string) (frames, credit [
 // graph does not have. tp's own trace stays only when neither yields a chain.
 //
 // Ties are broken by the symbols themselves, never by the order the paths or edges are
-// stored in, which this package does not control: every lane writes its own.
+// stored in, which this package does not control: every lane writes its own. Only the
+// chain picked is shown, and guardsOnPath lists the guards its frames call, so of two
+// chains of the same length the one whose symbols sort first decides the guard list.
 func taintFrames(tp plugin.ReachPath, paths []plugin.ReachPath, edges func() []plugin.CallEdge) []plugin.Symbol {
 	ingress, sink := tp.Ingress.SCIP, tp.Sink.SCIP
 	var best []plugin.Symbol

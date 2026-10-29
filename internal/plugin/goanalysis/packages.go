@@ -73,25 +73,36 @@ type LoadResult struct {
 	// cgoUnresolved: `go env CGO_ENABLED` failed, so which variant of the build was loaded is unknown.
 	cgoUnresolved bool
 	// goVersion is the Go release the load ran under; buildGoVersion is the subject's toolchain when
-	// the caller established it (loadForBuild), else "". buildRelease compares them.
+	// the caller established it (loadForBuild), else "". buildGoFloor is the subject's binding go.mod
+	// floor when the caller holds one, else "". buildRelease reads them.
 	goVersion      string
 	buildGoVersion string
+	buildGoFloor   string
 }
 
-// buildRelease returns the Go release the load ran under when it is established as the build's:
-// the subject's toolchain is known and names the same minor, which alone decides the goN.M build
-// tags a build satisfies. Otherwise it returns nil. The go command on the analyzer's PATH never
-// establishes it: in a dedicated scan job that is the runner's Go, not the build's.
-func (l *LoadResult) buildRelease() *goRelease {
-	loaded, ok := parseGoRelease(l.goVersion)
-	if !ok {
-		return nil
+// releaseBound is what is established about the Go release a build compiles under: exactly release,
+// or, when exact is false, release or any later one.
+type releaseBound struct {
+	release goRelease
+	exact   bool
+}
+
+// buildRelease returns what is established about the Go release the build compiles under, or nil
+// when nothing is. The load's release is the build's exactly when the subject's toolchain is known
+// and names the same minor, which alone decides the goN.M build tags a build satisfies. Otherwise
+// the subject's binding floor, when the caller holds one, bounds it from below. The go command on the
+// analyzer's PATH establishes neither: in a dedicated scan job that is the runner's Go, not the
+// build's.
+func (l *LoadResult) buildRelease() *releaseBound {
+	loaded, okLoaded := parseGoRelease(l.goVersion)
+	build, okBuild := parseGoRelease(l.buildGoVersion)
+	if okLoaded && okBuild && build.major == loaded.major && build.minor == loaded.minor {
+		return &releaseBound{release: loaded, exact: true}
 	}
-	build, ok := parseGoRelease(l.buildGoVersion)
-	if !ok || build.major != loaded.major || build.minor != loaded.minor {
-		return nil
+	if floor, ok := parseGoRelease(l.buildGoFloor); ok {
+		return &releaseBound{release: floor}
 	}
-	return &loaded
+	return nil
 }
 
 // LoadProgram loads the buildable module rooted at buildDir with full type and
@@ -445,9 +456,9 @@ func goflagsTags(env []string) []string {
 // standard library's only when no module in the graph holds it. A file that cannot be read counts. A
 // file left out of a loaded package that reaches a package that counts through the load counts
 // whatever it imports, unless its package clause names another package. A file constrained by the
-// ignore tag is never built and does not count, nor, when release is the Go release the build
+// ignore tag is never built and does not count, nor, when release bounds the Go release the build
 // compiles under, is a file whose goN.M build tags alone exclude it from every build under that
-// release (releaseExcluded); the files of an unloaded import are read the same way.
+// bound (releaseBound.excludes); the files of an unloaded import are read the same way.
 //
 // When module is the standard library, the packages that count are its vulnerable ones, or every
 // standard-library package when vulnerable is empty. Every unloaded import is followed, the standard
@@ -456,7 +467,7 @@ func goflagsTags(env []string) []string {
 // reaches. The golang.org/x packages the standard library imports resolve to its vendored copies.
 // Outside a standard-library refutation, the standard library's own files are not checked: it
 // imports no module.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *releaseBound, buildDir string, env []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
 	var graph modGraph
@@ -464,7 +475,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 	graphRead := false
 	src := sourceImports{}
 	built := func(expr constraint.Expr) bool {
-		return !ignored(expr) && (release == nil || !releaseExcluded(expr, *release))
+		return !ignored(expr) && (release == nil || !release.excludes(expr))
 	}
 
 	// classify reports whether the import imp counts outright and, when it does not, whether it is a
@@ -946,6 +957,54 @@ func releaseExcluded(x constraint.Expr, r goRelease) bool {
 	}
 	all := slices.Sorted(maps.Keys(seen))
 	return satisfiable(all, nil) && !satisfiable(tags, release)
+}
+
+// excludes reports whether the build constraint x excludes a file from every build under b. Under an
+// exact release that is releaseExcluded at it. Under a floor 1.f it is releaseExcluded at every
+// release minor m >= f, judged at f and at each minor above f that x's release tags name. Under m,
+// a release tag go1.n holds exactly when n <= m, so the values of x's release tags, and with them
+// releaseExcluded, change with m only where m reaches a minor x names: every m in [f, inf) gives the
+// values of the largest judged minor at or below it, and above the highest minor x names every one
+// of its release tags holds for good. A floor with another major is not judged.
+func (b releaseBound) excludes(x constraint.Expr) bool {
+	if b.exact {
+		return releaseExcluded(x, b.release)
+	}
+	if b.release.major != 1 {
+		return false
+	}
+	for _, m := range releaseMinorsFrom(x, b.release.minor) {
+		if !releaseExcluded(x, goRelease{major: 1, minor: m}) {
+			return false
+		}
+	}
+	return true
+}
+
+// releaseMinorsFrom returns floor and every release minor above it that x's release tags name,
+// ascending and without repeats.
+func releaseMinorsFrom(x constraint.Expr, floor int) []int {
+	minors := []int{floor}
+	var walk func(constraint.Expr)
+	walk = func(x constraint.Expr) {
+		switch x := x.(type) {
+		case *constraint.TagExpr:
+			if n, ok := releaseTagMinor(x.Tag); ok && n > floor {
+				minors = append(minors, n)
+			}
+		case *constraint.NotExpr:
+			walk(x.X)
+		case *constraint.AndExpr:
+			walk(x.X)
+			walk(x.Y)
+		case *constraint.OrExpr:
+			walk(x.X)
+			walk(x.Y)
+		}
+	}
+	walk(x)
+	slices.Sort(minors)
+	return slices.Compact(minors)
 }
 
 // releaseTagMinor returns N for a release tag "go1.N" as the go command spells it (N >= 1, no

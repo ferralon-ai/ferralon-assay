@@ -219,12 +219,12 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	b.AddPartiality(req.WorkSetLimits...)
 	// The inherited refutations' assumptions rest on the baseline's entry points.
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
-	b.WithProvenance(report.Provenance{
+	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
 		AdvisoryCursor:  cursorOr(req.Cursor, baseline.Provenance.AdvisoryCursor),
 		Timestamp:       time.Now().UTC(),
-	})
+	}, req.Signals))
 	b.WithBaseline(baselinePointer(baseline, state))
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	rep := b.Build()
@@ -354,12 +354,12 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		b.AddPartiality(note)
 	}
 
-	b.WithProvenance(report.Provenance{
+	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
 		AdvisoryCursor:  cursorOr(req.Cursor, baseline.Provenance.AdvisoryCursor),
 		Timestamp:       time.Now().UTC(),
-	})
+	}, req.Signals))
 	b.WithBaseline(baselinePointer(baseline, state))
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
@@ -548,12 +548,12 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		newCursor = state.Cursor
 	}
 
-	b.WithProvenance(report.Provenance{
+	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       stateCommit(prior, req.Subject.ResolvedCommit),
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
 		AdvisoryCursor:  newCursor,
 		Timestamp:       time.Now().UTC(),
-	})
+	}, req.Signals))
 	if prior.Baseline != nil {
 		b.WithBaseline(*prior.Baseline)
 	}

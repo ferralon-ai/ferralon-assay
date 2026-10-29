@@ -125,6 +125,7 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 	if next.Report, err = withNotFetched(next.Report, next.DepFetch); err != nil {
 		return nil, err
 	}
+	next.Remerge = remergeNotFetched
 
 	committed, err := store.Write(ctx, next)
 	if err != nil {
@@ -457,6 +458,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 
 	if len(newIDs) == 0 && len(retry) == 0 {
 		state.Cursor = newCursor
+		state.Remerge = remergeNotFetched
 		committed, err := store.Write(ctx, state)
 		if err != nil {
 			return nil, fmt.Errorf("trigger: cve-watch heartbeat: %w", err)
@@ -488,6 +490,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	if state.Report, err = withNotFetched(rep, state.DepFetch); err != nil {
 		return nil, err
 	}
+	state.Remerge = remergeNotFetched
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)

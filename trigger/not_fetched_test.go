@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
@@ -372,5 +373,75 @@ func TestRunCVEWatch_RecordBoundToAnotherReportIsIgnored(t *testing.T) {
 				t.Fatalf("stored verdict = %s, want %s", got, want)
 			}
 		})
+	}
+}
+
+// racingStore is a statestore.MemStore where another writer commits winner just before the first
+// Write lands, so that Write loses its CAS and the store merges it onto winner.
+type racingStore struct {
+	*statestore.MemStore
+	winner func(cur *statestore.State) *statestore.State
+	raced  bool
+}
+
+func (s *racingStore) Write(ctx context.Context, next *statestore.State) (*statestore.State, error) {
+	if !s.raced {
+		s.raced = true
+		cur, err := s.MemStore.Read(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.MemStore.Write(ctx, s.winner(cur)); err != nil {
+			return nil, err
+		}
+	}
+	return s.MemStore.Write(ctx, next)
+}
+
+// TestRunCVEWatch_LostCASWithholdsWhatTheMergeLists: a cve-watch run that read less dependency code
+// than the lock pins loses its CAS to a later fallback baseline that refuted the same advisory. The
+// merge keeps the baseline's later not_exploitable and unions the run's reassess list, which names
+// the advisory; the merged state is withheld again before it is written and published.
+func TestRunCVEWatch_LostCASWithholdsWhatTheMergeLists(t *testing.T) {
+	seed, baseline := groundedBaseline()
+	inner := statestore.NewMemStore()
+	st := *seed.state
+	st.DepFetch = &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}
+	if _, err := inner.Write(context.Background(), &st); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store := &racingStore{MemStore: inner, winner: func(cur *statestore.State) *statestore.State {
+		later := *baseline
+		later.Provenance.Timestamp = time.Now().UTC().Add(time.Hour)
+		w := *cur
+		w.Report = &later
+		w.DepFetch = nil
+		return &w
+	}}
+	osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
+	req := CVEWatchRequest{
+		Subject:         Subject{Repo: "r", ResolvedCommit: "sha"},
+		AssessOptions:   wiringOptions(t, plugin.Complete()),
+		DependencyFetch: func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior },
+	}
+	res, err := RunCVEWatch(context.Background(), store, osv, req)
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	stored, err := inner.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if stored.DepFetch == nil || !slices.Contains(stored.DepFetch.Reassess, wiringAdvisory.ID) {
+		t.Fatalf("merged reassess list %+v, want it to name %s", stored.DepFetch, wiringAdvisory.ID)
+	}
+	for name, rep := range map[string]*report.Report{"stored": stored.Report, "published": res.Report} {
+		f := rowByID(rep, wiringAdvisory.ID)
+		if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonDependencyNotFetched {
+			t.Fatalf("%s row %s/%q, want undetermined/%q", name, f.Verdict, f.UndeterminedReason, report.ReasonDependencyNotFetched)
+		}
+	}
+	if stored.Remerge != nil {
+		t.Fatal("the store kept the writer's Remerge hook")
 	}
 }

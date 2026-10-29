@@ -64,6 +64,22 @@ func withNotFetched(rep *report.Report, dep *statestore.DepFetch) (*report.Repor
 	return &out, nil
 }
 
+// remergeNotFetched is the statestore Remerge hook for a write that withheld with withNotFetched.
+// A lost CAS unions the winner's rows and reassess list with this run's, so the merged report can
+// hold a refuting verdict the winner reached for an advisory the merged list names; the hook
+// withholds it again over the merged record before the store writes the merged state.
+func remergeNotFetched(s *statestore.State) error {
+	if s.Report == nil {
+		return nil
+	}
+	rep, err := withNotFetched(s.Report, s.DepFetch)
+	if err != nil {
+		return err
+	}
+	s.Report = rep
+	return nil
+}
+
 // notFetchedRetry is the stored rows a cve-watch run assesses again although their advisories are
 // not new: every row on dep's reassess list, by ID or alias, and every row withheld as
 // dependency_not_fetched, whatever source assessed it. The stored row is read as well as the list

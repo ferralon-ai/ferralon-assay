@@ -678,7 +678,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			attr, aend, ok := attributeAfter(r, end)
 			switch {
 			case !ok:
-				opaque = opaque || !inspectedOnly(r, i, end, lits)
+				opaque = opaque || !inspectedOnly(r, i, end, lits) && !identityOnly(r, i, end)
 			case strings.HasPrefix(attr, "__") && !plainDunders[attr]:
 				opaque = true
 			case kind == lookupNamespace && namerAttrs[attr]:
@@ -757,6 +757,138 @@ func inspectedOnly(r []rune, start, end int, lits map[int]strLiteral) bool {
 		return ok && !lookupAttrs[attr]
 	}
 	return false
+}
+
+// identityOnly reports whether the module name running from r[start] to r[end] only leaves
+// the namespace or is compared by identity, so the module object reaches no other code: a
+// target of a del statement that deletes bare names alone (del os, sys), or an operand of is
+// or is not that no operator or other comparison also applies to (_sys is None, None is not
+// sys).
+func identityOnly(r []rune, start, end int) bool {
+	if deletedName(r, start, end) {
+		return true
+	}
+	if w, _ := readWordRunes(r, skipLineSpace(r, end)); w == "is" {
+		return operandStart(r, start) || precededByIs(r, start)
+	}
+	return precededByIs(r, start) && operandEnd(r, end)
+}
+
+// deletedName reports whether the name running from r[start] to r[end] is a target of a del
+// statement whose targets are all bare names.
+func deletedName(r []rune, start, end int) bool {
+	bare := func(c rune) bool { return isIdentPart(c) || strings.ContainsRune(", \t()", c) }
+	j := start - 1
+	for j >= 0 && bare(r[j]) {
+		j--
+	}
+	k := skipLineSpace(r, j+1)
+	if w, wend := readWordRunes(r, k); w != "del" || !statementStart(r, k) || wend > start {
+		return false
+	}
+	stop := statementEnd(r, end)
+	for k := end; k < stop; k++ {
+		if !bare(r[k]) && r[k] != '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+// identityLeaders are the words after which an expression begins whole, so the operand that
+// follows is not also the right operand of another operator.
+var identityLeaders = map[string]bool{
+	"if": true, "elif": true, "while": true, "not": true, "and": true, "or": true,
+	"return": true, "assert": true, "else": true, "yield": true,
+}
+
+// operandStart reports whether the expression at r[i] begins whole: at a statement start,
+// after an opening bracket, a comma, a colon, an assignment or one of identityLeaders, so no
+// operator or comparison takes it as its right operand.
+func operandStart(r []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\\' || r[j] == '\n' && continued(r, j)) {
+		j--
+	}
+	if j < 0 {
+		return true
+	}
+	switch c := r[j]; {
+	case strings.ContainsRune("\n;([{,:", c):
+		return true
+	case c == '=':
+		return j == 0 || !strings.ContainsRune("=<>!", r[j-1])
+	case isIdentPart(c):
+		end := j + 1
+		for j >= 0 && isIdentPart(r[j]) {
+			j--
+		}
+		return identityLeaders[string(r[j+1:end])]
+	}
+	return false
+}
+
+// precededByIs reports whether the word at r[i] is the right operand of is or is not.
+func precededByIs(r []rune, i int) bool {
+	if precededByWord(r, i, "is") {
+		return true
+	}
+	j := i - 1
+	for j >= 0 && unicode.IsSpace(r[j]) {
+		j--
+	}
+	for j >= 0 && isIdentPart(r[j]) {
+		j--
+	}
+	return precededByWord(r, i, "not") && precededByWord(r, j+1, "is")
+}
+
+// operandEnd reports whether the expression ending at r[i] ends there whole: at the end of
+// the statement, before a closing bracket, a comma, a colon or a word that joins whole
+// expressions, so no operator, call, subscript or further comparison other than is applies to
+// it.
+func operandEnd(r []rune, i int) bool {
+	k := skipLineSpace(r, i)
+	for k < len(r) && (r[k] == '\\' || r[k] == '\n' && continued(r, k)) {
+		k = skipLineSpace(r, k+1)
+	}
+	if k >= len(r) || strings.ContainsRune("\n;)]},:", r[k]) {
+		return true
+	}
+	w, _ := readWordRunes(r, k)
+	switch w {
+	case "and", "or", "if", "else", "for", "is":
+		return true
+	}
+	return false
+}
+
+// continued reports whether the newline at r[i] continues the logical line rather than
+// ending it: it lies inside brackets or follows a line-continuation backslash.
+func continued(r []rune, i int) bool {
+	return statementEnd(r, logicalLineStart(r, i)) > i
+}
+
+// logicalLineStart is the index just after the newline or ';' that ends the logical line
+// before the one holding r[i], or 0.
+func logicalLineStart(r []rune, i int) int {
+	start := 0
+	for k := 0; k < i; {
+		end := statementEnd(r, k)
+		if end >= i {
+			break
+		}
+		start, k = end+1, end+1
+	}
+	return start
+}
+
+// skipLineSpace returns the first index at or after i that is not a space or a tab.
+func skipLineSpace(r []rune, i int) int {
+	for i < len(r) && (r[i] == ' ' || r[i] == '\t') {
+		i++
+	}
+	return i
 }
 
 // importStatements finds the import statements in a cleaned source as rune spans, so the

@@ -52,9 +52,9 @@ func parseFile(module, src string) parseResult {
 }
 
 // stripPython blanks comments and string literals (single/double, and triple-quoted,
-// with escape handling) to whitespace, preserving newlines and indentation so byte
-// offsets, line structure, and block indentation are intact but no comment/string
-// content can be mistaken for code. A string literal collapses to a single '_' token
+// with escape handling) to whitespace, preserving newlines and indentation so offsets
+// into src with its line breaks converted, line structure, and block indentation are
+// intact but no comment/string content can be mistaken for code. A string literal collapses to a single '_' token
 // (a valid identifier char) so a literal argument still counts toward call-site arity.
 // This is the lexical pre-pass the scanner relies on.
 func stripPython(src string) string {
@@ -73,7 +73,10 @@ type strLiteral struct {
 // by the rune index of its '_' token in the cleaned text. Blanking is rune-length
 // preserving, so that index is also the opening quote's index in src; callers that need a
 // literal's value at a known code position (a dynamic import's module name) read it here.
+// Line breaks are first converted to "\n", as Python's tokenizer reads them, so src means the
+// converted text.
 func stripPythonLiterals(src string) (string, map[int]strLiteral) {
+	src = universalNewlines(src)
 	var b strings.Builder
 	b.Grow(len(src))
 	r := []rune(src)

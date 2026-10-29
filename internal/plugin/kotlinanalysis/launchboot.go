@@ -20,13 +20,15 @@ import (
 // any, so the facade is the one main it keeps.
 //
 // For Gradle, the root build script must apply org.springframework.boot, and nothing may be able
-// to configure the Boot main where the reader cannot see it (bootBlocked). The checks are
-// allow-lists: every plugin the root or settings script applies is one known not to set the Boot
-// main; every settings statement only names the root project or declares repositories; a
-// buildscript {} block only puts the Boot, Kotlin or dependency-management plugin on the
-// classpath; the root script has no import, applies nothing but literal plugin ids, and neither
-// mentions a main class nor reconfigures the source sets the plugin scans; and there is no
-// buildSrc. When all of that holds, the plugin's own answer comes first: resolveMainClassName
+// to configure the Boot main where the reader cannot see it (bootBlocked). The plugin, settings
+// and buildscript checks are allow-lists: every plugin the root or settings script applies is one
+// known not to set the Boot main; every settings statement only names the root project or
+// declares repositories; a buildscript {} block only puts the Boot, Kotlin or
+// dependency-management plugin on the classpath. The root script has no import and applies
+// nothing but literal plugin ids, and there is no buildSrc. Its mention check is a deny-list: it
+// withholds on a script that mentions a main class, a manifest or the source sets the plugin
+// scans, and any other way to reach the Boot main from the root script goes unseen. When all of
+// that holds, the plugin's own answer comes first: resolveMainClassName
 // writes the main it resolved to build/resolvedMainClassName, and that file names the entry (an
 // empty one is the plugin finding none). Without it, the finder's main is taken. A literal
 // mainClass or Start-Class in the script is a named entry, read by gradle, and takes precedence.
@@ -74,7 +76,7 @@ var (
 	// one bootJar launches: its main-class settings, any manifest customization (a manifest
 	// from(...) can carry a Start-Class), and the class output it scans. A literal named entry is
 	// read as named and takes precedence regardless.
-	gradleBootInput = regexp.MustCompile(`(?i)mainclass|start-class|\bmanifest\b|\bsourceSets\b`)
+	gradleBootInput = regexp.MustCompile(`(?i)mainclass|start-class|\b(?:get)?manifest\b|\bsourceSets\b`)
 	// gradleImport is an import in a build script: code beyond the Gradle API and applied plugins.
 	gradleImport = regexp.MustCompile(`(?m)^\s*import\s`)
 	// interpolation is a ${name} string template, whose braces are not blocks.

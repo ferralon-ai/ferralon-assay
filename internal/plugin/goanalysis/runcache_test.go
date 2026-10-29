@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"golang.org/x/tools/go/packages"
+	"golang.org/x/vuln/scan"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -550,6 +551,35 @@ func TestSettledLoadFailure(t *testing.T) {
 				t.Errorf("settledLoadFailure = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLoadPackageErrorsFindsVulnPackageErrors is the tripwire on x/vuln's unexported package-error
+// shape. It runs a real govulncheck load against a local, empty vulnerability database with
+// GOPROXY=off, so it needs no network, and asserts loadPackageErrors still finds the load's package
+// errors. If it fails after an x/vuln bump, the reflected Errors []packages.Error field moved or
+// changed type: re-verify loadPackageErrors against the new x/vuln before taking the bump, or every
+// deterministic load failure goes back to costing one full source load per advisory.
+func TestLoadPackageErrorsFindsVulnPackageErrors(t *testing.T) {
+	db := writeTree(t, map[string]string{"index/modules.json": "[]", "index/db.json": `{"modified":"2024-01-01T00:00:00Z"}`})
+	dir := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n",
+	})
+	var stderr bytes.Buffer
+	cmd := scan.Command(context.Background(), "-db", "file://"+filepath.ToSlash(db), "-C", dir, "-json", "-mode=source", "-scan=symbol", "./...")
+	cmd.Stdout = &bytes.Buffer{}
+	cmd.Stderr = &stderr
+	cmd.Env = append(reachBaseEnv(), "GOPROXY=off", "GOFLAGS=-mod=mod")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	err := cmd.Wait()
+	if err == nil {
+		t.Fatal("govulncheck succeeded on a tree with a type error")
+	}
+	if len(loadPackageErrors(err)) == 0 {
+		t.Fatalf("loadPackageErrors found no package errors in %v (stderr %q); x/vuln's packageError shape changed — re-verify loadPackageErrors before bumping golang.org/x/vuln", err, stderr.String())
 	}
 }
 

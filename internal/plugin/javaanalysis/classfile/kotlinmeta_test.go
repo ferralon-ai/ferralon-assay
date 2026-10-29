@@ -615,6 +615,8 @@ func TestParseClass_KotlinMetadata(t *testing.T) {
 
 func withVersion(m *KotlinMetadata, v []int) *KotlinMetadata { m.Version = v; return m }
 
+func withExtra(m *KotlinMetadata, xi int) *KotlinMetadata { m.Extra = xi; return m }
+
 func withMalformed(m *KotlinMetadata, elem string) *KotlinMetadata {
 	m.unreadable = "malformed element " + elem
 	return m
@@ -637,6 +639,12 @@ func TestReleaseMerge_KotlinMetadata(t *testing.T) {
 		{name: "override without metadata: withheld", base: plain(), wantErr: true},
 		{name: "base without metadata: withheld", over: inline(), wantErr: true},
 		{name: "neither carries metadata: not Kotlin"},
+		{name: "differ only in d2: withheld", base: plain(), over: meta(2, plainRecords(1), pl(3, fn(plainFlags, 0)), "h"), wantErr: true},
+		{name: "differ only in mv: withheld", base: plain(), over: withVersion(plain(), []int{2, 1, 0}), wantErr: true},
+		{name: "differ only in k: withheld", base: plain(), over: meta(5, plainRecords(1), pl(3, fn(plainFlags, 0)), "g"), wantErr: true},
+		{name: "differ only in xi: withheld", base: plain(), over: withExtra(plain(), 48), wantErr: true},
+		{name: "equal fields, only the override unreadable: withheld", base: plain(), over: withMalformed(plain(), "d1"), wantErr: true},
+		{name: "equal fields, only the base unreadable: withheld", base: withMalformed(plain(), "d1"), over: plain(), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -654,5 +662,37 @@ func TestReleaseMerge_KotlinMetadata(t *testing.T) {
 				t.Fatalf("inline = %v, want %v", got, tt.wantInline)
 			}
 		})
+	}
+}
+
+// An annotation body cut off after mv, d1 and d2 were read still records why it cannot
+// stand for the class; the fields read so far would otherwise answer.
+func TestParseKotlinMetadata_TruncatedAfterFieldsIsUnreadable(t *testing.T) {
+	d1 := d1UTF8(d1Payload(plainRecords(1), pl(3, fn(inlineFlags, 0))))
+	b := newClassBuilder()
+	anno := b.annotation(kotlinMetadataType,
+		b.annIntArray("mv", 2, 2, 0),
+		b.annStringArray("d1", d1...),
+		b.annStringArray("d2", "g"),
+	)
+	const numPairsLow = 3 // type_index (2 bytes), then num_pairs (2 bytes, big-endian)
+	anno[numPairsLow]++   // claims a fourth pair that the body does not hold
+	body := rvaBody(anno)
+
+	class := b.assembleClass("p/B", "java/lang/Object", nil, nil, nil, nil)
+	r := &reader{b: class, pos: 8} // past magic, minor, major
+	cp, err := parseConstPool(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	km := parseKotlinMetadata(cp, body)
+	if km == nil {
+		t.Fatal("no KotlinMetadata")
+	}
+	if km.unreadable != "truncated annotation" {
+		t.Fatalf("unreadable = %q, want truncated annotation", km.unreadable)
+	}
+	if err := km.readable(); err == nil {
+		t.Fatal("a truncated annotation must not be readable")
 	}
 }

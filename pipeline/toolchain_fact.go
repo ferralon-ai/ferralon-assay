@@ -159,7 +159,8 @@ func directivesBindToolchain(in toolchainInputs) bool {
 // rejects the directives at parse, and one from 1.21 on refuses a go line newer than itself unless it
 // switches to a toolchain that is not. The `toolchain` line is no such floor: under GOTOOLCHAIN=local,
 // or with a toolchain named without +auto, the go command ignores it and builds with any release at
-// or above the go line. "" when the go line does not bind or does not parse.
+// or above the go line. The premise is a module-mode go command; GOPATH mode ignores go.mod. ""
+// when the go line does not bind or does not parse.
 func goLineFloor(in toolchainInputs) string {
 	if !directivesBindToolchain(in) {
 		return ""

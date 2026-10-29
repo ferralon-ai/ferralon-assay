@@ -17,14 +17,19 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
-var leftPad = report.Package{Ecosystem: "npm", Name: "left-pad", Version: "1.3.0"}
+var (
+	leftPad = report.Package{Ecosystem: "npm", Name: "left-pad", Version: "1.3.0"}
+	pyYAML  = report.Package{Ecosystem: "PyPI", Name: "pyyaml", Version: "5.3"}
+)
 
 // notFetchedReport is a built Report holding one row of each verdict, plus a stale
 // dependency_not_fetched note whose row is gone.
 func notFetchedReport() report.Report {
-	pkg := leftPad
+	pkg, py := leftPad, pyYAML
 	b := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "sha"}).
 		AddPackage(pkg).
+		AddPackage(py).
+		NotExploitable(report.Advisory{ID: "GHSA-pypi", Source: "osv"}, &py, verdict.BasisSymbolUnreachable, "no path").
 		Disqualified(report.Advisory{ID: "GHSA-disq", Source: "osv"}, &pkg, verdict.BasisVersionNotAffected, "outside the range").
 		NotExploitable(report.Advisory{ID: "GHSA-refuted", Source: "osv", Aliases: []string{"CVE-2026-0001"}}, &pkg, verdict.BasisSymbolUnreachable, "no path").
 		NotExploitable(report.Advisory{ID: "GHSA-unlisted", Source: "osv"}, &pkg, verdict.BasisSymbolUnreachable, "no path").
@@ -63,6 +68,10 @@ func TestWithNotFetched(t *testing.T) {
 			name:         "listed refuting rows are withheld, by ID or alias",
 			dep:          &statestore.DepFetch{Reassess: []string{"GHSA-disq", "CVE-2026-0001"}},
 			wantWithheld: []string{"GHSA-disq", "GHSA-refuted"},
+		},
+		{
+			name: "a listed advisory on a package of another ecosystem keeps its verdict",
+			dep:  &statestore.DepFetch{Reassess: []string{"GHSA-pypi"}},
 		},
 		{
 			name: "listed rows that refute nothing keep their verdict",
@@ -142,8 +151,9 @@ func verdictIDs(rep *report.Report) []string {
 // withheld for want of dependency code, by ID or alias and whatever source assessed it, each once as
 // itself; a row OSV's new advisory replaces anyway is left to that assessment.
 func TestNotFetchedRetry(t *testing.T) {
-	pkg := leftPad
+	pkg, py := leftPad, pyYAML
 	stored := report.NewBuilder(report.Subject{Repo: "r"}).
+		NotExploitable(report.Advisory{ID: "GHSA-pypi", Source: "osv"}, &py, verdict.BasisSymbolUnreachable, "no path").
 		Undetermined(report.Advisory{ID: "GHSA-marked", Source: "osv", Aliases: []string{"CVE-2026-0002"}}, &pkg, report.ReasonDependencyNotFetched).
 		Undetermined(report.Advisory{ID: "GHSA-other", Source: "osv"}, &pkg, report.ReasonAdvisorySymbolAbsent).
 		NotExploitable(report.Advisory{ID: "GHSA-plain", Source: "osv"}, &pkg, verdict.BasisSymbolUnreachable, "no path").
@@ -160,6 +170,7 @@ func TestNotFetchedRetry(t *testing.T) {
 		{name: "listed, every source", dep: &statestore.DepFetch{Reassess: []string{"GHSA-plain"}}, want: []string{"GHSA-marked/osv", "GHSA-plain/corpus", "GHSA-plain/osv"}},
 		{name: "listed by alias", dep: &statestore.DepFetch{Reassess: []string{"CVE-2026-0003"}}, want: []string{"GHSA-aliased/corpus", "GHSA-marked/osv"}},
 		{name: "new osv row left to its assessment", dep: &statestore.DepFetch{Reassess: []string{"GHSA-plain"}}, newIDs: []string{"GHSA-plain", "GHSA-marked"}, want: []string{"GHSA-plain/corpus"}},
+		{name: "listed on a package of another ecosystem", dep: &statestore.DepFetch{Reassess: []string{"GHSA-pypi"}}, want: []string{"GHSA-marked/osv"}},
 		{name: "listed but not stored", dep: &statestore.DepFetch{Reassess: []string{"GHSA-gone"}}, want: []string{"GHSA-marked/osv"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

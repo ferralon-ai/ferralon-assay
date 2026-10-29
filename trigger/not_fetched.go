@@ -20,7 +20,17 @@ import (
 // Neither treats an unlisted advisory as anything.
 
 // listedNotFetched reports whether f's advisory is on reassess, by its ID or one of its aliases.
+//
+// Only a JS run adds to the list, and only for npm packages, so a row for a package of another
+// ecosystem is never listed: a scan of another language can share the state ref, carry the list
+// unchanged (it records no dependency acquisition) and hold a row whose advisory is also listed,
+// since one advisory can name packages in several ecosystems. That row was not assessed with less
+// npm code than the lock pins, and withholding it would also retry it on every cve-watch run until
+// a JS run cleared the entry. A row with no package stays matchable.
 func listedNotFetched(f report.AdvisoryFinding, reassess []string) bool {
+	if f.Package != nil && f.Package.Ecosystem != "npm" {
+		return false
+	}
 	return slices.Contains(reassess, f.Advisory.ID) ||
 		slices.ContainsFunc(f.Advisory.Aliases, func(a string) bool { return slices.Contains(reassess, a) })
 }

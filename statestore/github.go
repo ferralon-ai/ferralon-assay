@@ -212,8 +212,8 @@ func (s *GitHubRefStore) Write(ctx context.Context, next *State) (*State, error)
 			fresh := *cur
 			fresh.CommitSHA = ""
 			cur = &fresh
-		} else {
-			cur = Merge(winner, cur)
+		} else if cur, err = mergeForRetry(winner, cur); err != nil {
+			return nil, err
 		}
 
 		select {

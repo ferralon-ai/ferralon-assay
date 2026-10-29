@@ -2,7 +2,9 @@ package statestore
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -189,6 +191,46 @@ func TestDepFetchMergeAfterLostCAS(t *testing.T) {
 			}
 			if got.DepFetch == nil || !reflect.DeepEqual(got.DepFetch.normalized(), want) {
 				t.Errorf("merged record: got %+v want %+v", got.DepFetch, want)
+			}
+		})
+	}
+}
+
+// TestRemergeAfterLostCAS: every store applies the race-loser's Remerge hook to the merged state,
+// over the merged record, before it writes it; a failing hook fails the write and nothing lands.
+func TestRemergeAfterLostCAS(t *testing.T) {
+	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	for _, h := range storeHarnesses {
+		t.Run(h.name, func(t *testing.T) {
+			hs := h.new(t)
+			ctx := context.Background()
+			mustWrite(t, hs.store, &State{Report: sampleReport("c0", "cur", ts), Cursor: "cur"})
+			loser, _ := hs.store.Read(ctx)
+			winner, _ := hs.store.Read(ctx)
+			winner.DepFetch = &DepFetch{Reassess: []string{"GHSA-winner"}}
+			mustWrite(t, hs.store, winner)
+
+			failing := *loser
+			failing.Remerge = func(*State) error { return errors.New("refused") }
+			if _, err := hs.store.Write(ctx, &failing); err == nil {
+				t.Fatal("a failing Remerge hook did not fail the write")
+			}
+
+			loser.DepFetch = &DepFetch{Reassess: []string{"GHSA-loser"}}
+			loser.Remerge = func(s *State) error {
+				s.Cursor = "remerged:" + strings.Join(s.DepFetch.Reassess, ",")
+				return nil
+			}
+			mustWrite(t, hs.store, loser)
+			got, err := hs.store.Read(ctx)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if got.Cursor != "remerged:GHSA-loser,GHSA-winner" {
+				t.Fatalf("cursor %q: the hook did not run over the merged record", got.Cursor)
+			}
+			if got.Remerge != nil {
+				t.Fatal("the store handed the hook back on a read")
 			}
 		})
 	}

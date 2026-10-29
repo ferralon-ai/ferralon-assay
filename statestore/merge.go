@@ -2,6 +2,7 @@ package statestore
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -51,6 +52,19 @@ func Merge(base, mine *State) *State {
 	}
 	out.DepFetch = mergeDepFetch(base.DepFetch, mine.DepFetch)
 	return out
+}
+
+// mergeForRetry is the State a store retries after a lost CAS: mine Merged onto the winner, with
+// mine's Remerge hook carried over and applied to the result.
+func mergeForRetry(winner, mine *State) (*State, error) {
+	out := Merge(winner, mine)
+	out.Remerge = mine.Remerge
+	if out.Remerge != nil {
+		if err := out.Remerge(out); err != nil {
+			return nil, fmt.Errorf("statestore: re-deriving the merged state: %w", err)
+		}
+	}
+	return out, nil
 }
 
 func reportOf(s *State) *report.Report {

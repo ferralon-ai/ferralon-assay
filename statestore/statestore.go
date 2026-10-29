@@ -175,6 +175,12 @@ type State struct {
 	// DepFetch is the dependency-fetch record (depfetch.json). nil when the tree has
 	// none, or has one that describes a report.json other than the one beside it.
 	DepFetch *DepFetch
+	// Remerge, when set, is applied to the State a store builds by merging this one onto a
+	// concurrent winner after a lost CAS, before that State is written. A writer that derives
+	// part of its State from the rest (a projection over the Report and DepFetch) sets it so the
+	// derivation is redone over the merged values rather than lost to the union. It is never
+	// persisted, and it is carried onto the merged State so every retry applies it.
+	Remerge func(*State) error
 	// CommitSHA is the commit the State was read from — the CAS expected-old token.
 	// Empty for a freshly constructed State (signals create-if-absent to Write).
 	CommitSHA string

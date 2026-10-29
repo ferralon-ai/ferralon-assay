@@ -1372,6 +1372,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"is operand ending a bracketed line", "import sys\n\ndef go(m):\n    return (m is sys\n            or m)\n", false, false, false},
 		{"is operand compared across a CRLF backslash", "import sys\r\n\r\ndef go(m):\r\n    return m < \\\r\n        sys is None\r\n", false, false, true},
 		{"is operand in CRLF source", "import sys\r\n\r\ndef go(m):\r\n    return (m is sys\r\n            or m)\r\n", false, false, false},
+		{"is operand after a CRLF string continuation", "import sys\r\n\r\ndef go(m):\r\n    return (m < f('a\\\r\nb', '))') <\r\n            sys is None)\r\n", false, false, true},
+		{"lookup in CR source", "import sys\r\rdef go(m):\r    return sys.modules[m]\r", false, false, true},
 		{"is operand on both sides", "import sys\n\ndef go(m):\n    return m is sys is None\n", false, false, false},
 		{"spec from a file location", "import importlib.util\n\ndef load(path):\n    spec = importlib.util.spec_from_file_location('plugin', path)\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n", false, false, true},
 		{"module from spec renamed", "from importlib.util import module_from_spec as mfs\n\ndef load(spec):\n    return mfs(spec)\n", false, false, true},

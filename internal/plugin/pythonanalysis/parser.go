@@ -73,7 +73,10 @@ type strLiteral struct {
 // by the rune index of its '_' token in the cleaned text. Blanking is rune-length
 // preserving, so that index is also the opening quote's index in src; callers that need a
 // literal's value at a known code position (a dynamic import's module name) read it here.
+// Line breaks are first converted to "\n", as Python's tokenizer reads them, so src means the
+// converted text.
 func stripPythonLiterals(src string) (string, map[int]strLiteral) {
+	src = universalNewlines(src)
 	var b strings.Builder
 	b.Grow(len(src))
 	r := []rune(src)

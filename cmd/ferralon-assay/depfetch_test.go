@@ -89,6 +89,7 @@ func TestDepCodeRunRecord(t *testing.T) {
 		name    string
 		prior   *statestore.DepFetch
 		results []pipeline.DependencyAcquisitionResult // nil: no acquisition observed
+		off     bool                                   // the run has dependency code off
 		run     trigger.DependencyFetchRun
 		want    *statestore.DepFetch
 	}{
@@ -97,6 +98,25 @@ func TestDepCodeRunRecord(t *testing.T) {
 			prior: &statestore.DepFetch{Reassess: []string{"A"}, Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 2, FirstHeldAt: earlier}}},
 			run:   watch(true, "A"),
 			want:  &statestore.DepFetch{Reassess: []string{"A"}, Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 2, FirstHeldAt: earlier}}},
+		},
+		{
+			name:  "a cve-watch with dependency code off drops the list and keeps the registries",
+			prior: &statestore.DepFetch{Reassess: []string{"A", "B"}, Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 2, FirstHeldAt: earlier}}},
+			off:   true,
+			run:   watch(true),
+			want:  &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{npmjs: {HeldRuns: 2, FirstHeldAt: earlier}}},
+		},
+		{
+			name:  "a baseline with dependency code off drops the list",
+			prior: &statestore.DepFetch{Reassess: []string{"A"}},
+			off:   true,
+			run:   baseline("A"),
+			want:  &statestore.DepFetch{},
+		},
+		{
+			name: "dependency code off with no stored record leaves none",
+			off:  true,
+			run:  watch(false),
 		},
 		{
 			name:    "a network fetch sets has_served",
@@ -287,6 +307,9 @@ func TestDepCodeRunRecord(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := &depCodeRun{source: report.DependencyCodeSourceFetch}
+			if tc.off {
+				run.source = report.DependencyCodeSourceOff
+			}
 			for _, r := range tc.results {
 				run.observe(r)
 			}

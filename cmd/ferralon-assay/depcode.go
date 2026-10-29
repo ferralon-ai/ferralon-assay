@@ -401,7 +401,9 @@ func holdsRegistry(t registryTally, stored *statestore.DepFetch, key string) boo
 }
 
 // fetchUpdate is the run's depfetch.json hook, or nil for a scan with no dependency acquisition to
-// record (not JS), which carries the stored record.
+// record (not JS), which carries the stored record. Such a scan sharing the state ref neither adds to
+// nor clears the reassess list, and the list never matches its rows: only npm rows are matched
+// against it (trigger listedNotFetched).
 func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 	if d == nil {
 		return nil
@@ -412,7 +414,10 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 }
 
 // record is the depfetch.json a writing run leaves, from the stored record prior, which it does not
-// modify. A run that observed no acquisition (dependency code off, or none reached) carries prior.
+// modify. A run with dependency code off carries prior's registries and drops its reassess list: the
+// verdicts it reached are the declared off verdicts, which its dependency_code field discloses, and
+// a list it kept would make every later cve-watch run under off assess the same rows again to the
+// same off verdicts. Any other run that observed no acquisition (none reached) carries prior.
 // Otherwise, per registry: a network fetch sets has_served; on a cve-watch earnest run whose cursor
 // held, a registry holdsRegistry holds counts one more held run, stamping first_held_at at now on
 // the first, and otherwise reading anything from the registry resets its count. A held count of
@@ -421,7 +426,10 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 // lock pins (it fell back, or a registry failed some fetches) adds the IDs of the advisories it
 // assessed to reassess, and a run of either kind that read all of it removes them: a baseline every
 // entry naming one by ID or alias, since it rebuilds every row, and a cve-watch run only entries
-// naming one by ID, since it replaces only the rows of the IDs it assessed.
+// naming one by ID, since it replaces only the rows of the IDs it assessed. An advisory whose
+// assessment fails is not among the assessed, so an assessment that fails on every run leaves its
+// entry listed and its row retried on every cve-watch run: the failure leaves the row undetermined,
+// and nothing reached with all the dependency code has replaced it.
 //
 // A lost CAS can leave the count higher than the runs that held since the registry last served:
 // Merge keeps the larger held_runs and the earliest first_held_at, so a reset written by a
@@ -432,7 +440,10 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.observed {
-		return prior
+		if d.source != report.DependencyCodeSourceOff || prior == nil || len(prior.Reassess) == 0 {
+			return prior
+		}
+		return &statestore.DepFetch{Registries: maps.Clone(prior.Registries)}
 	}
 	d.stalled, d.held = nil, nil
 	next := &statestore.DepFetch{}

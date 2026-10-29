@@ -565,11 +565,11 @@ func (prog *program) launchTargets() []launchTarget {
 }
 
 // starBinds is the first-party modules whose star import into f binds name, when nothing
-// else in f's module scope does. open is true when a star import may bind it in a way the
+// else in f's module scope does but a dependency import, which a later star may rebind. open is true when a star import may bind it in a way the
 // lane does not follow: a module it does not read, or one that star-imports first-party
 // code without binding the name itself.
 func (prog *program) starBinds(f *fileParse, name string) (paths []string, open bool) {
-	if _, bound := f.bindings[""][name]; bound || f.topNames[name] {
+	if _, bound := f.bindings[""][name]; (bound || f.topNames[name]) && f.depImports[""][name] == 0 {
 		return nil, false
 	}
 	for _, sp := range f.starPaths {

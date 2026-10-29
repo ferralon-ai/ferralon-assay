@@ -409,6 +409,49 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"http_route", funcSCIP("site/views", nil, "feed", 1), "f/"}},
 		},
 		{
+			name: "Django view a first-party star import rebinds over a dependency import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom other.views import dash\nfrom site.views import *\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+		},
+		{
+			name: "Django view name behind an unread first-party star import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site.gone import *\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django dependency view a first-party star import re-exports",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "from django.views.generic import TemplateView\n",
+				"site/urls.py": "from django.urls import path\nfrom site.views import *\n\nurlpatterns = [path(\"a/\", TemplateView.as_view(template_name=\"a.html\"))]\n",
+			},
+		},
+		{
+			name: "Django view behind a wrapper given a function from a nested star import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/checks.py": "def is_staff(u):\n    return True\n", "site/reexp.py": "from site.checks import *\n",
+				"site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py":  "from django.urls import path\nfrom django.contrib.auth.decorators import user_passes_test\nfrom site.reexp import *\nfrom site import views\n\nurlpatterns = [path(\"d/\", user_passes_test(is_staff)(views.dash))]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+			partial: true,
+		},
+		{
+			name: "Django view name a later star import's nested star may rebind",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n", "site/models.py": "def dash(request):\n    return None\n",
+				"site/forms.py": "from site.models import *\n",
+				"site/urls.py":  "from django.urls import path\nfrom site.views import *\nfrom site.forms import *\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+			partial: true,
+		},
+		{
 			name: "Django view behind a wrapper's trailing attribute",
 			files: map[string]string{
 				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",

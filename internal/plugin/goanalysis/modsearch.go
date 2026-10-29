@@ -190,13 +190,19 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 
 // mainTreeHolds reports whether the main module mainPath, rooted at buildDir, has a directory for
 // import path p with no go.mod between them, as the go command requires of a path it loads from the
-// main module.
+// main module. A directory without Go files still holds p, so that a module path that is not itself
+// a package stays first-party, unless vendor/<p> has Go files: the go command then loads p from
+// vendor/.
 func mainTreeHolds(buildDir, mainPath, p string) bool {
 	if mainPath == "" || !pathHolds(mainPath, p) {
 		return false
 	}
+	buildDir = filepath.Clean(buildDir)
 	dir := filepath.Join(buildDir, filepath.FromSlash(strings.TrimPrefix(p[len(mainPath):], "/")))
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return false
+	}
+	if !hasGoFiles(dir) && hasGoFiles(filepath.Join(buildDir, "vendor", filepath.FromSlash(p))) {
 		return false
 	}
 	for d := dir; len(d) > len(buildDir); d = filepath.Dir(d) {
@@ -205,6 +211,20 @@ func mainTreeHolds(buildDir, mainPath, p string) bool {
 		}
 	}
 	return true
+}
+
+// hasGoFiles reports whether dir directly holds a .go file.
+func hasGoFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+			return true
+		}
+	}
+	return false
 }
 
 // vendoredModules reads a vendored build's module list: the main module from go.mod, and every

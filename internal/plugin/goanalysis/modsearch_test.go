@@ -531,6 +531,9 @@ func TestDependencyHolds_VendorMode(t *testing.T) {
 		{name: "a vendored module nested under the main module's path, outside its tree, is a dependency",
 			proxied: []srcModule{modSub}, imports: []string{"example.com/app/sub/x"}, goLine: "1.21", vendor: "vendor",
 			offline: true, holds: "example.com/app/sub/x", want: true, wantVendor: true},
+		{name: "a main module directory without Go files does not shadow a vendored package",
+			proxied: []srcModule{modSub}, imports: []string{"example.com/app/sub/x"}, files: map[string]string{"app/sub/x/README": ""},
+			goLine: "1.21", vendor: "vendor", offline: true, holds: "example.com/app/sub/x", want: true, wantVendor: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

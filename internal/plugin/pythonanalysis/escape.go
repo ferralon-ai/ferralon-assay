@@ -56,8 +56,8 @@ type valueRefs struct {
 	computed bool
 	// evaluated records eval/exec: the evaluated code's call sites are never seen.
 	evaluated bool
-	// hidden records a call inside an f-string substitution, which the call scanner does not
-	// list as a site.
+	// hidden records a call inside an f-string substitution that spliceFStrings could not
+	// splice, which the call scanner therefore does not list as a site.
 	hidden bool
 }
 
@@ -84,7 +84,8 @@ func (vr *valueRefs) scan(text string, params bool) {
 }
 
 // scanRunes is scan over runes; allValues counts every name as a value use, call position
-// included, for text the call scanner never reads (an f-string substitution).
+// included, for text the call scanner never reads (an f-string substitution that could not
+// be spliced).
 func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 	n := len(r)
 	for i := 0; i < n; {
@@ -130,40 +131,6 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 			}
 		}
 		i = pos
-	}
-}
-
-// scanFStrings records the names used inside the substitutions of every f-string and
-// t-string literal in a file, given its cleaned source and the literals stripPythonLiterals
-// blanked. The call scanner reads only cleaned text, so a substitution's calls are not sites:
-// every name in one counts as a value use, and a call there marks the file's site list
-// incomplete.
-func (vr *valueRefs) scanFStrings(clean string, lits map[int]strLiteral) {
-	r := []rune(clean)
-	for start, lit := range lits {
-		if !fStringPrefix(r, start) {
-			continue
-		}
-		body := []rune(lit.body)
-		for i := 0; i < len(body); i++ {
-			if body[i] != '{' {
-				continue
-			}
-			if i+1 < len(body) && body[i+1] == '{' {
-				i++
-				continue
-			}
-			end := matchingClose(body, i)
-			if end < 0 {
-				end = len(body)
-			}
-			expr := body[i+1 : end]
-			vr.scanRunes(expr, false, true)
-			if strings.ContainsRune(string(expr), '(') {
-				vr.hidden = true
-			}
-			i = end
-		}
 	}
 }
 

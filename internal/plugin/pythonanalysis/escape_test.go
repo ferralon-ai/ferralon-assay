@@ -1452,11 +1452,12 @@ func TestCallGraph_UnlistedSites(t *testing.T) {
 	}{
 		{"every site listed", "def f(x):\n    return g(x)\n", false},
 		{"f-string without a call", "def f(x):\n    return f\"{x}\"\n", false},
-		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", true},
+		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", false},
+		{"f-string substitution cut short", "def f(d):\n    return f\"{g(d[\"k\"])}\"\n", true},
 		{"evaluated code", "def f(src):\n    return eval(src)\n", true},
 		{"t-string without a call", "def f(x):\n    return t\"{x}\"\n", false},
-		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", true},
-		{"raw t-string with a call", "def f(x):\n    return rt\"{g(x)}\"\n", true},
+		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", false},
+		{"raw t-string with a call", "def f(x):\n    return rt\"{g(x)}\"\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

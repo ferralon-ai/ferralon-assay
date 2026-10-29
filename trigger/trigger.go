@@ -61,6 +61,10 @@ type BaselineRequest struct {
 	// reaches any pipeline/verdict struct (inv.5). A nil map ⇒ every case BandUnknown ⇒ all
 	// admitted (byte-identical to the pre-gate behavior). An absent band never drops a case.
 	Bands map[string]Band
+	// Analysis bounds the inventory and the per-advisory assessments. When it is done, the
+	// advisories not yet assessed get scan_cut_short rows and the run still writes its Report
+	// under ctx. Nil means ctx.
+	Analysis context.Context
 }
 
 // RunBaseline runs the full S1–S6 pipeline for every advisory in the request, builds
@@ -72,8 +76,17 @@ type BaselineRequest struct {
 // current evaluation, not an accumulation); the StateStore merge unions only across
 // concurrent racers. On a fresh repo Read returns ErrNotFound and the Write creates
 // the ref.
+//
+// A baseline stopped before its dependency inventory resolved keeps the stored SBOM: replacing it
+// with an empty one would leave CVE-watch nothing to query until the next baseline finishes.
 func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineRequest) (*report.Report, error) {
-	rep, err := buildBaselineReport(ctx, req)
+	rep, err := baselineReport(ctx, req, func() (report.SBOM, error) {
+		prior, err := readForUpdate(ctx, store)
+		if err != nil {
+			return report.SBOM{}, err
+		}
+		return prior.SBOM, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +109,12 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 // buildBaselineReport runs S1–S6 per advisory and assembles the Report. It does not
 // touch the StateStore — the offline pipeline test exercises it directly.
 func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Report, error) {
+	return baselineReport(ctx, req, nil)
+}
+
+// baselineReport is buildBaselineReport with priorSBOM, which reads the stored SBOM a baseline
+// stopped before its inventory resolved carries forward. Nil carries nothing forward.
+func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, error) {
 	analyzer := req.AnalyzerVersion
 	if analyzer == "" {
 		analyzer = AnalyzerVersion
@@ -124,19 +143,36 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 	// DECLARED as a scan-level partiality note (C3), never a silently short SBOM that would feed a
 	// later CVE-watch a shrunken query set. Coordinate-specific advisory resolution is RETAINED
 	// unchanged in the loop below (advisoryFromArtifacts still serves the finding path — §4.1 / C5).
-	inv, invLanguage, _, err := pipeline.ResolveCodebaseInventory(ctx, req.Codebase, "", req.AssessOptions...)
+	analysis := analysisOr(req.Analysis, ctx)
+	inv, invLanguage, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
 	sbom, invNotes := sbomFromInventory(inv, ecosystemFor(invLanguage))
+	if inventoryCutShort(invNotes) && priorSBOM != nil {
+		prior, err := priorSBOM()
+		if err != nil {
+			return nil, fmt.Errorf("trigger: read the stored SBOM: %w", err)
+		}
+		if len(prior.Packages) > 0 {
+			sbom = prior
+			b.AddPartiality(priorSBOMNote)
+		}
+	}
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 
+	cut := 0
 	for _, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		if stopped {
+			b.AddFinding(cutShortFinding(adv))
+			cut++
+			continue
+		}
 		if err != nil {
 			// One advisory's analysis failing must not abort the scan: a run with no Report
 			// renders downstream as a run with no findings. The advisories that resolved keep
@@ -160,6 +196,9 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 			b.AddPartiality(note)
 		}
 		b.AddPartiality(partialityNotes(st, assessmentID)...)
+	}
+	if cut > 0 {
+		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))
 	}
 
 	b.WithProvenance(withSignals(report.Provenance{
@@ -214,6 +253,9 @@ type PRInheritRequest struct {
 	// Signals mirrors BaselineRequest.Signals. Every row is ranked by it — inherited rows too, so
 	// none keeps a value from the signals file the baseline run read.
 	Signals *intel.Signals
+	// Analysis bounds the per-advisory re-assessments. When it is done, the advisories not yet
+	// assessed get scan_cut_short rows and the run still returns its Report. Nil means ctx.
+	Analysis context.Context
 }
 
 // PRInheritResult reports the outcome of a PR-inherit run.
@@ -296,6 +338,10 @@ type CVEWatchRequest struct {
 	// again next run. Set it when this run's analysis inputs could not be had (a failed build
 	// graph): the Report is still written, but the advisories it could not assess stay new.
 	HoldCursor bool
+	// Analysis bounds the earnest re-assessments. When it is done, the advisories not yet assessed
+	// get scan_cut_short rows, the stored cursor is held so they stay new, and the run still
+	// writes its Report under ctx. Nil means ctx.
+	Analysis context.Context
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -309,6 +355,12 @@ type CVEWatchResult struct {
 	NewAdvisories []string
 	// Report is the re-analyzed Report on an earnest run; nil on a heartbeat.
 	Report *report.Report
+	// Truncated is true when the Report left in state discloses a scan cut short: the earnest
+	// Report, or on a heartbeat the stored one, which the heartbeat keeps.
+	Truncated bool
+	// NoInventory is true on a heartbeat over an empty stored SBOM that a baseline stopped before
+	// resolving: there was nothing to query, so the heartbeat says nothing about new advisories.
+	NoInventory bool
 	// Cursor is the new cursor written to state (the full sorted advisory-ID set).
 	Cursor string
 }
@@ -360,7 +412,12 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		if err != nil {
 			return nil, fmt.Errorf("trigger: cve-watch heartbeat: %w", err)
 		}
-		return &CVEWatchResult{Heartbeat: true, Cursor: committed.Cursor}, nil
+		return &CVEWatchResult{
+			Heartbeat:   true,
+			Cursor:      committed.Cursor,
+			Truncated:   hasCutShort(state.Report.Partiality),
+			NoInventory: len(state.SBOM.Packages) == 0 && inventoryCutShort(state.Report.Partiality),
+		}, nil
 	}
 
 	// The Report's provenance carries the cursor too, and a conflicting write merges the
@@ -375,7 +432,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	}
 	state.Report = rep
 	state.SBOM = rep.SBOM
-	state.Cursor = cursor
+	state.Cursor = rep.Provenance.AdvisoryCursor
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)
@@ -384,5 +441,6 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		NewAdvisories: newIDs,
 		Report:        committed.Report,
 		Cursor:        committed.Cursor,
+		Truncated:     hasCutShort(committed.Report.Partiality),
 	}, nil
 }

@@ -175,7 +175,7 @@ func TestDependencyCodeFetchFailureRunsAsOff(t *testing.T) {
 		name, npmrc, timeout, wantKind string
 	}{
 		{name: "credential required and unset", npmrc: "//registry.npmjs.org/:_authToken=\n", wantKind: pipeline.UnreadPolicyRefused},
-		{name: "registry unreachable", npmrc: "registry=https://127.0.0.1:1/\n", wantKind: pipeline.UnreadFetchFailed},
+		{name: "registry unreachable", npmrc: "registry=https://127.0.0.1:1/\n", wantKind: pipeline.UnreadUnreachable},
 		{name: "deadline", npmrc: "registry=https://127.0.0.1:1/\n", timeout: "1ns"},
 	}
 	for _, tt := range tests {

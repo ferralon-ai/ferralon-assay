@@ -88,18 +88,24 @@ func TestPublishedSignalsSummary(t *testing.T) {
 		f         *runFlags
 		published *report.IntelProvenance
 		clause    string // appended to signalsSummary's line; "" when the two agree
+		want      string // the whole line, when it is not signalsSummary's line plus clause
 	}{
-		{"the Report names the run's file", withFile, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, SignalsDigest: loaded}, ""},
-		{"no file, no intel block", none, nil, ""},
-		{"no file, a block without a digest", none, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery}, ""},
-		{"a merge cleared the run's file", withFile, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery}, noFile},
-		{"a merge cleared the run's file and the block", withFile, nil, noFile},
-		{"a merge kept another run's file", withFile, &report.IntelProvenance{SignalsDigest: other}, otherFile},
-		{"a merge kept another run's file over a run with none", none, &report.IntelProvenance{SignalsDigest: other}, otherFile},
+		{"the Report names the run's file", withFile, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, SignalsDigest: loaded}, "", ""},
+		{"no file, no intel block", none, nil, "", ""},
+		{"no file, a block without a digest", none, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery}, "", ""},
+		{"a merge cleared the run's file", withFile, &report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery}, noFile, ""},
+		{"a merge cleared the run's file and the block", withFile, nil, noFile, ""},
+		{"a merge kept another run's file", withFile, &report.IntelProvenance{SignalsDigest: other}, otherFile, ""},
+		{"a merge kept another run's file over a run with none", none, &report.IntelProvenance{SignalsDigest: other}, "",
+			"none — no signals source was provided (-advisory-signals, " + envAdvisorySignals + ", or an advisory corpus directory's signals.json)" + otherFile},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rep := &report.Report{Provenance: report.Provenance{Intel: c.published}}
-			if got, want := c.f.publishedSignalsSummary(rep, now), c.f.signalsSummary(now)+c.clause; got != want {
+			want := c.want
+			if want == "" {
+				want = c.f.signalsSummary(now) + c.clause
+			}
+			if got := c.f.publishedSignalsSummary(rep, now); got != want {
 				t.Errorf("summary line = %q\nwant         %q", got, want)
 			}
 		})

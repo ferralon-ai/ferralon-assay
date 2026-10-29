@@ -52,9 +52,9 @@ func parseFile(module, src string) parseResult {
 }
 
 // stripPython blanks comments and string literals (single/double, and triple-quoted,
-// with escape handling) to whitespace, preserving newlines and indentation so byte
-// offsets, line structure, and block indentation are intact but no comment/string
-// content can be mistaken for code. A string literal collapses to a single '_' token
+// with escape handling) to whitespace, preserving newlines and indentation so offsets
+// into src with its line breaks converted, line structure, and block indentation are
+// intact but no comment/string content can be mistaken for code. A string literal collapses to a single '_' token
 // (a valid identifier char) so a literal argument still counts toward call-site arity.
 // This is the lexical pre-pass the scanner relies on.
 func stripPython(src string) string {

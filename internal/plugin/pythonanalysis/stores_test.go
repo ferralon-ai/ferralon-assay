@@ -114,3 +114,82 @@ func TestCallGraph_ModuleObjectStores(t *testing.T) {
 		})
 	}
 }
+
+// TestCallGraph_ModuleStoresSrcLayout: a store into a namespace package and a site reading
+// through it meet whichever root each names the package by.
+func TestCallGraph_ModuleStoresSrcLayout(t *testing.T) {
+	impl := funcSCIP("src/pkg/impl", nil, "f", 1)
+	cases := []struct {
+		name, caller, callee string
+		files                map[string]string
+	}{
+		{"relative store, absolute site", "src/c", "pkg.ns.a.g", map[string]string{
+			"src/pkg/b.py": "from . import ns\nfrom . import x\nns.a = x\n",
+			"src/c.py":     "import pkg.ns.a\n\ndef go():\n    return pkg.ns.a.g(1)\n"}},
+		{"absolute store, relative site", "src/pkg/c", "ns.a.g", map[string]string{
+			"src/b.py":     "import pkg.ns\nimport pkg.x\npkg.ns.a = pkg.x\n",
+			"src/pkg/c.py": "from . import ns\nimport pkg.ns.a\n\ndef go():\n    return ns.a.g(1)\n"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{
+				"src/pkg/__init__.py": "",
+				"src/pkg/impl.py":     "def f(x):\n    return x\n",
+				"src/pkg/v.py":        "def vuln(x):\n    return x\n",
+				"src/pkg/x.py":        "from .v import vuln as g\n",
+				"src/pkg/ns/a.py":     "from ..impl import f as g\n",
+			}
+			maps.Copy(files, tc.files)
+			res := mustCallGraph(t, files)
+			caller := funcSCIP(tc.caller, nil, "go", 0)
+			if !hasEdge(res.Edges, caller, impl) {
+				t.Fatalf("missing alias edge %s -> %s; edges %v", caller, impl, res.Edges)
+			}
+			for _, u := range res.Unresolved {
+				if u.Caller.SCIP == caller && u.Callee == tc.callee && len(u.Targets) == 0 {
+					return
+				}
+			}
+			t.Fatalf("%s(1) not listed; unresolved %v", tc.callee, res.Unresolved)
+		})
+	}
+}
+
+// TestCallGraph_ModuleStoresImportCycles: a module that re-exports from itself through a
+// suffix-matched path, or two modules that re-export from each other, are resolved to an end.
+func TestCallGraph_ModuleStoresImportCycles(t *testing.T) {
+	cases := map[string]map[string]string{
+		"self re-export through a suffix": {
+			"app/__init__.py":         "",
+			"app/models.py":           "class User:\n    @classmethod\n    def create(cls, n):\n        return n\n",
+			"scripts/__init__.py":     "",
+			"scripts/app/__init__.py": "",
+			"scripts/app/models.py":   "from app.models import User\n",
+			"app/views.py":            "from app.models import User\n\ndef go():\n    return User.create(1)\n",
+		},
+		"self re-export in a module passed whole": {
+			"utils.py":        "class Cfg:\n    pass\n",
+			"lib/__init__.py": "",
+			"lib/utils.py":    "from utils import Cfg\n",
+			"b.py":            "import lib.utils\n\ndef reg(register):\n    register(lib.utils)\n",
+		},
+		"package re-export through a suffix": {
+			"pkg/__init__.py":         "from pkg.core import Engine\n",
+			"pkg/core.py":             "class Engine:\n    def run(self):\n        pass\n",
+			"plugins/__init__.py":     "",
+			"plugins/pkg/__init__.py": "from pkg import Engine\n",
+			"c.py":                    "from pkg import Engine\n\ndef go():\n    return Engine.run(None)\n",
+		},
+		"two modules re-exporting each other": {
+			"pkg/__init__.py": "",
+			"pkg/a.py":        "from pkg.b import x\n",
+			"pkg/b.py":        "from pkg.a import x\n",
+			"c.py":            "from pkg.a import x\nx.flag = 1\n",
+		},
+	}
+	for name, files := range cases {
+		t.Run(name, func(t *testing.T) {
+			mustCallGraph(t, files)
+		})
+	}
+}

@@ -233,8 +233,8 @@ func guardsOnPath(store artifact.Store, assessmentID string, frames []report.Cal
 	if len(declared) == 0 || len(frames) == 0 {
 		return nil
 	}
-	edges := callGraphEdges(store, assessmentID)
-	if len(edges) == 0 {
+	cg, _ := callGraph(store, assessmentID)
+	if cg.EdgeCount() == 0 {
 		return nil
 	}
 	onPath := make(map[string]bool, len(frames))
@@ -246,7 +246,7 @@ func guardsOnPath(store artifact.Store, assessmentID string, frames []report.Cal
 		declaredSet[g] = true
 	}
 	found := make(map[string]bool, len(declared))
-	for _, e := range edges {
+	for e := range cg.Edges() {
 		if !onPath[e.Caller.SCIP] {
 			continue
 		}
@@ -422,28 +422,19 @@ func guardSufficiencyFor(onPath []string, declared []guardSufficiencyVariant) []
 	return out
 }
 
-// callGraphEdges reads the resolved call-graph edges from the reachability artifact
-// (S5 records the call graph alongside the reachability result). Empty when the
-// stub path produced no graph.
-func callGraphEdges(store artifact.Store, assessmentID string) []plugin.CallEdge {
-	cg, _ := callGraphResult(store, assessmentID)
-	return cg.Edges
-}
-
-// callGraphResult reads the whole call-graph leg of the reachability artifact, partiality
-// included. ok is false when there is no reachability artifact to read it from.
-func callGraphResult(store artifact.Store, assessmentID string) (plugin.CallGraphResult, bool) {
-	arts, err := store.Query(assessmentID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
-		return plugin.CallGraphResult{}, false
+// callGraph reads the call-graph leg of the reachability artifact (S5 records the call graph
+// alongside the reachability result), partiality included. ok is false when there is no
+// reachability artifact to read it from; the stub path's artifact holds an empty graph.
+func callGraph(store artifact.Store, assessmentID string) (pipeline.CallGraphView, bool) {
+	rec, ok, err := pipeline.Reachability(store, assessmentID)
+	if err != nil || !ok {
+		return pipeline.CallGraphView{}, false
 	}
-	var payload struct {
-		CallGraph plugin.CallGraphResult `json:"call_graph"`
+	cg, err := rec.CallGraph()
+	if err != nil {
+		return pipeline.CallGraphView{}, false
 	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
-		return plugin.CallGraphResult{}, false
-	}
-	return payload.CallGraph, true
+	return cg, true
 }
 
 // symbolLeaf extracts the bare function/method name from a self-emitted SCIP id
@@ -753,17 +744,11 @@ func firstTaintPath(store artifact.Store, assessmentID string) (plugin.ReachPath
 }
 
 func firstReachPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
-	arts, err := store.Query(assessmentID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
+	reach, ok := reachabilityResult(store, assessmentID)
+	if !ok || len(reach.Paths) == 0 {
 		return plugin.ReachPath{}, false
 	}
-	var payload struct {
-		Reachability plugin.ReachabilityResult `json:"reachability"`
-	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil || len(payload.Reachability.Paths) == 0 {
-		return plugin.ReachPath{}, false
-	}
-	return payload.Reachability.Paths[0], true
+	return reach.Paths[0], true
 }
 
 // disqualResult reads the disqualification_discovery artifact (TypeDiscovery).
@@ -1017,8 +1002,8 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 // emptyGraphUncalledComplete reports whether the call graph is empty and the analyzer declined to
 // call it complete: a search that did not happen (see analysisDidNotRun).
 func emptyGraphUncalledComplete(store artifact.Store, assessmentID string) bool {
-	cg, ok := callGraphResult(store, assessmentID)
-	return ok && len(cg.Edges) == 0 && !cg.Partiality.Complete
+	cg, ok := callGraph(store, assessmentID)
+	return ok && cg.EdgeCount() == 0 && !cg.Partiality().Complete
 }
 
 // didNotRunReasons returns the did-not-run limits analysisDidNotRun weighs for this assessment, in

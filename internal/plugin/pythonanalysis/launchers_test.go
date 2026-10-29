@@ -368,6 +368,79 @@ func TestFindIngresses_Launchers(t *testing.T) {
 				"site/wsgi.py": "from django.core.wsgi import get_wsgi_application\napplication = get_wsgi_application()\n",
 			},
 		},
+		{
+			name: "Django views from a first-party star import",
+			files: map[string]string{
+				"site/__init__.py": "",
+				"site/views.py":    "def dash(request):\n    return None\n\nclass Items:\n    def get(self, request):\n        return None\n",
+				"site/urls.py":     "from django.urls import path\nfrom django.contrib.auth.decorators import login_required\nfrom site.views import *\n\nurlpatterns = [\n    path(\"d/\", dash),\n    path(\"items/\", Items.as_view()),\n    path(\"l/\", login_required(dash)),\n]\n",
+			},
+			want: []ing{
+				{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"},
+				{"http_route", funcSCIP("site/views", []string{"Items"}, "get", 2), "items/"},
+				{"http_route", funcSCIP("site/views", nil, "dash", 1), "l/"},
+			},
+		},
+		{
+			name: "Django view behind a nested first-party star import",
+			files: map[string]string{
+				"site/__init__.py": "", "site/impl.py": "def dash(request):\n    return None\n",
+				"site/views.py": "from site.impl import *\n",
+				"site/urls.py":  "from django.urls import path\nfrom site.views import *\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view behind a wrapper given a star-imported first-party function",
+			files: map[string]string{
+				"site/__init__.py": "", "site/checks.py": "def is_staff(user):\n    return True\n",
+				"site/views.py": "def panel(request):\n    return None\n",
+				"site/urls.py":  "from django.urls import path\nfrom django.contrib.auth.decorators import user_passes_test\nfrom site.checks import *\nfrom site import views\n\nurlpatterns = [path(\"p/\", user_passes_test(is_staff)(views.panel))]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", nil, "panel", 1), "p/"}},
+			partial: true,
+		},
+		{
+			name: "Django view name a first-party star import does not bind",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def feed(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site.views import *\n\nurlpatterns = [path(\"f/\", feed), path(\"s/\", str)]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "feed", 1), "f/"}},
+		},
+		{
+			name: "Django view behind a wrapper's trailing attribute",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom deco import wrap\nfrom site import views\n\nurlpatterns = [path(\"d/\", wrap(views.dash).inner)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view behind a wrapper given another first-party argument",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n\ndef is_staff(u):\n    return True\n",
+				"site/urls.py": "import functools\nfrom django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"d/\", functools.partial(views.dash, check=views.is_staff))]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+			partial: true,
+		},
+		{
+			name: "Django class-based view on object",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "class Items(object):\n    def get(self, request):\n        return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", []string{"Items"}, "get", 2), "items/"}},
+		},
+		{
+			name: "Django as_view on a whole module",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def as_view():\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"x/\", views.as_view())]\n",
+			},
+			partial: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

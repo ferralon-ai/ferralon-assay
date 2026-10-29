@@ -531,7 +531,10 @@ func (prog *program) launchTargets() []launchTarget {
 		f := &prog.files[i]
 		out = append(out, f.settings...)
 		for _, v := range f.urlViews {
-			if slices.ContainsFunc(v.heads, f.definesFirstParty) {
+			if slices.ContainsFunc(v.heads, func(h string) bool {
+				paths, open := prog.starBinds(f, h)
+				return f.definesFirstParty(h) || len(paths) > 0 || open
+			}) {
 				out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
 			}
 			if v.chain == nil {
@@ -544,6 +547,14 @@ func (prog *program) launchTargets() []launchTarget {
 				}
 			} else if f.definesFirstParty(v.chain[0]) {
 				bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
+			} else {
+				paths, open := prog.starBinds(f, v.chain[0])
+				for _, p := range paths {
+					bases = append(bases, append(strings.Split(p, "/"), v.chain...))
+				}
+				if open {
+					out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+				}
 			}
 			for _, segs := range bases {
 				out = append(out, launchTarget{segs: segs, kind: "http_route", selector: v.selector, view: v.asView})
@@ -551,6 +562,35 @@ func (prog *program) launchTargets() []launchTarget {
 		}
 	}
 	return out
+}
+
+// starBinds is the first-party modules whose star import into f binds name, when nothing
+// else in f's module scope does. open is true when a star import may bind it in a way the
+// lane does not follow: a module it does not read, or one that star-imports first-party
+// code without binding the name itself.
+func (prog *program) starBinds(f *fileParse, name string) (paths []string, open bool) {
+	if _, bound := f.bindings[""][name]; bound || f.topNames[name] {
+		return nil, false
+	}
+	for _, sp := range f.starPaths {
+		if len(prog.byModule[sp]) == 0 {
+			open = true
+		}
+		for _, i := range prog.byModule[sp] {
+			g := &prog.files[i]
+			if g.depImports[""][name] > 0 {
+				continue // a dependency's
+			}
+			if _, bound := g.bindings[""][name]; bound || g.topNames[name] {
+				if !slices.Contains(paths, sp) {
+					paths = append(paths, sp)
+				}
+			} else if len(g.starPaths) > 0 {
+				open = true
+			}
+		}
+	}
+	return paths, open
 }
 
 // definesFirstParty reports whether the file's module scope binds name to first-party code:

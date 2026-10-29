@@ -509,9 +509,23 @@ func dependencyCodeUnavailableLine(scope, detail string) string {
 		return line + " A fetched package did not match the lockfile's integrity hash: check the lockfile against the registry it resolves from."
 	case "npmrc_malformed":
 		return line + " The npm configuration could not be read: fix the file and line it names."
+	case "fetch_failed":
+		return line + " A package fetch failed outside any registry answer, such as a dropped transfer or a cache that could not be written: check the runner's network and that the dependency cache directory is writable."
+	case "cancelled":
+		return line + dependencyTimeoutHint
+	case "inventory_failed":
+		if strings.HasSuffix(detail, "cancelled") {
+			return line + dependencyTimeoutHint
+		}
+		// Otherwise the JS analyzer failed to list the locked packages, for a reason of its own
+		// that names no setting the operator could change, so the line names the cause and stops.
 	}
 	return line
 }
+
+// dependencyTimeoutHint is the fix for dependency fetching that ran out of time.
+var dependencyTimeoutHint = " Dependency fetching ran out of time or the run was cancelled: set " + brand.EnvPrefix +
+	"_DEPENDENCY_TIMEOUT for the scan step to allow it longer than the default 15 minutes, or give the job more time."
 
 // dependencyFetchBlock renders the run's dependency fetch outcomes for the job summary, one line
 // per registry with what to do about it, or "" when the fetch needs nothing from the operator. It

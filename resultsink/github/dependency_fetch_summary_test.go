@@ -96,6 +96,7 @@ func TestBothSurfaces_DependencyCodeNotes(t *testing.T) {
 		name string
 		note report.PartialityNote
 		want []string
+		not  []string
 	}{
 		{
 			name: "missing credential fallback",
@@ -123,9 +124,25 @@ func TestBothSurfaces_DependencyCodeNotes(t *testing.T) {
 			want: []string{"did not match the lockfile's integrity hash"},
 		},
 		{
-			name: "cause with no hint",
+			name: "inventory failure has no hint",
 			note: report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: "inventory_failed"},
 			want: []string{"The scan read none of its npm dependency code (`inventory_failed`)"},
+			not:  []string{"ran out of time"},
+		},
+		{
+			name: "inventory cut off by the deadline",
+			note: report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: "inventory_failed: cancelled"},
+			want: []string{"ran out of time or the run was cancelled", "ASSAY_DEPENDENCY_TIMEOUT"},
+		},
+		{
+			name: "fetch cut off by the deadline",
+			note: report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: "cancelled: pkg:npm/left-pad@1.3.0"},
+			want: []string{"ran out of time or the run was cancelled", "ASSAY_DEPENDENCY_TIMEOUT"},
+		},
+		{
+			name: "other fetch failure",
+			note: report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: "fetch_failed: pkg:npm/left-pad@1.3.0"},
+			want: []string{"check the runner's network and that the dependency cache directory is writable"},
 		},
 		{
 			name: "not fetched",
@@ -139,6 +156,11 @@ func TestBothSurfaces_DependencyCodeNotes(t *testing.T) {
 				for _, w := range append([]string{"Partial coverage"}, tc.want...) {
 					if !strings.Contains(s, w) {
 						t.Errorf("%s: missing %q\n---\n%s", name, w, s)
+					}
+				}
+				for _, w := range tc.not {
+					if strings.Contains(s, w) {
+						t.Errorf("%s: has %q\n---\n%s", name, w, s)
 					}
 				}
 				if strings.Contains(s, "analysis was incomplete") {

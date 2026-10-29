@@ -200,19 +200,29 @@ func TestDepFetchMergeAfterLostCAS(t *testing.T) {
 // over the merged record, before it writes it; a failing hook fails the write and nothing lands.
 func TestRemergeAfterLostCAS(t *testing.T) {
 	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	stores := []struct {
+		name string
+		new  func(t *testing.T) StateStore
+	}{{"mem", func(*testing.T) StateStore { return NewMemStore() }}}
 	for _, h := range storeHarnesses {
+		stores = append(stores, struct {
+			name string
+			new  func(t *testing.T) StateStore
+		}{h.name, func(t *testing.T) StateStore { return h.new(t).store }})
+	}
+	for _, h := range stores {
 		t.Run(h.name, func(t *testing.T) {
-			hs := h.new(t)
+			store := h.new(t)
 			ctx := context.Background()
-			mustWrite(t, hs.store, &State{Report: sampleReport("c0", "cur", ts), Cursor: "cur"})
-			loser, _ := hs.store.Read(ctx)
-			winner, _ := hs.store.Read(ctx)
+			mustWrite(t, store, &State{Report: sampleReport("c0", "cur", ts), Cursor: "cur"})
+			loser, _ := store.Read(ctx)
+			winner, _ := store.Read(ctx)
 			winner.DepFetch = &DepFetch{Reassess: []string{"GHSA-winner"}}
-			mustWrite(t, hs.store, winner)
+			mustWrite(t, store, winner)
 
 			failing := *loser
 			failing.Remerge = func(*State) error { return errors.New("refused") }
-			if _, err := hs.store.Write(ctx, &failing); err == nil {
+			if _, err := store.Write(ctx, &failing); err == nil {
 				t.Fatal("a failing Remerge hook did not fail the write")
 			}
 
@@ -221,8 +231,8 @@ func TestRemergeAfterLostCAS(t *testing.T) {
 				s.Cursor = "remerged:" + strings.Join(s.DepFetch.Reassess, ",")
 				return nil
 			}
-			mustWrite(t, hs.store, loser)
-			got, err := hs.store.Read(ctx)
+			mustWrite(t, store, loser)
+			got, err := store.Read(ctx)
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}

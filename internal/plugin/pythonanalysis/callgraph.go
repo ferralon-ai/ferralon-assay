@@ -201,7 +201,7 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 				return nil
 			}
 			if len(at) == 0 || open {
-				return p.declsNamed(leaves)
+				return appendDecls(p.declsNamed(leaves), at)
 			}
 			out = appendDecls(out, at)
 		}
@@ -251,10 +251,11 @@ func (f *fileParse) topDefs(scope, name string) []funcDecl {
 // module's attribute ("pkg/x/f", pkg binding x) follows what the module binds x to the same
 // way. Each path is visited once, so an import cycle ends, and a re-export through the cycle
 // is still followed to its def. decided is false when a module on the way binds f, the
-// attribute, or a package binds its submodule's name, by anything but defs at module level,
-// first-party imports and star imports (bindsOtherwise): what it holds there is not a
-// declaration the walk can name. open is true when the path leaves the modules the lane
-// reads: a module no file is, or a class's member; the name then decides the candidates.
+// attribute by anything but defs at module level,
+// first-party imports and star imports (bindsOtherwise), or a package on the way rebinds its
+// submodule's name (rebound): what it holds there is not a declaration the walk can name.
+// open is true when the path leaves the modules the lane reads: a module no file is, or a
+// class's member; the name then decides the candidates, beside any the walk found.
 func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 	visited := map[string]bool{}
 	var out []funcDecl
@@ -279,6 +280,10 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 				open = true
 				return
 			}
+			if p.rebound(segs[:k]) {
+				decided = false
+				return
+			}
 			attr, rest := segs[k], strings.Join(segs[k+1:], "/")
 			for _, i := range p.byModule[strings.Join(segs[:k], "/")] {
 				g := &p.files[i]
@@ -298,14 +303,9 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 			}
 			return
 		}
-		segs := strings.Split(mod, "/")
-		for j := 1; j < len(segs); j++ {
-			for _, i := range p.byModule[strings.Join(segs[:j], "/")] {
-				if p.files[i].bindsOtherwise(segs[j]) {
-					decided = false // the package rebinds the submodule's name
-					return
-				}
-			}
+		if p.rebound(strings.Split(mod, "/")) {
+			decided = false
+			return
 		}
 		for _, i := range p.byModule[mod] {
 			g := &p.files[i]
@@ -324,6 +324,33 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 	}
 	walk(path)
 	return out, decided, open
+}
+
+// rebound reports whether a package on a module path binds the name of the next segment, its
+// submodule, to anything but that submodule: by a value (bindsOtherwise), by a first-party
+// import of another path, or so through a first-party star import.
+func (p *program) rebound(segs []string) bool {
+	for j := 1; j < len(segs); j++ {
+		pkg, sub := strings.Join(segs[:j], "/"), segs[j]
+		self := pkg + "/" + sub
+		other := func(g *fileParse) bool {
+			return g.bindsOtherwise(sub) || slices.ContainsFunc(g.fpBinds[""][sub], func(b string) bool { return b != self })
+		}
+		for _, i := range p.byModule[pkg] {
+			g := &p.files[i]
+			if other(g) {
+				return true
+			}
+			for _, star := range g.starPaths {
+				for _, k := range p.byModule[star] {
+					if other(&p.files[k]) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // bindsOtherwise reports whether the module scope binds name by something besides defs

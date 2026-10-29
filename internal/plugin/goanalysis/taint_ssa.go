@@ -338,10 +338,13 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// a call on the tainted request, so its result is tainted. The callees that
 		// then receive ctx are not tainted as a whole; ctx spreads three ways. A
 		// sink that takes ctx as any argument is a hit (exec.CommandContext(ctx,
-		// "const")). The result of every call that takes ctx is tainted, whether
-		// or not it depends on ctx: here, a library call's (context.WithTimeout(
-		// ctx, d), db.QueryRowContext(ctx, constQ)), and below, a first-party
-		// call's (lookup(ctx, "const")). And a first-party callee's ctx parameter
+		// "const")). The result of every statically resolved call that takes ctx,
+		// other than a sanitizer, is tainted, whether or not it depends on ctx
+		// (forwardsUnbuilt, and the isSanitizer return below): here, a library
+		// call's (context.WithTimeout(ctx, d), db.QueryRowContext(ctx, constQ)),
+		// and below, a first-party call's (lookup(ctx, "const")). A ctx passed to
+		// an interface method or a function value leaves the result clean, as the
+		// dynamic-call sentence above says. And a first-party callee's ctx parameter
 		// is tainted, never its other parameters, so the same holds for every call
 		// it makes with ctx, down the call tree. Like the field-base seed, this
 		// only affects trace and entry-point selection, never a verdict.

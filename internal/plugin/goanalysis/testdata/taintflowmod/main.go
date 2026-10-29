@@ -11,9 +11,11 @@
 //
 // The controls sit beside them: field reads and a first-party call, which were always
 // tainted, and a library call, an append and a copy over values never derived from
-// the request, which must stay untainted. So must the places taint stops: a store
-// through a global pointer, through a package-level struct value, and through a
-// pointer a closure captures, each read back afterwards. (The http types are
+// the request, which must stay untainted. Apart from them sit the places taint
+// stops: a store through a global pointer, through a package-level struct value,
+// and through a pointer a closure captures, each read back afterwards. Those reads
+// do receive the request at run time, so they are known misses, not clean
+// controls, pinned so a change to them is deliberate. (The http types are
 // tegron.test/nethttp's stand-ins; see ../chimod/nethttpstub/http.go.)
 package main
 

@@ -534,7 +534,7 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			name: "Django view name a for loop binds",
 			files: map[string]string{
 				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
-				"site/urls.py": "from django.urls import path\nfrom site import views\n\nfor dash in [views.dash]:\n    pass\n\nurlpatterns = [path(\"d/\", dash)]\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\nfrom thirdparty import dash\n\nfor dash in [views.dash]:\n    pass\n\nurlpatterns = [path(\"d/\", dash)]\n",
 			},
 			partial: true,
 		},

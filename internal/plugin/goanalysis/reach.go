@@ -877,7 +877,7 @@ func (r goRelease) toolchain() string {
 // (govulncheckOrPartial); the result says so in its partial field.
 func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string, settle bool) (vulnScan, error) {
 	out, partial, err := govulncheckOrPartial(ctx, req.BuildDir, env, settle, func() ([]byte, error) {
-		return govulncheckStream(ctx, req.BuildDir, env)
+		return govulncheckStream(ctx, req.BuildDir, env, []string{"./..."})
 	}, func(failure error) ([]byte, error) {
 		return partialGovulncheck(ctx, req.BuildDir, env, failure)
 	})
@@ -980,10 +980,11 @@ func replayGovulncheckFailure(ctx context.Context, buildDir string, key []string
 	return &govulncheckError{buildDir: buildDir, cause: errors.New(rec.Cause), stderr: rec.Stderr, settled: true}
 }
 
-// govulncheckStream runs govulncheck over buildDir under env and returns its -json stream.
-func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]byte, error) {
+// govulncheckStream runs govulncheck over patterns in buildDir under env and returns its -json
+// stream.
+func govulncheckStream(ctx context.Context, buildDir string, env, patterns []string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := scan.Command(ctx, "-C", buildDir, "-json", "-mode=source", "-scan=symbol", "./...")
+	cmd := scan.Command(ctx, append([]string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}, patterns...)...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = env

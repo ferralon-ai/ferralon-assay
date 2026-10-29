@@ -1389,6 +1389,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"imp load_compiled", "import imp\n\ndef go(path):\n    return imp.load_compiled('plugin', path)\n", false, false, true},
 		{"extension file loader", "from importlib.machinery import ExtensionFileLoader\n\ndef load(path):\n    return ExtensionFileLoader('plugin', path)\n", false, false, true},
 		{"zipimport module as a value", "import zipimport\n\nZI = zipimport\n", false, false, true},
+		{"lookup inside an f-string substitution", "import sys\n\ndef go(m):\n    return f\"{sys.modules[m].run()}\"\n", false, false, true},
+		{"lookup inside a multi-line f-string substitution", "import sys\n\ndef go(m):\n    return f'''x\n{sys.modules[m]}'''\n", false, false, true},
 		{"loader imports alone", "import runpy\nimport zipimport\nfrom importlib.util import spec_from_file_location\nfrom importlib.machinery import SourceFileLoader as SFL\n", false, false, false},
 		{"def named like a loader", "def run_path(p):\n    return p\n", false, false, false},
 	}

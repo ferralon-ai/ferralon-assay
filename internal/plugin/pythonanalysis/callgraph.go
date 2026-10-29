@@ -328,25 +328,37 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 
 // rebound reports whether a package on a module path binds the name of the next segment, its
 // submodule, to anything but that submodule: by a value (bindsOtherwise), by a first-party
-// import of another path, or so through a first-party star import.
+// import of another path, or so through first-party star imports, followed transitively.
 func (p *program) rebound(segs []string) bool {
 	for j := 1; j < len(segs); j++ {
 		pkg, sub := strings.Join(segs[:j], "/"), segs[j]
 		self := pkg + "/" + sub
-		other := func(g *fileParse) bool {
-			return g.bindsOtherwise(sub) || slices.ContainsFunc(g.fpBinds[""][sub], func(b string) bool { return b != self })
-		}
 		for _, i := range p.byModule[pkg] {
 			g := &p.files[i]
-			if other(g) {
-				return true
-			}
-			for _, star := range g.starPaths {
-				for _, k := range p.byModule[star] {
-					if other(&p.files[k]) {
-						return true
+			// A relative import in the package, or in a module it star-imports, resolves
+			// against the package file's own module path.
+			own := g.module + "/" + sub
+			seen := map[string]bool{}
+			var binds func(h *fileParse) bool
+			binds = func(h *fileParse) bool {
+				if h.bindsOtherwise(sub) || slices.ContainsFunc(h.fpBinds[""][sub], func(b string) bool { return b != self && b != own }) {
+					return true
+				}
+				for _, star := range h.starPaths {
+					if seen[star] {
+						continue
+					}
+					seen[star] = true
+					for _, k := range p.byModule[star] {
+						if binds(&p.files[k]) {
+							return true
+						}
 					}
 				}
+				return false
+			}
+			if binds(g) {
+				return true
 			}
 		}
 	}

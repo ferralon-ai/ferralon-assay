@@ -413,6 +413,57 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			listed: true,
 		},
 		{
+			name: "src layout package importing its own submodule relatively",
+			files: map[string]string{
+				"pyproject.toml":      "[project]\nname = \"pkg\"\n",
+				"src/pkg/__init__.py": "from . import sub\n", "src/pkg/sub.py": "def f(x):\n    return x\n",
+				"src/app.py": "import pkg\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("src/app", nil, "index", 0),
+			want:   funcSCIP("src/pkg/sub", nil, "f", 1),
+		},
+		{
+			name: "src layout attribute path through a relatively imported submodule",
+			files: map[string]string{
+				"pyproject.toml":      "[project]\nname = \"pkg\"\n",
+				"src/pkg/__init__.py": "from . import sub\n", "src/pkg/sub/__init__.py": "from .impl import tools\n",
+				"src/pkg/sub/impl/__init__.py": "", "src/pkg/sub/impl/tools.py": "def f(x):\n    return x\n",
+				"src/app.py": "import pkg\n\ndef index():\n    return pkg.sub.tools.f(1)\n",
+			},
+			caller: funcSCIP("src/app", nil, "index", 0),
+			want:   funcSCIP("src/pkg/sub/impl/tools", nil, "f", 1),
+		},
+		{
+			name: "namespace package beside a same-named package importing its own submodule",
+			files: map[string]string{
+				"pkg/sub.py": "def f(x):\n    return x\n", "tests/pkg/__init__.py": "from . import sub\n", "tests/pkg/sub.py": "def h(x):\n    return x\n",
+				"app.py": "import pkg.sub\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/sub", nil, "f", 1),
+		},
+		{
+			name: "src layout submodule its package rebinds to another module",
+			files: map[string]string{
+				"pyproject.toml":      "[project]\nname = \"pkg\"\n",
+				"src/pkg/__init__.py": "from .other import sub\n", "src/pkg/other/__init__.py": "", "src/pkg/other/sub.py": "def f(x):\n    return x\n", "src/pkg/sub.py": "def f(x):\n    return x\n",
+				"src/app.py": "import pkg\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("src/app", nil, "index", 0),
+			absent: []string{funcSCIP("src/pkg/sub", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a submodule its package rebinds through two star imports",
+			files: map[string]string{
+				"pkg/__init__.py": "from . import sub\nfrom .a import *\n", "pkg/a.py": "from .b import *\n", "pkg/b.py": "sub = make()\n", "pkg/sub.py": "def f(x):\n    return x\n",
+				"app.py": "import pkg\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/sub", nil, "f", 1)},
+			listed: true,
+		},
+		{
 			name: "module path to a submodule its grandparent package rebinds",
 			files: map[string]string{
 				"a/__init__.py": "from . import b\n\nb = make()\n", "a/b/__init__.py": "", "a/b/c.py": "def f(x):\n    return x\n",

@@ -127,7 +127,18 @@ func (d *depCodeRun) err() error {
 // holds reports whether the dependency-code policy holds a cve-watch cursor. It reads the
 // acquisitions observed so far, so a caller consults it after the re-assessments.
 func (d *depCodeRun) holds() bool {
-	return d.err() != nil
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.holdsLocked()
+}
+
+// holdsLocked is holds for a caller that holds d.mu: a fallback observed, and fetch failures fail
+// the run.
+func (d *depCodeRun) holdsLocked() bool {
+	return d.failsRun && d.fell != nil
 }
 
 // fetchUpdate is the run's depfetch.json hook, or nil for a scan with no dependency acquisition to
@@ -184,7 +195,7 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 		}
 	}
 
-	policyHeld := run.Held && d.failsRun && d.fell != nil
+	policyHeld := run.Held && d.holdsLocked()
 	next := &statestore.DepFetch{}
 	if prior != nil {
 		next.Registries = maps.Clone(prior.Registries)

@@ -169,12 +169,24 @@ func (fs *fileScan) recordReads(st string, names []string) {
 	local, rest := readIdent(st)
 	rest = strings.TrimLeft(rest, " \t")
 	if len(names) != 1 || local != names[0] || !strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "==") {
-		for _, n := range names {
-			fs.opaque[n] = true
-		}
+		fs.markOpaque(names)
 		return
 	}
 	fs.reads[local] = append(fs.reads[local], identHeads([]rune(rest[1:]))...)
+}
+
+// markOpaque marks names as given a module-scope value the lane does not read: by a binding
+// recordReads does not read, or by a def that declares them global.
+func (fs *fileScan) markOpaque(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if fs.reads == nil {
+		fs.reads, fs.opaque = map[string][]string{}, map[string]bool{}
+	}
+	for _, n := range names {
+		fs.opaque[n] = true
+	}
 }
 
 // assignsNone reports whether st is "name = None" (or "name: T = None").
@@ -369,6 +381,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 		}
 		fs.countBinders("", st, global)
+		fs.markOpaque(global)
 		if scopes := funcScopes(); len(nonlocal) > 0 && len(scopes) > 1 {
 			for _, outer := range scopes[:len(scopes)-1] {
 				fs.countBinders(outer, st, nonlocal)

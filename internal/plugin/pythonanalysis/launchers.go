@@ -598,8 +598,11 @@ func (prog *program) definesFirstParty(f *fileParse, name string) bool {
 }
 
 // namesFirstParty reports whether name, read at f's module scope, may be first-party code:
-// f binds it so, or a first-party star import may.
+// f binds it so, or a first-party star import may, or it opens a lambda, whose body is f's.
 func (prog *program) namesFirstParty(f *fileParse, name string, seen map[string]bool) bool {
+	if name == "lambda" {
+		return true
+	}
 	paths, open := prog.starBinds(f, name)
 	return prog.bindsFirstParty(f, name, seen) || len(paths) > 0 || open
 }

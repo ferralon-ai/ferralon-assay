@@ -507,6 +507,53 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "Django view a lambda an assignment binds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom django.http import HttpResponse\ndash = lambda request: HttpResponse(\"ok\")\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view a lambda written in place",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom django.http import HttpResponse\n\nurlpatterns = [path(\"d/\", lambda request: HttpResponse(\"ok\"))]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view name a def's global write rebinds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom thirdparty import dash\nfrom site import views\n\ndef setup():\n    global dash\n    dash = views.dash\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view name a for loop binds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\nfor dash in [views.dash]:\n    pass\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django view names assignments bind to each other",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\na = b\nb = a\n\nurlpatterns = [path(\"d/\", a)]\n",
+			},
+		},
+		{
+			name: "Django view name a later star import rebinds over a builtin's value",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\ndash = dict()\nfrom site.views import *\n\nurlpatterns = [path(\"d/\", dash)]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+		},
+		{
 			name: "Django class-based view on a base a dependency's factory builds",
 			files: map[string]string{
 				"site/__init__.py": "",

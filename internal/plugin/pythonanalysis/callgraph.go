@@ -89,23 +89,26 @@ func (p *program) declsNamed(leaves []string) []funcDecl {
 	return out
 }
 
-// siteLeaves is the leaf names a call site may stand for. A name always stands for the
-// declarations under it. It stands for a first-party function an import binds to it under
-// another name only where the caller holds that binding (aliasBound): a bare call whose
-// name the caller's scopes bind by import, not shadowed by a parameter or local, or a call
-// through a name bound to a first-party module that re-exports the leaf. escape is the
-// wider set the escape scan uses: every alias the file binds the name to in any scope.
+// siteLeaves is the leaf names a call site may stand for. A name stands for the
+// declarations under it unless the scope that decides it binds it only by dependency import
+// (depOnly). It stands for a first-party function an import binds to it under another name
+// only where the caller holds that binding (aliasBound): a bare call whose name the caller's
+// scopes bind by import, not shadowed by a parameter or local, or a call through a name
+// bound to a first-party module that re-exports the leaf. escape is the wider set the escape
+// scan uses: every alias the file binds the name to in any scope.
 func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) {
 	name := cs.calleeName
 	if name == "" {
 		return nil, nil
 	}
-	edge = []string{name}
+	if !f.depOnly(cs) {
+		edge = []string{name}
+	}
 	if len(cs.calleeChain) <= 1 {
 		if paths, ok := f.aliasBound(name, cs.scopes); ok && !cs.inner {
 			edge = p.withAliases(edge, paths)
 		}
-		return edge, p.withAliases(edge, f.anyScopeBinds(name))
+		return edge, p.withAliases(p.withAliases([]string{name}, edge), f.anyScopeBinds(name))
 	}
 	head := cs.calleeChain[0]
 	mid := strings.Join(cs.calleeChain[1:len(cs.calleeChain)-1], "/")
@@ -124,7 +127,183 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 	if paths, ok := f.aliasBound(head, cs.scopes); ok && !cs.inner {
 		edge = p.withAliases(edge, via(paths))
 	}
-	return edge, p.withAliases(edge, via(f.anyScopeBinds(head)))
+	return edge, p.withAliases(p.withAliases([]string{name}, edge), via(f.anyScopeBinds(head)))
+}
+
+// deciding finds the scope that decides the name a site calls (a chain's head): the
+// innermost of the site's def scopes, then the module, that binds it at all. ok is false
+// when no binding the scanner sees decides it: a lambda or comprehension variable, a class
+// attribute, computed-name access or a module-scope star import may bind it, or nothing in
+// the file does.
+func (f *fileParse) deciding(cs callSite) (scope string, ok bool) {
+	if cs.inner || cs.shadowed || f.computed {
+		return "", false
+	}
+	head := cs.calleeName
+	if len(cs.calleeChain) > 1 {
+		head = cs.calleeChain[0]
+	}
+	for i := len(cs.scopes) - 1; i >= -1; i-- {
+		scope := ""
+		if i >= 0 {
+			scope = cs.scopes[i]
+		}
+		if scope == "" && len(f.stars) > 0 {
+			return "", false
+		}
+		if len(f.fpBinds[scope][head])+f.binders[scope][head]+f.depImports[scope][head] > 0 || f.defs[scope][head] {
+			return scope, true
+		}
+	}
+	return "", false
+}
+
+// depOnly reports whether the scope that decides a site's name binds it only by dependency
+// import. The call then runs dependency code, or a class member or a function handed over
+// as a value, which escape anyway, so no first-party declaration is named by the leaf
+// alone: `json.loads(x)` is not a call to a first-party loads.
+func (f *fileParse) depOnly(cs callSite) bool {
+	scope, ok := f.deciding(cs)
+	if !ok {
+		return false
+	}
+	head := cs.calleeName
+	if len(cs.calleeChain) > 1 {
+		head = cs.calleeChain[0]
+	}
+	return f.depImports[scope][head] > 0 && len(f.fpBinds[scope][head]) == 0 &&
+		f.binders[scope][head] == 0 && !f.defs[scope][head] && !f.depNamed[scope][head]
+}
+
+// siteDecls is the declarations a site's edge may name. Where the deciding scope binds the
+// name by first-party import, they are the functions the import path names (declsAt); a
+// chain's head names a module, so the path runs on through the chain to its leaf, and a
+// module on the way that binds the leaf by a class, an assignment or a dependency import
+// names nothing (declsAt's decided). Where the module binds a bare name by def, the
+// module-level defs are candidates beside any import of the name, unless a class or an
+// assignment of the name may replace them (ownDefs); a def inside a function body is never
+// one. Otherwise, or when a path finds no module binding the name, they are every
+// declaration under the leaves (declsNamed).
+func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDecl {
+	if len(leaves) == 0 {
+		return nil
+	}
+	scope, ok := f.deciding(cs)
+	if !ok {
+		return p.declsNamed(leaves)
+	}
+	var out []funcDecl
+	head, rest := cs.calleeName, ""
+	if len(cs.calleeChain) > 1 {
+		head, rest = cs.calleeChain[0], "/"+strings.Join(cs.calleeChain[1:], "/")
+	}
+	if paths, bound := f.aliasBound(head, cs.scopes); bound {
+		for _, path := range paths {
+			at, decided := p.declsAt(path + rest)
+			if !decided {
+				return nil
+			}
+			if len(at) == 0 {
+				return p.declsNamed(leaves)
+			}
+			out = appendDecls(out, at)
+		}
+	}
+	if len(cs.calleeChain) <= 1 && f.defs[scope][head] {
+		if scope == "" {
+			return appendDecls(out, f.ownDefs(head))
+		}
+		return p.declsNamed(leaves)
+	}
+	if len(out) == 0 {
+		return p.declsNamed(leaves)
+	}
+	return out
+}
+
+// ownDefs is the module-level defs of name in the file when the module scope binds the name
+// by no class and no assignment; an import of the name beside them is a further candidate
+// the caller adds. A def inside a function body is no candidate.
+func (f *fileParse) ownDefs(name string) []funcDecl {
+	if !f.topFuncs[name] || f.binders[""][name] > 0 {
+		return nil
+	}
+	var out []funcDecl
+	for _, fd := range f.decls {
+		if fd.name == name && len(fd.enclosing) == 0 && !fd.inDef {
+			out = append(out, fd)
+		}
+	}
+	return out
+}
+
+// topDefs is the module-level defs of name in the file when the module scope binds the name
+// by def alone: not by a class, an import, an assignment or another value binding (a later
+// "f = other.f" replaces the def). A def inside a function body binds the name there, not
+// at module level, and is no candidate.
+func (f *fileParse) topDefs(scope, name string) []funcDecl {
+	if scope != "" || f.depImports[""][name] > 0 || len(f.fpBinds[""][name]) > 0 {
+		return nil
+	}
+	return f.ownDefs(name)
+}
+
+// declsAt is the top-level functions an import path ("pkg/m/f") names: the defs of f at
+// module level in the modules pkg/m names (topDefs), and what each such module's own
+// first-party imports and star imports bind f to, followed in turn. Each path is visited
+// once, so an import cycle ends. decided is false when a module on the way binds f by
+// anything but defs at module level, first-party imports and star imports (bindsOtherwise):
+// what f holds there is not a declaration the walk can name.
+func (p *program) declsAt(path string) (decls []funcDecl, decided bool) {
+	visited := map[string]bool{}
+	var out []funcDecl
+	decided = true
+	var walk func(string)
+	walk = func(path string) {
+		if visited[path] {
+			return
+		}
+		visited[path] = true
+		mod, leaf := parentModule(path), path[strings.LastIndexByte(path, '/')+1:]
+		if mod == "" {
+			return
+		}
+		for _, i := range p.byModule[mod] {
+			g := &p.files[i]
+			if g.bindsOtherwise(leaf) {
+				decided = false
+				return
+			}
+			out = appendDecls(out, g.topDefs("", leaf))
+			for _, next := range g.fpBinds[""][leaf] {
+				walk(next)
+			}
+			for _, star := range g.starPaths {
+				walk(star + "/" + leaf)
+			}
+		}
+	}
+	walk(path)
+	return out, decided
+}
+
+// bindsOtherwise reports whether the module scope binds name by something besides defs
+// topDefs names, first-party imports and star imports: an assignment, a dependency import, a
+// class, or a def beside an import of the name.
+func (f *fileParse) bindsOtherwise(name string) bool {
+	return f.binders[""][name] > 0 || f.depImports[""][name] > 0 ||
+		(f.defs[""][name] && len(f.topDefs("", name)) == 0)
+}
+
+// appendDecls adds each of add not already in out.
+func appendDecls(out, add []funcDecl) []funcDecl {
+	for _, fd := range add {
+		s := fd.scip()
+		if !slices.ContainsFunc(out, func(o funcDecl) bool { return o.scip() == s }) {
+			out = append(out, fd)
+		}
+	}
+	return out
 }
 
 // withAliases adds the leaf names each import path may stand for to leaves.
@@ -185,6 +364,7 @@ type funcDecl struct {
 	name      string
 	arity     int
 	params    paramShape // the argument counts a call may pass
+	inDef     bool
 }
 
 func (d funcDecl) scip() string {
@@ -231,6 +411,11 @@ type fileParse struct {
 	// stars are the modules the file star-imports; starPaths the first-party ones' paths.
 	stars     []string
 	starPaths []string
+	// topFuncs holds the names the file defines by a module-level def and no class of the
+	// same name; depNamed the dependency imports, by scope, whose path a first-party module
+	// path contains (a first-party package the distribution scan does not see as one).
+	topFuncs map[string]bool
+	depNamed map[string]map[string]bool
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -372,16 +557,26 @@ func loadProgram(buildDir string) (*program, error) {
 
 		var fds []funcDecl
 		topNames := map[string]bool{}
+		topFuncs, classNames := map[string]bool{}, map[string]bool{}
 		for _, d := range decls {
 			if len(d.enclosing) == 0 {
 				topNames[d.name] = true
 			}
 			if d.kind != kindFunc {
+				if len(d.enclosing) == 0 {
+					classNames[d.name] = true
+				}
 				continue
 			}
-			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity, params: d.params}
+			if len(d.enclosing) == 0 && !d.inDef {
+				topFuncs[d.name] = true
+			}
+			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity, params: d.params, inDef: d.inDef}
 			prog.funcsByName[d.name] = append(prog.funcsByName[d.name], fd)
 			fds = append(fds, fd)
+		}
+		for name := range classNames {
+			delete(topFuncs, name)
 		}
 		for name := range scan.locals[""] {
 			topNames[name] = true
@@ -411,6 +606,7 @@ func loadProgram(buildDir string) (*program, error) {
 			loadRoots: roots,
 			decls:     fds,
 			topNames:  topNames,
+			topFuncs:  topFuncs,
 			decorated: scan.decorated,
 			wrapped:   scan.wrapped,
 			stars:     slices.Sorted(maps.Keys(stars)),
@@ -499,6 +695,9 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 					f.depImports[b.scope] = map[string]int{}
 				}
 				f.depImports[b.scope][b.local]++
+				if prog.named[strings.ReplaceAll(b.target, ".", "/")] && !prog.dists.knownTop(b.target) {
+					addNames(&f.depNamed, b.scope, []string{b.local})
+				}
 			}
 			if !b.guarded {
 				addNames(&f.plain, b.scope, []string{b.local})
@@ -560,11 +759,15 @@ func (f fileParse) callerSCIP(cs callSite) string {
 
 // CallGraph builds the source-level call graph for the Python module at req.BuildDir. It
 // is a pure-Go, source-only lexical graph: caller and callee are both declared functions,
-// and a call site is connected to its callee ONLY when the callee's (simple name, arity)
-// resolves to EXACTLY ONE declared function in the program. When a callee is ambiguous (a
-// name declared by multiple functions the lexer cannot scope-resolve) or unknown (a
-// library/imported/builtin function with no source declaration), NO edge is fabricated and
-// the partiality carries dynamic_dispatch — the inv.5 honesty boundary.
+// and a call site is connected to its callee ONLY when its candidates hold EXACTLY ONE
+// declared function that accepts the call's arguments. A name the deciding scope binds by
+// first-party import names the functions that import path reaches, through its module's
+// re-exports and star imports (`pkg.f(1)` after `import pkg` is pkg's f, never another
+// module's); a bare name it binds by def names that scope's def; otherwise the candidates
+// are every function of the name in the program. When a callee is ambiguous (a name declared by multiple
+// functions the lexer cannot scope-resolve) or unknown (a library/imported/builtin function
+// with no source declaration), NO edge is fabricated and the partiality carries
+// dynamic_dispatch — the inv.5 honesty boundary.
 //
 // Two node kinds extend the declared functions. A call through an import binding
 // (`jwt.decode(t)` after `import jwt`, `Environment().from_string(x)` after `from jinja2
@@ -580,9 +783,11 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // sits under a non-route decorator, or lives in a file that reaches names by computed
 // access. A name an import binds to a first-party function under another name resolves to
 // that function, through any chain of re-exports, but only at a call site whose file holds
-// the binding in scope. A parameter, local or dependency import that is the deciding
-// scope's only binding of the name, a lambda parameter or comprehension variable in the
-// same statement, or a dependency receiver keeps the edges the name alone gives.
+// the binding in scope. A parameter or local that is the deciding scope's only binding of
+// the name, a lambda parameter or comprehension variable in the same statement, or an
+// instance receiver keeps the edges the name alone gives. A name the deciding scope binds
+// only by dependency import names no first-party function: `json.loads(x)` has its boundary
+// edge and none to a first-party loads.
 //
 // The graph is ALWAYS declared Partial(dynamic_dispatch): a lexical Python scanner cannot
 // see dynamic dispatch, getattr, decorator-rewriting, or monkeypatched edges, so it is
@@ -642,7 +847,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
-			callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity, cs.calleeStar)
+			callee, ok := resolveCallee(prog.siteDecls(f, cs, edgeLeaves), cs.calleeArity, cs.calleeStar)
 			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true

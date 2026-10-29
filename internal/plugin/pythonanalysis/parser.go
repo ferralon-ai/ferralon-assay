@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -21,6 +22,7 @@ type decl struct {
 	enclosing []string // outer→inner class names; empty for a module-level declaration
 	arity     int      // parameter count (kindFunc only; includes self/cls)
 	params    paramShape
+	inDef     bool // declared inside a def body, where enclosing omits the def
 }
 
 // parseResult holds the module-relative path and declarations parsed from one source
@@ -258,6 +260,9 @@ func parseDecls(lines []logicalLine) []decl {
 	var stack []scope
 	var decls []decl
 
+	inDef := func() bool {
+		return slices.ContainsFunc(stack, func(s scope) bool { return s.className == "" })
+	}
 	classChain := func() []string {
 		var out []string
 		for _, s := range stack {
@@ -289,7 +294,7 @@ func parseDecls(lines []logicalLine) []decl {
 			if !ok {
 				continue
 			}
-			decls = append(decls, decl{kind: kindClass, name: name, enclosing: classChain()})
+			decls = append(decls, decl{kind: kindClass, name: name, enclosing: classChain(), inDef: inDef()})
 			stack = append(stack, scope{indent: ll.indent, className: name})
 		case "def":
 			name, arity, ok := parseDefSignature(rest)
@@ -297,7 +302,7 @@ func parseDecls(lines []logicalLine) []decl {
 				continue
 			}
 			_, after := readIdent(strings.TrimSpace(rest))
-			decls = append(decls, decl{kind: kindFunc, name: name, enclosing: classChain(), arity: arity, params: paramShapeOf(strings.TrimSpace(after))})
+			decls = append(decls, decl{kind: kindFunc, name: name, enclosing: classChain(), arity: arity, params: paramShapeOf(strings.TrimSpace(after)), inDef: inDef()})
 			stack = append(stack, scope{indent: ll.indent, className: ""})
 		}
 	}

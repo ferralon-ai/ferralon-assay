@@ -191,6 +191,358 @@ def process(x):
 	}
 }
 
+// TestCallGraph_ModuleQualifiedResolution: a name the deciding scope binds by first-party
+// import resolves to the function its import path names, whatever else shares the name; a
+// bare name its scope binds by def resolves to that def; a name bound only by dependency
+// import names no first-party function. A same-named function the edge does not name still
+// escapes.
+func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
+	impl, other := funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("other", nil, "f", 1)
+	lib := map[string]string{
+		"pkg/__init__.py": "from .impl import f\n",
+		"pkg/impl.py":     "def f(x):\n    return x\n",
+		"other.py":        "def f(x):\n    return x\n",
+	}
+	with := func(extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range lib {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	cases := []struct {
+		name   string
+		files  map[string]string
+		caller string
+		want   string   // the one first-party edge from caller, "" for none
+		absent []string // first-party callees that must get no edge from caller
+		escape []string // must escape
+		listed bool     // the site is in Unresolved
+	}{
+		{
+			name:   "package re-export",
+			files:  with(map[string]string{"app.py": "import pkg\n\ndef index():\n    return pkg.f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other}, escape: []string{other},
+		},
+		{
+			name:   "module through package chain",
+			files:  with(map[string]string{"app.py": "import pkg\n\ndef index():\n    return pkg.impl.f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other}, escape: []string{other},
+		},
+		{
+			name:   "from-imported module",
+			files:  with(map[string]string{"app.py": "from pkg import impl\n\ndef index():\n    return impl.f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other},
+		},
+		{
+			name:   "from-imported function",
+			files:  with(map[string]string{"app.py": "from pkg.impl import f\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other},
+		},
+		{
+			name: "renamed re-export",
+			files: with(map[string]string{
+				"pkg/__init__.py": "from .impl import g as f\n",
+				"pkg/impl.py":     "def g(x):\n    return x\n",
+				"app.py":          "import pkg\n\ndef index():\n    return pkg.f(1)\n",
+			}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/impl", nil, "g", 1), absent: []string{other},
+		},
+		{
+			name: "star re-export",
+			files: with(map[string]string{
+				"pkg/__init__.py": "from .impl import *\n",
+				"app.py":          "import pkg\n\ndef index():\n    return pkg.f(1)\n",
+			}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other},
+		},
+		{
+			name:   "same-module def",
+			files:  with(map[string]string{"app.py": "def f(x):\n    return x\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("app", nil, "f", 1), absent: []string{impl, other}, escape: []string{impl, other},
+		},
+		{
+			name:   "def beside an import of the name",
+			files:  with(map[string]string{"app.py": "from pkg.impl import f\n\nif X:\n    def f(x):\n        return x\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{impl, other, funcSCIP("app", nil, "f", 1)},
+			escape: []string{impl, other, funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name:   "dependency module receiver",
+			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "import json\n\ndef run(x):\n    return json.loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			escape: []string{funcSCIP("util", nil, "loads", 1)},
+			listed: true,
+		},
+		{
+			name:   "dependency from-import",
+			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "from json import loads\n\ndef run(x):\n    return loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			escape: []string{funcSCIP("util", nil, "loads", 1)},
+			listed: true,
+		},
+		{
+			name: "dependency import with a first-party fallback",
+			files: map[string]string{
+				"pkg/compat.py": "def loads(s):\n    return s\n",
+				"pkg/app.py":    "try:\n    import ujson as json\nexcept ImportError:\n    from . import compat as json\n\ndef run(x):\n    return json.loads(x)\n",
+			},
+			caller: funcSCIP("pkg/app", nil, "run", 1),
+			want:   funcSCIP("pkg/compat", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name: "re-export cycle",
+			files: map[string]string{
+				"a.py":   "from b import f\n",
+				"b.py":   "from a import f\n",
+				"c.py":   "def f(x):\n    return x\n",
+				"app.py": "import a\n\ndef index():\n    return a.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("c", nil, "f", 1),
+		},
+		{
+			name: "first-party package below a directory the distribution scan reads as the top",
+			files: map[string]string{
+				"backend/app/util.py":  "def loads(s):\n    return s\n",
+				"backend/app/views.py": "from app import util\n\ndef run(x):\n    return util.loads(x)\n",
+			},
+			caller: funcSCIP("backend/app/views", nil, "run", 1),
+			want:   funcSCIP("backend/app/util", nil, "loads", 1),
+		},
+		{
+			name:   "def beside a dependency import of the name",
+			files:  map[string]string{"app.py": "from json import loads\n\ndef loads(s):\n    return s\n\ndef run(x):\n    return loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			want:   funcSCIP("app", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name: "dependency import beside a module star import",
+			files: map[string]string{
+				"pkg/impl.py": "def loads(s):\n    return s\n",
+				"pkg/app.py":  "from json import loads\nfrom .impl import *\n\ndef run(x):\n    return loads(x)\n",
+			},
+			caller: funcSCIP("pkg/app", nil, "run", 1),
+			want:   funcSCIP("pkg/impl", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name:   "dependency import the module rebinds",
+			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "import json\njson = make()\n\ndef run(x):\n    return json.loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			want:   funcSCIP("util", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name: "nested def beside a module-level class of the name",
+			files: map[string]string{
+				"app.py":   "def make():\n    def Loader(x):\n        return x\n    return Loader\n\nclass Loader:\n    def __init__(self, x):\n        self.x = x\n\ndef index():\n    return Loader(1)\n",
+				"other.py": "def Loader(x):\n    return x\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "Loader", 1), funcSCIP("other", nil, "Loader", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a class beside a nested def of the name",
+			files: with(map[string]string{
+				"pkg/impl.py": "class f:\n    def __init__(self, x):\n        self.x = x\n\ndef helper():\n    def f(x):\n        return x\n    return f\n",
+				"app.py":      "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			}),
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{impl, other},
+			listed: true,
+		},
+		{
+			name:   "def the module rebinds to another module's function",
+			files:  with(map[string]string{"app.py": "import other\n\ndef f(x):\n    return x\n\nf = other.f\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			escape: []string{other},
+			listed: true,
+		},
+		{
+			name:   "nested def beside a module-level class, the only def of the name",
+			files:  map[string]string{"app.py": "def make():\n    def Loader(x):\n        return x\n    return Loader\n\nclass Loader:\n    def __init__(self, x):\n        self.x = x\n\ndef index():\n    return Loader(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "Loader", 1)},
+			listed: true,
+		},
+		{
+			name:   "def a later class of the name replaces",
+			files:  map[string]string{"app.py": "def f(x):\n    return x\n\nclass f:\n    def __init__(self, x):\n        self.x = x\n\ndef index():\n    return f(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name:   "def the module rebinds through a wrapper, the only def of the name",
+			files:  map[string]string{"app.py": "def wrap(g):\n    return g\n\ndef f(x):\n    return x\n\nf = wrap(f)\n\ndef index():\n    return f(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name:   "module-level def whose arity misses beside a nested def that fits",
+			files:  map[string]string{"app.py": "def f(x, y, z):\n    return x\n\ndef make():\n    def f(x):\n        return x\n    return f\n\ndef index():\n    return f(1)\n"},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a name the module rebinds over a star import",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"pkg/x.py":        "def f(x):\n    return x\n",
+				"pkg/impl.py":     "from .x import *\n\ndef wrap(g):\n    return g\n\ndef f(x):\n    return x\n\nf = wrap(f)\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/x", nil, "f", 1), funcSCIP("pkg/impl", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a class beside a def of its name elsewhere",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"other.py":        "def f(x):\n    return x\n",
+				"pkg/impl.py":     "class f:\n    def __init__(self, x):\n        pass\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("other", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a def the module rebinds through a global",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"other.py":        "def g(x):\n    return x\n",
+				"pkg/impl.py":     "import other\n\ndef f(x):\n    return x\n\ndef init():\n    global f\n    f = other.g\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("other", nil, "g", 1)},
+			listed: true,
+		},
+		{
+			name: "standard-library module beside a first-party module of its name",
+			files: map[string]string{
+				"util.py": "def loads(s):\n    return s\n", "app/__init__.py": "", "app/json.py": "X = 1\n",
+				"run.py": "import json\n\ndef run(x):\n    return json.loads(x)\n",
+			},
+			caller: funcSCIP("run", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			escape: []string{funcSCIP("util", nil, "loads", 1)},
+			listed: true,
+		},
+		{
+			name: "declared dependency beside a first-party module of its name",
+			files: map[string]string{
+				"pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"redis\"]\n",
+				"util.py":        "def get(k):\n    return k\n", "app/__init__.py": "", "app/redis.py": "X = 1\n",
+				"run.py": "import redis\n\ndef run(k):\n    return redis.get(k)\n",
+			},
+			caller: funcSCIP("run", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "get", 1)},
+			escape: []string{funcSCIP("util", nil, "get", 1)},
+			listed: true,
+		},
+		{
+			name: "curated dependency beside a first-party module of its name",
+			files: map[string]string{
+				"util.py": "def safe_load(s):\n    return s\n", "app/__init__.py": "", "app/yaml.py": "X = 1\n",
+				"run.py": "import yaml\n\ndef run(s):\n    return yaml.safe_load(s)\n",
+			},
+			caller: funcSCIP("run", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "safe_load", 1)},
+			escape: []string{funcSCIP("util", nil, "safe_load", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a def the module imports over its own",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"pkg/x.py":        "def f(x):\n    return x\n",
+				"pkg/impl.py":     "from .x import f\n\ndef f(x, y, z):\n    return x\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/x", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a name the module assigns",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"lib.py":          "def f(x):\n    return x\n",
+				"pkg/impl.py":     "import lib\n\nf = lib.f\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("lib", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a name the module imports from a dependency",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"lib.py":          "def dumps(x):\n    return x\n",
+				"pkg/impl.py":     "from json import dumps\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.dumps(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("lib", nil, "dumps", 1)},
+			listed: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := mustCallGraph(t, tc.files)
+			var got []string
+			for _, e := range res.Edges {
+				if e.Caller.SCIP == tc.caller && !strings.HasPrefix(e.Callee.SCIP, "pypi:") {
+					got = append(got, e.Callee.SCIP)
+				}
+			}
+			if tc.want != "" && !slices.Equal(got, []string{tc.want}) {
+				t.Errorf("edges from caller = %v, want exactly %s", got, tc.want)
+			}
+			for _, a := range tc.absent {
+				if slices.Contains(got, a) {
+					t.Errorf("unexpected edge to %s; edges %v", a, got)
+				}
+			}
+			esc := symbolSet(res.Escaped)
+			for _, e := range tc.escape {
+				if !esc[e] {
+					t.Errorf("%s must escape; escaped %v", e, res.Escaped)
+				}
+			}
+			listed := slices.ContainsFunc(res.Unresolved, func(u plugin.UnresolvedCall) bool { return u.Caller.SCIP == tc.caller })
+			if listed != tc.listed {
+				t.Errorf("site listed = %v, want %v; unresolved %+v", listed, tc.listed, res.Unresolved)
+			}
+		})
+	}
+}
+
 func TestCallGraph_UnknownCalleeIsPartialNoEdge(t *testing.T) {
 	src := `
 def run():

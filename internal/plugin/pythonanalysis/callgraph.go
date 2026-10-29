@@ -211,6 +211,10 @@ type fileParse struct {
 	fpBinds   map[string]map[string][]string
 	depBinds  map[string]map[string]bool
 	locals    map[string]map[string]bool
+	// storedNames and storedAny are what stores through a module object may rebind in the
+	// file's namespace (markModuleStores): those names, or any name.
+	storedNames map[string]bool
+	storedAny   bool
 	// plain holds the names a scope rebinds on every path: parameters, straight-line
 	// assignments and straight-line dependency imports or instances.
 	plain map[string]map[string]bool
@@ -260,7 +264,7 @@ func (f *fileParse) aliasBound(name string, scopes []string) ([]string, bool) {
 // complete; nor is a call through a lambda or comprehension variable, nor any site in a file
 // with computed-name access, which may rebind any name (globals()["g"] = ...). A name the
 // module scope decides is never complete in a file with a star import, which may bind any
-// name.
+// name, nor when a store through a module object may rebind it (markModuleStores).
 func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
 	if cs.inner || cs.shadowed || f.computed {
 		return false
@@ -279,7 +283,7 @@ func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
 		if f.defs[scope][head] {
 			def = 1
 		}
-		if scope == "" && len(f.stars) > 0 {
+		if scope == "" && (len(f.stars) > 0 || f.storedAny || f.storedNames[head]) {
 			return false
 		}
 		if fp+vals+dep+def == 0 {
@@ -596,6 +600,7 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 
 // callGraphOf builds the call graph of an already-loaded program.
 func callGraphOf(prog *program) plugin.CallGraphResult {
+	prog.markModuleStores()
 	seen := map[plugin.CallEdge]bool{}
 	var edges []plugin.CallEdge
 	rootsSet := map[string]bool{}
@@ -652,7 +657,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			// single edge, so never fabricate one (inv.5). A site whose edge is not provably
 			// all it reaches is listed too. Listed with no Targets, it may reach any escaped
 			// frame.
-			if !ok || wrapped[callee] || !f.siteComplete(cs, len(provides) > 0) {
+			if !ok || wrapped[callee] || !f.siteComplete(cs, len(provides) > 0) || prog.storedThrough(f, cs) {
 				u := plugin.UnresolvedCall{
 					Caller: sym(caller),
 					Callee: cs.calleeWritten,

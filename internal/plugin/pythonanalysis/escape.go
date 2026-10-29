@@ -52,6 +52,11 @@ type valueRefs struct {
 	// chains are dotted runs used whole as values ("handlers", "pkg.handlers"): a module
 	// used this way hands every function in it over.
 	chains map[string]bool
+	// stores are dotted runs a statement assigns to ("pkg.a.g = h", "for me.g in hs"): a
+	// store into the namespace of the module the run's prefix names. exposed are the dotted
+	// runs whose namespace a __dict__ or __setattr__ hands over ("me.__dict__.update(d)").
+	stores  map[string]bool
+	exposed map[string]bool
 	// computed records computed-name access anywhere in the file.
 	computed bool
 	// evaluated records eval/exec: the evaluated code's call sites are never seen.
@@ -62,7 +67,7 @@ type valueRefs struct {
 }
 
 func newValueRefs() valueRefs {
-	return valueRefs{names: map[string]bool{}, chains: map[string]bool{}}
+	return valueRefs{names: map[string]bool{}, chains: map[string]bool{}, stores: map[string]bool{}, exposed: map[string]bool{}}
 }
 
 // computedNameCalls reach names by computed access when used unqualified.
@@ -108,6 +113,9 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 		prev := prevSignificantRune(r, start)
 		attr := prev >= 0 && r[prev] == '.'
 		for k, seg := range segs {
+			if k > 0 && !attr && (seg == "__dict__" || seg == "__setattr__") {
+				vr.exposed[strings.Join(segs[:k], ".")] = true
+			}
 			switch {
 			case computedNameAttrs[seg]:
 				vr.computed = true
@@ -123,6 +131,9 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 		assigned := p < n && r[p] == '=' && !(p+1 < n && r[p+1] == '=')
 		param := params && len(segs) == 1 && (prev < 0 || strings.ContainsRune("(,*", r[prev])) &&
 			(p >= n || strings.ContainsRune(",)=:", r[p]))
+		if len(segs) > 1 && !attr && !called && !(p < n && r[p] == '[') && assignTarget(r, start, pos) {
+			vr.stores[strings.Join(segs, ".")] = true
+		}
 		if allValues || !(called || assigned || param) {
 			vr.names[segs[len(segs)-1]] = true
 			if !attr {
@@ -131,6 +142,58 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 		}
 		i = pos
 	}
+}
+
+// assignTarget reports whether the expression running from r[start] to r[end] may be a
+// target the statement assigns to: an assignment, augmented assignment or annotated
+// assignment follows it outside brackets, or it is in the target list of a for or an as.
+func assignTarget(r []rune, start, end int) bool {
+	depth := 0
+	for k := 0; k < len(r); k++ {
+		switch r[k] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '=':
+			if k < end || depth > 0 || k+1 < len(r) && r[k+1] == '=' {
+				continue
+			}
+			if k == 0 {
+				return true
+			}
+			switch r[k-1] {
+			case '=', '!':
+				continue
+			case '<', '>':
+				if k < 2 || r[k-2] != r[k-1] {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	for j := start - 1; j >= 0; {
+		switch c := r[j]; {
+		case strings.ContainsRune(" \t,([*.", c):
+			j--
+		case isIdentPart(c):
+			k := j
+			for k >= 0 && isIdentPart(r[k]) {
+				k--
+			}
+			switch string(r[k+1 : j+1]) {
+			case "for", "as":
+				return true
+			case "in":
+				return false
+			}
+			j = k
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // scanFStrings records the names used inside the substitutions of every f-string and

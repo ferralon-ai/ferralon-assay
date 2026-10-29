@@ -388,6 +388,8 @@ func TestGoflagsBlock(t *testing.T) {
 		{"--", true},
 		{"-=x", true},
 		{"trimpath", true},
+		{"-tags prod", true},
+		{"-trimpath x", true},
 		{"'-trimpath", true},
 		{"\"-trimpath", true},
 	}

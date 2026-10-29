@@ -6,14 +6,17 @@ import "strings"
 // may rebind in its namespace: an assignment to an attribute of the module ("import pkg.a;
 // pkg.a.g = h", "import pkg.a as me; me.g = h") binds that name, and a module handed over
 // whole (passed or stored as a value, named by a literal dynamic import or sys.modules
-// lookup, or its __dict__ or __setattr__ reached) may have any name rebound. Stores in test
-// code are left out, as escape leaves test code out.
+// lookup, or its __dict__ or __setattr__ reached) may have any name rebound, and so may every
+// module reachable from it as an attribute: its submodules and the modules it binds by a
+// first-party import, transitively. Stores in test code are left out, as escape leaves test
+// code out.
 func (prog *program) markModuleStores() {
+	var exposed []int
 	mark := func(path, name string) {
 		for _, i := range prog.byModule[path] {
 			g := &prog.files[i]
 			if name == "" {
-				g.storedAny = true
+				exposed = append(exposed, i)
 				continue
 			}
 			if g.storedNames == nil {
@@ -46,6 +49,25 @@ func (prog *program) markModuleStores() {
 				for _, path := range prog.modulesAt(base, segs[1:len(segs)-1]) {
 					mark(path, segs[len(segs)-1])
 				}
+			}
+		}
+	}
+	for len(exposed) > 0 {
+		i := exposed[len(exposed)-1]
+		exposed = exposed[:len(exposed)-1]
+		g := &prog.files[i]
+		if g.storedAny {
+			continue
+		}
+		g.storedAny = true
+		for j := range prog.files {
+			if strings.HasPrefix(prog.files[j].module, g.module+"/") {
+				exposed = append(exposed, j)
+			}
+		}
+		for _, paths := range g.fpBinds[""] {
+			for _, p := range paths {
+				exposed = append(exposed, prog.byModule[p]...)
 			}
 		}
 	}

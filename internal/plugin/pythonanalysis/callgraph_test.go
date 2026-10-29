@@ -191,6 +191,161 @@ def process(x):
 	}
 }
 
+// TestCallGraph_ModuleQualifiedResolution: a name the deciding scope binds by first-party
+// import resolves to the function its import path names, whatever else shares the name; a
+// bare name its scope binds by def resolves to that def; a name bound only by dependency
+// import names no first-party function. A same-named function the edge does not name still
+// escapes.
+func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
+	impl, other := funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("other", nil, "f", 1)
+	lib := map[string]string{
+		"pkg/__init__.py": "from .impl import f\n",
+		"pkg/impl.py":     "def f(x):\n    return x\n",
+		"other.py":        "def f(x):\n    return x\n",
+	}
+	with := func(extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range lib {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	cases := []struct {
+		name   string
+		files  map[string]string
+		caller string
+		want   string   // the one first-party edge from caller, "" for none
+		absent []string // first-party callees that must get no edge from caller
+		escape []string // must escape
+		listed bool     // the site is in Unresolved
+	}{
+		{
+			name:   "package re-export",
+			files:  with(map[string]string{"app.py": "import pkg\n\ndef index():\n    return pkg.f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other}, escape: []string{other},
+		},
+		{
+			name:   "module through package chain",
+			files:  with(map[string]string{"app.py": "import pkg\n\ndef index():\n    return pkg.impl.f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other}, escape: []string{other},
+		},
+		{
+			name:   "from-imported module",
+			files:  with(map[string]string{"app.py": "from pkg import impl\n\ndef index():\n    return impl.f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other},
+		},
+		{
+			name:   "from-imported function",
+			files:  with(map[string]string{"app.py": "from pkg.impl import f\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other},
+		},
+		{
+			name: "renamed re-export",
+			files: with(map[string]string{
+				"pkg/__init__.py": "from .impl import g as f\n",
+				"pkg/impl.py":     "def g(x):\n    return x\n",
+				"app.py":          "import pkg\n\ndef index():\n    return pkg.f(1)\n",
+			}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/impl", nil, "g", 1), absent: []string{other},
+		},
+		{
+			name: "star re-export",
+			files: with(map[string]string{
+				"pkg/__init__.py": "from .impl import *\n",
+				"app.py":          "import pkg\n\ndef index():\n    return pkg.f(1)\n",
+			}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   impl, absent: []string{other},
+		},
+		{
+			name:   "same-module def",
+			files:  with(map[string]string{"app.py": "def f(x):\n    return x\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("app", nil, "f", 1), absent: []string{impl, other}, escape: []string{impl, other},
+		},
+		{
+			name:   "def beside an import of the name",
+			files:  with(map[string]string{"app.py": "from pkg.impl import f\n\nif X:\n    def f(x):\n        return x\n\ndef index():\n    return f(1)\n"}),
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{impl, other, funcSCIP("app", nil, "f", 1)},
+			escape: []string{impl, other, funcSCIP("app", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name:   "dependency module receiver",
+			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "import json\n\ndef run(x):\n    return json.loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			listed: true,
+		},
+		{
+			name:   "dependency from-import",
+			files:  map[string]string{"util.py": "def loads(s):\n    return s\n", "app.py": "from json import loads\n\ndef run(x):\n    return loads(x)\n"},
+			caller: funcSCIP("app", nil, "run", 1),
+			absent: []string{funcSCIP("util", nil, "loads", 1)},
+			listed: true,
+		},
+		{
+			name: "dependency import with a first-party fallback",
+			files: map[string]string{
+				"pkg/compat.py": "def loads(s):\n    return s\n",
+				"pkg/app.py":    "try:\n    import ujson as json\nexcept ImportError:\n    from . import compat as json\n\ndef run(x):\n    return json.loads(x)\n",
+			},
+			caller: funcSCIP("pkg/app", nil, "run", 1),
+			want:   funcSCIP("pkg/compat", nil, "loads", 1),
+			listed: true,
+		},
+		{
+			name: "re-export cycle",
+			files: map[string]string{
+				"a.py":   "from b import f\n",
+				"b.py":   "from a import f\n",
+				"c.py":   "def f(x):\n    return x\n",
+				"app.py": "import a\n\ndef index():\n    return a.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("c", nil, "f", 1),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := mustCallGraph(t, tc.files)
+			var got []string
+			for _, e := range res.Edges {
+				if e.Caller.SCIP == tc.caller && !strings.HasPrefix(e.Callee.SCIP, "pypi:") {
+					got = append(got, e.Callee.SCIP)
+				}
+			}
+			if tc.want != "" && !slices.Equal(got, []string{tc.want}) {
+				t.Errorf("edges from caller = %v, want exactly %s", got, tc.want)
+			}
+			for _, a := range tc.absent {
+				if slices.Contains(got, a) {
+					t.Errorf("unexpected edge to %s; edges %v", a, got)
+				}
+			}
+			esc := symbolSet(res.Escaped)
+			for _, e := range tc.escape {
+				if !esc[e] {
+					t.Errorf("%s must escape; escaped %v", e, res.Escaped)
+				}
+			}
+			listed := slices.ContainsFunc(res.Unresolved, func(u plugin.UnresolvedCall) bool { return u.Caller.SCIP == tc.caller })
+			if listed != tc.listed {
+				t.Errorf("site listed = %v, want %v; unresolved %+v", listed, tc.listed, res.Unresolved)
+			}
+		})
+	}
+}
+
 func TestCallGraph_UnknownCalleeIsPartialNoEdge(t *testing.T) {
 	src := `
 def run():

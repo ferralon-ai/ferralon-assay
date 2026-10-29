@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/artifactcache"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
@@ -30,15 +31,145 @@ const (
 
 var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// fetchFailureFailsRun is the policy for a JS scan whose dependency fetch failed (a registry
-// error, a refused or missing credential, the deadline, or a partial fetch). Either way the scan
-// reads no dependency code, exactly as with -dependency-code=off, and its Report names the cause.
-//
-// THIS IS THE SINGLE LINE THAT DECIDES WHETHER THAT RUN FAILS. false: it exits as the off run
-// would. true: it exits non-zero once its Report is published, and a cve-watch earnest run holds
-// its cursor, as a JVM scan without its build graph does. The fetch happens during the
-// re-assessments, so cve-watch decides that hold after them, through CVEWatchRequest.Hold.
-const fetchFailureFailsRun = false
+// The dependency-code policy decides, per registry, what a failed fetch does to the run. A
+// registry that refused a token the run sent fails the run, on every run kind. A registry that
+// served this build some packages and failed others is read for what it served, and the JS lane
+// withholds each package it did not. Otherwise the scan reads no dependency code, exactly as with
+// -dependency-code=off, and its Report names the cause; on a cve-watch earnest run a registry
+// that is stuck rather than misconfigured also holds the cursor, and a hold that has lasted
+// stallRuns earnest runs and stallAge fails the run.
+const (
+	stallRuns = 3
+	stallAge  = 24 * time.Hour
+)
+
+// Run-failing dependency fetch kinds, as depFetchError.Kind.
+const (
+	kindCredentialRejected = "credential_rejected"
+	kindFetchStalled       = "dependency_fetch_stalled"
+)
+
+// depFetchError is the exit error of a run the dependency-code policy fails, once its Report is
+// published. Registry is the registry's base URL: stderr may name a host, the Report never does.
+type depFetchError struct {
+	Kind     string
+	Registry string
+	// Detail is the refused package for kindCredentialRejected.
+	Detail string
+	// HeldRuns and Since are the stalled hold for kindFetchStalled.
+	HeldRuns int
+	Since    time.Time
+}
+
+func (e *depFetchError) Error() string {
+	switch e.Kind {
+	case kindCredentialRejected:
+		return fmt.Sprintf("dependency code not read: %s: registry %s refused the token this run sent (HTTP 401 or 403) for %s. "+
+			"The token may be expired or wrong, it may lack read access to the package, or a curation proxy in front of the registry "+
+			"(such as Artifactory curation or a Nexus firewall) may be blocking the package", e.Kind, e.Registry, e.Detail)
+	case kindFetchStalled:
+		return fmt.Sprintf("dependency code not read: %s: registry %s has served nothing on %d cve-watch runs since %s, "+
+			"holding the advisory cursor; the advisories those runs found stay new until a run reads from it",
+			e.Kind, e.Registry, e.HeldRuns, e.Since.UTC().Format(time.RFC3339))
+	}
+	return "dependency code not read: " + e.Kind
+}
+
+// registryAction is what the policy does about one registry's fetches on one run.
+type registryAction int
+
+const (
+	actionRead     registryAction = iota // every fetch from it completed
+	actionPartial                        // read what it served; the lane withholds the rest per package
+	actionFallback                       // read no dependency code
+	actionHold                           // read no dependency code, and a cve-watch earnest run keeps its cursor
+	actionRed                            // a token it was sent was refused: the run fails
+)
+
+// registryTally is what one run's acquisitions did against one registry. failed counts fetches
+// that did not complete apart from those the run's deadline cancelled, which say nothing about the
+// registry.
+type registryTally struct {
+	read, network, failed, cancelled, missing, unavailable int
+	rejected                                               string // the first package whose token was refused
+	unsetEnv                                               string // a token variable an auth entry for it left unset
+}
+
+func (t *registryTally) add(o pipeline.DependencyOutcome) {
+	switch {
+	case o.Outcome == pipeline.OutcomeReadNetwork:
+		t.read++
+		t.network++
+	case o.Outcome == pipeline.OutcomeReadCache:
+		t.read++
+	case o.Outcome == pipeline.UnreadCancelled:
+		t.cancelled++
+	case pipeline.FetchFailed(o.Outcome):
+		t.failed++
+		switch {
+		case pipeline.CredentialRejected(o.Outcome, o.Detail):
+			if t.rejected == "" {
+				t.rejected = o.PURL
+			}
+		case o.Outcome == pipeline.UnreadPolicyRefused && o.Detail == artifactcache.PolicyMissingCredential:
+			t.missing++
+		case o.Outcome == pipeline.UnreadUnavailable:
+			t.unavailable++
+		}
+	}
+	if o.UnsetEnv != "" && t.unsetEnv == "" {
+		t.unsetEnv = o.UnsetEnv
+	}
+}
+
+// classifyRegistry is the policy for one registry, given its stored entry. A token refused is red
+// whether or not the registry served anything else: an expired token, a token without read access
+// and a curation proxy blocking a package answer alike, and none of them is fixed by waiting. A
+// registry that served some packages is partial. One that served none is stuck, and holds, when it
+// answered with a transient error, or when it has served this repository before and failed for a
+// reason other than a missing credential: a registry that has never served it (an unreachable host,
+// a wrong URL) and a credential the runner did not provide are configuration, which no number of
+// held runs fixes, so they fall back.
+func classifyRegistry(t registryTally, prior statestore.RegistryFetch) registryAction {
+	switch {
+	case t.rejected != "":
+		return actionRed
+	case t.failed == 0 && t.cancelled == 0:
+		return actionRead
+	case t.read > 0:
+		return actionPartial
+	case t.failed == 0:
+		return actionFallback
+	case t.unavailable > 0:
+		return actionHold
+	case prior.HasServed && t.failed > t.missing:
+		return actionHold
+	}
+	return actionFallback
+}
+
+// tallyLocked is the run's outcomes per registry, for a caller that holds d.mu. A package with no
+// registry (offline, no usable integrity, an npm configuration that failed closed) is in none.
+func (d *depCodeRun) tallyLocked() map[string]registryTally {
+	regs := map[string]registryTally{}
+	for _, o := range d.outcomes {
+		if o.Registry == "" {
+			continue
+		}
+		t := regs[o.Registry]
+		t.add(o)
+		regs[o.Registry] = t
+	}
+	return regs
+}
+
+// incompleteLocked reports whether the run read less dependency code than its lock pins: it fell
+// back, or a registry failed some of its fetches.
+func (d *depCodeRun) incompleteLocked() bool {
+	return d.fell != nil || slices.ContainsFunc(d.outcomes, func(o pipeline.DependencyOutcome) bool {
+		return pipeline.FetchFailed(o.Outcome)
+	})
+}
 
 // dependencyCodeOption resolves the -dependency-* flags into the acquisition option, or nil
 // when they turn it off, and records on f.depRun the handle the Report and the exit status read.
@@ -52,22 +183,23 @@ func (f *runFlags) dependencyCodeOption() (pipeline.AssessOption, error) {
 		f.depRun = &depCodeRun{source: report.DependencyCodeSourceOff}
 		return nil, nil
 	}
-	run := &depCodeRun{source: string(cfg.Mode), failsRun: fetchFailureFailsRun}
+	run := &depCodeRun{source: string(cfg.Mode)}
 	cfg.Observe = run.observe
 	f.depRun = run
 	return pipeline.WithDependencyAcquisition(*cfg), nil
 }
 
 // depCodeRun is what a run's dependency code acquisition came to: the configured source, every
-// package outcome the acquisitions observed and, when a fetch failed, the first cause. failsRun
-// is fetchFailureFailsRun, held per run so a test can exercise the policy either way.
+// package outcome the acquisitions observed, the first cause when one fell back and, once record
+// has run, a hold that has stalled.
 type depCodeRun struct {
 	source   string
-	failsRun bool
 	mu       sync.Mutex
 	observed bool
 	outcomes []pipeline.DependencyOutcome
 	fell     *report.DependencyCodeCause
+	hinted   map[string]bool
+	stalled  *depFetchError
 }
 
 func (d *depCodeRun) observe(res pipeline.DependencyAcquisitionResult) {
@@ -75,11 +207,48 @@ func (d *depCodeRun) observe(res pipeline.DependencyAcquisitionResult) {
 	defer d.mu.Unlock()
 	d.observed = true
 	d.outcomes = append(d.outcomes, res.Outcomes...)
-	if res.Fallback == nil || d.fell != nil {
+	d.hintLocked(res.Outcomes)
+	if res.Fallback == nil {
+		if n := countFetchFailed(res.Outcomes); n > 0 {
+			fmt.Fprintf(os.Stderr, "%s: dependency code partly read: %d of %d lock-pinned packages not fetched; the scan withholds each of them\n", brand.Name, n, len(res.Outcomes))
+		}
+		return
+	}
+	if d.fell != nil {
 		return
 	}
 	d.fell = &report.DependencyCodeCause{Kind: res.Fallback.Kind, Detail: res.Fallback.Detail}
 	fmt.Fprintf(os.Stderr, "%s: dependency code not read, scanning as with it off: %s\n", brand.Name, describeCause(d.fell))
+}
+
+// hintLocked tells the operator, once per registry, that a registry answered 401 or 403 to a
+// request that carried no token: a credential the runner did not provide, not one the registry
+// refused.
+func (d *depCodeRun) hintLocked(outcomes []pipeline.DependencyOutcome) {
+	for _, o := range outcomes {
+		if o.Registry == "" || d.hinted[o.Registry] || o.Outcome != pipeline.UnreadPolicyRefused || o.Detail != artifactcache.PolicyMissingCredential {
+			continue
+		}
+		if d.hinted == nil {
+			d.hinted = map[string]bool{}
+		}
+		d.hinted[o.Registry] = true
+		if o.UnsetEnv != "" {
+			fmt.Fprintf(os.Stderr, "%s: registry %s needs a token and %s is unset: set it for the scan step to read that registry's packages\n", brand.Name, o.Registry, o.UnsetEnv)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "%s: registry %s needs a token and the npm configuration has no auth entry for it: add one to read that registry's packages\n", brand.Name, o.Registry)
+	}
+}
+
+func countFetchFailed(outcomes []pipeline.DependencyOutcome) int {
+	n := 0
+	for _, o := range outcomes {
+		if pipeline.FetchFailed(o.Outcome) {
+			n++
+		}
+	}
+	return n
 }
 
 // forLanguage is d for a JS scan and nil for every other language, whose Report carries no
@@ -102,7 +271,9 @@ func (d *depCodeRun) cause() *report.DependencyCodeCause {
 
 // stamp records the run's dependency code on rep: the dependency_code field and, after a
 // fallback, the scan-level tool_failure:dependency_code_unavailable note. Both are disclosure;
-// the verdicts are the ones the scan reached reading no dependency code.
+// the verdicts are the ones the scan reached reading no dependency code. A partial read adds
+// neither: it read the code it fetched, and the JS lane withholds each package it did not as
+// uninspectable_package.
 func (d *depCodeRun) stamp(rep *report.Report) {
 	if d == nil {
 		return
@@ -115,31 +286,52 @@ func (d *depCodeRun) stamp(rep *report.Report) {
 	rep.DependencyCode = dc
 }
 
-// err is the run's exit error once its Report is published. fetchFailureFailsRun decides it.
+// err is the run's exit error once its Report is published: a *depFetchError when a registry
+// refused a token the run sent, on any run kind, or, on a cve-watch earnest run, when record found
+// a hold that has stalled. Every other fetch failure exits as the off run would.
 func (d *depCodeRun) err() error {
-	c := d.cause()
-	if c == nil || !d.failsRun {
+	if d == nil {
 		return nil
 	}
-	return fmt.Errorf("dependency code not read: %s", describeCause(c))
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	regs := d.tallyLocked()
+	for _, key := range slices.Sorted(maps.Keys(regs)) {
+		if t := regs[key]; t.rejected != "" {
+			return &depFetchError{Kind: kindCredentialRejected, Registry: key, Detail: t.rejected}
+		}
+	}
+	if d.stalled != nil {
+		return d.stalled
+	}
+	return nil
 }
 
 // holds reports whether the dependency-code policy holds a cve-watch cursor, given the stored
-// dependency-fetch record. It reads the acquisitions observed so far, so a caller consults it
-// after the re-assessments.
-func (d *depCodeRun) holds(*statestore.DepFetch) bool {
+// dependency-fetch record: whether any registry it fetched from holds. It reads the acquisitions
+// observed so far, so a caller consults it after the re-assessments.
+func (d *depCodeRun) holds(stored *statestore.DepFetch) bool {
 	if d == nil {
 		return false
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.holdsLocked()
+	for key, t := range d.tallyLocked() {
+		if holdsRegistry(t, stored, key) {
+			return true
+		}
+	}
+	return false
 }
 
-// holdsLocked is holds for a caller that holds d.mu: a fallback observed, and fetch failures fail
-// the run.
-func (d *depCodeRun) holdsLocked() bool {
-	return d.failsRun && d.fell != nil
+// holdsRegistry is the one rule that both holds a cve-watch cursor and counts the run against the
+// registry's stall cap, so a run is counted exactly when the registry held it.
+func holdsRegistry(t registryTally, stored *statestore.DepFetch, key string) bool {
+	var prior statestore.RegistryFetch
+	if stored != nil {
+		prior = stored.Registries[key]
+	}
+	return classifyRegistry(t, prior) == actionHold
 }
 
 // fetchUpdate is the run's depfetch.json hook, or nil for a scan with no dependency acquisition to
@@ -153,69 +345,52 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 	}
 }
 
-// registryRun is what one run's acquisitions did against one registry.
-type registryRun struct {
-	read, network, failed bool
-}
-
 // record is the depfetch.json a writing run leaves, from the stored record prior, which it does not
 // modify. A run that observed no acquisition (dependency code off, or none reached) carries prior.
-// Otherwise, per registry: a network fetch sets has_served; on a cve-watch earnest run, reading
-// anything from the registry resets its held count, and a run the dependency-code policy held in
-// which every fetch from it failed counts one more, stamping first_held_at at now on the first. A
-// fetch the run's deadline cancelled is not a registry failure, and a cursor held for any other
-// reason (the JVM build graph, a cut-short assessment) counts nothing. A baseline never touches the
-// held count. A cve-watch earnest run that fell back adds the IDs of the advisories it assessed to
-// reassess, and a run of either kind that read dependency code without falling back removes them:
-// a baseline every entry naming one by ID or alias, since it rebuilds every row, and a cve-watch run
-// only entries naming one by ID, since it replaces only the rows of the IDs it assessed.
+// Otherwise, per registry: a network fetch sets has_served; on a cve-watch earnest run whose cursor
+// held, a registry holdsRegistry holds counts one more held run, stamping first_held_at at now on
+// the first, and otherwise reading anything from the registry resets its count. A held count of
+// stallRuns or more with first_held_at stallAge or more before now stalls the run, which err then
+// fails. A baseline never touches the held count. A cve-watch earnest run that read less than its
+// lock pins (it fell back, or a registry failed some fetches) adds the IDs of the advisories it
+// assessed to reassess, and a run of either kind that read all of it removes them: a baseline every
+// entry naming one by ID or alias, since it rebuilds every row, and a cve-watch run only entries
+// naming one by ID, since it replaces only the rows of the IDs it assessed.
+//
+// A lost CAS can leave a count one higher than the runs that held, since Merge keeps the larger
+// count beside the winner's cursor; the stall still needs stallAge since the earliest first hold,
+// so the extra run can only bring the failure one run sooner, never without the wall-clock leg.
 func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFetchRun, now time.Time) *statestore.DepFetch {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.observed {
 		return prior
 	}
-	regs := map[string]*registryRun{}
-	for _, o := range d.outcomes {
-		if o.Registry == "" {
-			continue
-		}
-		r := regs[o.Registry]
-		if r == nil {
-			r = &registryRun{}
-			regs[o.Registry] = r
-		}
-		switch {
-		case o.Outcome == pipeline.OutcomeReadNetwork:
-			r.read, r.network = true, true
-		case o.Outcome == pipeline.OutcomeReadCache:
-			r.read = true
-		case o.Outcome == pipeline.UnreadCancelled: // the run ran out of time, not the registry
-		case pipeline.FetchFailed(o.Outcome):
-			r.failed = true
-		}
-	}
-
-	policyHeld := run.Held && d.holdsLocked()
+	d.stalled = nil
 	next := &statestore.DepFetch{}
 	if prior != nil {
 		next.Registries = maps.Clone(prior.Registries)
 		next.Reassess = slices.Clone(prior.Reassess)
 	}
-	for key, r := range regs {
+	regs := d.tallyLocked()
+	for _, key := range slices.Sorted(maps.Keys(regs)) {
+		t := regs[key]
 		e := next.Registries[key]
-		if r.network {
+		if t.network > 0 {
 			e.HasServed = true
 		}
 		if !run.Baseline {
 			switch {
-			case r.read:
-				e.HeldRuns, e.FirstHeldAt = 0, time.Time{}
-			case r.failed && policyHeld:
+			case run.Held && holdsRegistry(t, prior, key):
 				e.HeldRuns++
 				if e.FirstHeldAt.IsZero() {
 					e.FirstHeldAt = now
 				}
+				if d.stalled == nil && e.HeldRuns >= stallRuns && now.Sub(e.FirstHeldAt) >= stallAge {
+					d.stalled = &depFetchError{Kind: kindFetchStalled, Registry: key, HeldRuns: e.HeldRuns, Since: e.FirstHeldAt}
+				}
+			case t.read > 0:
+				e.HeldRuns, e.FirstHeldAt = 0, time.Time{}
 			}
 		}
 		if next.Registries == nil {
@@ -223,12 +398,12 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 		}
 		next.Registries[key] = e
 	}
-	switch {
-	case d.fell != nil && !run.Baseline:
+	switch incomplete := d.incompleteLocked(); {
+	case incomplete && !run.Baseline:
 		for _, a := range run.Assessed {
 			next.Reassess = append(next.Reassess, a.ID)
 		}
-	case d.fell == nil:
+	case !incomplete:
 		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool {
 			if run.Baseline {
 				return namesAny(run.Assessed, id)

@@ -62,9 +62,6 @@ func TestDependencyCodeOption(t *testing.T) {
 			if f.depRun == nil || f.depRun.source != tt.wantSource {
 				t.Fatalf("depRun = %+v, want source %q", f.depRun, tt.wantSource)
 			}
-			if opt != nil && f.depRun.failsRun != fetchFailureFailsRun {
-				t.Fatalf("depRun.failsRun = %v, want fetchFailureFailsRun", f.depRun.failsRun)
-			}
 		})
 	}
 }
@@ -120,7 +117,7 @@ func TestDependencyCodeStampAndExit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			run := &depCodeRun{source: report.DependencyCodeSourceFetch, failsRun: fetchFailureFailsRun}
+			run := &depCodeRun{source: report.DependencyCodeSourceFetch}
 			if tt.fell != nil {
 				run.observe(pipeline.DependencyAcquisitionResult{Fallback: tt.fell})
 			}
@@ -394,5 +391,24 @@ func TestDependencyUncredentialedCacheOption(t *testing.T) {
 				t.Fatalf("CacheDir %q UncredentialedDir %q, want %q %q", cfg.CacheDir, cfg.UncredentialedDir, cache, tt.want)
 			}
 		})
+	}
+}
+
+// A partial read stamps no fallback: it read the code it fetched, and the JS lane withholds each
+// package it did not. It still exits as off does.
+func TestDependencyCodeStampPartialRead(t *testing.T) {
+	const reg = "https://registry.npmjs.org/"
+	run := &depCodeRun{source: report.DependencyCodeSourceFetch}
+	run.observe(pipeline.DependencyAcquisitionResult{Mode: "fetch", Outcomes: []pipeline.DependencyOutcome{
+		{PURL: "pkg:npm/a@1", Registry: reg, Outcome: pipeline.OutcomeReadNetwork},
+		{PURL: "pkg:npm/b@1", Registry: reg, Outcome: pipeline.UnreadNotServed},
+	}})
+	rep := &report.Report{}
+	run.stamp(rep)
+	if rep.DependencyCode == nil || rep.DependencyCode.Source != report.DependencyCodeSourceFetch || rep.DependencyCode.Cause != nil || len(rep.Partiality) != 0 {
+		t.Fatalf("partial read stamped %+v %+v", rep.DependencyCode, rep.Partiality)
+	}
+	if err := run.err(); err != nil {
+		t.Fatalf("err = %v", err)
 	}
 }

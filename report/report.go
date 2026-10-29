@@ -1053,7 +1053,9 @@ const (
 )
 
 // PartialReasonDependencyCodeUnavailable is the scan-level reason a JS scan carries when a fetch
-// failed and it read no dependency code. It is plugin.PartialReasonToolFailure narrowed the way
+// failed and it read no dependency code. A scan whose registry served some packages and failed
+// others reads what it fetched and does not carry it; each package it could not fetch is withheld
+// on its own. It is plugin.PartialReasonToolFailure narrowed the way
 // the JVM lane narrows it to build_graph_absent: the step that did not run is the dependency
 // code read, whatever stopped it (the registry, a credential, the deadline).
 const PartialReasonDependencyCodeUnavailable = plugin.PartialReasonToolFailure + ":dependency_code_unavailable"

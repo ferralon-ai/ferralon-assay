@@ -47,7 +47,7 @@ func TestEveryPathRanksRowsByThisRunsSignals(t *testing.T) {
 		},
 		"cve-watch": func(t *testing.T, req PRInheritRequest) *report.Report {
 			rep, _, err := earnestRun(ctx, &statestore.State{Report: storedWithStalePriority()},
-				CVEWatchRequest{Subject: req.Subject, Signals: req.Signals}, OSVResult{}, nil, "osv:next")
+				CVEWatchRequest{Subject: req.Subject, Signals: req.Signals}, OSVResult{}, nil, nil, "osv:next")
 			if err != nil {
 				t.Fatal(err)
 			}

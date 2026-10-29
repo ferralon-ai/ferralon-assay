@@ -1182,7 +1182,8 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // disclose one fact twice and scope the copy to Go.
 //
 // The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
-// ecosystem: they are about that package's admission and symbols, not the Go toolchain.
+// ecosystem: they are about that package's admission and symbols, not the Go toolchain. So is
+// dependency_not_fetched, which is about the package's dependency code.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	switch {
 	case f.Verdict != report.VerdictUndetermined,
@@ -1192,7 +1193,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	}
 	switch f.UndeterminedReason {
 	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
-		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent:
+		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent, report.ReasonDependencyNotFetched:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {
 			note.Ecosystem = f.Package.Ecosystem

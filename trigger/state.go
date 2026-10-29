@@ -443,15 +443,19 @@ func canonicalKey(ecosystem, name string) string {
 	return ecosystem + "\x00" + name
 }
 
-// earnestRun is the CVE-watch overlap path: re-run S1–S6 for the newly-relevant
-// advisories OSV.dev flagged, merge the fresh findings over the prior Report's
+// osvSource is the advisory source a cve-watch run assesses OSV's newly-relevant advisories under.
+const osvSource = "osv"
+
+// earnestRun is the CVE-watch overlap path: re-run S1–S6 for the advisories in newIDs (the
+// newly-relevant ones OSV.dev flagged) and for the stored rows in retry (those RunCVEWatch assesses
+// again, each under its own source and package), merge the fresh findings over the prior Report's
 // findings, and build a Report stamped with the new cursor. The prior Report's SBOM
 // is reused (CVE-watch does not re-resolve dependencies — only advisories changed).
 //
 // It also returns the advisories whose re-assessment completed, sorted by ID. The cursor is held,
 // the stored one written to provenance, when newCursor already is the stored one, when an
 // advisory was cut short, or when req.Hold, consulted after every re-assessment, says so.
-func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, newCursor string) (*report.Report, []report.Advisory, error) {
+func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, retry []report.AdvisoryFinding, newCursor string) (*report.Report, []report.Advisory, error) {
 	prior := state.Report
 
 	newSet := make(map[string]struct{}, len(newIDs))
@@ -469,33 +473,27 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	analysis := analysisOr(req.Analysis, ctx)
 	cut := 0
 	var assessed []report.Advisory
-	for _, a := range osvResult.Advisories {
-		if _, ok := newSet[a.ID]; !ok {
-			continue
-		}
-		areq := assessment.Request{
-			Vulnerability: assessment.VulnRef{ID: a.ID, Source: "osv"},
-			Codebase:      req.Codebase,
-		}
-		workSet = append(workSet, areq.Vulnerability)
+	// assess assesses ref against pkg and keys the finding under key, the row it replaces.
+	assess := func(ref assessment.VulnRef, pkg *report.Package, key string) {
+		areq := assessment.Request{Vulnerability: ref, Codebase: req.Codebase}
+		workSet = append(workSet, ref)
 		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
 		if stopped {
-			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = cutShortFinding(areq.Vulnerability)
-			freshIDs[a.ID] = struct{}{}
+			reFindings[key] = cutShortFinding(ref)
+			freshIDs[ref.ID] = struct{}{}
 			cut++
-			continue
+			return
 		}
 		if err != nil {
-			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
-			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = assessFailureFinding(areq.Vulnerability, err)
-			freshIDs[a.ID] = struct{}{}
-			continue
+			notes = append(notes, assessFailureNote(ref, err))
+			reFindings[key] = assessFailureFinding(ref, err)
+			freshIDs[ref.ID] = struct{}{}
+			return
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
-		pkg := a.Package
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather
@@ -504,9 +502,23 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			f.Package = tcPkg
 			notes = append(notes, note)
 		}
-		reFindings[advisory.ID+"\x00"+advisory.Source] = f
+		reFindings[key] = f
 		freshIDs[advisory.ID] = struct{}{}
 		assessed = append(assessed, advisory)
+	}
+	for _, a := range osvResult.Advisories {
+		if _, ok := newSet[a.ID]; !ok {
+			continue
+		}
+		pkg := a.Package
+		assess(assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, a.ID+"\x00"+osvSource)
+	}
+	for _, f := range retry {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if _, ok := reFindings[key]; ok {
+			continue
+		}
+		assess(assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key)
 	}
 
 	b := report.NewBuilder(report.Subject{

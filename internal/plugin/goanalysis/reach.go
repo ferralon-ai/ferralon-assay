@@ -1025,8 +1025,9 @@ func settledLoadFailure(ctx context.Context, err error) bool {
 		return false
 	}
 	for _, pe := range perrs {
+		msg := strings.ToLower(pe.Msg)
 		for _, transient := range transientLoadFaults {
-			if strings.Contains(pe.Msg, transient) {
+			if strings.Contains(msg, transient) {
 				return false
 			}
 		}
@@ -1035,13 +1036,15 @@ func settledLoadFailure(ctx context.Context, err error) bool {
 }
 
 // transientLoadFaults are texts in a package error that name a fault of the machine rather than of
-// the packages, so the same load could succeed on a retry.
+// the packages, so the same load could succeed on a retry. They are lower case: a message is
+// lowered before matching, since cc and ld report errno in libc's capitalised form.
 var transientLoadFaults = []string{
 	"signal: ",
 	"resource temporarily unavailable",
 	"no space left on device",
 	"too many open files",
 	"cannot allocate memory",
+	"out of memory",
 }
 
 var packageErrorsType = reflect.TypeFor[[]packages.Error]()

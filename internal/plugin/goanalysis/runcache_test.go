@@ -539,6 +539,8 @@ func TestSettledLoadFailure(t *testing.T) {
 		{name: "a full disk", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: write /cache/ab/cd: no space left on device", Kind: packages.ListError}}}), want: false},
 		{name: "out of file descriptors", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: open /tmp/x.c: too many open files", Kind: packages.ListError}}}), want: false},
 		{name: "out of memory", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: fork/exec /usr/bin/cc: cannot allocate memory", Kind: packages.ListError}}}), want: false},
+		{name: "cc reporting errno in libc's form", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncc1: error: Resource temporarily unavailable", Kind: packages.ListError}}}), want: false},
+		{name: "cc out of memory", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncc1: out of memory allocating 65536 bytes", Kind: packages.ListError}}}), want: false},
 		{name: "exit code -1", ctx: context.Background(), err: &exitCoded{code: -1, err: asVuln(cgo)}, want: false},
 		{name: "go command failed outright", ctx: context.Background(), err: asVuln(errors.New("err: signal: killed: stderr: ")), want: false},
 		{name: "vulnerability database unreachable", ctx: context.Background(), err: fmt.Errorf("govulncheck: %w", errors.New(`fetching vulnerabilities: Get "https://vuln.go.dev/index/modules.json.gz": dial tcp: i/o timeout`)), want: false},
@@ -570,7 +572,7 @@ func TestLoadPackageErrorsFindsVulnPackageErrors(t *testing.T) {
 	cmd := scan.Command(context.Background(), "-db", "file://"+filepath.ToSlash(db), "-C", dir, "-json", "-mode=source", "-scan=symbol", "./...")
 	cmd.Stdout = &bytes.Buffer{}
 	cmd.Stderr = &stderr
-	cmd.Env = append(reachBaseEnv(), "GOPROXY=off", "GOFLAGS=-mod=mod")
+	cmd.Env = append(reachBaseEnv(), "GOPROXY=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}

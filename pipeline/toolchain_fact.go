@@ -154,6 +154,23 @@ func directivesBindToolchain(in toolchainInputs) bool {
 	return ok && (v.major > 1 || v.minor >= 21)
 }
 
+// goLineFloor returns the go.mod `go` line, normalized goX.Y.Z, when it binds (directivesBindToolchain):
+// then no go command below it builds the module, whatever GOTOOLCHAIN says. A go command before 1.21
+// rejects the directives at parse, and one from 1.21 on refuses a go line newer than itself unless it
+// switches to a toolchain that is not. The `toolchain` line is no such floor: under GOTOOLCHAIN=local,
+// or with a toolchain named without +auto, the go command ignores it and builds with any release at
+// or above the go line. "" when the go line does not bind or does not parse.
+func goLineFloor(in toolchainInputs) string {
+	if !directivesBindToolchain(in) {
+		return ""
+	}
+	v, ok := parseGoToolchainVersion(in.goDirective)
+	if !ok {
+		return ""
+	}
+	return formatGoToolchainVersion(v)
+}
+
 // resolveToolchainFact reduces the candidate sources to one fact: the
 // highest-precedence EXACT source wins outright, and absent any exact source the resolved FLOORS
 // combine by maximum. A source that does not parse as an orderable Go release version resolves

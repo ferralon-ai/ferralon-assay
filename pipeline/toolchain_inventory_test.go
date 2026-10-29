@@ -390,3 +390,41 @@ func keysOf(m map[string]json.RawMessage) []string {
 	}
 	return out
 }
+
+// TestCodebaseInventory_GoFloorReachesRequest: the real stage records the binding go line from a real
+// go.mod, and the reachability stage reads it back as the request's floor, whatever the flag.
+func TestCodebaseInventory_GoFloorReachesRequest(t *testing.T) {
+	cases := []struct {
+		name  string
+		goMod string
+		want  string
+	}{
+		{"toolchain line over a two-part go line", "module example.com/target\n\ngo 1.21\n\ntoolchain go1.22.0\n", "go1.21.0"},
+		{"three-part go line", "module example.com/target\n\ngo 1.22.0\n", "go1.22.0"},
+		{"two-part go line alone", "module example.com/target\n\ngo 1.22\n", ""},
+		{"go line before 1.21", "module example.com/target\n\ngo 1.17\n", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buildDir := writeGoModFixture(t, tc.goMod)
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "case-go-floor", Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "CVE-TEST-NO-SUCH-ADVISORY", Source: "corpus"},
+				Codebase: assessment.CodebaseRef{
+					Repo:        "example.com/target",
+					Revision:    "v1",
+					Acquisition: assessment.Acquisition{Mode: "git"},
+				},
+			}}
+			stage := codebaseInventory{checkout: dirCheckout{dir: buildDir, lang: "go"}, plugin: goManifestPlugin{}}
+			if err := stage.Run(context.Background(), c, store); err != nil {
+				t.Fatalf("codebase_inventory.Run: %v", err)
+			}
+			for _, flag := range []bool{false, true} {
+				if got := (reachabilityIngress{subjectToolchain: flag}).toolchainFloor(store, c.ID); got != tc.want {
+					t.Errorf("flag %v: toolchainFloor = %q, want %q", flag, got, tc.want)
+				}
+			}
+		})
+	}
+}

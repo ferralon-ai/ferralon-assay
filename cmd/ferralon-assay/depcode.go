@@ -365,9 +365,11 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 // entry naming one by ID or alias, since it rebuilds every row, and a cve-watch run only entries
 // naming one by ID, since it replaces only the rows of the IDs it assessed.
 //
-// A lost CAS can leave a count one higher than the runs that held, since Merge keeps the larger
-// count beside the winner's cursor; the stall still needs stallAge since the earliest first hold,
-// so the extra run can only bring the failure one run sooner, never without the wall-clock leg.
+// A lost CAS can leave the count higher than the runs that held since the registry last served:
+// Merge keeps the larger held_runs and the earliest first_held_at, so a reset written by a
+// concurrent run that read can be lost, reviving the streak it ended, and the next held run after
+// the registry recovered can fail at once. The error is only ever toward failing early, never
+// late: no merge lowers a count or moves a first hold later.
 func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFetchRun, now time.Time) *statestore.DepFetch {
 	d.mu.Lock()
 	defer d.mu.Unlock()

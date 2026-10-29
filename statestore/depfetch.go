@@ -37,10 +37,11 @@ type RegistryFetch struct {
 	// HasServed is set once the registry has served a tarball over the network for this
 	// repository. A cache hit never sets it.
 	HasServed bool `json:"has_served,omitempty"`
-	// HeldRuns counts the consecutive cve-watch earnest runs this registry held the cursor on:
-	// it served nothing and either answered a transient error or, having served this repository
-	// before, failed for a reason other than a missing credential. A run that reads from the
-	// registry resets it.
+	// HeldRuns counts the cve-watch earnest runs this registry held the cursor on since it last
+	// served a package: it served nothing and either answered a transient error or, having served
+	// this repository before, failed for a reason other than a missing credential. Only a run
+	// that reads from the registry resets it; a run between holds that neither holds nor reads
+	// leaves it as it is.
 	HeldRuns int `json:"held_runs,omitempty"`
 	// FirstHeldAt is when the first of those runs ran; zero while HeldRuns is zero.
 	FirstHeldAt time.Time `json:"first_held_at,omitzero"`

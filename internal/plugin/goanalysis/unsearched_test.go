@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/tools/go/packages"
+
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -384,5 +386,90 @@ func TestWithholdForLibraryEscape_VulnerablePackages(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestNarrowedGates_StandardLibraryWidening: a standard-library refutation widens to every standard
+// package in both gates when the advisory lists the standard library whole or lists none of its
+// packages, even though a finding names the one it traced; otherwise only the listed packages count.
+func TestNarrowedGates_StandardLibraryWidening(t *testing.T) {
+	tree := map[string]string{
+		"go.mod":     "module example.com/m\n\ngo 1.22\n",
+		"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Run() string { return strings.ToUpper(\"x\") }\n\nfunc Get() func(string) string { return strings.ToUpper }\n",
+	}
+	listed := map[string][]string{"stdlib": {"net/http"}}
+	scans := []struct {
+		name     string
+		scanned  vulnScan
+		withheld bool
+	}{
+		{"the advisory lists only a package the build does not reach", vulnScan{imports: listed}, false},
+		{"the advisory also lists the whole standard library", vulnScan{imports: listed, wholeModule: map[string]bool{"stdlib": true}}, true},
+		{"no advisory entry lists a standard package, a finding names one", vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "stdlib", Package: "net/http"}}}}}, true},
+	}
+	gates := []struct {
+		name   string
+		reason string
+		run    func(plugin.ReachabilityResult, vulnScan, []*packages.Package, entrypoints) plugin.ReachabilityResult
+	}{
+		{"unsearched methods", plugin.PartialReasonUnsearchedMethods, func(r plugin.ReachabilityResult, s vulnScan, pkgs []*packages.Package, _ entrypoints) plugin.ReachabilityResult {
+			return withholdForUnsearchedMethods(r, s, pkgs)
+		}},
+		{"library escape", plugin.PartialReasonLibraryEscape, withholdForLibraryEscape},
+	}
+	dir := writeTree(t, tree)
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incompleteLoad(load.Packages) {
+		t.Fatal("load incomplete")
+	}
+	entry := resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir)
+	for _, g := range gates {
+		for _, tc := range scans {
+			t.Run(g.name+"/"+tc.name, func(t *testing.T) {
+				res := g.run(plugin.ReachabilityResult{
+					Partiality: plugin.Complete(),
+					Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/stdlib"},
+				}, tc.scanned, load.Packages, entry)
+				if withheld := res.Refutation == nil; withheld != tc.withheld {
+					t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
+				}
+				if declared := slices.Contains(res.Partiality.Reasons, g.reason); declared != tc.withheld {
+					t.Errorf("%s declared = %v, want %v (partiality %+v)", g.reason, declared, tc.withheld, res.Partiality)
+				}
+			})
+		}
+	}
+}
+
+// TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded: a method whose declaring package the
+// load does not hold withholds, though that package would not reach the vulnerable one. The load is
+// cut by hand: a complete load always holds it.
+func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
+	dir := writeTree(t, merge(narrowedModule, map[string]string{
+		"internal/lib/lib.go": "package lib\n\nimport \"example.com/vulnmod/blake\"\n\ntype S struct{ blake.T }\n",
+	}))
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lib *packages.Package
+	for _, p := range load.Packages {
+		if p.PkgPath == "example.com/m/internal/lib" {
+			lib = p
+		}
+	}
+	if lib == nil {
+		t.Fatal("internal/lib not loaded")
+	}
+	lib.Imports = map[string]*packages.Package{}
+	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, []*packages.Package{lib})
+	if res.Refutation != nil {
+		t.Fatal("refutation stands, want withheld")
+	}
+	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods) {
+		t.Errorf("unsearched_methods not declared (partiality %+v)", res.Partiality)
 	}
 }

@@ -58,8 +58,10 @@ func TestRunCVEWatch_HoldConsultedAfterAssessment(t *testing.T) {
 			wantCursor: "GO-2000-0001",
 		},
 		{
-			name:       "Hold false advances",
-			set:        func(req *CVEWatchRequest, _ *atomic.Int32) { req.Hold = func(*statestore.DepFetch) bool { return false } },
+			name: "Hold false advances",
+			set: func(req *CVEWatchRequest, _ *atomic.Int32) {
+				req.Hold = func(*statestore.DepFetch) bool { return false }
+			},
 			wantCursor: "GO-2021-0113",
 		},
 		{

@@ -20,7 +20,10 @@ import (
 //
 // The wrapper is meant to live for one run over one checkout. A failed call is not cached, so the
 // next caller retries it exactly as it would without the wrapper. A cached answer is handed out as a
-// fresh decode of its JSON encoding, so no two callers share a slice or map.
+// fresh decode of its JSON encoding, so no two callers share a slice or map, except CallGraph's:
+// every assessment reads the run's whole call graph, and decoding it again for each one dominates a
+// large scan, so the callers after the first share one decode and must not modify it, including
+// its slices.
 func Memoize(p LanguagePlugin) LanguagePlugin {
 	if p == nil {
 		return nil
@@ -37,6 +40,7 @@ type memoPlugin struct {
 type memoCall struct {
 	done    chan struct{}
 	payload []byte
+	shared  any
 	ok      bool
 }
 
@@ -44,7 +48,10 @@ var _ LanguagePlugin = (*memoPlugin)(nil)
 
 // memoized runs op through m's cache. Concurrent callers with the same key wait for the first; if it
 // fails, they each retry rather than inherit an error that may belong to the first caller's context.
-func memoized[Req, Res any](ctx context.Context, m *memoPlugin, op string, req Req, run func(context.Context, Req) (Res, error)) (Res, error) {
+//
+// With share, the answer is decoded once and every later caller gets that same value; the first
+// caller still gets the answer the plugin returned, so nothing it does to it reaches the cache.
+func memoized[Req, Res any](ctx context.Context, m *memoPlugin, op string, share bool, req Req, run func(context.Context, Req) (Res, error)) (Res, error) {
 	enc, err := json.Marshal(req)
 	if err != nil {
 		return run(ctx, req)
@@ -71,6 +78,14 @@ func memoized[Req, Res any](ctx context.Context, m *memoPlugin, op string, req R
 			if err == nil {
 				if payload, mErr := json.Marshal(res); mErr == nil {
 					c.payload, c.ok = payload, true
+					if share {
+						var dec Res
+						if json.Unmarshal(payload, &dec) == nil {
+							c.shared = dec
+						} else {
+							c.ok = false
+						}
+					}
 				}
 			}
 			return res, err
@@ -86,6 +101,9 @@ func memoized[Req, Res any](ctx context.Context, m *memoPlugin, op string, req R
 		if !c.ok {
 			continue
 		}
+		if share {
+			return c.shared.(Res), nil
+		}
 		var res Res
 		if err := json.Unmarshal(c.payload, &res); err != nil {
 			return run(ctx, req)
@@ -97,7 +115,7 @@ func memoized[Req, Res any](ctx context.Context, m *memoPlugin, op string, req R
 func (m *memoPlugin) Language() string { return m.inner.Language() }
 
 func (m *memoPlugin) IndexSymbols(ctx context.Context, req IndexSymbolsRequest) (SymbolIndexResult, error) {
-	return memoized(ctx, m, OpIndexSymbols, req, m.inner.IndexSymbols)
+	return memoized(ctx, m, OpIndexSymbols, false, req, m.inner.IndexSymbols)
 }
 
 func (m *memoPlugin) ResolveDependencySymbols(ctx context.Context, req ResolveSymbolsRequest) (SymbolResolutionResult, error) {
@@ -105,15 +123,15 @@ func (m *memoPlugin) ResolveDependencySymbols(ctx context.Context, req ResolveSy
 }
 
 func (m *memoPlugin) ResolveDependencyVersions(ctx context.Context, req ResolveVersionsRequest) (DependencyVersionResult, error) {
-	return memoized(ctx, m, OpResolveVersions, req, m.inner.ResolveDependencyVersions)
+	return memoized(ctx, m, OpResolveVersions, false, req, m.inner.ResolveDependencyVersions)
 }
 
 func (m *memoPlugin) CallGraph(ctx context.Context, req CallGraphRequest) (CallGraphResult, error) {
-	return memoized(ctx, m, OpCallGraph, req, m.inner.CallGraph)
+	return memoized(ctx, m, OpCallGraph, true, req, m.inner.CallGraph)
 }
 
 func (m *memoPlugin) FindIngresses(ctx context.Context, req FindIngressesRequest) (IngressResult, error) {
-	return memoized(ctx, m, OpFindIngresses, req, m.inner.FindIngresses)
+	return memoized(ctx, m, OpFindIngresses, false, req, m.inner.FindIngresses)
 }
 
 func (m *memoPlugin) Reachability(ctx context.Context, req ReachabilityRequest) (ReachabilityResult, error) {
@@ -129,11 +147,11 @@ func (m *memoPlugin) GenerateHarness(ctx context.Context, req GenerateHarnessReq
 }
 
 func (m *memoPlugin) BuildManifest(ctx context.Context, req BuildManifestRequest) (BuildManifestResult, error) {
-	return memoized(ctx, m, OpBuildManifest, req, m.inner.BuildManifest)
+	return memoized(ctx, m, OpBuildManifest, false, req, m.inner.BuildManifest)
 }
 
 func (m *memoPlugin) ResolveInventory(ctx context.Context, req ResolveInventoryRequest) (DependencyInventory, error) {
-	return memoized(ctx, m, OpResolveInventory, req, m.inner.ResolveInventory)
+	return memoized(ctx, m, OpResolveInventory, false, req, m.inner.ResolveInventory)
 }
 
 func (m *memoPlugin) CapabilityManifest(ctx context.Context, req CapabilityManifestRequest) (capability.Manifest, error) {

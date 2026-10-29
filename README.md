@@ -13,7 +13,7 @@ the repository without running it.
 
 Point it at a **Go, Java, Kotlin, JavaScript, Python or .NET** repository and every one gets a full scan
 and a `Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory
-names — and the [Language support](docs/language-support.md) fit matrix shows at a glance how far the
+names — and the [language capability matrix](docs/capabilities/README.md) shows at a glance how far the
 analysis reaches in each.
 
 ## Quickstart — GitHub Action
@@ -48,7 +48,7 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        uses: ferralon-ai/ferralon-assay@v0.5
+        uses: ferralon-ai/ferralon-assay@v0.6
         with:
           mode: baseline
           target: .
@@ -92,11 +92,11 @@ would with `off` and the Report says why, under `dependency_code` and a
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
 receives it, and what the cache exposes.
 
-**`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
+**`@v0.6` floats** to the newest 0.6.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
-`vX.Y.Z` scanner it was cut with, so `@v0.5` fetches the scanner of the patch it currently points at.
+`vX.Y.Z` scanner it was cut with, so `@v0.6` fetches the scanner of the patch it currently points at.
 Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the current
-minor alias. A full tag (`@v0.5.0`) or a commit SHA freezes the Action source and, through it, that
+minor alias. A full tag (`@v0.6.0`) or a commit SHA freezes the Action source and, through it, that
 scanner release. To freeze the exact bytes as well, set
 **`scanner-sha256`** yourself — each release publishes the value as a `.sha256` asset — and the run
 verifies the fetched tarball against your pin, failing loudly on any mismatch. It is off by default and
@@ -306,8 +306,8 @@ declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 
 Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
 onto vulnerable symbols, builds a call graph, and computes reachability, then reports what it found.
-What each of the six languages resolves today is laid out in
-[Language support](docs/language-support.md).
+What each of the six languages resolves is laid out in the
+[language capability matrix](docs/capabilities/README.md).
 
 It stops at reachability — there is no execution of the target codebase, no exploit synthesis, and no
 live confirmation step, and it neither generates nor validates patches. It produces the evidence those
@@ -330,10 +330,10 @@ and reserved for implementation.
 **Fit:** CI reachability triage — resolving whether a CVE's vulnerable code is actually callable in
 your build, not just present in your dependency tree. Go gets the deepest analysis, dependency-level
 reachability into the code an advisory names. Java and Kotlin reach into dependency JARs, .NET into
-restored NuGet assemblies, and Python and JavaScript trace first-party calls to the dependency
-boundary; all of them resolve dependency versions and disqualify advisories your pinned version is
-provably outside. [Language
-support](docs/language-support.md) has the per-language specifics.
+restored NuGet assemblies, JavaScript into lock-pinned dependency code it reads and verifies, and
+Python traces first-party calls to the dependency boundary; all of them resolve dependency versions
+and disqualify advisories your pinned version is provably outside. The
+[language capability matrix](docs/capabilities/README.md) has the per-language specifics.
 
 **Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not execute the
 scanned codebase or synthesize an exploit; a `reachable_candidate`
@@ -569,3 +569,9 @@ bot; you can reply on any of them with questions.
 ## License
 
 Business Source License 1.1. See [LICENSE](LICENSE).
+
+You can run Assay in production solely to analyze, test and patch software that you or your
+organization develop, or operate for your organization's own use. That includes commercial software and software you develop for a
+client, and its output is yours to use however you like. The license doesn't cover offering
+analysis, testing, or patching of software as a product or service, or building Assay into a product
+or service you provide to others. For those, write to operators@ferralon.com.

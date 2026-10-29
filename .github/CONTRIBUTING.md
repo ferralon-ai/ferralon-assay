@@ -37,6 +37,8 @@ Small, focused pull requests are much easier for us to accept than large ones.
 - Match the surrounding code's style, and include a test if the project has
   tests for that area.
 - Each repository's README documents how to build and test it.
+- In this repository, [the review guide](../docs/review-guide.md) says what a
+  review checks, so it's worth a read before you open a PR.
 
 We review PRs on the same board as issues, so the same expectation applies:
 normally a few business days.

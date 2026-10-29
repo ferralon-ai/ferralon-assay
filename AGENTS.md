@@ -3,6 +3,7 @@
 This file orients an automated assistant — and any human — working in this
 repository. Match the surrounding code's style, keep changes small and focused,
 and open a pull request rather than pushing to `main`.
+To review a pull request, follow [docs/review-guide.md](docs/review-guide.md).
 
 ## Build and test
 

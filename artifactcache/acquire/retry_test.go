@@ -154,9 +154,23 @@ func TestAcquireTransientFailures(t *testing.T) {
 	}
 }
 
+// countingTransport counts the requests the client sends, whether or not they reach the server.
+type countingTransport struct {
+	next     http.RoundTripper
+	requests atomic.Int32
+}
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.requests.Add(1)
+	return c.next.RoundTrip(r)
+}
+
 // A registry that does not answer within the client's own timeout is unavailable and retried;
 // one still not answering when the caller's deadline passes is the caller's deadline, returned
 // as is for the caller to read as cancelled, and not retried.
+//
+// Attempts are counted as the client sends them: on a loaded machine the dial and TLS handshake
+// can outlast a 50ms timeout, so an attempt may never reach the handler.
 func TestAcquireSlowRegistry(t *testing.T) {
 	data := []byte("hermetic .nupkg fixture bytes")
 	tests := []struct {
@@ -173,9 +187,7 @@ func TestAcquireSlowRegistry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			release := make(chan struct{})
-			var requests atomic.Int32
 			h.serve(t, nugetHost, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
 				select {
 				case <-r.Context().Done():
 				case <-release:
@@ -184,6 +196,8 @@ func TestAcquireSlowRegistry(t *testing.T) {
 			t.Cleanup(func() { close(release) })
 			client := *h.client
 			client.Timeout = tt.clientTimeout
+			sent := &countingTransport{next: client.Transport}
+			client.Transport = sent
 			a := NewAcquirer(t.TempDir(), &client)
 			a.SetRetrySleep(func(context.Context, time.Duration) error { return nil })
 			ctx := context.Background()
@@ -199,7 +213,7 @@ func TestAcquireSlowRegistry(t *testing.T) {
 			if errors.Is(err, artifactcache.ErrDeclaredAbsent) {
 				t.Fatalf("a slow registry reads as absent: %v", err)
 			}
-			if n := int(requests.Load()); n != tt.wantReqs {
+			if n := int(sent.requests.Load()); n != tt.wantReqs {
 				t.Fatalf("requests = %d, want %d", n, tt.wantReqs)
 			}
 		})

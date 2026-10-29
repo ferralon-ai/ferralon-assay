@@ -353,7 +353,7 @@ jobs:
       - name: Run the Ferralon Assay
         id: assay
         # Use the same ref as your main workflow (see the README Quickstart).
-        uses: ferralon-ai/ferralon-assay@v0.5
+        uses: ferralon-ai/ferralon-assay@v0.6
         with:
           mode: cve-watch
           state-repo: ${{ github.repository }}

@@ -19,18 +19,21 @@ import (
 // demote a listed advisory's refuting verdict, and they send a listed advisory back to assessment.
 // Neither treats an unlisted advisory as anything.
 
-// listedNotFetched reports whether f's advisory is on reassess, by its ID or one of its aliases.
-//
-// Only a JS run adds to the list, and only for npm packages, so a row for a package of another
-// ecosystem is never listed: a scan of another language can share the state ref, carry the list
-// unchanged (it records no dependency acquisition) and hold a row whose advisory is also listed,
-// since one advisory can name packages in several ecosystems. That row was not assessed with less
-// npm code than the lock pins, and withholding it would also retry it on every cve-watch run until
-// a JS run cleared the entry. A row with no package stays matchable.
-func listedNotFetched(f report.AdvisoryFinding, reassess []string) bool {
-	if f.Package != nil && f.Package.Ecosystem != "npm" {
-		return false
+// appliedRecord is the record whose reassess list a run applies: dep for a run that records its
+// dependency acquisition (update set, a JS scan) and none for any other. Only a JS run adds to the
+// list. A scan of another language sharing the state ref carries the list unchanged, and applying
+// it there could withhold, and retry on every cve-watch run, a row of its own whose advisory also
+// names an npm package the list holds; nothing that run assessed read less npm code than the lock
+// pins.
+func appliedRecord(update DependencyFetchUpdate, dep *statestore.DepFetch) *statestore.DepFetch {
+	if update == nil {
+		return nil
 	}
+	return dep
+}
+
+// listedNotFetched reports whether f's advisory is on reassess, by its ID or one of its aliases.
+func listedNotFetched(f report.AdvisoryFinding, reassess []string) bool {
 	return slices.Contains(reassess, f.Advisory.ID) ||
 		slices.ContainsFunc(f.Advisory.Aliases, func(a string) bool { return slices.Contains(reassess, a) })
 }
@@ -74,20 +77,23 @@ func withNotFetched(rep *report.Report, dep *statestore.DepFetch) (*report.Repor
 	return &out, nil
 }
 
-// remergeNotFetched is the statestore Remerge hook for a write that withheld with withNotFetched.
-// A lost CAS unions the winner's rows and reassess list with this run's, so the merged report can
-// hold a refuting verdict the winner reached for an advisory the merged list names; the hook
-// withholds it again over the merged record before the store writes the merged state.
-func remergeNotFetched(s *statestore.State) error {
-	if s.Report == nil {
+// remergeNotFetched is the statestore Remerge hook for a write that withheld with withNotFetched,
+// for a run whose DependencyFetchUpdate is update. A lost CAS unions the winner's rows and reassess
+// list with this run's, so the merged report can hold a refuting verdict the winner reached for an
+// advisory the merged list names; the hook withholds it again over the merged record before the
+// store writes the merged state.
+func remergeNotFetched(update DependencyFetchUpdate) func(*statestore.State) error {
+	return func(s *statestore.State) error {
+		if s.Report == nil {
+			return nil
+		}
+		rep, err := withNotFetched(s.Report, appliedRecord(update, s.DepFetch))
+		if err != nil {
+			return err
+		}
+		s.Report = rep
 		return nil
 	}
-	rep, err := withNotFetched(s.Report, s.DepFetch)
-	if err != nil {
-		return err
-	}
-	s.Report = rep
-	return nil
 }
 
 // notFetchedRetry is the stored rows a cve-watch run assesses again although their advisories are

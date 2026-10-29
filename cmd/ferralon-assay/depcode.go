@@ -409,8 +409,8 @@ func holdsRegistry(t registryTally, stored *statestore.DepFetch, key string) boo
 
 // fetchUpdate is the run's depfetch.json hook, or nil for a scan with no dependency acquisition to
 // record (not JS), which carries the stored record. Such a scan sharing the state ref neither adds to
-// nor clears the reassess list, and the list never matches its rows: only npm rows are matched
-// against it (trigger listedNotFetched).
+// nor clears the reassess list, and does not apply it to its own rows: the trigger withholds and
+// retries only on a run with this hook set.
 func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 	if d == nil {
 		return nil

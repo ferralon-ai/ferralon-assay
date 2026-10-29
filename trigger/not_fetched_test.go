@@ -17,19 +17,14 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
-var (
-	leftPad = report.Package{Ecosystem: "npm", Name: "left-pad", Version: "1.3.0"}
-	pyYAML  = report.Package{Ecosystem: "PyPI", Name: "pyyaml", Version: "5.3"}
-)
+var leftPad = report.Package{Ecosystem: "npm", Name: "left-pad", Version: "1.3.0"}
 
 // notFetchedReport is a built Report holding one row of each verdict, plus a stale
 // dependency_not_fetched note whose row is gone.
 func notFetchedReport() report.Report {
-	pkg, py := leftPad, pyYAML
+	pkg := leftPad
 	b := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "sha"}).
 		AddPackage(pkg).
-		AddPackage(py).
-		NotExploitable(report.Advisory{ID: "GHSA-pypi", Source: "osv"}, &py, verdict.BasisSymbolUnreachable, "no path").
 		Disqualified(report.Advisory{ID: "GHSA-disq", Source: "osv"}, &pkg, verdict.BasisVersionNotAffected, "outside the range").
 		NotExploitable(report.Advisory{ID: "GHSA-refuted", Source: "osv", Aliases: []string{"CVE-2026-0001"}}, &pkg, verdict.BasisSymbolUnreachable, "no path").
 		NotExploitable(report.Advisory{ID: "GHSA-unlisted", Source: "osv"}, &pkg, verdict.BasisSymbolUnreachable, "no path").
@@ -68,10 +63,6 @@ func TestWithNotFetched(t *testing.T) {
 			name:         "listed refuting rows are withheld, by ID or alias",
 			dep:          &statestore.DepFetch{Reassess: []string{"GHSA-disq", "CVE-2026-0001"}},
 			wantWithheld: []string{"GHSA-disq", "GHSA-refuted"},
-		},
-		{
-			name: "a listed advisory on a package of another ecosystem keeps its verdict",
-			dep:  &statestore.DepFetch{Reassess: []string{"GHSA-pypi"}},
 		},
 		{
 			name: "listed rows that refute nothing keep their verdict",
@@ -151,9 +142,8 @@ func verdictIDs(rep *report.Report) []string {
 // withheld for want of dependency code, by ID or alias and whatever source assessed it, each once as
 // itself; a row OSV's new advisory replaces anyway is left to that assessment.
 func TestNotFetchedRetry(t *testing.T) {
-	pkg, py := leftPad, pyYAML
+	pkg := leftPad
 	stored := report.NewBuilder(report.Subject{Repo: "r"}).
-		NotExploitable(report.Advisory{ID: "GHSA-pypi", Source: "osv"}, &py, verdict.BasisSymbolUnreachable, "no path").
 		Undetermined(report.Advisory{ID: "GHSA-marked", Source: "osv", Aliases: []string{"CVE-2026-0002"}}, &pkg, report.ReasonDependencyNotFetched).
 		Undetermined(report.Advisory{ID: "GHSA-other", Source: "osv"}, &pkg, report.ReasonAdvisorySymbolAbsent).
 		NotExploitable(report.Advisory{ID: "GHSA-plain", Source: "osv"}, &pkg, verdict.BasisSymbolUnreachable, "no path").
@@ -170,7 +160,6 @@ func TestNotFetchedRetry(t *testing.T) {
 		{name: "listed, every source", dep: &statestore.DepFetch{Reassess: []string{"GHSA-plain"}}, want: []string{"GHSA-marked/osv", "GHSA-plain/corpus", "GHSA-plain/osv"}},
 		{name: "listed by alias", dep: &statestore.DepFetch{Reassess: []string{"CVE-2026-0003"}}, want: []string{"GHSA-aliased/corpus", "GHSA-marked/osv"}},
 		{name: "new osv row left to its assessment", dep: &statestore.DepFetch{Reassess: []string{"GHSA-plain"}}, newIDs: []string{"GHSA-plain", "GHSA-marked"}, want: []string{"GHSA-plain/corpus"}},
-		{name: "listed on a package of another ecosystem", dep: &statestore.DepFetch{Reassess: []string{"GHSA-pypi"}}, want: []string{"GHSA-marked/osv"}},
 		{name: "listed but not stored", dep: &statestore.DepFetch{Reassess: []string{"GHSA-gone"}}, want: []string{"GHSA-marked/osv"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -203,6 +192,10 @@ func TestRunCVEWatch_ReassessListed(t *testing.T) {
 		wantReason    string
 	}{
 		{name: "nothing listed is a heartbeat", wantHeartbeat: true, wantVerdict: report.VerdictNotExploitable},
+		{
+			name: "listed, a run that records no dependency acquisition leaves it alone", stored: listed,
+			wantHeartbeat: true, wantVerdict: report.VerdictNotExploitable,
+		},
 		{
 			name: "listed, read again without dependency code",
 			hook: func(prior *statestore.DepFetch) *statestore.DepFetch { return prior }, stored: listed,
@@ -257,6 +250,7 @@ func TestRunCVEWatch_RetryOnlyRunReachesAnalysis(t *testing.T) {
 	store.state.Report = &stored
 	store.state.Cursor = "GO-2021-0113"
 	store.state.DepFetch = &statestore.DepFetch{Reassess: []string{"GO-2021-0113"}}
+	req.DependencyFetch = func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior }
 	res, err := RunCVEWatch(context.Background(), store, osv, req)
 	if err != nil {
 		t.Fatalf("RunCVEWatch: %v", err)
@@ -277,18 +271,20 @@ func TestRunBaseline_WithholdsWhatStaysListed(t *testing.T) {
 	}{
 		{"still listed", func(prior *statestore.DepFetch) *statestore.DepFetch { return prior }, report.VerdictUndetermined},
 		{"cleared", func(*statestore.DepFetch) *statestore.DepFetch { return nil }, report.VerdictNotExploitable},
+		{"a run that records no dependency acquisition", nil, report.VerdictNotExploitable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, _ := groundedBaseline()
 			store.state.DepFetch = &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}
-			rep, err := RunBaseline(context.Background(), store, BaselineRequest{
+			req := BaselineRequest{
 				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
 				Advisories:    []assessment.VulnRef{wiringAdvisory},
 				AssessOptions: wiringOptions(t, plugin.Complete()),
-				DependencyFetch: func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch {
-					return tc.hook(prior)
-				},
-			})
+			}
+			if tc.hook != nil {
+				req.DependencyFetch = func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return tc.hook(prior) }
+			}
+			rep, err := RunBaseline(context.Background(), store, req)
 			if err != nil {
 				t.Fatalf("RunBaseline: %v", err)
 			}
@@ -409,50 +405,102 @@ func (s *racingStore) Write(ctx context.Context, next *statestore.State) (*state
 	return s.MemStore.Write(ctx, next)
 }
 
-// TestRunCVEWatch_LostCASWithholdsWhatTheMergeLists: a cve-watch run that read less dependency code
-// than the lock pins loses its CAS to a later fallback baseline that refuted the same advisory. The
-// merge keeps the baseline's later not_exploitable and unions the run's reassess list, which names
-// the advisory; the merged state is withheld again before it is written and published.
-func TestRunCVEWatch_LostCASWithholdsWhatTheMergeLists(t *testing.T) {
-	seed, baseline := groundedBaseline()
-	inner := statestore.NewMemStore()
-	st := *seed.state
-	st.DepFetch = &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}
-	if _, err := inner.Write(context.Background(), &st); err != nil {
-		t.Fatalf("seed: %v", err)
+// TestLostCASWithholdsWhatTheMergeLists: a run that leaves an advisory on the reassess list loses
+// its CAS to a later fallback baseline that refuted the same advisory. The merge keeps the
+// baseline's later not_exploitable and unions the run's list, which names the advisory; every kind
+// of state write withholds the merged state again before it is written and published.
+func TestLostCASWithholdsWhatTheMergeLists(t *testing.T) {
+	listed := func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior }
+	osv := func() *fakeOSV {
+		return &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
 	}
-	store := &racingStore{MemStore: inner, winner: func(cur *statestore.State) *statestore.State {
-		later := *baseline
-		later.Provenance.Timestamp = time.Now().UTC().Add(time.Hour)
-		w := *cur
-		w.Report = &later
-		w.DepFetch = nil
-		return &w
-	}}
-	osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
-	req := CVEWatchRequest{
-		Subject:         Subject{Repo: "r", ResolvedCommit: "sha"},
-		AssessOptions:   wiringOptions(t, plugin.Complete()),
-		DependencyFetch: func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior },
-	}
-	res, err := RunCVEWatch(context.Background(), store, osv, req)
-	if err != nil {
-		t.Fatalf("RunCVEWatch: %v", err)
-	}
-	stored, err := inner.Read(context.Background())
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if stored.DepFetch == nil || !slices.Contains(stored.DepFetch.Reassess, wiringAdvisory.ID) {
-		t.Fatalf("merged reassess list %+v, want it to name %s", stored.DepFetch, wiringAdvisory.ID)
-	}
-	for name, rep := range map[string]*report.Report{"stored": stored.Report, "published": res.Report} {
-		f := rowByID(rep, wiringAdvisory.ID)
-		if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonDependencyNotFetched {
-			t.Fatalf("%s row %s/%q, want undetermined/%q", name, f.Verdict, f.UndeterminedReason, report.ReasonDependencyNotFetched)
+	cveWatch := func(t *testing.T, store statestore.StateStore) *report.Report {
+		res, err := RunCVEWatch(context.Background(), store, osv(), CVEWatchRequest{
+			Subject:         Subject{Repo: "r", ResolvedCommit: "sha"},
+			AssessOptions:   wiringOptions(t, plugin.Complete()),
+			DependencyFetch: listed,
+		})
+		if err != nil {
+			t.Fatalf("RunCVEWatch: %v", err)
 		}
+		return res.Report
 	}
-	if stored.Remerge != nil {
-		t.Fatal("the store kept the writer's Remerge hook")
+	for _, tc := range []struct {
+		name string
+		// rowless seeds a report with no row for the advisory, so nothing is retried.
+		rowless bool
+		run     func(t *testing.T, store statestore.StateStore) *report.Report // the published report, nil for none
+	}{
+		{name: "cve-watch earnest", run: cveWatch},
+		{name: "cve-watch heartbeat", rowless: true, run: func(t *testing.T, store statestore.StateStore) *report.Report {
+			res, err := RunCVEWatch(context.Background(), store, osv(), CVEWatchRequest{
+				Subject: Subject{Repo: "r", ResolvedCommit: "sha"}, AssessOptions: wiringOptions(t, plugin.Complete()), DependencyFetch: listed,
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			if !res.Heartbeat {
+				t.Fatal("not a heartbeat")
+			}
+			return nil
+		}},
+		{name: "baseline", run: func(t *testing.T, store statestore.StateStore) *report.Report {
+			rep, err := RunBaseline(context.Background(), store, BaselineRequest{
+				Subject:         Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+				Advisories:      []assessment.VulnRef{wiringAdvisory},
+				AssessOptions:   wiringOptions(t, plugin.Complete()),
+				DependencyFetch: listed,
+			})
+			if err != nil {
+				t.Fatalf("RunBaseline: %v", err)
+			}
+			return rep
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seed, baseline := groundedBaseline()
+			st := *seed.state
+			if tc.rowless {
+				empty := report.NewBuilder(baseline.Subject).AddPackages(baseline.SBOM.Packages...).WithProvenance(baseline.Provenance).Build()
+				st.Report = &empty
+			}
+			st.DepFetch = &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}
+			inner := statestore.NewMemStore()
+			if _, err := inner.Write(context.Background(), &st); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			store := &racingStore{MemStore: inner, winner: func(cur *statestore.State) *statestore.State {
+				later := *baseline
+				later.Provenance.Timestamp = time.Now().UTC().Add(time.Hour)
+				w := *cur
+				w.Report = &later
+				w.DepFetch = nil
+				return &w
+			}}
+			published := tc.run(t, store)
+			stored, err := inner.Read(context.Background())
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !store.raced {
+				t.Fatal("the write did not race")
+			}
+			if stored.DepFetch == nil || !slices.Contains(stored.DepFetch.Reassess, wiringAdvisory.ID) {
+				t.Fatalf("merged reassess list %+v, want it to name %s", stored.DepFetch, wiringAdvisory.ID)
+			}
+			reps := map[string]*report.Report{"stored": stored.Report}
+			if published != nil {
+				reps["published"] = published
+			}
+			for name, rep := range reps {
+				f := rowByID(rep, wiringAdvisory.ID)
+				if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonDependencyNotFetched {
+					t.Fatalf("%s row %s/%q, want undetermined/%q", name, f.Verdict, f.UndeterminedReason, report.ReasonDependencyNotFetched)
+				}
+			}
+			if stored.Remerge != nil {
+				t.Fatal("the store kept the writer's Remerge hook")
+			}
+		})
 	}
 }

@@ -532,6 +532,7 @@ func TestReleaseBoundExcludes(t *testing.T) {
 		{"floor 1.22, go1.22", floor(1, 22), "go1.22", false},
 		{"floor 1.22, go1.23: later releases select it", floor(1, 22), "go1.23", false},
 		{"floor 1.22, go1.21 && !go1.24: go1.22 selects it", floor(1, 22), "go1.21 && !go1.24", false},
+		{"floor 1.22, go1.23 && !go1.24: only go1.23 selects it", floor(1, 22), "go1.23 && !go1.24", false},
 		{"floor 1.24, go1.21 && !go1.24", floor(1, 24), "go1.21 && !go1.24", true},
 		{"floor 1.25, go1.21 && !go1.24", floor(1, 25), "go1.21 && !go1.24", true},
 		{"floor 1.24, go1.21 && !go1.25: go1.24 selects it", floor(1, 24), "go1.21 && !go1.25", false},

@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ferralon-ai/ferralon-assay/artifactcache/acquire"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -410,5 +411,37 @@ func TestDependencyCodeStampPartialRead(t *testing.T) {
 	}
 	if err := run.err(); err != nil {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The missing-token hint names the variable that left the auth value empty and says what fixes
+// it: set it, give it a value, or also allow the scan to read it.
+func TestMissingTokenHint(t *testing.T) {
+	const reg = "https://npm.corp.example/"
+	tests := []struct {
+		name string
+		env  acquire.TokenEnv
+		want []string
+		not  []string
+	}{
+		{"unset", acquire.TokenEnv{Name: "NODE_AUTH_TOKEN", State: acquire.TokenEnvUnset}, []string{reg, "NODE_AUTH_TOKEN is unset", "set it"}, []string{"-dependency-npmrc-env", "auth entry"}},
+		{"set to empty", acquire.TokenEnv{Name: "NPM_TOKEN", State: acquire.TokenEnvEmpty}, []string{reg, "NPM_TOKEN is set but empty"}, []string{"auth entry", "unset"}},
+		{"outside the allowlist", acquire.TokenEnv{Name: "CORP_TOKEN", State: acquire.TokenEnvNotAllowed}, []string{reg, "CORP_TOKEN", "add it to -dependency-npmrc-env"}, []string{"add an auth entry"}},
+		{"no variable", acquire.TokenEnv{}, []string{reg, "add an auth entry"}, []string{"-dependency-npmrc-env"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := missingTokenHint(reg, tt.env)
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("hint lacks %q: %s", w, got)
+				}
+			}
+			for _, n := range tt.not {
+				if strings.Contains(got, n) {
+					t.Errorf("hint has %q: %s", n, got)
+				}
+			}
+		})
 	}
 }

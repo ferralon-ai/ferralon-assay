@@ -25,6 +25,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/artifactcache/acquire"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -156,7 +157,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		wantRead int
 		want     string // Unread reason, "" when read
 		detail   string
-		unsetEnv string
+		tokenEnv acquire.TokenEnv
 		wantReqs int
 		fallback string // Fallback kind, "" when the result does not fall back
 	}{
@@ -166,15 +167,15 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		{name: "malformed lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "sha512:short", want: UnreadMalformedIntegrity},
 		{name: "fetch verifies a sha1-only lock entry", mode: DependencyCodeFetch, served: tarball, digest: sri1(tarball), wantRead: 1, wantReqs: 1},
 		{name: "unset allowlisted token reads a public registry anonymously", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
-		{name: "401 where an allowlisted token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NODE_AUTH_TOKEN}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", unsetEnv: "NODE_AUTH_TOKEN", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "401 where an allowlisted token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NODE_AUTH_TOKEN}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", tokenEnv: acquire.TokenEnv{Name: "NODE_AUTH_TOKEN", State: acquire.TokenEnvUnset}, wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}${CORP_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "CORP_TOKEN"`, fallback: UnreadNPMRCMalformed},
 		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, fallback: UnreadNPMRCMalformed},
 		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
 		{name: "empty per-host token refuses before any request", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
 		{name: "top-level auth refuses before any request", mode: DependencyCodeFetch, npmrc: "_auth=Zm9vOmJhcg==", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
 		{name: "public registry reads with an optional token unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
-		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", unsetEnv: "NPM_TOKEN", wantReqs: 1, fallback: UnreadPolicyRefused},
-		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", unsetEnv: "NPM_TOKEN", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", tokenEnv: acquire.TokenEnv{Name: "NPM_TOKEN", State: acquire.TokenEnvUnset}, wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", tokenEnv: acquire.TokenEnv{Name: "NPM_TOKEN", State: acquire.TokenEnvUnset}, wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "401 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "403 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "throttled on every attempt", mode: DependencyCodeFetch, status: http.StatusTooManyRequests, digest: sri512(tarball), want: UnreadUnavailable, detail: "rate-limited", wantReqs: 3, fallback: UnreadUnavailable},
@@ -256,7 +257,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 			if tt.mode == DependencyCodeFetch && tt.want != UnreadNoIntegrity && tt.want != UnreadNPMRCMalformed {
 				wantRegistry = "https://" + registry
 			}
-			if want := []DependencyOutcome{{PURL: qs, Registry: wantRegistry, Outcome: wantOutcome, Detail: detail, UnsetEnv: tt.unsetEnv}}; !slices.Equal(res.Outcomes, want) {
+			if want := []DependencyOutcome{{PURL: qs, Registry: wantRegistry, Outcome: wantOutcome, Detail: detail, TokenEnv: tt.tokenEnv}}; !slices.Equal(res.Outcomes, want) {
 				t.Fatalf("outcomes = %+v, want %+v", res.Outcomes, want)
 			}
 			if len(tt.env) == 0 {
@@ -885,7 +886,7 @@ func TestDependencyAcquisitionSplitCache(t *testing.T) {
 			}
 			gotOutcomes := slices.Clone(res.Outcomes)
 			for i := range gotOutcomes {
-				gotOutcomes[i].Detail, gotOutcomes[i].UnsetEnv = "", ""
+				gotOutcomes[i].Detail, gotOutcomes[i].TokenEnv = "", acquire.TokenEnv{}
 			}
 			if !slices.Equal(gotOutcomes, wantOutcomes) {
 				t.Fatalf("outcomes = %+v, want %+v", res.Outcomes, wantOutcomes)

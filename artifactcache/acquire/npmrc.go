@@ -54,10 +54,10 @@ var DefaultNPMRCEnv = []string{"NPM_CONFIG_USERCONFIG", "NPM_CONFIG_REGISTRY", "
 // Tokens live only inside creds, bound to their exact host.
 type NPMConfig struct {
 	defaultRegistry string
-	scopes          map[string]string // "@scope" -> registry base URL
-	requireAuth     map[string]bool   // canonical host -> an anonymous fetch must be refused
-	authConfigured  map[string]bool   // canonical host -> an auth key names it, though it may present nothing
-	unsetAuthEnv    map[string]string // canonical host -> the variable its empty auth value referenced
+	scopes          map[string]string   // "@scope" -> registry base URL
+	requireAuth     map[string]bool     // canonical host -> an anonymous fetch must be refused
+	authConfigured  map[string]bool     // canonical host -> an auth key names it, though it may present nothing
+	unsetAuthEnv    map[string]TokenEnv // canonical host -> the variable that left its auth value empty
 	creds           RegistryCredentials
 	allow           Allowlist
 }
@@ -96,7 +96,7 @@ func (e *npmrcError) Unwrap() error { return ErrMalformedNPMRC }
 type npmrcEntry struct {
 	value  string
 	raw    string
-	unset  string // the first referenced variable the environment left unset
+	token  TokenEnv // the variable that left an auth value empty, if one did
 	source string
 	line   int
 }
@@ -274,29 +274,57 @@ func expandRefs(s string, env npmrcEnv) (out, missing string) {
 	return out, missing
 }
 
+// TokenEnv names the environment variable that left a registry's auth value empty, so the
+// registry was fetched with no token, and why it was empty.
+type TokenEnv struct {
+	Name  string
+	State string // TokenEnvUnset, TokenEnvEmpty or TokenEnvNotAllowed
+}
+
+const (
+	// TokenEnvUnset is an allowlisted variable the runner left unset.
+	TokenEnvUnset = "unset"
+	// TokenEnvEmpty is an allowlisted variable the runner set to "".
+	TokenEnvEmpty = "empty"
+	// TokenEnvNotAllowed is an optional ${VAR?} reference to a variable outside the allowlist,
+	// which the scan never reads, set or not.
+	TokenEnvNotAllowed = "not_allowed"
+)
+
 // expandAuthValue expands an auth value. A plain reference to an allowlisted variable the
 // runner left unset (a workflow that never exported NODE_AUTH_TOKEN) is a missing token, not a
 // malformed file: the whole value reads as "", so the registry is fetched anonymously and a
-// 401/403 reads as missing_credential, and unset names the variable. A partially expanded
-// value is never kept, so no fragment of a token is presented. A plain reference to a variable
-// outside the allowlist still fails the load: the operator has not let the scan read it.
-func expandAuthValue(s, source string, line int, env npmrcEnv) (value, unset string, err error) {
+// 401/403 reads as missing_credential. A partially expanded value is never kept, so no fragment
+// of a token is presented. A plain reference to a variable outside the allowlist still fails the
+// load: the operator has not let the scan read it. token names the variable that left the value
+// empty, preferring one unset or outside the allowlist to one set to "".
+func expandAuthValue(s, source string, line int, env npmrcEnv) (value string, token TokenEnv, err error) {
+	var empty TokenEnv
 	for _, sub := range envRef.FindAllStringSubmatch(s, -1) {
-		if _, ok := env.get(sub[1]); ok {
-			continue
+		v, ok := env.get(sub[1])
+		switch {
+		case ok && v == "":
+			if empty.Name == "" {
+				empty = TokenEnv{Name: sub[1], State: TokenEnvEmpty}
+			}
+		case ok:
+		case sub[2] == "" && !env.allowed[sub[1]]:
+			return "", TokenEnv{}, &npmrcError{source: source, line: line, reason: "references unset environment variable " + strconv.Quote(sub[1])}
+		case token.Name != "":
+		case !env.allowed[sub[1]]:
+			token = TokenEnv{Name: sub[1], State: TokenEnvNotAllowed}
+		default:
+			token = TokenEnv{Name: sub[1], State: TokenEnvUnset}
 		}
-		if sub[2] == "" && !env.allowed[sub[1]] {
-			return "", "", &npmrcError{source: source, line: line, reason: "references unset environment variable " + strconv.Quote(sub[1])}
-		}
-		if unset == "" {
-			unset = sub[1]
-		}
+	}
+	if token.Name == "" {
+		token = empty
 	}
 	out, missing := expandRefs(s, env)
 	if missing != "" {
-		return "", missing, nil
+		return "", TokenEnv{Name: missing, State: TokenEnvUnset}, nil
 	}
-	return out, unset, nil
+	return out, token, nil
 }
 
 // authField reports whether k, a top-level or //host/ key, holds a credential.
@@ -345,16 +373,16 @@ func parseNPMRC(text, source string, env npmrcEnv) (map[string]npmrcEntry, error
 		if k, err = expandEnv(k, source, line, env); err != nil {
 			return nil, err
 		}
-		raw, unset := v, ""
+		raw, token := v, TokenEnv{}
 		if authField(k) {
-			v, unset, err = expandAuthValue(v, source, line, env)
+			v, token, err = expandAuthValue(v, source, line, env)
 		} else {
 			v, err = expandEnv(v, source, line, env)
 		}
 		if err != nil {
 			return nil, err
 		}
-		out[k] = npmrcEntry{value: v, raw: raw, unset: unset, source: source, line: line}
+		out[k] = npmrcEntry{value: v, raw: raw, token: token, source: source, line: line}
 	}
 	return out, nil
 }
@@ -389,7 +417,7 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 		scopes:          map[string]string{},
 		requireAuth:     map[string]bool{},
 		authConfigured:  map[string]bool{},
-		unsetAuthEnv:    map[string]string{},
+		unsetAuthEnv:    map[string]TokenEnv{},
 	}
 	if e, ok := entries["registry"]; ok {
 		r, err := registryBase(e)
@@ -411,13 +439,13 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 	// as missing_credential rather than fetched anonymously and misread as not served. An
 	// optional ${VAR?} reference that expanded to "" presents nothing, as in npm, so it
 	// fetches anonymously.
-	defaultAuth, defaultAuthOptional, defaultUnset := false, false, ""
+	defaultAuth, defaultAuthOptional, defaultUnset := false, false, TokenEnv{}
 	for _, k := range []string{"_auth", "_authToken", "username", "_password"} {
 		if e, ok := entries[k]; ok {
 			if emptyOptional(e) {
 				defaultAuthOptional = true
-				if defaultUnset == "" {
-					defaultUnset = e.unset
+				if defaultUnset.Name == "" {
+					defaultUnset = e.token
 				}
 			} else {
 				defaultAuth = true
@@ -450,8 +478,8 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 				return NPMConfig{}, &npmrcError{source: e.source, line: e.line, reason: "per-registry key has a malformed host"}
 			}
 			host := canonicalizeHostString(u.Hostname())
-			if authField(k) && emptyOptional(e) && e.unset != "" && cfg.unsetAuthEnv[host] == "" {
-				cfg.unsetAuthEnv[host] = e.unset
+			if authField(k) && emptyOptional(e) && e.token.Name != "" && cfg.unsetAuthEnv[host].Name == "" {
+				cfg.unsetAuthEnv[host] = e.token
 			}
 			switch field {
 			case "_authToken":
@@ -493,7 +521,7 @@ func buildNPMConfig(entries map[string]npmrcEntry) (NPMConfig, error) {
 		if defaultAuth {
 			cfg.requireAuth[h] = true
 		}
-		if defaultUnset != "" && cfg.unsetAuthEnv[h] == "" {
+		if defaultUnset.Name != "" && cfg.unsetAuthEnv[h].Name == "" {
 			cfg.unsetAuthEnv[h] = defaultUnset
 		}
 	}
@@ -564,12 +592,12 @@ func (c NPMConfig) RegistryFor(name string) string {
 	return c.defaultRegistry
 }
 
-// UnsetTokenEnv names the environment variable the auth entry for name's registry referenced
-// and the runner left unset, so that registry was fetched with no token; "" when there is none.
-func (c NPMConfig) UnsetTokenEnv(name string) string {
+// TokenEnvFor names the environment variable that left the auth value for name's registry
+// empty, so that registry was fetched with no token; the zero TokenEnv when there is none.
+func (c NPMConfig) TokenEnvFor(name string) TokenEnv {
 	u, err := url.Parse(c.RegistryFor(name))
 	if err != nil {
-		return ""
+		return TokenEnv{}
 	}
 	return c.unsetAuthEnv[canonicalizeHostString(u.Hostname())]
 }

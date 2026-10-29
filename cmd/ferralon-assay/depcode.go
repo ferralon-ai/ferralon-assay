@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/artifactcache/acquire"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
@@ -92,7 +93,6 @@ const (
 type registryTally struct {
 	read, network, failed, cancelled, missing, unavailable int
 	rejected                                               string // the first package whose token was refused
-	unsetEnv                                               string // a token variable an auth entry for it left unset
 }
 
 func (t *registryTally) add(o pipeline.DependencyOutcome) {
@@ -116,9 +116,6 @@ func (t *registryTally) add(o pipeline.DependencyOutcome) {
 		case o.Outcome == pipeline.UnreadUnavailable:
 			t.unavailable++
 		}
-	}
-	if o.UnsetEnv != "" && t.unsetEnv == "" {
-		t.unsetEnv = o.UnsetEnv
 	}
 }
 
@@ -233,12 +230,23 @@ func (d *depCodeRun) hintLocked(outcomes []pipeline.DependencyOutcome) {
 			d.hinted = map[string]bool{}
 		}
 		d.hinted[o.Registry] = true
-		if o.UnsetEnv != "" {
-			fmt.Fprintf(os.Stderr, "%s: registry %s needs a token and %s is unset: set it for the scan step to read that registry's packages\n", brand.Name, o.Registry, o.UnsetEnv)
-			continue
-		}
-		fmt.Fprintf(os.Stderr, "%s: registry %s needs a token and the npm configuration has no auth entry for it: add one to read that registry's packages\n", brand.Name, o.Registry)
+		fmt.Fprintf(os.Stderr, "%s: %s\n", brand.Name, missingTokenHint(o.Registry, o.TokenEnv))
 	}
+}
+
+// missingTokenHint says what would give registry the token it needs, naming the variable that
+// left its auth value empty when there is one.
+func missingTokenHint(registry string, env acquire.TokenEnv) string {
+	switch env.State {
+	case acquire.TokenEnvUnset:
+		return fmt.Sprintf("registry %s needs a token and %s is unset: set it for the scan step to read that registry's packages", registry, env.Name)
+	case acquire.TokenEnvEmpty:
+		return fmt.Sprintf("registry %s needs a token and %s is set but empty: give it the token for the scan step to read that registry's packages", registry, env.Name)
+	case acquire.TokenEnvNotAllowed:
+		return fmt.Sprintf("registry %s needs a token and its auth entry reads %s, which the scan reads only when -dependency-npmrc-env names it: "+
+			"set it for the scan step and add it to -dependency-npmrc-env to read that registry's packages", registry, env.Name)
+	}
+	return fmt.Sprintf("registry %s needs a token and the npm configuration supplies none for it: add an auth entry to read that registry's packages", registry)
 }
 
 func countFetchFailed(outcomes []pipeline.DependencyOutcome) int {

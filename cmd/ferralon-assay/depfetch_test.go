@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/artifactcache/acquire"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
@@ -192,7 +193,7 @@ func TestDepCodeRunRecord(t *testing.T) {
 			name:  "a registry that has served but now gets no token counts nothing",
 			prior: &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{corp: {HasServed: true, HeldRuns: 1, FirstHeldAt: earlier}}},
 			results: []pipeline.DependencyAcquisitionResult{{Fallback: fell, Outcomes: []pipeline.DependencyOutcome{
-				{PURL: "pkg:npm/a@1", Registry: corp, Outcome: pipeline.UnreadPolicyRefused, Detail: artifactcache.PolicyMissingCredential, UnsetEnv: "NODE_AUTH_TOKEN"},
+				{PURL: "pkg:npm/a@1", Registry: corp, Outcome: pipeline.UnreadPolicyRefused, Detail: artifactcache.PolicyMissingCredential, TokenEnv: acquire.TokenEnv{Name: "NODE_AUTH_TOKEN", State: acquire.TokenEnvUnset}},
 			}}},
 			run:  watch(true),
 			want: &statestore.DepFetch{Registries: map[string]statestore.RegistryFetch{corp: {HasServed: true, HeldRuns: 1, FirstHeldAt: earlier}}},
@@ -534,7 +535,7 @@ func TestDepCodeRunOnlyRejectedAndStalledFail(t *testing.T) {
 		{Outcome: pipeline.UnreadNotServed},
 		{Outcome: pipeline.UnreadIntegrityMismatch},
 		{Outcome: pipeline.UnreadCancelled},
-		{Outcome: pipeline.UnreadPolicyRefused, Detail: artifactcache.PolicyMissingCredential, UnsetEnv: "NODE_AUTH_TOKEN"},
+		{Outcome: pipeline.UnreadPolicyRefused, Detail: artifactcache.PolicyMissingCredential, TokenEnv: acquire.TokenEnv{Name: "NODE_AUTH_TOKEN", State: acquire.TokenEnvUnset}},
 		{Outcome: pipeline.UnreadPolicyRefused, Detail: artifactcache.PolicyRedirectOffAllowlist},
 	} {
 		outcome.PURL, outcome.Registry = "pkg:npm/a@1", "https://registry.npmjs.org/"

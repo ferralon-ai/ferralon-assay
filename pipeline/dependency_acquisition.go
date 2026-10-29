@@ -136,9 +136,9 @@ type DependencyOutcome struct {
 	// Detail is the unread package's UnreadDependency.Detail: for UnreadPolicyRefused, the
 	// artifactcache policy code.
 	Detail string
-	// UnsetEnv names the variable an auth entry for Registry referenced and the runner left
-	// unset, so the package was fetched with no token. Set only for an unread package.
-	UnsetEnv string
+	// TokenEnv names the variable that left the auth value for Registry empty, so the package
+	// was fetched with no token. Set only for an unread package.
+	TokenEnv acquire.TokenEnv
 }
 
 // DependencyCodeCause is why a fetch-mode acquisition fell back to reading no dependency code.
@@ -235,8 +235,8 @@ type UnreadDependency struct {
 	// that. It stays in process, for a caller keeping per-registry state through Observe; the
 	// artifact names no registry.
 	Registry string `json:"-"`
-	// UnsetEnv is DependencyOutcome.UnsetEnv. It stays in process.
-	UnsetEnv string `json:"-"`
+	// TokenEnv is DependencyOutcome.TokenEnv. It stays in process.
+	TokenEnv acquire.TokenEnv `json:"-"`
 }
 
 type dependencyAcquirer struct {
@@ -363,7 +363,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 			if u != nil && d.cfg.Mode == DependencyCodeFetch {
 				u.Registry = registryOf(npmrc, pin.purl)
 				if name, err := acquire.NPMNameOf(pin.purl); err == nil {
-					u.UnsetEnv = npmrc.UnsetTokenEnv(name)
+					u.TokenEnv = npmrc.TokenEnvFor(name)
 				}
 			}
 			outcomes[i], fetched[i] = u, net
@@ -374,7 +374,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 	for i, o := range outcomes {
 		if o != nil {
 			res.Unread = append(res.Unread, *o)
-			res.Outcomes = append(res.Outcomes, DependencyOutcome{PURL: o.PURL, Registry: o.Registry, Outcome: o.Reason, Detail: o.Detail, UnsetEnv: o.UnsetEnv})
+			res.Outcomes = append(res.Outcomes, DependencyOutcome{PURL: o.PURL, Registry: o.Registry, Outcome: o.Reason, Detail: o.Detail, TokenEnv: o.TokenEnv})
 			continue
 		}
 		res.Read++

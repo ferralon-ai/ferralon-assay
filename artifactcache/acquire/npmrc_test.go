@@ -345,21 +345,25 @@ func TestLoadNPMConfigContainsProjectDir(t *testing.T) {
 	}
 }
 
-// An auth value whose allowlisted variable the runner left unset names that variable for the
-// registry it binds to, so the scan can say which token was missing.
-func TestUnsetTokenEnv(t *testing.T) {
+// An auth value a variable left empty names that variable, and why, for the registry it binds
+// to, so the scan can say which token was missing.
+func TestTokenEnvFor(t *testing.T) {
 	tests := []struct {
 		name    string
 		project string
 		env     map[string]string
 		allow   []string
 		pkg     string
-		want    string
+		want    TokenEnv
 	}{
-		{name: "setup-node token unset", project: "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}", pkg: "qs", want: "NODE_AUTH_TOKEN"},
-		{name: "operator-added name unset", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=${CORP_TOKEN}", allow: []string{"CORP_TOKEN"}, pkg: "@acme/x", want: "CORP_TOKEN"},
-		{name: "optional reference unset", project: "//registry.npmjs.org/:_authToken=${NPM_TOKEN?}", pkg: "qs", want: "NPM_TOKEN"},
-		{name: "top-level token unset", project: "_authToken=${NPM_TOKEN}", pkg: "qs", want: "NPM_TOKEN"},
+		{name: "setup-node token unset", project: "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}", pkg: "qs", want: TokenEnv{Name: "NODE_AUTH_TOKEN", State: TokenEnvUnset}},
+		{name: "operator-added name unset", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=${CORP_TOKEN}", allow: []string{"CORP_TOKEN"}, pkg: "@acme/x", want: TokenEnv{Name: "CORP_TOKEN", State: TokenEnvUnset}},
+		{name: "optional reference unset", project: "//registry.npmjs.org/:_authToken=${NPM_TOKEN?}", pkg: "qs", want: TokenEnv{Name: "NPM_TOKEN", State: TokenEnvUnset}},
+		{name: "top-level token unset", project: "_authToken=${NPM_TOKEN}", pkg: "qs", want: TokenEnv{Name: "NPM_TOKEN", State: TokenEnvUnset}},
+		{name: "allowlisted token set to empty", project: "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}", env: map[string]string{"NODE_AUTH_TOKEN": ""}, pkg: "qs", want: TokenEnv{Name: "NODE_AUTH_TOKEN", State: TokenEnvEmpty}},
+		{name: "optional reference outside the allowlist, set", project: "//registry.npmjs.org/:_authToken=${CORP_TOKEN?}", env: map[string]string{"CORP_TOKEN": npmrcSecret}, pkg: "qs", want: TokenEnv{Name: "CORP_TOKEN", State: TokenEnvNotAllowed}},
+		{name: "optional reference outside the allowlist, unset", project: "//registry.npmjs.org/:_authToken=${CORP_TOKEN?}", pkg: "qs", want: TokenEnv{Name: "CORP_TOKEN", State: TokenEnvNotAllowed}},
+		{name: "an unset reference is named before an empty one", project: "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}${NPM_TOKEN?}", env: map[string]string{"NODE_AUTH_TOKEN": ""}, pkg: "qs", want: TokenEnv{Name: "NPM_TOKEN", State: TokenEnvUnset}},
 		{name: "token set", project: "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}", env: map[string]string{"NODE_AUTH_TOKEN": npmrcSecret}, pkg: "qs"},
 		{name: "another registry's unset token", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=${NODE_AUTH_TOKEN}", pkg: "qs"},
 		{name: "no auth entry", project: "registry=https://mirror.test/", pkg: "qs"},
@@ -372,10 +376,10 @@ func TestUnsetTokenEnv(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := cfg.UnsetTokenEnv(tt.pkg); got != tt.want {
-				t.Fatalf("UnsetTokenEnv(%q) = %q, want %q", tt.pkg, got, tt.want)
+			if got := cfg.TokenEnvFor(tt.pkg); got != tt.want {
+				t.Fatalf("TokenEnvFor(%q) = %+v, want %+v", tt.pkg, got, tt.want)
 			}
-			if !cfg.PolicyFor(tt.pkg).Credentials.For("registry.npmjs.org").IsEmpty() && tt.want != "" {
+			if !cfg.PolicyFor(tt.pkg).Credentials.For("registry.npmjs.org").IsEmpty() && tt.want.Name != "" {
 				t.Fatal("an unset token bound a credential")
 			}
 		})

@@ -37,8 +37,9 @@ const partialReasonNoWholeProgramRoot = "no_whole_program_root"
 //
 // Every hazard met is declared: reachability_undetermined (did_not_run) always, plus
 // `reflection` / `dynamic_dispatch` when those were the kinds met. A dependency JAR that could
-// not be opened is a Scoped reason bounded by its closure, and its reason is also declared
-// run-wide in Reasons.
+// not be opened is a Scoped reason bounded by its closure (javaanalysis.BlindSpotTargets) and is
+// not repeated in Reasons: the verdict gate counts it only against an advisory whose package the
+// hidden code could reach.
 func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...javaanalysis.Option) (plugin.ReachabilityResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
@@ -64,9 +65,6 @@ func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...jav
 		firstParty[c.Name] = true
 	}
 	deps := loadDependencyClosure(req.BuildDir, firstParty, opts...)
-	for _, sr := range deps.scoped {
-		prog.reasons[sr.Reason] = true
-	}
 	for _, r := range deps.reasons {
 		prog.reasons[r] = true
 	}

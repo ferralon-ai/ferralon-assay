@@ -52,6 +52,7 @@ var pyCallKeywords = map[string]bool{
 type callExpr struct {
 	name    string
 	arity   int
+	star    int // how many of the arity arguments are *iterable or **mapping expansions
 	chain   []string
 	written string
 }
@@ -68,6 +69,7 @@ type callSite struct {
 	callerArity     int
 	calleeName      string
 	calleeArity     int
+	calleeStar      int
 	calleeChain     []string
 	calleeWritten   string
 	scopes          []string
@@ -285,6 +287,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			cs := site
 			cs.calleeName = ce.name
 			cs.calleeArity = ce.arity
+			cs.calleeStar = ce.star
 			cs.calleeChain = ce.chain
 			cs.calleeWritten = ce.written
 			head := ce.name
@@ -938,7 +941,7 @@ func scanCalls(text string) []callExpr {
 	for i := 0; i < n; {
 		if r[i] == '(' {
 			if start, ok := calledValueStart(r, i); ok {
-				out = append(out, callExpr{arity: paramArityAt(r, i), written: collapseWritten(string(r[start:i]))})
+				out = append(out, callExpr{arity: paramArityAt(r, i), star: starArgs(r, i), written: collapseWritten(string(r[start:i]))})
 			}
 			i++
 			continue
@@ -971,7 +974,7 @@ func scanCalls(text string) []callExpr {
 		}
 		p := skipSpaceRunes(r, pos)
 		if last != "" && !pyCallKeywords[last] && p < n && r[p] == '(' {
-			out = append(out, callExpr{name: last, arity: paramArityAt(r, p), chain: segs, written: collapseWritten(string(r[start:pos]))})
+			out = append(out, callExpr{name: last, arity: paramArityAt(r, p), star: starArgs(r, p), chain: segs, written: collapseWritten(string(r[start:pos]))})
 			if c := matchingClose(r, p); c >= 0 {
 				closeChain[c] = segs
 				closeStart[c] = start
@@ -1125,4 +1128,17 @@ func skipSpaceRunes(r []rune, i int) int {
 		i++
 	}
 	return i
+}
+
+// starArgs counts the arguments of the call whose '(' is at open that expand an iterable
+// (*xs) or a mapping (**kw) into any number of arguments.
+func starArgs(r []rune, open int) int {
+	args, _ := callArgs(r, open)
+	n := 0
+	for _, a := range args {
+		if i := skipAllSpace(r, a[0]); i < a[1] && r[i] == '*' {
+			n++
+		}
+	}
+	return n
 }

@@ -29,6 +29,8 @@ func TestParamShapeOf(t *testing.T) {
 		{"(a, f=lambda x, y: lambda z, w: 0)", paramShape{required: 1, max: 2}},
 		{"(a: Annotated[int, Field(default=1)])", paramShape{required: 1, max: 1}},
 		{"(lambda_, b)", paramShape{required: 2, max: 2}},
+		{"(a, key=lambda x=lambda: 1, *ys: 0)", paramShape{required: 1, max: 2}},
+		{"(a, key=lambda x=lambda: 1, y=2: 0, b=3)", paramShape{required: 1, max: 3}},
 	}
 	for _, tc := range cases {
 		if got := paramShapeOf(tc.params); got != tc.want {
@@ -76,6 +78,26 @@ func TestCallGraph_DefaultedArity(t *testing.T) {
 		{
 			name:   "a lambda default's star parameter is not the def's",
 			files:  map[string]string{"app.py": "def f(a, key=lambda x, *ys: 0):\n    return a\n\ndef run():\n    return f(1, 2, 3, 4, 5)\n"},
+			listed: true,
+		},
+		{
+			name:   "a nested lambda default's star parameter is not the def's",
+			files:  map[string]string{"app.py": "def f(a, key=lambda x=lambda: 1, *ys: 0):\n    return a\n\ndef run():\n    return f(1, 2, 3, 4, 5)\n"},
+			listed: true,
+		},
+		{
+			name:  "a lone def takes star-expanded arguments",
+			files: map[string]string{"app.py": "def f(a, b, c):\n    return a\n\ndef run():\n    return f(*XS)\n"},
+			want:  funcSCIP("app", nil, "f", 3),
+		},
+		{
+			name:  "star-expanded arguments only one def can take",
+			files: map[string]string{"m.py": "def f(a, b, c, d):\n    return a\n", "n.py": "def f():\n    return 0\n", "app.py": "def run():\n    return f(1, *REST)\n"},
+			want:  funcSCIP("m", nil, "f", 4),
+		},
+		{
+			name:   "star-expanded keyword arguments two defs can take",
+			files:  map[string]string{"m.py": "def f(a, b, c):\n    return a\n", "n.py": "def f(x):\n    return x\n", "app.py": "def run():\n    return f(**OPTS)\n"},
 			listed: true,
 		},
 		{

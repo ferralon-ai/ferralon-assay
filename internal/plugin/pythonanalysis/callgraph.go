@@ -54,11 +54,14 @@ type program struct {
 // *args/**kwargs counted (paramShape), and the match is self/cls-tolerant: a method call
 // "obj.method(args)" carries one fewer explicit argument than the declaration
 // "def method(self, args)", so a list accepting callArity+1 matches too. Zero matches (library/import/builtin) or more
-// than one (an ambiguous name the lexer cannot scope-resolve) yields no edge.
-func resolveCallee(decls []funcDecl, callArity int) (string, bool) {
+// than one (an ambiguous name the lexer cannot scope-resolve) yields no edge. star of the
+// callArity arguments expand into any number, so with star > 0 a declaration matches when
+// it takes at least the other callArity-star.
+func resolveCallee(decls []funcDecl, callArity, star int) (string, bool) {
 	var matches []string
 	for _, fd := range decls {
-		if fd.params.accepts(callArity) || fd.params.accepts(callArity+1) {
+		if star > 0 && (fd.params.variadic || fd.params.max >= callArity-star) ||
+			star == 0 && (fd.params.accepts(callArity) || fd.params.accepts(callArity+1)) {
 			matches = append(matches, fd.scip())
 		}
 	}
@@ -639,7 +642,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
-			callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity)
+			callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity, cs.calleeStar)
 			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true

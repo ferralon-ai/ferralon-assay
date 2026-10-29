@@ -128,9 +128,23 @@ func unranked(r *report.Report) *report.Report {
 	return r
 }
 
+// sourceless is a Report with no signals digest whose rows are source-less `undetermined` ones, as
+// report.Upgrade migrates a stored v1 document's withheld-advisory list.
+func sourceless(commit string, ts time.Time, ids ...string) *report.Report {
+	b := report.NewBuilder(report.Subject{Repo: "github.com/example/widget", Revision: "main", ResolvedCommit: commit}).
+		WithProvenance(report.Provenance{CommitSHA: commit, AnalyzerVersion: "test", Timestamp: ts})
+	for _, id := range ids {
+		b.Undetermined(report.Advisory{ID: id}, nil, report.ReasonGoToolchainNotScanned)
+	}
+	r := b.Build()
+	return &r
+}
+
 // TestMergeSignalsDigest: a merged Report names a signals file only when that file ranked every
 // row, with or without a Priority. A row from a Report that named another file, or none, must not be
-// published under the kept provenance's digest.
+// published under the kept provenance's digest; a row the merge drops is not published, so it does
+// not count. The rule does not depend on which side is the retrying writer, so each case runs with
+// the later Report as mine and again as base.
 func TestMergeSignalsDigest(t *testing.T) {
 	t0 := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	const a, b = "sha256:aaa", "sha256:bbb"
@@ -146,23 +160,32 @@ func TestMergeSignalsDigest(t *testing.T) {
 		{"unranked rows from a run with no signals clear it", sampleReport("b", "c", t0, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
 		{"unranked rows from a run with another file clear it", unranked(signalsReport("b", t0, a, "GO-A")), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), ""},
 		{"unranked rows from a run with the same file keep it", unranked(signalsReport("b", t0, b, "GO-A")), signalsReport("m", t0.Add(time.Hour), b, "GO-B"), b},
+		{"a dropped source-less row from a run with no signals keeps it", sourceless("b", t0, "GO-A"), signalsReport("m", t0.Add(time.Hour), b, "GO-A"), b},
 	} {
-		t.Run(c.name, func(t *testing.T) {
-			out := Merge(&State{Report: c.base, CommitSHA: "sha-base"}, &State{Report: c.mine}).Report
-			got := ""
-			if out.Provenance.Intel != nil {
-				got = out.Provenance.Intel.SignalsDigest
-			}
-			if got != c.want {
-				t.Errorf("merged SignalsDigest = %q, want %q", got, c.want)
-			}
-			// The inputs are never edited: a retry re-merges from the same Reports.
-			for _, in := range []*report.Report{c.base, c.mine} {
-				if in.Provenance.Intel != nil && in.Provenance.Intel.SignalsDigest == "" {
-					t.Errorf("Merge cleared the digest on one of its inputs")
+		for _, side := range []struct {
+			name       string
+			base, mine *report.Report
+		}{
+			{"later is mine", c.base, c.mine},
+			{"later is base", c.mine, c.base},
+		} {
+			t.Run(c.name+"/"+side.name, func(t *testing.T) {
+				out := Merge(&State{Report: side.base, CommitSHA: "sha-base"}, &State{Report: side.mine}).Report
+				got := ""
+				if out.Provenance.Intel != nil {
+					got = out.Provenance.Intel.SignalsDigest
 				}
-			}
-		})
+				if got != c.want {
+					t.Errorf("merged SignalsDigest = %q, want %q", got, c.want)
+				}
+				// The inputs are never edited: a retry re-merges from the same Reports.
+				for _, in := range []*report.Report{side.base, side.mine} {
+					if in.Provenance.Intel != nil && in.Provenance.Intel.SignalsDigest == "" {
+						t.Errorf("Merge cleared the digest on one of its inputs")
+					}
+				}
+			})
+		}
 	}
 }
 

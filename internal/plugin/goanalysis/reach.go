@@ -202,7 +202,7 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res := evidenceResult(scanned.findings, g.CallGraph, env)
+	res := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
 	if res.Refutation != nil {
 		loaded, err := load()
 		if err != nil {
@@ -873,10 +873,13 @@ func (r goRelease) toolchain() string {
 // A govulncheck FAILURE (build broke, non-zero exit, timeout) is a HARD error (inv.4) — never a
 // silent empty result; only the caller may decide that a failure under a switched toolchain is
 // retryable. settle lets the run cache keep a settled failure; the caller withholds it for a run it
-// may retry.
+// may retry. A settled failure is answered by a partial run when one can be made
+// (govulncheckOrPartial); the result says so in its partial field.
 func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string, settle bool) (vulnScan, error) {
-	out, err := govulncheckCached(ctx, req.BuildDir, env, settle, func() ([]byte, error) {
+	out, partial, err := govulncheckOrPartial(ctx, req.BuildDir, env, settle, func() ([]byte, error) {
 		return govulncheckStream(ctx, req.BuildDir, env)
+	}, func(failure error) ([]byte, error) {
+		return partialGovulncheck(ctx, req.BuildDir, env, failure)
 	})
 	if err != nil {
 		return vulnScan{}, err
@@ -886,6 +889,7 @@ func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []s
 	if err != nil {
 		return vulnScan{}, fmt.Errorf("parse govulncheck json: %w", err)
 	}
+	scanned.partial = partial
 	return scanned, nil
 }
 
@@ -1156,6 +1160,8 @@ type vulnScan struct {
 	imports     map[string][]string
 	symbols     map[string][]string
 	wholeModule map[string]bool
+	// partial is the partial run the stream came from, or nil for a run over the whole build.
+	partial *partialRun
 }
 
 // vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols

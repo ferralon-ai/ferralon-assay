@@ -222,8 +222,7 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale: "go1.21.0 is at or past go1.17.3",
 		},
 		{
-			// A pre-1.21 go line beside a toolchain line cannot be the build: no go command before 1.21
-			// parses the file, so the floor is go1.21.0, past every GO-2021-0264 fix.
+			// No go command before 1.21 parses a toolchain line, so the floor is go1.21.0, past both fixes.
 			name:          "a pre-1.21 go line beside a toolchain line floors at go1.21.0, past the fix",
 			vulnID:        "GO-2021-0264",
 			goMod:         "module example.com/target\n\ngo 1.17\n\ntoolchain go1.17.0\n",

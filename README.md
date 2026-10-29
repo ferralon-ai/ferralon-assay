@@ -93,7 +93,12 @@ timeout), the scan reports what it would with `off` and the Report says why, und
 the token the scan sent fails the run: the token is expired or wrong, or a curation proxy is
 blocking a package. On `cve-watch`, a registry that has served the repository and now serves
 nothing, or answers with a transient error, holds the advisory cursor, and the run fails once that
-has lasted 3 runs and 24 hours. Before a pull-request job exports a registry
+has lasted 3 runs and 24 hours. A `cve-watch` run that read less dependency code than the
+lockfile pins does not keep a disqualified or not-exploitable verdict it reached: the advisory
+shows as undetermined with reason `dependency_not_fetched`, and the next `cve-watch` run assesses
+it again, even when OSV reports nothing new. The job summary names each registry that failed and
+what to fix (the token variable to set, a token to renew or a curation proxy to check, or the
+stalled registry); the Report and the pull-request comment never name a registry host. Before a pull-request job exports a registry
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
 receives it, and what the cache exposes.
 

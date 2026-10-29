@@ -200,7 +200,7 @@ func (p *program) siteDecls(f *fileParse, cs callSite, leaves []string) []funcDe
 			if !decided || len(at) == 0 && !open {
 				return nil
 			}
-			if len(at) == 0 {
+			if len(at) == 0 || open {
 				return p.declsNamed(leaves)
 			}
 			out = appendDecls(out, at)
@@ -250,11 +250,11 @@ func (f *fileParse) topDefs(scope, name string) []funcDecl {
 // first-party imports and star imports bind f to, followed in turn. A path through a
 // module's attribute ("pkg/x/f", pkg binding x) follows what the module binds x to the same
 // way. Each path is visited once, so an import cycle ends, and a re-export through the cycle
-// is still followed to its def. decided is false when a module on the way binds f, or the
-// attribute, by anything but defs at module level, first-party imports and star imports
-// (bindsOtherwise): what it holds there is not a declaration the walk can name. open is
-// true when the path leaves the modules the lane reads: a module no file is, or a class's
-// member.
+// is still followed to its def. decided is false when a module on the way binds f, the
+// attribute, or a package binds its submodule's name, by anything but defs at module level,
+// first-party imports and star imports (bindsOtherwise): what it holds there is not a
+// declaration the walk can name. open is true when the path leaves the modules the lane
+// reads: a module no file is, or a class's member; the name then decides the candidates.
 func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 	visited := map[string]bool{}
 	var out []funcDecl
@@ -297,6 +297,15 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 				}
 			}
 			return
+		}
+		segs := strings.Split(mod, "/")
+		for j := 1; j < len(segs); j++ {
+			for _, i := range p.byModule[strings.Join(segs[:j], "/")] {
+				if p.files[i].bindsOtherwise(segs[j]) {
+					decided = false // the package rebinds the submodule's name
+					return
+				}
+			}
 		}
 		for _, i := range p.byModule[mod] {
 			g := &p.files[i]

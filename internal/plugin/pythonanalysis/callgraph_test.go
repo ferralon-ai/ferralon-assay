@@ -381,6 +381,66 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			want:   funcSCIP("pkg/impl", []string{"K"}, "m", 1),
 		},
 		{
+			name: "module path to an attribute both imported and a class",
+			files: map[string]string{
+				"pkg/__init__.py":     "from .sub import tools\n\nclass tools:\n    @staticmethod\n    def f(x):\n        return x\n",
+				"pkg/sub/__init__.py": "", "pkg/sub/tools.py": "def f(x):\n    return x\n",
+				"app.py": "import pkg\n\ndef index():\n    return pkg.tools.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/sub/tools", nil, "f", 1), funcSCIP("pkg", []string{"tools"}, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to an attribute imported then reassigned",
+			files: map[string]string{
+				"pkg/__init__.py":     "from .sub import tools\n\ntools = wrap(tools)\n",
+				"pkg/sub/__init__.py": "", "pkg/sub/tools.py": "def f(x):\n    return x\n",
+				"app.py": "import pkg\n\ndef index():\n    return pkg.tools.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/sub/tools", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path to a submodule its package rebinds",
+			files: map[string]string{
+				"pkg/__init__.py": "from . import sub\n\nsub = make()\n", "pkg/sub.py": "def f(x):\n    return x\n",
+				"app.py": "import pkg\n\ndef index():\n    return pkg.sub.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/sub", nil, "f", 1)},
+			listed: true,
+		},
+		{
+			name: "module path through a star re-exported attribute",
+			files: map[string]string{
+				"pkg/__init__.py": "from .sub import *\n", "pkg/sub/__init__.py": "from . import tools\n", "pkg/sub/tools.py": "def f(x):\n    return x\n",
+				"other.py": "def f(x):\n    return x\n",
+				"app.py":   "import pkg\n\ndef index():\n    return pkg.tools.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/sub/tools", nil, "f", 1), absent: []string{funcSCIP("other", nil, "f", 1)},
+		},
+		{
+			name: "module path through two attributes to a class member",
+			files: map[string]string{
+				"pkg/__init__.py": "from .sub import tools\n", "pkg/sub/__init__.py": "", "pkg/sub/tools.py": "class K:\n    @staticmethod\n    def m(x):\n        return x\n",
+				"app.py": "import pkg\n\ndef index():\n    return pkg.tools.K.m(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("pkg/sub/tools", []string{"K"}, "m", 1),
+		},
+		{
+			name: "module path below a namespace package keeps the name fallback",
+			files: map[string]string{
+				"ns/other.py": "def f(x):\n    return x\n",
+				"app.py":      "import ns.ext\n\ndef index():\n    return ns.ext.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			want:   funcSCIP("ns/other", nil, "f", 1),
+		},
+		{
 			name: "first-party package below a directory the distribution scan reads as the top",
 			files: map[string]string{
 				"backend/app/util.py":  "def loads(s):\n    return s\n",

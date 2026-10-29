@@ -533,8 +533,8 @@ type EvidenceSummary struct {
 // can always say how old each one is. Which signals file the values came from is recorded once, as
 // Provenance.Intel.SignalsDigest.
 //
-// A nil Priority means the run had no signals, or the file had no stamped value for the advisory's
-// id or aliases. It never means "not exploited".
+// A nil Priority means the run had no signals, the file had no stamped value for the advisory's id
+// or aliases, or the join to its record was refused. It never means "not exploited".
 type Priority struct {
 	// EPSSScore is FIRST.org's 0..1 probability the CVE is exploited in the wild in the 30 days
 	// after EPSSAsOf. Set only with EPSSAsOf. Not omitempty: 0 is a real score, so it serializes
@@ -723,6 +723,10 @@ type Provenance struct {
 // from a fresh one. Without this block, "why did this go red with no code change?" — or
 // green — has no answer.
 //
+// The command line fills the whole block. trigger.Run* sets only SignalsDigest, the one input it
+// holds: how the work set was chosen and where the facts came from are known to the entrypoint that
+// resolved them, so on a library run the other fields are zero, meaning not recorded.
+//
 // It is DISCLOSURE, never a verdict (inv. 5). No finding's verdict, grounds, or count
 // depends on it; it narrows what the verdicts above cover, exactly as PartialityNote
 // does.
@@ -762,8 +766,19 @@ type IntelProvenance struct {
 	// bundle handed over without one). It records what was verified, not who should have signed.
 	CorpusSigner *CorpusSigner `json:"corpus_signer,omitempty"`
 	// SignalsDigest is the signals_digest of the EPSS/KEV signals file the pass ranked its findings
-	// with, as the file states it. Empty when the run had no signals, in which case no finding
-	// carries a Priority. Each priority value carries its own age stamp; this names the file.
+	// with: the value the loader recomputed from the file's payload, not the file's unverified
+	// claim. trigger.Run* records it from the request's Signals, so a library run and the command
+	// line name the file alike. Each priority value carries its own age stamp; this names the file.
+	// When set, the file ranked every row in the Report, so a row with no Priority is one the file
+	// holds no usable signal for (no record, or a refused join).
+	//
+	// A Report read back from the state ref is not always one run's work, so Priority rows can appear
+	// WITHOUT a digest: statestore.Merge, on a conflicting write, unions rows from two runs and leaves
+	// the digest empty when any row, ranked or not, came from a Report that named a different file (or
+	// none) than the one whose provenance the merge kept; and a Report written before this field
+	// existed has rows and no digest. So empty with Priority rows means the file is not known; empty
+	// with no Priority rows means no file is named: no signals were recorded, or the rows came from
+	// runs that did not share one.
 	SignalsDigest string `json:"signals_digest,omitempty"`
 }
 

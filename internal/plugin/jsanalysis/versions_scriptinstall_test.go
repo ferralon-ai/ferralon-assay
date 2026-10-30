@@ -104,6 +104,16 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		// Expansions and variables.
 		{"npm_config_registry set by Dockerfile ENV", npm(map[string]string{"Dockerfile": "FROM node:20\nENV npm_config_registry=https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
 		{"YARN_ variable in CI", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  YARN_REGISTRY: https://registry.example.com\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
+		// yarn 1 and yarn 2+ lowercase every variable name before matching yarn_, on any runner.
+		{"yarn_ lower-case in a Windows workflow env", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  yarn_npm_registry_server: https://mirror.example\njobs:\n  t:\n    runs-on: windows-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
+		{"YARN_ with a camel-case setting", npm(map[string]string{"install.sh": "export YARN_npmRegistryServer=https://mirror.example\nnpm ci\n"}), false, ""},
+		{"Yarn_ mixed case by Dockerfile ENV", npm(map[string]string{"Dockerfile": "FROM node:20\nENV Yarn_Registry=https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
+		{"yarn_ lower-case read, not set", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/cache@v4\n        with:\n          path: ${{ env.yarn_cache_folder }}\n          key: $yarn_registry:${yarn_lock}\n      - run: npm ci\n"}), true, ""},
+		{"yarn_ lower-case written to GITHUB_ENV", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"yarn_npm_registry_server=https://mirror.example\" >> $GITHUB_ENV\n      - run: npm ci\n"}), false, ""},
+		{"yarn_ lower-case by PowerShell $env:", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: windows-latest\n    steps:\n      - run: $env:yarn_registry = 'https://mirror.example'; npm ci\n        shell: pwsh\n"}), false, ""},
+		{"yarn_ lower-case by SetEnvironmentVariable", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: windows-latest\n    steps:\n      - run: '[Environment]::SetEnvironmentVariable(\"yarn_registry\", \"https://mirror.example\")'\n        shell: pwsh\n      - run: npm ci\n"}), false, ""},
+		{"yarn_ lower-case by legacy Dockerfile ENV", npm(map[string]string{"Dockerfile": "FROM node:20\nENV yarn_registry https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
+		{"yarn_ lower-case as a step id, cache path and key", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - id: yarn_cache\n        uses: actions/cache@v4\n        with:\n          path: ~/yarn_cache\n          key: yarn_cache-${{ hashFiles('package-lock.json') }}\n      - run: npm ci\n"}), true, ""},
 		{"NPM_FLAGS in netlify.toml", npm(map[string]string{"netlify.toml": "[build.environment]\n  NPM_FLAGS = \"--no-save express@4.18.2\"\n"}), false, ""},
 		{"PNPM_FLAGS in netlify.toml", npm(map[string]string{"netlify.toml": "[build.environment]\n  PNPM_FLAGS = \"--no-frozen-lockfile\"\n"}), false, ""},
 		{"BUN_FLAGS in a CI file", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  BUN_FLAGS: --no-save\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
@@ -240,6 +250,43 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 				t.Fatalf("Resolved = %v, want %v (match %+v)", r.Match.Resolved, tt.want, r.Match)
 			}
 		})
+	}
+}
+
+// TestLaneEnvRE pins which yarn_ spellings count as set. yarn reads yarn_ in any case, but a name
+// in other than upper case counts only where it is assigned, since it is common outside the
+// environment; an upper-case YARN_ name counts wherever it is not read.
+func TestLaneEnvRE(t *testing.T) {
+	tests := []struct {
+		src  string
+		sets bool
+	}{
+		{"YARN_REGISTRY: https://registry.example.com", true},
+		{"id: YARN_CACHE", true},
+		{"  yarn_npm_registry_server: https://mirror.example", true},
+		{"export YARN_npmRegistryServer=https://mirror.example", true},
+		{"yarn_registry = \"https://mirror.example\"", true},
+		{"echo \"yarn_npm_registry_server=https://mirror.example\" >> $GITHUB_ENV", true},
+		{"$env:yarn_registry = 'https://mirror.example'", true},
+		{"[Environment]::SetEnvironmentVariable(\"yarn_registry\", \"https://mirror.example\")", true},
+		{"os.environ[\"yarn_registry\"] = \"https://mirror.example\"", true},
+		{"ENV yarn_registry https://mirror.example", true},
+		{"ARG Yarn_Registry", true},
+		{"- name: yarn_npm_registry_server", true},
+		{"  - name: \"yarn_registry\"", true},
+		{"id: yarn_cache", false},
+		{"path: ~/yarn_cache", false},
+		{"key: yarn_cache-${{ hashFiles('yarn.lock') }}", false},
+		{"needs: [yarn_cache, build]", false},
+		{"YARN_npmRegistryServer is read from the environment", false},
+		{"$yarn_registry=", false},
+		{"${yarn_registry}=", false},
+		{"${{ env.yarn_registry }}", false},
+	}
+	for _, tt := range tests {
+		if got := laneEnvRE.MatchString(tt.src); got != tt.sets {
+			t.Errorf("laneEnvRE.MatchString(%q) = %v, want %v", tt.src, got, tt.sets)
+		}
 	}
 }
 

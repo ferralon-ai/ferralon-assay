@@ -1625,6 +1625,8 @@ func TestResolveVersions_UVResolverStaleLockExhaustive(t *testing.T) {
 		// A scoped override can add a dependency its package does not declare.
 		{"scoped override adds a name the lock lacks", "override-dependencies = [{ package = { name = \"pyjwt\" }, dependencies = [\"cryptography>=41\"] }]", "2.8.0", false},
 		{"versioned scoped override adds a name the lock lacks", "override-dependencies = [{ package = { name = \"pyjwt\", version = \"2.8.0\" }, dependencies = [\"cryptography>=41\"] }]", "2.8.0", false},
+		{"scoped override adds a direct reference", "override-dependencies = [{ package = { name = \"pyjwt\" }, dependencies = [\"cryptography @ git+https://github.com/example/cryptography@abc\"] }]", "2.8.0", false},
+		{"scoped override file URL over a locked name", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt @ file:///opt/forks/pyjwt\"] }]", "2.8.0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := writeTree(t, map[string]string{

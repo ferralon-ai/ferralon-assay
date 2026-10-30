@@ -257,8 +257,15 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 		out.reqs[i].Resolver = true
 	}
 	// A scoped override's dependencies can add a name, so they are declarations like any other.
+	// A direct reference there installs whatever it names, which no lock entry records.
+	m := len(out.reqs)
 	if !add(scopedAdds) {
 		return out, false
+	}
+	for _, r := range out.reqs[m:] {
+		if r.Direct {
+			return out, false
+		}
 	}
 	for _, g := range slices.Sorted(maps.Keys(all.Tool.PDM.DevDependencies)) {
 		if !add(all.Tool.PDM.DevDependencies[g]) {

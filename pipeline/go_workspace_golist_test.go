@@ -103,6 +103,32 @@ func TestGoWorkspace_BuildHoldsAModuleNoGoModLists(t *testing.T) {
 	}
 }
 
+// TestWorkspaceBuildList_ReplaceTargetChange: a go.mod a replace points at is part of what fixes the
+// build list, so a remembered list is not reused once that file changes; the module it now requires is
+// present, not absent.
+func TestWorkspaceBuildList_ReplaceTargetChange(t *testing.T) {
+	proxy := offlineProxy(t)
+	publish(t, proxy, "example.com/n", "v1.0.0", map[string]string{"go.mod": "module example.com/n\n\ngo 1.21\n", "n.go": "package n\n"})
+	sum := download(t, proxy, "example.com/n@v1.0.0")
+	tree := writeTree(t, map[string]string{
+		"go.work":  "go 1.21\n\nuse ./a\n",
+		"a/go.mod": "module example.com/mono/a\n\ngo 1.21\n\nrequire example.com/r v0.0.0\n\nreplace example.com/r => ../r\n",
+		"a/go.sum": sum,
+		"r/go.mod": "module example.com/r\n\ngo 1.21\n",
+	})
+	ws := GoWorkspace{File: filepath.Join(tree, "go.work")}
+	buildDir := filepath.Join(tree, "a")
+	ctx := context.Background()
+
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n"); present || !known {
+		t.Fatalf("before: goModRequires = %v, %v; want false, true", present, known)
+	}
+	writeProxyFile(t, filepath.Join(tree, "r"), "go.mod", "module example.com/r\n\ngo 1.21\n\nrequire example.com/n v1.0.0\n")
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n"); !present || !known {
+		t.Fatalf("after the replace target requires n: goModRequires = %v, %v; want true, true", present, known)
+	}
+}
+
 // offlineProxy returns an empty file:// GOPROXY directory and points the go command at a fresh module
 // cache with no go env file, checksum database or toolchain switching.
 func offlineProxy(t *testing.T) string {

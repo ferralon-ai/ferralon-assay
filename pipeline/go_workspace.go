@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -227,8 +228,9 @@ type listedModule struct {
 	Replace *struct{ Path, Version string }
 }
 
-// buildLists memoizes workspaceBuildList by the build directory and the content of the go.work and
-// every go.mod it uses, which with the checksummed go.mod files of the module cache fix the list.
+// buildLists memoizes workspaceBuildList by the build directory and the content of the go.work, every
+// go.mod it uses and every go.mod a replace there points at, which with the checksummed go.mod files
+// of the module cache fix the list.
 var buildLists sync.Map
 
 // workspaceBuildList returns every module in the build list of buildDir under the workspace ws, as
@@ -242,6 +244,11 @@ func workspaceBuildList(ctx context.Context, buildDir string, ws GoWorkspace) ([
 		return nil, err
 	}
 	h.Write(data)
+	wf, err := modfile.ParseWork(ws.File, data, nil)
+	if err != nil {
+		return nil, err
+	}
+	hashReplaced(h, filepath.Dir(ws.File), wf.Replace)
 	uses, _, err := parseGoWork(ws.File)
 	if err != nil {
 		return nil, err
@@ -253,6 +260,11 @@ func workspaceBuildList(ctx context.Context, buildDir string, ws GoWorkspace) ([
 		}
 		fmt.Fprintf(h, "\x00%s\x00", use)
 		h.Write(data)
+		mf, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return nil, err
+		}
+		hashReplaced(h, use, mf.Replace)
 	}
 	key := string(h.Sum(nil))
 	if mods, ok := buildLists.Load(key); ok {
@@ -264,6 +276,24 @@ func workspaceBuildList(ctx context.Context, buildDir string, ws GoWorkspace) ([
 	}
 	buildLists.Store(key, mods)
 	return mods, nil
+}
+
+// hashReplaced adds to h the go.mod of every directory a replace in a manifest under dir points at:
+// the build reads its requirements as the replaced module's. One that cannot be read hashes as such,
+// and the go command decides what that means.
+func hashReplaced(h io.Writer, dir string, replaces []*modfile.Replace) {
+	for _, r := range replaces {
+		if !modfile.IsDirectoryPath(r.New.Path) {
+			continue
+		}
+		target := r.New.Path
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(dir, target)
+		}
+		data, err := os.ReadFile(filepath.Join(target, "go.mod"))
+		fmt.Fprintf(h, "\x00%s\x00%v\x00", target, err != nil)
+		h.Write(data)
+	}
 }
 
 // goListBuild runs `go list -m -json all` for the build of buildDir under ws. It runs offline

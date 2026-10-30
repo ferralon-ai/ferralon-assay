@@ -56,9 +56,9 @@ import (
 //     groups or tool dependency tables hold an entry that cannot be read.
 //     See versions_surfaces.go and versions_declared.go.
 //   - A script surface that runs a pip self-upgrade (pipSelfUpgrade) is treated the same way
-//     for the pip coordinate alone: it installs pip and nothing else. One that names a Python
-//     interpreter, base image or installer, or creates a venv, is treated so for pip,
-//     setuptools and wheel (seededDistributions), which the interpreter or venv seeds.
+//     for the pip coordinate alone: it installs pip and nothing else. pip, setuptools and
+//     wheel are treated so in every build (seededDistributions): the interpreter it runs on,
+//     or a venv it creates, seeds them.
 //   - A distribution installed in a site-packages directory under the build dir is another
 //     copy of its project: it takes part in Match like a pin, without joining All.
 //

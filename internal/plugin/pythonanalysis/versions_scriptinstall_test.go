@@ -219,14 +219,7 @@ func TestResolveVersions_PipSelfUpgrade(t *testing.T) {
 		})
 	}
 
-	// Controls: with no script surface the pip pin resolves, and a Dockerfile self-upgrade
-	// leaves the requirements file it installs bound.
-	t.Run("no script surface: pip resolves", func(t *testing.T) {
-		r := resolveVersion(t, writeTree(t, map[string]string{"requirements.txt": reqs}), "pip")
-		if !r.Match.Resolved || r.Match.Version != "24.0" {
-			t.Fatalf("pip = %+v, want 24.0 resolved", r.Match)
-		}
-	})
+	// Control: a Dockerfile self-upgrade leaves the requirements file it installs bound.
 	t.Run("Dockerfile self-upgrade between COPY and install", func(t *testing.T) {
 		dir := writeTree(t, map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "pip install --upgrade pip\nRUN pip install -r requirements.txt\n"})
 		if r := resolveVersion(t, dir, "jinja2"); !r.Match.Resolved {
@@ -332,29 +325,33 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 	})
 }
 
-// A build that runs a Python interpreter, base image or installer, or creates a venv, holds the
-// pip, setuptools and wheel that interpreter, image or venv seeds, at versions nothing read
-// here records, so none of the three is ever proven absent, and each is declared to the import
-// resolver. Every row keeps a uv.lock that proves PyJWT absent.
+// Every build runs on an interpreter that holds, or creates a venv that holds, the pip,
+// setuptools and wheel it seeds, at versions nothing read here records, so none of the three is
+// ever proven absent, and each is declared to the import resolver. The rows cover where an
+// interpreter comes from, named in a script surface or not. Every row keeps a uv.lock that
+// proves PyJWT absent.
 func TestResolveVersions_SeededExhaustive(t *testing.T) {
 	const ci = "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'\n      - run: uv sync --frozen\n"
+	const sync = "WORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen\n"
 	tests := []struct {
-		name   string
-		files  map[string]string
-		seeded bool
+		name  string
+		files map[string]string
 	}{
-		{"python base image, uv sync", map[string]string{"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen\n"}, true},
-		{"slim stage", map[string]string{"Dockerfile": "FROM python:3.11-slim AS build\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen\n"}, true},
-		{"registry path, version in the tag", map[string]string{"Dockerfile": "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen\n"}, true},
-		{"pypy image", map[string]string{"Dockerfile": "FROM pypy:3.10\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen\n"}, true},
-		{"setup-python", map[string]string{".github/workflows/ci.yml": ci}, true},
-		{"python -m venv", map[string]string{"install.sh": "python3 -m venv .venv\n"}, true},
-		{"virtualenv", map[string]string{"install.sh": "virtualenv .venv\n"}, true},
-		{"interpreter run", map[string]string{"Makefile": "check:\n\tpython3.12 -c 'import app'\n"}, true},
-
-		// Guards.
-		{"no script surface", nil, false},
-		{"surface naming no interpreter", map[string]string{"install.sh": "echo pythonic uvicorn\n"}, false},
+		{"python base image, uv sync", map[string]string{"Dockerfile": "FROM python:3.12\n" + sync}},
+		{"slim stage", map[string]string{"Dockerfile": "FROM python:3.11-slim AS build\n" + sync}},
+		{"registry path, version in the tag", map[string]string{"Dockerfile": "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim\n" + sync}},
+		{"pypy image", map[string]string{"Dockerfile": "FROM pypy:3.10\n" + sync}},
+		{"image not named for python", map[string]string{"Dockerfile": "FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime\n" + sync}},
+		{"Dockerfile under a dashed name", map[string]string{"Dockerfile-prod": "FROM python:3.12\n" + sync}},
+		{"setup-python", map[string]string{".github/workflows/ci.yml": ci}},
+		{"python -m venv", map[string]string{"install.sh": "python3 -m venv .venv\n"}},
+		{"py launcher venv", map[string]string{"install.ps1": "py -3.12 -m venv .venv\n"}},
+		{"virtualenv", map[string]string{"install.sh": "virtualenv .venv\n"}},
+		{"interpreter run", map[string]string{"Makefile": "check:\n\tpython3.12 -c 'import app'\n"}},
+		{".python-version", map[string]string{".python-version": "3.12\n"}},
+		{"platform runtime", map[string]string{"runtime.txt": "python-3.12.4\n", "Procfile": "web: gunicorn app:app\n"}},
+		{"surface naming no interpreter", map[string]string{"install.sh": "echo pythonic uvicorn\n"}},
+		{"no script surface", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -368,34 +365,30 @@ func TestResolveVersions_SeededExhaustive(t *testing.T) {
 			}
 			names, _, _ := declaredDistributions(dir)
 			for _, c := range seededDistributions {
-				if r := resolveVersion(t, dir, c); r.Found || r.Exhaustive == tt.seeded {
-					t.Fatalf("%s = found %v exhaustive %v, want absent and exhaustive %v", c, r.Found, r.Exhaustive, !tt.seeded)
+				if r := resolveVersion(t, dir, c); r.Found || r.Exhaustive {
+					t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)
 				}
-				if names[c] != tt.seeded {
-					t.Fatalf("declaredDistributions = %v, want %s declared %v", names, c, tt.seeded)
+				if !names[c] {
+					t.Fatalf("declaredDistributions = %v, want %s declared", names, c)
 				}
 			}
 		})
 	}
 }
 
-// A pin of a seeded distribution is not the version the build holds once it runs an
-// interpreter or creates a venv: the interpreter, image or venv seeds its own copy. The other
-// pins still resolve.
+// A pin of a seeded distribution is not the version the build holds: the interpreter it runs
+// on, or a venv it creates, seeds its own copy. The other pins still resolve.
 func TestResolveVersions_SeededPins(t *testing.T) {
 	const reqs = "jinja2==3.1.4\npip==24.0\nsetuptools==69.0.0\nwheel==0.42.0\n"
 	tests := []struct {
-		name   string
-		files  map[string]string
-		seeded bool
+		name  string
+		files map[string]string
 	}{
-		{"python -m venv", map[string]string{"install.sh": "python -m venv .venv\n"}, true},
-		{"virtualenv", map[string]string{"install.sh": "virtualenv .venv\n"}, true},
-		{"pip install -r", map[string]string{"install.sh": "pip install -r requirements.txt\n"}, true},
-		{"Dockerfile", map[string]string{"Dockerfile": "FROM python:3.12-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}, true},
-
-		// Guard.
-		{"no script surface", nil, false},
+		{"python -m venv", map[string]string{"install.sh": "python -m venv .venv\n"}},
+		{"virtualenv", map[string]string{"install.sh": "virtualenv .venv\n"}},
+		{"pip install -r", map[string]string{"install.sh": "pip install -r requirements.txt\n"}},
+		{"Dockerfile", map[string]string{"Dockerfile": "FROM python:3.12-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}},
+		{"no script surface", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -408,9 +401,8 @@ func TestResolveVersions_SeededPins(t *testing.T) {
 				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete", r.Match, r.Partiality)
 			}
 			for _, c := range seededDistributions {
-				r := resolveVersion(t, dir, c)
-				if !r.Found || r.Match.Resolved == tt.seeded || r.Partiality.Complete == tt.seeded {
-					t.Fatalf("%s = %+v partiality %+v, want found, resolved and complete %v", c, r.Match, r.Partiality, !tt.seeded)
+				if r := resolveVersion(t, dir, c); !r.Found || r.Match.Resolved || r.Partiality.Complete {
+					t.Fatalf("%s = %+v partiality %+v, want found, unresolved and partial", c, r.Match, r.Partiality)
 				}
 			}
 		})

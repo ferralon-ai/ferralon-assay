@@ -154,17 +154,13 @@ func pipSelfUpgrade(args []string) bool {
 // config subcommand.
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip`)
 
-// interpreterNamedRE matches, in a script surface's text, a Python interpreter, base image or
-// installer: python, pypy, pip, virtualenv, setup-python, uv and the other lane installers,
-// with or without a version suffix. Whatever runs it seeds what seededDistributions names, at
-// versions the interpreter, image or venv bundles and nothing read here records.
-var interpreterNamedRE = regexp.MustCompile(`(?i)(?:^|[^\w.])(?:python|pypy|pip|virtualenv|uvx?|poetry|pdm|pipenv|hatch|tox|nox|conda|mamba|micromamba|pixi|rye|flit)(?:\d+(?:\.\d+)*)?(?:$|\W)`)
-
-// seededDistributions are what an interpreter, a base image or a new venv may already hold:
-// ensurepip and python -m venv seed pip, and before Python 3.12 setuptools; virtualenv and
-// uv venv --seed seed wheel too, and an image or distro interpreter may ship any of them. Which
-// of them a given interpreter holds is not read: its own site-packages keeps whatever it
-// ships, whatever --without-pip, --no-setuptools or --no-wheel leave out of a venv.
+// seededDistributions are what the interpreter a build runs on, or a venv it creates, may
+// already hold: ensurepip and python -m venv seed pip, and before Python 3.12 setuptools;
+// virtualenv and uv venv --seed seed wheel too, and an image or distro interpreter may ship any
+// of them. Every Python build runs on some interpreter, and where it comes from (a base image,
+// a runner, .python-version, a platform runtime) is not read, nor is its site-packages, which
+// keeps whatever it ships whatever --without-pip, --no-setuptools or --no-wheel leave out of a
+// venv. So each is installed at a version nothing read here records, in every build.
 var seededDistributions = []string{"pip", "setuptools", "wheel"}
 
 // laneFlags are the flags every allowed form may carry.

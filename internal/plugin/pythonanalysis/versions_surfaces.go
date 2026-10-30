@@ -29,9 +29,9 @@ import (
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
 // surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
 // read here records, which a caller withholds as it would every pin: pip after an allowed
-// self-upgrade (pipSelfUpgrade), and every seeded distribution once a script surface names a
-// Python interpreter or installer (interpreterNamedRE). No self-upgrade is allowed when root
-// holds a pip config file (pipConfigInTree) or a script surface names one (pipConfigNamedRE).
+// self-upgrade (pipSelfUpgrade), and in every build the distributions an interpreter or venv
+// seeds (seededDistributions). No self-upgrade is allowed when root holds a pip config file
+// (pipConfigInTree) or a script surface names one (pipConfigNamedRE).
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
@@ -63,10 +63,9 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed, interpreted := false, false
+	configNamed := false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
-		interpreted = interpreted || interpreterNamedRE.MatchString(src)
 	}
 	veto := scriptsurface.New(root, read, spec)
 	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
@@ -78,13 +77,12 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	if interpreted {
-		if tooling == nil {
-			tooling = map[string]bool{}
-		}
-		for _, n := range seededDistributions {
-			tooling[n] = true
-		}
+	// After the check above: seeding is not a self-upgrade, and must not trip it.
+	if tooling == nil {
+		tooling = map[string]bool{}
+	}
+	for _, n := range seededDistributions {
+		tooling[n] = true
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
 }

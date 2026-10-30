@@ -46,10 +46,8 @@ package pythonanalysis
 // dependency closure brings into that environment, and a Dockerfile RUN pip install, are
 // outside what Exhaustive covers.
 //
-// pip, setuptools and wheel are never Exhaustive once a script surface names a Python
-// interpreter, base image or installer, or creates a venv (interpreterNamedRE): the
-// interpreter, image or venv seeds them at versions no lockfile records. With no script
-// surface naming one, an interpreter the build gets elsewhere is not observed.
+// pip, setuptools and wheel are never Exhaustive (seededDistributions): the interpreter the
+// build runs on, or a venv it creates, may hold them at versions no lockfile records.
 
 import (
 	"os"

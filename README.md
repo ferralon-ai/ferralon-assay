@@ -304,8 +304,9 @@ declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 
 ## Scope
 
-Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
-onto vulnerable symbols, builds a call graph, and computes reachability, then reports what it found.
+Assay is a source-available reachability engine, published under the Business Source License 1.1
+(see [License](#license)): it resolves dependency versions, maps advisories onto vulnerable symbols,
+builds a call graph, and computes reachability, then reports what it found.
 What each of the six languages resolves today is laid out in
 [Language support](docs/language-support.md).
 

@@ -465,16 +465,18 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
-// bindAll binds every element of a relative path.
-func (v *Veto) bindAll(p string) {
+// bindRoot binds the first element of a relative path, which any path a command names
+// through it mentions.
+func (v *Veto) bindRoot(p string) {
 	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
 		if part != "" && part != "." {
 			v.bind(part)
+			return
 		}
 	}
 }
 
-// mention records the base names of a command's arguments, a redirect's or an option's
+// mention records every element of a command's arguments, a redirect's or an option's
 // target included.
 func (v *Veto) mention(args []string) {
 	for _, w := range args {
@@ -483,8 +485,10 @@ func (v *Veto) mention(args []string) {
 			w = trimShell(w[i+1:])
 		}
 		for _, a := range braces(filepath.ToSlash(w), 0) {
-			if b := strings.ToLower(path.Base(a)); b != "" && b != "." && b != "/" {
-				v.mentioned[b] = true
+			for _, b := range strings.Split(strings.ToLower(a), "/") {
+				if b != "" && b != "." {
+					v.mentioned[b] = true
+				}
 			}
 		}
 	}

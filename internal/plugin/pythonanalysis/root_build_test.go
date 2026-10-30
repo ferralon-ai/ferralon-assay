@@ -25,6 +25,12 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 		"pdm":    {"pdm.lock", lockPDM},
 	}
 	commands := map[string]string{"uv": "uv sync --locked", "poetry": "poetry install", "pdm": "pdm sync"}
+	// before is what install.sh runs ahead of the install, by row.
+	before := map[string]string{
+		"pdm, .pdm-plugins written by the script":           "mkdir -p .pdm-plugins\n",
+		"poetry, .poetry/plugins written by the script":     "mkdir -p .poetry/plugins\n",
+		"poetry, a script naming another plugins directory": "pytest tests/plugins\n",
+	}
 	tests := []struct {
 		name, tool, pyproject string
 		files                 map[string]string // more files in the tree
@@ -38,6 +44,7 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 		{"poetry, .poetry/plugins committed", "poetry", project, map[string]string{".poetry/plugins/p.py": "x = 1\n"}, "", false},
 		{"poetry, .poetry/plugins copied in", "poetry", project, map[string]string{".poetry/plugins/p.py": "x = 1\n"},
 			"FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN poetry install\n", false},
+		{"poetry, .poetry/plugins written by the script", "poetry", project, nil, "", false},
 
 		// pdm: in-tree plugins, then the root's PEP 517 backend.
 		{"pdm, .pdm-plugins", "pdm", project, map[string]string{".pdm-plugins/lib/p.py": "x = 1\n"}, "", false},
@@ -53,6 +60,13 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 		{"pdm, hatchling target hook", "pdm", backend("hatchling.build") + "[tool.hatch.build.targets.wheel.hooks.vcs]\n", nil, "", false},
 		{"pdm, hatchling metadata hook", "pdm", backend("hatchling.build") + "[tool.hatch.metadata.hooks.custom]\n", nil, "", false},
 		{"pdm, hatchling with hatch_build.py", "pdm", backend("hatchling.build"), map[string]string{"hatch_build.py": hook}, "", false},
+		{"pdm, hatchling with a hook in hatch.toml", "pdm", backend("hatchling.build"),
+			map[string]string{"hatch.toml": "[build.hooks.custom]\npath = \"tools/hook.py\"\n", "tools/hook.py": hook}, "", false},
+		{"pdm, setuptools cmdclass", "pdm", backend("setuptools.build_meta") + "[tool.setuptools.cmdclass]\nbuild_py = \"tools.b:B\"\n", nil, "", false},
+		{"pdm, setuptools with a setup.cfg cmdclass", "pdm", backend("setuptools.build_meta"),
+			map[string]string{"setup.cfg": "[options]\ncmdclass =\n    build_py = tools.b:B\n"}, "", false},
+		{"pdm, library package-type over distribution false", "pdm", project + "[tool.pdm]\npackage-type = \"library\"\ndistribution = false\n",
+			map[string]string{"setup.py": setupPy}, "", false},
 		{"pdm, poetry-core build script", "pdm", backend("poetry.core.masonry.api") + "[tool.poetry]\nbuild = \"build.py\"\n", nil, "", false},
 		{"pdm, setup.py copied in", "pdm", project, map[string]string{"setup.py": setupPy},
 			"FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml pdm.lock setup.py ./\nRUN pdm sync\n", false},
@@ -61,10 +75,15 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 		{"pdm, plugins copied to .pdm-plugins", "pdm", project, map[string]string{"plugins/p.py": "x = 1\n"},
 			"FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml pdm.lock ./\nCOPY plugins .pdm-plugins/lib\nRUN pdm sync\n", false},
 		{"pdm, .pdm-plugins written by the script", "pdm", project, nil, "", false},
+		{"pdm, setup.py from a stage built on the source", "pdm", project, map[string]string{"setup.py": setupPy},
+			"FROM python:3.12 AS src\nWORKDIR /app\nCOPY . .\nFROM src\nWORKDIR /app\nCOPY pyproject.toml pdm.lock ./\nRUN pdm sync\n", false},
+		{"pdm, setup.py copied to a destination not known", "pdm", project, map[string]string{"setup.py": setupPy},
+			"FROM python:3.12\nARG D=/app\nWORKDIR /app\nCOPY setup.py $D/\nCOPY pyproject.toml pdm.lock ./\nRUN pdm sync\n", false},
+		{"pdm, the context bind-mounted beside the manifest", "pdm", project, map[string]string{"setup.py": setupPy},
+			"FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml pdm.lock ./\nRUN --mount=type=bind,source=.,target=/app pdm sync\n", false},
 		{"pdm, .pdm-plugins when distribution is false", "pdm", project + "[tool.pdm]\ndistribution = false\n", map[string]string{".pdm-plugins/lib/p.py": "x = 1\n"}, "", false},
 
 		// uv: the root's PEP 517 backend, and a workspace.
-		{"uv, setup.py, no build-system", "uv", project, map[string]string{"setup.py": setupPy}, "", false},
 		{"uv, setuptools with setup.py", "uv", backend("setuptools.build_meta"), map[string]string{"setup.py": setupPy}, "", false},
 		{"uv, unknown backend", "uv", backend("scikit_build_core.build"), nil, "", false},
 		{"uv, workspace root", "uv", project + "[tool.uv.workspace]\nmembers = [\"packages/*\"]\n", nil, "", false},
@@ -81,6 +100,12 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 		{"pdm, distribution false with setup.py", "pdm", project + "[tool.pdm]\ndistribution = false\n", map[string]string{"setup.py": setupPy}, "", true},
 		{"pdm, setup.py left out of the image", "pdm", project, map[string]string{"setup.py": setupPy},
 			"FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml pdm.lock ./\nRUN pdm sync\n", true},
+		{"pdm, whole context copied with nothing there", "pdm", project, nil,
+			"FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,target=/root/.cache/pdm pdm sync\n", true},
+		{"pdm, application package-type with setup.py", "pdm", project + "[tool.pdm]\npackage-type = \"application\"\n",
+			map[string]string{"setup.py": setupPy}, "", true},
+		{"poetry, a script naming another plugins directory", "poetry", project, nil, "", true},
+		{"uv, no build-system with setup.py", "uv", project, map[string]string{"setup.py": setupPy}, "", true},
 		{"uv, uv_build with a stub setup.py", "uv", backend("uv_build"), map[string]string{"setup.py": setupPy}, "", true},
 		{"uv, package false with setup.py", "uv", project + "[tool.uv]\npackage = false\n", map[string]string{"setup.py": setupPy}, "", true},
 		{"uv, setuptools without setup.py", "uv", backend("setuptools.build_meta"), nil, "", true},
@@ -92,10 +117,8 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 			switch {
 			case tt.dockerfile != "":
 				files["Dockerfile"] = tt.dockerfile
-			case tt.name == "pdm, .pdm-plugins written by the script":
-				files["install.sh"] = "#!/bin/sh\nmkdir -p .pdm-plugins\n" + commands[tt.tool] + "\n"
 			default:
-				files["install.sh"] = "#!/bin/sh\n" + commands[tt.tool] + "\n"
+				files["install.sh"] = "#!/bin/sh\n" + before[tt.name] + commands[tt.tool] + "\n"
 			}
 			for k, v := range tt.files {
 				files[k] = v

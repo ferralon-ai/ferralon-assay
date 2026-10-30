@@ -26,8 +26,8 @@ type Binder interface {
 	Prefixed(dir, name string, locks ...string) []string
 	// Clear reports whether nothing is at p, a relative path with no .. part, beside each
 	// file Nearest(name) returns: nothing in the build tree there and, under a Dockerfile,
-	// nothing copied there. It binds every element of p, so a command that names one
-	// withholds. false when Nearest(name) is nil or p may be there.
+	// nothing copied or mounted there. It binds p's first element, so a command that names a
+	// path through it withholds. false when Nearest(name) is nil or p may be there.
 	Clear(name, p string) bool
 }
 
@@ -230,11 +230,11 @@ func (c *hostCursor) Clear(name, p string) bool {
 		return false
 	}
 	for _, h := range hits {
-		if _, there, known := c.v.stat(filepath.Join(filepath.Dir(h), p)); there || !known {
+		if there, known := c.v.lstat(filepath.Join(filepath.Dir(h), p)); there || !known {
 			return false
 		}
 	}
-	c.v.bindAll(p)
+	c.v.bindRoot(p)
 	return true
 }
 
@@ -319,6 +319,15 @@ func (v *Veto) stat(p string) (regular, there, known bool) {
 		return false, false, v.spec.Absent(err)
 	}
 	return fi.Mode().IsRegular(), true, true
+}
+
+// lstat reports whether anything is at p, a dangling symlink included, and whether that is
+// known.
+func (v *Veto) lstat(p string) (there, known bool) {
+	if _, err := os.Lstat(p); err != nil {
+		return false, v.spec.Absent(err)
+	}
+	return true, true
 }
 
 // glob lists what a COPY source pattern matches. ok is false when the pattern has a

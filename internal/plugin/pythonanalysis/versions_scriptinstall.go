@@ -240,8 +240,12 @@ type rootProject struct {
 			Build           any `toml:"build"`
 			RequiresPlugins any `toml:"requires-plugins"`
 		} `toml:"poetry"`
+		Setuptools struct {
+			Cmdclass any `toml:"cmdclass"`
+		} `toml:"setuptools"`
 		PDM struct {
-			Distribution *bool `toml:"distribution"`
+			PackageType  *string `toml:"package-type"`
+			Distribution *bool   `toml:"distribution"`
 			Build        struct {
 				CustomHook    any `toml:"custom-hook"`
 				RunSetuptools any `toml:"run-setuptools"`
@@ -264,11 +268,12 @@ type rootProject struct {
 // tree code that runs is a tool.poetry.build script. Any poetry command loads plugins from a
 // .poetry/plugins directory beside the manifest, and poetry install installs
 // tool.poetry.requires-plugins there from the index. pdm loads plugins from a .pdm-plugins
-// directory there (releases before 2.27; the release a build runs is not known here), and pdm
-// and uv build the root through its PEP 517 backend unless tool.pdm.distribution or
-// tool.uv.package is false. That build is clean only for a backend that runs nothing from the
-// tree but what tool tables or files named here ask it to (backendClean). A uv workspace
-// builds its members as well, so a workspace root fails.
+// directory there (releases before 2.27; the release a build runs is not known here). pdm
+// builds the root through its PEP 517 backend when tool.pdm.package-type is "library" or,
+// with none, unless tool.pdm.distribution is false; uv does when tool.uv.package is true or,
+// with none, when the manifest has a build-system table. That build is clean only for a
+// backend that runs nothing from the tree but what tool tables or files named here ask it to
+// (backendClean). A uv workspace builds its members as well, so a workspace root fails.
 func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 	pyprojects := b.Nearest("pyproject.toml")
 	if pyprojects == nil {
@@ -292,14 +297,22 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 			if !b.Clear("pyproject.toml", ".pdm-plugins") {
 				return false
 			}
-			if d := doc.Tool.PDM.Distribution; (d == nil || *d) && !backendClean(doc, b) {
+			builds := doc.Tool.PDM.Distribution == nil || *doc.Tool.PDM.Distribution
+			if t := doc.Tool.PDM.PackageType; t != nil {
+				builds = *t == "library"
+			}
+			if builds && !backendClean(doc, b) {
 				return false
 			}
 		case "uv":
 			if doc.Tool.UV.Workspace != nil {
 				return false
 			}
-			if p := doc.Tool.UV.Package; (p == nil || *p) && !backendClean(doc, b) {
+			builds := doc.BuildSystem != nil
+			if p := doc.Tool.UV.Package; p != nil {
+				builds = *p
+			}
+			if builds && !backendClean(doc, b) {
 				return false
 			}
 		default:
@@ -311,9 +324,11 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 
 // backendClean reports whether the PEP 517 backend a manifest names runs no code from the
 // tree when it builds the project: setuptools (also the backend when none is named) with no
-// setup.py beside the manifest; pdm-backend with no pdm_build.py and no custom-hook or
-// run-setuptools; hatchling with no hooks table anywhere in tool.hatch and no hatch_build.py;
-// poetry-core with no tool.poetry.build; flit_core; or uv_build. A backend-path, which loads
+// setup.py or setup.cfg beside the manifest, either of which can name command classes in the
+// tree, and no tool.setuptools.cmdclass; pdm-backend with no pdm_build.py and no custom-hook
+// or run-setuptools; hatchling with no hooks table anywhere in tool.hatch and no
+// hatch_build.py or hatch.toml, which hatchling merges into tool.hatch; poetry-core with no
+// tool.poetry.build; flit_core; or uv_build. A backend-path, which loads
 // the backend itself from the tree, or any other backend fails.
 func backendClean(doc rootProject, b scriptsurface.Binder) bool {
 	backend := ""
@@ -325,11 +340,11 @@ func backendClean(doc rootProject, b scriptsurface.Binder) bool {
 	}
 	switch backend {
 	case "", "setuptools.build_meta", "setuptools.build_meta:__legacy__":
-		return b.Clear("pyproject.toml", "setup.py")
+		return doc.Tool.Setuptools.Cmdclass == nil && b.Clear("pyproject.toml", "setup.py") && b.Clear("pyproject.toml", "setup.cfg")
 	case "pdm.backend":
 		return doc.Tool.PDM.Build.CustomHook == nil && doc.Tool.PDM.Build.RunSetuptools == nil && b.Clear("pyproject.toml", "pdm_build.py")
 	case "hatchling.build":
-		return !hasKey(doc.Tool.Hatch, "hooks") && b.Clear("pyproject.toml", "hatch_build.py")
+		return !hasKey(doc.Tool.Hatch, "hooks") && b.Clear("pyproject.toml", "hatch_build.py") && b.Clear("pyproject.toml", "hatch.toml")
 	case "poetry.core.masonry.api":
 		return doc.Tool.Poetry.Build == nil
 	case "flit_core.buildapi", "uv_build":

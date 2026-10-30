@@ -537,6 +537,501 @@ func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaq
 	return sortedDedup(roots), opaque
 }
 
+// stringLoaderArg says what a string loader's name argument may be.
+type stringLoaderArg int
+
+const (
+	// loaderNameOnly: the argument is always a dotted name, so a computed one is a dynamic
+	// import the scanner cannot name.
+	loaderNameOnly stringLoaderArg = iota
+	// loaderNameOrObject: the argument may be the object itself (an app, a config class),
+	// so a computed one is a dynamic import only when it is provably a string.
+	loaderNameOrObject
+)
+
+// stringLoaders are library callables that import the module a dotted-name argument
+// ("pkg.mod.attr" or "pkg.mod:attr") names, keyed by the full dotted name the file's
+// imports resolve the call to, so an unrelated run() or import_string() is not one.
+var stringLoaders = map[string]stringLoaderArg{
+	"werkzeug.import_string":                    loaderNameOnly,
+	"werkzeug.utils.import_string":              loaderNameOnly,
+	"django.utils.module_loading.import_string": loaderNameOnly,
+	"uvicorn.run":                               loaderNameOrObject,
+	"uvicorn.Config":                            loaderNameOrObject,
+	"uvicorn.main.run":                          loaderNameOrObject,
+	"uvicorn.config.Config":                     loaderNameOrObject,
+}
+
+// stringLoaderMethods are loader methods called on an instance the scanner cannot type,
+// keyed by the attribute chain that ends the call: Flask's app.config.from_object and
+// Celery's app.config_from_object, which both take a dotted name or the object itself.
+var stringLoaderMethods = map[string]bool{
+	"config.from_object": true,
+	"config_from_object": true,
+}
+
+// loaderKeywords are the parameter names string loaders give the argument that names the
+// module: uvicorn's app, werkzeug's and django's import_name and dotted_path, Flask's and
+// Celery's obj.
+var loaderKeywords = map[string]bool{"app": true, "import_name": true, "dotted_path": true, "obj": true}
+
+// stringLoaderImports scans one file's cleaned source for calls to stringLoaders and
+// stringLoaderMethods. It returns the module names literal arguments import and whether a
+// loader may import a module the scanner cannot name: a computed argument, or a loader
+// used as a value (map(import_string, paths)), whose calls it cannot see. bindings resolve
+// the head of each dotted call to the module the file imported it from.
+func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots []string, opaque bool) {
+	r := []rune(clean)
+	n := len(r)
+	spans, stars := importStatements(r)
+	targets := map[string][]string{}
+	for _, b := range bindings {
+		if b.target != "" && !slices.Contains(targets[b.local], b.target) {
+			targets[b.local] = append(targets[b.local], b.target)
+		}
+	}
+	for name := range stringLoaders {
+		if mod, leaf, _ := cutLast(name, "."); stars[mod] && !definesName(r, leaf) {
+			targets[leaf] = append(targets[leaf], name)
+		}
+	}
+	si := 0
+	for i := 0; i < n; {
+		if si < len(spans) && i >= spans[si][0] {
+			i = max(i, spans[si][1])
+			si++
+			continue
+		}
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		qualified := i > 0 && r[i-1] == '.'
+		var segs []string
+		end := i
+		for {
+			var w string
+			w, end = readWordRunes(r, end)
+			segs = append(segs, w)
+			if end+1 < n && r[end] == '.' && isIdentStartRune(r[end+1]) {
+				end++
+				continue
+			}
+			break
+		}
+		kind, name, ok := stringLoaderKind(segs, qualified, targets)
+		if !ok || precededByDef(r, i) || precededByWord(r, i, "class") || assignedTo(r, end) {
+			i = end
+			continue
+		}
+		open := skipAllSpace(r, end)
+		if open >= n || r[open] != '(' {
+			// A loader passed or bound as a value may be called anywhere. A Config class
+			// named as a type (an annotation, isinstance) is no call.
+			opaque = opaque || !strings.HasSuffix(name, ".Config") || !typePosition(r, i)
+			i = end
+			continue
+		}
+		arg, known := loaderNameArg(r, open)
+		switch {
+		case !known:
+			opaque = opaque || kind == loaderNameOnly
+		case arg[0] < arg[1]:
+			c := classifyLoaderArg(r, arg[0], arg[1], lits)
+			roots = append(roots, c.roots...)
+			opaque = opaque || c.computed || c.other && kind == loaderNameOnly
+		}
+		i = end
+	}
+	return sortedDedup(roots), opaque
+}
+
+// stringLoaderKind reports whether the dotted call segs is a string loader: its head
+// resolved through the file's import targets names a stringLoaders entry, returned as
+// name, or its trailing attributes are a stringLoaderMethods chain on some receiver (name
+// empty). qualified says segs follow a '.' (a call or subscript receiver), so the head is
+// an attribute, not a name to resolve.
+func stringLoaderKind(segs []string, qualified bool, targets map[string][]string) (kind stringLoaderArg, name string, ok bool) {
+	k := len(segs)
+	if k >= 2 && segs[k-2] == "config" && stringLoaderMethods["config."+segs[k-1]] && (k >= 3 || qualified) ||
+		stringLoaderMethods[segs[k-1]] && (k >= 2 || qualified) {
+		return loaderNameOrObject, "", true
+	}
+	if qualified {
+		return 0, "", false
+	}
+	rest := strings.Join(segs[1:], ".")
+	for _, t := range targets[segs[0]] {
+		full := t
+		if rest != "" {
+			full += "." + rest
+		}
+		if kind, ok := stringLoaders[full]; ok {
+			return kind, full, true
+		}
+	}
+	return 0, "", false
+}
+
+// loaderNameArg returns the span of a loader call's name argument, given the index of its
+// '(': a loaderKeywords keyword argument anywhere, else the first positional one. The span
+// is empty when the call passes neither; known is false when an unpacking (*args, **kw)
+// may pass it.
+func loaderNameArg(r []rune, open int) (arg [2]int, known bool) {
+	var positional [2]int
+	found, unpacked := false, false
+	for _, sp := range callArgSpans(r, open) {
+		s := skipAllSpace(r, sp[0])
+		switch {
+		case s >= sp[1]:
+		case r[s] == '*':
+			unpacked = true
+		case isIdentStartRune(r[s]) && assignedTo(r, wordEnd(r, s)):
+			if w, end := readWordRunes(r, s); loaderKeywords[w] {
+				return [2]int{skipAllSpace(r, end) + 1, sp[1]}, true
+			}
+		case !found && !unpacked:
+			positional, found = [2]int{s, sp[1]}, true
+		}
+	}
+	return positional, found || !unpacked
+}
+
+// wordEnd returns the index just past the identifier starting at r[i].
+func wordEnd(r []rune, i int) int {
+	_, end := readWordRunes(r, i)
+	return end
+}
+
+// callArgSpans splits the arguments of the call whose '(' is at r[open] at its top-level
+// commas, up to the matching ')' (or the end of the source).
+func callArgSpans(r []rune, open int) [][2]int {
+	var spans [][2]int
+	depth, start := 0, open+1
+	for j := open + 1; j < len(r); j++ {
+		switch r[j] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return append(spans, [2]int{start, j})
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				spans = append(spans, [2]int{start, j})
+				start = j + 1
+			}
+		}
+	}
+	return append(spans, [2]int{start, len(r)})
+}
+
+// loaderArgClass is what a loader's name argument may evaluate to.
+type loaderArgClass struct {
+	roots    []string // modules its literal names import
+	computed bool     // it may be a string the scanner cannot read
+	other    bool     // it may be any value: a name, a call, an object
+}
+
+// classifyLoaderArg classifies the argument expression r[s:e]. Each branch of a conditional
+// ("pkg.asgi:app" if prod else app) is classified on its own; a parenthesised expression
+// is classified by its contents.
+func classifyLoaderArg(r []rune, s, e int, lits map[int]strLiteral) loaderArgClass {
+	s = skipAllSpace(r, s)
+	for e > s && unicode.IsSpace(r[e-1]) {
+		e--
+	}
+	if s < e && r[s] == '(' && closingBracket(r, s) == e-1 {
+		return classifyLoaderArg(r, s+1, e-1, lits)
+	}
+	if s >= e {
+		return loaderArgClass{other: true}
+	}
+	if ifAt, elseAt, ok := conditionalSplit(r, s, e, lits); ok {
+		return classifyLoaderArg(r, s, ifAt, lits).or(classifyLoaderArg(r, elseAt+len("else"), e, lits))
+	}
+	// Either operand of a boolean operator may be the value (path or "pkg.asgi:app").
+	for _, op := range []string{"or", "and"} {
+		if at := topLevelKeyword(r, s, e, op, lits); at >= 0 {
+			return classifyLoaderArg(r, s, at, lits).or(classifyLoaderArg(r, at+len(op), e, lits))
+		}
+	}
+	if body, ok := wholeLiteral(r, s, e, lits); ok {
+		return loaderArgClass{roots: loaderNameRoots(body)}
+	}
+	if provablyString(r, s, lits) {
+		return loaderArgClass{computed: true}
+	}
+	return loaderArgClass{other: true}
+}
+
+// or combines the classes of two expressions the argument may evaluate to either of.
+func (c loaderArgClass) or(d loaderArgClass) loaderArgClass {
+	return loaderArgClass{roots: append(c.roots, d.roots...), computed: c.computed || d.computed, other: c.other || d.other}
+}
+
+// closingBracket returns the index of the bracket closing the one at r[i], or -1.
+func closingBracket(r []rune, i int) int {
+	depth := 0
+	for j := i; j < len(r); j++ {
+		switch r[j] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// conditionalSplit finds the top-level if and else keywords of a conditional expression
+// in r[s:e].
+func conditionalSplit(r []rune, s, e int, lits map[int]strLiteral) (ifAt, elseAt int, ok bool) {
+	ifAt = topLevelKeyword(r, s, e, "if", lits)
+	if ifAt < 0 {
+		return 0, 0, false
+	}
+	elseAt = topLevelKeyword(r, ifAt+len("if"), e, "else", lits)
+	return ifAt, elseAt, elseAt >= 0
+}
+
+// topLevelKeyword returns the index of the first keyword kw outside brackets in r[s:e], or
+// -1. A blanked literal right after it ('_' in else'pkg') does not extend the word.
+func topLevelKeyword(r []rune, s, e int, kw string, lits map[int]strLiteral) int {
+	depth := 0
+	for j := s; j < e; j++ {
+		switch c := r[j]; {
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case isIdentStartRune(c) && (j == s || !isIdentPart(r[j-1])):
+			end := j + 1
+			for end < e && isIdentPart(r[end]) {
+				if _, lit := lits[end]; lit {
+					break
+				}
+				end++
+			}
+			if depth == 0 && string(r[j:end]) == kw {
+				return j
+			}
+			j = end - 1
+		}
+	}
+	return -1
+}
+
+// typePosition reports whether the expression starting at r[i] is a type, not a value: a
+// return annotation (-> T), a parameter or annotated-assignment annotation (x: T), a type
+// subscript (Optional[T]), or an isinstance, issubclass or cast argument, directly or in a
+// tuple. Any other position, a class base among them, is a value.
+func typePosition(r []rune, i int) bool {
+	p := i - 1
+	for p >= 0 && unicode.IsSpace(r[p]) {
+		p--
+	}
+	if p >= 1 && r[p] == '>' && r[p-1] == '-' {
+		return true
+	}
+	open := enclosingOpen(r, i)
+	if p >= 0 && r[p] == ':' {
+		// The annotated name starts its statement, or is a def parameter.
+		q := p - 1
+		for q >= 0 && (r[q] == ' ' || r[q] == '\t') {
+			q--
+		}
+		e := q + 1
+		for q >= 0 && isIdentPart(r[q]) {
+			q--
+		}
+		if q+1 == e {
+			return false
+		}
+		if open < 0 {
+			for q >= 0 && (r[q] == ' ' || r[q] == '\t') {
+				q--
+			}
+			return q < 0 || r[q] == '\n' || r[q] == ';'
+		}
+		// A parameter follows '(', ',' or '*'; a lambda's parameters do not open a def's.
+		for q >= 0 && unicode.IsSpace(r[q]) {
+			q--
+		}
+		return r[open] == '(' && isDefParams(r, open) && q >= 0 && strings.ContainsRune("(,*", r[q])
+	}
+	for open >= 0 {
+		w, before := wordBefore(r, open)
+		switch {
+		case r[open] == '[':
+			return w != "" && !pyCallKeywords[w] || w == "" && before >= 0 && r[before] == ']'
+		case r[open] != '(':
+			return false
+		case w == "isinstance" || w == "issubclass" || w == "cast":
+			return true
+		case w == "" && before >= 0 && (r[before] == ',' || r[before] == '('):
+			open = enclosingOpen(r, open) // a tuple argument
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// enclosingOpen returns the index of the innermost unclosed bracket before r[i], or -1.
+func enclosingOpen(r []rune, i int) int {
+	depth := 0
+	for j := i - 1; j >= 0; j-- {
+		switch r[j] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			if depth == 0 {
+				return j
+			}
+			depth--
+		}
+	}
+	return -1
+}
+
+// wordBefore returns the identifier ending just before r[open] (spaces skipped), and the
+// index of the last non-space rune before that word, or -1.
+func wordBefore(r []rune, open int) (string, int) {
+	j := open - 1
+	for j >= 0 && unicode.IsSpace(r[j]) {
+		j--
+	}
+	end := j + 1
+	for j >= 0 && isIdentPart(r[j]) {
+		j--
+	}
+	w := string(r[j+1 : end])
+	if w != "" {
+		for j >= 0 && unicode.IsSpace(r[j]) {
+			j--
+		}
+	}
+	return w, j
+}
+
+// isDefParams reports whether the '(' at r[open] opens a def's parameter list.
+func isDefParams(r []rune, open int) bool {
+	j := open
+	for j > 0 && unicode.IsSpace(r[j-1]) {
+		j--
+	}
+	k := j
+	for k > 0 && isIdentPart(r[k-1]) {
+		k--
+	}
+	return k < j && precededByDef(r, k)
+}
+
+// definesName reports whether the file defines a module-level function or class named
+// name, which shadows a star import's binding of it. A method or nested definition does not.
+func definesName(r []rune, name string) bool {
+	for i := 0; i < len(r); {
+		if i > 0 && r[i-1] != '\n' {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if w == "async" {
+			w, end = readWordRunes(r, skipAllSpace(r, end))
+		}
+		if w == "def" || w == "class" {
+			if n, _ := readWordRunes(r, skipAllSpace(r, end)); n == name {
+				return true
+			}
+		}
+		i = max(end, i+1)
+	}
+	return false
+}
+
+// wholeLiteral returns the value of r[s:e] when it is one plain string literal
+// (optionally r/b/u-prefixed).
+func wholeLiteral(r []rune, s, e int, lits map[int]strLiteral) (string, bool) {
+	i := s
+	for i < e && i-s < 2 && strings.ContainsRune("rRbBuU", r[i]) {
+		i++
+	}
+	lit, ok := lits[i]
+	if !ok || skipAllSpace(r, lit.end) < e {
+		return "", false
+	}
+	return lit.body, true
+}
+
+// provablyString reports whether the call argument starting at r[i] is a string even
+// though it is not a plain literal: it opens with a string literal (an f-string, a
+// concatenation, a %-format, a .format call) or reads the environment (os.environ[...],
+// os.environ.get(...), os.getenv(...)).
+func provablyString(r []rune, i int, lits map[int]strLiteral) bool {
+	i = skipAllSpace(r, i)
+	for j := i; j < len(r) && j-i < 2 && strings.ContainsRune("rRbBuUfFtT", r[j]); j++ {
+		if _, ok := lits[j+1]; ok {
+			return true
+		}
+	}
+	if _, ok := lits[i]; ok {
+		return true
+	}
+	var segs []string
+	end := i
+	for end < len(r) && isIdentStartRune(r[end]) {
+		var w string
+		w, end = readWordRunes(r, end)
+		segs = append(segs, w)
+		if end+1 < len(r) && r[end] == '.' && isIdentStartRune(r[end+1]) {
+			end++
+			continue
+		}
+		break
+	}
+	chain := strings.TrimPrefix(strings.Join(segs, "."), "os.")
+	p := skipAllSpace(r, end)
+	switch chain {
+	case "environ":
+		return p < len(r) && r[p] == '['
+	case "environ.get", "getenv":
+		return p < len(r) && r[p] == '('
+	}
+	return false
+}
+
+// loaderNameRoots returns the modules a loader's dotted name may import: the part before a
+// ':' ("pkg.mod:attr"), or else the name and, since its last part may be an attribute, its
+// parent ("pkg.mod.Class").
+func loaderNameRoots(name string) []string {
+	if mod, _, ok := strings.Cut(name, ":"); ok {
+		if mod == "" {
+			return nil
+		}
+		return []string{mod}
+	}
+	if k := strings.LastIndexByte(name, '.'); k > 0 {
+		return []string{name, name[:k]}
+	}
+	if name == "" {
+		return nil
+	}
+	return []string{name}
+}
+
+// cutLast slices s around the last instance of sep.
+func cutLast(s, sep string) (before, after string, found bool) {
+	if k := strings.LastIndex(s, sep); k >= 0 {
+		return s[:k], s[k+len(sep):], true
+	}
+	return s, "", false
+}
+
 // lookupKind classifies a name moduleLookups watches.
 type lookupKind int
 

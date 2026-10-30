@@ -794,6 +794,96 @@ func TestCallGraph_ModuleLevelCallsGetModuleInitCaller(t *testing.T) {
 	}
 }
 
+// TestCallGraph_StringLoaders: a loader that imports the module a string names records a
+// literal name as a load root, and a name the scanner cannot read adds the dynamic_import
+// reason; a loader is matched by the dotted name the file's imports resolve it to.
+func TestCallGraph_StringLoaders(t *testing.T) {
+	cases := []struct {
+		name      string
+		src       string
+		roots     []string
+		dynReason bool
+	}{
+		{"werkzeug import_string literal", "from werkzeug.utils import import_string\nview = import_string('acme.views.Index')\n", []string{"acme.views", "acme.views.Index"}, false},
+		{"werkzeug import_string colon form", "import werkzeug\nview = werkzeug.import_string('acme.views:Index')\n", []string{"acme.views"}, false},
+		{"django import_string through an alias", "from django.utils.module_loading import import_string as load\nBackend = load(dotted_path='acme.backends.Mail')\n", []string{"acme.backends", "acme.backends.Mail"}, false},
+		{"import_string computed", "from werkzeug.utils import import_string\n\ndef view(name):\n    return import_string(name)\n", nil, true},
+		{"import_string unpacked", "from werkzeug.utils import import_string\n\ndef view(kw):\n    return import_string(**kw)\n", nil, true},
+		{"uvicorn.run literal", "import uvicorn\n\nif __name__ == '__main__':\n    uvicorn.run('acme.asgi:app', port=8000)\n", []string{"acme.asgi"}, false},
+		{"uvicorn Config keyword", "from uvicorn import Config\ncfg = Config(app='acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"uvicorn.run f-string", "import uvicorn\n\ndef serve(m):\n    uvicorn.run(f'{m}:app')\n", nil, true},
+		{"uvicorn.run from the environment", "import os\nimport uvicorn\nuvicorn.run(os.environ['APP'])\n", nil, true},
+		{"uvicorn.run from getenv", "import os\nimport uvicorn\nuvicorn.run(os.getenv('APP', 'acme.asgi:app'))\n", nil, true},
+		{"uvicorn.run literal or app object", "import uvicorn\n\ndef serve(app, reload):\n    uvicorn.run('acme.asgi:app' if reload else app)\n", []string{"acme.asgi"}, false},
+		{"import_string literal or computed", "from werkzeug.utils import import_string\n\ndef view(name, default):\n    return import_string('acme.views' if default else name)\n", []string{"acme", "acme.views"}, true},
+		{"literal in the else branch", "import uvicorn\n\ndef serve(app, reload):\n    uvicorn.run(app if not reload else 'acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"two literal branches", "import uvicorn\n\ndef serve(prod):\n    uvicorn.run('acme.asgi:app' if prod else 'acme.dev:app')\n", []string{"acme.asgi", "acme.dev"}, false},
+		{"literal or environment branch", "import os\nimport uvicorn\n\ndef serve(dev):\n    uvicorn.run('acme.asgi:app' if dev else os.environ['APP'])\n", []string{"acme.asgi"}, true},
+		{"parenthesised conditional", "import uvicorn\n\ndef serve(app, reload):\n    uvicorn.run(('acme.asgi:app' if reload else app), port=8000)\n", []string{"acme.asgi"}, false},
+		{"name-only conditional of literals", "from werkzeug.utils import import_string\n\ndef view(a):\n    return import_string('acme.a' if a else 'acme.b')\n", []string{"acme", "acme.a", "acme.b"}, false},
+		{"app keyword after another", "import uvicorn\nuvicorn.run(\n    host='0.0.0.0',\n    app='acme.asgi:app',\n)\n", []string{"acme.asgi"}, false},
+		{"app keyword from the environment", "import os\nimport uvicorn\nuvicorn.run(host='0.0.0.0', app=os.environ['APP'])\n", nil, true},
+		{"import_string keyword after another", "from werkzeug.utils import import_string\nimport_string(silent=True, import_name='acme.views')\n", []string{"acme", "acme.views"}, false},
+		{"empty module name", "import uvicorn\nuvicorn.run(':app')\n", nil, false},
+		{"star import", "from uvicorn import *\nrun('acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"import_string as a value", "from werkzeug.utils import import_string\nfrom django.conf import settings\nBACKENDS = list(map(import_string, settings.BACKENDS))\n", nil, true},
+		{"import_string bound to another name", "from django.utils.module_loading import import_string\nload = import_string\n", nil, true},
+		{"import_string in a parenthesised import", "from werkzeug.utils import (\n    cached_property,\n    import_string,\n)\nview = import_string('acme.views')\n", []string{"acme", "acme.views"}, false},
+		{"uvicorn.run app object", "import uvicorn\nfrom acme.asgi import app\nuvicorn.run(app, host='0.0.0.0')\n", nil, false},
+		{"flask from_object literal", "from flask import Flask\napp = Flask(__name__)\napp.config.from_object('acme.settings.Prod')\n", []string{"acme.settings", "acme.settings.Prod"}, false},
+		{"flask from_object on a call", "def make():\n    create_app().config.from_object('acme.settings')\n", []string{"acme", "acme.settings"}, false},
+		{"flask from_object class", "from flask import Flask\nfrom acme.settings import Prod\napp = Flask(__name__)\napp.config.from_object(Prod)\n", nil, false},
+		{"flask from_object from the environment", "import os\n\ndef make(app):\n    app.config.from_object(os.environ.get('SETTINGS'))\n", nil, true},
+		{"celery config_from_object literal", "from celery import Celery\napp = Celery('acme')\napp.config_from_object('django.conf:settings', namespace='CELERY')\n", []string{"django.conf"}, false},
+		{"celery config_from_object variable", "def make(app, settings):\n    app.config_from_object(settings)\n", nil, false},
+		{"subprocess.run is not a loader", "import subprocess\n\ndef go(cmd):\n    subprocess.run(cmd)\n    subprocess.run('acme.tool')\n", nil, false},
+		{"unbound import_string", "def import_string(name):\n    return name\n\nimport_string('acme.views')\n", nil, false},
+		{"run on an unrelated module", "import server\nserver.run('acme.asgi:app')\n", nil, false},
+		{"attribute named like a loader", "import werkzeug\nobj.werkzeug.import_string('acme.views')\n", nil, false},
+		{"loader name on a call receiver", "import uvicorn\nimport werkzeug\nmake().werkzeug.import_string(name)\nservers[0].uvicorn.run('acme.asgi:app')\n", nil, false},
+		{"bare config.from_object name", "from acme import config\nconfig.from_object('acme.settings')\n", nil, false},
+		{"uvicorn Config as a type", "from typing import Optional\nimport uvicorn\nfrom uvicorn import Config\n\ndef build(cfg: uvicorn.Config, alt: Optional[Config]) -> Config:\n    assert isinstance(cfg, uvicorn.config.Config)\n    return cfg\n", nil, false},
+		{"uvicorn Config subclassed", "import uvicorn\n\nclass Settings(uvicorn.Config):\n    pass\n", nil, true},
+		{"uvicorn Config subclassed across lines", "import uvicorn\n\nclass Settings(\n    Base,\n    uvicorn.Config,\n):\n    pass\n", nil, true},
+		{"uvicorn Config subclassed after a statement", "import uvicorn\nx = 1; class S(uvicorn.Config): pass\n", nil, true},
+		{"uvicorn Config bound and called", "import uvicorn\ncfg_cls = uvicorn.Config\ncfg = cfg_cls('acme.asgi:app')\n", nil, true},
+		{"uvicorn Config in a partial", "import functools\nimport uvicorn\nmk = functools.partial(uvicorn.Config, port=80)\n", nil, true},
+		{"uvicorn Config returned", "import uvicorn\n\ndef factory():\n    return uvicorn.Config\n", nil, true},
+		{"uvicorn Config in a dict", "import uvicorn\nFACTORIES = {'u': uvicorn.Config}\n", nil, true},
+		{"uvicorn Config in a lambda", "import uvicorn\nmk = lambda: uvicorn.Config\n", nil, true},
+		{"uvicorn Config in a list", "import uvicorn\nKINDS = [uvicorn.Config]\n", nil, true},
+		{"uvicorn Config in a returned list", "import uvicorn\n\ndef kinds():\n    return [uvicorn.Config]\n", nil, true},
+		{"uvicorn Config in a loop list", "import uvicorn\nfor k in [uvicorn.Config]:\n    k('acme.asgi:app')\n", nil, true},
+		{"uvicorn Config in a lambda default", "import uvicorn\n\ndef f(mk=lambda: uvicorn.Config):\n    return mk()\n", nil, true},
+		{"aliased Config as a type", "from uvicorn import Config as UC\n\ndef f(c: UC) -> None:\n    pass\n", nil, false},
+		{"Config annotations in a class body and a tuple isinstance", "import typing\nimport uvicorn\n\nclass S(Base):\n    cfg: uvicorn.Config\n    kind: typing.Type[uvicorn.Config]\n\ndef check(c):\n    return isinstance(c, (int, uvicorn.Config))\n", nil, false},
+		{"Config annotation on a multi-line def", "import uvicorn\n\nasync def serve(\n    host,\n    cfg: uvicorn.Config,\n):\n    pass\n", nil, false},
+		{"uvicorn.run passed as a value", "import uvicorn\nserve = uvicorn.run\n", nil, true},
+		{"environment or literal", "import os\nimport uvicorn\n\ndef serve(path):\n    uvicorn.run(path or 'acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"literal and computed", "from werkzeug.utils import import_string\n\ndef view(name, on):\n    return import_string(on and 'acme.views' or name)\n", []string{"acme", "acme.views"}, true},
+		{"else against a literal", "from werkzeug.utils import import_string\n\ndef view(a):\n    return import_string('acme.a' if a else'acme.b')\n", []string{"acme", "acme.a", "acme.b"}, false},
+		{"star import with a method named run", "from uvicorn import *\n\nclass Svc:\n    def run(self):\n        pass\n\nrun('acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"star import with an inner class named Config", "from uvicorn import *\n\nclass M(BaseModel):\n    class Config:\n        frozen = True\n\nConfig('acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"star import shadowed by a def", "from uvicorn import *\n\ndef run(target):\n    return target\n\nhandlers = [run]\n", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"m.py": c.src})
+			prog, err := loadProgram(dir)
+			if err != nil {
+				t.Fatalf("loadProgram: %v", err)
+			}
+			if got := prog.files[0].loadRoots; !reflect.DeepEqual(got, c.roots) {
+				t.Errorf("loadRoots = %v, want %v", got, c.roots)
+			}
+			res := callGraphOf(prog)
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != c.dynReason {
+				t.Errorf("dynamic_import reason = %v, want %v (reasons %v)", got, c.dynReason, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
 // TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
 // program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
 // reason.

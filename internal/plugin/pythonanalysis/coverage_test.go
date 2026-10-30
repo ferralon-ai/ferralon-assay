@@ -273,6 +273,7 @@ func TestResolveVersions_ExhaustiveHatchInstallsPast(t *testing.T) {
 		{"top-level sources", "[tool.hatch.sources]\njinja2 = { path = \"../jinja2\" }\n", false},
 		{"custom collector", "[tool.hatch.env.collectors.custom]\n", false},
 		{"script override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.scripts]]\nkey = \"setup\"\nvalue = \"pip install pyjwt\"\n", false},
+		{"dependency override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.custom]]\ndependencies = [\"pyjwt<2\"]\n", false},
 		{"env-var override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.env-vars]]\nkey = \"PIP_INDEX_URL\"\nvalue = \"https://mirror.example/simple\"\n", false},
 	}
 	for _, tt := range tests {

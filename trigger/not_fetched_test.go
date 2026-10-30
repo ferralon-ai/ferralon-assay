@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"os/exec"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -186,8 +187,9 @@ func TestRunCVEWatch_ReassessListed(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		stored *statestore.DepFetch
-		// marked stores the row already withheld as dependency_not_fetched.
-		marked        bool
+		// marked stores the row already withheld as dependency_not_fetched; fresh leaves the
+		// advisory off the stored cursor, so OSV reports it as new.
+		marked, fresh bool
 		hook          func(prior *statestore.DepFetch) *statestore.DepFetch
 		wantHeartbeat bool
 		wantVerdict   report.Verdict
@@ -195,12 +197,20 @@ func TestRunCVEWatch_ReassessListed(t *testing.T) {
 	}{
 		{name: "nothing listed is a heartbeat", wantHeartbeat: true, wantVerdict: report.VerdictNotExploitable},
 		{
-			name: "listed, a run that records no dependency acquisition leaves it alone", stored: listed,
+			name: "listed, a heartbeat of a run that records no dependency acquisition leaves the stored row", stored: listed,
 			wantHeartbeat: true, wantVerdict: report.VerdictNotExploitable,
 		},
 		{
 			name: "listed and withheld, a run that records no dependency acquisition retries nothing", stored: listed, marked: true,
 			wantHeartbeat: true, wantVerdict: report.VerdictUndetermined, wantReason: report.ReasonDependencyNotFetched,
+		},
+		{
+			name: "withheld and the record lost, a run that records no dependency acquisition retries nothing", marked: true,
+			wantHeartbeat: true, wantVerdict: report.VerdictUndetermined, wantReason: report.ReasonDependencyNotFetched,
+		},
+		{
+			name: "listed and new to the cursor, a run that records no dependency acquisition withholds it", stored: listed, fresh: true,
+			wantVerdict: report.VerdictUndetermined, wantReason: report.ReasonDependencyNotFetched,
 		},
 		{
 			name: "listed, read again without dependency code",
@@ -217,11 +227,14 @@ func TestRunCVEWatch_ReassessListed(t *testing.T) {
 			store, _ := groundedBaseline()
 			store.state.DepFetch = tc.stored
 			if tc.marked {
-				rep, err := withNotFetched(store.state.Report, tc.stored)
+				rep, err := withNotFetched(store.state.Report, listed)
 				if err != nil {
 					t.Fatal(err)
 				}
 				store.state.Report = rep
+			}
+			if tc.fresh {
+				store.state.Cursor = ""
 			}
 			osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
 			req := CVEWatchRequest{
@@ -238,8 +251,19 @@ func TestRunCVEWatch_ReassessListed(t *testing.T) {
 			if res.Heartbeat != tc.wantHeartbeat {
 				t.Fatalf("heartbeat = %v, want %v", res.Heartbeat, tc.wantHeartbeat)
 			}
-			if !tc.wantHeartbeat && (!slices.Equal(res.Reassessed, []string{wiringAdvisory.ID}) || len(res.NewAdvisories) != 0) {
-				t.Fatalf("reassessed %v new %v, want %s reassessed and nothing new", res.Reassessed, res.NewAdvisories, wiringAdvisory.ID)
+			switch {
+			case tc.wantHeartbeat:
+			case tc.fresh:
+				if len(res.Reassessed) != 0 || !slices.Equal(res.NewAdvisories, []string{wiringAdvisory.ID}) {
+					t.Fatalf("reassessed %v new %v, want %s new and nothing reassessed", res.Reassessed, res.NewAdvisories, wiringAdvisory.ID)
+				}
+			default:
+				if !slices.Equal(res.Reassessed, []string{wiringAdvisory.ID}) || len(res.NewAdvisories) != 0 {
+					t.Fatalf("reassessed %v new %v, want %s reassessed and nothing new", res.Reassessed, res.NewAdvisories, wiringAdvisory.ID)
+				}
+			}
+			if tc.hook == nil && !reflect.DeepEqual(store.state.DepFetch, tc.stored) {
+				t.Fatalf("a run that records no dependency acquisition changed the record to %+v, want %+v", store.state.DepFetch, tc.stored)
 			}
 			f := rowByID(store.state.Report, wiringAdvisory.ID)
 			if f.Verdict != tc.wantVerdict || f.UndeterminedReason != tc.wantReason {
@@ -284,7 +308,7 @@ func TestRunBaseline_WithholdsWhatStaysListed(t *testing.T) {
 	}{
 		{"still listed", func(prior *statestore.DepFetch) *statestore.DepFetch { return prior }, report.VerdictUndetermined},
 		{"cleared", func(*statestore.DepFetch) *statestore.DepFetch { return nil }, report.VerdictNotExploitable},
-		{"a run that records no dependency acquisition", nil, report.VerdictNotExploitable},
+		{"a run that records no dependency acquisition still withholds", nil, report.VerdictUndetermined},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, _ := groundedBaseline()

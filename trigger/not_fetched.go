@@ -19,19 +19,11 @@ import (
 // demote a listed advisory's refuting verdict, and they send a listed advisory back to assessment.
 // Neither treats an unlisted advisory as anything.
 
-// appliedRecord is the record whose reassess list a run applies: dep for a run that records its
-// dependency acquisition (update set, a JS scan) and none for any other. Only a JS run adds to the
-// list. A scan of another language sharing the state ref carries the list unchanged, and applying
-// it there could withhold, and retry on every cve-watch run, a row of its own whose advisory also
-// names an npm package the list holds. Such a run also retries nothing (RunCVEWatch), a row
-// withheld as dependency_not_fetched included, so every row it does not assess keeps what the JS
-// run stored.
-func appliedRecord(update DependencyFetchUpdate, dep *statestore.DepFetch) *statestore.DepFetch {
-	if update == nil {
-		return nil
-	}
-	return dep
-}
+// Every write applies the list, whichever lane runs: a listed advisory is never stored with a
+// refuting verdict. Only a run that records its dependency acquisition (DependencyFetchUpdate set,
+// a JS scan) changes the record; a scan of another language sharing the state ref carries it
+// unchanged, so it never clears or shrinks the list, and its own row for an advisory the list names
+// stays withheld until a JS run reads the code and clears it. That over-withholds on purpose.
 
 // listedNotFetched reports whether f's advisory is on reassess, by its ID or one of its aliases.
 func listedNotFetched(f report.AdvisoryFinding, reassess []string) bool {
@@ -78,17 +70,17 @@ func withNotFetched(rep *report.Report, dep *statestore.DepFetch) (*report.Repor
 	return &out, nil
 }
 
-// remergeNotFetched is the statestore Remerge hook for a write that withheld with withNotFetched,
-// for a run whose DependencyFetchUpdate is update. A lost CAS unions the winner's rows and reassess
+// remergeNotFetched is the statestore Remerge hook for a write that withheld with withNotFetched.
+// A lost CAS unions the winner's rows and reassess
 // list with this run's, so the merged report can hold a refuting verdict the winner reached for an
 // advisory the merged list names; the hook withholds it again over the merged record before the
 // store writes the merged state.
-func remergeNotFetched(update DependencyFetchUpdate) func(*statestore.State) error {
+func remergeNotFetched() func(*statestore.State) error {
 	return func(s *statestore.State) error {
 		if s.Report == nil {
 			return nil
 		}
-		rep, err := withNotFetched(s.Report, appliedRecord(update, s.DepFetch))
+		rep, err := withNotFetched(s.Report, s.DepFetch)
 		if err != nil {
 			return err
 		}

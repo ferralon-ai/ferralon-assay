@@ -136,10 +136,10 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 	}
 	// A baseline that read all the dependency code cleared what it assessed from the list; what is
 	// left was not assessed with it, so this Report does not refute it either.
-	if next.Report, err = withNotFetched(next.Report, appliedRecord(req.DependencyFetch, next.DepFetch)); err != nil {
+	if next.Report, err = withNotFetched(next.Report, next.DepFetch); err != nil {
 		return nil, err
 	}
-	next.Remerge = remergeNotFetched(req.DependencyFetch)
+	next.Remerge = remergeNotFetched()
 
 	committed, err := store.Write(ctx, next)
 	if err != nil {
@@ -472,8 +472,9 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	}
 
 	// A run that records no dependency acquisition retries nothing, a row withheld as
-	// dependency_not_fetched included: it applies no reassess list, so it could not withhold what
-	// it re-assessed, and the list would still name the advisory beside the refuting verdict.
+	// dependency_not_fetched included. It cannot clear the list, so a listed row it re-assessed
+	// would be withheld again; and a marked row whose record was lost would get back a verdict
+	// reached without reading the dependency code it was withheld for.
 	var retry []report.AdvisoryFinding
 	if req.DependencyFetch != nil {
 		retry = notFetchedRetry(state.Report, state.DepFetch, newIDs)
@@ -481,7 +482,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 
 	if len(newIDs) == 0 && len(retry) == 0 {
 		state.Cursor = newCursor
-		state.Remerge = remergeNotFetched(req.DependencyFetch)
+		state.Remerge = remergeNotFetched()
 		committed, err := store.Write(ctx, state)
 		if err != nil {
 			return nil, fmt.Errorf("trigger: cve-watch heartbeat: %w", err)
@@ -513,10 +514,10 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	if req.DependencyFetch != nil {
 		state.DepFetch = req.DependencyFetch(state.DepFetch, DependencyFetchRun{Held: held, Assessed: assessed})
 	}
-	if state.Report, err = withNotFetched(rep, appliedRecord(req.DependencyFetch, state.DepFetch)); err != nil {
+	if state.Report, err = withNotFetched(rep, state.DepFetch); err != nil {
 		return nil, err
 	}
-	state.Remerge = remergeNotFetched(req.DependencyFetch)
+	state.Remerge = remergeNotFetched()
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)

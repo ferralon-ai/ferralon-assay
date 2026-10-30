@@ -245,7 +245,7 @@ func renderSummary(r report.Report) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headline(c, headlineTail(r)))
+	b.WriteString(reportHeadline(r, c))
 	b.WriteString("\n\n")
 
 	// Disclosed BEFORE the counts, because it qualifies them: the counts of a scan
@@ -310,6 +310,43 @@ func headlineTail(r report.Report) string {
 		}
 	}
 	return partialHeadlineTail
+}
+
+// noAnalyzerHeadline replaces the headline when no analyzer ran at all, so a reader who stops at the
+// headline learns that nothing was assessed, not that coverage was partial.
+const noAnalyzerHeadline = "**Not analyzed — no analyzer ran for this codebase's language, so nothing was assessed.** This is not a clean result: no advisory was checked."
+
+// noAnalyzerRan reports whether the Report is a scan that never reached an analyzer: a did-not-run
+// no_language_plugin note, and no advisory row and no package to show for the run. A codebase where
+// one language had no analyzer but another was inventoried is partial coverage, not this.
+func noAnalyzerRan(r report.Report) bool {
+	if len(r.Advisories) != 0 || len(r.SBOM.Packages) != 0 {
+		return false
+	}
+	for _, n := range r.Partiality {
+		if n.Reason == plugin.PartialReasonNoPlugin && n.EffectiveClass() == report.PartialityDidNotRun {
+			return true
+		}
+	}
+	return false
+}
+
+// reportHeadline is the headline both surfaces print for r: noAnalyzerHeadline when no analyzer ran,
+// headline otherwise.
+func reportHeadline(r report.Report, c counts) string {
+	if noAnalyzerRan(r) {
+		return noAnalyzerHeadline
+	}
+	return headline(c, headlineTail(r))
+}
+
+// coverageLead opens the did-not-run disclosure on both surfaces. It says "partial coverage" only
+// when something was assessed.
+func coverageLead(r report.Report) string {
+	if noAnalyzerRan(r) {
+		return "**Not analyzed.** No analyzer ran for this codebase:"
+	}
+	return "**Partial coverage.** This scan could not fully resolve the codebase:"
 }
 
 // headline is the one-line verdict statement at the top of the summary. It is the one
@@ -454,6 +491,10 @@ func partialityLine(n report.PartialityNote) string {
 	case plugin.PartialReasonNoManifest:
 		return fmt.Sprintf("Installed %s versions could not be pinned: no lockfile or pinned-version manifest was found. Advisories for those dependencies were kept in scope rather than ruled out on version, so this run is not a complete dependency assessment.", scope)
 	case plugin.PartialReasonNoPlugin:
+		// The detail names the language and the analyzer that was looked for.
+		if n.Detail != "" {
+			return fmt.Sprintf("No analyzer is available for this codebase's language (`%s`). No advisory for it was ruled out — none was assessed.", mdCell(n.Detail))
+		}
 		return fmt.Sprintf("No analyzer is available for this codebase's language, so its %s set was not analyzed. The advisories below were not ruled out — they were not assessed.", scope)
 	case report.ReasonScanCutShort:
 		if n.Detail != "" {
@@ -511,7 +552,7 @@ func partialityBlock(r report.Report) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("**Partial coverage.** This scan could not fully resolve the codebase:\n\n")
+	b.WriteString(coverageLead(r) + "\n\n")
 	for _, l := range lines {
 		fmt.Fprintf(&b, "- %s\n", l)
 	}

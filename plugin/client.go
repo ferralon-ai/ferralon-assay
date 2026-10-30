@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
@@ -58,9 +57,9 @@ func NewGoPlugin(opts ...Option) (LanguagePlugin, error) {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath(BinaryName("go"))
+		bin, err := discoverBinary("go")
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("go"), err)
+			return nil, err
 		}
 		p.bin = bin
 	}

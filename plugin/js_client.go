@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
@@ -55,9 +54,9 @@ func NewJSPlugin(opts ...JSOption) (LanguagePlugin, error) {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath(BinaryName("js"))
+		bin, err := discoverBinary("js")
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("js"), err)
+			return nil, err
 		}
 		p.bin = bin
 	}

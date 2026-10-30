@@ -604,7 +604,7 @@ func TestSemantic_G8PnpmPatched(t *testing.T) {
 			return strings.Replace(s, "\n  'q@1.0.0': {}", "\n  'q@1.0.0(patch_hash=abc)': {}", 1)
 		}
 		files := map[string]string{
-			"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"pnpm":{"patchedDependencies":{"`+cfgKey+`":"patches/q.patch"}}`),
+			"pnpm-workspace.yaml": "patchedDependencies:\n  " + yq(cfgKey) + ": patches/q.patch\n",
 		}
 		if patch != "" {
 			files["patches/q.patch"] = patch
@@ -665,8 +665,8 @@ func TestSemantic_G9PnpmConfigHazards(t *testing.T) {
 	withOverrides := func(s string) string {
 		return strings.Replace(s, "importers:", "overrides:\n  q: 1.0.0\n\nimporters:", 1)
 	}
-	if cg := pnpmVariant(t, withOverrides, map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, `,"pnpm":{"overrides":{"q":"1.0.0"}}`)}); runWide(cg) {
-		t.Fatalf("control: matching overrides read; got %+v", cg.Partiality)
+	if cg := pnpmVariant(t, nil, nil); runWide(cg) {
+		t.Fatalf("control: a tree with no hazard is read; got %+v", cg.Partiality)
 	}
 	for name, tc := range map[string]struct {
 		edit  func(string) string
@@ -1489,8 +1489,8 @@ func semKeys[V any](m map[string]V) []string {
 
 // semRun builds dir's call graph with store's dependency code twice. The edges come from the
 // build as written; the partiality comes from the same build with every first-party module
-// emptied. A first-party load of a package always withholds run-wide in the base graph, so
-// only the emptied build shows whether the dependency lane itself withholds.
+// emptied. A first-party load of a package whose code is not read withholds run-wide in the
+// base graph, so only the emptied build shows whether the dependency lane itself withholds.
 func semRun(t *testing.T, dir string, store artifactcache.Store) plugin.CallGraphResult {
 	t.Helper()
 	loaded := withDeps(t, dir, store)
@@ -2411,6 +2411,174 @@ func TestSemantic_YarnRootCase(t *testing.T) {
 			}
 			if !control && (!incomplete || !runWide(cg)) {
 				t.Errorf("a root config named in another case, an .npmrc key off the allowlist, or a yarn.json withholds; got %+v", cg.Partiality)
+			}
+		})
+	}
+}
+
+// TestYAMLSubset_QuotedEscapes pins which double-quoted scalars the subset reader decodes: \" and
+// \\ only. Any other escape is outside the subset, because the lane keeps no decoder for it and a
+// verbatim \x31 is not the character a YAML loader reads. Rows named _guard
+// were withheld before the escape gate.
+func TestYAMLSubset_QuotedEscapes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		doc     string
+		want    string // the value of k when the document is read
+		withold bool
+	}{
+		"key_hex":                  {doc: "\"k\\x31\": v\n", withold: true},
+		"value_hex":                {doc: "k: \"\\x31.0.0\"\n", withold: true},
+		"value_unicode":            {doc: "k: \"\\u0031\"\n", withold: true},
+		"value_unicode32":          {doc: "k: \"\\U00000031\"\n", withold: true},
+		"value_tab":                {doc: "k: \"a\\tb\"\n", withold: true},
+		"value_newline":            {doc: "k: \"a\\nb\"\n", withold: true},
+		"value_slash":              {doc: "k: \"a\\/b\"\n", withold: true},
+		"value_nul":                {doc: "k: \"\\0\"\n", withold: true},
+		"value_space":              {doc: "k: \"a\\ b\"\n", withold: true},
+		"after_modelled":           {doc: "k: \"\\\\\\x31\"\n", withold: true},
+		"after_quote":              {doc: "k: \"a\\\"\\x31\"\n", withold: true},
+		"sequence_item":            {doc: "k:\n  - \"\\x31\"\n", withold: true},
+		"nested_key":               {doc: "o:\n  \"\\x71\": v\n", withold: true},
+		"value_trailing_guard":     {doc: "k: \"a\\\" # c\n", withold: true},
+		"control_quote":            {doc: "k: \"a\\\"b\"\n", want: `a"b`},
+		"control_slash":            {doc: "k: \"a\\\\b\"\n", want: `a\b`},
+		"control_pair":             {doc: "k: \"\\\\x31\"\n", want: `\x31`},
+		"control_key":              {doc: "\"k\\\"\": v\n", want: ""},
+		"control_single":           {doc: "k: 'it''s'\n", want: "it's"},
+		"control_single_backslash": {doc: "k: 'a\\x31'\n", want: `a\x31`},
+		"control_plain":            {doc: "k: a\\x31\n", want: `a\x31`},
+		"control_hex_in_comment":   {doc: "k: v # \"\\x31\"\n", want: "v"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n, err := parseYAMLSubset(tc.doc)
+			if tc.withold {
+				if err != errYAMLSubset {
+					t.Fatalf("parseYAMLSubset(%q) = %v, want errYAMLSubset", tc.doc, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseYAMLSubset(%q): %v", tc.doc, err)
+			}
+			if k, ok := n.kids["k"]; ok {
+				if k.val != tc.want {
+					t.Errorf("k = %q, want %q", k.val, tc.want)
+				}
+			} else if len(n.kids) != 1 {
+				t.Errorf("keys = %v", n.keys)
+			}
+		})
+	}
+}
+
+// TestSemantic_PnpmQuotedEscapes places a pnpm lock whose quoted scalars carry escapes. Rows
+// named _guard withheld before the escape gate, by a compare against the manifest or a name check
+// downstream; the rest placed a package under an identity other than the one pnpm installs, or
+// kept an escaped digest.
+func TestSemantic_PnpmQuotedEscapes(t *testing.T) {
+	esc := func(old, repl string) func(string) string {
+		return func(s string) string { return strings.ReplaceAll(s, old, repl) }
+	}
+	chain := func(fs ...func(string) string) func(string) string {
+		return func(s string) string {
+			for _, f := range fs {
+				s = f(s)
+			}
+			return s
+		}
+	}
+	qKeyRef := func(hex string) func(string) string {
+		return chain(esc("\n  'q@1.0.0':", "\n  \"q@"+hex+".0.0\":"), esc("'q': '1.0.0'", "'q': \""+hex+".0.0\""))
+	}
+	for name, tc := range map[string]struct {
+		edit   func(string) string
+		placed bool
+		// unread marks a row that places the lock but reads an entry as unreadable.
+		unread bool
+	}{
+		"control_unchanged":        {edit: esc("", ""), placed: true},
+		"control_double_quoted":    {edit: esc("\n  'q@1.0.0':", "\n  \"q@1.0.0\":"), placed: true},
+		"control_trailing_comment": {edit: esc("version: '1.0.0'", "version: '1.0.0' # c"), placed: true},
+		"snapshots_value_guard":    {edit: esc("\nsnapshots:\n", "\nsnapshots: {x: {}}\n")},
+		"flow_key_guard":           {edit: esc("\n  'q@1.0.0': {}", "\n  {'q@1.0.0': {}}")},
+		"control_unread_modelled":  {edit: esc("    resolution:", "    deprecated: \"say \\\"hi\\\" \\\\ bye\"\n    resolution:"), placed: true},
+		"key_ref_hex":              {edit: qKeyRef(`\x31`)},
+		"key_ref_unicode":          {edit: qKeyRef(`\u0031`)},
+		"key_ref_wide_unicode":     {edit: qKeyRef(`\U00000031`)},
+		"key_only_guard":           {edit: esc("\n  'q@1.0.0':", "\n  \"q@\\x31.0.0\":")},
+		"unread_field":             {edit: esc("    resolution:", "    deprecated: \"a\\tb\"\n    resolution:")},
+		"importer_version_guard":   {edit: esc("version: '1.0.0'", "version: \"\\x31.0.0\"")},
+		"importer_specifier_guard": {edit: esc("specifier: '1.0.0'", "specifier: \"\\x31.0.0\"")},
+		"dependency_name_guard":    {edit: esc("'q': '1.0.0'", "\"\\x71\": '1.0.0'")},
+		"integrity":                {edit: esc("{integrity: sha512-", "{integrity: \"sha512-\\x41"), placed: true, unread: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			q := qPkg("1.0.0")
+			base := pnpmLockText(t, "9.0", map[string]map[string]string{".": {"p": "1.0.0"}}, p, q)
+			lock := tc.edit(base)
+			if (lock != base) == (name == "control_unchanged") {
+				t.Fatalf("edit did not apply to the lock:\n%s", base)
+			}
+			dir := semProgram(t, pnpmLockFile, lock, map[string]string{
+				"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, ""),
+				"index.js":     "require('p').run();\n",
+			})
+			l := buildDepLayout(context.Background(), dir)
+			if l.incomplete == tc.placed {
+				t.Errorf("incomplete = %v, want %v", l.incomplete, !tc.placed)
+			}
+			unread := false
+			for _, e := range l.entries() {
+				unread = unread || e.unreadable
+			}
+			if unread != tc.unread {
+				t.Errorf("an entry is unreadable = %v, want %v", unread, tc.unread)
+			}
+		})
+	}
+}
+
+// TestSemantic_YarnClassicQuotedEscapes places a yarn classic lock whose quoted scalars carry
+// escapes. The reader only strips quotes, so an escape would place q under the text it spells;
+// the lock is withheld and the layout is incomplete.
+func TestSemantic_YarnClassicQuotedEscapes(t *testing.T) {
+	esc := func(old, repl string) func(string) string {
+		return func(s string) string { return strings.ReplaceAll(s, old, repl) }
+	}
+	for name, tc := range map[string]struct {
+		edit   func(string) string
+		placed bool
+	}{
+		"control_unchanged":    {edit: esc("", ""), placed: true},
+		"control_comment":      {edit: esc("# yarn lockfile v1", "# yarn lockfile v1 \"\\x31\""), placed: true},
+		"control_comments":     {edit: esc("  resolved", "  # c\n\n  resolved"), placed: true},
+		"header_comment_guard": {edit: esc("\"q@1.0.0\":", "\"q@1.0.0\": # c")},
+		"version_comment":      {edit: esc("  version \"1.0.0\"", "  version \"1.0.0\" # 2.0.0")},
+		"version_unclosed":     {edit: esc("  version \"1.0.0\"", "  version \"1.0.0")},
+		"version_plain_hash":   {edit: esc("  version \"1.0.0\"", "  version 1.0.0#2.0.0")},
+		"version_plain_digit":  {edit: esc("  version \"1.0.0\"", "  version 1.0.0")},
+		"header_anchor_guard":  {edit: esc("\"q@1.0.0\":", "&a \"q@1.0.0\":")},
+		"stray_line":           {edit: func(s string) string { return s + "stray\n" }},
+		"flow_key":             {edit: esc("  resolved", "  {a: b}\n  resolved")},
+		"version":              {edit: esc("  version \"1.0.0\"", "  version \"\\x31.0.0\"")},
+		"header_guard":         {edit: esc("\"q@1.0.0\":", "\"q@\\x31.0.0\":")},
+		"resolved":             {edit: esc("q-1.0.0.tgz", "q-\\x31.0.0.tgz")},
+		"integrity":            {edit: esc("  integrity ", "  integrity \"\\x73\" ")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := sp("p", "1.0.0", map[string]string{"q": "1.0.0"}, map[string]string{"index.js": callsQ})
+			base := yarnLockText(t, p, qPkg("1.0.0"))
+			lock := tc.edit(base)
+			if (lock != base) == (name == "control_unchanged") {
+				t.Fatalf("edit did not apply to the lock:\n%s", base)
+			}
+			dir := semProgram(t, yarnLockFile, lock, map[string]string{
+				"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, ""),
+				"index.js":     "require('p').run();\n",
+			})
+			if incomplete := buildDepLayout(context.Background(), dir).incomplete; incomplete == tc.placed {
+				t.Errorf("incomplete = %v, want %v", incomplete, !tc.placed)
 			}
 		})
 	}

@@ -489,6 +489,38 @@ func TestRead_InterfaceImplAndMethodImpl(t *testing.T) {
 	}
 }
 
+// TestRead_PropertyAccessors: MethodSemantics binds a property's getter and setter by row,
+// whatever the methods are named; a property's Other method and an event's accessors are
+// not property accessors.
+func TestRead_PropertyAccessors(t *testing.T) {
+	b := newMDBuilder()
+	b.addRow(tModule, 0, b.str("Test.dll"), b.guid(), 0, 0)
+	asmRef := b.addRow(tAssemblyRef, 1, 0, 0, 0, 0, b.blob(nil), b.str("System.Runtime"), 0, b.blob(nil))
+	obj := b.addRow(tTypeRef, coded2(ciResolutionScope, tAssemblyRef, asmRef), b.str("Object"), b.str("System"))
+	sig := b.blob([]byte{0x20, 0x00, 0x0E})
+	for _, n := range []string{"Fetch", "Store", "get_Plain", "Extra", "add_Changed"} {
+		b.addRow(tMethodDef, 0, 0, 0x0886, b.str(n), sig, 1)
+	}
+	b.addRow(tTypeDef, 0, b.str("<Module>"), 0, 0, 1, 1)
+	b.addRow(tTypeDef, 0x100001, b.str("Payload"), b.str("App"), coded2(ciTypeDefOrRef, tTypeRef, obj), 1, 1)
+	prop := b.addRow(tProperty, 0, b.str("Value"), b.blob([]byte{0x28, 0x00, 0x0E}))
+	ev := b.addRow(tEvent, 0, b.str("Changed"), coded2(ciTypeDefOrRef, tTypeRef, obj))
+	b.addRow(tMethodSemantics, msGetter, 1, coded2(ciHasSemantics, tProperty, prop))
+	b.addRow(tMethodSemantics, msSetter, 2, coded2(ciHasSemantics, tProperty, prop))
+	b.addRow(tMethodSemantics, 0x0004, 4, coded2(ciHasSemantics, tProperty, prop)) // Other
+	b.addRow(tMethodSemantics, 0x0008, 5, coded2(ciHasSemantics, tEvent, ev))      // AddOn
+	b.addRow(tAssembly, 0, 1, 0, 0, 0, 0, b.blob(nil), b.str("TestAsm"), 0)
+	a, err := Read(wrapPE(b.buildMetadata(0x00)).data)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for rid, want := range map[uint32]bool{1: true, 2: true, 3: false, 4: false, 5: false} {
+		if got := a.PropertyAccessor(rid); got != want {
+			t.Errorf("PropertyAccessor(%d) = %v, want %v", rid, got, want)
+		}
+	}
+}
+
 // safeRead runs Read guarded against panics — a panic on hostile dependency bytes
 // is a crash-DoS seam and a hard test failure.
 func safeRead(data []byte) (a *Assembly, err error, panicked bool) {

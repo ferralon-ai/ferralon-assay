@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
@@ -80,6 +81,7 @@ func (a *acquired) provenance(revision, commit string) (string, string) {
 // goAdvisoryCorpus); the demo scan sets it via -include-house-canaries so the DOS canary
 // surfaces as a reachable_candidate the pipeline can enumerate and fire.
 func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool, graphReq graphRequest) (*acquired, error) {
+	start := time.Now()
 	var buildDir, language, repo, analyzeRef, analyzedCommit string
 	cleanup := func() {}
 
@@ -158,9 +160,13 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		}
 	}
 	var graph *jvmGraph
+	var graphTime time.Duration
 	if language == checkout.LangJava || language == checkout.LangKotlin {
 		var done func()
+		graphStart := time.Now()
 		graph, done = acquireBuildGraph(ctx, buildDir, graphReq)
+		graphTime = time.Since(graphStart)
+		logPhase(os.Stderr, "graph", graphTime)
 		prev := cleanup
 		cleanup = func() { done(); prev() }
 	}
@@ -187,6 +193,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		cleanup()
 		return nil, err
 	}
+	logPhase(os.Stderr, "acquire", time.Since(start)-graphTime)
 
 	return &acquired{
 		buildDir:   buildDir,

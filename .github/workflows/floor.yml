@@ -1,0 +1,303 @@
+name: Floor run
+
+# The nightly floor run: scan every demo repository in floor/targets.json with the scanner built from
+# this commit, and fail on any not_exploitable finding without grounds, a disqualified finding on a
+# basis that cannot ground it, or a scan that failed, timed out or was cut short. The summary shows,
+# per language, what Assay returned on each repository. docs/floor.md is the reference: what the run
+# checks and why, how to add a target, the secrets and their scopes, and how to read the summary.
+#
+# Secrets:
+#   FLOOR_DEMO_TOKEN     read-only token for checking out the demo repositories. Without it the run
+#                        scans nothing and ends with a notice, never a failure.
+#   FLOOR_SLACK_WEBHOOK  optional Slack incoming-webhook URL. Set, a failed run posts a short alert
+#                        there; unset, the run says so in a notice and posts nothing.
+
+on:
+  schedule:
+    - cron: "43 8 * * *" # nightly, off the hour (08:43 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: floor
+  cancel-in-progress: false
+
+env:
+  # The corpus the demo repositories' own workflows read, and the signer its consumer documentation
+  # names (CONSUMING.md in the corpus repository). The policy comes from floor/targets.json.
+  CORPUS_REPO: ferralon-ai/vulnerability-corpus
+  CORPUS_REF: main
+  CORPUS_SIGNER_IDENTITY: ferralon-intel-publisher@ferralon.iam.gserviceaccount.com
+  CORPUS_SIGNER_ISSUER: https://accounts.google.com
+
+jobs:
+  secrets:
+    name: Check secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      demo-token: ${{ steps.check.outputs.demo-token }}
+      slack: ${{ steps.check.outputs.slack }}
+    steps:
+      - name: Check the floor secrets
+        id: check
+        env:
+          FLOOR_DEMO_TOKEN: ${{ secrets.FLOOR_DEMO_TOKEN }}
+          FLOOR_SLACK_WEBHOOK: ${{ secrets.FLOOR_SLACK_WEBHOOK }}
+        run: |
+          if [ -n "$FLOOR_DEMO_TOKEN" ]; then
+            echo "demo-token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "demo-token=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Floor run skipped::Secret FLOOR_DEMO_TOKEN is not set, so no demo repo was scanned. Add it (docs/floor.md) and run the workflow again."
+          fi
+          if [ -n "$FLOOR_SLACK_WEBHOOK" ]; then
+            echo "slack=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "slack=false" >> "$GITHUB_OUTPUT"
+            if [ -n "$FLOOR_DEMO_TOKEN" ]; then
+              echo "::notice title=No Slack alert::Secret FLOOR_SLACK_WEBHOOK is not set, so a failed floor run is not posted to Slack."
+            fi
+          fi
+
+  build:
+    name: Build the scanner
+    needs: secrets
+    if: needs.secrets.outputs.demo-token == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      policy: ${{ steps.targets.outputs.policy }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Built once from this commit and shared with every scan job. The binaries carry the lookup
+      # names the scanner resolves on PATH (assay-plugin-<lang>); the version names the commit.
+      - name: Build the scanner, its analyzers and floorcheck
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/floor-bin"
+          mkdir -p "$bin"
+          ld="-s -w -X github.com/ferralon-ai/ferralon-assay/internal/brand.Version=main-${GITHUB_SHA::12}"
+          export CGO_ENABLED=0
+          go build -trimpath -ldflags "$ld" -o "$bin/ferralon-assay" ./cmd/ferralon-assay
+          for lang in go python js java dotnet kotlin; do
+            go build -trimpath -ldflags "$ld" -o "$bin/assay-plugin-$lang" "./cmd/assay-plugin-$lang"
+          done
+          go build -trimpath -o "$bin/floorcheck" ./cmd/floorcheck
+
+      - name: Read the targets
+        id: targets
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/floor-bin/floorcheck" matrix -targets floor/targets.json | tee -a "$GITHUB_OUTPUT"
+
+      # Fetched once so every repository is scanned against the same corpus release. The bundle is
+      # signature-checked and digest-pinned by the same scripts action.yml runs.
+      - name: Fetch the advisory corpus bundle
+        env:
+          CORPUS_POLICY: ${{ steps.targets.outputs.policy }}
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/floor-bin/corpus"
+          cosign_dir="$RUNNER_TEMP/floor-cosign"
+          DEST="$cosign_dir" bash scripts/install-cosign.sh
+          PATH="$cosign_dir:$PATH" DEST="$dest" GITHUB_OUTPUT="$RUNNER_TEMP/corpus.out" \
+            bash scripts/fetch-corpus-bundle.sh
+          if [ ! -f "$dest/$CORPUS_POLICY.jsonl.gz" ] || [ ! -f "$dest/signals.json.gz" ]; then
+            echo "::error::The corpus release carries no verified $CORPUS_POLICY bundle and signals; the floor run reads only a verified bundle."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: floor-bin
+          path: ${{ runner.temp }}/floor-bin
+          retention-days: 3
+          if-no-files-found: error
+
+  scan:
+    name: Scan ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
+    steps:
+      - name: Check out floor/
+        uses: actions/checkout@v4
+        with:
+          path: assay
+          sparse-checkout: floor
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: floor-bin
+          path: ${{ runner.temp }}/floor-bin
+
+      - name: Check out ${{ matrix.repo }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          token: ${{ secrets.FLOOR_DEMO_TOKEN }}
+          path: target
+          persist-credentials: false
+
+      # The toolchain each demo repository's own workflow sets up before its scan.
+      - uses: actions/setup-go@v5
+        if: matrix.language == 'go'
+        with:
+          go-version-file: target/go.mod
+          cache: false
+      - name: Warm the module cache
+        if: matrix.language == 'go'
+        working-directory: target
+        run: go mod download
+      - uses: actions/setup-java@v4
+        if: matrix.language == 'java'
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Scan
+        id: scan
+        timeout-minutes: 26
+        env:
+          BIN_DIR: ${{ runner.temp }}/floor-bin
+          TARGET_DIR: ${{ github.workspace }}/target
+          OUT_DIR: ${{ runner.temp }}/floor-out
+          POLICY: ${{ needs.build.outputs.policy }}
+          SUBJECT_REPO: ${{ matrix.repo }}
+          REVISION: ${{ matrix.ref }}
+          HOUSE_CANARIES: ${{ matrix.include_house_canaries }}
+          SCAN_TIMEOUT: 22m
+        run: bash assay/floor/scan.sh
+
+      # Written whatever happened to the scan, so floorcheck can tell a failed scan from a clean one.
+      - name: Record the scan
+        if: always()
+        env:
+          OUT_DIR: ${{ runner.temp }}/floor-out
+          REPO: ${{ matrix.repo }}
+          POLICY: ${{ needs.build.outputs.policy }}
+          OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          mkdir -p "$OUT_DIR"
+          num() { if [ -f "$OUT_DIR/$1" ]; then cat "$OUT_DIR/$1"; else echo null; fi; }
+          jq -n --arg repo "$REPO" --arg policy "$POLICY" --arg commit "$GITHUB_SHA" --arg outcome "$OUTCOME" \
+            --argjson exit_code "$(num exit_code)" --argjson duration "$(num duration_seconds)" \
+            '{repo: $repo, policy: $policy, assay_commit: $commit, outcome: $outcome,
+              exit_code: $exit_code, duration_seconds: $duration}' > "$OUT_DIR/meta.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: floor-scan-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/floor-out/meta.json
+            ${{ runner.temp }}/floor-out/report.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  check:
+    name: Check the floor
+    needs: [build, scan]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out floor/
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: floor
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: floor-bin
+          path: ${{ runner.temp }}/floor-bin
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: floor-scan-*
+          path: ${{ runner.temp }}/floor-results
+
+      - name: Run floorcheck
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/floor-results" floor-summary
+          chmod +x "$RUNNER_TEMP/floor-bin/floorcheck"
+          "$RUNNER_TEMP/floor-bin/floorcheck" check -targets floor/targets.json \
+            -results "$RUNNER_TEMP/floor-results" -assay-commit "$GITHUB_SHA" -run-url "$RUN_URL" \
+            -summary floor-summary/floor-summary.json -markdown floor-summary/floor-summary.md \
+            -alert floor-summary/floor-alert.txt
+
+      - name: Write the job summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -f floor-summary/floor-summary.md ]; then
+            cat floor-summary/floor-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Gather the reports
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p floor-summary/reports
+          if [ -d "$RUNNER_TEMP/floor-results" ]; then
+            cp -R "$RUNNER_TEMP/floor-results/." floor-summary/reports/
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: floor-summary
+          path: floor-summary
+          retention-days: 30
+          if-no-files-found: warn
+
+  alert:
+    name: Alert on failure
+    needs: [secrets, build, scan, check]
+    # Only a run that scanned (the demo token is set), only when the webhook is set, and only when
+    # something failed.
+    if: >-
+      ${{ !cancelled() &&
+      needs.secrets.outputs.demo-token == 'true' &&
+      needs.secrets.outputs.slack == 'true' &&
+      (needs.build.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: floor-summary
+          path: floor-summary
+
+      - name: Post to Slack
+        env:
+          FLOOR_SLACK_WEBHOOK: ${{ secrets.FLOOR_SLACK_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -f floor-summary/floor-alert.txt ]; then
+            text="$(cat floor-summary/floor-alert.txt)"
+          else
+            text="$(printf '%s\n' \
+              "• Nightly Assay floor run failed before it could check the reports." \
+              "• The build or the check job failed; the run page says which." \
+              "• Run: $RUN_URL")"
+          fi
+          jq -n --arg text "$text" '{text: $text}' |
+            curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$FLOOR_SLACK_WEBHOOK" > /dev/null

@@ -191,6 +191,7 @@ func TestPolicyForRequireAuth(t *testing.T) {
 		name       string
 		project    string
 		pkg        string
+		env        map[string]string
 		want       bool
 		configured bool
 	}{
@@ -202,13 +203,18 @@ func TestPolicyForRequireAuth(t *testing.T) {
 		{name: "top-level auth on the default registry", project: "_authToken=x", pkg: "qs", want: true, configured: true},
 		{name: "top-level auth on a configured default registry", project: "registry=https://mirror.test/\n_auth=Zm9vOmJhcg==", pkg: "qs", want: true, configured: true},
 		{name: "top-level optional token left empty fetches anonymously", project: "_authToken=${NPM_TOKEN?}", pkg: "qs", configured: true},
+		{name: "top-level always-auth on the default registry", project: "always-auth=true", pkg: "qs", want: true, configured: true},
+		{name: "top-level always-auth reaches a scope registry", project: "always-auth=true\n@acme:registry=https://npm.acme.test/", pkg: "@acme/x", want: true, configured: true},
+		{name: "per-host username and password", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:username=u\n//npm.acme.test/:_password=cA==", pkg: "@acme/x", want: true, configured: true},
+		{name: "per-host client certificate", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:certfile=/c.pem\n//npm.acme.test/:keyfile=/k.pem", pkg: "@acme/x", want: true, configured: true},
+		{name: "setup-node token on the public registry", project: "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}", env: map[string]string{"NODE_AUTH_TOKEN": npmrcSecret}, pkg: "qs", want: true, configured: true},
 		{name: "public registry", project: "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=t", pkg: "qs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeNPMRC(t, dir, tt.project)
-			cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir})
+			cfg, err := LoadNPMConfig(NPMRCSources{ProjectDir: dir, LookupEnv: envOf(tt.env)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -218,6 +224,11 @@ func TestPolicyForRequireAuth(t *testing.T) {
 			}
 			if reg.AuthConfigured != tt.configured {
 				t.Fatalf("AuthConfigured = %v, want %v", reg.AuthConfigured, tt.configured)
+			}
+			// Credentialed is that same resolution, which decides where the bytes may be kept.
+			purl := "pkg:npm/" + strings.Replace(tt.pkg, "@", "%40", 1) + "@1.0.0"
+			if got, err := cfg.PolicyFor(tt.pkg).Credentialed(purl); err != nil || got != tt.configured {
+				t.Fatalf("Credentialed(%s) = %v, %v; want %v", purl, got, err, tt.configured)
 			}
 		})
 	}

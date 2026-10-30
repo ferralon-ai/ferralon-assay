@@ -45,6 +45,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		deps      []assembly.DepRef
 		locator   *assembly.AssetsLocator
 		graph     *assetsGraph
+		rt        runtimeTarget
 		untrusted bool
 	)
 	if build.assets != nil {
@@ -56,11 +57,15 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		if loc, parsed := assembly.ParseAssetsLocator(build.assets); parsed {
 			locator = loc
 		}
-		deps = depRefsFrom(build.assets, build.target)
-		for i := range deps {
-			deps[i].Runtime = build.runtime
-		}
 		graph = parseAssetsGraph(build.assets)
+		rt = resolveRuntimeTarget(graph, build.target, build.runtime, build.rids, locator)
+		for _, d := range depRefsFrom(build.assets, rt.load) {
+			if rt.shadowed[d.PkgKey] {
+				continue
+			}
+			d.Runtime = build.runtime
+			deps = append(deps, d)
+		}
 	}
 
 	// A dep that does not locate/read is a DECLARED MISS: absent from the set ⇒ out-of-set ⇒
@@ -68,8 +73,20 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	// disclosed as a scoped limit bounded by what the missing code could reach, and as a
 	// run-wide reason too, so a consumer that reads only Reasons still sees it.
 	set := assembly.LoadSpanningSet(req.BuildDir, fp, locator, deps)
+	set.Misses = append(set.Misses, rt.misses...)
 	engine := depreach.NewEngine(set.Assemblies)
 	idx := buildReconcileIndex(set.Assemblies)
+	// Calls into the shared framework are leaves except where it can run application code
+	// the graph does not show (framework.go, depreach/framework.go). A package restore marks
+	// as supplied by that framework is then not a missing dependency.
+	fw := frameworkNames(rt, locator, set.Assemblies)
+	engine.SetFramework(fw)
+	var misses []assembly.DepMiss
+	for _, m := range set.Misses {
+		if !frameworkSuppliedMiss(m, locator, fw) {
+			misses = append(misses, m)
+		}
+	}
 	// Two root classes. MAIN is the confident, PRECISE two-trace root and the ONLY root that
 	// can license a clean not_exploitable: a hazard-free hit or miss from Main is the EARNED
 	// confident verdict (reachable path / clean NE). The RUNTIME roots (module initializer +
@@ -78,16 +95,27 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	// ADD reachable/undetermined, never license an NE on their own.
 	mainKey, mainOK := idx.entryKey(fp)
 	runtimeRoots := idx.runtimeRootKeys(set.Assemblies)
+	// A third class, the ASP.NET Core entry points (ingress_il.go), is what the web host
+	// runs. It is searched for a candidate path only: it never licenses not_exploitable,
+	// and it is not a program root (its searches use every in-set type as instantiated).
+	ingressRoots := ingressRootKeys(fp, set.Assemblies)
+	if mainOK {
+		// The types these roots can instantiate bound what framework code can call back into.
+		engine.SetProgramRoots(append([]depreach.MethodKey{mainKey}, runtimeRoots...))
+	}
 
 	reasons := map[string]bool{}
 	for _, r := range build.reasons {
 		reasons[r] = true
 	}
-	for _, m := range set.Misses {
+	for _, m := range misses {
 		reasons[missReason(m.Reason)] = true
 	}
 	if untrusted {
 		reasons[partialReasonRestoreUntrusted] = true
+	}
+	if len(rt.absent) > 0 {
+		reasons[partialReasonRuntimeTargetAbsent] = true
 	}
 	var paths []plugin.ReachPath
 	var searched []string
@@ -96,7 +124,27 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 			continue
 		}
 		sinkKeys := idx.reconcile(scip)
-		if len(sinkKeys) == 0 || !mainOK {
+		if len(sinkKeys) == 0 {
+			reasons[plugin.PartialReasonReachabilityUndetermined] = true
+			continue
+		}
+		// (0) The ASP.NET Core entry points: a path from one is a candidate unless Main
+		// itself reaches the sink, and a hit or hazard from one keeps the sink out of
+		// Searched.
+		ingress := ingressOutcome{}
+		if len(ingressRoots) > 0 {
+			ingress = ingressSearch(engine, idx, ingressRoots, sinkKeys, scip)
+		}
+		useIngress := func() {
+			if ingress.path != nil {
+				paths = append(paths, *ingress.path)
+			}
+			if ingress.reason != "" {
+				reasons[ingress.reason] = true
+			}
+		}
+		if !mainOK {
+			useIngress()
 			// NO LOADED SINK / NO CONFIDENT ROOT: a sink whose SCIP names no method of the
 			// loaded set, or a program with NO Main (a library — whose consumer-invoked public
 			// API is NOT a runtime root, so the runtime roots alone cannot bound
@@ -126,11 +174,14 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 			}
 			continue
 		case depreach.Undetermined:
+			useIngress()
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
+			reasons[hazardReason(res.HazardWhy)] = true
 			continue
 		case depreach.NotExploitable:
 			// fall through to the runtime roots
 		}
+		useIngress()
 		// (2) Main did not settle it as reachable/undetermined. Consult the OVER-APPROXIMATED
 		// runtime roots (module init, finalizers). A hit here is NOT Main's confident verdict
 		// — the finalizer floor over-approximates reachable instantiations — so it degrades
@@ -153,7 +204,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 				break // a single non-NE runtime root already forces undetermined
 			}
 		}
-		if runtimeHit {
+		if runtimeHit || ingress.blocks {
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
 			continue
 		}
@@ -164,16 +215,43 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		searched = append(searched, scip)
 	}
 
-	if len(build.reasons) > 0 || untrusted {
+	if len(build.reasons) > 0 || untrusted || len(rt.absent) > 0 {
 		// Another project or entry assembly went untraced, or the dependency bytes may not
 		// be the ones this build runs against: nothing was searched for the whole program.
 		searched = nil
 	}
 	return plugin.ReachabilityResult{
-		Partiality: ilPartiality(reasons, missScopes(set.Misses, graph)),
+		Partiality: ilPartiality(reasons, missScopes(misses, graph)),
 		Paths:      paths,
 		Searched:   searched,
 	}, true
+}
+
+// ingressOutcome is what the ASP.NET Core entry points settled for one sink: a candidate
+// path, the frontier reason that came with it, and whether the sink must stay unsearched.
+type ingressOutcome struct {
+	path   *plugin.ReachPath
+	reason string
+	blocks bool
+}
+
+// ingressSearch searches the entry points together for sinkKeys. A path is a candidate;
+// a hazard with no path is undetermined. Either blocks Searched.
+func ingressSearch(engine *depreach.Engine, idx *reconcileIndex, roots, sinkKeys []depreach.MethodKey, scip string) ingressOutcome {
+	res := engine.ReachFromAny(roots, sinkKeys)
+	var out ingressOutcome
+	switch res.Verdict {
+	case depreach.ReachableCandidate:
+		p := idx.projectPath(res.Path, scip)
+		out.path, out.blocks = &p, true
+		if res.HazardOnFrontier {
+			out.reason = hazardReason(res.HazardWhy)
+		}
+	case depreach.Undetermined:
+		out.blocks = true
+		out.reason = hazardReason(res.HazardWhy)
+	}
+	return out
 }
 
 // missScopes discloses each declared dependency miss as a scoped limit: the package's code

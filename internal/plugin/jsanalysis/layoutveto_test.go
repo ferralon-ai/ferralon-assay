@@ -12,8 +12,8 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// The rows below use a first-party program that loads nothing: a first-party load of any package
-// already withholds run-wide, which would hide whether the layout itself withholds.
+// The rows below use a first-party program that loads nothing: a first-party load of a package
+// whose code is not read withholds run-wide, which would hide whether the layout itself withholds.
 
 func vetoDep(version string) *depPkg {
 	return &depPkg{

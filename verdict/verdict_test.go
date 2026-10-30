@@ -372,3 +372,61 @@ func TestConfidenceFromFlags_Deterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestValidate_SymbolUnreachableBasis: the reachability basis is a reasoned refutation like the
+// others, so it validates only on a reasoned not_exploitable.
+func TestValidate_SymbolUnreachableBasis(t *testing.T) {
+	cases := []struct {
+		name   string
+		poe    func() PoE
+		wantOK bool
+	}{
+		{"reasoned not_exploitable", wellFormedReasonedNotExploitable, true},
+		{"indeterminate", wellFormedIndeterminate, false},
+		{"proven not_exploitable", func() PoE {
+			return PoE{
+				SchemaVersion:    SchemaVersion,
+				AssessmentID:     "01890000-0000-7000-8000-0000000000aa",
+				CaseID:           "01890000-0000-7000-8000-0000000000a0",
+				Direction:        DirectionNotExploitable,
+				Strength:         StrengthProven,
+				Confidence:       ConfidenceFromFlags([]EvidenceFlag{FlagCanaryTriggered}),
+				CompletionStatus: CompletionCompleted,
+				PatchValidation: &PatchValidationRef{
+					PositiveTrace: &artifact.Ref{ID: "01890000-0000-7000-8000-0000000000c1", Type: artifact.Type("proof_report")},
+					NegativeTrace: &artifact.Ref{ID: "01890000-0000-7000-8000-0000000000c2", Type: artifact.Type("proof_report")},
+					FixSource:     "advisory:fixed",
+				},
+				Episodes: []string{"01890000-0000-7000-8000-0000000000bb"},
+			}
+		}, false},
+		{"reasoned exploitable", func() PoE {
+			return PoE{
+				SchemaVersion:    SchemaVersion,
+				AssessmentID:     "01890000-0000-7000-8000-0000000000aa",
+				CaseID:           "01890000-0000-7000-8000-0000000000a0",
+				Direction:        DirectionExploitable,
+				Strength:         StrengthReasoned,
+				ReasonedGrounds:  "lean",
+				CompletionStatus: CompletionCompleted,
+				Episodes:         []string{"01890000-0000-7000-8000-0000000000bb"},
+			}
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if base := tc.poe(); base.Validate() != nil {
+				t.Fatalf("fixture invalid without the basis: %v", base.Validate())
+			}
+			p := tc.poe()
+			p.NonExploitableBasis = BasisSymbolUnreachable
+			err := p.Validate()
+			if tc.wantOK && err != nil {
+				t.Fatalf("want accepted, got %v", err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Fatal("want rejected, got nil")
+			}
+		})
+	}
+}

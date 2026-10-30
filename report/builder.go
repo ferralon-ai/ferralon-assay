@@ -1,9 +1,12 @@
 package report
 
 import (
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -24,6 +27,7 @@ type Builder struct {
 	provenance    Provenance
 	baseline      *BaselineRef
 	priority      func(Advisory) *Priority
+	entrypoints   []plugin.ResolvedLibraryEntrypoints
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -84,7 +88,7 @@ func (b *Builder) Disqualified(adv Advisory, pkg *Package, basis verdict.NonExpl
 
 // NotExploitable records a grounded-safe advisory: the vulnerable symbol is absent
 // or not reachable. basis distinguishes which (verdict.BasisSymbolAbsent /
-// BasisVersionNotAffected); detail is the neutral one-line grounds.
+// BasisSymbolUnreachable / BasisVersionNotAffected); detail is the neutral one-line grounds.
 func (b *Builder) NotExploitable(adv Advisory, pkg *Package, basis verdict.NonExploitableBasis, detail string) *Builder {
 	return b.AddFinding(AdvisoryFinding{
 		Advisory: adv,
@@ -174,6 +178,18 @@ func (b *Builder) WithProvenance(p Provenance) *Builder {
 		p.CommitSHA = b.subject.ResolvedCommit
 	}
 	b.provenance = p
+	return b
+}
+
+// WithLibraryEntrypoints records the library entry points the lanes resolved for the build, one set
+// per ecosystem. The first recorded for an ecosystem stands: every advisory of a pass on that
+// ecosystem resolves them from the same build and statement.
+func (b *Builder) WithLibraryEntrypoints(es ...plugin.ResolvedLibraryEntrypoints) *Builder {
+	for _, e := range es {
+		if !slices.ContainsFunc(b.entrypoints, func(r plugin.ResolvedLibraryEntrypoints) bool { return r.Ecosystem == e.Ecosystem }) {
+			b.entrypoints = append(b.entrypoints, e)
+		}
+	}
 	return b
 }
 
@@ -286,15 +302,18 @@ func (b *Builder) Build() Report {
 		}
 	}
 	sortFindings(adv)
+	entrypoints := slices.Clone(b.entrypoints)
+	slices.SortFunc(entrypoints, func(a, c plugin.ResolvedLibraryEntrypoints) int { return strings.Compare(a.Ecosystem, c.Ecosystem) })
 
 	return Report{
-		SchemaVersion: SchemaVersion,
-		Subject:       b.subject,
-		SBOM:          SBOM{Packages: pkgs, Relationships: sortedUniqueRelationships(b.relationships)},
-		Advisories:    adv,
-		Partiality:    dedupPartiality(b.partiality),
-		Provenance:    prov,
-		Baseline:      b.baseline,
+		SchemaVersion:      SchemaVersion,
+		Subject:            b.subject,
+		SBOM:               SBOM{Packages: pkgs, Relationships: sortedUniqueRelationships(b.relationships)},
+		Advisories:         adv,
+		Partiality:         dedupPartiality(b.partiality),
+		Provenance:         prov,
+		Baseline:           b.baseline,
+		LibraryEntrypoints: entrypoints,
 	}
 }
 

@@ -1,5 +1,5 @@
 // Package http is a minimal local stand-in for the net/http types the gin API
-// surface uses (ResponseWriter, Request, Handler, HandlerFunc), so the gin stub and
+// surface uses (ResponseWriter, Request, Handler, HandlerFunc, FileSystem), so the gin stub and
 // the fixture read exactly as they would against net/http, with only the import path
 // changed.
 //
@@ -30,6 +30,16 @@ type Request struct {
 // Handler mirrors net/http.Handler.
 type Handler interface {
 	ServeHTTP(ResponseWriter, *Request)
+}
+
+// File mirrors net/http.File.
+type File interface {
+	Close() error
+}
+
+// FileSystem mirrors net/http.FileSystem.
+type FileSystem interface {
+	Open(name string) (File, error)
 }
 
 // HandlerFunc mirrors net/http.HandlerFunc.

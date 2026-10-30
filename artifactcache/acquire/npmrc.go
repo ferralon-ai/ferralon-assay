@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -497,6 +498,24 @@ func (c NPMConfig) RegistryFor(name string) string {
 		}
 	}
 	return c.defaultRegistry
+}
+
+// RegistryID identifies the registry at base URL raw for keeping per-registry state: the
+// URL's scheme, lowercased host, port and path, with no trailing slash and no userinfo, query
+// or fragment. A URL that does not parse identifies as "".
+func RegistryID(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := canonicalizeHostString(u.Hostname())
+	switch {
+	case u.Port() != "":
+		host = net.JoinHostPort(host, u.Port())
+	case strings.Contains(host, ":"):
+		host = "[" + host + "]"
+	}
+	return (&url.URL{Scheme: strings.ToLower(u.Scheme), Host: host, Path: strings.TrimRight(u.Path, "/")}).String()
 }
 
 // PolicyFor returns the acquisition policy for one npm package: its tarball URL is built

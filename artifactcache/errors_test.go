@@ -14,6 +14,10 @@ func TestIsPartiality(t *testing.T) {
 		ErrIntegrityMismatch,
 		ErrPolicyRefused,
 		ErrUnpinnedArtifact,
+		ErrRegistryUnavailable,
+		ErrRegistryUnreachable,
+		&FetchReason{PURL: "pkg:npm/x@1", Host: "h", Code: FetchRateLimited, Status: 429},
+		&FetchReason{PURL: "pkg:npm/x@1", Host: "h", Code: FetchDNSFailure},
 		&IntegrityReason{PURL: "pkg:nuget/x@1"},
 		&PolicyReason{PURL: "pkg:nuget/x@1", Code: PolicyOffAllowlist},
 		&UnpinnedReason{PURL: "pkg:pypi/x@1", Detail: "python-wheel-selection-gap"},
@@ -50,6 +54,12 @@ func TestReasonUnwrap(t *testing.T) {
 		{&PolicyReason{PURL: "p", Host: "h", Code: PolicyOffAllowlist}, ErrPolicyRefused},
 		{&UnpinnedReason{PURL: "p", Detail: "python-wheel-selection-gap"}, ErrUnpinnedArtifact},
 		{&MalformedReason{Algo: "md5", Detail: "unknown"}, ErrMalformedRef},
+		{&FetchReason{PURL: "p", Host: "h", Code: FetchRateLimited, Status: 429}, ErrRegistryUnavailable},
+		{&FetchReason{PURL: "p", Host: "h", Code: FetchServerError, Status: 503}, ErrRegistryUnavailable},
+		{&FetchReason{PURL: "p", Host: "h", Code: FetchTimeout}, ErrRegistryUnavailable},
+		{&FetchReason{PURL: "p", Host: "h", Code: FetchConnectionReset}, ErrRegistryUnavailable},
+		{&FetchReason{PURL: "p", Host: "h", Code: FetchDNSFailure}, ErrRegistryUnreachable},
+		{&FetchReason{PURL: "p", Host: "h", Code: FetchConnectFailure}, ErrRegistryUnreachable},
 	}
 	for _, tc := range cases {
 		if !errors.Is(tc.err, tc.sentinel) {
@@ -58,6 +68,10 @@ func TestReasonUnwrap(t *testing.T) {
 		// A reason must never carry an empty message.
 		if tc.err.Error() == "" {
 			t.Errorf("%T.Error() is empty", tc.err)
+		}
+		// A registry failure is never evidence the artifact is absent.
+		if errors.Is(tc.err, ErrDeclaredAbsent) {
+			t.Errorf("errors.Is(%v, ErrDeclaredAbsent) = true, want false", tc.err)
 		}
 	}
 }

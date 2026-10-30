@@ -333,7 +333,7 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 		return res
 	}
 	vulnerable := scanned.vulnerablePackages(module)
-	incomplete := incompleteLoad(pkgs)
+	incomplete := incompleteLoad(pkgs, scanned.partial.loadExempt(module))
 	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
@@ -356,11 +356,15 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 }
 
 // incompleteLoad reports whether a package failed to load or type-check, so that its imports, and
-// what reaches through them, may be incomplete.
-func incompleteLoad(pkgs []*packages.Package) bool {
+// what reaches through them, may be incomplete. A package whose path is in exempt does not count
+// when it is the only loaded package with that path; exempt is the packages of a partial run's P
+// for a verdict the run supports (partialRun.loadExempt), whose imports go list reported in full.
+func incompleteLoad(pkgs []*packages.Package, exempt []string) bool {
+	byPath := map[string]int{}
+	packages.Visit(pkgs, nil, func(p *packages.Package) { byPath[p.PkgPath]++ })
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.Types == nil || len(p.Errors) > 0 {
+		if (p.Types == nil || len(p.Errors) > 0) && !(byPath[p.PkgPath] == 1 && slices.Contains(exempt, p.PkgPath)) {
 			incomplete = true
 		}
 	})
@@ -890,6 +894,7 @@ func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []s
 		return vulnScan{}, fmt.Errorf("parse govulncheck json: %w", err)
 	}
 	scanned.partial = partial
+	scanned.admitted = req.Package
 	return scanned, nil
 }
 
@@ -1163,6 +1168,8 @@ type vulnScan struct {
 	wholeModule map[string]bool
 	// partial is the partial run the stream came from, or nil for a run over the whole build.
 	partial *partialRun
+	// admitted is the package URL of the package the request asks about.
+	admitted string
 }
 
 // vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols

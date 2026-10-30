@@ -23,25 +23,36 @@ import (
 // type error), and x/vuln has no flag to tolerate one. When that failure is settled, the scan instead
 // runs govulncheck once more over the build's packages less the roots that import a package the load
 // could not read: the partial run. Its symbol findings are paths that exist in the build, so they
-// stand. Its silence covers only what it loaded, so every refutation it would ground and every
-// advisory it says nothing about is withheld as a tool failure.
+// stand. Its silence covers only what it loaded. Every package the run left out lies in H, the
+// import closure of the roots it left out, so a refutation it grounds and an advisory it says
+// nothing about stand only when no module they name has a package in H; any other is withheld as
+// a tool failure.
 
 // govulncheckPartialKind names the run cache entry that holds a partial run, under the same key as
 // the stream and the settled failure it replaces.
 const govulncheckPartialKind = "govulncheck-partial"
 
 // govulncheckPartialMarker identifies a partial run record; an entry without it is no record.
-const govulncheckPartialMarker = "govulncheck-partial/v2"
+const govulncheckPartialMarker = "govulncheck-partial/v3"
 
 // partialRun is a govulncheck run over the build less Excluded, the roots of ./... that are or
 // import a package in Unloadable, which the full run's load could not read. Modules names each
-// unloadable package's module as a scoped limit does (modulePURL).
+// unloadable package's module as a scoped limit does (modulePURL). Held is the modules with a
+// package in H, the import closure of Excluded; nil when H could not be computed.
 type partialRun struct {
 	Marker     string            `json:"marker"`
 	Unloadable []string          `json:"unloadable"`
 	Modules    map[string]string `json:"modules"`
 	Excluded   []string          `json:"excluded"`
+	Held       []heldModule      `json:"held,omitempty"`
 	Stream     []byte            `json:"stream"`
+}
+
+// heldModule is a module with a package in a partial run's H: the standard library when Path is
+// "", the module under analysis when Main is set.
+type heldModule struct {
+	Path string `json:"path"`
+	Main bool   `json:"main,omitempty"`
 }
 
 // govulncheckOrPartial returns the govulncheck stream for buildDir under env (govulncheckCached),
@@ -115,6 +126,7 @@ type listedPackage struct {
 	ImportPath string
 	Dir        string
 	DepOnly    bool
+	Standard   bool
 	Imports    []string
 	Module     *listedModule // none for the standard library
 }
@@ -178,7 +190,8 @@ func partialRunRecord(buildDir string, perrs []packages.Error, list func() ([]li
 			modules[p.ImportPath] = p.purl()
 		}
 	}
-	return json.Marshal(partialRun{Marker: govulncheckPartialMarker, Unloadable: unloadable, Modules: modules, Excluded: excluded, Stream: out})
+	return json.Marshal(partialRun{Marker: govulncheckPartialMarker, Unloadable: unloadable, Modules: modules, Excluded: excluded,
+		Held: heldModules(graph, excluded), Stream: out})
 }
 
 // posFile matches a go/packages error position, file:line or file:line:col.
@@ -272,11 +285,102 @@ func excludedRoots(graph []listedPackage, unloadable []string) (excluded, kept [
 	return excluded, kept
 }
 
+// heldModules returns the modules with a package in the import closure of excluded over graph,
+// sorted, or nil when that closure cannot be computed: an import graph does not list, or a package
+// that is neither in a module nor in the standard library. "C" is cgo's pseudo-package, not a Go
+// package. The imports go list leaves implicit (runtime, runtime/cgo, syscall, unsafe) are all
+// standard library, which every closure that holds a package already holds.
+func heldModules(graph []listedPackage, excluded []string) []heldModule {
+	byPath := make(map[string]listedPackage, len(graph))
+	for _, p := range graph {
+		byPath[p.ImportPath] = p
+	}
+	held := map[heldModule]bool{}
+	seen := map[string]bool{}
+	stack := slices.Clone(excluded)
+	for len(stack) > 0 {
+		path := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		p, ok := byPath[path]
+		switch {
+		case !ok:
+			return nil
+		case p.Module != nil:
+			held[heldModule{Path: p.Module.Path, Main: p.Module.Main}] = true
+		case p.Standard:
+			held[heldModule{}] = true
+		default:
+			return nil
+		}
+		for _, imp := range p.Imports {
+			if imp != "C" {
+				stack = append(stack, imp)
+			}
+		}
+	}
+	out := slices.Collect(maps.Keys(held))
+	slices.SortFunc(out, func(a, b heldModule) int { return strings.Compare(a.Path, b.Path) })
+	return out
+}
+
+// holds reports whether module, a module path or a toolchain package (isToolchainPackage), may have
+// a package in H. The standard library and the toolchain count as one module. Any other module
+// counts when a held module's path is it, lies under it, or holds it, ignoring case, so a nested
+// module and the module that contains it stand or fall together. An empty module, and any module
+// when H is unknown, counts.
+func (run *partialRun) holds(module string) bool {
+	if run.Held == nil || module == "" {
+		return true
+	}
+	if isToolchainPackage(module) {
+		return slices.Contains(run.Held, heldModule{})
+	}
+	for _, h := range run.Held {
+		if h.Path != "" && (pathWithin(h.Path, module) || pathWithin(module, h.Path)) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathWithin reports whether the import path p is root or lies under it, ignoring case.
+func pathWithin(p, root string) bool {
+	p, root = strings.ToLower(p), strings.ToLower(root)
+	return p == root || strings.HasPrefix(p, root+"/")
+}
+
+// supports reports whether the run's search covers res: neither the admitted module (the request's
+// package URL), nor any module the advisory names (scanned.imports, scanned.wholeModule), nor the
+// module res refutes may have a package in H. A package URL that names no Go module does not.
+func (run *partialRun) supports(res plugin.ReachabilityResult, scanned vulnScan) bool {
+	modules := []string{packageFromPURL(scanned.admitted)}
+	if r := res.Refutation; r != nil {
+		modules = append(modules, packageFromPURL(r.Package))
+	}
+	modules = slices.AppendSeq(modules, maps.Keys(scanned.imports))
+	modules = slices.AppendSeq(modules, maps.Keys(scanned.wholeModule))
+	return !slices.ContainsFunc(modules, run.holds)
+}
+
+// loadExempt returns the packages of P that incompleteLoad may pass over for a refutation of
+// module: all of P when the run supports a verdict on module, so that no package of P reaches it
+// (P lies in H), and none otherwise.
+func (run *partialRun) loadExempt(module string) []string {
+	if run == nil || run.holds(module) {
+		return nil
+	}
+	return run.Unloadable
+}
+
 // listBuildPackages lists the packages of ./... and their dependencies in buildDir under env, as
 // the govulncheck load sees them: tests excluded. It never fetches: a settled failure already
 // resolved every module offline (packagesResolveOffline).
 func listBuildPackages(ctx context.Context, buildDir string, env []string) ([]listedPackage, error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Imports,Module", "./...")
+	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Standard,Imports,Module", "./...")
 	cmd.Dir = buildDir
 	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
 	out, err := cmd.Output()
@@ -297,14 +401,15 @@ func listBuildPackages(ctx context.Context, buildDir string, env []string) ([]li
 
 // withholdForPartialRun shapes a result read off a partial run. A symbol finding is a path in the
 // build and stands. A refutation, and an advisory the run says nothing about, rest on a search that
-// left the excluded roots out, so neither stands: each declares tool_failure. Every result names
-// what the run left out.
+// left H out, so each stands only when the run supports it (partialRun.supports); otherwise it
+// declares tool_failure. Every result names what the run left out.
 func withholdForPartialRun(res plugin.ReachabilityResult, scanned vulnScan) plugin.ReachabilityResult {
 	run := scanned.partial
 	if run == nil {
 		return res
 	}
 	switch {
+	case run.supports(res, scanned):
 	case res.Refutation != nil:
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
@@ -321,14 +426,16 @@ func withholdForPartialRun(res plugin.ReachabilityResult, scanned vulnScan) plug
 	return res
 }
 
-// partialRunLimits discloses a partial run as unbounded tool_failure limits, one per module of a
-// package the run could not load (Package as a scoped limit names it), each naming those packages
-// and the roots the run left out.
+// partialRunLimits discloses a partial run as tool_failure limits, one per module of a package the
+// run could not load (Package as a scoped limit names it), each naming those packages and the roots
+// the run left out. The search left out only H, so each targets H's modules (heldTargets); with H
+// unknown, each is unbounded.
 func partialRunLimits(run *partialRun) []plugin.ScopedReason {
 	byModule := map[string][]string{}
 	for _, p := range run.Unloadable {
 		byModule[run.Modules[p]] = append(byModule[run.Modules[p]], p)
 	}
+	targets := heldTargets(run.Held)
 	var limits []plugin.ScopedReason
 	for _, mod := range slices.Sorted(maps.Keys(byModule)) {
 		limits = append(limits, plugin.ScopedReason{
@@ -336,9 +443,28 @@ func partialRunLimits(run *partialRun) []plugin.ScopedReason {
 			Package: mod,
 			Path: fmt.Sprintf("govulncheck could not load %s; it searched the build less the roots that are or import a package it could not load: %s",
 				nameList(byModule[mod]), nameList(run.Excluded)),
+			Targets: targets,
 		})
 	}
 	return limits
+}
+
+// heldTargets names held modules as a scoped limit's targets: the module under analysis as "", the
+// standard library as stdlib, toolchain and cmd, any other module by its path. None names none.
+func heldTargets(held []heldModule) []string {
+	var targets []string
+	for _, h := range held {
+		switch {
+		case h.Main:
+			targets = append(targets, "")
+		case h.Path == "":
+			targets = append(targets, stdlibPURL, "pkg:golang/toolchain", "pkg:golang/cmd")
+		default:
+			targets = append(targets, "pkg:golang/"+h.Path)
+		}
+	}
+	slices.Sort(targets)
+	return slices.Compact(targets)
 }
 
 // nameList joins names, naming at most five.

@@ -571,6 +571,52 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 	}
 }
 
+// TestGoModRequires_WorkspaceMembers: the go.work in force puts every module it uses, and what
+// each requires, in the build, so none of them is absent; a module only the root's own use claims,
+// that a nested module owns instead, still is, and a go.work that cannot be read proves nothing.
+func TestGoModRequires_WorkspaceMembers(t *testing.T) {
+	workspace := map[string]string{
+		"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
+		"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+		"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.6\n",
+	}
+	rootOnly := map[string]string{
+		"a/go.work":    "go 1.22\n\nuse .\n",
+		"a/go.mod":     "module example.com/mono\n\ngo 1.22\n",
+		"a/sub/go.mod": "module example.com/mono/sub\n\ngo 1.22\n",
+		"a/sub/sub.go": "package sub\n",
+	}
+	cases := []struct {
+		name        string
+		files       map[string]string
+		module      string
+		wantPresent bool
+		wantKnown   bool
+	}{
+		{"a member module", workspace, "example.com/mono/b", true, true},
+		{"a package of a member module", workspace, "example.com/mono/b/pkg", true, true},
+		{"a module a member requires", workspace, "golang.org/x/text", true, true},
+		{"a module nothing in the workspace declares", workspace, "example.com/never", false, true},
+		{"a nested module the root's own use does not claim", rootOnly, "example.com/mono/sub", false, true},
+		{"a go.work that does not parse", map[string]string{
+			"go.work":  "go 1.22\n\nuse (\n",
+			"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+		}, "example.com/never", false, false},
+		{"a go.work using a directory with no go.mod", map[string]string{
+			"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./gone\n)\n",
+			"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+		}, "example.com/never", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buildDir := filepath.Join(writeTree(t, tc.files), "a")
+			if present, known := goModRequires(buildDir, tc.module); present != tc.wantPresent || known != tc.wantKnown {
+				t.Fatalf("goModRequires = %v, %v; want %v, %v", present, known, tc.wantPresent, tc.wantKnown)
+			}
+		})
+	}
+}
+
 // TestGradleRootPackage_VersionAllowlist: the version is read only when every statement that runs
 // before publishing is on the allowlist: settings holds only rootProject.name, and the root script
 // only literal group and version assignments and plain dependencies and repositories blocks.

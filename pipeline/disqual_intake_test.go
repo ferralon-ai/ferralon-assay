@@ -221,6 +221,30 @@ func TestIntakeRun_ModulePresentInGoMod_Proceeds(t *testing.T) {
 	}
 }
 
+// Guard 2 PROCEED: a module the go.work in force uses is in the workspace build even though
+// the build directory's go.mod never requires it, so the guard does not fire.
+func TestIntakeRun_GoWorkMemberModule_Proceeds(t *testing.T) {
+	store := artifact.NewMemStore()
+	caseID := "case-work-member"
+	dir := writeTree(t, map[string]string{
+		"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
+		"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+		"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
+	})
+	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
+		"vuln_id": "GO-XXXX-MEMBER",
+		"module":  "example.com/mono/b",
+		"purl":    "pkg:golang/example.com/mono/b",
+	})
+	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
+		"language": "go", "build_dir": filepath.Join(dir, "a"),
+	})
+	res := runDisqual(t, store, caseID)
+	if res.Disqualified {
+		t.Fatalf("a go.work member module must proceed, got %+v", res)
+	}
+}
+
 // Guard 2 protection: a first-party/app-level Go sink (empty module — gogs archetype) is NEVER
 // caught by the no-manifest-entry guard; it proceeds to first-party reachability downstream.
 func TestIntakeRun_FirstPartyEmptyModule_Proceeds(t *testing.T) {

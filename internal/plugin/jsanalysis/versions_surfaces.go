@@ -28,9 +28,10 @@ import (
 
 // unreadSurfaces reports whether any install surface under root goes unread, and whether a
 // script surface may install a package no lock or manifest read here names
-// (scriptsurface.Veto.Withheld); locks maps each path lockFiles(root) returned to what
-// parseLockfile read from it.
-func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithheld bool) {
+// (scriptsurface.Veto.Withheld), and where a file the rule does not read as a surface runs an
+// installer (scriptsurface.Veto.Unrecognised), or ""; locks maps each path lockFiles(root)
+// returned to what parseLockfile read from it.
+func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithheld bool, unrecognised string) {
 	read := make(map[string]bool, len(locks))
 	for l := range locks {
 		read[l] = true
@@ -47,24 +48,27 @@ func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithh
 		}
 	}
 	scriptWithheld = veto.Withheld()
-	return unread || scriptWithheld, scriptWithheld
+	return unread || scriptWithheld, scriptWithheld, veto.Unrecognised()
 }
 
 // installSurfaces is unreadSurfaces for the build at root, computed once per scan through the
 // run cache and shared by the versions op and the dependency layout. locks returns what
 // lockFiles(root) and parseLockfile read; it is called only when the cache holds no answer.
-func installSurfaces(ctx context.Context, root string, locks func() map[string]lockInfo) (unread, scriptWithheld bool) {
-	type answer struct{ Unread, ScriptWithheld bool }
+func installSurfaces(ctx context.Context, root string, locks func() map[string]lockInfo) (unread, scriptWithheld bool, unrecognised string) {
+	type answer struct {
+		Unread, ScriptWithheld bool
+		Unrecognised           string
+	}
 	b, err := runCached(ctx, "installsurfaces", []string{root}, func() ([]byte, error) {
 		var a answer
-		a.Unread, a.ScriptWithheld = unreadSurfaces(root, locks())
+		a.Unread, a.ScriptWithheld, a.Unrecognised = unreadSurfaces(root, locks())
 		return json.Marshal(a)
 	})
 	var a answer
 	if err != nil || json.Unmarshal(b, &a) != nil {
 		return unreadSurfaces(root, locks())
 	}
-	return a.Unread, a.ScriptWithheld
+	return a.Unread, a.ScriptWithheld, a.Unrecognised
 }
 
 // parsedLocks reads every lockfile lockFiles finds under root, keyed by path.

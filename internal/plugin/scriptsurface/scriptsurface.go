@@ -214,6 +214,9 @@ type Veto struct {
 	mentioned map[string]bool // lowercased base names other commands take as arguments
 	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
 	triggered bool            // a surface's text may reach a sample hook (trigger)
+	// unrecognisedAt is where the backstop first withheld (Unrecognised).
+	unrecognisedAt string
+	actions        *bool // a workflow uses an action from the tree (localActions), once known
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
@@ -230,11 +233,18 @@ func New(root string, read func(string) bool, spec Spec) *Veto {
 		bound: map[string]bool{}, mentioned: map[string]bool{}}
 }
 
-// Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on is
-// a candidate FullyRead reports unread, and every other file is classified by match.
+// Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on, or
+// another file the backstop finds an installer in, is a candidate FullyRead reports unread, and
+// every other file is classified by match.
 func (v *Veto) Classify(match func(path string, head []byte) (string, bool)) func(string, []byte) (string, bool) {
 	return func(path string, head []byte) (string, bool) {
-		if why, ok := v.surface(path, head); ok {
+		why, ok := "", false
+		if _, surface := surfaceOf(path, head); surface {
+			why, ok = v.surface(path, head)
+		} else {
+			why, ok = v.backstop(path, head)
+		}
+		if ok {
 			v.vetoed[path] = true
 			return why, true
 		}

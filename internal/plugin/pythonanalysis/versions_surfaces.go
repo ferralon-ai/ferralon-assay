@@ -30,8 +30,9 @@ import (
 // surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
 // read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
 // is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
-// or a script surface names one (pipConfigNamedRE).
-func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
+// or a script surface names one (pipConfigNamedRE). unrecognised is where a file the rule does
+// not read as a surface runs an installer (scriptsurface.Veto.Unrecognised), or "".
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool, unrecognised string) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -76,7 +77,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
+	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling, veto.Unrecognised()
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

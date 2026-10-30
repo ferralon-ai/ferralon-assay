@@ -333,7 +333,7 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete, re
 			}
 		}
 	}
-	manifests, unread, _, _, tooling := versionSurfaces(buildDir)
+	manifests, unread, _, _, tooling, _ := versionSurfaces(buildDir)
 	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
 	for n := range tooling {
 		names[n] = true // a self-upgrade installs it as surely as a manifest declares it

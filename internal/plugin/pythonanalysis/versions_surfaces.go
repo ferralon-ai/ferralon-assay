@@ -95,7 +95,8 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	if uvConfigNamed && uvSynced || pdmConfigNamed && pdmSynced {
+	uvInTree, pdmInTree := lockToolConfigInTree(root)
+	if (uvConfigNamed || uvInTree) && uvSynced || (pdmConfigNamed || pdmInTree) && pdmSynced {
 		scriptWithheld = true
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling

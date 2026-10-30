@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"errors"
+	"io/fs"
 	"maps"
 	"path/filepath"
 	"regexp"
@@ -170,18 +171,54 @@ func pipSelfUpgrade(args []string) bool {
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip`)
 
 // uvConfigNamedRE matches, in a script surface's text, a uv config file or directory (uv.toml,
-// /etc/uv, /etc/xdg/uv, .config/uv), UV_CONFIG_FILE, or an XDG variable that moves where uv
-// looks for one. A uv sync reads the settings there, which can add build requirements, indexes
+// /etc/uv, /etc/xdg/uv, .config/uv, AppData or ProgramData's uv), UV_CONFIG_FILE, or a
+// variable that moves where uv looks for one (XDG_CONFIG_HOME or XDG_CONFIG_DIRS, HOME,
+// USERPROFILE). A uv sync reads the settings there, which can add build requirements, indexes
 // and build environment, so an allowed one withholds where a script names one (versionSurfaces).
-var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|xdg_config_(?:home|dirs)`)
+var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|(?:appdata|programdata)%?[\\/]uv\b|` + configHomeMoved)
 
 // pdmConfigNamedRE matches, in a script surface's text, a pdm config file or the directory pdm
 // reads its user or site config from (pdm.toml, .pdm.toml, pdm/config.toml, .config/pdm,
-// /etc/xdg/pdm, Application Support/pdm, AppData or ProgramData's pdm), or an XDG variable that
-// moves where pdm looks. A pdm sync reads the settings there, which can name an index or turn
-// off build isolation, so an allowed one withholds where a script names one (versionSurfaces).
+// /etc/xdg/pdm, Application Support/pdm, AppData or ProgramData's pdm), or a variable that
+// moves where pdm looks (XDG_CONFIG_HOME or XDG_CONFIG_DIRS, HOME, USERPROFILE, platformdirs'
+// WIN_PD_OVERRIDE_*). A pdm sync reads the settings there, which can name an index or turn off
+// build isolation, so an allowed one withholds where a script names one (versionSurfaces).
 // PDM_CONFIG_FILE falls under laneEnvRE.
-var pdmConfigNamedRE = regexp.MustCompile(`(?i)pdm\.toml|pdm[\\/]config\.toml|(?:\.config|/etc/xdg|application support|appdata[\\/](?:local|roaming)|localappdata%?|programdata%?)[\\/]pdm\b|xdg_config_(?:home|dirs)`)
+var pdmConfigNamedRE = regexp.MustCompile(`(?i)pdm\.toml|pdm[\\/]config\.toml|(?:\.config|/etc/xdg|application support|appdata[\\/](?:local|roaming)|localappdata%?|programdata%?)[\\/]pdm\b|win_pd_override_|` + configHomeMoved)
+
+// configHomeMoved matches, in a script surface's text, a variable a tool's user or site config
+// location is found from being set or exported: XDG_CONFIG_HOME, XDG_CONFIG_DIRS, HOME (as
+// HOME=, a workflow's HOME:, or a Dockerfile's ENV HOME) and USERPROFILE.
+const configHomeMoved = `xdg_config_(?:home|dirs)|\bhome\s*[=:]|\benv\s+home\s|userprofile`
+
+// lockToolConfigInTree reports whether root (all but its own .git) holds a file uv or pdm
+// reads as a user or site config once it is in place: uv's uv.toml under a uv directory, pdm's
+// config.toml under a pdm directory, or a pdm.toml or .pdm.toml anywhere. A script can put one
+// there without naming it, copying a directory onto ~/.config or /etc or moving HOME onto the
+// tree, so an allowed uv sync or pdm sync withholds where one is here (versionSurfaces). A walk
+// or read error counts as both.
+func lockToolConfigInTree(root string) (uv, pdm bool) {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			uv, pdm = true, true
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name, dir := strings.ToLower(d.Name()), strings.ToLower(filepath.Base(filepath.Dir(path)))
+		uv = uv || name == "uv.toml" && dir == "uv"
+		pdm = pdm || name == "pdm.toml" || name == ".pdm.toml" || name == "config.toml" && dir == "pdm"
+		return nil
+	})
+	if err != nil {
+		return true, true
+	}
+	return uv, pdm
+}
 
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}

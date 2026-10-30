@@ -151,7 +151,8 @@ var setuptoolsBytes, _ = pep440.Parse("65.4.1")
 // own environment installs it from that requirement. A build without isolation uses another,
 // and every way to ask for one withholds before this is read: an installer flag (laneFlags), a
 // tool table (uvSettingsClean, the pdm case of rootBuildClean), a config file a script names
-// (uvConfigNamedRE, pdmConfigNamedRE), or an environment variable (laneEnvRE).
+// (uvConfigNamedRE, pdmConfigNamedRE) or the tree holds (lockToolConfigInTree), or an
+// environment variable (laneEnvRE).
 func setuptoolsReadsBytes(doc rootProject) bool {
 	if doc.BuildSystem == nil {
 		return false

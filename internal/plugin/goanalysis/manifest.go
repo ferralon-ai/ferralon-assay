@@ -16,9 +16,11 @@ import (
 // command (`go build ./...`). It is a single-module parse, not a build orchestrator.
 //
 // The two version directives are reported separately and neither is a pin: `go X.Y`
-// is a minimum LANGUAGE version and `toolchain goX.Y.Z` a minimum TOOLCHAIN, and
-// GOTOOLCHAIN=auto only ever switches UP from them. Ordering them into one fact
-// about the subject's toolchain is the caller's job (pipeline.ToolchainFact).
+// is a minimum version, and `toolchain goX.Y.Z` is recorded as declared but bounds
+// nothing — under GOTOOLCHAIN=local or a pinned GOTOOLCHAIN the go command ignores
+// its version. Its presence does imply go1.21 or later, since older go commands
+// reject the line. Ordering them into one fact about the subject's toolchain is the
+// caller's job (pipeline.ToolchainFact).
 //
 // Those bounds hold only for a go command from Go 1.21 on; an older one does not
 // enforce the `go` line. When the directives do not exclude such a go command (no

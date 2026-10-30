@@ -811,7 +811,7 @@ const (
 type RuntimeSpec struct {
 	Name      string        `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
 	Version   string        `json:"version,omitempty"`   // declared/minimum runtime version (JS: node engine range)
-	Toolchain string        `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one; a stronger floor than Version
+	Toolchain string        `json:"toolchain,omitempty"` // the manifest's toolchain directive, recorded as declared; not a bound (Go: its presence implies go1.21 or later, its version does not)
 	Source    RuntimeSource `json:"source,omitempty"`    // provenance of this identity
 	Target    string        `json:"target,omitempty"`    // this toolchain's target platform/architecture ("linux/amd64", "x86_64-linux-gnu")
 	Lang      string        `json:"lang,omitempty"`      // language mode this toolchain compiles ("c", "c++")

@@ -74,7 +74,8 @@ func isCondaToolPackage(spec string) bool {
 
 // pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
-// dependency tables, and the uv and pdm dev-dependencies.
+// dependency tables, and the uv and pdm dev-dependencies. [tool.pixi] is read for its presence
+// alone.
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`

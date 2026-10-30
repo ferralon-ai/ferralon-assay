@@ -298,6 +298,24 @@ func TestResolveVersions_PyprojectPixiUnread(t *testing.T) {
 			mustVetoedPy(t, writeTree(t, map[string]string{"pyproject.toml": project + pixi}), "pyjwt")
 		})
 	}
+	t.Run("beside a uv.lock", func(t *testing.T) {
+		mustVetoedPy(t, writeTree(t, map[string]string{
+			"pyproject.toml": project + "[tool.pixi.pypi-dependencies]\npyjwt = \"==2.10.0\"\n",
+			"uv.lock": "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+				"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n" +
+				"source = { registry = \"https://pypi.org/simple\" }\n",
+		}), "pyjwt")
+	})
+	// A name only the pixi tables declare is not reported absent from a complete read.
+	t.Run("name only pixi declares", func(t *testing.T) {
+		res := resolveVersion(t, writeTree(t, map[string]string{
+			"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask>=3\"]\n" +
+				"[tool.pixi.pypi-dependencies]\npyjwt = \"==2.10.0\"\n",
+		}), "pyjwt")
+		if res.Partiality.Complete || res.Exhaustive {
+			t.Fatalf("pyjwt: Found=%v Exhaustive=%v partiality %+v, want a partial, non-exhaustive result", res.Found, res.Exhaustive, res.Partiality)
+		}
+	})
 	t.Run("another tool table still resolves", func(t *testing.T) {
 		mustResolvedCompletePy(t, writeTree(t, map[string]string{
 			"pyproject.toml": project + "[tool.ruff]\nline-length = 100\n",

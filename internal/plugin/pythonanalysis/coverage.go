@@ -867,6 +867,9 @@ func (r *reqInstalls) hashesDisabled() bool {
 
 var noRequireHashesRE = regexp.MustCompile(`(?i)no[-_]require[-_]hashes`)
 
+// patchLevelRE matches a version that names a patch level, as in ">=3.10.5".
+var patchLevelRE = regexp.MustCompile(`\d+\.\d+\.\d+`)
+
 var pipIndexConfigRE = regexp.MustCompile(`(?i)index[-_]url|find[-_]links`)
 
 // pipConfigDisablesHashes walks root (all but its own .git) for a pip.conf or pip.ini that
@@ -1024,8 +1027,9 @@ func (r *reqInstalls) closed(f string, locks []*pyLock) bool {
 		return false
 	}
 	build := buildInterpreter(r.root)
+	buildSpec, _ := declaredPython(r.root)
 	for _, l := range locks {
-		if !l.closable || !admitsAll(l.requiresPython, build) {
+		if !l.closable || !admitsAll(l.requiresPython, buildSpec, build) {
 			return false
 		}
 		done := map[[3]string]bool{}
@@ -1086,9 +1090,15 @@ func (r *reqInstalls) pipConfigNamesIndex() bool {
 	return *r.indexCfg
 }
 
-// admitsAll reports whether the requires-python spec admits every release in build. An
-// absent or unreadable spec admits nothing.
-func admitsAll(spec string, build interpreterRange) bool {
+// admitsAll reports whether the requires-python spec admits every release in build, which
+// buildSpec declares. An absent or unreadable spec admits nothing. The ranges are compared by
+// minor release, so a spec that bounds a patch level must be buildSpec itself: uv drops an
+// edge marked below a lock's ">=3.10.5" that pip on 3.10.0 installs.
+func admitsAll(spec, buildSpec string, build interpreterRange) bool {
+	if strings.Join(strings.Fields(spec), "") != strings.Join(strings.Fields(buildSpec), "") &&
+		(patchLevelRE.MatchString(spec) || patchLevelRE.MatchString(buildSpec)) {
+		return false
+	}
 	r, ok := parseInterpreterRange(spec)
 	if !ok || build.newer && !r.newer {
 		return false

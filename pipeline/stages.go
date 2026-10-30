@@ -2497,12 +2497,13 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
 // guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
-// inside it, or a require), or a module the go.work in force uses declares it the same way, and
-// whether the manifests were readable at all. manifestKnown=false — no build dir, or an absent /
-// unparseable go.mod or go.work — forces the caller to fail OPEN, because absence is only PROVABLE
-// against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
+// inside it, or a require), or a module the go.work in force uses declares it the same way, or —
+// under a go.work — the build list the go command computes holds it, and whether that was readable
+// at all. manifestKnown=false — no build dir, an absent / unparseable go.mod or go.work, or a build
+// list the go command could not compute — forces the caller to fail OPEN, because absence is only
+// PROVABLE against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
 // manifest_membership.go.
-func goModRequires(buildDir string, ws GoWorkspace, module string) (present bool, manifestKnown bool) {
+func goModRequires(ctx context.Context, buildDir string, ws GoWorkspace, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
 	}
@@ -2546,6 +2547,20 @@ func goModRequires(buildDir string, ws GoWorkspace, module string) (present bool
 			return false, false
 		}
 		if p := wm.Module.Mod.Path; p != root && (module == p || strings.HasPrefix(module, p+"/")) || declares(wm) {
+			return true, true
+		}
+	}
+	if ws.File == "" {
+		return false, true
+	}
+	// Under a go.work no go.mod states what is in the build: a dependency the workspace selects at
+	// a higher version can bring in a module none of them lists. Only the build list decides.
+	mods, err := workspaceBuildList(ctx, buildDir, ws)
+	if err != nil {
+		return false, false
+	}
+	for _, m := range mods {
+		if !m.Main && (module == m.Path || strings.HasPrefix(module, m.Path+"/")) {
 			return true, true
 		}
 	}
@@ -3097,7 +3112,7 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 		return err
 	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
-	coordinate, manifestHas, manifestKnown := intakeManifestMembership(store, c.ID, buildDir, goWork, advModule)
+	coordinate, manifestHas, manifestKnown := intakeManifestMembership(ctx, store, c.ID, buildDir, goWork, advModule)
 	if disq, reason := intakeDisqualify(
 		extractAdvisoryEcosystem(store, c.ID),
 		extractCodebaseEcosystem(store, c.ID),

@@ -516,7 +516,7 @@ func TestGoPathOwner_ModulesOutsideTheBuildDir(t *testing.T) {
 			if v, got := root.Matches(buildDir, workspaceFor(t, buildDir), tc.module, "", ""); got != tc.want || v != tc.wantVersion {
 				t.Errorf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
 			}
-			if present, known := goModRequires(buildDir, workspaceFor(t, buildDir), tc.module); !present || !known {
+			if present, known := goModRequires(context.Background(), buildDir, workspaceFor(t, buildDir), tc.module); !present || !known {
 				t.Errorf("goModRequires = %v, %v; want present, known (a module outside the build never proves absence)", present, known)
 			}
 		})
@@ -593,7 +593,7 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 			if got := goPathOwner(buildDir, workspaceFor(t, buildDir), "example.com/mono", tc.module); got != tc.want {
 				t.Fatalf("goPathOwner = %v; want %v", got, tc.want)
 			}
-			if present, known := goModRequires(buildDir, workspaceFor(t, buildDir), tc.module); present != (tc.want != goOwnedElsewhere) || !known {
+			if present, known := goModRequires(context.Background(), buildDir, workspaceFor(t, buildDir), tc.module); present != (tc.want != goOwnedElsewhere) || !known {
 				t.Errorf("goModRequires = %v, %v; want %v, true", present, known, tc.want != goOwnedElsewhere)
 			}
 		})
@@ -646,7 +646,7 @@ func TestGoModRequires_WorkspaceMembers(t *testing.T) {
 			tree := writeTree(t, tc.files)
 			gitTree(t, tree)
 			buildDir := filepath.Join(tree, "a")
-			if present, known := goModRequires(buildDir, workspaceFor(t, buildDir), tc.module); present != tc.wantPresent || known != tc.wantKnown {
+			if present, known := goModRequires(context.Background(), buildDir, workspaceFor(t, buildDir), tc.module); present != tc.wantPresent || known != tc.wantKnown {
 				t.Fatalf("goModRequires = %v, %v; want %v, %v", present, known, tc.wantPresent, tc.wantKnown)
 			}
 		})

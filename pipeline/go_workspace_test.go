@@ -70,7 +70,7 @@ func TestResolveGoWorkspace_StopsAtTheRepository(t *testing.T) {
 	if err != nil || ws.File != "" {
 		t.Fatalf("above the work tree: ResolveGoWorkspace = %+v, %v; want off", ws, err)
 	}
-	if present, known := goModRequires(buildDir, ws, "example.com/lib"); present || !known {
+	if present, known := goModRequires(context.Background(), buildDir, ws, "example.com/lib"); present || !known {
 		t.Fatalf("goModRequires = %v, %v; want false, true", present, known)
 	}
 }
@@ -83,25 +83,23 @@ func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 	const work = "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n"
 	const modA = "module example.com/mono/a\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.6\n"
 	const modB = "module example.com/mono/b\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.8\n"
-	selected := func(v string) func(context.Context, string, GoWorkspace, string) (listedModule, error) {
-		return func(_ context.Context, _ string, _ GoWorkspace, module string) (listedModule, error) {
-			return listedModule{Path: module, Version: v}, nil
+	type buildList = func(context.Context, string, GoWorkspace) ([]listedModule, error)
+	listing := func(mods ...listedModule) buildList {
+		return func(context.Context, string, GoWorkspace) ([]listedModule, error) {
+			return append([]listedModule{{Path: "example.com/mono/a", Main: true}, {Path: "example.com/mono/b", Main: true}}, mods...), nil
 		}
 	}
-	failing := func(context.Context, string, GoWorkspace, string) (listedModule, error) {
-		return listedModule{}, errors.New("go: module lookup disabled by GOPROXY=off")
+	selected := func(v string) buildList { return listing(listedModule{Path: "golang.org/x/text", Version: v}) }
+	failing := func(context.Context, string, GoWorkspace) ([]listedModule, error) {
+		return nil, errors.New("go: module lookup disabled by GOPROXY=off")
 	}
-	replacedBy := func(_ context.Context, _ string, _ GoWorkspace, module string) (listedModule, error) {
-		return listedModule{Path: module, Version: "v0.3.8", Replace: &struct{ Path, Version string }{Path: "../text"}}, nil
-	}
-	main := func(_ context.Context, _ string, _ GoWorkspace, module string) (listedModule, error) {
-		return listedModule{Path: module, Main: true}, nil
-	}
+	replacedBy := listing(listedModule{Path: "golang.org/x/text", Version: "v0.3.8", Replace: &struct{ Path, Version string }{Path: "../text"}})
+	main := listing(listedModule{Path: "golang.org/x/text", Main: true})
 	cases := []struct {
 		name         string
 		files        map[string]string
 		module       string
-		list         func(context.Context, string, GoWorkspace, string) (listedModule, error)
+		list         buildList
 		wantVersion  string
 		wantPinned   bool
 		wantManifest bool
@@ -111,7 +109,9 @@ func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 		{"the go command reports a replacement", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", replacedBy, "", false, true},
 		{"the go command reports a main module", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", main, "", false, true},
 		{"the go command reports no version", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", selected(""), "", false, true},
-		{"a module no member requires", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/never", selected("v9.9.9"), "", true, true},
+		{"a module the build list does not hold", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/never", selected("v0.3.9"), "", true, true},
+		{"a module no member requires that the build list holds", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/n", listing(listedModule{Path: "example.com/n", Version: "v1.0.0"}), "v1.0.0", true, true},
+		{"a module no member requires when the go command cannot say", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/never", failing, "", false, true},
 		{"a member module", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/mono/b", selected("v1.0.0"), "", false, true},
 		{"a module the go.work replaces", map[string]string{"go.work": work + "\nreplace golang.org/x/text => golang.org/x/text v0.3.0\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", selected("v0.3.8"), "", false, true},
 		{"a module a member replaces", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text => ../text\n"}, "golang.org/x/text", selected("v0.3.8"), "", false, true},
@@ -132,9 +132,9 @@ func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 	}
 
 	t.Run("off reads the module's go.mod alone", func(t *testing.T) {
-		stubGoList(t, func(context.Context, string, GoWorkspace, string) (listedModule, error) {
+		stubGoList(t, func(context.Context, string, GoWorkspace) ([]listedModule, error) {
 			t.Fatal("the go command ran for a build with no go.work")
-			return listedModule{}, nil
+			return nil, nil
 		})
 		tree := writeTree(t, map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB})
 		if v, pinned, read := moduleVersionFromBuild(context.Background(), filepath.Join(tree, "a"), GoWorkspace{}, "golang.org/x/text"); v != "v0.3.6" || !pinned || !read {
@@ -143,9 +143,18 @@ func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 	})
 }
 
-func stubGoList(t *testing.T, list func(context.Context, string, GoWorkspace, string) (listedModule, error)) {
+func stubGoList(t *testing.T, list func(context.Context, string, GoWorkspace) ([]listedModule, error)) {
 	t.Helper()
-	orig := goListModule
-	goListModule = list
-	t.Cleanup(func() { goListModule = orig })
+	orig := goListBuild
+	goListBuild = list
+	t.Cleanup(func() { goListBuild = orig })
+	resetBuildLists(t)
+}
+
+// resetBuildLists forgets every memoized build list, now and when t ends.
+func resetBuildLists(t *testing.T) {
+	t.Helper()
+	reset := func() { buildLists.Range(func(k, _ any) bool { buildLists.Delete(k); return true }) }
+	reset()
+	t.Cleanup(reset)
 }

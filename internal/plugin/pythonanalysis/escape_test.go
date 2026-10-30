@@ -1315,6 +1315,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"star import of sys", "from sys import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
 		{"star import of sys continued before import", "from sys \\\n    import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
 		{"star import of sys continued after import", "from sys import \\\n    *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"star import of sys continued with CRLF", "from sys \\\r\n    import *\r\n\r\ndef go(mod):\r\n    return modules[mod]\r\n", false, false, true},
+		{"star import of sys without a space", "from sys import*\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
 		{"sys aliased", "import sys as s\n\ndef go(mod, n, x):\n    return getattr(s.modules[mod], n)(x)\n", false, false, true},
 		{"importlib aliased", "import importlib as il\n\ndef go(mod, n, x):\n    return getattr(il.import_module(mod), n)(x)\n", false, false, true},
 		{"import_module renamed", "from importlib import import_module as load\n\ndef go(mod, n, x):\n    return getattr(load(mod), n)(x)\n", false, false, true},

@@ -112,3 +112,27 @@ func TestCallGraph_ReexportRebinding(t *testing.T) {
 		})
 	}
 }
+
+// TestCallGraph_ReexportRebindingSrcLayout: in a src/ layout, a package attribute stored
+// through the absolute spelling of a namespace package lists a site that reads it through
+// the relative spelling.
+func TestCallGraph_ReexportRebindingSrcLayout(t *testing.T) {
+	res := mustCallGraph(t, map[string]string{
+		"src/pkg/impl.py": "def f(x):\n    return x\n",
+		"src/pkg/v.py":    "def vuln(x):\n    return x\n",
+		"src/pkg/x.py":    "from .v import vuln as g\n",
+		"src/pkg/a.py":    "from .impl import f as g\n",
+		"src/b.py":        "import pkg\nimport pkg.x\npkg.a = pkg.x\n",
+		"src/pkg/c.py":    "from . import a\n\ndef go():\n    return a.g(1)\n",
+	})
+	goC, impl := funcSCIP("src/pkg/c", nil, "go", 0), funcSCIP("src/pkg/impl", nil, "f", 1)
+	if !hasEdge(res.Edges, goC, impl) {
+		t.Fatalf("missing alias edge %s -> %s; edges %v", goC, impl, res.Edges)
+	}
+	for _, u := range res.Unresolved {
+		if u.Caller.SCIP == goC && u.Callee == "a.g" && len(u.Targets) == 0 {
+			return
+		}
+	}
+	t.Fatalf("a.g(1) not listed; unresolved %v", res.Unresolved)
+}

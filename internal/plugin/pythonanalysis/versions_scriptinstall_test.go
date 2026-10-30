@@ -420,3 +420,69 @@ func TestResolveVersions_PDMEnvKept(t *testing.T) {
 		})
 	}
 }
+
+// poetry install with a terminal flag, --no-root or a group selection installs a subset of
+// poetry.lock, so it keeps the pins and the lock's exhaustive claim; any other flag withholds.
+// --no-root skips the root's tool.poetry.build script, but not its plugins or its path
+// sources' builds.
+func TestResolveVersions_PoetryInstallFlags(t *testing.T) {
+	const (
+		project    = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
+		lockPoetry = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ngroups = [\"main\"]\n"
+		setupPy    = "import subprocess\nsubprocess.run([\"pip\", \"install\", \"jinja2==3.1.2\"])\n"
+		pathLock   = "[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\ndevelop = true\n\n[package.source]\ntype = \"directory\"\nurl = \"lib\"\n\n" + lockPoetry
+		lib        = "[project]\nname = \"lib\"\nversion = \"0.1.0\"\n[build-system]\nrequires = [\"x\"]\nbuild-backend = \"setuptools.build_meta\"\n"
+	)
+	tests := []struct {
+		name, args string
+		files      map[string]string // more files in the tree, over pyproject.toml and poetry.lock
+		want       bool              // jinja2 resolved, and an unlocked coordinate exhaustive
+	}{
+		{"--no-root --no-interaction", "--no-root --no-interaction", nil, true},
+		{"-n --no-ansi", "-n --no-ansi", nil, true},
+		{"--ansi -q", "--ansi -q", nil, true},
+		{"--only main", "--only main", nil, true},
+		{"--only=main", "--only=main", nil, true},
+		{"--without dev", "--without dev", nil, true},
+		{"--with docs", "--with docs", nil, true},
+		{"--with a,b repeated", "--with docs,lint --with test --without dev", nil, true},
+		{"--no-dev --no-root", "--no-dev --no-root", nil, true},
+		{"--no-root skips the build script", "--no-root", map[string]string{"pyproject.toml": project + "[tool.poetry]\nbuild = \"build.py\"\n", "build.py": setupPy}, true},
+
+		{"build script without --no-root", "--only main", map[string]string{"pyproject.toml": project + "[tool.poetry]\nbuild = \"build.py\"\n", "build.py": setupPy}, false},
+		{"--no-root still loads requires-plugins", "--no-root", map[string]string{"pyproject.toml": project + "[tool.poetry.requires-plugins]\npoetry-plugin-export = \">=1.8\"\n"}, false},
+		{"--no-root still loads .poetry/plugins", "--no-root", map[string]string{".poetry/plugins/p.py": "x = 1\n"}, false},
+		{"--no-root still builds a path source", "--no-root", map[string]string{"poetry.lock": pathLock, "lib/pyproject.toml": lib, "lib/setup.py": setupPy}, false},
+		{"--extras foo", "--extras foo", nil, false},
+		{"-E foo", "-E foo", nil, false},
+		{"--extras=foo", "--extras=foo", nil, false},
+		{"--all-extras", "--all-extras", nil, false},
+		{"--all-groups", "--all-groups", nil, false},
+		{"--sync", "--sync", nil, false},
+		{"--dry-run", "--dry-run", nil, false},
+		{"--compile", "--compile", nil, false},
+		{"--only-root", "--only-root", nil, false},
+		{"unknown flag", "--no-root --frobnicate", nil, false},
+		{"--only with no value", "--only", nil, false},
+		{"--only= with no value", "--only=", nil, false},
+		{"--with taking a flag as its value", "--with --all-extras", nil, false},
+		{"--without= naming a bad group", "--without=,dev", nil, false},
+		{"-nq clustered", "-nq", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"pyproject.toml": project, "poetry.lock": lockPoetry, "install.sh": "#!/bin/sh\npoetry install " + tt.args + "\n"}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			dir := writeTree(t, files)
+			r := resolveVersion(t, dir, "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+			if r := resolveVersion(t, dir, "PyJWT"); r.Found || r.Exhaustive != tt.want {
+				t.Fatalf("PyJWT found %v exhaustive %v, want not found and exhaustive %v", r.Found, r.Exhaustive, tt.want)
+			}
+		})
+	}
+}

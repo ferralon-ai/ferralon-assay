@@ -38,7 +38,8 @@ import (
 //	                               and pipenv run only where no script table can name <argv>
 //
 // with only --no-cache-dir, --user and -q added (and, to pip, --no-deps and --require-hashes,
-// which only narrow what it installs), and with the manifest each binds to (the
+// which only narrow what it installs; to poetry install, what poetryInstallArgs allows), and
+// with the manifest each binds to (the
 // nearest pyproject.toml or Pipfile at or above the command's directory) and the lock it
 // installs (the nearest at or above that) read here; and, for uv sync, poetry install and pdm
 // sync, with a root project, and every local source the lock names, whose build runs no code
@@ -223,6 +224,50 @@ func lockToolConfigInTree(root string) (uv, pdm bool) {
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}
 
+// poetryFlags are the poetry install flags, beyond laneFlags, that set only how poetry talks
+// to the terminal.
+var poetryFlags = map[string]bool{"-n": true, "--no-interaction": true, "--ansi": true, "--no-ansi": true}
+
+// poetryGroupFlags select the dependency groups poetry install installs, each taking a value
+// of comma-separated group names: --only replaces the default groups, --with adds optional
+// ones to them, and --without drops some.
+var poetryGroupFlags = map[string]bool{"--only": true, "--with": true, "--without": true}
+
+// poetryGroupsRE is a comma-separated list of group names.
+var poetryGroupsRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:,[A-Za-z0-9_][A-Za-z0-9_.-]*)*$`)
+
+// poetryInstallArgs reports whether poetry install's arguments are laneFlags, poetryFlags,
+// --no-root, --no-dev and poetryGroupFlags, each group flag with its value attached by = or
+// as the next word; and whether the install builds the root project (no --no-root).
+//
+// A group selection installs a subset of poetry.lock, which resolves every group, optional
+// ones included, so the lock still names every package it can install. A pin for a package
+// the selection leaves out over-approximates what is installed, as one in an optional group
+// does under a bare poetry install; it never makes the lock miss a package. --no-dev is the
+// legacy spelling of --without dev. --no-root skips only the project itself: its
+// dependencies, path sources among them, install as before.
+func poetryInstallArgs(args []string) (ok, buildsRoot bool) {
+	buildsRoot = true
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		name, value, attached := strings.Cut(a, "=")
+		switch {
+		case laneFlags[a] || poetryFlags[a] || a == "--no-dev":
+		case a == "--no-root":
+			buildsRoot = false
+		case poetryGroupFlags[name] && attached:
+			if !poetryGroupsRE.MatchString(value) {
+				return false, false
+			}
+		case poetryGroupFlags[a] && i+1 < len(args) && poetryGroupsRE.MatchString(args[i+1]):
+			i++
+		default:
+			return false, false
+		}
+	}
+	return true, buildsRoot
+}
+
 // laneRunWrapper returns the command a run wrapper runs, and whether words is one.
 func laneRunWrapper(words []string) ([]string, bool) {
 	if len(words) < 2 || words[1] != "run" {
@@ -344,7 +389,9 @@ type rootProject struct {
 // fails.
 //
 // poetry installs the root with a builder of its own, not the PEP 517 backend, and the only
-// tree code that runs is a tool.poetry.build script. Any poetry command loads plugins from a
+// tree code that runs is a tool.poetry.build script; buildsRoot is false for an install that
+// skips the root (poetry install --no-root), which runs no such script. Any poetry command
+// loads plugins from a
 // .poetry/plugins directory beside the manifest, and poetry install installs
 // tool.poetry.requires-plugins there from the index. pdm loads plugins from a .pdm-plugins
 // directory there (releases before 2.27; the release a build runs is not known here). pdm
@@ -358,7 +405,7 @@ type rootProject struct {
 // are the root's to every backendClean check. uv and pdm resolve build requirements from the
 // indexes the manifest names, and uv builds with the environment its tool.uv settings give,
 // built root or not (uvSettingsClean, pdmSourcesRemote).
-func rootBuildClean(tool string, b scriptsurface.Binder) bool {
+func rootBuildClean(tool string, b scriptsurface.Binder, buildsRoot bool) bool {
 	pyprojects := b.Nearest("pyproject.toml")
 	if pyprojects == nil {
 		return false
@@ -384,7 +431,7 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 	for i, doc := range docs {
 		switch tool {
 		case "poetry":
-			if doc.Tool.Poetry.Build != nil || doc.Tool.Poetry.RequiresPlugins != nil || !b.Clear("pyproject.toml", ".poetry/plugins") {
+			if buildsRoot && doc.Tool.Poetry.Build != nil || doc.Tool.Poetry.RequiresPlugins != nil || !b.Clear("pyproject.toml", ".poetry/plugins") {
 				return false
 			}
 		case "pdm":
@@ -944,11 +991,12 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 	case len(words) < 2:
 		return false
 	case head == "uv" && words[1] == "sync":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--locked", "--frozen") && b.Nearest("pyproject.toml", "uv.lock") != nil && rootBuildClean(head, b)
+		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--locked", "--frozen") && b.Nearest("pyproject.toml", "uv.lock") != nil && rootBuildClean(head, b, true)
 	case head == "poetry" && words[1] == "install":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("pyproject.toml", "poetry.lock") != nil && rootBuildClean(head, b)
+		ok, buildsRoot := poetryInstallArgs(words[2:])
+		return ok && b.Nearest("pyproject.toml", "poetry.lock") != nil && rootBuildClean(head, b, buildsRoot)
 	case head == "pdm" && words[1] == "sync":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags) && pdmSyncNoHooks(b.Nearest("pyproject.toml", "pdm.lock")) && rootBuildClean(head, b)
+		return scriptsurface.FlagsOnly(words[2:], laneFlags) && pdmSyncNoHooks(b.Nearest("pyproject.toml", "pdm.lock")) && rootBuildClean(head, b, true)
 	case head == "pipenv" && words[1] == "install":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--deploy") && b.Nearest("Pipfile", "Pipfile.lock") != nil
 	case head == "pipenv" && words[1] == "sync":

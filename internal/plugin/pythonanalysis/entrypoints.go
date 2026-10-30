@@ -273,7 +273,7 @@ func setupPyEntrypoints(src string) []entrypoint {
 	group, prev := "", 0
 	for _, start := range slices.Sorted(maps.Keys(lits)) {
 		gap := string(cr[prev:start])
-		if strings.ContainsRune(gap, ']') {
+		if strings.ContainsAny(gap, "])") {
 			group = ""
 		}
 		if m := keywordList.FindStringSubmatch(gap); m != nil {
@@ -303,9 +303,9 @@ func setupPyEntrypoints(src string) []entrypoint {
 	return specEntrypoints(specs)
 }
 
-// keywordList is a keyword argument opening a list at the end of the text before a literal
-// (pytest11=[).
-var keywordList = regexp.MustCompile(`([A-Za-z_]\w*)\s*=\s*\[\s*$`)
+// keywordList is a keyword argument opening a list or tuple at the end of the text before a
+// literal (pytest11=[).
+var keywordList = regexp.MustCompile(`([A-Za-z_]\w*)\s*=\s*[\[(]\s*$`)
 
 var (
 	// settingLine is a WSGI/ASGI application setting, annotated or not, at the start of a
@@ -376,6 +376,10 @@ var wsgiServers = map[string]bool{
 // shellSeparators end one command on a line.
 var shellSeparators = map[string]bool{"&&": true, "||": true, ";": true, "|": true, "&": true}
 
+// separatorSpacer splits off the separators a shell writes attached to a word (pip install
+// -r x; gunicorn app:app).
+var separatorSpacer = strings.NewReplacer(";", " ; ", "&&", " && ", "||", " || ")
+
 // commandEntrypoints reads the launch commands in text. deploy admits the script forms
 // (python -m, python file.py, streamlit/fastapi run), which only a production launch file
 // runs reliably.
@@ -383,7 +387,7 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 	text = strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(text)
 	var eps []entrypoint
 	for _, line := range yamlCommandLines(strings.Split(text, "\n")) {
-		toks := commandTokens(line)
+		toks := commandTokens(separatorSpacer.Replace(line))
 		for i := 0; i < len(toks); i++ {
 			eps = append(eps, launchAt(toks, i, deploy)...)
 		}
@@ -391,40 +395,87 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 	return eps
 }
 
-// yamlCommandLines joins a YAML command:, args: or entrypoint: key and the block-list items
-// under it into one line, and a command: with the args: that follows it, so a manifest's
-// launch reads as one command. A list item that is a mapping ("- name: web") ends the list.
+// yamlCommandLines joins the adjacent entrypoint:, command: and args: keys of one YAML
+// mapping, with the block-list items under each, into one line in that order, so a
+// manifest's or compose service's launch reads as one command whichever key comes first. A
+// list item that is a mapping ("- name: web") ends the list. A compose healthcheck's test:
+// is a probe, not a launch, and is dropped with its items.
 func yamlCommandLines(lines []string) []string {
 	var out []string
-	joining := false
+	var grp map[string]string
+	last := ""
+	flush := func() {
+		if grp != nil {
+			out = append(out, grp["entrypoint"]+" "+grp["command"]+" "+grp["args"])
+			grp = nil
+		}
+	}
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
 		key := strings.TrimSpace(strings.TrimPrefix(t, "- "))
-		isKey := strings.HasPrefix(key, "command:") || strings.HasPrefix(key, "args:") || strings.HasPrefix(key, "entrypoint:")
+		k := ""
+		for _, c := range []string{"entrypoint", "command", "args", "test"} {
+			if strings.HasPrefix(key, c+":") {
+				k = c
+			}
+		}
 		switch {
-		case joining && strings.HasPrefix(key, "args:"):
-			out[len(out)-1] += " " + strings.TrimPrefix(key, "args:")
+		case k == "test":
+			flush()
+			last = k
 			continue
-		case joining && !isKey && strings.HasPrefix(t, "- ") && !strings.Contains(t, ": ") && !strings.HasSuffix(t, ":"):
-			out[len(out)-1] += " " + strings.TrimPrefix(t, "- ")
+		case k != "":
+			if last == "test" || grp == nil || grp[k] != "" {
+				flush()
+				grp = map[string]string{}
+			}
+			grp[k] = strings.TrimPrefix(key, k+":")
+			last = k
+			continue
+		case last != "" && strings.HasPrefix(t, "- ") && !strings.Contains(t, ": ") && !strings.HasSuffix(t, ":"):
+			if last != "test" {
+				grp[last] += " " + strings.TrimPrefix(t, "- ")
+			}
 			continue
 		}
-		joining = isKey
+		flush()
+		last = ""
 		out = append(out, line)
 	}
+	flush()
 	return out
 }
 
 // commandTokens splits a command line into words, reading a Dockerfile or YAML exec-form
-// list ("["gunicorn", "app:app"]") as the words it lists.
+// list ("["gunicorn", "app:app"]") as the words it lists. A value quoted right after an
+// equals sign (FLASK_APP="app", --chdir="src") stays part of its word.
 func commandTokens(line string) []string {
-	return strings.FieldsFunc(line, func(r rune) bool {
-		switch r {
-		case ' ', '\t', '\r', '[', ']', '"', '\'', ',':
-			return true
+	var toks []string
+	var w strings.Builder
+	var quote rune
+	for _, r := range line {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				w.WriteRune(r)
+			}
+		case (r == '"' || r == '\'') && strings.HasSuffix(w.String(), "="):
+			quote = r
+		case strings.ContainsRune(" \t\r[]\"',", r):
+			if w.Len() > 0 {
+				toks = append(toks, w.String())
+				w.Reset()
+			}
+		default:
+			w.WriteRune(r)
 		}
-		return false
-	})
+	}
+	if w.Len() > 0 {
+		toks = append(toks, w.String())
+	}
+	return toks
 }
 
 // launchAt reads the launch that starts at toks[i], if any.
@@ -439,8 +490,12 @@ func launchAt(toks []string, i int, deploy bool) []entrypoint {
 			return flaskAppSpec(toks[i+1])
 		}
 	}
-	// A supervisor program writes its launch as command=gunicorn ...
+	// A supervisor program writes its launch as command=gunicorn ..., a systemd unit as
+	// ExecStart=gunicorn ..., with an optional -, @ or + prefix.
 	tok = strings.TrimPrefix(tok, "command=")
+	if v, ok := strings.CutPrefix(tok, "ExecStart="); ok {
+		tok = strings.TrimLeft(v, "-@:+!")
+	}
 	name := tok[strings.LastIndexByte(tok, '/')+1:]
 	if !launcherName(name) || installing(toks, i) {
 		return nil
@@ -574,11 +629,20 @@ var serverValueFlags = map[string]bool{
 	"--cleanup-interval": true, "--channel-timeout": true, "--max-request-header-size": true,
 	"--max-request-body-size": true, "--trusted-proxy": true, "--trusted-proxy-count": true,
 	"--trusted-proxy-headers": true,
+	// gunicorn 22+
+	"--header-map": true, "--forwarder-headers": true, "--paste-global": true,
+}
+
+// serverSwitches are the options a server reads as a switch although another server's
+// option of that name takes a value (daphne's --access-log names a file).
+var serverSwitches = map[string]map[string]bool{
+	"uvicorn": {"--access-log": true},
+	"granian": {"--access-log": true, "--ws": true},
 }
 
 // serverApp reads a WSGI/ASGI server's application argument: any "pkg.mod:attr" word, or,
-// for gunicorn and waitress-serve, which default the attribute, the first dotted word that
-// is no option or option value. --chdir and --app-dir move the directory the module is
+// for gunicorn and waitress-serve, which default the attribute, the last dotted word that
+// is no option or option value (gunicorn's usage puts the module last). --chdir and --app-dir move the directory the module is
 // read from.
 func serverApp(name string, args []string) []entrypoint {
 	dir, module := "", ""
@@ -597,7 +661,7 @@ func serverApp(name string, args []string) []entrypoint {
 				}
 				dir = v
 				continue
-			case !inline && serverValueFlags[flag]:
+			case !inline && serverValueFlags[flag] && !serverSwitches[name][flag]:
 				k++
 				continue
 			default:
@@ -606,7 +670,7 @@ func serverApp(name string, args []string) []entrypoint {
 		}
 		if m := appSpec.FindStringSubmatch(a); m != nil {
 			eps = append(eps, entrypoint{module: strings.ReplaceAll(m[1], ".", "/"), attr: m[2]})
-		} else if module == "" && dottedName.MatchString(a) {
+		} else if dottedName.MatchString(a) {
 			module = a
 		}
 	}
@@ -678,25 +742,89 @@ func uwsgiIniEntrypoints(text string) []entrypoint {
 	return eps
 }
 
-// handlerLine is a serverless or SAM function's handler: "path/to/module.function".
-var handlerLine = regexp.MustCompile(`(?m)^[ \t-]*[Hh]andler:[ \t]*['"]?([A-Za-z_][\w/.]*)\.([A-Za-z_]\w*)['"]?[ \t]*(?:#.*)?\r?$`)
+var (
+	// handlerLine is a serverless or SAM function's handler: "path/to/module.function".
+	handlerLine = regexp.MustCompile(`(?m)^[ \t-]*[Hh]andler:[ \t]*['"]?([A-Za-z_][\w/.]*)\.([A-Za-z_]\w*)['"]?[ \t]*(?:#.*)?\r?$`)
+	// codeURILine is a SAM function's CodeUri, the directory its handler is read from.
+	codeURILine = regexp.MustCompile(`^([ \t]*)CodeUri:[ \t]*['"]?([\w./-]+?)/?['"]?[ \t]*(?:#.*)?\r?$`)
+	// runtimeLine is a serverless or SAM function's (or provider's) runtime.
+	runtimeLine = regexp.MustCompile(`(?m)^[ \t]*[Rr]untime:[ \t]*['"]?([\w.]+)`)
+	// manifestKind is a Kubernetes object's top-level kind.
+	manifestKind = regexp.MustCompile(`(?m)^kind:[ \t]*\w`)
+)
 
 // yamlEntrypoints reads a YAML file that launches code: a serverless or SAM template's
 // function handlers, and a Kubernetes manifest's container commands.
 func yamlEntrypoints(name, text string) []entrypoint {
 	var eps []entrypoint
 	lower := strings.ToLower(name)
-	if strings.HasPrefix(lower, "serverless.") || strings.Contains(text, "AWS::Serverless::Function") || strings.Contains(text, "AWS::Lambda::Function") {
-		for _, m := range handlerLine.FindAllStringSubmatch(text, -1) {
-			if mod := strings.ReplaceAll(m[1], ".", "/"); !strings.Contains(mod, "//") {
-				eps = append(eps, entrypoint{module: mod, attr: m[2]})
+	lambda := strings.HasPrefix(lower, "serverless.") || strings.Contains(text, "AWS::Serverless::Function") || strings.Contains(text, "AWS::Lambda::Function")
+	if lambda && pythonRuntime(text) {
+		for _, loc := range handlerLine.FindAllStringSubmatchIndex(text, -1) {
+			mod := strings.ReplaceAll(text[loc[2]:loc[3]], ".", "/")
+			if strings.Contains(mod, "//") {
+				continue
 			}
+			eps = append(eps, entrypoint{module: mod, attr: text[loc[4]:loc[5]], dir: launchDir(codeURI(text, loc[0]))})
 		}
 	}
-	if strings.Contains(text, "containers:") {
+	if strings.Contains(text, "containers:") && manifestKind.MatchString(text) {
 		eps = append(eps, commandEntrypoints(text, true)...)
 	}
 	return eps
+}
+
+// pythonRuntime reports whether a template's functions may run Python: it names no runtime,
+// or a python one among them (a nodejs template's handler.main is no Python module).
+func pythonRuntime(text string) bool {
+	ms := runtimeLine.FindAllStringSubmatch(text, -1)
+	for _, m := range ms {
+		if strings.HasPrefix(strings.ToLower(m[1]), "python") {
+			return true
+		}
+	}
+	return len(ms) == 0
+}
+
+// codeURI is the CodeUri beside the handler line at offset at: the same mapping's, else the
+// template's Globals.Function's, else "". An S3 location or intrinsic is no local directory.
+func codeURI(text string, at int) string {
+	lines := strings.Split(text, "\n")
+	h := strings.Count(text[:at], "\n")
+	indent := len(lines[h]) - len(strings.TrimLeft(lines[h], " \t-"))
+	sibling := func(j int) (string, bool) {
+		m := codeURILine.FindStringSubmatch(lines[j])
+		if m == nil || len(m[1]) != indent {
+			return "", false
+		}
+		return m[2], true
+	}
+	within := func(j int) bool {
+		t := strings.TrimSpace(lines[j])
+		return t == "" || strings.HasPrefix(t, "#") || len(lines[j])-len(strings.TrimLeft(lines[j], " \t")) >= indent
+	}
+	for j := h - 1; j >= 0 && within(j); j-- {
+		if v, ok := sibling(j); ok {
+			return v
+		}
+	}
+	for j := h + 1; j < len(lines) && within(j); j++ {
+		if v, ok := sibling(j); ok {
+			return v
+		}
+	}
+	// Globals: Function: CodeUri: applies to every function that names none.
+	globals := false
+	for _, line := range lines {
+		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") && line[0] != ' ' && line[0] != '\t' {
+			globals = strings.HasPrefix(t, "Globals:")
+			continue
+		}
+		if m := codeURILine.FindStringSubmatch(line); globals && m != nil {
+			return m[2]
+		}
+	}
+	return ""
 }
 
 // appFlag reads celery's or flask's -A/--app value.

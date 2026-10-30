@@ -61,6 +61,18 @@ func TestCallGraph_DeclaredEntrypoints(t *testing.T) {
 		{"kubernetes manifest", "ab_test", "", map[string]string{"k8s/deployment.yaml": "kind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n        - name: web\n          command:\n            - gunicorn\n          args:\n            - --bind=0.0.0.0:80\n            - ab_test:app\n", "ab_test.py": route}, true},
 		{"serverless handler", "ab_test", "", map[string]string{"serverless.yml": "functions:\n  hello:\n    handler: ab_test.main\n", "ab_test.py": route}, true},
 		{"sam handler", "fn/ab_test", "", map[string]string{"template.yaml": "Resources:\n  Fn:\n    Type: AWS::Serverless::Function\n    Properties:\n      CodeUri: fn/\n      Handler: ab_test.main\n", "fn/ab_test.py": route}, true},
+		{"sam CodeUri beside a root module", "hello_world/ab_test", "ab_test", map[string]string{"template.yaml": "Resources:\n  Fn:\n    Type: AWS::Serverless::Function\n    Properties:\n      CodeUri: hello_world/\n      Handler: ab_test.main\n", "ab_test.py": route, "hello_world/ab_test.py": route}, true},
+		{"sam Globals CodeUri", "src/ab_test", "ab_test", map[string]string{"template.yaml": "Globals:\n  Function:\n    CodeUri: src\nResources:\n  Fn:\n    Type: AWS::Serverless::Function\n    Properties:\n      Handler: ab_test.main\n", "ab_test.py": route, "src/ab_test.py": route}, true},
+		{"systemd ExecStart bare command", "ab_test", "", map[string]string{"app.service": "[Service]\nExecStart=gunicorn ab_test:app\n", "ab_test.py": route}, true},
+		{"kubernetes args before command", "ab_test", "", map[string]string{"k8s/d.yaml": "kind: Deployment\nspec:\n  containers:\n  - name: w\n    args:\n    - ab_test:app\n    command:\n    - gunicorn\n", "ab_test.py": route}, true},
+		{"compose entrypoint with command", "ab_test", "", map[string]string{"docker-compose.yml": "services:\n  web:\n    entrypoint: [\"gunicorn\"]\n    command: [\"ab_test:app\"]\n", "ab_test.py": route}, true},
+		{"launch after an install on one line", "ab_test", "", map[string]string{"entrypoint.sh": "pip install -r requirements.txt; gunicorn ab_test:app\n", "ab_test.py": route}, true},
+		{"flaskenv quoted value", "ab_test", "", map[string]string{".flaskenv": "FLASK_APP=\"ab_test\"\n", "ab_test.py": route}, true},
+		{"uvicorn access-log switch", "ab_test", "", map[string]string{"Dockerfile": "CMD uvicorn --host 0.0.0.0 --access-log ab_test:app\n", "ab_test.py": route}, true},
+		{"granian ws switch", "ab_test", "", map[string]string{"Dockerfile": "CMD granian --interface asgi --ws ab_test:app\n", "ab_test.py": route}, true},
+		{"gunicorn quoted inline value", "proj/ab_test", "", map[string]string{"docker-compose.yml": "services:\n  web:\n    command: gunicorn --worker-class=\"uvicorn.workers.UvicornWorker\" proj.ab_test\n", "proj/__init__.py": "", "proj/ab_test.py": route}, true},
+		{"gunicorn module after an unlisted value flag", "ab_test", "", map[string]string{"Procfile": "web: gunicorn --new-option drop ab_test\n", "ab_test.py": route}, true},
+		{"setup.py console script tuple after a pytest plugin tuple", "ab_test", "", map[string]string{"setup.py": "setup(entry_points=dict(pytest11=('p = other:plugin',), console_scripts=('x = ab_test:main',)))\n", "ab_test.py": route}, true},
 
 		{"undeclared", "ab_test", "", map[string]string{"app.py": "def main():\n    return 1\n", "ab_test.py": route}, false},
 		{"procfile names another module", "ab_test", "", map[string]string{"Procfile": "web: gunicorn app:app\n", "app.py": "def main():\n    return 1\n", "ab_test.py": route}, false},
@@ -87,6 +99,10 @@ func TestCallGraph_DeclaredEntrypoints(t *testing.T) {
 		{"makefile flask --app", "ab_test", "", map[string]string{"Makefile": "routes:\n\tflask --app ab_test routes\n", "ab_test.py": route}, false},
 		{"pip install of a server", "ab_test", "", map[string]string{"Dockerfile": "RUN pip install gunicorn ab_test\n", "ab_test.py": route}, false},
 		{"yaml that launches nothing", "ab_test", "", map[string]string{"config.yaml": "command: gunicorn ab_test:app\n", "ab_test.py": route}, false},
+		{"ci pipeline with containers", "load_test", "", map[string]string{"azure-pipelines.yml": "resources:\n  containers:\n  - container: py\n    image: python:3.11\nsteps:\n- script: python load_test.py\n", "load_test.py": route}, false},
+		{"serverless node handler", "handler_test", "", map[string]string{"serverless.yml": "provider:\n  runtime: nodejs18.x\nfunctions:\n  a:\n    handler: handler_test.main\n", "handler_test.py": route}, false},
+		{"compose healthcheck", "health_test", "", map[string]string{"docker-compose.yml": "services:\n  web:\n    healthcheck:\n      test: [\"CMD\", \"python\", \"health_test.py\"]\n  worker:\n    healthcheck:\n      test:\n        - CMD\n        - python\n        - health_test.py\n", "health_test.py": route}, false},
+		{"setup.py pytest plugin tuple", "ab_test", "", map[string]string{"setup.py": "setup(entry_points=dict(pytest11=('ab = ab_test:plugin',)))\n", "ab_test.py": route}, false},
 		{"conf without a program table", "ab_test", "", map[string]string{"nginx.conf": "command=gunicorn ab_test:app\n", "ab_test.py": route}, false},
 	}
 	for _, c := range cases {
@@ -128,6 +144,7 @@ func TestCallGraph_EntrypointCallableRoots(t *testing.T) {
 		{"re-exported by absolute import", map[string]string{"setup.cfg": "[options.entry_points]\nconsole_scripts =\n    x = pkg:main\n", "pkg/__init__.py": "from pkg.cli import main\n", "pkg/cli.py": cli}, []string{"pkg/cli"}, nil},
 		{"re-exported from a test-named module", map[string]string{"pyproject.toml": "[project.scripts]\nx = \"scripts:main\"\n", "scripts/__init__.py": "from .test_retriever import main\n", "scripts/test_retriever.py": cli}, []string{"scripts/test_retriever"}, nil},
 		{"re-export prefers the exact module", map[string]string{"pyproject.toml": "[project.scripts]\nx = \"pkg:main\"\n", "pkg/__init__.py": "from .cli import main\n", "pkg/cli.py": cli, "examples/pkg/cli.py": cli}, []string{"pkg/cli"}, []string{"examples/pkg/cli"}},
+		{"sam handler under its CodeUri", map[string]string{"template.yaml": "Resources:\n  Fn:\n    Type: AWS::Serverless::Function\n    Properties:\n      CodeUri: hello_world/\n      Handler: app.main\n", "app.py": cli, "hello_world/app.py": cli}, []string{"hello_world/app"}, []string{"app"}},
 		{"undeclared", map[string]string{"pkg/__init__.py": "", "pkg/cli.py": cli}, nil, []string{"pkg/cli"}},
 		{"module-only launch roots no callable", map[string]string{"Dockerfile": "CMD python -m pkg.cli\n", "pkg/__init__.py": "", "pkg/cli.py": cli}, nil, []string{"pkg/cli"}},
 	}

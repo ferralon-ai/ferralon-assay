@@ -115,6 +115,7 @@ func symbolNames(symbols []string) map[string]bool {
 func modfileFlagSet(ctx context.Context, buildDir string) bool {
 	cmd := exec.CommandContext(ctx, "go", "env", "GOFLAGS")
 	cmd.Dir = buildDir
+	// GOFLAGS comes from the environment or the go env file, never a go.work, so no workspace is read.
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	out, err := cmd.Output()
 	if err != nil {
@@ -208,12 +209,11 @@ func vendoredModules(buildDir string) ([]listedModule, error) {
 	return mods, nil
 }
 
-// pathHolds reports whether module path mod holds import path p, ignoring case.
 // sameDir reports whether dir, once its symlinks are evaluated, is resolved; a dir that cannot be
-// evaluated is taken to be it.
+// evaluated is not.
 func sameDir(dir, resolved string) bool {
 	d, err := filepath.EvalSymlinks(dir)
-	return err != nil || d == resolved
+	return err == nil && d == resolved
 }
 
 // pathWithin reports whether dir is root or lies below it.
@@ -221,6 +221,7 @@ func pathWithin(dir, root string) bool {
 	return strings.HasPrefix(dir+string(filepath.Separator), root+string(filepath.Separator))
 }
 
+// pathHolds reports whether module path mod holds import path p, ignoring case.
 func pathHolds(mod, p string) bool {
 	return len(p) >= len(mod) && strings.EqualFold(p[:len(mod)], mod) && (len(p) == len(mod) || p[len(mod)] == '/')
 }
@@ -301,6 +302,8 @@ func downloadModules(ctx context.Context, buildDir string, mods []listedModule) 
 	}
 	cmd := exec.CommandContext(ctx, "go", append([]string{"mod", "download", "-json", "-modfile=" + modfile}, args...)...)
 	cmd.Dir = buildDir
+	// The go command refuses -modfile in workspace mode, and every module is named at its version,
+	// so the download selects nothing a workspace would change.
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	// A module that fails to download is reported in its own JSON entry and makes the command
 	// exit non-zero, so the output is read whatever the exit status. A checksum mismatch stops the

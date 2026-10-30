@@ -140,9 +140,18 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		return nil, fmt.Errorf("go/packages load %q: no packages found", buildDir)
 	}
 
-	members := workspaceMembers(pkgs)
 	part := plugin.Complete()
 	var loadErrs []string
+	var members []*packages.Package
+	for _, p := range workspaceMembers(pkgs) {
+		// A member package with no type information is left out of the index and the SSA program;
+		// the load is partial rather than failed, since the build's own packages type-check.
+		if p.Types == nil {
+			loadErrs = append(loadErrs, fmt.Sprintf("package %q has no type info", p.PkgPath))
+			continue
+		}
+		members = append(members, p)
+	}
 	for _, p := range append(pkgs[:len(pkgs):len(pkgs)], members...) {
 		for _, e := range p.Errors {
 			loadErrs = append(loadErrs, e.Error())

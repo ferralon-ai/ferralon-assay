@@ -1396,6 +1396,8 @@ func arrowEnd(clean []rune, p int) int {
 			if !joined {
 				return p
 			}
+			// Every line break up to a sits in the same run of space, so it joins the same way.
+			p = a - 1
 		}
 	}
 	return p

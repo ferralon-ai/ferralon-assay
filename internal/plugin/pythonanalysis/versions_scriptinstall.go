@@ -28,6 +28,8 @@ import (
 //	pdm sync                       installs the lock as written
 //	pipenv install --deploy        refuses a Pipfile.lock the Pipfile has moved past
 //	pipenv sync                    installs Pipfile.lock as written
+//	uv venv [<dir>]                creates an empty environment; only -p, --python and
+//	                               --prompt may be added (--seed installs pip and setuptools)
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
 //	                               and pipenv run only where no script table can name <argv>
 //
@@ -229,6 +231,8 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 		return installs.pip(words[3:], b, tooling)
 	case len(words) < 2:
 		return false
+	case head == "uv" && words[1] == "venv":
+		return uvVenv(words[2:])
 	case head == "uv" && words[1] == "sync":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--locked", "--frozen") && b.Nearest("pyproject.toml", "uv.lock") != nil
 	case head == "poetry" && words[1] == "install":
@@ -241,6 +245,27 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("Pipfile", "Pipfile.lock") != nil
 	}
 	return false
+}
+
+// uvVenv reports whether uv venv's arguments are at most one directory and -p, --python or
+// --prompt with a value: an environment with no packages in it.
+func uvVenv(args []string) bool {
+	dirs := 0
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-p" || a == "--python" || a == "--prompt":
+			if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
+				return false
+			}
+			i++
+		case strings.HasPrefix(a, "--python=") || strings.HasPrefix(a, "--prompt="):
+		case strings.HasPrefix(a, "-"):
+			return false
+		default:
+			dirs++
+		}
+	}
+	return dirs <= 1
 }
 
 // pip reports whether pip's arguments are install, the shared flags, --no-deps,

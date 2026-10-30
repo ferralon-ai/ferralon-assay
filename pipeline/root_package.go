@@ -105,10 +105,11 @@ const (
 // first element is not a major-version suffix (example.com/m/v2 is a different module from
 // example.com/m) and that no other module claims: none another go.mod below buildDir declares, none
 // a go.work at or above buildDir uses, and none go.mod requires or replaces. A longer module path
-// go.sum records but go.mod does not name, one a go.mod elsewhere in the repository declares, or
-// one a go.work member requires or replaces or the go.work replaces, leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
+// go.sum records but go.mod does not name, or one a go.mod elsewhere in the repository declares,
+// leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
 // in the build, so the path may still be the root's, but it may also be the other module's at
-// another version.
+// another version. So does one a go.work member requires or replaces, or the go.work replaces: the
+// workspace build may serve the path from that module instead.
 func goPathOwner(buildDir, mod, p string) goOwner {
 	if p == mod {
 		return goOwnedByRoot

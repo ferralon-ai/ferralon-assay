@@ -563,6 +563,22 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 			"a/go.mod":  gomod,
 			"_x/go.mod": claimX,
 		}, "a", "example.com/mono/x/pkg", goOwnerAmbiguous},
+		{"a module a go.work member only replaces into an underscore directory", map[string]string{
+			"go.work":   "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
+			"a/go.mod":  gomod,
+			"b/go.mod":  "module example.com/mono/b\n\ngo 1.22\n\nreplace example.com/mono/x => ../_x\n",
+			"_x/go.mod": claimX,
+		}, "a", "example.com/mono/x", goOwnerAmbiguous},
+		{"a module under the root's path a go.work member requires", map[string]string{
+			"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
+			"a/go.mod": gomod, "a/x/x.go": "package x\n",
+			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n\nrequire example.com/mono/x v1.2.3\n",
+		}, "a", "example.com/mono/x/pkg", goOwnerAmbiguous},
+		{"a go.work member whose requires do not parse", map[string]string{
+			"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
+			"a/go.mod": gomod, "a/x/x.go": "package x\n",
+			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n\nrequire !!!\n",
+		}, "a", "example.com/mono/x", goOwnerAmbiguous},
 		{"a build directory under a testdata directory", map[string]string{
 			"testdata/a/go.mod": gomod, "testdata/b/go.mod": claimX,
 		}, "testdata/a", "example.com/mono/x", goOwnerAmbiguous},

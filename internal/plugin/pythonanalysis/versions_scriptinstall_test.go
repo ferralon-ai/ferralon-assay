@@ -108,6 +108,11 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"script fetches the file it installs", map[string]string{"requirements.txt": reqs,
 			"install.sh": "curl -fsSL -o requirements.txt https://example.com/r.txt\npip install -r requirements.txt\n"}, false, ""},
 
+		{"uv venv --seed", map[string]string{"requirements.txt": reqs, "install.sh": "uv venv --seed .venv && . .venv/bin/activate && pip install -r requirements.txt\n"}, false, ""},
+		{"uv venv with another flag", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Dockerfile": uvDocker + "uv venv --clear && uv sync --locked\n"}, false, ""},
+		{"uv venv with two directories", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Dockerfile": uvDocker + "uv venv a b && uv sync --locked\n"}, false, ""},
+		{"uv venv -p with no value", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Dockerfile": uvDocker + "uv venv -p\nRUN uv sync --locked\n"}, false, ""},
+		{"uv venv --prompt taking a flag", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Dockerfile": uvDocker + "uv venv --prompt --seed && uv sync --locked\n"}, false, ""},
 		{"activate of a venv no command created", map[string]string{"requirements.txt": reqs, "install.sh": ". .venv/bin/activate\npip install -r requirements.txt\n"}, false, ""},
 		{"activate of a venv other than the one created", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv a\n. b/bin/activate\npip install -r requirements.txt\n"}, false, ""},
 		{"activate of a committed script that installs", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv venv\n. venv/bin/activate\npip install -r requirements.txt\n", "venv/bin/activate": "#!/bin/sh\npip install jinja2==3.1.2\n"}, false, ""},
@@ -132,6 +137,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"absolute venv activated in a CI run", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python3 -m venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
 		{"venv created and activated in a run block", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          python -m venv .venv\n          . .venv/bin/activate\n          pip install -r requirements.txt\n"}, true, ""},
 		{"venv created in before_script and activated in script", map[string]string{"requirements.txt": reqs, ".gitlab-ci.yml": "build:\n  before_script:\n    - python -m venv .venv\n  script:\n    - source .venv/bin/activate\n    - pip install -r requirements.txt\n"}, true, ""},
+		{"uv venv, then uv sync --locked", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Dockerfile": uvDocker + "uv venv && uv sync --locked\n"}, true, ""},
+		{"uv venv <dir> -p and --prompt, activate, pip install -r", map[string]string{"requirements.txt": reqs, "install.sh": "uv venv venv -p 3.12 --prompt app && . venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
+		{"uv venv --python= and --prompt=", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Makefile": "install:\n\tuv venv --python=3.12 --prompt=app .venv\n\tuv sync --frozen\n"}, true, ""},
 		{"pipenv run, an empty scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 	}
 	for _, tt := range tests {

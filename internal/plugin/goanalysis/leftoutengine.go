@@ -32,6 +32,10 @@ type lofEngine struct {
 	Nodes []lofNode
 	In0   [][]int32
 	InT   [][]int32
+	// Decls holds every function and declared method of every loaded package, in or out of either
+	// graph, as {Pkg, Name, Sym, method name} string ids (method name -1 for a function): S is
+	// every one of them the advisory names, whether loaded code calls it or not.
+	Decls [][4]int32
 	// Fail is set when the engine could not be built (lofGraphError): every left-out file counts.
 	Fail string
 	// FailStd is set when the toolchain's standard library source cannot be established
@@ -360,6 +364,31 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	}
 	e.In0 = callers(g0)
 	e.InT = callers(gT)
+	seenPkg := map[*types.Package]bool{}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Types == nil || seenPkg[p.Types] {
+			return
+		}
+		seenPkg[p.Types] = true
+		path := p.Types.Path()
+		scope := p.Types.Scope()
+		for _, name := range scope.Names() {
+			switch o := scope.Lookup(name).(type) {
+			case *types.Func:
+				e.Decls = append(e.Decls, [4]int32{in.id(path), in.id(name), in.id(symKey(path, name)), -1})
+			case *types.TypeName:
+				named, ok := o.Type().(*types.Named)
+				if !ok || o.IsAlias() {
+					continue
+				}
+				for i := 0; i < named.NumMethods(); i++ {
+					m := named.Method(i).Name()
+					sym := name + "." + m
+					e.Decls = append(e.Decls, [4]int32{in.id(path), in.id(sym), in.id(symKey(path, sym)), in.id(m)})
+				}
+			}
+		}
+	})
 	for len(e.In0) < len(e.Nodes) {
 		e.In0 = append(e.In0, nil)
 	}
@@ -448,9 +477,10 @@ type lofRow struct {
 	r0, rT  *lofReach
 }
 
-// lofReach is what reaches S in one graph: R, the functions that reach S (S included), as their
-// symbols; the method names R's functions answer to; and whether R holds a function whose address
-// the slice takes.
+// lofReach is what reaches S in one graph: R, as symbols, is every function of S, whether the
+// graph holds it or not, and every function of the graph's slice that calls into one; names, the
+// method names R's functions answer to; addr, whether R holds a function whose address the slice
+// takes.
 type lofReach struct {
 	syms  map[int32]bool
 	names map[int32]bool
@@ -459,6 +489,14 @@ type lofReach struct {
 
 func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReach {
 	r := &lofReach{syms: map[int32]bool{}, names: map[int32]bool{}}
+	for _, d := range row.e.Decls {
+		if row.inS(row.e.Strs[d[0]], row.e.Strs[d[1]]) {
+			r.syms[d[2]] = true
+			if d[3] >= 0 {
+				r.names[d[3]] = true
+			}
+		}
+	}
 	seen := make([]bool, len(row.e.Nodes))
 	var queue []int32
 	for i, n := range row.e.Nodes {

@@ -96,6 +96,24 @@ func (st *dockerStage) clear(v *Veto, f string) bool {
 	return true
 }
 
+// linked reports whether a directory copied from the build context may put a symlink at or
+// above the container directory d, so the directory a process reaches there is not the one d
+// names.
+func (st *dockerStage) linked(v *Veto, d string) bool {
+	for _, e := range st.events {
+		if !e.dir || e.taint || e.all || e.dst != "/" && d != e.dst && !strings.HasPrefix(d, e.dst+"/") {
+			continue
+		}
+		rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(d, e.dst), "/"))
+		for _, h := range e.hosts {
+			if v.linked(filepath.Join(h, rel)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (st *dockerStage) taintAll() { st.events = append(st.events, dockerEvent{all: true}) }
 
 // taintCmd taints everything for a command whose words were mentioned.
@@ -363,7 +381,7 @@ func (c *dockerCursor) Nearest(name string, locks ...string) []string {
 }
 
 func (c *dockerCursor) Clear(name, p string) bool {
-	if !c.known || !c.mountsKnown || !plainRel(p) {
+	if _, ok := relPath(p); !c.known || !c.mountsKnown || !ok {
 		return false
 	}
 	for d := c.dir; ; d = path.Dir(d) {
@@ -392,6 +410,88 @@ func (c *dockerCursor) Clear(name, p string) bool {
 		}
 		if d == "/" {
 			return false
+		}
+	}
+}
+
+func (c *dockerCursor) Beside(name, p string) []string {
+	if _, ok := relPath(p); !c.known || !c.mountsKnown || !ok {
+		return nil
+	}
+	for d := c.dir; ; d = path.Dir(d) {
+		hosts, state := c.st.lookup(c.v, path.Join(d, name))
+		switch state {
+		case pathTainted:
+			return nil
+		case pathBound:
+			for _, h := range hosts {
+				if !c.v.read(h) {
+					return nil
+				}
+			}
+			f := path.Join(d, filepath.ToSlash(p))
+			found, state := c.st.lookup(c.v, f)
+			if state != pathBound || len(found) == 0 {
+				return nil
+			}
+			for _, h := range found {
+				if !c.v.read(h) {
+					return nil
+				}
+			}
+			for _, m := range c.mounts {
+				if m == "/" || m == f || strings.HasPrefix(m, f+"/") || strings.HasPrefix(f, m+"/") {
+					return nil
+				}
+			}
+			c.v.bind(name)
+			c.v.bind(p)
+			c.v.bindRoot(p)
+			return found
+		}
+		if d == "/" {
+			return nil
+		}
+	}
+}
+
+func (c *dockerCursor) Enclosing(name string) ([]string, bool) {
+	if !c.known || !c.mountsKnown {
+		return nil, false
+	}
+	var found []string
+	near := false
+	for d := c.dir; ; d = path.Dir(d) {
+		f := path.Join(d, name)
+		for _, m := range c.mounts {
+			if m == "/" || m == f || strings.HasPrefix(f, m+"/") {
+				return nil, false
+			}
+		}
+		if c.st.linked(c.v, d) {
+			return nil, false
+		}
+		hosts, state := c.st.lookup(c.v, f)
+		switch state {
+		case pathTainted:
+			return nil, false
+		case pathBound:
+			for _, h := range hosts {
+				if !c.v.read(h) {
+					return nil, false
+				}
+			}
+			if near {
+				found = append(found, hosts...)
+			}
+			near = true
+		}
+		if d == "/" {
+			if !near {
+				return nil, false
+			}
+			c.v.bind(name)
+			return found, true
 		}
 	}
 }

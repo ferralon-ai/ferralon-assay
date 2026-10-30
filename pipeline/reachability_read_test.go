@@ -303,6 +303,9 @@ func reachPayloadMatrix(t *testing.T) []reachPayloadCase {
 	graphs := map[string]plugin.CallGraphResult{
 		"empty":        {},
 		"empty slices": {Edges: []plugin.CallEdge{}, Roots: []plugin.Symbol{}},
+		// Reasons is omitempty, so this graph decodes to nil Reasons: a wrapped view read in place of
+		// the decode would differ.
+		"empty reasons": {Partiality: plugin.Partiality{Reasons: []string{}}},
 		"populated": {
 			Partiality: plugin.Partiality{Reasons: []string{plugin.PartialReasonReflection}, Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonReflection, Targets: []string{"pkg:golang/<y>"}}}},
 			Algorithm:  "vta",

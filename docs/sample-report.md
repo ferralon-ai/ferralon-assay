@@ -109,6 +109,7 @@ These fields appear only when the scan has something to say:
 | `package`, `path` | `partiality` note | The package and location inside it that a limit is bounded to. |
 | `priority` | finding | EPSS/KEV context, only when the run was given a signals file that has a stamped value for the advisory. Each value carries its own date: `epss_as_of` for the EPSS fields, `kev_catalog_version` and `kev_date_released` for the KEV ones. `epss_score` is present exactly when `epss_as_of` is, a score of 0 included, and `epss_percentile` whenever the signals file sourced one, a percentile of 0 included. `kev_listed` appears only when `true`; a KEV stamp without it, as above, means "not in that catalog". |
 | `signals_digest` | `provenance.intel` | The `signals_digest` of the signals file the findings were ranked with. |
+| `timings` | `provenance` | Where the run spent its time: `wall_seconds` end to end, and under `stages` each pipeline stage's `runs` and total `seconds` across all advisories. Informational only; nothing reads it for a verdict. |
 
 Partiality reasons a scan can carry include `work_set_dependency_unresolved` and the JavaScript
 `relationship_unexpressed:uninspectable_package` and `relationship_unexpressed:computed_require`;

@@ -262,8 +262,9 @@ func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, tok
 // in this same binary, so nothing about the analyzed ref needs to travel through the environment.
 // It is the ONLY thing it is used for here: it selects the delivery channel and changes neither
 // what was analyzed nor what is published on any other sink.
-func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph, deps *depCodeRun) error {
+func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph, deps *depCodeRun, clock *runClock) error {
 	stampIntel(rep, intel)
+	rep.Provenance.Timings = clock.timings()
 	rep.BuildGraph = graph.record()
 	deps.stamp(rep)
 	res, err := buildResult(rep)
@@ -285,6 +286,30 @@ func stampIntel(rep *report.Report, intel report.IntelProvenance) {
 		intel.SignalsDigest = ranked.SignalsDigest
 	}
 	rep.Provenance.Intel = &intel
+}
+
+// runClock times one run mode for the Report's provenance: end to end, and per pipeline stage
+// through the StageTimer it puts on the run's context.
+type runClock struct {
+	start  time.Time
+	stages *pipeline.StageTimer
+}
+
+// startRunClock starts timing a run mode and returns the context its pipeline runs must use.
+func startRunClock(ctx context.Context) (context.Context, *runClock) {
+	c := &runClock{start: time.Now(), stages: pipeline.NewStageTimer()}
+	return pipeline.WithStageTimer(ctx, c.stages), c
+}
+
+func (c *runClock) timings() *report.RunTimings {
+	if c == nil {
+		return nil
+	}
+	t := &report.RunTimings{WallSeconds: time.Since(c.start).Seconds()}
+	for _, st := range c.stages.Stages() {
+		t.Stages = append(t.Stages, report.StageTiming{Stage: st.Stage, Runs: st.Runs, Seconds: st.Total.Seconds()})
+	}
+	return t
 }
 
 // Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in
@@ -1185,7 +1210,8 @@ func runPRInherit(args []string) error {
 	budget := startScanBudget(timeout)
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
-	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+	stages, clock := startRunClock(budget.analysis)
+	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	cfg, err := f.resolve(analysis, true)
 	if err != nil {
@@ -1232,7 +1258,7 @@ func runPRInherit(args []string) error {
 	}
 	rescan := rescanFromEnv()
 	publishStart := time.Now()
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps, clock); err != nil {
 		return err
 	}
 	logPhase(os.Stderr, "publish", time.Since(publishStart))
@@ -1270,7 +1296,8 @@ func runCVEWatch(args []string) error {
 	budget := startScanBudget(timeout)
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
-	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+	stages, clock := startRunClock(budget.analysis)
+	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	// widen=false: cve-watch's work set is the OSV query it makes below, against the STORED SBOM and
 	// diffed against a cursor. That mechanism is the one the scan path now borrows; re-widening the
@@ -1313,7 +1340,7 @@ func runCVEWatch(args []string) error {
 		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		publishStart := time.Now()
-		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
+		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps, clock); err != nil {
 			return err
 		}
 		logPhase(os.Stderr, "publish", time.Since(publishStart))

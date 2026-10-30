@@ -206,13 +206,14 @@ func TestCallGraphViewEncoding(t *testing.T) {
 		t.Fatal("a memoized view holds no encoding; the test would not cover that path")
 	}
 	tests := []struct {
-		name string
-		v    CallGraphView
-		want any
+		name         string
+		v            CallGraphView
+		want         any
+		fromEncoding bool
 	}{
-		{"memoized", memo, richGraph()},
-		{"wrapped", NewCallGraphView(richGraph()), richGraph()},
-		{"zero", CallGraphView{}, CallGraphResult{}},
+		{"memoized", memo, richGraph(), true},
+		{"wrapped", NewCallGraphView(richGraph()), richGraph(), false},
+		{"zero", CallGraphView{}, CallGraphResult{}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,6 +235,18 @@ func TestCallGraphViewEncoding(t *testing.T) {
 			if string(got) != "prefix"+string(want) {
 				t.Errorf("AppendJSON: got %s, want prefix%s", got, want)
 			}
+			if got := tc.v.FromEncoding(); got != tc.fromEncoding {
+				t.Errorf("FromEncoding = %v, want %v", got, tc.fromEncoding)
+			}
+			if tc.fromEncoding {
+				var decoded CallGraphResult
+				if err := json.Unmarshal(want, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(&decoded, tc.v.cg) {
+					t.Errorf("a view FromEncoding holds a graph that is not the decode of its encoding")
+				}
+			}
 		})
 	}
 }
@@ -252,7 +265,7 @@ func TestCallGraphViewSurface(t *testing.T) {
 	for i := 0; i < typ.NumMethod(); i++ {
 		methods = append(methods, typ.Method(i).Name)
 	}
-	want := []string{"AppendJSON", "EdgeCount", "Edges", "MarshalJSON", "Partiality", "Roots"}
+	want := []string{"AppendJSON", "EdgeCount", "Edges", "FromEncoding", "MarshalJSON", "Partiality", "Roots"}
 	if !slices.Equal(methods, want) {
 		t.Errorf("CallGraphView methods = %v, want %v", methods, want)
 	}

@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -102,14 +102,18 @@ type pyprojectDoc struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
 		} `toml:"pdm"`
 		Hatch struct {
-			Envs map[string]struct {
+			Sources any `toml:"sources"`
+			Envs    map[string]struct {
 				Type              any `toml:"type"`
 				Dependencies      any `toml:"dependencies"`
 				ExtraDependencies any `toml:"extra-dependencies"`
 				PreInstall        any `toml:"pre-install-commands"`
 				PostInstall       any `toml:"post-install-commands"`
 				Scripts           any `toml:"scripts"`
+				ExtraScripts      any `toml:"extra-scripts"`
 				EnvVars           any `toml:"env-vars"`
+				Sources           any `toml:"sources"`
+				Workspace         any `toml:"workspace"`
 				Overrides         any `toml:"overrides"`
 			} `toml:"envs"`
 		} `toml:"hatch"`
@@ -243,11 +247,15 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {
 		addAny(doc.Tool.PDM.DevDependencies[g], []string{"pdm.lock"})
 	}
+	// Hatch sources and workspace members redirect a declared dependency to a local path, a
+	// git ref or a URL at install time, so the declaration no longer says what installs.
+	ok = ok && doc.Tool.Hatch.Sources == nil
 	for _, e := range slices.Sorted(maps.Keys(doc.Tool.Hatch.Envs)) {
 		env := doc.Tool.Hatch.Envs[e]
 		addAny(env.Dependencies, nil)
 		addAny(env.ExtraDependencies, nil)
-		ok = ok && !hatchEnvInstalls(env.Type, env.Overrides, env.EnvVars, env.PreInstall, env.PostInstall, env.Scripts)
+		ok = ok && env.Sources == nil && env.Workspace == nil &&
+			!hatchEnvInstalls(env.Type, env.Overrides, env.EnvVars, env.PreInstall, env.PostInstall, env.Scripts, env.ExtraScripts)
 	}
 
 	p := doc.Tool.Poetry
@@ -299,16 +307,18 @@ func hatchEnvInstalls(typ, overrides, envVars any, commands ...any) bool {
 		slices.ContainsFunc(commands, hatchCommandsInstall)
 }
 
-// hatchOverridesInstall reports whether an overrides value sets dependencies or
-// extra-dependencies anywhere in it, or sets commands, scripts or env-vars that install.
+// hatchOverridesInstall reports whether an overrides value sets dependencies,
+// extra-dependencies, sources, workspace or type anywhere in it, or sets commands, scripts or
+// env-vars that install. A set- prefix overwrites the option rather than appending to it, and
+// counts the same.
 func hatchOverridesInstall(v any) bool {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, sub := range t {
-			switch k {
-			case "dependencies", "extra-dependencies":
+			switch strings.TrimPrefix(k, "set-") {
+			case "dependencies", "extra-dependencies", "sources", "workspace", "type":
 				return true
-			case "pre-install-commands", "post-install-commands", "scripts":
+			case "pre-install-commands", "post-install-commands", "scripts", "extra-scripts":
 				if hatchCommandsInstall(sub) {
 					return true
 				}
@@ -328,14 +338,12 @@ func hatchOverridesInstall(v any) bool {
 }
 
 // hatchCommandsInstall reports whether any string in v, at any depth, has a word laneToken
-// names. Words split at whitespace and shell punctuation, so a quoted or chained installer
-// counts.
+// names, split the way the build-script veto splits a command (scriptsurface.NamesToken), so
+// a quoted, chained, path-qualified or {env:...}-defaulted installer counts.
 func hatchCommandsInstall(v any) bool {
 	switch t := v.(type) {
 	case string:
-		return slices.ContainsFunc(strings.FieldsFunc(t, func(r rune) bool {
-			return unicode.IsSpace(r) || strings.ContainsRune("\"'`;&|()<>{}", r)
-		}), laneToken)
+		return scriptsurface.NamesToken(t, laneToken, nil)
 	case []any:
 		return slices.ContainsFunc(t, hatchCommandsInstall)
 	case map[string]any:

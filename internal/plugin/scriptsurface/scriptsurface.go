@@ -1166,15 +1166,18 @@ func FlagsOnly(args []string, allowed map[string]bool, need ...string) bool {
 // wordRE splits text into the words installer tokens are matched against.
 var wordRE = regexp.MustCompile(`[A-Za-z0-9_.+-]+`)
 
-// hasToken reports whether a word of text, or a part of one split at - or _, names a token,
-// so a hyphenated tool or action name (npm-install, setup-uv) names its installer too. A
-// variable the lane's EnvKeeps keeps (npm_config_production) names none.
-func (v *Veto) hasToken(text string) bool {
+// hasToken reports whether text names one of the lane's installer tokens (NamesToken).
+func (v *Veto) hasToken(text string) bool { return NamesToken(text, v.spec.Token, v.spec.EnvKeeps) }
+
+// NamesToken reports whether a word of text, or a part of one split at - or _, names a token,
+// so a hyphenated tool or action name (npm-install, setup-uv) names its installer too. A word
+// keeps reports (npm_config_production) names none; keeps may be nil.
+func NamesToken(text string, token, keeps func(string) bool) bool {
 	for _, w := range wordRE.FindAllString(text, -1) {
-		if v.spec.EnvKeeps != nil && v.spec.EnvKeeps(w) {
+		if keeps != nil && keeps(w) {
 			continue
 		}
-		if v.spec.Token(w) {
+		if token(w) {
 			return true
 		}
 		parts := strings.FieldsFunc(w, func(r rune) bool { return r == '-' || r == '_' })
@@ -1182,7 +1185,7 @@ func (v *Veto) hasToken(text string) bool {
 			continue
 		}
 		for _, p := range parts {
-			if v.spec.Token(p) {
+			if token(p) {
 				return true
 			}
 		}

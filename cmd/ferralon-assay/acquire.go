@@ -55,6 +55,19 @@ func (a *acquired) provenance(revision, commit string) (string, string) {
 	return a.analyzeRef, a.analyzedCommit
 }
 
+// manifestDir returns the directory the project's manifest is read from. For a Go tree it is the
+// module root checkout.FindGoModuleRoot finds under buildDir — the directory the pipeline's
+// codebase_inventory analyzes, which need not be the checkout root — and buildDir when none is
+// found. Every other language reads its manifest at buildDir.
+func (a *acquired) manifestDir() string {
+	if a.language == checkout.LangGo {
+		if root, ok := checkout.FindGoModuleRoot(a.buildDir); ok {
+			return root
+		}
+	}
+	return a.buildDir
+}
+
 // acquireTarget materializes the scan target into a local BuildDir and selects the
 // language-matched analyzer plugin plus advisory corpus. It is the single place both the
 // multi-language plugin wiring and the real-checkout wiring live.

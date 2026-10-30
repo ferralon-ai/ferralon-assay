@@ -457,21 +457,21 @@ func partialityLine(n report.PartialityNote) string {
 		return fmt.Sprintf("No analyzer is available for this codebase's language, so its %s set was not analyzed. The advisories below were not ruled out — they were not assessed.", scope)
 	case report.ReasonScanCutShort:
 		if n.Detail != "" {
-			return fmt.Sprintf("The scan was cut short before it finished (`%s`). Every advisory it did not assess has no verdict and is counted as not assessed.", mdCell(n.Detail))
+			return fmt.Sprintf("The scan was cut short before it finished (%s). Every advisory it did not assess has no verdict and is counted as not assessed.", mdCode(n.Detail))
 		}
 		return "The scan was cut short before it finished, so one or more advisories have no verdict and are counted as not assessed."
 	case plugin.PartialReasonToolFailure:
 		// Names the step and the advisory. The advisory's row is undetermined, so it is
 		// counted as not assessed.
 		if n.Detail != "" {
-			return fmt.Sprintf("An analysis step did not complete (`%s`). That advisory has no verdict and is counted as not assessed.", mdCell(n.Detail))
+			return fmt.Sprintf("An analysis step did not complete (%s). That advisory has no verdict and is counted as not assessed.", mdCode(n.Detail))
 		}
 		return "An analysis step did not complete, so one or more advisories have no verdict and are counted as not assessed."
 	default:
 		if n.Detail != "" {
-			return fmt.Sprintf("Part of the %s analysis was incomplete (`%s`: `%s`), so this run covers less than the whole codebase.", scope, mdCell(n.Reason), mdCell(n.Detail))
+			return fmt.Sprintf("Part of the %s analysis was incomplete (%s: %s), so this run covers less than the whole codebase.", scope, mdCode(n.Reason), mdCode(n.Detail))
 		}
-		return fmt.Sprintf("Part of the %s analysis was incomplete (`%s`), so this run covers less than the whole codebase.", scope, mdCell(n.Reason))
+		return fmt.Sprintf("Part of the %s analysis was incomplete (%s), so this run covers less than the whole codebase.", scope, mdCode(n.Reason))
 	}
 }
 
@@ -491,9 +491,9 @@ func limitLine(n report.PartialityNote) string {
 		// An inherent limit this build does not recognize: state the code verbatim rather
 		// than drop it. Reaching here needs a writer that classified the note explicitly,
 		// since ClassifyPartialityReason sends every unknown code to the loud arm.
-		body = fmt.Sprintf("a known limit of the analysis method applies (`%s`)", mdCell(n.Reason))
+		body = fmt.Sprintf("a known limit of the analysis method applies (%s)", mdCode(n.Reason))
 		if n.Detail != "" {
-			body = fmt.Sprintf("a known limit of the analysis method applies (`%s`: `%s`)", mdCell(n.Reason), mdCell(n.Detail))
+			body = fmt.Sprintf("a known limit of the analysis method applies (%s: %s)", mdCode(n.Reason), mdCode(n.Detail))
 		}
 	}
 	if n.Ecosystem != "" {

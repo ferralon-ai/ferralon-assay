@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/resultsink"
 	ghsink "github.com/ferralon-ai/ferralon-assay/resultsink/github"
@@ -190,6 +191,24 @@ func TestDisclosure_UnknownReasonCode_StillDisclosed(t *testing.T) {
 		}
 		if !strings.Contains(s, "PyPI dependency") {
 			t.Errorf("%s must scope the disclosure to the ecosystem\n---\n%s", name, s)
+		}
+	}
+}
+
+// A reason that carries a file name from the scanned tree is rendered as one code span: a
+// backtick in the name cannot close it, and a newline cannot start a list item of its own.
+func TestDisclosure_ReasonWithFileName_RenderedAsCode(t *testing.T) {
+	reason := plugin.PartialReasonUnrecognisedInstallSurface + ":ci/we`ird\n- injected.yml:3"
+	r := partialReport(report.PartialityNote{Reason: reason, Ecosystem: "PyPI"})
+	want := "``" + plugin.PartialReasonUnrecognisedInstallSurface + ":ci/we`ird - injected.yml:3``"
+	for name, s := range bothSurfaces(t, r) {
+		if !strings.Contains(s, want) {
+			t.Errorf("%s must render the reason as one code span %s\n---\n%s", name, want, s)
+		}
+		for _, l := range strings.Split(s, "\n") {
+			if strings.HasPrefix(strings.TrimLeft(l, "> "), "- injected") {
+				t.Errorf("%s let a newline in a file name start a line: %q", name, l)
+			}
 		}
 	}
 }

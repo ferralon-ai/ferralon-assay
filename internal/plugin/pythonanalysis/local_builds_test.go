@@ -29,6 +29,16 @@ func TestResolveVersions_LocalBuilds(t *testing.T) {
 		return "[metadata]\ngroups = [\"default\"]\n\n[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\n" + fields + "\n\n" + jinjaPy
 	}
 	workspace := project + "[tool.uv.workspace]\nmembers = [\"packages/*\"]\n"
+	dynamic := func(b, tool string) string {
+		return "[project]\nname = \"lib\"\ndynamic = [\"version\"]\n[build-system]\nrequires = [\"x\"]\nbuild-backend = \"" + b + "\"\n" + tool
+	}
+	// A member run on its own, from a lock beside its manifest.
+	inMember := map[string]string{
+		"packages/lib/pyproject.toml": "[project]\nname = \"lib\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n" +
+			"[build-system]\nrequires = [\"x\"]\nbuild-backend = \"uv_build\"\n",
+		"packages/lib/uv.lock":    "version = 1\n[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n\n" + jinjaUV,
+		"packages/lib/install.sh": "#!/bin/sh\nuv sync --locked\n",
+	}
 	locks := map[string]string{"uv": "uv.lock", "poetry": "poetry.lock", "pdm": "pdm.lock"}
 	commands := map[string]string{"uv": "uv sync --locked", "poetry": "poetry install", "pdm": "pdm sync"}
 	tests := []struct {
@@ -62,6 +72,27 @@ func TestResolveVersions_LocalBuilds(t *testing.T) {
 		{"uv, run from a member over the workspace lock", "uv", workspace, uvLock(`{ editable = "packages/lib" }`),
 			map[string]string{"packages/lib/pyproject.toml": backend("uv_build")},
 			"FROM python:3.12\nWORKDIR /app\nCOPY . .\nWORKDIR /app/packages/lib\nRUN uv sync --locked\n", false},
+		{"uv, run from a member over its own lock", "uv", workspace, uvLock(`{ editable = "packages/lib" }`), inMember, "", false},
+		{"uv, run from a member copied in over its own lock", "uv", workspace, uvLock(`{ editable = "packages/lib" }`), inMember,
+			"FROM python:3.12\nWORKDIR /app\nCOPY . .\nWORKDIR /app/packages/lib\nRUN uv sync --locked\n", false},
+		{"uv, a path with .. after a named part", "uv", project, uvLock(`{ editable = "packages/../lib" }`),
+			map[string]string{"lib/pyproject.toml": backend("uv_build")}, "", false},
+		{"uv, a local source with another key", "uv", project, uvLock(`{ editable = "lib", subdirectory = "sub" }`),
+			map[string]string{"lib/pyproject.toml": backend("uv_build")}, "", false},
+
+		// Version sources that run code from the tree.
+		{"uv, member with flit_core and a dynamic version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("flit_core.buildapi", "")}, "", false},
+		{"uv, member with flit_core and no project table", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": "[tool.flit.metadata]\nmodule = \"lib\"\n[build-system]\nrequires = [\"x\"]\nbuild-backend = \"flit_core.buildapi\"\n"}, "", false},
+		{"uv, member with a hatchling code version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("hatchling.build", "[tool.hatch.version]\nsource = \"code\"\npath = \"lib/v.py\"\n")}, "", false},
+		{"uv, member with a pdm-backend call version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("pdm.backend", "[tool.pdm.version]\nsource = \"call\"\ngetter = \"lib.v:get\"\n")}, "", false},
+		{"uv, member with a pdm-backend version_format", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("pdm.backend", "[tool.pdm.version]\nsource = \"scm\"\nversion_format = \"lib.v:fmt\"\n")}, "", false},
+		{"uv, member with a setuptools attr version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("setuptools.build_meta", "[tool.setuptools.dynamic]\nversion = { attr = \"lib.__version__\" }\n")}, "", false},
 
 		// poetry: path dependencies.
 		{"poetry, directory with setup.py", "poetry", project, poetryLock("type = \"directory\"\nurl = \"lib\""),
@@ -80,6 +111,14 @@ func TestResolveVersions_LocalBuilds(t *testing.T) {
 			map[string]string{"lib/pyproject.toml": backend("setuptools.build_meta"), "lib/setup.py": setupPy}, "", false},
 		{"pdm, source archive", "pdm", project, pdmLock("path = \"./dist/lib-0.1.0.tar.gz\""), nil, "", false},
 		{"pdm, file url", "pdm", project, pdmLock("url = \"file:///${PROJECT_ROOT}/lib\""), nil, "", false},
+		{"pdm, subdirectory with setup.py", "pdm", project, pdmLock("path = \"./repo\"\nsubdirectory = \"lib\""),
+			map[string]string{"repo/pyproject.toml": backend("uv_build"), "repo/lib/pyproject.toml": backend("setuptools.build_meta"), "repo/lib/setup.py": setupPy}, "", false},
+		{"pdm, run from a member over its own lock", "pdm", project + "[tool.pdm.workspace]\npackages = [\"packages/*\"]\n", pdmLock("path = \"./lib\""),
+			map[string]string{"lib/pyproject.toml": backend("flit_core.buildapi"),
+				"packages/lib/pyproject.toml": "[project]\nname = \"m\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n",
+				"packages/lib/pdm.lock":       "[metadata]\ngroups = [\"default\"]\n\n" + jinjaPy, "packages/lib/install.sh": "#!/bin/sh\npdm sync\n"}, "", false},
+		{"pdm, subdirectory not a string", "pdm", project, pdmLock("path = \"./lib\"\nsubdirectory = 1"),
+			map[string]string{"lib/pyproject.toml": backend("uv_build")}, "", false},
 
 		// Guards: a backend that runs nothing from the tree, or a source no build reads here.
 		{"uv, workspace root with no member locked", "uv", workspace, uvLock(`{ registry = "https://pypi.org/simple" }`), nil, "", true},
@@ -101,6 +140,18 @@ func TestResolveVersions_LocalBuilds(t *testing.T) {
 			map[string]string{"lib/pyproject.toml": backend("flit_core.buildapi")}, "", true},
 		{"pdm, wheel", "pdm", project, pdmLock("path = \"./dist/lib-0.1.0-py3-none-any.whl\""), nil, "", true},
 		{"pdm, index url", "pdm", project, pdmLock("url = \"https://example.com/lib-0.1.0.tar.gz\""), nil, "", true},
+		{"pdm, subdirectory with flit_core", "pdm", project, pdmLock("path = \"./repo\"\nsubdirectory = \"lib\""),
+			map[string]string{"repo/lib/pyproject.toml": backend("flit_core.buildapi")}, "", true},
+		{"uv, git source with a subdirectory", "uv", project, uvLock(`{ git = "https://github.com/o/lib?subdirectory=lib#abc", subdirectory = "lib" }`), nil, "", true},
+		{"uv, run from a member over its own lock with no workspace", "uv", project, uvLock(`{ registry = "https://pypi.org/simple" }`), inMember, "", true},
+		{"uv, member with a hatchling regex version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("hatchling.build", "[tool.hatch.version]\npath = \"lib/__init__.py\"\n")}, "", true},
+		{"uv, member with a pdm-backend scm version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("pdm.backend", "[tool.pdm.version]\nsource = \"scm\"\n")}, "", true},
+		{"uv, member with a setuptools file version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": dynamic("setuptools.build_meta", "[tool.setuptools.dynamic]\nversion = { file = \"VERSION\" }\n")}, "", true},
+		{"uv, member with flit_core and a static version", "uv", project, uvLock(`{ editable = "lib" }`),
+			map[string]string{"lib/pyproject.toml": backend("flit_core.buildapi")}, "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,6 +198,8 @@ func TestResolveVersions_LocalBuildsAbove(t *testing.T) {
 			"lib/pyproject.toml": lib + "\"setuptools.build_meta\"\n", "lib/setup.py": setupPy}, false},
 		{"uv, sibling a script writes into", map[string]string{"app/uv.lock": uvLock,
 			"app/install.sh": "#!/bin/sh\nmkdir -p ../lib/gen\nuv sync --locked\n", "lib/pyproject.toml": lib + "\"hatchling.build\"\n"}, false},
+		{"uv, sibling named by an absolute path", map[string]string{"app/uv.lock": uvLock,
+			"app/install.sh": "#!/bin/sh\nmkdir -p /opt/lib/gen\nuv sync --locked\n", "lib/pyproject.toml": lib + "\"hatchling.build\"\n"}, false},
 		{"uv, sibling copied in with setup.py", map[string]string{"app/uv.lock": uvLock, "Dockerfile": image,
 			"lib/pyproject.toml": lib + "\"setuptools.build_meta\"\n", "lib/setup.py": setupPy}, false},
 		{"uv, sibling left out of the image", map[string]string{"app/uv.lock": uvLock, "lib/pyproject.toml": lib + "\"uv_build\"\n",

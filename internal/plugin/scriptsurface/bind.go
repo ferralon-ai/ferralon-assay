@@ -36,6 +36,11 @@ type Binder interface {
 	// Dockerfile, the files copied there and covered by no mount. In the tree, a p with ..
 	// must stay inside root from a file reached through no symlink. nil when any is not.
 	Beside(name, p string) []string
+	// Enclosing returns every file named name in the directories above each file Nearest(name)
+	// returns, up to the top of the build, each read here and unchanged. In the tree, each
+	// file Nearest(name) returns must be reached through no symlink. ok is false when
+	// Nearest(name) is nil or one may be there that is not read here.
+	Enclosing(name string) (found []string, ok bool)
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -264,7 +269,36 @@ func (c *hostCursor) Beside(name, p string) []string {
 		found = append(found, f)
 	}
 	c.v.bind(p)
+	c.v.bindRoot(p)
 	return found
+}
+
+func (c *hostCursor) Enclosing(name string) ([]string, bool) {
+	hits := c.Nearest(name)
+	if hits == nil {
+		return nil, false
+	}
+	var found []string
+	for _, h := range hits {
+		if !c.v.unlinked(h) {
+			return nil, false
+		}
+		for dir := filepath.Dir(h); dir != c.v.root; {
+			dir = filepath.Dir(dir)
+			if !c.v.inRoot(dir) {
+				break
+			}
+			f := filepath.Join(dir, name)
+			regular, there, known := c.v.stat(f)
+			if !known || there && (!regular || !c.v.read(f)) {
+				return nil, false
+			}
+			if regular {
+				found = append(found, f)
+			}
+		}
+	}
+	return found, true
 }
 
 // climbs reports whether p, which leaves h's directory through .., lands inside root, and

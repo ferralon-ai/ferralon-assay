@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -235,13 +236,17 @@ type rootProject struct {
 		Backend     string `toml:"build-backend"`
 		BackendPath any    `toml:"backend-path"`
 	} `toml:"build-system"`
+	Project *struct {
+		Dynamic []string `toml:"dynamic"`
+	} `toml:"project"`
 	Tool struct {
 		Poetry struct {
 			Build           any `toml:"build"`
 			RequiresPlugins any `toml:"requires-plugins"`
 		} `toml:"poetry"`
 		Setuptools struct {
-			Cmdclass any `toml:"cmdclass"`
+			Cmdclass any            `toml:"cmdclass"`
+			Dynamic  map[string]any `toml:"dynamic"`
 		} `toml:"setuptools"`
 		PDM struct {
 			PackageType  *string `toml:"package-type"`
@@ -250,10 +255,16 @@ type rootProject struct {
 				CustomHook    any `toml:"custom-hook"`
 				RunSetuptools any `toml:"run-setuptools"`
 			} `toml:"build"`
+			Version struct {
+				Source        any `toml:"source"`
+				VersionFormat any `toml:"version_format"`
+			} `toml:"version"`
+			Workspace any `toml:"workspace"`
 		} `toml:"pdm"`
 		Hatch map[string]any `toml:"hatch"`
 		UV    struct {
-			Package *bool `toml:"package"`
+			Package   *bool `toml:"package"`
+			Workspace any   `toml:"workspace"`
 		} `toml:"uv"`
 	} `toml:"tool"`
 }
@@ -336,6 +347,9 @@ var toolLocks = map[string]string{"uv": "uv.lock", "poetry": "poetry.lock", "pdm
 // build or written with a variable, a lock that is not beside the manifest (uv then installs
 // the workspace that lock is for), or a source of a kind this does not know.
 func localBuildsClean(tool string, b scriptsurface.Binder) bool {
+	if !standalone(tool, b) {
+		return false
+	}
 	locks := b.Beside("pyproject.toml", toolLocks[tool])
 	if locks == nil {
 		return false
@@ -353,6 +367,31 @@ func localBuildsClean(tool string, b scriptsurface.Binder) bool {
 			if !localBuildClean(tool, src, b) {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+// standalone reports whether no pyproject.toml above the nearest one declares a uv or pdm
+// workspace. uv or pdm run inside a workspace member installs from the workspace's lock, not
+// the one beside the member's manifest.
+func standalone(tool string, b scriptsurface.Binder) bool {
+	if tool == "poetry" {
+		return true
+	}
+	above, ok := b.Enclosing("pyproject.toml")
+	if !ok {
+		return false
+	}
+	for _, m := range above {
+		data, err := readRegular(m)
+		if err != nil {
+			return false
+		}
+		var doc rootProject
+		if _, err := toml.Decode(string(data), &doc); err != nil ||
+			tool == "uv" && doc.Tool.UV.Workspace != nil || tool == "pdm" && doc.Tool.PDM.Workspace != nil {
+			return false
 		}
 	}
 	return true
@@ -379,26 +418,29 @@ func localSources(tool string, data []byte) ([]localSource, bool) {
 		switch tool {
 		case "uv":
 			src, ok := pkg["source"].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			// A remote source may carry other keys (a git subdirectory); a local one is its
+			// path alone.
+			var kinds []string
+			for _, k := range []string{"registry", "git", "url", "editable", "directory", "virtual", "path"} {
+				if _, ok := src[k]; ok {
+					kinds = append(kinds, k)
+				}
+			}
+			if len(kinds) != 1 {
+				return nil, false
+			}
+			kind := kinds[0]
+			if kind == "registry" || kind == "git" || kind == "url" {
+				continue
+			}
+			p, ok := src[kind].(string)
 			if !ok || len(src) != 1 {
 				return nil, false
 			}
-			for kind, v := range src {
-				p, ok := v.(string)
-				if !ok {
-					return nil, false
-				}
-				switch kind {
-				case "registry", "git", "url":
-				case "editable", "directory":
-					srcs = append(srcs, localSource{path: p})
-				case "virtual":
-					srcs = append(srcs, localSource{path: p, virtual: true})
-				case "path":
-					srcs = append(srcs, localSource{path: p, file: true})
-				default:
-					return nil, false
-				}
-			}
+			srcs = append(srcs, localSource{path: p, file: kind == "path", virtual: kind == "virtual"})
 		case "poetry":
 			src, ok := pkg["source"]
 			if !ok {
@@ -431,6 +473,13 @@ func localSources(tool string, data []byte) ([]localSource, bool) {
 			if !ok {
 				return nil, false
 			}
+			if sub, there := pkg["subdirectory"]; there {
+				s, ok := sub.(string)
+				if !ok || isArchive(p) {
+					return nil, false
+				}
+				p += "/" + s
+			}
 			srcs = append(srcs, localSource{path: p, file: isArchive(p)})
 		default:
 			return nil, false
@@ -454,7 +503,7 @@ func isArchive(p string) bool {
 // The project itself (".") is rootBuildClean's for uv; poetry and pdm never lock it, so for
 // them a source there is a dependency built through the backend like any other.
 func localBuildClean(tool string, src localSource, b scriptsurface.Binder) bool {
-	p := filepath.ToSlash(filepath.Clean(filepath.FromSlash(src.path)))
+	p := strings.TrimSuffix(filepath.ToSlash(src.path), "/")
 	if src.file {
 		return strings.HasSuffix(strings.ToLower(p), ".whl")
 	}
@@ -487,11 +536,16 @@ func localBuildClean(tool string, src localSource, b scriptsurface.Binder) bool 
 // backendClean reports whether the PEP 517 backend a manifest names runs no code from the
 // tree when it builds the project: setuptools (also the backend when none is named) with no
 // setup.py or setup.cfg beside the manifest, either of which can name command classes in the
-// tree, and no tool.setuptools.cmdclass; pdm-backend with no pdm_build.py and no custom-hook
-// or run-setuptools; hatchling with no hooks table anywhere in tool.hatch and no
-// hatch_build.py or hatch.toml, which hatchling merges into tool.hatch; poetry-core with no
-// tool.poetry.build; flit_core; or uv_build. A backend-path, which loads
-// the backend itself from the tree, or any other backend fails.
+// tree, no tool.setuptools.cmdclass, and no tool.setuptools.dynamic attr, which setuptools
+// imports when it cannot read the value statically; pdm-backend with no pdm_build.py, no
+// custom-hook or run-setuptools, and a version source of file or scm with no version_format,
+// since a call source or a version_format calls a function in the tree; hatchling with no
+// hooks table anywhere in tool.hatch, a version source of regex or none (the code source runs
+// a file), and no hatch_build.py or hatch.toml, which hatchling merges into tool.hatch;
+// poetry-core with no tool.poetry.build; flit_core with a project table whose dynamic names
+// neither version nor description, which flit imports the module for when it cannot read them
+// statically; or uv_build. A backend-path, which loads the backend itself from the tree, or
+// any other backend fails.
 func backendClean(doc rootProject, b scriptsurface.Binder, dir string) bool {
 	clear := func(f string) bool {
 		if dir != "" {
@@ -508,17 +562,37 @@ func backendClean(doc rootProject, b scriptsurface.Binder, dir string) bool {
 	}
 	switch backend {
 	case "", "setuptools.build_meta", "setuptools.build_meta:__legacy__":
-		return doc.Tool.Setuptools.Cmdclass == nil && clear("setup.py") && clear("setup.cfg")
+		return doc.Tool.Setuptools.Cmdclass == nil && !hasKey(doc.Tool.Setuptools.Dynamic, "attr") &&
+			clear("setup.py") && clear("setup.cfg")
 	case "pdm.backend":
-		return doc.Tool.PDM.Build.CustomHook == nil && doc.Tool.PDM.Build.RunSetuptools == nil && clear("pdm_build.py")
+		v := doc.Tool.PDM.Version
+		return doc.Tool.PDM.Build.CustomHook == nil && doc.Tool.PDM.Build.RunSetuptools == nil &&
+			(v.Source == nil || v.Source == "file" || v.Source == "scm") && v.VersionFormat == nil && clear("pdm_build.py")
 	case "hatchling.build":
-		return !hasKey(doc.Tool.Hatch, "hooks") && clear("hatch_build.py") && clear("hatch.toml")
+		return !hasKey(doc.Tool.Hatch, "hooks") && hatchVersionStatic(doc.Tool.Hatch["version"]) &&
+			clear("hatch_build.py") && clear("hatch.toml")
 	case "poetry.core.masonry.api":
 		return doc.Tool.Poetry.Build == nil
-	case "flit_core.buildapi", "uv_build":
+	case "flit_core.buildapi":
+		return doc.Project != nil && !slices.Contains(doc.Project.Dynamic, "version") && !slices.Contains(doc.Project.Dynamic, "description")
+	case "uv_build":
 		return true
 	}
 	return false
+}
+
+// hatchVersionStatic reports whether a tool.hatch.version table, if there is one, reads the
+// version with hatchling's regex source rather than running code.
+func hatchVersionStatic(v any) bool {
+	if v == nil {
+		return true
+	}
+	t, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	src, there := t["source"]
+	return !there || src == "regex"
 }
 
 // hasKey reports whether key names a table or value anywhere in v.

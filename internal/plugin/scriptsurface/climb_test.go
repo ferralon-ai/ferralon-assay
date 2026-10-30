@@ -63,3 +63,51 @@ func TestBinder_Climb(t *testing.T) {
 		})
 	}
 }
+
+// Enclosing returns the files of a name above the nearest one, up to root, and fails from a
+// nearest one reached through a symlink, whose parents are not the ones its path names.
+func TestBinder_Enclosing(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		link  bool // app is a symlink to real/app
+		want  []string
+		ok    bool
+	}{
+		{"one above, one at root", map[string]string{"a/m.toml": "x\n", "m.toml": "x\n"}, false, []string{"a/m.toml", "m.toml"}, true},
+		{"none above", nil, false, nil, true},
+		{"from a linked manifest", map[string]string{"m.toml": "x\n"}, true, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := "a/app"
+			if tt.link {
+				app = "real/app"
+			}
+			files := map[string]string{app + "/m.toml": "x\n"}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			root := writeTree(t, files)
+			if tt.link {
+				if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(root, "real", "app"), filepath.Join(root, "a", "app")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			v := New(root, func(string) bool { return true }, testSpec)
+			c := &hostCursor{v: v, dirs: []string{filepath.Join(root, "a", "app")}}
+			got, ok := c.Enclosing("m.toml")
+			if ok != tt.ok || len(got) != len(tt.want) {
+				t.Fatalf("got %v %v, want %v %v", got, ok, tt.want, tt.ok)
+			}
+			for i, w := range tt.want {
+				if got[i] != filepath.Join(root, w) {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}

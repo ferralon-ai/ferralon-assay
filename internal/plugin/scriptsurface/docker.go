@@ -428,10 +428,43 @@ func (c *dockerCursor) Beside(name, p string) []string {
 			}
 			c.v.bind(name)
 			c.v.bind(p)
+			c.v.bindRoot(p)
 			return found
 		}
 		if d == "/" {
 			return nil
+		}
+	}
+}
+
+func (c *dockerCursor) Enclosing(name string) ([]string, bool) {
+	if !c.known {
+		return nil, false
+	}
+	var found []string
+	near := false
+	for d := c.dir; ; d = path.Dir(d) {
+		hosts, state := c.st.lookup(c.v, path.Join(d, name))
+		switch state {
+		case pathTainted:
+			return nil, false
+		case pathBound:
+			for _, h := range hosts {
+				if !c.v.read(h) {
+					return nil, false
+				}
+			}
+			if near {
+				found = append(found, hosts...)
+			}
+			near = true
+		}
+		if d == "/" {
+			if !near {
+				return nil, false
+			}
+			c.v.bind(name)
+			return found, true
 		}
 	}
 }

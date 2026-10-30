@@ -220,11 +220,12 @@ func runBaseline(args []string) error {
 			Revision:    revision,
 			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
 		},
-		Advisories:    ws.advisories,
-		WorkSetLimits: ws.partiality,
-		AssessOptions: assessOptions,
-		Signals:       f.resolvedSignals,
-		Analysis:      analysis,
+		Advisories:      ws.advisories,
+		WorkSetLimits:   ws.partiality,
+		AssessOptions:   assessOptions,
+		Signals:         f.resolvedSignals,
+		Analysis:        analysis,
+		DependencyFetch: f.depRun.forLanguage(acq.language).fetchUpdate(),
 	}
 
 	rep, err := trigger.RunBaseline(ctx, store, req)

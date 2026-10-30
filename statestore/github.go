@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,6 +165,18 @@ func (s *GitHubRefStore) readAt(ctx context.Context) (*State, error) {
 			return nil, err
 		}
 	}
+	if b, ok := files[fileRevoke]; ok {
+		st.RevokeCount, err = decodeRevoke(b)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if b, ok := files[fileDepFetch]; ok {
+		st.DepFetch, err = decodeDepFetch(b, files[fileReport])
+		if err != nil {
+			return nil, err
+		}
+	}
 	return st, nil
 }
 
@@ -195,7 +209,9 @@ func (s *GitHubRefStore) Write(ctx context.Context, next *State) (*State, error)
 		}
 		if rerr == ErrNotFound {
 			// The ref vanished between the failed CAS and the re-read; retry as create.
-			cur = &State{Report: cur.Report, SBOM: cur.SBOM, Cursor: cur.Cursor, VEXLog: cur.VEXLog}
+			fresh := *cur
+			fresh.CommitSHA = ""
+			cur = &fresh
 		} else {
 			cur = Merge(winner, cur)
 		}
@@ -221,6 +237,9 @@ func (s *GitHubRefStore) tryWrite(ctx context.Context, st *State) (*State, error
 	st = s.stampStateRef(st)
 
 	treeSHA, err := s.buildTree(ctx, st)
+	if errors.Is(err, errParentGone) {
+		return nil, ErrConflict
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -260,9 +279,10 @@ func (s *GitHubRefStore) stampStateRef(st *State) *State {
 	return &cp
 }
 
-// buildTree writes the four state files as blobs and assembles a tree, omitting
-// files whose State field is empty (a heartbeat with no Report writes only cursor +
-// vex.log). GitHub deduplicates blobs/trees by content, so an unchanged file's bytes
+// buildTree writes the state files as blobs and assembles a tree, omitting files
+// whose State field is empty (a heartbeat with no Report writes only cursor +
+// vex.log). Entries of the parent tree this version does not model are carried
+// through by their existing object SHA. GitHub deduplicates blobs/trees by content, so an unchanged file's bytes
 // resolve to the existing object — the API analogue of `git hash-object` reuse.
 func (s *GitHubRefStore) buildTree(ctx context.Context, st *State) (string, error) {
 	type entry struct {
@@ -271,11 +291,13 @@ func (s *GitHubRefStore) buildTree(ctx context.Context, st *State) (string, erro
 	}
 	var entries []entry
 
+	var reportJSON []byte
 	if st.Report != nil {
 		b, err := marshalCanonical(st.Report)
 		if err != nil {
 			return "", fmt.Errorf("statestore: marshal report: %w", err)
 		}
+		reportJSON = b
 		entries = append(entries, entry{fileReport, b})
 	}
 	sbom := st.SBOM
@@ -295,8 +317,23 @@ func (s *GitHubRefStore) buildTree(ctx context.Context, st *State) (string, erro
 	if len(st.VEXLog) > 0 {
 		entries = append(entries, entry{fileVEXLog, encodeVEXLog(st.VEXLog)})
 	}
+	// The revoke counter is carried in the tree only while non-zero: a reset to 0
+	// drops the blob (read-absent → 0), and a repo that never revokes writes none.
+	if st.RevokeCount > 0 {
+		entries = append(entries, entry{fileRevoke, []byte(strconv.Itoa(st.RevokeCount))})
+	}
+	if b, ok, err := encodeDepFetch(st.DepFetch, reportJSON); err != nil {
+		return "", err
+	} else if ok {
+		entries = append(entries, entry{fileDepFetch, b})
+	}
 
-	treeEntries := make([]ghTreeEntry, 0, len(entries))
+	carried, err := s.unmodelledEntries(ctx, st.CommitSHA)
+	if err != nil {
+		return "", err
+	}
+
+	treeEntries := make([]ghTreeEntry, 0, len(entries)+len(carried))
 	for _, e := range entries {
 		blobSHA, err := s.createBlob(ctx, e.data)
 		if err != nil {
@@ -309,7 +346,47 @@ func (s *GitHubRefStore) buildTree(ctx context.Context, st *State) (string, erro
 			SHA:  blobSHA,
 		})
 	}
+	treeEntries = append(treeEntries, carried...)
 	return s.createTree(ctx, treeEntries)
+}
+
+// unmodelledEntries returns the parent commit's tree entries that this version does
+// not model, unchanged, so createTree re-links them by SHA. Blobs and subtrees are
+// carried; anything else (a gitlink) is not a state file and is dropped. A fresh
+// state (no parent) has nothing to carry; a parent the API answers 404 for is
+// errParentGone. Any other failure is returned as is.
+func (s *GitHubRefStore) unmodelledEntries(ctx context.Context, commitSHA string) ([]ghTreeEntry, error) {
+	if commitSHA == "" {
+		return nil, nil
+	}
+	var c ghCommit
+	status, err := s.do(ctx, http.MethodGet, "/git/commits/"+commitSHA, nil, &c)
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, errParentGone
+	default:
+		return nil, fmt.Errorf("statestore: get commit %s: unexpected status %d", commitSHA, status)
+	}
+	treeSHA := c.Tree.SHA
+	entries, err := s.treeEntries(ctx, treeSHA)
+	if err != nil {
+		return nil, err
+	}
+	var carried []ghTreeEntry
+	for _, e := range entries {
+		if e.Type != "blob" && e.Type != "tree" {
+			continue
+		}
+		if modelled(e.Path) {
+			continue
+		}
+		carried = append(carried, e)
+	}
+	return carried, nil
 }
 
 // --- Git Data API request/response shapes ---
@@ -376,21 +453,18 @@ func (s *GitHubRefStore) commitTree(ctx context.Context, commitSHA string) (stri
 	return c.Tree.SHA, nil
 }
 
-// treeFiles reads the (flat) state tree and returns each file's decoded bytes keyed
-// by path. The state tree has no subdirectories, so a non-recursive listing
-// suffices; each entry's blob is fetched and base64-decoded.
+// treeFiles reads the (flat) state tree and returns each modelled file's decoded
+// bytes keyed by path. The state tree has no subdirectories, so a non-recursive
+// listing suffices; each modelled entry's blob is fetched and base64-decoded. An
+// unmodelled blob is not fetched: a write carries it by SHA without reading it.
 func (s *GitHubRefStore) treeFiles(ctx context.Context, treeSHA string) (map[string][]byte, error) {
-	var t ghTree
-	status, err := s.do(ctx, http.MethodGet, "/git/trees/"+treeSHA, nil, &t)
+	entries, err := s.treeEntries(ctx, treeSHA)
 	if err != nil {
 		return nil, err
 	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("statestore: get tree %s: unexpected status %d", treeSHA, status)
-	}
-	out := make(map[string][]byte, len(t.Tree))
-	for _, e := range t.Tree {
-		if e.Type != "blob" {
+	out := make(map[string][]byte, len(entries))
+	for _, e := range entries {
+		if e.Type != "blob" || !modelled(e.Path) {
 			continue
 		}
 		b, err := s.readBlob(ctx, e.SHA)
@@ -400,6 +474,19 @@ func (s *GitHubRefStore) treeFiles(ctx context.Context, treeSHA string) (map[str
 		out[e.Path] = b
 	}
 	return out, nil
+}
+
+// treeEntries lists a (flat) tree's entries.
+func (s *GitHubRefStore) treeEntries(ctx context.Context, treeSHA string) ([]ghTreeEntry, error) {
+	var t ghTree
+	status, err := s.do(ctx, http.MethodGet, "/git/trees/"+treeSHA, nil, &t)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("statestore: get tree %s: unexpected status %d", treeSHA, status)
+	}
+	return t.Tree, nil
 }
 
 func (s *GitHubRefStore) readBlob(ctx context.Context, blobSHA string) ([]byte, error) {

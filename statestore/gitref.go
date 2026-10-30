@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -98,9 +99,11 @@ func (s *GitRefStore) Read(ctx context.Context) (*State, error) {
 	}
 	st := &State{CommitSHA: sha}
 
+	var reportJSON []byte
 	if b, ok, err := s.readFile(ctx, sha, fileReport); err != nil {
 		return nil, err
 	} else if ok {
+		reportJSON = b
 		r, err := decodeReport(b)
 		if err != nil {
 			return nil, err
@@ -137,11 +140,20 @@ func (s *GitRefStore) Read(ctx context.Context) (*State, error) {
 	if b, ok, err := s.readFile(ctx, sha, fileRevoke); err != nil {
 		return nil, err
 	} else if ok {
-		n, perr := strconv.Atoi(strings.TrimSpace(string(b)))
-		if perr != nil {
-			return nil, fmt.Errorf("statestore: decode %s: %w", fileRevoke, perr)
+		n, err := decodeRevoke(b)
+		if err != nil {
+			return nil, err
 		}
 		st.RevokeCount = n
+	}
+
+	if b, ok, err := s.readFile(ctx, sha, fileDepFetch); err != nil {
+		return nil, err
+	} else if ok {
+		st.DepFetch, err = decodeDepFetch(b, reportJSON)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return st, nil
 }
@@ -171,7 +183,9 @@ func (s *GitRefStore) Write(ctx context.Context, next *State) (*State, error) {
 		if rerr == ErrNotFound {
 			// The ref vanished between our failed CAS and the re-read; retry as a
 			// create against an empty expected-old.
-			cur = &State{Report: cur.Report, SBOM: cur.SBOM, Cursor: cur.Cursor, VEXLog: cur.VEXLog}
+			fresh := *cur
+			fresh.CommitSHA = ""
+			cur = &fresh
 		} else {
 			cur = Merge(winner, cur)
 		}
@@ -194,6 +208,9 @@ func (s *GitRefStore) Write(ctx context.Context, next *State) (*State, error) {
 // ErrConflict.
 func (s *GitRefStore) tryWrite(ctx context.Context, st *State) (*State, error) {
 	treeSHA, err := s.buildTree(ctx, st)
+	if errors.Is(err, errParentGone) {
+		return nil, ErrConflict
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +251,8 @@ func (s *GitRefStore) tryWrite(ctx context.Context, st *State) (*State, error) {
 // for identical bytes and writes NO new object, so a write that changes only one
 // file produces exactly one new blob (plus the new tree+commit). Files whose State
 // field is empty are omitted from the tree (a heartbeat with no Report writes only
-// cursor + vex.log).
+// cursor + vex.log). Entries of the parent tree this version does not model are
+// carried through by their existing object SHA.
 func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) {
 	type entry struct {
 		name string
@@ -242,11 +260,13 @@ func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) 
 	}
 	var entries []entry
 
+	var reportJSON []byte
 	if st.Report != nil {
 		b, err := marshalCanonical(st.Report)
 		if err != nil {
 			return "", fmt.Errorf("statestore: marshal report: %w", err)
 		}
+		reportJSON = b
 		entries = append(entries, entry{fileReport, b})
 	}
 	// Persist the SBOM as its own file. When a Report is present its SBOM is the
@@ -273,6 +293,11 @@ func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) 
 	if st.RevokeCount > 0 {
 		entries = append(entries, entry{fileRevoke, []byte(strconv.Itoa(st.RevokeCount))})
 	}
+	if b, ok, err := encodeDepFetch(st.DepFetch, reportJSON); err != nil {
+		return "", err
+	} else if ok {
+		entries = append(entries, entry{fileDepFetch, b})
+	}
 
 	var mktree bytes.Buffer
 	for _, e := range entries {
@@ -280,15 +305,65 @@ func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) 
 		if err != nil {
 			return "", fmt.Errorf("statestore: hash-object %s: %w", e.name, err)
 		}
-		// mktree line: "<mode> blob <sha>\t<name>" (100644 = normal file).
-		fmt.Fprintf(&mktree, "100644 blob %s\t%s\n", blobSHA, e.name)
+		// mktree -z record: "<mode> blob <sha>\t<name>\x00" (100644 = normal file).
+		fmt.Fprintf(&mktree, "100644 blob %s\t%s\x00", blobSHA, e.name)
 	}
+	carried, err := s.unmodelledEntries(ctx, st.CommitSHA)
+	if err != nil {
+		return "", err
+	}
+	mktree.Write(carried)
 
-	treeSHA, err := s.gitStdin(ctx, mktree.Bytes(), "mktree")
+	treeSHA, err := s.gitStdin(ctx, mktree.Bytes(), "mktree", "-z")
 	if err != nil {
 		return "", fmt.Errorf("statestore: mktree: %w", err)
 	}
 	return strings.TrimSpace(treeSHA), nil
+}
+
+// unmodelledEntries returns the parent commit's tree entries that this version does
+// not model, as NUL-terminated `ls-tree -z` records ready for `mktree -z`. Blobs and
+// subtrees are carried; anything else (a gitlink) is not a state file and is dropped.
+// A fresh state (no parent) has nothing to carry; a parent that no longer exists is
+// errParentGone. Any other ls-tree failure is returned as is.
+func (s *GitRefStore) unmodelledEntries(ctx context.Context, commitSHA string) ([]byte, error) {
+	if commitSHA == "" {
+		return nil, nil
+	}
+	out, err := s.gitRaw(ctx, "ls-tree", "-z", commitSHA)
+	if err != nil {
+		if s.commitMissing(ctx, commitSHA) {
+			return nil, errParentGone
+		}
+		return nil, fmt.Errorf("statestore: ls-tree %s: %w", commitSHA, err)
+	}
+	var carried bytes.Buffer
+	for _, rec := range bytes.Split(out, []byte{0}) {
+		// "<mode> <type> <sha>\t<name>"
+		tab := bytes.IndexByte(rec, '\t')
+		if tab < 0 {
+			continue
+		}
+		meta := strings.Fields(string(rec[:tab]))
+		if len(meta) != 3 || (meta[1] != "blob" && meta[1] != "tree") {
+			continue
+		}
+		if modelled(string(rec[tab+1:])) {
+			continue
+		}
+		carried.Write(rec)
+		carried.WriteByte(0)
+	}
+	return carried.Bytes(), nil
+}
+
+// commitMissing reports whether commitSHA is definitely absent from the object
+// store: `rev-parse --verify --quiet` exits 1 with no output for a missing object,
+// and 128 for anything else (an unreadable repo), which is not treated as missing.
+func (s *GitRefStore) commitMissing(ctx context.Context, commitSHA string) bool {
+	out, err := s.gitRaw(ctx, "rev-parse", "--verify", "--quiet", commitSHA+"^{commit}")
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0
 }
 
 // resolveRef returns the commit SHA the ref points at, or "" if the ref does not
@@ -369,7 +444,7 @@ func (s *GitRefStore) runEnv(ctx context.Context, stdin []byte, env []string, ar
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }

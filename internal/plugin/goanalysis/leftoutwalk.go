@@ -72,7 +72,10 @@ type lofWorld struct {
 	modules  map[string]bool
 	dirs     map[string]string
 	names    map[string]string
-	pkgs     map[string]*lofPkg
+	// std records whether each resolved import path is a standard-library package, as go list
+	// reports it, so an unloaded module whose path has no dot is not taken for one.
+	std  map[string]bool
+	pkgs map[string]*lofPkg
 	// pushes maps a //go:linkname remote ("path.name") to the (file, local) declarations that
 	// push their bodies to it.
 	pushes     map[string][][2]string
@@ -88,7 +91,7 @@ func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string,
 	w := &lofWorld{
 		ctx: ctx, buildDir: buildDir, env: env, excluded: excluded, goroot: goroot, deadline: deadline,
 		loaded: map[string]*packages.Package{}, modules: map[string]bool{},
-		dirs: map[string]string{}, names: map[string]string{}, pkgs: map[string]*lofPkg{},
+		dirs: map[string]string{}, names: map[string]string{}, std: map[string]bool{}, pkgs: map[string]*lofPkg{},
 		pushes: map[string][][2]string{}, dropped: map[string]bool{},
 		linkMemo: map[string]lofLinks{}, importMemo: map[string]lofDirImports{},
 	}
@@ -184,7 +187,9 @@ type lofAsm struct {
 // reaches (terminals), the source declarations it walks, the method names it selects, and what it
 // fails closed on.
 type lofClosure struct {
-	funcs   map[*types.Func]bool
+	funcs map[*types.Func]bool
+	// inits holds the loaded packages the closure links, whose initializers run once it does.
+	inits   map[*types.Package]bool
 	types   map[*types.TypeName]bool
 	vars    bool
 	methods map[string]bool
@@ -231,6 +236,7 @@ func (w *lofWorld) resolve(paths []string) {
 		if lp, ok := w.loaded[p]; ok {
 			if dir := lofLoadedDir(lp); dir != "" {
 				w.dirs[p], w.names[p] = dir, lp.Name
+				w.std[p] = lp.Module == nil && isStdlibPath(p, w.modules)
 				continue
 			}
 		}
@@ -240,16 +246,17 @@ func (w *lofWorld) resolve(paths []string) {
 	need = slices.Compact(need)
 	for i := 0; i < len(need); i += 400 {
 		batch := need[i:min(i+400, len(need))]
-		cmd := exec.CommandContext(w.ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Dir}}\t{{.Name}}"}, batch...)...)
+		cmd := exec.CommandContext(w.ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Dir}}\t{{.Name}}\t{{.Standard}}"}, batch...)...)
 		cmd.Dir = w.buildDir
 		cmd.Env = w.env
 		out, _ := cmd.Output()
 		for _, line := range strings.Split(string(out), "\n") {
 			f := strings.Split(line, "\t")
-			if len(f) != 3 || f[1] == "" {
+			if len(f) != 4 || f[1] == "" {
 				continue
 			}
 			w.dirs[f[0]] = f[1]
+			w.std[f[0]] = f[3] == "true"
 			if f[2] != "" {
 				w.names[f[0]] = f[2]
 			}
@@ -258,6 +265,7 @@ func (w *lofWorld) resolve(paths []string) {
 	for _, p := range need {
 		if _, ok := w.dirs[p]; !ok {
 			w.dirs[p] = ""
+			w.std[p] = isStdlibPath(p, w.modules)
 		}
 		if _, ok := w.names[p]; !ok && w.dirs[p] != "" {
 			w.names[p] = w.clauseName(w.dirs[p])
@@ -317,7 +325,7 @@ func (w *lofWorld) pkgVariant(path, name string) *lofPkg {
 	}
 	w.resolve([]string{path})
 	p := &lofPkg{
-		path: path, dir: w.dirs[path], name: w.names[path], std: isStdlibPath(path, w.modules),
+		path: path, dir: w.dirs[path], name: w.names[path], std: w.std[path],
 		decls: map[string][]*lofDecl{}, methods: map[string][]*lofDecl{}, byRecv: map[string][]*lofDecl{},
 		asmText: map[string][]*lofAsm{}, asmData: map[string]bool{},
 	}
@@ -711,7 +719,7 @@ type lofWalk struct {
 // every package the closure enters and the //export functions of its cgo files. Loaded
 // declarations are terminals, not walked.
 func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
-	out := &lofClosure{funcs: map[*types.Func]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}}
+	out := &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		out.fail(lofMissingSource)
@@ -735,6 +743,14 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 	if own.name != af.Name.Name {
 		own = w.pkgVariant(pkgPath, af.Name.Name)
 	}
+	// The package's files are named by the directory go list reports; path may reach the same
+	// directory by another name (a symbolic link).
+	if own.dir != "" && sameDir(filepath.Dir(path), own.dir) {
+		path = filepath.Join(own.dir, filepath.Base(path))
+	}
+	if w.dropped[path] {
+		return &lofClosure{excluded: true, dropped: true}
+	}
 	var file *lofFile
 	for _, f := range own.files {
 		if f.path == path {
@@ -742,12 +758,13 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 		}
 	}
 	if file == nil {
-		if own.missing != "" {
+		switch {
+		case own.missing != "":
 			out.fail(own.missing)
-		} else if len(own.errs) > 0 {
+		case len(own.errs) > 0:
 			out.fail(own.errs[0])
-		} else {
-			out.excluded = true
+		default:
+			out.fail(lofMissingSource)
 		}
 		return out
 	}
@@ -788,6 +805,19 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 		return &lofClosure{excluded: true, dropped: true}
 	}
 	return w.closure(path, pkgPath)
+}
+
+// sameDir reports whether a and b name the same directory.
+func sameDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && os.SameFile(ai, bi)
 }
 
 // uncompilable proves that the Go file f, which names the package-level identifier name that no
@@ -993,7 +1023,8 @@ func (k *lofWalk) touch(f *lofFile) {
 
 // enter links package p. A package the build did not load contributes its initializers, the
 // //export functions of its cgo files, the methods of the names the closure has called, and its
-// files' imports and directives; a loaded package's are in the loaded program already.
+// files' imports and directives; a loaded package contributes its initializer as a terminal, the
+// rest being in the loaded program already.
 func (k *lofWalk) enter(p *lofPkg) {
 	if k.entered[p] {
 		return
@@ -1007,6 +1038,7 @@ func (k *lofWalk) enter(p *lofPkg) {
 		k.out.fail(e)
 	}
 	if p.loaded != nil {
+		k.out.inits[p.loaded.Types] = true
 		return
 	}
 	for _, d := range p.inits {
@@ -1558,7 +1590,7 @@ func (w *lofWorld) links(dir string, std bool) (map[string]bool, []string) {
 				fail(lofUnresolvedImport)
 				continue
 			}
-			imps, item := w.dirImports(d, isStdlibPath(ip, w.modules))
+			imps, item := w.dirImports(d, w.std[ip])
 			if item != "" {
 				fail(item)
 			}

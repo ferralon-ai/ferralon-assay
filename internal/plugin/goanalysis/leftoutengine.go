@@ -48,6 +48,9 @@ type lofEngine struct {
 type lofNode struct {
 	Pkg, Name, Sym, M1, M2 int32
 	Addr, F0, FT           bool
+	// Synth marks a package's synthesized initializer: never a vulnerable symbol itself, only a
+	// caller of the declared init functions and the calls in variable initializers it runs.
+	Synth bool
 }
 
 // lofFacts is one left-out file's closure. Funcs, TypeMeth and NewMeth hold symbols (string ids of
@@ -226,6 +229,9 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 				}
 			}
 		}
+		for tp := range cl.inits {
+			f.Funcs = append(f.Funcs, in.id(symKey(tp.Path(), "init")))
+		}
 		for tn := range cl.types {
 			f.TypeMeth = append(f.TypeMeth, methodKeys(in, tn)...)
 		}
@@ -251,6 +257,13 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		for fn := range cl.funcs {
 			if v := sp.prog.FuncValue(fn); v != nil {
 				roots[v] = true
+			}
+		}
+		for tp := range cl.inits {
+			if sp := sp.prog.Package(tp); sp != nil {
+				if v := sp.Func("init"); v != nil {
+					roots[v] = true
+				}
 			}
 		}
 		for tn := range cl.types {
@@ -308,8 +321,9 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		}
 		id := int32(len(e.Nodes))
 		ids[fn] = id
-		pkg, name := dbSymbol(fn)
-		n := lofNode{Pkg: in.id(pkg), Name: in.id(name), Sym: in.id(symKey(pkg, name)), M1: -1, M2: -1, Addr: addr[fn], F0: sl0[fn], FT: slT[fn]}
+		pkg, name := lofSymbol(fn)
+		n := lofNode{Pkg: in.id(pkg), Name: in.id(name), Sym: in.id(symKey(pkg, name)), M1: -1, M2: -1, Addr: addr[fn], F0: sl0[fn], FT: slT[fn],
+			Synth: fn.Object() == nil && fn.Parent() == nil && fn.Name() == "init"}
 		if fn.Signature.Recv() != nil {
 			n.M1 = in.id(fn.Name())
 		}
@@ -367,6 +381,19 @@ func methodKeys(in *lofInterner, tn *types.TypeName) []int32 {
 		}
 	}
 	return out
+}
+
+// lofSymbol names fn as dbSymbol does, and a package's synthesized initializer, or a function
+// nested in it, as the package's "init", the name its declared init functions take.
+func lofSymbol(fn *ssa.Function) (pkg, name string) {
+	root := fn
+	for root.Parent() != nil {
+		root = root.Parent()
+	}
+	if root.Object() == nil && root.Pkg != nil && root.Name() == "init" {
+		return root.Pkg.Pkg.Path(), "init"
+	}
+	return dbSymbol(fn)
 }
 
 // lofGraph builds the call graph govulncheck (v1.3.0, internal/vulncheck callGraph) builds, rooted
@@ -435,7 +462,7 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 	seen := make([]bool, len(row.e.Nodes))
 	var queue []int32
 	for i, n := range row.e.Nodes {
-		if inSlice(n) && row.inS(row.e.Strs[n.Pkg], row.e.Strs[n.Name]) {
+		if inSlice(n) && !n.Synth && row.inS(row.e.Strs[n.Pkg], row.e.Strs[n.Name]) {
 			seen[i] = true
 			queue = append(queue, int32(i))
 		}

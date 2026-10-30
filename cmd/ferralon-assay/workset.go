@@ -323,7 +323,8 @@ func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pip
 // rootMatcher returns whether an advisory package key names the scanned project itself, judged
 // exactly as codebase_inventory judges it, or nil when the project declares no package identity.
 func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) bool {
-	root, ok := pipeline.ReadRootPackage(ctx, acq.buildDir, acq.language)
+	dir := acq.manifestDir()
+	root, ok := pipeline.ReadRootPackage(ctx, dir, acq.language)
 	if !ok {
 		return nil
 	}
@@ -333,9 +334,9 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 		}
 		var ok bool
 		if root.PURLType == "golang" {
-			_, ok = root.Matches(acq.buildDir, k.Name, "", "")
+			_, ok = root.Matches(dir, k.Name, "", "")
 		} else {
-			_, ok = root.Matches(acq.buildDir, "", k.Name, "")
+			_, ok = root.Matches(dir, "", k.Name, "")
 		}
 		return ok
 	}
@@ -437,7 +438,7 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	// The project's own published package is queried too, so OSV answers for advisories against
 	// the repository itself. Only a versioned one: OSV answers an unversioned query with every
 	// advisory ever recorded against the package.
-	if root, ok := pipeline.ReadRootPackage(ctx, acq.buildDir, acq.language); ok && root.Version != "" {
+	if root, ok := pipeline.ReadRootPackage(ctx, acq.manifestDir(), acq.language); ok && root.Version != "" {
 		pkgs = append(pkgs, report.Package{Ecosystem: ws.ecosystem, Name: root.Name, Version: root.Version, Root: true})
 	}
 	if len(pkgs) == 0 {
@@ -747,8 +748,12 @@ func versionlessPURL(purlType, name string) string {
 // real facts for that no repository's go.mod will ever name, so without this the widening cannot
 // reach them. It is resolved at the subject's toolchain when that is exact (stdlibVersion), and is
 // otherwise unresolved: named, with no version.
+//
+// go.mod is read at the module root (acquired.manifestDir), the module the pipeline analyzes; a tree
+// with no go.mod within that search gets a no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
-	data, err := os.ReadFile(filepath.Join(acq.buildDir, "go.mod"))
+	dir := acq.manifestDir()
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 	}
@@ -776,7 +781,7 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 		}
 		add(r.Mod.Path, r.Mod.Version)
 	}
-	if v := stdlibVersion(ctx, acq, mf); v != "" {
+	if v := stdlibVersion(ctx, acq, dir, mf); v != "" {
 		add(goStdlibPackage, v)
 	} else {
 		unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
@@ -797,8 +802,8 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 // unfiltered firehose that reads exactly like a real answer.
 //
 // The analyzer's resolved build toolchain is read only under trust, the only state in which the
-// resolution consults it.
-func stdlibVersion(ctx context.Context, acq *acquired, mf *modfile.File) string {
+// resolution consults it. Its build manifest is read at dir, the module root mf was read from.
+func stdlibVersion(ctx context.Context, acq *acquired, dir string, mf *modfile.File) string {
 	in := pipeline.ToolchainCandidates{
 		SubjectDeclared: acq.goToolchain.declared,
 		CIObserved:      acq.goToolchain.observed,
@@ -811,7 +816,7 @@ func stdlibVersion(ctx context.Context, acq *acquired, mf *modfile.File) string 
 		in.ToolchainDirective = mf.Toolchain.Name
 	}
 	if in.TrustCIObserved && acq.plugin != nil {
-		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: acq.buildDir}); err == nil {
+		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: dir}); err == nil {
 			if rt, ok := mani.PrimaryRuntime(); ok {
 				in.BuildResolved = rt.Resolved
 			}

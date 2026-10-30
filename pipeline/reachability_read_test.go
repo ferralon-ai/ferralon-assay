@@ -285,10 +285,18 @@ func (p payloadGraphPlugin) CallGraph(context.Context, plugin.CallGraphRequest) 
 	return p.cg, nil
 }
 
-// TestReachabilityPayloadBytes pins that the reachability artifact's payload is byte for byte what
-// json.Marshal makes of the struct it stands for, whether the call graph view holds the memo's
-// encoding or encodes the graph itself.
-func TestReachabilityPayloadBytes(t *testing.T) {
+// reachPayloadCase is one point of the resolved reachability payload matrix.
+type reachPayloadCase struct {
+	name  string
+	cg    plugin.CallGraphResult
+	view  plugin.CallGraphView
+	reach plugin.ReachabilityResult
+	ts    ToolchainScan
+}
+
+// reachPayloadMatrix is graphs × (memoized, wrapped) views × reach results × toolchain scans.
+func reachPayloadMatrix(t *testing.T) []reachPayloadCase {
+	t.Helper()
 	sym := func(s string) plugin.Symbol {
 		return plugin.Symbol{Kind: plugin.SymbolKindFunction, Package: "example.com/<p>", Name: s, DisplayName: "p." + s + " & \u2028é", SCIP: "scip:p#" + s}
 	}
@@ -308,7 +316,8 @@ func TestReachabilityPayloadBytes(t *testing.T) {
 		"none":  {},
 		"paths": {Partiality: plugin.Complete(), Paths: []plugin.ReachPath{{Sink: sym("b"), Ingress: sym("a"), Trace: []plugin.Symbol{sym("a"), sym("b")}}}},
 	}
-	scans := []ToolchainScan{{}, {Requested: "go1.22.1", Actual: "go1.22.1", Subject: true}}
+	scans := map[string]ToolchainScan{"zero": {}, "subject": {Requested: "go1.22.1", Actual: "go1.22.1", Subject: true}}
+	var cases []reachPayloadCase
 	for gname, cg := range graphs {
 		memo, err := plugin.SharedCallGraph(context.Background(), plugin.Memoize(payloadGraphPlugin{cg: cg}), plugin.CallGraphRequest{BuildDir: "/src"})
 		if err != nil {
@@ -317,23 +326,33 @@ func TestReachabilityPayloadBytes(t *testing.T) {
 		views := map[string]plugin.CallGraphView{"memoized": memo, "wrapped": plugin.NewCallGraphView(cg)}
 		for vname, v := range views {
 			for rname, reach := range reaches {
-				for _, ts := range scans {
-					t.Run(gname+"/"+vname+"/"+rname, func(t *testing.T) {
-						want := mustMarshal(t, struct {
-							Reachability  plugin.ReachabilityResult `json:"reachability"`
-							CallGraph     plugin.CallGraphResult    `json:"call_graph"`
-							ToolchainScan ToolchainScan             `json:"toolchain_scan"`
-						}{reach, cg, ts})
-						got, err := reachabilityPayload(reach, v, ts)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if string(got) != want {
-							t.Errorf("payload:\n%s\nwant\n%s", got, want)
-						}
-					})
+				for sname, ts := range scans {
+					cases = append(cases, reachPayloadCase{gname + "/" + vname + "/" + rname + "/" + sname, cg, v, reach, ts})
 				}
 			}
 		}
+	}
+	return cases
+}
+
+// TestReachabilityPayloadBytes pins that the reachability artifact's payload is byte for byte what
+// json.Marshal makes of the struct it stands for, whether the call graph view holds the memo's
+// encoding or encodes the graph itself.
+func TestReachabilityPayloadBytes(t *testing.T) {
+	for _, tc := range reachPayloadMatrix(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			want := mustMarshal(t, struct {
+				Reachability  plugin.ReachabilityResult `json:"reachability"`
+				CallGraph     plugin.CallGraphResult    `json:"call_graph"`
+				ToolchainScan ToolchainScan             `json:"toolchain_scan"`
+			}{tc.reach, tc.cg, tc.ts})
+			got, err := reachabilityPayload(tc.reach, tc.view, tc.ts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != want {
+				t.Errorf("payload:\n%s\nwant\n%s", got, want)
+			}
+		})
 	}
 }

@@ -7,7 +7,6 @@ package pythonanalysis
 import (
 	"io/fs"
 	"maps"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -787,90 +786,38 @@ func pipConfigDisablesHashes(root string) bool {
 	return pipConfigMatches(root, noRequireHashesRE.Match)
 }
 
+// pipConfigInTree reports whether root (all but its own .git) holds any pip.conf or pip.ini.
+// A walk or read error counts as holding one.
+func pipConfigInTree(root string) bool {
+	return pipConfigMatches(root, func([]byte) bool { return true })
+}
+
 // pipConfigMatches walks root (all but its own .git) for a pip.conf or pip.ini whose content
 // match accepts. A walk or read error counts as a match.
 func pipConfigMatches(root string, match func([]byte) bool) bool {
-	return treeFilesMatch(root, pipConfigCheck(match))[0]
-}
-
-// pipConfigCheck asks whether a pip.conf or pip.ini holds content match accepts.
-func pipConfigCheck(match func([]byte) bool) fileCheck {
-	return fileCheck{
-		path:  func(rel string) bool { name := path.Base(rel); return name == "pip.conf" || name == "pip.ini" },
-		match: match,
-	}
-}
-
-// installTypesOnRE matches an install_types option set true, as mypy's INI and TOML readers
-// accept it.
-var installTypesOnRE = regexp.MustCompile(`(?i)install[-_]types\s*[=:]\s*["']?(?:true|1|yes|on)\b`)
-
-// mypyInstallTypesCheck asks whether a file that could be a mypy config, one named .ini, .cfg,
-// .conf or .toml or with mypy in its path, turns install_types on.
-var mypyInstallTypesCheck = fileCheck{
-	path: func(rel string) bool {
-		switch path.Ext(rel) {
-		case ".ini", ".cfg", ".conf", ".toml":
-			return true
-		}
-		return strings.Contains(rel, "mypy")
-	},
-	match: installTypesOnRE.Match,
-}
-
-// fileCheck is one question treeFilesMatch asks of a tree: whether a file whose lowercased
-// slash path relative to the root path accepts holds content match accepts.
-type fileCheck struct {
-	path  func(rel string) bool
-	match func([]byte) bool
-}
-
-// treeFilesMatch walks root (all but its own .git) once and answers each check. A walk error
-// answers every check yes, and a read error every check whose path accepts the file.
-func treeFilesMatch(root string, checks ...fileCheck) []bool {
-	found := make([]bool, len(checks))
-	open := len(checks)
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	found := false
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			found = true
+			return filepath.SkipAll
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" && filepath.Dir(p) == filepath.Clean(root) {
+			if d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		rel, rerr := filepath.Rel(root, p)
-		if rerr != nil {
-			return rerr
+		if name := strings.ToLower(d.Name()); name != "pip.conf" && name != "pip.ini" {
+			return nil
 		}
-		rel = strings.ToLower(filepath.ToSlash(rel))
-		var data []byte
-		read := false
-		for i, c := range checks {
-			if found[i] || !c.path(rel) {
-				continue
-			}
-			if !read {
-				data, rerr = readRegular(p)
-				read = true
-			}
-			if rerr != nil || c.match(data) {
-				found[i] = true
-				open--
-			}
-		}
-		if open == 0 {
+		data, rerr := readRegular(path)
+		if rerr != nil || match(data) {
+			found = true
 			return filepath.SkipAll
 		}
 		return nil
 	})
-	if err != nil {
-		for i := range found {
-			found[i] = true
-		}
-	}
-	return found
+	return found || err != nil
 }
 
 // refused reports whether pip refuses, wherever the build installs the requirements file f,

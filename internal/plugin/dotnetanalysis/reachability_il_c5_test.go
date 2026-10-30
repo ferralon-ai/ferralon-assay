@@ -356,8 +356,11 @@ func hasILReason(p plugin.Partiality, reason string) bool {
 
 // depAssetsJSON lists one package dependency so LoadSpanningSet loads it (its dll locates via
 // the build-output fallback in bin/).
-func depAssetsJSON(pkgKey string) []byte {
-	return []byte(`{"version":3,"targets":{"net8.0":{"` + pkgKey + `":{"type":"package"}}},` +
+func depAssetsJSON(pkgKey string) []byte { return depAssetsJSONFor("net8.0", pkgKey) }
+
+// depAssetsJSONFor is depAssetsJSON for the restore target tfm.
+func depAssetsJSONFor(tfm, pkgKey string) []byte {
+	return []byte(`{"version":3,"targets":{"` + tfm + `":{"` + pkgKey + `":{"type":"package"}}},` +
 		`"libraries":{"` + pkgKey + `":{"type":"package","path":"dep/1.0.0"}}}`)
 }
 

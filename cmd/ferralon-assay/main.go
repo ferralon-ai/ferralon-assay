@@ -172,11 +172,18 @@ func runBaseline(args []string) error {
 		return err
 	}
 
-	ctx := context.Background()
-
-	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
+	timeout, err := f.scanTimeout()
 	if err != nil {
 		return err
+	}
+	budget := startScanBudget(timeout)
+	defer budget.release()
+	timer := &phaseTimer{w: os.Stderr}
+	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+
+	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
+	if err != nil {
+		return markIfStopped(analysis, err)
 	}
 	defer acq.cleanup()
 
@@ -199,9 +206,9 @@ func runBaseline(args []string) error {
 	// repository's real dependencies. Resolved AFTER advisoryCorpusOption, which decides the fact
 	// source the widener admits against. Never fails: an unreachable OSV degrades to the floor and
 	// says so on the Report (workset.go).
-	ws, err := f.scanWorkSet(ctx, acq)
+	ws, err := f.scanWorkSet(analysis, acq)
 	if err != nil {
-		return err
+		return markIfStopped(analysis, err)
 	}
 	fmt.Fprintf(os.Stdout, "%s baseline — work set: %s\n", brand.Name, ws.describe())
 
@@ -217,22 +224,27 @@ func runBaseline(args []string) error {
 		WorkSetLimits: ws.partiality,
 		AssessOptions: assessOptions,
 		Signals:       f.resolvedSignals,
+		Analysis:      analysis,
 	}
 
 	rep, err := trigger.RunBaseline(ctx, store, req)
 	if err != nil {
 		return err
 	}
+	timer.logAdvisories()
+	writeScanTruncated(scanTruncated(rep), os.Stderr)
 
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph); err != nil {
+	publishStart := time.Now()
+	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph, f.depRun.forLanguage(acq.language)); err != nil {
 		return err
 	}
+	logPhase(os.Stderr, "publish", time.Since(publishStart))
 
-	printSummary(*f.outDir, rep, f.signalsSummary(time.Now()))
+	printSummary(*f.outDir, rep, f.publishedSignalsSummary(rep, time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, store, req.Subject, rescan)
-	return acq.graph.err()
+	return runExit(acq.graph, f.depRun.forLanguage(acq.language))
 }
 
 // baselineStore resolves the StateStore the baseline writes to. When an operator selects a store

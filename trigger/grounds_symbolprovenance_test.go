@@ -120,9 +120,11 @@ func TestFinding_SymbolProvenanceGate(t *testing.T) {
 				}
 				return
 			}
-			if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != verdict.BasisSymbolAbsent {
+			// Every ground leaves the code installed and unreached.
+			wantBasis := verdict.BasisSymbolUnreachable
+			if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != wantBasis {
 				t.Fatalf("verdict = %q basis %q (reason %q), want not_exploitable on %q",
-					f.Verdict, f.Evidence.Basis, f.UndeterminedReason, verdict.BasisSymbolAbsent)
+					f.Verdict, f.Evidence.Basis, f.UndeterminedReason, wantBasis)
 			}
 			if f.Evidence.Detail != tt.detail {
 				t.Errorf("detail = %q\nwant     %q", f.Evidence.Detail, tt.detail)
@@ -176,8 +178,8 @@ func TestFinding_BuiltInRecordThroughIntake(t *testing.T) {
 		plugin.ReachabilityResult{Partiality: plugin.Complete(), Searched: []string{sink}})
 	pkg := &report.Package{Ecosystem: "Maven", Name: "com.example.net:urlkit", Version: "2.0.0", PURL: purl + "@2.0.0"}
 	f := finding(store, c.ID, report.Advisory{ID: id, Source: "builtin"}, pkg)
-	if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != verdict.BasisSymbolAbsent {
+	if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != verdict.BasisSymbolUnreachable {
 		t.Fatalf("verdict = %q basis %q (reason %q: %s), want not_exploitable on %q",
-			f.Verdict, f.Evidence.Basis, f.UndeterminedReason, f.Evidence.Detail, verdict.BasisSymbolAbsent)
+			f.Verdict, f.Evidence.Basis, f.UndeterminedReason, f.Evidence.Detail, verdict.BasisSymbolUnreachable)
 	}
 }

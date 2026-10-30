@@ -44,6 +44,7 @@ func TestClassifyPartialityReason(t *testing.T) {
 		// of this codebase, not of the method.
 		plugin.PartialReasonReflectiveCall:    report.PartialityDidNotRun,
 		plugin.PartialReasonPluginLoad:        report.PartialityDidNotRun,
+		plugin.PartialReasonCgoUnresolved:     report.PartialityDidNotRun,
 		plugin.PartialReasonExcludedFiles:     report.PartialityDidNotRun,
 		plugin.PartialReasonUnsearchedMethods: report.PartialityDidNotRun,
 		plugin.PartialReasonLibraryEscape:     report.PartialityDidNotRun,

@@ -452,7 +452,8 @@ type AdvisoryBound struct {
 type EvidenceSummary struct {
 	// Basis is the structured grounds for a not_exploitable / disqualified verdict,
 	// reusing the OSS verdict grammar (verdict.NonExploitableBasis):
-	// "version_not_in_affected_range" or "vulnerable_symbol_absent". Empty for a
+	// "version_not_in_affected_range", "vulnerable_symbol_absent" or, for a not_exploitable
+	// resting on reachability, "vulnerable_symbol_unreachable". Empty for a
 	// reachable_candidate (which has no refutation basis — its grounds are the path) and
 	// for an undetermined finding (which has no grounds at all).
 	Basis verdict.NonExploitableBasis `json:"basis,omitempty"`
@@ -461,6 +462,10 @@ type EvidenceSummary struct {
 	// HTTP handler reaches the advisory symbol"). Neutral phrasing only — never
 	// asserts exploitability.
 	Detail string `json:"detail,omitempty"`
+	// Assumptions are the caller's declarations a not_exploitable verdict holds only under, each one
+	// checkable line (a library-entrypoints declaration that took a package out of the entry points).
+	// Empty means the verdict rests on the scan's evidence alone. Set only on a not_exploitable.
+	Assumptions []string `json:"assumptions,omitempty"`
 	// ReachablePath, for a reachable_candidate, names the entrypoint→symbol path that
 	// made it a candidate (compact, e.g. "net/http.Handler → pkg.VulnFunc"). Empty
 	// for disqualified / not_exploitable. Framed as a candidate path, never a proof.
@@ -528,8 +533,8 @@ type EvidenceSummary struct {
 // can always say how old each one is. Which signals file the values came from is recorded once, as
 // Provenance.Intel.SignalsDigest.
 //
-// A nil Priority means the run had no signals, or the file had no stamped value for the advisory's
-// id or aliases. It never means "not exploited".
+// A nil Priority means the run had no signals, the file had no stamped value for the advisory's id
+// or aliases, or the join to its record was refused. It never means "not exploited".
 type Priority struct {
 	// EPSSScore is FIRST.org's 0..1 probability the CVE is exploited in the wild in the 30 days
 	// after EPSSAsOf. Set only with EPSSAsOf. Not omitempty: 0 is a real score, so it serializes
@@ -718,6 +723,10 @@ type Provenance struct {
 // from a fresh one. Without this block, "why did this go red with no code change?" — or
 // green — has no answer.
 //
+// The command line fills the whole block. trigger.Run* sets only SignalsDigest, the one input it
+// holds: how the work set was chosen and where the facts came from are known to the entrypoint that
+// resolved them, so on a library run the other fields are zero, meaning not recorded.
+//
 // It is DISCLOSURE, never a verdict (inv. 5). No finding's verdict, grounds, or count
 // depends on it; it narrows what the verdicts above cover, exactly as PartialityNote
 // does.
@@ -757,8 +766,19 @@ type IntelProvenance struct {
 	// bundle handed over without one). It records what was verified, not who should have signed.
 	CorpusSigner *CorpusSigner `json:"corpus_signer,omitempty"`
 	// SignalsDigest is the signals_digest of the EPSS/KEV signals file the pass ranked its findings
-	// with, as the file states it. Empty when the run had no signals, in which case no finding
-	// carries a Priority. Each priority value carries its own age stamp; this names the file.
+	// with: the value the loader recomputed from the file's payload, not the file's unverified
+	// claim. trigger.Run* records it from the request's Signals, so a library run and the command
+	// line name the file alike. Each priority value carries its own age stamp; this names the file.
+	// When set, the file ranked every row in the Report, so a row with no Priority is one the file
+	// holds no usable signal for (no record, or a refused join).
+	//
+	// A Report read back from the state ref is not always one run's work, so Priority rows can appear
+	// WITHOUT a digest: statestore.Merge, on a conflicting write, unions rows from two runs and leaves
+	// the digest empty when any row, ranked or not, came from a Report that named a different file (or
+	// none) than the one whose provenance the merge kept; and a Report written before this field
+	// existed has rows and no digest. So empty with Priority rows means the file is not known; empty
+	// with no Priority rows means no file is named: no signals were recorded, or the rows came from
+	// runs that did not share one.
 	SignalsDigest string `json:"signals_digest,omitempty"`
 }
 
@@ -919,8 +939,8 @@ const (
 	// reachable path is a fact about the analysis rather than about the codebase.
 	//
 	// It is the code an analyzer that cannot yet resolve a dependency's versions or symbols lands
-	// its findings on. `not_exploitable / vulnerable_symbol_absent` asserts that the vulnerable
-	// symbol is not present in what this codebase builds; an analysis that never searched has
+	// its findings on. A `not_exploitable` basis asserts that no path in what this codebase builds
+	// reaches the vulnerable symbol; an analysis that never searched has
 	// asserted it on evidence it does not have, which is a false negative — the one outcome this
 	// scanner may never produce.
 	//
@@ -962,6 +982,11 @@ const (
 	// without asserting anything about this run's verdicts. A follow-on that persists build context
 	// into the compared state closes it.
 	ReasonBuildContextNotCompared = "build_context_not_compared"
+	// ReasonScanCutShort: the scan stopped before this advisory's assessment finished, at its time
+	// limit or because the runner stopped it. Nothing the advisory's analysis produced is kept, so
+	// the row says nothing about the codebase. As a scan-level note it names the cause, how many
+	// advisories were not assessed, and how to give the scan more time.
+	ReasonScanCutShort = "scan_cut_short"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is
@@ -1013,6 +1038,61 @@ type Report struct {
 	// BuildGraph records where a JVM scan's dependency graph came from and, when it could not be
 	// had, the typed cause. Set on every Java and Kotlin scan; nil for every other language.
 	BuildGraph *BuildGraph `json:"build_graph,omitempty"`
+	// LibraryEntrypoints are the sets of the build's packages the scan treated as callable by code
+	// outside the build, one per ecosystem, and whether each was inferred or declared. A lane
+	// resolves one only to judge a refutation such a caller may contradict. Sorted by ecosystem.
+	LibraryEntrypoints []plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// DependencyCode records whether a JS scan read its dependencies' code and, when a fetch
+	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
+	// nil for every other language.
+	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
+}
+
+// AddPartiality records notes on a built Report, classified, de-duplicated and sorted as
+// Builder.AddPartiality and Build would have them.
+func (r *Report) AddPartiality(notes ...PartialityNote) {
+	b := Builder{partiality: append([]PartialityNote(nil), r.Partiality...)}
+	b.AddPartiality(notes...)
+	r.Partiality = dedupPartiality(b.partiality)
+}
+
+// Dependency code sources.
+const (
+	// DependencyCodeSourceFetch is a scan that fetches each lock-pinned package and reads its
+	// integrity-verified code.
+	DependencyCodeSourceFetch = "fetch"
+	// DependencyCodeSourceOffline is a scan that reads only an operator-seeded dependency cache.
+	DependencyCodeSourceOffline = "offline"
+	// DependencyCodeSourceOff is a scan the caller ran with dependency code switched off.
+	DependencyCodeSourceOff = "off"
+)
+
+// PartialReasonDependencyCodeUnavailable is the scan-level reason a JS scan carries when a fetch
+// failed and it read no dependency code. It is plugin.PartialReasonToolFailure narrowed the way
+// the JVM lane narrows it to build_graph_absent: the step that did not run is the dependency
+// code read, whatever stopped it (the registry, a credential, the deadline).
+const PartialReasonDependencyCodeUnavailable = plugin.PartialReasonToolFailure + ":dependency_code_unavailable"
+
+// DependencyCode is the provenance of the dependency code a JS scan read.
+type DependencyCode struct {
+	// Source is one of the DependencyCodeSource constants.
+	Source string `json:"source"`
+	// Cause is why a fetch-mode scan read no dependency code. Nil when it read what it fetched,
+	// and for "offline" and "off".
+	Cause *DependencyCodeCause `json:"cause,omitempty"`
+}
+
+// DependencyCodeCause is why a fetch fell back to reading no dependency code.
+type DependencyCodeCause struct {
+	// Kind is inventory_failed, or the reason the first failed package, in PURL order, was not
+	// fetched: registry_unavailable (throttled, server error, timeout or dropped connection),
+	// registry_unreachable (name resolution or connect failure), not_served (the registry
+	// answered that it does not serve the tarball), fetch_failed, policy_refused, cancelled,
+	// integrity_mismatch or npmrc_malformed.
+	Kind string `json:"kind"`
+	// Detail names that package and, where there is one, the policy or fetch-failure code or the
+	// npm configuration file and line. It never carries a URL, a host or a credential.
+	Detail string `json:"detail,omitempty"`
 }
 
 // Build graph sources.
@@ -1069,6 +1149,9 @@ type Subject struct {
 //     rejected, so a minimally-populated Report still validates.
 //   - An undetermined finding must NOT carry a Basis (it has no grounds at all) and
 //     MUST carry an UndeterminedReason; no other verdict may carry one.
+//   - The reachability basis (vulnerable_symbol_unreachable) is valid only on a
+//     not_exploitable: a disqualification rests on the version or symbol axis, never on
+//     a path search.
 func (r Report) Validate() error {
 	if r.SchemaVersion == "" {
 		return fmt.Errorf("report: SchemaVersion is required")
@@ -1090,6 +1173,10 @@ func (r Report) Validate() error {
 		if f.Verdict == VerdictUndetermined && f.Evidence.Basis != verdict.BasisNone {
 			return fmt.Errorf("report: advisory %q is undetermined but carries a not-exploitability basis %q (an undetermined finding establishes nothing, so it has no grounds)",
 				f.Advisory.ID, f.Evidence.Basis)
+		}
+		if f.Evidence.Basis == verdict.BasisSymbolUnreachable && f.Verdict != VerdictNotExploitable {
+			return fmt.Errorf("report: advisory %q carries basis %q but verdict is %q (a reachability refutation grounds only a not_exploitable)",
+				f.Advisory.ID, f.Evidence.Basis, f.Verdict)
 		}
 		if f.Verdict == VerdictUndetermined && f.UndeterminedReason == "" {
 			return fmt.Errorf("report: advisory %q is undetermined but carries no undetermined_reason (an unexplained non-verdict is silent suppression)",
@@ -1120,6 +1207,11 @@ func (r Report) Validate() error {
 		if f.Evidence.SymbolConfidence != "" && f.Verdict != VerdictReachableCandidate {
 			return fmt.Errorf("report: advisory %q carries symbol confidence %q but verdict is %q (a derivation-confidence signal qualifies only a reachable_candidate, never an admission or refutation)",
 				f.Advisory.ID, f.Evidence.SymbolConfidence, f.Verdict)
+		}
+		// A declaration only ever lets a refutation stand, so only a not_exploitable rests on one.
+		if len(f.Evidence.Assumptions) > 0 && f.Verdict != VerdictNotExploitable {
+			return fmt.Errorf("report: advisory %q carries assumptions but verdict is %q (an assumption qualifies only a not_exploitable)",
+				f.Advisory.ID, f.Verdict)
 		}
 		// Structural honest-absent gate (inv.5, RFC §4.2): the exploit-precondition qualifier may
 		// describe ONLY a reachable_candidate. Forbidding it on every other verdict is what makes a

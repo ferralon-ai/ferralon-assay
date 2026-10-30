@@ -3,6 +3,7 @@ package artifactcache
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // The acquisition failure taxonomy (PLAN-200). These are ADDITIVE siblings of
@@ -28,6 +29,12 @@ var (
 	// partiality — a resolver should never emit it. Kept out of the four so a real
 	// partiality is never masked by a validation error; surfaces on Acquire and Lookup.
 	ErrMalformedRef = errors.New("artifactcache: malformed ref digest (failed decode-validate gate)")
+	// ErrRegistryUnavailable: the registry throttled the request (429), failed it (408 or
+	// 5xx), timed out or dropped the connection. Transient: says nothing about whether the
+	// artifact exists.
+	ErrRegistryUnavailable = errors.New("artifactcache: registry unavailable (throttled, server error, timeout or dropped connection)")
+	// ErrRegistryUnreachable: the registry's host did not resolve or refused the connection.
+	ErrRegistryUnreachable = errors.New("artifactcache: registry unreachable (name resolution or connect failure)")
 )
 
 // Policy-refusal reason codes (non-secret, matchable telemetry).
@@ -43,15 +50,28 @@ const (
 	PolicyNoBackend            = "no-backend-for-ecosystem"
 )
 
-// IsPartiality reports whether err is one of the four typed declared-partial outcomes —
-// MISS / INTEGRITY / POLICY / UNPINNED — so a caller can route all four to a
-// declared-partial result in one check. ErrMalformedRef is deliberately EXCLUDED: it is a
-// bug to surface loudly, not a partiality to absorb.
+// Fetch-failure reason codes (non-secret, matchable telemetry). The first four are
+// ErrRegistryUnavailable, the last two ErrRegistryUnreachable.
+const (
+	FetchRateLimited     = "rate-limited"
+	FetchServerError     = "server-error"
+	FetchTimeout         = "timeout"
+	FetchConnectionReset = "connection-reset"
+	FetchDNSFailure      = "dns-failure"
+	FetchConnectFailure  = "connect-failure"
+)
+
+// IsPartiality reports whether err is one of the typed declared-partial outcomes —
+// MISS / INTEGRITY / POLICY / UNPINNED / UNAVAILABLE / UNREACHABLE — so a caller can route
+// all of them to a declared-partial result in one check. ErrMalformedRef is deliberately
+// EXCLUDED: it is a bug to surface loudly, not a partiality to absorb.
 func IsPartiality(err error) bool {
 	return errors.Is(err, ErrDeclaredAbsent) ||
 		errors.Is(err, ErrIntegrityMismatch) ||
 		errors.Is(err, ErrPolicyRefused) ||
-		errors.Is(err, ErrUnpinnedArtifact)
+		errors.Is(err, ErrUnpinnedArtifact) ||
+		errors.Is(err, ErrRegistryUnavailable) ||
+		errors.Is(err, ErrRegistryUnreachable)
 }
 
 // IntegrityReason carries non-secret context for an integrity failure. It holds only the
@@ -110,3 +130,33 @@ func (r *MalformedReason) Error() string {
 }
 
 func (r *MalformedReason) Unwrap() error { return ErrMalformedRef }
+
+// FetchReason is a fetch the registry did not complete: Code is one of the Fetch* constants.
+// Status is the HTTP status the registry answered with, zero for a transport failure, and
+// RetryAfter the wait its Retry-After header asked for, zero when absent. Host is the
+// registry host the request went to. It holds no URL, no credential and no wrapped error, so
+// it is secret-free by construction.
+type FetchReason struct {
+	PURL       string
+	Host       string
+	Code       string
+	Status     int
+	RetryAfter time.Duration
+}
+
+func (r *FetchReason) Error() string {
+	if r.Status != 0 {
+		return fmt.Sprintf("artifactcache: fetch failed for %s (host %q): %s (HTTP %d)", r.PURL, r.Host, r.Code, r.Status)
+	}
+	return fmt.Sprintf("artifactcache: fetch failed for %s (host %q): %s", r.PURL, r.Host, r.Code)
+}
+
+// Unwrap is ErrRegistryUnreachable for a name resolution or connect failure and
+// ErrRegistryUnavailable for every other code.
+func (r *FetchReason) Unwrap() error {
+	switch r.Code {
+	case FetchDNSFailure, FetchConnectFailure:
+		return ErrRegistryUnreachable
+	}
+	return ErrRegistryUnavailable
+}

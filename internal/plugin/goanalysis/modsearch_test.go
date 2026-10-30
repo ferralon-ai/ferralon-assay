@@ -431,3 +431,139 @@ func listAll(t *testing.T, app string) {
 		t.Fatalf("go list -m all: %v\n%s", err, out)
 	}
 }
+
+// vendor vendors app's dependencies, so that go list -m all no longer lists its build.
+func vendor(t *testing.T, app string) {
+	t.Helper()
+	cmd := exec.Command("go", "mod", "vendor")
+	cmd.Dir = app
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod vendor: %v\n%s", err, out)
+	}
+	if _, err := listModules(context.Background(), app); err == nil {
+		t.Fatal("go list -m all listed a vendored build; the vendor fallback is untested")
+	}
+}
+
+func TestDependencyHolds_UnreadableBuildList(t *testing.T) {
+	if dependencyHolds(context.Background(), t.TempDir(), "example.com/a") {
+		t.Fatal("a build list that cannot be read holds a dependency path; the advisory would resolve nothing")
+	}
+}
+
+func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
+	reader := map[string]string{"app/reader.go": "package main\n\ntype Reader struct{}\n\nfunc (*Reader) Verify() error { return nil }\n\nfunc Verify() bool { return true }\n"}
+	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nvar X = 1\n"}}
+	resolve := func(t *testing.T, app, purl string, symbols []string) plugin.SymbolResolutionResult {
+		t.Helper()
+		res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{BuildDir: app, PURL: purl, AdvisorySymbols: symbols})
+		if err != nil {
+			t.Fatalf("ResolveDependencySymbols: %v", err)
+		}
+		return res
+	}
+	wantNone := func(t *testing.T, res plugin.SymbolResolutionResult) {
+		t.Helper()
+		if len(res.Resolved) != 0 || res.ModuleSearch != nil {
+			t.Fatalf("Resolved %v, ModuleSearch %+v; want neither: a first-party symbol is not a dependency's", res.Resolved, res.ModuleSearch)
+		}
+	}
+	wantFirstParty := func(t *testing.T, res plugin.SymbolResolutionResult) {
+		t.Helper()
+		if len(res.Resolved) != 2 {
+			t.Fatalf("Resolved %v, want the app's (*Reader).Verify and Verify", res.Resolved)
+		}
+		for _, s := range res.Resolved {
+			if s.Package != "example.com/app" {
+				t.Fatalf("Resolved %v, want only example.com/app symbols", res.Resolved)
+			}
+		}
+	}
+
+	t.Run("dependency advisories resolve nothing in first-party code", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		for _, purl := range []string{"pkg:golang/example.com/a", "pkg:golang/example.com/a/ssh@v1.0.0",
+			"pkg:golang/example.com/a?type=module", "pkg:golang/example.com/a#ssh", "pkg:golang/example.com/a/ssh@v1.0.0?type=module#sub",
+			"pkg:Golang/example.com/a"} {
+			t.Run(purl, func(t *testing.T) {
+				wantNone(t, resolve(t, app, purl, []string{"example.com/a/ssh.Certificate.Verify"}))
+			})
+		}
+		t.Run("a path no module holds still resolves by name and searches the modules", func(t *testing.T) {
+			res := resolve(t, app, "pkg:golang/tegron/corpus/x", []string{"main.Verify"})
+			wantFirstParty(t, res)
+			wantSearch(t, res.ModuleSearch, []string{"example.com/a", "example.com/app"}, []string{"example.com/app"})
+		})
+		t.Run("an unloaded path of the scanned module still resolves by name", func(t *testing.T) {
+			wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
+		})
+	})
+	t.Run("a module nested under the scanned module's path is a dependency", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modSub})
+		app := newApp(t, []string{"example.com/app/sub"}, "", reader)
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/app/sub/x", []string{"Verify"}))
+	})
+	t.Run("a dependency held under its replacement's path", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/old"}, "\nrequire example.com/old v1.0.0\n\nreplace example.com/old v1.0.0 => example.com/a v1.0.0\n", reader)
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/a", []string{"example.com/a.Verify"}))
+	})
+	t.Run("a standard-library advisory", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		wantNone(t, resolve(t, app, "pkg:golang/stdlib", []string{"crypto/x509.Certificate.Verify"}))
+	})
+	t.Run("a standard-library or toolchain advisory resolves nothing in first-party code", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		for _, purl := range []string{
+			"pkg:golang/stdlib@go1.22.1", "pkg:golang/stdlib?type=module", "pkg:golang/stdlib#net/http",
+			"pkg:golang/stdlib@go1.22.1?os=linux#net/http", "pkg:golang/StdLib",
+			"pkg:golang/toolchain", "pkg:golang/toolchain@go1.22.1", "pkg:golang/toolchain?os=linux#cmd/go",
+			"pkg:golang/cmd/go", "pkg:golang/cmd/go/internal/modfetch@go1.22.1", "pkg:GOLANG/stdlib", "pkg:golang/Toolchain",
+		} {
+			t.Run(purl, func(t *testing.T) {
+				wantNone(t, resolve(t, app, purl, []string{"Verify"}))
+			})
+		}
+	})
+	t.Run("the scanned module nested under a dependency's path holds its own paths", func(t *testing.T) {
+		parent := srcModule{"example.com", "v1.0.0", map[string]string{"root.go": "package root\n\nvar X = 1\n"}}
+		newSourceProxy(t, []srcModule{parent})
+		app := newApp(t, []string{"example.com"}, "", reader)
+		purl := "pkg:golang/example.com/app/missing"
+		wantFirstParty(t, resolve(t, app, purl, []string{"main.Verify"}))
+		vendor(t, app)
+		wantFirstParty(t, resolve(t, app, purl, []string{"main.Verify"}))
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/x", []string{"example.com/x.Verify"}))
+	})
+	t.Run("a vendored build", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", reader)
+		vendor(t, app)
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/a/ssh", []string{"example.com/a/ssh.Certificate.Verify"}))
+		wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
+	})
+}
+
+func TestPackageFromPURL(t *testing.T) {
+	for _, tc := range []struct{ purl, want string }{
+		{"pkg:golang/example.com/a/ssh", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh@v1.0.0", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh?type=module", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh#sub/dir", "example.com/a/ssh"},
+		{"pkg:golang/example.com/a/ssh@v1.0.0?type=module#sub/dir", "example.com/a/ssh"},
+		{"pkg:golang/stdlib", "stdlib"},
+		{"pkg:golang/toolchain@go1.22.1", "toolchain"},
+		{"pkg:Golang/example.com/a?q=1@x", "example.com/a"},
+		{"pkg:golang/example.com/a#s@x", "example.com/a"},
+		{"pkg:npm/left-pad@1.0.0", ""},
+		{"", ""},
+	} {
+		if got := packageFromPURL(tc.purl); got != tc.want {
+			t.Errorf("packageFromPURL(%q) = %q, want %q", tc.purl, got, tc.want)
+		}
+	}
+}

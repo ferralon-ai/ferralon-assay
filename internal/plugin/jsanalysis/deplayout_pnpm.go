@@ -22,8 +22,9 @@ var pnpmLockRootKeys = map[string]bool{
 	"onlyBuiltDependencies": true, "neverBuiltDependencies": true,
 }
 
-// pnpmManifestKeys are the package.json "pnpm" settings that cannot change what the lock pins
-// beyond what the lane checks (overrides and patches are compared with the lock).
+// pnpmManifestKeys are the package.json "pnpm" settings that cannot change what the lock pins.
+// overrides, patchedDependencies and ignoredOptionalDependencies can; manifestPnpmInert
+// withholds them when set.
 var pnpmManifestKeys = map[string]bool{
 	"overrides": true, "patchedDependencies": true, "peerDependencyRules": true,
 	"neverBuiltDependencies": true, "onlyBuiltDependencies": true, "ignoredBuiltDependencies": true,
@@ -231,7 +232,7 @@ func (p *pnpmLock) entries() bool {
 		res := m.child("resolution")
 		if res != nil && len(res.kids) == 0 && strings.HasPrefix(res.val, "{") {
 			e.digest = mapIntegrity(extractIntegrity(res.val))
-			e.unreadable = e.digest == "" || strings.Contains(res.val, "type: git") ||
+			e.unreadable = e.digest == "" || yamlRawQuoted(res.val) || strings.Contains(res.val, "type: git") ||
 				strings.Contains(res.val, "type: directory") || strings.Contains(res.val, "commit:")
 		} else {
 			e.unreadable = true
@@ -506,11 +507,7 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			return nil, false
 		}
 	}
-	var manOverrides, manPatches map[string]string
-	if v, ok := man.Pnpm["overrides"]; ok && json.Unmarshal(v, &manOverrides) != nil {
-		return nil, false
-	}
-	if v, ok := man.Pnpm["patchedDependencies"]; ok && json.Unmarshal(v, &manPatches) != nil {
+	if !manifestPnpmInert(man.Pnpm) {
 		return nil, false
 	}
 
@@ -572,12 +569,7 @@ func readPnpmConfig(root string) (*pnpmConfig, bool) {
 			globs = slices.DeleteFunc(slices.Clone(n.items), func(g string) bool { return g == "." })
 		}
 	}
-	if len(manOverrides) > 0 && len(wsOverrides) > 0 || len(manPatches) > 0 && len(wsPatches) > 0 {
-		return nil, false
-	}
-	maps.Copy(cfg.overrides, manOverrides)
 	maps.Copy(cfg.overrides, wsOverrides)
-	maps.Copy(cfg.patches, manPatches)
 	maps.Copy(cfg.patches, wsPatches)
 
 	members, ok := workspaceMembers(root, globs)
@@ -647,6 +639,12 @@ func (p *pnpmLock) checkConfig(cfg *pnpmConfig) bool {
 		return false
 	}
 	if p.version == "5.4" && len(cfg.overrides) > 0 {
+		return false
+	}
+	if n := p.doc.child("ignoredOptionalDependencies"); n != nil && (len(n.kids) > 0 || len(n.items) > 0 || n.val != "" && n.val != "[]") {
+		return false // getOutdatedLockfileSetting compares it with the configuration; the lane does not
+	}
+	if !p.localSourcesHold() || !p.noMemberShadow(cfg) {
 		return false
 	}
 

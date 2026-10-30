@@ -132,18 +132,19 @@ func appCallsStart() []byte {
 func TestReachability_CrossAssemblySignatures(t *testing.T) {
 	sink := funcSCIP("D", []string{"Sink"}, "boom", 0)
 	cases := []struct {
-		name     string
-		app, dep []byte
-		wantPath bool
+		name         string
+		app, dep     []byte
+		wantPath     bool
+		wantSearched bool
 	}{
-		{"class virtual reaches the override", appCrossAsm(true, "Base", "Run", "Arg"), depCrossAsm(), true},
-		{"interface call reaches the implementation", appCrossAsm(true, "IRun", "Run", "Arg"), depCrossAsm(), true},
-		{"direct call binds the declared method", appCrossAsm(false, "Sink", "take", "Arg"), depCrossAsm(), true},
-		{"a parameter naming another type binds nothing", appCrossAsm(false, "Sink", "take", "Other"), depCrossAsm(), false},
-		{"an undecoded parameter binds every overload of that arity", appCrossAsm(false, "Sink", "pick", ""), depCrossAsm(), true},
-		{"a generic base's virtual call reaches the override in a closed subclass", appCallsStart(), depGenericOverride(), true},
-		{"a conversion binds the overload of its return type", appCast(0x08), depCrossAsm(), true},
-		{"a conversion does not bind an overload of another return type", appCast(0x0E), depCrossAsm(), false},
+		{"class virtual reaches the override", appCrossAsm(true, "Base", "Run", "Arg"), depCrossAsm(), true, false},
+		{"interface call reaches the implementation", appCrossAsm(true, "IRun", "Run", "Arg"), depCrossAsm(), true, false},
+		{"direct call binds the declared method", appCrossAsm(false, "Sink", "take", "Arg"), depCrossAsm(), true, false},
+		{"a parameter naming another type binds nothing", appCrossAsm(false, "Sink", "take", "Other"), depCrossAsm(), false, false},
+		{"an undecoded parameter binds every overload of that arity", appCrossAsm(false, "Sink", "pick", ""), depCrossAsm(), true, false},
+		{"a generic base's virtual call reaches the override in a closed subclass", appCallsStart(), depGenericOverride(), true, false},
+		{"a conversion binds the overload of its return type", appCast(0x08), depCrossAsm(), true, false},
+		{"a conversion does not bind an overload of another return type", appCast(0x0E), depCrossAsm(), false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -151,9 +152,8 @@ func TestReachability_CrossAssemblySignatures(t *testing.T) {
 			if got := len(res.Paths) > 0; got != c.wantPath {
 				t.Fatalf("path = %v, want %v (Searched=%v, partiality=%+v)", got, c.wantPath, res.Searched, res.Partiality)
 			}
-			// Neither a reached sink nor an unbound call is ever a searched one.
-			if slices.Contains(res.Searched, sink) {
-				t.Fatalf("Searched = %v, want %s unsettled", res.Searched, sink)
+			if got := slices.Contains(res.Searched, sink); got != c.wantSearched {
+				t.Fatalf("searched = %v, want %v (Searched=%v, partiality=%+v)", got, c.wantSearched, res.Searched, res.Partiality)
 			}
 		})
 	}

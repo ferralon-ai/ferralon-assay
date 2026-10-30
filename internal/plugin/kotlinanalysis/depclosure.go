@@ -58,6 +58,13 @@ type depClosure struct {
 	// beside it, or a JVM launch option the lanes do not model is set
 	// (javaanalysis.LaunchOptionReasons).
 	reasons []string
+	// listed is set when the loaded classes are every class the build's runtime classpath
+	// defines, as javaanalysis's reachClosure.Listed: the graph lists the runtime classpath
+	// (javaanalysis.RuntimeListed), every entry was listed, every class each JAR holds was
+	// read, no two JARs define one class (the copy kept is not the one first on the
+	// classpath), and the runtime is a recorded JDK after 8, whose extension directories add
+	// to the classpath. The launch is the caller's to check.
+	listed bool
 }
 
 // loadDependencyClosure loads every runtime JAR the build graph names. firstParty names classes
@@ -91,6 +98,8 @@ func loadDependencyClosure(buildDir string, firstParty map[string]bool, opts ...
 
 	definedBy := map[string]string{} // class binary name -> the GAV that defined it
 	shadowed := map[string]bool{}    // "<kept gav>|<shadowed gav>" pairs already reported
+	unread := false                  // a JAR could not be opened or holds a class that failed to parse
+	duplicate := false               // two JARs define one class
 	for _, j := range load {
 		gav := j.GAV()
 		blind := func(reason, path string) {
@@ -115,10 +124,12 @@ func loadDependencyClosure(buildDir string, firstParty map[string]bool, opts ...
 		}
 		jr, err := classfile.LoadJarBytes(data)
 		if err != nil {
+			unread = true
 			blind(plugin.PartialReasonToolFailure, gav)
 			continue
 		}
 		if len(jr.Failed) > 0 {
+			unread = true
 			// Unparsed classes are absent from the engine, so a call into one is already an
 			// unloaded_dependency hazard; the scoped reason discloses the gap and bounds it.
 			blind(plugin.PartialReasonToolFailure, gav+": "+jr.Failed[0])
@@ -133,11 +144,13 @@ func loadDependencyClosure(buildDir string, firstParty map[string]bool, opts ...
 					shadowed[key] = true
 					blind(partialReasonDuplicateClass, fmt.Sprintf("%s shadowed by %s: %s", gav, prev, c.Name))
 				}
+				duplicate = true
 				continue
 			}
 			definedBy[c.Name] = gav
 			dc.classes = append(dc.classes, c)
 		}
 	}
+	dc.listed = javaanalysis.RuntimeListed(g, buildDir) && g.RuntimeJDK() > 8 && !dc.cp.Unlisted && !unread && !duplicate
 	return dc
 }

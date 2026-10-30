@@ -117,6 +117,10 @@ type Engine struct {
 	ownerOf    map[*assembly.MethodDef]typeEntry
 	typeByName map[string][]typeEntry            // "Namespace.Name" -> in-set types (scope-disambiguated on collision)
 	subOf      map[*assembly.TypeDef][]typeEntry // direct subclasses + interface implementers (for re-entry)
+	types      []typeEntry                       // every in-set type, in load order
+	entryOf    map[*assembly.TypeDef]typeEntry
+
+	fw fwModel // the shared-framework model; inactive until SetFramework
 
 	// Test seams for the barrier-5 mutation controls. Production leaves BOTH false.
 	// disableInitClosure removes the whole .cctor channel (proves the closure is
@@ -140,6 +144,7 @@ func NewEngine(asms []*assembly.Assembly) *Engine {
 		ownerOf:    map[*assembly.MethodDef]typeEntry{},
 		typeByName: map[string][]typeEntry{},
 		subOf:      map[*assembly.TypeDef][]typeEntry{},
+		entryOf:    map[*assembly.TypeDef]typeEntry{},
 	}
 	// Pass 1: index types and methods.
 	for _, a := range asms {
@@ -149,7 +154,10 @@ func NewEngine(asms []*assembly.Assembly) *Engine {
 		for i := range a.Types {
 			td := &a.Types[i]
 			te := typeEntry{asm: a, td: td}
-			e.typeByName[typeKeyName(td.Namespace, td.Name)] = append(e.typeByName[typeKeyName(td.Namespace, td.Name)], te)
+			e.types = append(e.types, te)
+			e.entryOf[td] = te
+			q := a.QualifiedName(td)
+			e.typeByName[q] = append(e.typeByName[q], te)
 			for _, m := range td.Methods {
 				sigKey := ""
 				if sig, err := DecodeMethodSig(m.SigBlob, a); err == nil {
@@ -207,24 +215,35 @@ func (e *Engine) keyOf(m *assembly.MethodDef) (MethodKey, bool) {
 // It returns resolved NODES rather than bare MethodKeys (the dispatch's nominal shape):
 // nodes preserve pointer identity, so a signature-key collision cannot silently merge
 // two distinct callees. Each node's .key is its MethodKey.
-func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly) (targets []*methodNode, hazard bool, why string) {
+func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly, ctx *searchCtx) (out edgeOut) {
 	// Name-decided channels first — reflection and the DLR resolve their real callee
 	// at runtime from a string/handle, invisible to a static graph. Matched on the
 	// callee's owner+name via the resolved MethodRef, BEFORE CHA (whose out-of-set
 	// resolution would otherwise mask them as a plain leaf).
 	owner, name := e.calleeName(fromAsm, edge.Token)
 	if w, ok := reflectionHazard(owner, name); ok {
-		return nil, true, w
+		return edgeOut{hazard: true, why: w}
 	}
 	if w, ok := dynamicHazard(owner); ok {
-		return nil, true, w + "::" + name
+		return edgeOut{hazard: true, why: w + "::" + name}
+	}
+	if o, ok := e.frameworkEdge(edge, fromAsm, ctx); ok {
+		return o
 	}
 
 	dr := e.cha.ResolveDispatch(fromAsm, edge)
 	if dr.State == assembly.DispatchBoundary {
 		// calli (indirect/unmanaged), jmp tail-transfer, an out-of-set callvirt/interface
 		// RECEIVER (open-world overrides), or an unresolvable token — all open-world.
-		return nil, true, "unresolved-boundary: " + dr.Reason
+		return edgeOut{hazard: true, why: "unresolved-boundary: " + dr.Reason}
+	}
+	// A receiver that inherits the slot's body from an out-of-set base runs that body.
+	for _, b := range dr.OutOfSetBases {
+		if e.isFrameworkType(b.Asm, b.Ref) {
+			out.fw = true
+			continue
+		}
+		out.flag("inherited implementation from out-of-set base " + typeRefDisplay(b.Ref) + ": body unreadable, may re-enter")
 	}
 
 	// DispatchResolved / DispatchConservative: enumerate the concrete targets.
@@ -251,31 +270,47 @@ func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly) 
 			// reentryHazard recognizer below is retained ONLY to sharpen the diagnostic `why`
 			// when it already names a specific callback shape; it no longer gates the hazard
 			// (its old in-set-only coverage was exactly the under-approximation this closes).
-			hazard = true
-			if why == "" {
-				if w, ok := e.reentryHazard(fromAsm, edge.Token); ok {
-					why = w
-				} else {
-					why = "out-of-set call: callee body unreadable, may re-enter"
-				}
+			if w, ok := e.reentryHazard(fromAsm, edge.Token); ok {
+				out.flag(w)
+			} else {
+				out.flag("out-of-set call: callee body unreadable, may re-enter")
 			}
 			continue
 		}
 		// In-set target with a body candidate.
 		if isNativeOrPInvoke(tgt.Method) {
+			if e.fw.active() && e.isDelegateRuntimeMethod(tgt) {
+				// The runtime's delegate plumbing: Invoke runs the method an ldftn/ldvirtftn
+				// captured, and every capture in code the search reaches is itself an edge.
+				continue
+			}
 			// DllImport/extern or runtime-implemented: the callee body is opaque native
 			// code, not IL we can walk. Treat as a frontier hazard, not a clean leaf.
-			hazard = true
-			if why == "" {
-				why = "p/invoke/native target (opaque body): " + tgt.OwnerDisplay + "::" + tgt.Name
-			}
+			out.flag("p/invoke/native target (opaque body): " + tgt.OwnerDisplay + "::" + tgt.Name)
 			continue
 		}
 		if n := e.nodes[tgt.Method]; n != nil {
-			targets = append(targets, n)
+			out.targets = append(out.targets, n)
 		}
 	}
-	return targets, hazard, why
+	return out
+}
+
+// edgeOut is one call site's resolution: the in-set callees to enqueue, whether the
+// site is a completeness hazard (and the first reason), and whether it hands control to
+// shared-framework code (which can call back into instantiated application types).
+type edgeOut struct {
+	targets []*methodNode
+	hazard  bool
+	why     string
+	fw      bool
+}
+
+func (o *edgeOut) flag(why string) {
+	o.hazard = true
+	if o.why == "" {
+		o.why = why
+	}
 }
 
 // reentryHazard reports whether an out-of-set callee (named by tok in fromAsm) takes a
@@ -367,6 +402,28 @@ func (e *Engine) Reach(ingress, sink MethodKey) Result {
 // SCIP id covers) is searched: not_exploitable means no member of the set is reachable.
 // Every key must be present in the loaded set, else the search is undetermined.
 func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
+	return e.reachFrom(e.byKey[ingress], "ingress not found in loaded set: "+ingress.String(), sinks)
+}
+
+// ReachFromAny is ReachAny from a set of ingresses searched together: a path from any of
+// them is a candidate, a hazard on the joint frontier with no path is undetermined. Keys
+// absent from the loaded set are skipped; when none is present the search never ran and
+// the result is undetermined.
+func (e *Engine) ReachFromAny(ingresses []MethodKey, sinks []MethodKey) Result {
+	var starts []*methodNode
+	seen := map[*methodNode]bool{}
+	for _, k := range ingresses {
+		for _, n := range e.byKey[k] {
+			if !seen[n] {
+				seen[n] = true
+				starts = append(starts, n)
+			}
+		}
+	}
+	return e.reachFrom(starts, "no ingress found in loaded set", sinks)
+}
+
+func (e *Engine) reachFrom(startNodes []*methodNode, noIngress string, sinks []MethodKey) Result {
 	res := Result{}
 	var sinkNodes []*methodNode
 	missing := ""
@@ -378,13 +435,12 @@ func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 		sinkNodes = append(sinkNodes, nodes...)
 	}
 	res.SinkPresent = len(sinks) > 0 && missing == ""
-	startNodes := e.byKey[ingress]
 
 	if len(startNodes) == 0 {
 		// The search never began; absence proves nothing.
 		res.Verdict = Undetermined
 		res.HazardOnFrontier = true
-		res.HazardWhy = "ingress not found in loaded set: " + ingress.String()
+		res.HazardWhy = noIngress
 		return res
 	}
 	if !res.SinkPresent {
@@ -399,22 +455,79 @@ func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 	for _, n := range sinkNodes {
 		sinkSet[n] = true
 	}
+	ctx := e.ctxFor(startNodes)
+	a := e.search(startNodes, sinkSet, ctx)
+	res.Reached = a.reached
+	switch {
+	case a.found != nil:
+		res.Verdict = ReachableCandidate
+		res.Path = a.path
+		res.HazardOnFrontier, res.HazardWhy = a.hazard, a.why
+		return res
+	case a.hazard:
+		res.Verdict = Undetermined
+		res.HazardOnFrontier, res.HazardWhy = true, a.why
+		return res
+	case !a.fw:
+		res.Verdict = NotExploitable
+		return res
+	}
+	// The search handed control to shared-framework code, which can call back into any
+	// application type it was given an instance of: the re-entry roots. NE holds only if
+	// the sink is unreachable from them too.
+	b := e.reentrySearch(sinks, sinkSet, ctx)
+	switch {
+	case b.found != nil:
+		res.Verdict = Undetermined
+		res.HazardOnFrontier = true
+		res.HazardWhy = "higher-order re-entry: framework code can call " + b.path[0].String() + ", which reaches the sink (" + PathString(b.path) + ")"
+	case b.hazard:
+		res.Verdict = Undetermined
+		res.HazardOnFrontier = true
+		res.HazardWhy = "higher-order re-entry: " + b.why
+	default:
+		res.Verdict = NotExploitable
+	}
+	return res
+}
+
+// searchOut is one breadth-first search's outcome: the first sink found (with its path
+// from a start node), the first completeness hazard on the frontier, whether any edge
+// handed control to framework code, and the visited count.
+type searchOut struct {
+	found   *methodNode
+	path    []MethodKey
+	hazard  bool
+	why     string
+	fw      bool
+	reached int
+}
+
+// search runs the BFS from starts over resolveTargets edges + the .cctor init closure,
+// stopping at the first node of sinkSet. visit, when non-nil, sees every node dequeued
+// (the RTA prepass collects instantiation facts through it).
+func (e *Engine) search(starts []*methodNode, sinkSet map[*methodNode]bool, ctx *searchCtx) searchOut {
+	return e.walk(starts, sinkSet, ctx, nil)
+}
+
+func (e *Engine) walk(starts []*methodNode, sinkSet map[*methodNode]bool, ctx *searchCtx, visit func(*methodNode, *assembly.MethodBody)) searchOut {
+	var out searchOut
 	startSet := map[*methodNode]bool{}
-	for _, n := range startNodes {
+	for _, n := range starts {
 		startSet[n] = true
 	}
-
 	visited := map[*methodNode]bool{}
 	prev := map[*methodNode]*methodNode{}
 	var queue []*methodNode
 	var found *methodNode
 
 	markHazard := func(why string) {
-		res.HazardOnFrontier = true
-		if res.HazardWhy == "" {
-			res.HazardWhy = why
+		out.hazard = true
+		if out.why == "" {
+			out.why = why
 		}
 	}
+	markFramework := func() { out.fw = true }
 	enqueue := func(from, t *methodNode) {
 		if t == nil {
 			return
@@ -431,13 +544,13 @@ func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 		}
 	}
 
-	for _, s := range startNodes {
+	for _, s := range starts {
 		if !visited[s] {
 			visited[s] = true
 			queue = append(queue, s)
 		}
-		if sinkSet[s] {
-			found = s // the ingress itself is the sink
+		if sinkSet[s] && found == nil {
+			found = s // the start itself is the sink
 		}
 	}
 
@@ -445,17 +558,23 @@ func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 		cur := queue[0]
 		queue = queue[1:]
 		body := e.bodyOf(cur)
+		if visit != nil {
+			visit(cur, body)
+		}
 		if body == nil {
 			// No walkable IL (abstract, or a native/pinvoke node reached as a callee):
 			// a leaf. Its opacity as a TARGET is charged in resolveTargets, caller-side.
 			continue
 		}
 		for _, edge := range body.Edges {
-			targets, hazard, why := e.resolveTargets(edge, cur.asm)
-			if hazard {
-				markHazard(why)
+			o := e.resolveTargets(edge, cur.asm, ctx)
+			if o.hazard {
+				markHazard(o.why)
 			}
-			for _, t := range targets {
+			if o.fw {
+				markFramework()
+			}
+			for _, t := range o.targets {
 				enqueue(cur, t)
 			}
 			if found != nil {
@@ -464,25 +583,19 @@ func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 		}
 		if found == nil {
 			for _, tr := range body.InitTriggers {
-				e.handleTrigger(cur, tr, enqueue, markHazard)
+				e.handleTrigger(cur, tr, enqueue, markHazard, markFramework)
 				if found != nil {
 					break
 				}
 			}
 		}
 	}
-	res.Reached = len(visited)
-
-	switch {
-	case found != nil:
-		res.Verdict = ReachableCandidate
-		res.Path = reconstruct(prev, startSet, found)
-	case res.HazardOnFrontier:
-		res.Verdict = Undetermined
-	default:
-		res.Verdict = NotExploitable
+	out.reached = len(visited)
+	if found != nil {
+		out.found = found
+		out.path = reconstruct(prev, startSet, found)
 	}
-	return res
+	return out
 }
 
 // handleTrigger walks the .cctor type-init closure for one init-trigger site. A .cctor
@@ -501,19 +614,22 @@ func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 //     HAZARD, not a clean leaf. Reading it as a leaf is exactly the hole (a base .cctor
 //     we cannot see might reach the sink). beforefieldinit relaxes WHEN the CLR runs a
 //     .cctor, not WHETHER — the path is modelled regardless; over-approx is sound.
-func (e *Engine) handleTrigger(cur *methodNode, tr assembly.InitTrigger, enqueue func(from, t *methodNode), markHazard func(string)) {
+func (e *Engine) handleTrigger(cur *methodNode, tr assembly.InitTrigger, enqueue func(from, t *methodNode), markHazard func(string), markFramework func()) {
 	if e.disableInitClosure {
 		return // test seam: prove the whole .cctor channel is load-bearing.
 	}
-	te, inSet, resolvable := e.triggerType(cur.asm, tr.Token)
+	te, inSet, outRef, resolvable := e.triggerType(cur.asm, tr.Token)
 	if !resolvable {
-		// The declaring type of the trigger could not be resolved (e.g. a local Field
-		// token with no parsed owner): a .cctor we cannot enqueue is a path we cannot
-		// rule out. Conservative hazard.
+		// The declaring type of the trigger could not be resolved: a .cctor we cannot
+		// enqueue is a path we cannot rule out. Conservative hazard.
 		markHazard("unresolved type-init trigger (declaring type unknown)")
 		return
 	}
 	if !inSet {
+		if e.isFrameworkType(cur.asm, outRef) {
+			markFramework() // a framework type's initializer is platform code
+			return
+		}
 		// The triggered type itself is out-of-set: its .cctor is unreadable. Hazard.
 		markHazard("out-of-set type-init trigger: unreadable .cctor")
 		return
@@ -537,6 +653,10 @@ func (e *Engine) handleTrigger(cur *methodNode, tr assembly.InitTrigger, enqueue
 		}
 		base, ok := e.lookupTypeRef(c.asm, ext)
 		if !ok {
+			if e.isFrameworkType(c.asm, ext) {
+				markFramework() // a framework base's initializer is platform code
+				return
+			}
 			// Base type is out-of-set: its .cctor is unreadable ⇒ hazard, NOT a clean
 			// leaf (the reading that reopens cobalt's twice-confirmed hole).
 			markHazard("out-of-set base type in .cctor init closure: " + typeRefDisplay(ext))
@@ -559,34 +679,38 @@ func (e *Engine) cctorOf(te typeEntry) *methodNode {
 
 // triggerType resolves the declaring type an init-trigger token initializes.
 //   - a MethodDef trigger (newobj/static-call of an in-set method) → its owner type.
-//   - a MemberRef trigger → its parent type (in-set or, resolvably, out-of-set).
+//   - a MemberRef trigger → its parent type (in-set or, resolvably, out-of-set, in which
+//     case outRef names it).
 //   - a MethodSpec → its open method, recursively.
-//   - a local Field token → the Field->Type ownership is not parsed, so the declaring
-//     type is unknown (resolvable=false → conservative hazard at the caller).
-func (e *Engine) triggerType(asm *assembly.Assembly, tok assembly.Token) (te typeEntry, inSet, resolvable bool) {
+//   - a local Field token → the type whose field list holds it.
+func (e *Engine) triggerType(asm *assembly.Assembly, tok assembly.Token) (te typeEntry, inSet bool, outRef assembly.TypeRef, resolvable bool) {
 	switch tok.Table() {
 	case tblMethodDef:
 		if m := asm.MethodByRID(tok.RID()); m != nil {
 			if oe, ok := e.ownerOf[m]; ok {
-				return oe, true, true
+				return oe, true, assembly.TypeRef{}, true
 			}
 		}
 	case tblMemberRef:
 		if mr := asm.MemberRef(tok.RID()); mr != nil {
 			tr := asm.TypeRefFor(mr.ParentToken)
 			if oe, ok := e.lookupTypeRef(asm, tr); ok {
-				return oe, true, true
+				return oe, true, assembly.TypeRef{}, true
 			}
-			return typeEntry{}, false, true // out-of-set parent, but a known identity
+			return typeEntry{}, false, tr, true // out-of-set parent, but a known identity
 		}
 	case tblMethodSpec:
 		if int(tok.RID()) < len(asm.MethodSpecs) {
 			return e.triggerType(asm, asm.MethodSpecs[tok.RID()].Method)
 		}
 	case tblField:
-		return typeEntry{}, false, false // no Field->Type ownership in the model
+		if td := asm.FieldOwner(tok.RID()); td != nil {
+			if oe, ok := e.entryOf[td]; ok {
+				return oe, true, assembly.TypeRef{}, true
+			}
+		}
 	}
-	return typeEntry{}, false, false
+	return typeEntry{}, false, assembly.TypeRef{}, false
 }
 
 // calleeName resolves a call operand token to its callee's (owner display, method
@@ -602,7 +726,9 @@ func (e *Engine) calleeName(asm *assembly.Assembly, tok assembly.Token) (owner, 
 		}
 	case tblMemberRef:
 		if mr := asm.MemberRef(tok.RID()); mr != nil {
-			return mr.Type, mr.Name // mr.Type is the parent's "Namespace.Name" display
+			// The parent's nesting-qualified name; a generic instantiation is named by its
+			// generic type, so a hazard on a generic owner is not missed.
+			return asm.TypeRefFor(mr.ParentToken).Qualified(), mr.Name
 		}
 	case tblMethodSpec:
 		if int(tok.RID()) < len(asm.MethodSpecs) {
@@ -632,25 +758,34 @@ func calleeSigBlob(asm *assembly.Assembly, tok assembly.Token) []byte {
 	return nil
 }
 
-// lookupTypeRef resolves a TypeRef to an in-set type. A TypeSpec (generic
-// instantiation) or a null token is not an open-type node here → not in-set. On a
-// namespace.name collision across assemblies, the resolution scope disambiguates.
+// lookupTypeRef resolves a TypeRef read in asm to an in-set type. A generic
+// instantiation resolves to its generic type; a null token is not in-set. Types are keyed
+// by their nesting-qualified name; on a collision across assemblies, a TypeDef token picks
+// asm's own type and a TypeRef picks the assembly its scope chain names.
 func (e *Engine) lookupTypeRef(asm *assembly.Assembly, tr assembly.TypeRef) (typeEntry, bool) {
-	if tr.Token.IsNull() || tr.IsSpec {
+	if tr.IsSpec {
+		if tr.Def == nil {
+			return typeEntry{}, false
+		}
+		tr = *tr.Def
+	}
+	if tr.Token.IsNull() {
 		return typeEntry{}, false
 	}
-	cands := e.typeByName[typeKeyName(tr.Namespace, tr.Name)]
+	cands := e.typeByName[tr.Qualified()]
 	switch len(cands) {
 	case 0:
 		return typeEntry{}, false
 	case 1:
 		return cands[0], true
 	}
-	if tr.Scope != "" {
-		for _, c := range cands {
-			if c.asm.Name == tr.Scope {
-				return c, true
-			}
+	want := tr.ScopeAssembly()
+	if tr.Token.Table() == 0x02 && asm != nil { // a TypeDef token names asm's own type
+		want = asm.Name
+	}
+	for _, c := range cands {
+		if c.asm.Name == want {
+			return c, true
 		}
 	}
 	return cands[0], true

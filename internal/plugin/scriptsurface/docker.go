@@ -96,6 +96,24 @@ func (st *dockerStage) clear(v *Veto, f string) bool {
 	return true
 }
 
+// linked reports whether a directory copied from the build context may put a symlink at or
+// above the container directory d, so the directory a process reaches there is not the one d
+// names.
+func (st *dockerStage) linked(v *Veto, d string) bool {
+	for _, e := range st.events {
+		if !e.dir || e.taint || e.all || e.dst != "/" && d != e.dst && !strings.HasPrefix(d, e.dst+"/") {
+			continue
+		}
+		rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(d, e.dst), "/"))
+		for _, h := range e.hosts {
+			if v.linked(filepath.Join(h, rel)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (st *dockerStage) taintAll() { st.events = append(st.events, dockerEvent{all: true}) }
 
 // taintCmd taints everything for a command whose words were mentioned.
@@ -438,13 +456,22 @@ func (c *dockerCursor) Beside(name, p string) []string {
 }
 
 func (c *dockerCursor) Enclosing(name string) ([]string, bool) {
-	if !c.known {
+	if !c.known || !c.mountsKnown {
 		return nil, false
 	}
 	var found []string
 	near := false
 	for d := c.dir; ; d = path.Dir(d) {
-		hosts, state := c.st.lookup(c.v, path.Join(d, name))
+		f := path.Join(d, name)
+		for _, m := range c.mounts {
+			if m == "/" || m == f || strings.HasPrefix(f, m+"/") {
+				return nil, false
+			}
+		}
+		if c.st.linked(c.v, d) {
+			return nil, false
+		}
+		hosts, state := c.st.lookup(c.v, f)
 		switch state {
 		case pathTainted:
 			return nil, false

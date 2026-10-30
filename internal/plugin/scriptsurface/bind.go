@@ -1,6 +1,8 @@
 package scriptsurface
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,9 +39,12 @@ type Binder interface {
 	// must stay inside root from a file reached through no symlink. nil when any is not.
 	Beside(name, p string) []string
 	// Enclosing returns every file named name in the directories above each file Nearest(name)
-	// returns, up to the top of the build, each read here and unchanged. In the tree, each
-	// file Nearest(name) returns must be reached through no symlink. ok is false when
-	// Nearest(name) is nil or one may be there that is not read here.
+	// returns, up to the top of the build, each read here and unchanged. Each directory the
+	// command runs in, and each file Nearest(name) returns, must be reached through no
+	// symlink, so the directories a tool walks up are the ones named here; in a Dockerfile, no
+	// mount may cover any place a file of that name is looked for. ok is false when
+	// Nearest(name) is nil, any of that does not hold, or one may be there that is not read
+	// here.
 	Enclosing(name string) (found []string, ok bool)
 }
 
@@ -278,6 +283,11 @@ func (c *hostCursor) Enclosing(name string) ([]string, bool) {
 	if hits == nil {
 		return nil, false
 	}
+	for _, d := range c.dirs {
+		if c.v.linked(d) {
+			return nil, false
+		}
+	}
 	var found []string
 	for _, h := range hits {
 		if !c.v.unlinked(h) {
@@ -462,6 +472,32 @@ func (v *Veto) unlinked(p string) bool {
 		}
 	}
 	return true
+}
+
+// linked reports whether some part of p, inside root, that exists is a symlink, or may be:
+// the directory a process reaches there is then not the one p names.
+func (v *Veto) linked(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	if rel == "." {
+		return false
+	}
+	at := v.root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		at = filepath.Join(at, part)
+		fi, err := os.Lstat(at)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return false
+		case err != nil:
+			return true
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return true
+		}
+	}
+	return false
 }
 
 func isDir(p string) bool {

@@ -1,6 +1,9 @@
 package pythonanalysis
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // uv sync, poetry install and pdm sync build every local directory the lock names, a path
 // dependency or a uv workspace member, through that directory's own backend, so code from the
@@ -113,7 +116,7 @@ func TestResolveVersions_LocalBuilds(t *testing.T) {
 		{"pdm, file url", "pdm", project, pdmLock("url = \"file:///${PROJECT_ROOT}/lib\""), nil, "", false},
 		{"pdm, subdirectory with setup.py", "pdm", project, pdmLock("path = \"./repo\"\nsubdirectory = \"lib\""),
 			map[string]string{"repo/pyproject.toml": backend("uv_build"), "repo/lib/pyproject.toml": backend("setuptools.build_meta"), "repo/lib/setup.py": setupPy}, "", false},
-		{"pdm, run from a member over its own lock", "pdm", project + "[tool.pdm.workspace]\npackages = [\"packages/*\"]\n", pdmLock("path = \"./lib\""),
+		{"pdm, run from a member over its own lock", "pdm", project + "[tool.pdm.workspace]\nmembers = [\"packages/*\"]\n", pdmLock("path = \"./lib\""),
 			map[string]string{"lib/pyproject.toml": backend("flit_core.buildapi"),
 				"packages/lib/pyproject.toml": "[project]\nname = \"m\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n",
 				"packages/lib/pdm.lock":       "[metadata]\ngroups = [\"default\"]\n\n" + jinjaPy, "packages/lib/install.sh": "#!/bin/sh\npdm sync\n"}, "", false},
@@ -223,6 +226,100 @@ func TestResolveVersions_LocalBuildsAbove(t *testing.T) {
 				files[k] = v
 			}
 			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+		})
+	}
+}
+
+// A build also runs code from the tree through what it reads beyond the lock: a build
+// requirement uv lowers through tool.uv.sources or one written as a direct reference, a
+// pylock.toml pdm prefers to pdm.lock, a manifest mounted into the image, or the parents of a
+// directory reached through a symlink, which a tool walks physically. Each withholds; the
+// same files without the channel still resolve.
+func TestResolveVersions_BuildInputs(t *testing.T) {
+	const (
+		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
+		setupPy = "import subprocess\nsubprocess.run([\"pip\", \"install\", \"jinja2==3.1.2\"])\n"
+		jinjaUV = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+		jinjaPy = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n"
+		uvBuild = "[build-system]\nrequires = [\"uv_build\"]\nbuild-backend = \"uv_build\"\n"
+		helper  = "[build-system]\nrequires = [\"uv_build\", \"helper\"]\nbuild-backend = \"uv_build\"\n"
+		pylock  = "lock-version = \"1.0\"\ncreated-by = \"pdm\"\n[[packages]]\nname = \"jinja2\"\nversion = \"3.1.2\"\n"
+		pdmLock = "[metadata]\ngroups = [\"default\"]\n\n" + jinjaPy
+		uvSync  = "#!/bin/sh\nuv sync --locked\n"
+		pdmPy   = project + "[tool.pdm]\ndistribution = false\n[tool.pdm.lock]\nformat = \"pylock\"\n"
+	)
+	uvLock := func(extra string) string {
+		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n\n" + extra + jinjaUV
+	}
+	lib := uvLock("[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\nsource = { directory = \"lib\" }\n\n")
+	evil := uvLock("[[package]]\nname = \"evil\"\nversion = \"0.1.0\"\nsource = { editable = \"evil\" }\n\n")
+	member := "[project]\nname = \"lib\"\nversion = \"1\"\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		links map[string]string // a symlink at each key to the path its value names from root
+		want  bool              // jinja2 resolved
+	}{
+		{"uv, root build requirement in tool.uv.sources", map[string]string{"pyproject.toml": project + helper +
+			"[tool.uv.sources]\nhelper = { path = \"helper\" }\n", "uv.lock": uvLock(""), "install.sh": uvSync, "helper/setup.py": setupPy}, nil, false},
+		{"uv, member build requirement in its tool.uv.sources", map[string]string{"pyproject.toml": project, "uv.lock": lib, "install.sh": uvSync,
+			"lib/pyproject.toml": member + helper + "[tool.uv.sources]\nhelper = { path = \"../helper\" }\n", "helper/setup.py": setupPy}, nil, false},
+		{"uv, member build requirement in the root's tool.uv.sources", map[string]string{"pyproject.toml": project +
+			"[tool.uv.sources]\nHelper_ = { path = \"helper\" }\n", "uv.lock": lib, "install.sh": uvSync,
+			"lib/pyproject.toml": member + helper, "helper/setup.py": setupPy}, nil, false},
+		{"uv, member build requirement as a direct reference", map[string]string{"pyproject.toml": project, "uv.lock": lib, "install.sh": uvSync,
+			"lib/pyproject.toml": member + "[build-system]\nrequires = [\"uv_build\", \"helper @ file:///app/helper\"]\nbuild-backend = \"uv_build\"\n",
+			"helper/setup.py":    setupPy}, nil, false},
+		{"uv, member build requirements not a list", map[string]string{"pyproject.toml": project, "uv.lock": lib, "install.sh": uvSync,
+			"lib/pyproject.toml": member + "[build-system]\nrequires = \"uv_build\"\nbuild-backend = \"uv_build\"\n"}, nil, false},
+		{"uv, extra-build-dependencies in the manifest", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv.extra-build-dependencies]\napp = [\"helper\"]\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, extra-build-dependencies in uv.toml", map[string]string{"pyproject.toml": project + uvBuild,
+			"uv.toml": "[extra-build-dependencies]\napp = [\"helper\"]\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"pdm, pylock.toml written by the script", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
+			"ci/lock.data": pylock, "install.sh": "#!/bin/sh\ncp ci/lock.data pylock.toml\npdm sync\n"}, nil, false},
+		{"pdm, pylock.toml copied into the image", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock, "ci/lock.data": pylock,
+			"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml pdm.lock ./\nCOPY ci/lock.data pylock.toml\nRUN pdm sync\n"}, nil, false},
+		{"pdm, absolute subdirectory", map[string]string{"pyproject.toml": project, "install.sh": "#!/bin/sh\npdm sync\n",
+			"pdm.lock":                "[metadata]\ngroups = [\"default\"]\n\n[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\npath = \"./repo\"\nsubdirectory = \"/abs\"\n\n" + jinjaPy,
+			"repo/abs/pyproject.toml": member + "[build-system]\nrequires = [\"x\"]\nbuild-backend = \"flit_core.buildapi\"\n"}, nil, false},
+		{"uv, run through a symlinked directory", map[string]string{"app/pyproject.toml": project + uvBuild, "app/uv.lock": uvLock(""),
+			"install.sh": "#!/bin/sh\ncd app/link\nuv sync --locked\n", "ws/pyproject.toml": project + "[tool.uv.workspace]\nmembers = []\n",
+			"ws/uv.lock": evil, "ws/m/x.txt": "x\n", "ws/evil/setup.py": setupPy}, map[string]string{"app/link": "ws/m"}, false},
+		{"uv, image workdir through a symlinked directory", map[string]string{"app/pyproject.toml": project + uvBuild, "app/uv.lock": uvLock(""),
+			"Dockerfile":        "FROM python:3.12\nWORKDIR /src\nCOPY . .\nWORKDIR /src/app/link\nRUN uv sync --locked\n",
+			"ws/pyproject.toml": project + "[tool.uv.workspace]\nmembers = []\n", "ws/uv.lock": evil, "ws/m/x.txt": "x\n", "ws/evil/setup.py": setupPy},
+			map[string]string{"app/link": "ws/m"}, false},
+		{"uv, workspace root mounted above a member", map[string]string{"packages/lib/pyproject.toml": project + uvBuild, "packages/lib/uv.lock": uvLock(""),
+			"Dockerfile": "FROM python:3.12\nCOPY packages/lib /app/packages/lib\nWORKDIR /app/packages/lib\n" +
+				"RUN --mount=type=bind,source=ci/pyproject.toml,target=/app/pyproject.toml --mount=type=bind,source=ci/uv.lock,target=/app/uv.lock " +
+				"--mount=type=bind,source=ci/evil,target=/app/evil uv sync --locked\n",
+			"ci/pyproject.toml": project + "[tool.uv.workspace]\nmembers = [\"packages/*\"]\n", "ci/uv.lock": evil, "ci/evil/setup.py": setupPy}, nil, false},
+		{"poetry, manifest mounted over the one copied", map[string]string{"pyproject.toml": project, "poetry.lock": jinjaPy,
+			"ci/pyproject.toml": project + "[tool.poetry]\nbuild = \"build.py\"\n",
+			"Dockerfile":        "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN --mount=type=bind,source=ci/pyproject.toml,target=/app/pyproject.toml poetry install\n"}, nil, false},
+
+		{"uv, build requirements from the index beside unrelated sources", map[string]string{"pyproject.toml": project + helper +
+			"[tool.uv.sources]\nother = { path = \"other\" }\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, true},
+		{"uv, uv.toml that holds no build requirements, which the walk does not read", map[string]string{"pyproject.toml": project + uvBuild,
+			"uv.toml": "native-tls = true\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"pdm, pylock format with none written", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
+			"install.sh": "#!/bin/sh\npdm sync\n"}, nil, true},
+		{"uv, a symlink off the path the build runs in", map[string]string{"app/pyproject.toml": project + uvBuild, "app/uv.lock": uvLock(""),
+			"install.sh": "#!/bin/sh\ncd app\nuv sync --locked\n", "ws/x.txt": "x\n"}, map[string]string{"docs": "ws"}, true},
+		{"uv, a cache mounted in the image", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
+			"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,target=/root/.cache/uv uv sync --locked\n"}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTree(t, tt.files)
+			for l, target := range tt.links {
+				link(t, root, l, filepath.Join(root, target))
+			}
+			r := resolveVersion(t, root, "jinja2")
 			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
 				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
 			}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"go/ast"
 	"go/build/constraint"
 	"go/parser"
@@ -200,8 +201,10 @@ type lofClosure struct {
 	// unres holds the bare identifiers no declaration has.
 	unres []lofRef
 	decls int
-	// excluded is set when the file compiles in no build the refutation describes.
+	// excluded is set when the file compiles in no build the refutation describes; dropped when
+	// that is because it never compiles at all (uncompilable).
 	excluded bool
+	dropped  bool
 }
 
 func (c *lofClosure) fail(item string) {
@@ -760,7 +763,175 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 	k.touch(file)
 	k.enter(own)
 	k.drain()
+	if len(out.unres) == 0 || k.stopped {
+		return out
+	}
+	// A bare identifier no declaration has leaves the closure open unless the file that names it
+	// never compiles (uncompilable); then the walk restarts without that file.
+	var drop []string
+	for _, r := range out.unres {
+		if item := w.uncompilable(r.file, r.name); item != "" {
+			out.fail(item)
+			return out
+		}
+		drop = append(drop, r.file.path)
+	}
+	for _, d := range drop {
+		w.dropped[d] = true
+	}
+	for key, p := range w.pkgs {
+		if slices.ContainsFunc(p.files, func(f *lofFile) bool { return w.dropped[f.path] }) {
+			delete(w.pkgs, key)
+		}
+	}
+	if w.dropped[path] {
+		return &lofClosure{excluded: true, dropped: true}
+	}
+	return w.closure(path, pkgPath)
+}
+
+// uncompilable proves that the Go file f, which names the package-level identifier name that no
+// declaration has, compiles in no build: go/types, checking f alone with every import failing,
+// reports "undefined: name", and reports nothing else but failed imports and other identifiers
+// that f's sibling files declare. The identifier is bare: a qualified one names a package the walk
+// reads whole, and is unresolved_name outright.
+//
+// It returns "" when proved, and otherwise what the closure fails closed on: lofVariantTypecheck
+// when go/types reports any other error or not that one, and lofUnresolvedName when the name could
+// come from a file the check does not see:
+//
+//   - f dot-imports a package;
+//   - the package's source set is incomplete: its directory, or a Go file in it, cannot be read or
+//     parsed;
+//   - a file of the package uses cgo (import "C"), whose generated Go declares names no source
+//     file does;
+//   - a Go file in the directory carries a "// Code generated" header or a //go:generate directive,
+//     so the package's source may be generated before the build;
+//   - another file of the package, in any build variant (excluded ones and the ignore tag
+//     included), declares name.
+func (w *lofWorld) uncompilable(f *lofFile, name string) string {
+	if len(f.dots) > 0 || f.pkg.missing != "" || len(f.pkg.errs) > 0 {
+		return lofUnresolvedName
+	}
+	clause := f.ast.Name.Name
+	ents, err := os.ReadDir(filepath.Dir(f.path))
+	if err != nil {
+		return lofUnresolvedName
+	}
+	siblings := map[string]bool{}
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") {
+			continue
+		}
+		full := filepath.Join(filepath.Dir(f.path), n)
+		src, err := os.ReadFile(full)
+		if err != nil {
+			return lofUnresolvedName
+		}
+		if lofGenerated(src) {
+			return lofUnresolvedName
+		}
+		if strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(token.NewFileSet(), full, src, parser.SkipObjectResolution)
+		if err != nil {
+			return lofUnresolvedName
+		}
+		if af.Name.Name != clause {
+			continue
+		}
+		for _, im := range af.Imports {
+			if im.Path.Value == `"C"` {
+				return lofUnresolvedName
+			}
+		}
+		if full == f.path {
+			continue
+		}
+		for _, n := range lofPackageNames(af) {
+			if n == name {
+				return lofUnresolvedName
+			}
+			siblings[n] = true
+		}
+	}
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, f.path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return lofUnresolvedName
+	}
+	confirmed := false
+	other := false
+	conf := types.Config{
+		Importer: lofNoImporter{},
+		Error: func(err error) {
+			te, ok := err.(types.Error)
+			if !ok {
+				other = true
+				return
+			}
+			undef, isUndef := strings.CutPrefix(te.Msg, "undefined: ")
+			switch {
+			case isUndef && undef == name:
+				confirmed = true
+			case isUndef && siblings[undef]:
+			case strings.HasPrefix(te.Msg, "could not import "):
+			default:
+				other = true
+			}
+		},
+	}
+	_, _ = conf.Check(f.pkg.path, fset, []*ast.File{af}, nil)
+	if other || !confirmed {
+		return lofVariantTypecheck
+	}
+	return ""
+}
+
+// lofGenerated reports whether a Go file's source carries a line beginning "// Code generated" or
+// "//go:generate".
+func lofGenerated(src []byte) bool {
+	for _, line := range bytes.Split(src, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("// Code generated")) || bytes.HasPrefix(line, []byte("//go:generate")) {
+			return true
+		}
+	}
+	return false
+}
+
+// lofPackageNames returns the names a file declares at package level.
+func lofPackageNames(af *ast.File) []string {
+	var out []string
+	for _, d := range af.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil {
+				out = append(out, d.Name.Name)
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch spec := spec.(type) {
+				case *ast.ValueSpec:
+					for _, n := range spec.Names {
+						out = append(out, n.Name)
+					}
+				case *ast.TypeSpec:
+					out = append(out, spec.Name.Name)
+				}
+			}
+		}
+	}
 	return out
+}
+
+// lofNoImporter fails every import, so go/types checks a file against its own declarations only.
+type lofNoImporter struct{}
+
+func (lofNoImporter) Import(path string) (*types.Package, error) {
+	return nil, fmt.Errorf("not loaded: %s", path)
 }
 
 // push queues d for walking.

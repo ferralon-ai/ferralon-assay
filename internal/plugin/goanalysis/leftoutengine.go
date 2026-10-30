@@ -203,7 +203,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		cl := w.closure(c.path, c.pkg)
 		closures[c.path] = cl
 		f := &lofFacts{FC: cl.fc, FCStd: cl.fcStd, Dyn: cl.dyn, Vars: cl.vars, Reflect: cl.reflect,
-			Excluded: cl.excluded}
+			Excluded: cl.excluded, Dropped: cl.dropped}
 		links, linkFC := w.links(filepath.Dir(c.path), c.std)
 		for ip := range links {
 			f.Links = append(f.Links, in.id(ip))
@@ -410,3 +410,131 @@ func lofGraph(initial *callgraph.Graph, roots []*ssa.Function) (*callgraph.Graph
 	return vta.CallGraph(fs, v1), fs, cs
 }
 
+// lofRow evaluates the left-out reach test for one refutation: the refuted module and its symbols
+// that count, S (inS). sLoaded is set when one of S's packages is loaded in the build.
+type lofRow struct {
+	e       *lofEngine
+	stdlib  bool
+	inS     func(pkg, name string) bool
+	inPkg   func(pkg string) bool
+	sLoaded bool
+	r0, rT  *lofReach
+}
+
+// lofReach is what reaches S in one graph: R, the functions that reach S (S included), as their
+// symbols; the method names R's functions answer to; and whether R holds a function whose address
+// the slice takes.
+type lofReach struct {
+	syms  map[int32]bool
+	names map[int32]bool
+	addr  bool
+}
+
+func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReach {
+	r := &lofReach{syms: map[int32]bool{}, names: map[int32]bool{}}
+	seen := make([]bool, len(row.e.Nodes))
+	var queue []int32
+	for i, n := range row.e.Nodes {
+		if inSlice(n) && row.inS(row.e.Strs[n.Pkg], row.e.Strs[n.Name]) {
+			seen[i] = true
+			queue = append(queue, int32(i))
+		}
+	}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		n := row.e.Nodes[id]
+		r.syms[n.Sym] = true
+		for _, m := range []int32{n.M1, n.M2} {
+			if m >= 0 {
+				r.names[m] = true
+			}
+		}
+		r.addr = r.addr || n.Addr
+		if int(id) < len(callers) {
+			for _, c := range callers[id] {
+				if !seen[c] {
+					seen[c] = true
+					queue = append(queue, c)
+				}
+			}
+		}
+	}
+	return r
+}
+
+// counts reports whether the left-out file at path may reach S. A file the engine does not hold, or
+// any file when the engine could not be built, counts.
+//
+// Stage 0: when none of S's packages is loaded, the file counts only when it can link one of them
+// (lofWorld.links), or that walk fails closed: S executes only once linked.
+//
+// Stage 1: the file counts when its closure fails closed, or when one of these holds against R,
+// what reaches S in the graph the file is tested against:
+//
+//   - func-in-R: it reaches a loaded function in R;
+//   - type-with-R-method: it names a loaded type whose method set (T or *T) holds an R method;
+//   - method-set-change: it declares methods on a loaded type whose method set holds an R method;
+//   - method-name-in-R: it selects a method name some R function answers to;
+//   - dynamic-call-and-R-address-taken: it calls a function value, or reads a loaded variable,
+//     while R holds a function whose address is taken;
+//   - reflect-call: it calls reflect's Call, CallSlice, Method or MethodByName while R holds a
+//     method or an address-taken function;
+//   - reaches-S-in-source: it walks the source of a function in S;
+//   - routed: it passes a value to a loaded function with a func- or interface-typed parameter
+//     while R holds a method or an address-taken function.
+//
+// A file none of whose loaded roots is new to G0 (not Novel) is tested against G0's R, otherwise
+// against G_T's. A non-novel file's roots already lie in both of G0's slices, so G0 already holds
+// every call they make on the values the loaded program builds. What G0 lacks is only the values
+// the file itself builds: a type it constructs is a loaded one it names (type-with-R-method), one
+// it declares methods on (method-set-change), or its own source, walked whole; such a value reaches
+// loaded code only as an argument to a loaded function, and loaded code calls into it only through
+// a func- or interface-typed parameter (routed), a method name (method-name-in-R) or a dynamic
+// call (dynamic-call-and-R-address-taken). Each of those is tested against R directly.
+func (row *lofRow) counts(path string) bool {
+	e := row.e
+	if e.Fail != "" {
+		return true
+	}
+	f, ok := e.Files[path]
+	if !ok {
+		return true
+	}
+	if f.Dropped || f.Excluded {
+		return false
+	}
+	if !row.sLoaded {
+		linked := slices.ContainsFunc(f.Links, func(id int32) bool { return row.inPkg(e.Strs[id]) })
+		if !linked {
+			return len(f.LinkFC) > 0
+		}
+	}
+	if len(f.FC) > 0 || (row.stdlib && (e.FailStd != "" || len(f.FCStd) > 0)) {
+		return true
+	}
+	var r *lofReach
+	if f.Novel {
+		if row.rT == nil {
+			row.rT = row.reach(e.InT, func(n lofNode) bool { return n.FT })
+		}
+		r = row.rT
+	} else {
+		if row.r0 == nil {
+			row.r0 = row.reach(e.In0, func(n lofNode) bool { return n.F0 })
+		}
+		r = row.r0
+	}
+	hit := func(ids []int32) bool { return slices.ContainsFunc(ids, func(id int32) bool { return r.syms[id] }) }
+	switch {
+	case hit(f.Funcs), hit(f.TypeMeth), hit(f.NewMeth):
+		return true
+	case slices.ContainsFunc(f.Methods, func(id int32) bool { return r.names[id] }):
+		return true
+	case (f.Dyn || f.Vars) && r.addr:
+		return true
+	case (f.Reflect || f.Sink) && (r.addr || len(r.names) > 0):
+		return true
+	}
+	return slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) })
+}

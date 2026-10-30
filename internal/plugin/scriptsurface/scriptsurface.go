@@ -145,9 +145,10 @@ var dataNames = map[string]string{
 	"package.json": baseDir, "tox.ini": baseDir, "noxfile.py": baseDir,
 }
 
-// dockerfileNamed reports whether a lowercased base name is a Dockerfile's: Dockerfile or
-// Containerfile, alone or joined to another word by ".", "-" or "_" on either side
+// dockerfileNamed reports whether a lowercased base name is dockerfile or containerfile,
+// starts with one followed by ".", "-" or "_", or ends with one of those followed by one
 // (Dockerfile.prod, Dockerfile-prod, Dockerfile_api, api.Dockerfile, api-Dockerfile).
+// surfaceOf checks it last, so an extension, shebang or path that names another kind wins.
 func dockerfileNamed(lower string) bool {
 	for _, n := range []string{"dockerfile", "containerfile"} {
 		if lower == n {
@@ -170,8 +171,6 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 	ext := filepath.Ext(lower)
 	yaml := ext == ".yml" || ext == ".yaml"
 	switch {
-	case dockerfileNamed(lower):
-		return surfaceType{kindDockerfile, baseNone}, true
 	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", ext == ".make", lower == "justfile", lower == ".justfile":
 		return surfaceType{kindMakefile, baseDir}, true
 	case ext == ".ps1", ext == ".bat", ext == ".cmd":
@@ -189,6 +188,8 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		strings.Contains(slash, "/.github/actions/") && (lower == "action.yml" || lower == "action.yaml"),
 		strings.HasPrefix(lower, "jenkinsfile"):
 		return surfaceType{kindData, baseRoot}, true
+	case dockerfileNamed(lower):
+		return surfaceType{kindDockerfile, baseNone}, true
 	}
 	if base, ok := dataNames[lower]; ok {
 		return surfaceType{kindData, base}, true

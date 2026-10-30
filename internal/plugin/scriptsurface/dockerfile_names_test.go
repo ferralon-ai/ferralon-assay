@@ -38,3 +38,24 @@ func TestVeto_DockerfileNames(t *testing.T) {
 		})
 	}
 }
+
+// A file whose extension or path names another kind is read as that kind, not as a
+// Dockerfile, so an install on a line of its own still withholds.
+func TestVeto_DockerfileNamedOtherKinds(t *testing.T) {
+	tests := []struct{ name, body string }{
+		{"dockerfile-build.sh", "#!/bin/sh\ninst add evil\n"},
+		{"Dockerfile_lint.sh", "inst add evil\n"},
+		{"Dockerfile.sh", "inst add evil\n"},
+		{"dockerfile_tasks.mk", "all:\n\tinst add evil\n"},
+		{"dockerfile-build.ps1", "inst add evil\n"},
+		{".github/workflows/dockerfile-lint.yml", "jobs:\n  b:\n    steps:\n      - run: |\n          inst add evil\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", tt.name: tt.body})
+			if !withheld(dir, testSpec) {
+				t.Fatal("withheld = false, want true")
+			}
+		})
+	}
+}

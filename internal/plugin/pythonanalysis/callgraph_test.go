@@ -846,6 +846,10 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"continued from-import of production", map[string]string{"app.py": "from lib \\\n    import(x,\n    y,)\n", "lib.py": app, "tests/other.py": opaque}, false, false},
 		{"continued plain import of production", map[string]string{"app.py": "import \\\n\tlib as l\n", "lib.py": app, "tests/other.py": opaque}, false, false},
 		{"continued raise from", map[string]string{"app.py": "def f(e):\n    raise ValueError() \\\n        from e\n", "tests/other.py": opaque}, false, false},
+		{"after a continued block opener", map[string]string{"app.py": "if True: \\\n    import tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"after a continued semicolon", map[string]string{"app.py": "import os; \\\r\n    import tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"after a leading continuation", map[string]string{"app.py": "\\\nimport tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"spaces around a dot", map[string]string{"app.py": "import tests . helpers\n", "tests/other.py": opaque}, true, false},
 		{"edge through another test module", map[string]string{"app.py": "def main():\n    return relay('1')\n", "tests/relay.py": "def relay(s):\n    return run_eval(s)\n", "tests/helpers.py": evals}, false, true},
 	}
 	for _, c := range cases {

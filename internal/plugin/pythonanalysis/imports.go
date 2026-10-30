@@ -860,19 +860,26 @@ func importStatements(r []rune) (spans [][2]int, stars map[string]bool) {
 }
 
 // statementStart reports whether the word at r[i] begins a statement: only spaces, tabs,
-// form feeds or a byte order mark lie between it and the start of the source, a newline
-// that ends no continuation line, a ';', or a ':' that opens a block on the same line.
+// form feeds, a byte order mark or backslash continuations lie between it and the start of
+// the source, a newline that ends no continuation line, a ';', or a ':' that opens a block
+// on the same line.
 func statementStart(r []rune, i int) bool {
 	j := i - 1
-	for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\f' || r[j] == '\ufeff') {
-		j--
-	}
-	if j >= 0 && r[j] == '\n' {
+	for {
+		for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\f' || r[j] == '\ufeff') {
+			j--
+		}
+		if j < 0 || r[j] != '\n' {
+			break
+		}
 		k := j - 1
 		if k >= 0 && r[k] == '\r' {
 			k--
 		}
-		return k < 0 || r[k] != '\\'
+		if k < 0 || r[k] != '\\' {
+			return true
+		}
+		j = k - 1
 	}
 	return j < 0 || r[j] == ';' || r[j] == ':'
 }

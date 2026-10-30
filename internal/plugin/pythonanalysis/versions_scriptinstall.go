@@ -950,7 +950,7 @@ func (installs pipInstalls) pip(args []string, b scriptsurface.Binder, tooling m
 			return false // a lock, build definition or module is not a requirements file
 		}
 		hosts := b.Hosts(p)
-		if hosts == nil {
+		if hosts == nil || slices.ContainsFunc(hosts, func(h string) bool { return strings.EqualFold(filepath.Ext(h), ".py") }) {
 			return false
 		}
 		files = append(files, hosts...)

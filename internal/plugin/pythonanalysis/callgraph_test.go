@@ -963,7 +963,7 @@ func TestCallGraph_TestModuleIngresses(t *testing.T) {
 
 // TestFindIngresses_HiddenRouteDynamicImport: ingress discovery is partial (dynamic_import)
 // when it leaves out an unreached test-module route and a reached file holds a dynamic
-// import the scanner cannot name, which may load that route.
+// import the scanner cannot name, or evaluates code, either of which may load that route.
 func TestFindIngresses_HiddenRouteDynamicImport(t *testing.T) {
 	const (
 		route  = "from flask import Flask\napp = Flask(__name__)\n\n@app.route('/x')\ndef handle():\n    return 1\n"
@@ -978,6 +978,9 @@ func TestFindIngresses_HiddenRouteDynamicImport(t *testing.T) {
 		{"hidden route only", map[string]string{"app.py": "def main():\n    return 1\n", "tests/routes.py": route}, false},
 		{"production dynamic import only", map[string]string{"app.py": opaque + route}, false},
 		{"dynamic import in unreached test code", map[string]string{"app.py": "def main():\n    return 1\n", "tests/load.py": opaque, "tests/routes.py": route}, false},
+		{"hidden route and production exec", map[string]string{"app.py": "def run(src):\n    exec(src)\n", "tests/routes.py": route}, true},
+		{"hidden route and production eval", map[string]string{"app.py": "def run(src):\n    return eval(src)\n", "tests/routes.py": route}, true},
+		{"exec in unreached test code", map[string]string{"app.py": "def main():\n    return 1\n", "tests/load.py": "def run(src):\n    exec(src)\n", "tests/routes.py": route}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

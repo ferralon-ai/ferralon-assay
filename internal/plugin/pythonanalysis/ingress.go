@@ -40,7 +40,7 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 			hidden = hidden || len(f.ingresses) > 0
 			continue
 		}
-		opaque = opaque || f.opaque
+		opaque = opaque || f.opaque || f.refs.evaluated
 		for _, in := range f.ingresses {
 			scip := funcSCIP(f.module, in.enclosing, in.name, in.arity)
 			key := in.kind + "\x00" + scip + "\x00" + in.selector
@@ -75,7 +75,7 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 // route handlers present in code production may run. A read failure or a skipped
 // construct degrades to partial with the matching machine-readable reason, and so does a
 // handler left out as unreached (hidden) when a reached file holds a dynamic import the
-// scanner cannot name, which may load it.
+// scanner cannot name, or evaluates code (eval/exec), either of which may load it.
 func ingressPartiality(prog *program, mayLoadHidden bool) plugin.Partiality {
 	reasons := dynamicImportReasons(mayLoadHidden)
 	if prog.readFailed {

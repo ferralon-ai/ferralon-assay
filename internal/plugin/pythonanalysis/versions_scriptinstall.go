@@ -154,6 +154,15 @@ func pipSelfUpgrade(args []string) bool {
 // config subcommand.
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip`)
 
+// seededDistributions are what the interpreter a build runs on, or a venv it creates, may
+// already hold: ensurepip and python -m venv seed pip, and before Python 3.12 setuptools;
+// virtualenv and uv venv --seed seed wheel too, and an image or distro interpreter may ship any
+// of them. Every Python build runs on some interpreter, and where it comes from (a base image,
+// a runner, .python-version, a platform runtime) is not read, nor is its site-packages, which
+// keeps whatever it ships whatever --without-pip, --no-setuptools or --no-wheel leave out of a
+// venv. So each may be installed, at a version nothing read here records, in every build.
+var seededDistributions = []string{"pip", "setuptools", "wheel"}
+
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}
 

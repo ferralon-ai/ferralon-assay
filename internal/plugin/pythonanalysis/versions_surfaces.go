@@ -27,10 +27,11 @@ import (
 // versionSurfaces returns the manifests version resolution parses, whether any other install
 // surface under root goes unread, whether a script surface may install a package no manifest
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
-// surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
-// read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
-// is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
-// or a script surface names one (pipConfigNamedRE).
+// surfaces run, and the distributions the build may hold at a version nothing read here
+// records, which a caller withholds as it would every pin: pip after an allowed self-upgrade
+// (pipSelfUpgrade), and in every build the distributions an interpreter or venv seeds
+// (seededDistributions). No self-upgrade is allowed when root holds a pip config file
+// (pipConfigInTree) or a script surface names one (pipConfigNamedRE).
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
@@ -75,6 +76,13 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	scriptWithheld = veto.Withheld()
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
+	}
+	// After the check above: seeding is not a self-upgrade, and must not trip it.
+	if tooling == nil {
+		tooling = map[string]bool{}
+	}
+	for _, n := range seededDistributions {
+		tooling[n] = true
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
 }

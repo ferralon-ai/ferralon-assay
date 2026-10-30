@@ -62,17 +62,24 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed := false
+	configNamed, mypyInstalls := false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
+		mypyInstalls = mypyInstalls || installTypesTextRE.MatchString(src) ||
+			installTypesAbbrevRE.MatchString(src) && mypyNamedRE.MatchString(src)
 	}
 	veto := scriptsurface.New(root, read, spec)
-	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
+	classify := veto.Classify(pyInstallSurface)
+	match := func(path string, head []byte) (string, bool) {
+		mypyInstalls = mypyInstalls || mypyConfigInstalls(head) || installTypesLineRE.Match(head)
+		return classify(path, head)
+	}
+	for _, c := range buildtree.Candidates(root, match, veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
-	scriptWithheld = veto.Withheld()
+	scriptWithheld = veto.Withheld() || mypyInstalls
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}

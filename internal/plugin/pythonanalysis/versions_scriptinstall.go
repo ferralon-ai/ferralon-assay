@@ -61,6 +61,28 @@ import (
 // not observed, as for hash-checking mode (pipConfigMatches).
 // A PIP_* variable falls under the lane-wide rule above. setuptools and wheel are not
 // targets: wheel requires packaging.
+//
+// ensurepip installs the pip its interpreter bundles, and before Python 3.12 setuptools too, so
+// under the same config rules it withholds those two coordinates alone (ensurepipFlags):
+//
+//	python -m ensurepip [flags]            the flags only from ensurepipFlags
+//
+// mypy --install-types runs pip on the stub packages mypy finds missing, which can pull in
+// runtime dependencies. Its parser accepts any unambiguous prefix of a long flag, so a word
+// from --install- up to --install-types is a token wherever it appears, and so is any script
+// surface whose text holds one, wherever it sits in that text: a ${FLAGS:-} default, or a line
+// a printf writes into an @ file (installTypesTextRE). A shorter prefix, --ins to --install,
+// is a flag helm and others use too, so it withholds every pin only in a surface whose text
+// names mypy (installTypesAbbrevRE). A mypy config can set install_types as well, and mypy
+// reads a config where it lands and by any name --config-file gives it, so a file under the
+// build dir whose head names mypy and an install_types key, however it is set, withholds
+// every pin (mypyConfigInstalls). mypy also reads arguments one per line from a
+// file an @ argument names, whatever that file is called and whether or not it names mypy, so
+// a file under the build dir holding a line that is a prefix of --install-types from --ins on
+// withholds every pin (installTypesLineRE). A config or arguments file the build fetches or
+// the base image holds is not observed, nor is a prefix shorter than --install- that reaches
+// mypy from a surface that does not name it: a variable another file sets, or an @ file
+// another surface writes.
 
 // newScriptSpec is the Python lane's part of the rule, recording into installs every pip
 // install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
@@ -96,15 +118,19 @@ var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
-// install_requires), any word starting pip or conda, and an interpreter option that runs one
-// as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
-// file not read here defines, or installs into the environments it makes (poe, invoke and its
-// inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
-// candidate whenever a session installs.
+// install_requires), ensurepip, mypy's --install-types or a prefix of it from --install-,
+// any word starting pip or conda, and an interpreter option that runs one as a module with its
+// name attached (-mpip, -Impip); or a task runner that runs commands a file not read here
+// defines, or installs into the environments it makes (poe, invoke and its inv, tox). nox is
+// not one: every noxfile imports it, and the noxfile.py it runs is a candidate whenever a
+// session installs.
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
-		"hatch", "flit", "setup.py", "poe", "invoke", "inv", "tox":
+		"hatch", "flit", "setup.py", "ensurepip", "poe", "invoke", "inv", "tox":
+		return true
+	}
+	if len(word) >= len(installTypesMin) && strings.HasPrefix(installTypesFlag, word) {
 		return true
 	}
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
@@ -113,9 +139,42 @@ func laneToken(word string) bool {
 	return strings.HasPrefix(word, "pip") || strings.HasPrefix(word, "conda")
 }
 
+// installTypesMin is the shortest prefix of installTypesFlag that no other common tool's flag
+// shares.
+const installTypesFlag, installTypesMin = "--install-types", "--install-"
+
+// installTypesTextRE matches, in a script surface's text, a prefix of --install-types from
+// --install- on wherever it sits. No other common tool's flag shares one.
+var installTypesTextRE = regexp.MustCompile(`--install-(?:t(?:y(?:p(?:es?)?)?)?)?(?:$|[^\w-])`)
+
+// installTypesAbbrevRE matches, in a script surface's text, a prefix of --install-types from
+// --ins on that mypy's parser reads as it, wherever it sits: a word laneToken does not see,
+// such as one a variable holds, the default in ${FLAGS:---install}, or an @ file line a printf
+// writes after a \n. mypyNamedRE must match the same text.
+var installTypesAbbrevRE = regexp.MustCompile(`--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?(?:$|[^\w-])`)
+
+// installTypesLineRE matches a line that is a prefix of --install-types from --ins on, as
+// mypy reads one argument per line from an @ file, split where Python's str.splitlines splits.
+var installTypesLineRE = regexp.MustCompile(`(?:^|[\n\r\v\f\x1c-\x1e\x{85}\x{2028}\x{2029}])` +
+	`--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?(?:$|[\n\r\v\f\x1c-\x1e\x{85}\x{2028}\x{2029}])`)
+
+// mypyNamedRE matches mypy anywhere, dmypy and mypy.api included.
+var mypyNamedRE = regexp.MustCompile(`(?i)mypy`)
+
+// installTypesKeyRE matches an install_types config key, no_install_types included (mypy
+// inverts a no_ key), as a key and not the tail of a --no-install-types flag.
+var installTypesKeyRE = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:no[-_])?install[-_]types`)
+
+// mypyConfigInstalls reports whether a file whose content starts with head may be a mypy
+// config that sets install_types: it names mypy and an install_types key, whatever the key's
+// value or the file's name.
+func mypyConfigInstalls(head []byte) bool {
+	return mypyNamedRE.Match(head) && installTypesKeyRE.Match(head)
+}
+
 // attachedModuleRE matches a cluster of interpreter short options ending in -m with the
-// module name attached, which CPython reads as -m <name>.
-var attachedModuleRE = regexp.MustCompile(`^-[A-Za-z]*m(.+)$`)
+// module name attached, which CPython reads as -m <name>: the first m ends the cluster.
+var attachedModuleRE = regexp.MustCompile(`^-[A-Za-ln-z]*m(.+)$`)
 
 var (
 	pipHeadRE    = regexp.MustCompile(`^pip(?:\d+(?:\.\d+)?)?$`)
@@ -128,6 +187,13 @@ var selfUpgradeFlags = map[string]bool{
 	"-U": true, "--upgrade": true, "-q": true, "--quiet": true, "--no-cache-dir": true,
 	"--disable-pip-version-check": true, "--user": true, "--no-warn-script-location": true,
 	"--root-user-action=ignore": true,
+}
+
+// ensurepipFlags are the flags an allowed ensurepip may carry: none changes what it installs.
+// --root is not one: this reads no install location.
+var ensurepipFlags = map[string]bool{
+	"-U": true, "--upgrade": true, "--default-pip": true, "--altinstall": true, "--user": true,
+	"-v": true, "--verbose": true,
 }
 
 // pipTargetRE matches the requirement pip, bare or with a PEP 440 version specifier.
@@ -227,6 +293,12 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 		return installs.pip(words[1:], b, tooling)
 	case pythonHeadRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && pipHeadRE.MatchString(words[2]):
 		return installs.pip(words[3:], b, tooling)
+	case pythonHeadRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "ensurepip":
+		if tooling == nil || !scriptsurface.FlagsOnly(words[3:], ensurepipFlags) {
+			return false
+		}
+		tooling["pip"], tooling["setuptools"] = true, true
+		return true
 	case len(words) < 2:
 		return false
 	case head == "uv" && words[1] == "sync":

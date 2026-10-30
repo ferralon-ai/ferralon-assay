@@ -331,3 +331,139 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 		}
 	})
 }
+
+// ensurepip installs the pip its interpreter bundles, and setuptools before Python 3.12, so the
+// allowed form withholds those two coordinates alone; any other form withholds every pin.
+func TestResolveVersions_Ensurepip(t *testing.T) {
+	const reqs = "jinja2==3.1.4\npip==24.0\nsetuptools==69.0.0\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		seeds bool // whether the line withholds pip and setuptools alone: jinja2 resolves
+	}{
+		{"python -m ensurepip", map[string]string{"install.sh": "python -m ensurepip\n"}, true},
+		{"--upgrade", map[string]string{"install.sh": "python3 -m ensurepip --upgrade\n"}, true},
+		{"every reviewed flag", map[string]string{"install.sh": "python3.11 -m ensurepip -U --default-pip --user -v --verbose\n"}, true},
+		{"--altinstall", map[string]string{"install.sh": "python3.11 -m ensurepip --upgrade --altinstall\n"}, true},
+		{"Dockerfile", map[string]string{"Dockerfile": "FROM python:3.11\nRUN python -m ensurepip --upgrade\n"}, true},
+
+		{"--root", map[string]string{"install.sh": "python -m ensurepip --root /opt/py\n"}, false},
+		{"another argument", map[string]string{"install.sh": "python -m ensurepip jinja2\n"}, false},
+		{"attached -m", map[string]string{"install.sh": "python -mensurepip\n"}, false},
+		{"pip config in the tree", map[string]string{"pip.conf": "[global]\n", "install.sh": "python -m ensurepip\n"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": reqs}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			dir := writeTree(t, files)
+			if r := resolveVersion(t, dir, "jinja2"); !r.Found || r.Match.Resolved != tt.seeds || r.Partiality.Complete != tt.seeds {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.seeds)
+			}
+			for _, c := range []string{"pip", "setuptools"} {
+				if r := resolveVersion(t, dir, c); !r.Found || r.Match.Resolved || r.Partiality.Complete || r.MatchesComplete {
+					t.Fatalf("%s = %+v, want found, unresolved and partial", c, r)
+				}
+			}
+		})
+	}
+}
+
+// Under a lock that covers the build, ensurepip leaves absence proven for every coordinate but
+// the two it installs, and declares both to the import resolver.
+func TestResolveVersions_EnsurepipExhaustive(t *testing.T) {
+	dir := writeTree(t, map[string]string{"pyproject.toml": exPyproject, "uv.lock": exUVLock,
+		"Dockerfile": "FROM python:3.11\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN python -m ensurepip --upgrade && uv sync --frozen\n"})
+	if r := resolveVersion(t, dir, "PyJWT"); r.Found || !r.Exhaustive {
+		t.Fatalf("PyJWT = found %v exhaustive %v, want absent and exhaustive", r.Found, r.Exhaustive)
+	}
+	for _, c := range []string{"pip", "setuptools"} {
+		if r := resolveVersion(t, dir, c); r.Found || r.Exhaustive {
+			t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)
+		}
+	}
+	names, complete, read := declaredDistributions(dir)
+	if !names["pip"] || !names["setuptools"] || !complete || !read {
+		t.Fatalf("declaredDistributions = %v complete %v read %v, want pip and setuptools declared, complete and read", names, complete, read)
+	}
+}
+
+// mypy --install-types runs pip on the stub packages it finds missing, as does a mypy config
+// that sets install_types, so either withholds every pin. A plain mypy run does not.
+func TestResolveVersions_MypyInstallTypes(t *testing.T) {
+	const reqs = "jinja2==3.1.4\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool // jinja2 resolved
+	}{
+		{"mypy --install-types", map[string]string{"install.sh": "mypy --install-types --non-interactive .\n"}, false},
+		{"python -m mypy", map[string]string{"Makefile": "lint:\n\tpython -m mypy --install-types --non-interactive src\n"}, false},
+		{"dmypy", map[string]string{"install.sh": "dmypy run -- --install-types --non-interactive .\n"}, false},
+		{"CI step", map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: mypy --install-types --non-interactive .\n"}, false},
+		{"mypy.ini install_types", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\nnon_interactive = True\n", "install.sh": "mypy .\n"}, false},
+		{"setup.cfg install_types", map[string]string{"setup.cfg": "[mypy]\ninstall_types = True\n", "install.sh": "mypy .\n"}, false},
+		{"pyproject [tool.mypy]", map[string]string{"pyproject.toml": "[tool.mypy]\ninstall_types = true\n", "install.sh": "mypy .\n"}, false},
+		{"--config-file to a .cfg", map[string]string{"config/types.cfg": "[mypy]\ninstall_types = True\n", "install.sh": "mypy --config-file config/types.cfg .\n"}, false},
+		{"config, dmypy", map[string]string{".mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "dmypy run -- .\n"}, false},
+		{"abbreviated --install", map[string]string{"install.sh": "mypy --install --non-interactive .\n"}, false},
+		{"abbreviated --install-type", map[string]string{"install.sh": "mypy --install-type --non-interactive .\n"}, false},
+		{"abbreviated --ins", map[string]string{"install.sh": "mypy --ins --non-interactive .\n"}, false},
+		{"config, -mmypy", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "python -mmypy .\n"}, false},
+		{"config, -Immypy", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "python3 -Immypy .\n"}, false},
+		{"config, colon delimiter", map[string]string{"mypy.ini": "[mypy]\ninstall_types: yes\n", "install.sh": "mypy .\n"}, false},
+		{"config, no_install_types off", map[string]string{"mypy.ini": "[mypy]\nno_install_types = False\n", "install.sh": "mypy .\n"}, false},
+		{"config, quoted TOML key", map[string]string{"pyproject.toml": "[tool.mypy]\n\"install_types\" = true\n", "install.sh": "mypy .\n"}, false},
+		{"config, dotted TOML key", map[string]string{"pyproject.toml": "[tool]\nmypy.install_types = true\n", "install.sh": "mypy .\n"}, false},
+		{"config, integer value", map[string]string{"pyproject.toml": "[tool.mypy]\ninstall_types = +1\n", "install.sh": "mypy .\n"}, false},
+		{"user config copied from the tree", map[string]string{"docker/.config/mypy/config": "[mypy]\ninstall_types = True\n", "Dockerfile": "FROM python:3.12\nCOPY docker/.config /root/.config\nRUN mypy .\n"}, false},
+		{"--config-file to a .conf", map[string]string{"ci/typecheck.conf": "[mypy]\ninstall_types = True\n", "install.sh": "mypy --config-file ci/typecheck.conf .\n"}, false},
+		{"abbreviated --conf to a renamed config", map[string]string{"ci/typecheck-rc": "[mypy]\ninstall_types = True\n", "install.sh": "mypy --conf ci/typecheck-rc .\n"}, false},
+		{"renamed config copied to ~/.mypy.ini", map[string]string{"docker/typecheck-rc": "[mypy]\ninstall_types = True\n", "Dockerfile": "FROM python:3.12\nCOPY docker/typecheck-rc /root/.mypy.ini\nRUN mypy .\n"}, false},
+		{"renamed config copied to mypy.ini", map[string]string{"ci/typecheck-rc": "[mypy]\ninstall_types = True\n", "Dockerfile": "FROM python:3.12\nCOPY ci/typecheck-rc mypy.ini\nRUN mypy .\n"}, false},
+		{"config, mypy run by a surface not read here", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "pytest\n"}, false},
+		{"config with install_types off", map[string]string{"mypy.ini": "[mypy]\ninstall_types = False\n", "install.sh": "mypy .\n"}, false},
+		{"abbreviation, mypy.__main__", map[string]string{"install.sh": "python -m mypy.__main__ --ins --non-interactive .\n"}, false},
+		{"abbreviation, -mmypy", map[string]string{"install.sh": "python -mmypy --install --non-interactive .\n"}, false},
+		{"abbreviated --inst", map[string]string{"install.sh": "mypy --inst --non-interactive .\n"}, false},
+		{"abbreviated --insta", map[string]string{"install.sh": "mypy --insta --non-interactive .\n"}, false},
+		{"abbreviated --instal", map[string]string{"install.sh": "mypy --instal --non-interactive .\n"}, false},
+		{"abbreviated --install-", map[string]string{"install.sh": "mypy --install- --non-interactive .\n"}, false},
+		{"abbreviation in a shell variable", map[string]string{"install.sh": "FLAGS=--install\nmypy $FLAGS --non-interactive .\n"}, false},
+		{"abbreviation in a Makefile variable", map[string]string{"Makefile": "MYPYFLAGS:=--ins\nlint:\n\tmypy $(MYPYFLAGS) --non-interactive src\n"}, false},
+		{"abbreviation as a ${:-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS:---install} --non-interactive .\n"}, false},
+		{"flag as a ${:-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS:---install-types} --non-interactive .\n"}, false},
+		{"flag in an @ file a printf writes", map[string]string{"install.sh": "printf 'src\\n--install-types\\n' > a && mypy @a\n"}, false},
+		{"flag in an @ file a surface not naming mypy writes", map[string]string{"gen.sh": "printf 'src\\n--install-types\\n' > ci/args\n", "lint.sh": "cd src && mypy @../ci/args\n"}, false},
+		{"quote-split flag in an @ file a surface not naming mypy writes", map[string]string{"gen.sh": "echo --ins''tall-types > ci/args\n", "lint.sh": "cd src && mypy @../ci/args\n"}, false},
+		{"abbreviation as a ${-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS---ins} --non-interactive .\n"}, false},
+		{"@ file with --install-types", map[string]string{"ci/mypy-args": "src/app\n--install-types\n--non-interactive\n", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},
+		{"@ file with --install, CRLF", map[string]string{"ci/mypy-args": "src/app\r\n--install\r\n--non-interactive\r\n", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},
+		{"@ file with --install-types, CR", map[string]string{"ci/mypy-args": "src/app\r--install-types\r--non-interactive\r", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},
+		{"@ file with --install-types, form feed", map[string]string{"ci/mypy-args": "src/app\f--install-types\f--non-interactive\f", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},
+
+		// Guards.
+		{"plain mypy", map[string]string{"install.sh": "mypy --strict .\n"}, true},
+		{"@ file without --install-types", map[string]string{"ci/mypy-args": "src/app\n--strict\n", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, true},
+		{"mypy config without install_types", map[string]string{"mypy.ini": "[mypy]\nstrict = True\n", "install.sh": "mypy .\n"}, true},
+		{"install_types key, no mypy", map[string]string{"tool.cfg": "[other]\ninstall_types = yes\n", "install.sh": "pytest\n"}, true},
+		{"--no-install-types", map[string]string{".github/workflows/mypy.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: mypy --no-install-types .\n"}, true},
+		{"--install without mypy", map[string]string{"install.sh": "helm upgrade --install app ./chart\n"}, true},
+		{"--", map[string]string{"install.sh": "pytest -- tests\n"}, true},
+		{"--install-types mid-line in a file mypy is not named in", map[string]string{"notes.txt": "pass --install-types to fetch stubs\n", "install.sh": "pytest\n"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": reqs}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+		})
+	}
+}

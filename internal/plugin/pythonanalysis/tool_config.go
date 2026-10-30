@@ -56,7 +56,7 @@ var poetryEnvKeeps = func() map[string]bool {
 // install or pdm sync reads the settings there, so an allowed one withholds where a script
 // names one (versionSurfaces). POETRY_CONFIG_DIR and PDM_CONFIG_FILE fall under laneEnvRE.
 var toolConfigNamedRE = regexp.MustCompile(`(?i)poetry\.toml|pdm\.toml|pypoetry[\\/](?:config|auth)\.toml|pdm[\\/]config\.toml|` +
-	`(?:\.config|application\\? support|appdata%?(?:[\\/](?:local|roaming))?|programdata%?|/etc/xdg)[\\/](?:pypoetry|pdm)\b|` +
+	`(?:\.config|application\\? support|appdata[%}]?(?:[\\/](?:local|roaming))?|programdata[%}]?|/etc/xdg)[\\/](?:pypoetry|pdm)\b|` +
 	`win_pd_override_|` + configHomeMoved)
 
 // toolConfigName reports which tool reads a file of this lowercased base name in directory dir

@@ -35,12 +35,7 @@ func runCached(ctx context.Context, kind string, key []string, compute func() ([
 	if dir == "" {
 		return compute()
 	}
-	h := sha256.New()
-	for _, k := range key {
-		h.Write([]byte(k))
-		h.Write([]byte{0})
-	}
-	path := filepath.Join(dir, kind+"-"+hex.EncodeToString(h.Sum(nil)))
+	path := runCachePath(dir, kind, key)
 	if b, err := os.ReadFile(path); err == nil {
 		return b, nil
 	}
@@ -48,12 +43,32 @@ func runCached(ctx context.Context, kind string, key []string, compute func() ([
 	if err != nil {
 		return nil, err
 	}
-	if tmp, err := os.CreateTemp(dir, kind+"-*.tmp"); err == nil {
-		_, wErr := tmp.Write(b)
-		cErr := tmp.Close()
-		if wErr != nil || cErr != nil || os.Rename(tmp.Name(), path) != nil {
-			_ = os.Remove(tmp.Name())
-		}
-	}
+	writeRunCacheEntry(dir, kind, path, b)
 	return b, nil
+}
+
+// runCachePath is where the run cache in dir keeps the entry of kind for key.
+func runCachePath(dir, kind string, key []string) string {
+	h := sha256.New()
+	for _, k := range key {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+	}
+	return filepath.Join(dir, kind+"-"+hex.EncodeToString(h.Sum(nil)))
+}
+
+// writeRunCacheEntry stores b at path through a rename, so a concurrent reader sees either nothing or
+// the whole entry, and reports whether it was stored.
+func writeRunCacheEntry(dir, kind, path string, b []byte) bool {
+	tmp, err := os.CreateTemp(dir, kind+"-*.tmp")
+	if err != nil {
+		return false
+	}
+	_, wErr := tmp.Write(b)
+	cErr := tmp.Close()
+	if wErr != nil || cErr != nil || os.Rename(tmp.Name(), path) != nil {
+		_ = os.Remove(tmp.Name())
+		return false
+	}
+	return true
 }

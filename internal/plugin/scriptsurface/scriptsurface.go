@@ -120,6 +120,7 @@ func (s Spec) complete() bool {
 const (
 	kindShell      = "shell"
 	kindDockerfile = "dockerfile"
+	kindEarthfile  = "earthfile" // read as a Dockerfile once earthfileAsDockerfile adapts it
 	kindMakefile   = "makefile"
 	kindData       = "data"   // YAML, TOML, INI, JSON and Procfile lines: "key: command"
 	kindOpaque     = "opaque" // PowerShell and batch: not parsed, so a line naming a token withholds
@@ -156,6 +157,8 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 	case lower == "dockerfile", lower == "containerfile", strings.HasPrefix(lower, "dockerfile."),
 		strings.HasPrefix(lower, "containerfile."), ext == ".dockerfile", ext == ".containerfile":
 		return surfaceType{kindDockerfile, baseNone}, true
+	case lower == "earthfile":
+		return surfaceType{kindEarthfile, baseNone}, true
 	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", ext == ".make", lower == "justfile", lower == ".justfile":
 		return surfaceType{kindMakefile, baseDir}, true
 	case ext == ".ps1", ext == ".bat", ext == ".cmd":
@@ -166,7 +169,8 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		return surfaceType{kindData, baseDir}, true
 	case yaml && (strings.HasPrefix(lower, "docker-compose") || strings.HasPrefix(lower, "compose.")):
 		return surfaceType{kindData, baseNone}, true
-	case yaml && (strings.Contains(slash, "/.github/workflows/") || strings.Contains(slash, "/.circleci/") ||
+	case yaml && (actionsWorkflow(slash) || strings.Contains(slash, "/.circleci/") ||
+		strings.Contains(slash, "/.buildkite/") || lower == "buildkite.yml" || lower == "buildkite.yaml" ||
 		strings.Contains(slash, "/.woodpecker/") || strings.HasPrefix(lower, "azure-pipelines") ||
 		strings.HasPrefix(lower, "buildspec") || strings.HasPrefix(lower, "cloudbuild.") ||
 		strings.HasPrefix(lower, "taskfile.")),
@@ -178,6 +182,14 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		return surfaceType{kindData, base}, true
 	}
 	return surfaceType{}, false
+}
+
+// actionsWorkflow reports whether a file, by its lowercased slash path with a leading slash,
+// is a workflow in the GitHub Actions format: GitHub's own, and Gitea's and Forgejo's, which
+// run the same format.
+func actionsWorkflow(slash string) bool {
+	return strings.Contains(slash, "/.github/workflows/") || strings.Contains(slash, "/.gitea/workflows/") ||
+		strings.Contains(slash, "/.forgejo/workflows/")
 }
 
 // shellShebang reports whether head starts with a #! line naming a POSIX-family shell.
@@ -641,6 +653,8 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 	switch {
 	case s.kind == kindDockerfile:
 		why = v.dockerfile(path, src)
+	case s.kind == kindEarthfile:
+		why = v.dockerfile(path, v.earthfileAsDockerfile(src))
 	case s.kind == kindOpaque:
 		why = v.opaque(src)
 	case strings.EqualFold(filepath.Ext(path), ".json"):

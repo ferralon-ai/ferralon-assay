@@ -29,7 +29,7 @@ type moduleProbe struct {
 // versionRead is the module a backend reads a dynamic version or description from without
 // importing it: the files it may be, the name whose assignment holds the version ("" when
 // only the description is read), whether the module's docstring is read too, and whether the
-// backend may read the module as text in the locale's encoding, as setuptools before 64.0.1
+// backend may read the module as text in the locale's encoding, as setuptools before 65.4.1
 // does, so only ASCII is read the same everywhere.
 type versionRead struct {
 	files     []string

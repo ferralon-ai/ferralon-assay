@@ -79,7 +79,7 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 			"lib/lib/__init__.py": "# café\n" + literal}), nil, false},
 		{"setuptools, a package-dir entry for a dotted part", tree(map[string]string{"lib/pyproject.toml": dynVer + setupBE +
 			"[tool.setuptools.dynamic]\nversion = { attr = \"lib.sub.V\" }\n[tool.setuptools.package-dir]\n\"lib.sub\" = \"alt\"\n",
-			"lib/alt.py": "V = \"1.0\"\n", "lib/lib/__init__.py": "", "lib/lib/sub.py": "V = get()\n"}), nil, false},
+			"lib/alt.py": "V = get()\n", "lib/lib/__init__.py": "", "lib/lib/sub.py": "V = \"1.0\"\n"}), nil, false},
 		{"setuptools, a package-dir entry ending in .", tree(map[string]string{"lib/pyproject.toml": setupLib +
 			"[tool.setuptools.package-dir]\nlib = \".\"\n", "lib/__init__.py": literal}), nil, false},
 		{"setuptools, a package-dir entry ending in /", tree(map[string]string{"lib/pyproject.toml": setupLib +

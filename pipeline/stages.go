@@ -30,6 +30,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/checkout/gomodtree"
 	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
@@ -2449,7 +2450,7 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 // manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
 //
 // A module this go.mod does not declare is unknown, not absent, when a module nested below
-// buildDir and outside its module graph exists (checkout.NestedGoModules): that module's go.mod
+// buildDir and outside its module graph exists (gomodtree.Nested): that module's go.mod
 // may require it, and buildDir/go.mod is then not the whole manifest.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
@@ -2471,7 +2472,7 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 			return true, true
 		}
 	}
-	if len(checkout.NestedGoModules(buildDir, 1)) > 0 {
+	if len(gomodtree.Nested(buildDir, 1)) > 0 {
 		return false, false
 	}
 	return false, true

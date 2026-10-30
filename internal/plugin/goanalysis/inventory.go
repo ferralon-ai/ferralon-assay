@@ -13,7 +13,7 @@ import (
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
-	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/checkout/gomodtree"
 	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -229,10 +229,10 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 const PartialReasonNestedModule = plugin.PartialReasonUnsupported + ":nested_module"
 
 // nestedModuleLimits returns one PartialReasonNestedModule limit per module nested below buildDir
-// and outside its module graph (checkout.NestedGoModules), each naming the module's directory relative to
+// and outside its module graph (gomodtree.Nested), each naming the module's directory relative to
 // buildDir. Its Targets are empty: what a module the inventory never read requires is unbounded.
 func nestedModuleLimits(buildDir string) []plugin.ScopedReason {
-	dirs := checkout.NestedGoModules(buildDir, 0)
+	dirs := gomodtree.Nested(buildDir, 0)
 	if len(dirs) == 0 {
 		return nil
 	}

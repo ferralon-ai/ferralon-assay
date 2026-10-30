@@ -87,8 +87,8 @@ type Spec struct {
 	Env *regexp.Regexp
 	// EnvKeeps reports whether an installer variable Env matched, by its name, installs
 	// nothing outside the lock read here: it only selects which of the packages that lock
-	// records get installed, or changes none of the packages, versions or environment an
-	// install has. nil means none does.
+	// records get installed, changes none of the packages, versions or environment an install
+	// has, or does only what a flag the lane already allows does. nil means none does.
 	EnvKeeps func(name string) bool
 	// Allowed reports whether a command naming a token, already free of expansions and
 	// redirects, is one of the lane's allowed forms and binds, through b, to the manifest and

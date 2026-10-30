@@ -98,9 +98,10 @@ type pipInstalls map[string][]pipInstall
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?i:PIP|UV)_[A-Za-z0-9_]+`)
 
 // laneEnvKept are the PIP_* and UV_* names whose option changes only output, prompts, caching,
-// timing, bytecode, how a file is copied into the environment, or whether the run fails: none
-// changes which distributions the build installs, the versions, or the environment it installs
-// them into. pip maps PIP_<NAME> to the option --<name> of whatever command it runs, and uv
+// timing, bytecode, how a file is copied into the environment, or whether the run fails, or
+// does only what a flag an allowed form may already carry does: none changes which
+// distributions the build installs, the versions, or the environment it installs them into
+// beyond what an allowed form can. pip maps PIP_<NAME> to the option --<name> of whatever command it runs, and uv
 // maps each UV_* name to one setting, so a name either sets its one option or none.
 var laneEnvKept = map[string]bool{
 	// pip: global options.
@@ -109,7 +110,7 @@ var laneEnvKept = map[string]bool{
 	"PIP_NO_COLOR": true, "PIP_NO_INPUT": true, "PIP_PROGRESS_BAR": true,
 	"PIP_TIMEOUT": true, "PIP_DEFAULT_TIMEOUT": true, "PIP_RETRIES": true, "PIP_RESUME_RETRIES": true,
 	"PIP_REQUIRE_VIRTUALENV": true, "PIP_REQUIRE_VENV": true, "PIP_ROOT_USER_ACTION": true,
-	// pip: install options. --user is a flag every allowed form already carries.
+	// pip: install options. laneFlags already lets every allowed form carry --user.
 	"PIP_USER": true, "PIP_COMPILE": true, "PIP_NO_COMPILE": true,
 	"PIP_NO_WARN_SCRIPT_LOCATION": true, "PIP_NO_WARN_CONFLICTS": true,
 	// uv.

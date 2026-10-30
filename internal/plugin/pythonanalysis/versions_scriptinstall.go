@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"errors"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -25,8 +26,9 @@ import (
 //	uv sync --locked | --frozen    --locked refuses a lock pyproject.toml has moved past;
 //	                               --frozen installs the lock as written
 //	poetry install                 refuses a lock pyproject.toml has moved past
-//	pdm sync                       installs the lock as written, where no pre_install or
-//	                               post_install hook in tool.pdm.scripts runs around it
+//	pdm sync                       installs the lock as written, where no pre_invoke,
+//	                               pre_install or post_install hook in tool.pdm.scripts
+//	                               runs around it
 //	pipenv install --deploy        refuses a Pipfile.lock the Pipfile has moved past
 //	pipenv sync                    installs Pipfile.lock as written
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
@@ -39,8 +41,8 @@ import (
 // else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
 // (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
 // every other tool laneToken names, run wrappers whose argv names one included. A
-// PIP_* or UV_* variable set in any script surface withholds, since every pip or uv the build
-// runs reads it. How a surface is read, and what binds a command to a file, is lane-neutral,
+// PIP_*, UV_* or PDM_* variable set in any script surface withholds, since every pip, uv or pdm
+// the build runs reads it. How a surface is read, and what binds a command to a file, is lane-neutral,
 // in scriptsurface.
 //
 // One more pip form installs nothing but pip itself, so it withholds the pip coordinate alone
@@ -91,21 +93,21 @@ type pipInstall struct {
 // the script surfaces run. A nil pipInstalls records nothing.
 type pipInstalls map[string][]pipInstall
 
-// laneEnvRE matches a PIP_* or UV_* name that is not a $, ${ or attribute reference, so is
+// laneEnvRE matches a PIP_*, UV_* or PDM_* name that is not a $, ${ or attribute reference, so is
 // being set.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`)
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV|PDM)_[A-Z0-9_]+`)
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
 // install_requires), any word starting pip or conda, and an interpreter option that runs one
 // as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
-// file not read here defines, or installs into the environments it makes (poe, invoke and its
-// inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
+// file not read here defines, or installs into the environments it makes (poe and its module
+// poethepoet, invoke and its inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
 // candidate whenever a session installs.
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
-		"hatch", "flit", "setup.py", "poe", "invoke", "inv", "tox":
+		"hatch", "flit", "setup.py", "poe", "poethepoet", "invoke", "inv", "tox":
 		return true
 	}
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
@@ -171,10 +173,10 @@ func laneRunWrapper(words []string) ([]string, bool) {
 }
 
 // pdmSyncNoHooks reports whether pyprojects, the manifests a pdm sync binds to, are there and
-// name no pre_install or post_install script, which pdm sync runs around the install. A
-// manifest this cannot decode names one.
+// name no pre_invoke, pre_install or post_install script, which pdm sync runs around the
+// install. A manifest this cannot decode names one.
 func pdmSyncNoHooks(pyprojects []string) bool {
-	if pyprojects == nil {
+	if len(pyprojects) == 0 {
 		return false
 	}
 	for _, m := range pyprojects {
@@ -182,24 +184,39 @@ func pdmSyncNoHooks(pyprojects []string) bool {
 		if err != nil {
 			return false
 		}
-		var doc struct {
-			Tool struct {
-				PDM struct {
-					Scripts map[string]any `toml:"scripts"`
-				} `toml:"pdm"`
-			} `toml:"tool"`
-		}
-		if _, err := toml.Decode(string(data), &doc); err != nil {
+		scripts, err := pdmScripts(data)
+		if err != nil {
 			return false
 		}
-		if _, ok := doc.Tool.PDM.Scripts["pre_install"]; ok {
-			return false
-		}
-		if _, ok := doc.Tool.PDM.Scripts["post_install"]; ok {
-			return false
+		for _, hook := range []string{"pre_invoke", "pre_install", "post_install"} {
+			if _, ok := scripts[hook]; ok {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+// pdmScripts decodes a pyproject.toml's tool.pdm.scripts table, failing when it is there but
+// not a table.
+func pdmScripts(data []byte) (map[string]any, error) {
+	var doc struct {
+		Tool struct {
+			PDM struct {
+				Scripts any `toml:"scripts"`
+			} `toml:"pdm"`
+		} `toml:"tool"`
+	}
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		return nil, err
+	}
+	switch scripts := doc.Tool.PDM.Scripts.(type) {
+	case nil:
+		return nil, nil
+	case map[string]any:
+		return scripts, nil
+	}
+	return nil, errors.New("tool.pdm.scripts is not a table")
 }
 
 // laneRunBinds reports whether a run wrapper's argv is the command it runs rather than a
@@ -213,17 +230,7 @@ func laneRunBinds(words []string, b scriptsurface.Binder) bool {
 	switch head, _ := scriptsurface.CommandName(words[0]); head {
 	case "pdm":
 		name = "pyproject.toml"
-		scripts = func(data []byte) (map[string]any, error) {
-			var doc struct {
-				Tool struct {
-					PDM struct {
-						Scripts map[string]any `toml:"scripts"`
-					} `toml:"pdm"`
-				} `toml:"tool"`
-			}
-			_, err := toml.Decode(string(data), &doc)
-			return doc.Tool.PDM.Scripts, err
-		}
+		scripts = pdmScripts
 	case "pipenv":
 		name = "Pipfile"
 		scripts = func(data []byte) (map[string]any, error) {

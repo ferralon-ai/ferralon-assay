@@ -349,7 +349,11 @@ func TestResolveVersions_PyprojectTaskInstalls(t *testing.T) {
 		{"pdm sync, hook as a dotted key", project + "[tool.pdm]\nscripts.post_install = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
 		{"pdm sync, hook as a table", project + "[tool.pdm.scripts.post_install]\ncmd = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
 		{"pdm sync, hook in a composite", project + "[tool.pdm.scripts]\npost_install = { composite = [\"pip install jinja2==3.1.2\"] }\n", "pdm sync\n", false},
+		{"pdm sync, pre_invoke", project + "[tool.pdm.scripts]\npre_invoke = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, scripts not a table", project + "[tool.pdm]\nscripts = [\"pip install jinja2==3.1.2\"]\n", "pdm sync\n", false},
+		{"pdm sync, PDM_PROJECT exported", project, "export PDM_PROJECT=/app/sub\npdm sync\n", false},
 		{"poe task", project + "[tool.poe.tasks]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\npoe setup\n", false},
+		{"poe task through python -m", project + "[tool.poe.tasks]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\npython -m poethepoet setup\n", false},
 		{"hatch env script", project + "[tool.hatch.envs.default.scripts]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\nhatch run setup\n", false},
 
 		// Guards: another script name, and no scripts table.
@@ -362,6 +366,25 @@ func TestResolveVersions_PyprojectTaskInstalls(t *testing.T) {
 			r := resolveVersion(t, dir, "jinja2")
 			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
 				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveVersions_PDMSyncUnbound(t *testing.T) {
+	tests := map[string]map[string]string{
+		"no pyproject.toml": {"requirements.txt": "jinja2==3.1.4\n", "install.sh": "#!/bin/sh\npdm sync\n"},
+		"PDM_PROJECT in a Dockerfile": {
+			"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n",
+			"pdm.lock": "[metadata]\ngroups = [\"default\"]\n",
+			"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY . .\nENV PDM_PROJECT=/app/sub\nRUN pdm sync\n",
+		},
+	}
+	for name, files := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved || r.Partiality.Complete {
+				t.Fatalf("jinja2 = %+v partiality %+v, want unresolved and incomplete", r.Match, r.Partiality)
 			}
 		})
 	}

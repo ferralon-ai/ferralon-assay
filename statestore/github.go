@@ -253,6 +253,8 @@ func (s *GitHubRefStore) tryWrite(ctx context.Context, st *State) (*State, error
 
 	out := *st
 	out.CommitSHA = commitSHA
+	// The hook belongs to this write; the committed State must not hand it to another writer.
+	out.Remerge = nil
 	if out.Report != nil {
 		out.SBOM = out.Report.SBOM
 	}

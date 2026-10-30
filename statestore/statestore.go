@@ -179,7 +179,9 @@ type State struct {
 	// concurrent winner after a lost CAS, before that State is written. A writer that derives
 	// part of its State from the rest (a projection over the Report and DepFetch) sets it so the
 	// derivation is redone over the merged values rather than lost to the union. It is never
-	// persisted, and it is carried onto the merged State so every retry applies it.
+	// persisted, and it is carried onto the merged State so every retry applies it. Every
+	// StateStore implementation must apply it on each merge-retry (mergeForRetry does), and
+	// must clear it on the State it returns from Write.
 	Remerge func(*State) error
 	// CommitSHA is the commit the State was read from — the CAS expected-old token.
 	// Empty for a freshly constructed State (signals create-if-absent to Write).

@@ -198,6 +198,7 @@ func TestDepFetchMergeAfterLostCAS(t *testing.T) {
 
 // TestRemergeAfterLostCAS: every store applies the race-loser's Remerge hook to the merged state,
 // over the merged record, before it writes it; a failing hook fails the write and nothing lands.
+// Neither the committed State a write returns nor a later read carries the hook.
 func TestRemergeAfterLostCAS(t *testing.T) {
 	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 	stores := []struct {
@@ -231,7 +232,9 @@ func TestRemergeAfterLostCAS(t *testing.T) {
 				s.Cursor = "remerged:" + strings.Join(s.DepFetch.Reassess, ",")
 				return nil
 			}
-			mustWrite(t, store, loser)
+			if committed := mustWrite(t, store, loser); committed.Remerge != nil {
+				t.Fatal("the store handed the hook back on the committed State")
+			}
 			got, err := store.Read(ctx)
 			if err != nil {
 				t.Fatalf("read: %v", err)

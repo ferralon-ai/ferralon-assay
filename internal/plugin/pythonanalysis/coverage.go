@@ -40,13 +40,14 @@ type pyDecls struct {
 // manifestDecls returns every requirement the non-lock manifest at path declares in a role that
 // installs it at runtime or into a development environment: requirements lines, PEP 621
 // dependencies and optional-dependencies (with the files a dynamic-metadata table names), PEP
-// 735 groups, uv/pdm dev-dependencies, hatch environments, poetry dependency tables, setup.cfg
+// 735 groups, uv/pdm dev-dependencies, hatch environments (pyproject.toml's and hatch.toml's), poetry dependency tables, setup.cfg
 // and setup.py install_requires and extras_require, and Pipfile.lock pins. Build-time
 // requirements ([build-system].requires, setup_requires) are not among them: they install into
 // an isolated build environment, not the runtime one, and no lockfile records them. ok is
 // false when anything the file declares cannot be read as a requirement: an editable, VCS or
 // URL requirements line, an unreadable entry, a pyproject that does not decode or configures
-// pixi, a computed setup.py, any hatch_build.py.
+// pixi, a computed setup.py, any hatch_build.py, a pyproject.toml or hatch.toml whose hatch config
+// can install past its environments' lists.
 func manifestDecls(path string) (pyDecls, bool) {
 	data, err := readRegular(path)
 	if err != nil {
@@ -87,6 +88,10 @@ func manifestDecls(path string) (pyDecls, bool) {
 		return out, scan.ok && addAll(scan.specs, true)
 	case base == "pyproject.toml":
 		return pyprojectDecls(path, data, out)
+	case base == "hatch.toml":
+		var h hatchConfig
+		ok := toml.Unmarshal(data, &h) == nil && hatchDecls(h, func(specs []string) bool { return addAll(specs, true) })
+		return out, ok
 	case base == "Pipfile.lock":
 		deps, ok := parsePipfileLock(data)
 		for _, d := range deps {
@@ -204,11 +209,28 @@ func stringArray(v any) ([]string, bool) {
 	return out, true
 }
 
+// hatchDecls passes every hatch environment's dependencies and extra-dependencies to add. It
+// is false when hatch can install past those lists (installsPast), a list is not an array of
+// strings, or add rejects an entry.
+func hatchDecls(h hatchConfig, add func([]string) bool) bool {
+	if h.installsPast() {
+		return false
+	}
+	for _, e := range slices.Sorted(maps.Keys(h.Envs)) {
+		env := h.Envs[e]
+		deps, depsOK := stringArray(env.Dependencies)
+		extra, extraOK := stringArray(env.ExtraDependencies)
+		if !depsOK || !extraOK || !add(deps) || !add(extra) {
+			return false
+		}
+	}
+	return true
+}
+
 func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	var pp pyprojectDeps
 	var all pyprojectAll
-	if toml.Unmarshal(data, &pp) != nil || toml.Unmarshal(data, &all) != nil || all.Tool.Pixi != nil ||
-		all.Tool.Hatch.installsPast() {
+	if toml.Unmarshal(data, &pp) != nil || toml.Unmarshal(data, &all) != nil || all.Tool.Pixi != nil {
 		return out, false
 	}
 	add := func(specs []string) bool {
@@ -260,13 +282,8 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			return out, false
 		}
 	}
-	for _, e := range slices.Sorted(maps.Keys(all.Tool.Hatch.Envs)) {
-		env := all.Tool.Hatch.Envs[e]
-		deps, depsOK := stringArray(env.Dependencies)
-		extra, extraOK := stringArray(env.ExtraDependencies)
-		if !depsOK || !extraOK || !add(deps) || !add(extra) {
-			return out, false
-		}
+	if !hatchDecls(all.Tool.Hatch, add) {
+		return out, false
 	}
 	poetry := []map[string]any{all.Tool.Poetry.Dependencies, all.Tool.Poetry.DevDependencies}
 	for _, g := range slices.Sorted(maps.Keys(all.Tool.Poetry.Group)) {

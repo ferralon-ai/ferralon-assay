@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -159,6 +161,11 @@ func manifestToPyReqs(path string, env map[string]string, selection []string) ([
 	case "hatch_build.py":
 		deps, ok := parseHatchBuild(data)
 		return liftAdvisory(deps, "hatch_build.py"), ok
+	case "hatch.toml":
+		// Its environments are development installs, which pyproject.toml's [tool.hatch] does
+		// not inventory either.
+		var h hatchConfig
+		return nil, toml.Unmarshal(data, &h) == nil
 	default: // requirements*.txt
 		reqs := resolveRequirements(data, env, selection)
 		applyViaEdges(reqs, pipCompileVia(data))

@@ -1106,6 +1106,44 @@ func TestResolveVersions_HatchEnvRangeBesideProjectPinUnresolved(t *testing.T) {
 	mustUndecidedCompletePy(t, dir, "pyjwt")
 }
 
+// hatch reads environments from hatch.toml too, under [envs.*] with no tool. prefix: a range
+// there leaves the project's pin unresolved, an environment there that installs past its lists
+// or a hatch.toml that does not decode leaves it unread, and a quiet one changes nothing.
+func TestResolveVersions_HatchTomlEnvs(t *testing.T) {
+	const pyproject = "[project]\nname = \"b\"\ndependencies = [\"pyjwt==2.8.0\"]\n"
+	tree := func(hatch string) string {
+		return writeTree(t, map[string]string{"pyproject.toml": pyproject, "hatch.toml": hatch})
+	}
+	t.Run("env range", func(t *testing.T) {
+		mustUndecidedCompletePy(t, tree("[envs.default]\ndependencies = [\"pyjwt<2\"]\n"), "pyjwt")
+	})
+	t.Run("env extra range", func(t *testing.T) {
+		mustUndecidedCompletePy(t, tree("[envs.test]\nextra-dependencies = [\"pyjwt<2\"]\n"), "pyjwt")
+	})
+	for name, hatch := range map[string]string{
+		"post-install pip":  "[envs.default]\npost-install-commands = [\"pip install 'pyjwt<2'\"]\n",
+		"top-level sources": "[sources]\npyjwt = { path = \"../pyjwt\" }\n",
+		"custom collector":  "[env.collectors.custom]\n",
+		"list not an array": "[envs.default]\ndependencies = \"pyjwt<2\"\n",
+		"does not decode":   "[envs.default\n",
+		"malformed entry":   "[envs.default]\ndependencies = [\"pyjwt <<2\"]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := tree(hatch)
+			for i := 0; i < resolveRuns; i++ {
+				res := resolveVersion(t, dir, "pyjwt")
+				mustUnresolvedPy(t, res)
+				if res.Partiality.Complete {
+					t.Fatalf("an unread hatch.toml must leave the result partial; got %+v", res.Partiality)
+				}
+			}
+		})
+	}
+	t.Run("quiet env", func(t *testing.T) {
+		mustResolvedCompletePy(t, tree("[envs.default]\ntype = \"virtual\"\ndependencies = [\"pytest\"]\n[envs.default.scripts]\ntest = \"pytest {args}\"\n"), "pyjwt", "2.8.0")
+	})
+}
+
 // [project].dependencies is read, and a dynamic field that is not a dependency list does
 // not veto.
 func TestResolveVersions_PyprojectReadTablesDoNotVeto(t *testing.T) {

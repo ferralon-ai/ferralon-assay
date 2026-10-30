@@ -97,6 +97,7 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"dev-requirements.txt", map[string]string{"dev-requirements.txt": "pyjwt==2.8.0\n"}, false},
 		{"requirements.in", map[string]string{"requirements.in": "pyjwt\n"}, false},
 		{"Pipfile without a lock", map[string]string{"Pipfile": "[packages]\npyjwt = \"*\"\n"}, false},
+		{"HATCH.toml in another case", map[string]string{"HATCH.toml": "[envs.default]\ndependencies = [\"pyjwt\"]\n"}, false},
 		{"environment.yml", map[string]string{"environment.yml": "dependencies:\n  - pip:\n    - pyjwt\n"}, false},
 		{"tox.ini with deps", map[string]string{"tox.ini": "[testenv]\ndeps = pyjwt\n"}, false},
 		// tox installs the project into each env it makes, resolving its dependencies itself.
@@ -457,5 +458,20 @@ func TestResolveVersions_PipfileLockWalkOrderDeterministic(t *testing.T) {
 		if !reflect.DeepEqual(r.Match, first) {
 			t.Fatalf("run %d: Match = %+v, first run %+v", i, r.Match, first)
 		}
+	}
+}
+
+// TestDeclaredDistributions_ReadsPastMalformedEntry: a malformed hatch requirement leaves the list
+// partly read, but the names after it are still declared.
+func TestDeclaredDistributions_ReadsPastMalformedEntry(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"hatch.toml": "[envs.default]\ndependencies = [\"not a requirement!!\", 3, \"pyjwt==2.8.0\"]\n",
+	})
+	names, complete, _ := declaredDistributions(root)
+	if !names["pyjwt"] {
+		t.Errorf("declared %v, want pyjwt", names)
+	}
+	if complete {
+		t.Error("complete, want partial")
 	}
 }

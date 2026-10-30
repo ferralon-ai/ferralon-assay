@@ -202,3 +202,32 @@ func canonicalInventory(t *testing.T, inv plugin.DependencyInventory) string {
 	}
 	return string(b)
 }
+
+// A hatch.toml is inventoried as what it is, environments only, and never read as a
+// requirements file: its lines add no node, and one that does not decode is a tool failure.
+func TestInventoryHatchToml(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hatch    string
+		complete bool
+	}{
+		"environments":    {"[envs.default]\ndependencies = [\"pyjwt<2\"]\n", true},
+		"does not decode": {"pyjwt==1.7.1\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"flask==2.3.0\"]\n",
+				"hatch.toml":     tc.hatch,
+			})
+			inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(inv.Nodes) != 1 || !strings.HasPrefix(inv.Nodes[0].PURL, "pkg:pypi/flask@") {
+				t.Fatalf("nodes = %+v; want flask alone", inv.Nodes)
+			}
+			if inv.Partiality.Complete != tc.complete {
+				t.Fatalf("partiality = %+v; want complete=%v", inv.Partiality, tc.complete)
+			}
+		})
+	}
+}

@@ -980,6 +980,13 @@ func TestResolveVersions_PyprojectUnreadTablesVeto(t *testing.T) {
 		"uv-dev-not-string":         head + "[tool.uv]\ndev-dependencies = [\"flask>=2\", {name = \"x\"}]\n",
 		"pdm-dev-editable":          head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\", \"-e ./lib\"]\n",
 		"pdm-dev-not-array":         head + "[tool.pdm.dev-dependencies]\ntest = \"flask>=2\"\n",
+		"hatch-dep-not-string":      head + "[tool.hatch.envs.default]\ndependencies = [\"flask>=2\", 1]\n",
+		"hatch-extra-not-string":    head + "[tool.hatch.envs.test]\nextra-dependencies = [\"flask>=2\", {name = \"x\"}]\n",
+		"hatch-dep-not-array":       head + "[tool.hatch.envs.default]\ndependencies = \"flask>=2\"\n",
+		"hatch-dep-unparseable":     head + "[tool.hatch.envs.default]\ndependencies = [\"flask>=2\", \"=bad\"]\n",
+		"hatch-dep-local-file":      head + "[tool.hatch.envs.default]\ndependencies = [\"lib @ file:///opt/lib\"]\n",
+		"hatch-matrix-override":     head + "[tool.hatch.envs.test]\ndependencies = [\"pytest\"]\n\n[[tool.hatch.envs.test.matrix]]\nflask = [\"1\", \"2\"]\n\n[tool.hatch.envs.test.overrides]\nmatrix.flask.dependencies = [{value = \"flask<2\", if = [\"1\"]}]\n",
+		"hatch-env-override":        head + "[tool.hatch.envs.test.overrides]\nenv.CI.extra-dependencies = [\"flask<2\"]\n",
 		"poetry-path":               head + "[tool.poetry.dependencies]\nflask = \"^2\"\nlib = {path = \"../lib\"}\n",
 		"poetry-file":               head + "[tool.poetry.group.dev.dependencies]\nflask = \"^2\"\nlib = {file = \"dist/lib.whl\"}\n",
 		"poetry-path-in-array":      head + "[tool.poetry.dependencies]\nflask = [{version = \"^2\", python = \"<3.12\"}, {path = \"../flask\", python = \">=3.12\"}]\n",
@@ -1019,6 +1026,9 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"groups-paren-uv-lock":   {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(>=2)\"]\n", "uv.lock": uvLock},
 		"uv-dev-paren-uv-lock":   {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask(>=2)\"]\n", "uv.lock": uvLock},
 		"pdm-dev-paren-pdm-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask(>=2)\"]\n", "pdm.lock": pdmLk},
+		"hatch-exact-pin":        {"pyproject.toml": head + "[tool.hatch.envs.default]\ndependencies = [\"flask==2.3.0\"]\n\n[tool.hatch.envs.lint]\nextra-dependencies = [\"flask==2.3.0\"]\n"},
+		// Overrides that set no dependencies (here the matrix's interpreters) do not veto.
+		"hatch-override-no-deps": {"pyproject.toml": head + "[tool.hatch.envs.test]\ndependencies = [\"flask==2.3.0\"]\n\n[[tool.hatch.envs.test.matrix]]\npython = [\"3.11\", \"3.12\"]\n\n[tool.hatch.envs.test.overrides]\nmatrix.python.platforms = [\"linux\"]\n"},
 	}
 	for name, files := range covered {
 		t.Run(name, func(t *testing.T) {
@@ -1032,8 +1042,11 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"pdm-dev-other-tool-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n", "uv.lock": uvLock},
 		"poetry-other-tool-lock":  {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2\"\n", "uv.lock": uvLock},
 		"poetry-caret-stale-lock": {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2.4\"\n", "poetry.lock": pdmLk},
-		"poetry-git":              {"pyproject.toml": "[tool.poetry.dependencies]\nflask = {git = \"https://github.com/pallets/flask\"}\n", "poetry.lock": pdmLk},
-		"group-direct-reference":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask @ https://example.com/flask-2.3.0.tar.gz\"]\n", "uv.lock": uvLock},
+		// hatch has no lock, so no lock covers an environment's range.
+		"hatch-dep-uv-lock":      {"pyproject.toml": head + "[tool.hatch.envs.default]\ndependencies = [\"flask>=2\"]\n", "uv.lock": uvLock},
+		"hatch-extra-uv-lock":    {"pyproject.toml": head + "[tool.hatch.envs.test]\nextra-dependencies = [\"flask>=2\"]\n", "uv.lock": uvLock},
+		"poetry-git":             {"pyproject.toml": "[tool.poetry.dependencies]\nflask = {git = \"https://github.com/pallets/flask\"}\n", "poetry.lock": pdmLk},
+		"group-direct-reference": {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask @ https://example.com/flask-2.3.0.tar.gz\"]\n", "uv.lock": uvLock},
 		// A parenthesized range a pin elsewhere does not satisfy: the name must still match.
 		"project-paren-stale-lock": {"pyproject.toml": head[:len(head)-1] + "dependencies = [\"Flask(<2.3)\"]\n", "uv.lock": uvLock},
 		"groups-paren-stale-lock":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(<2.3)\"]\n", "uv.lock": uvLock},
@@ -1049,6 +1062,15 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 			mustUndecidedCompletePy(t, writeTree(t, files), "flask")
 		})
 	}
+}
+
+// tracker#543: a hatch environment's range beside a [project] pin makes the coordinate
+// multi-valued, so the pin no longer resolves.
+func TestResolveVersions_HatchEnvRangeBesideProjectPinUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==2.8.0\"]\n\n[tool.hatch.envs.default]\ndependencies = [\"pyjwt<2\"]\n",
+	})
+	mustUndecidedCompletePy(t, dir, "pyjwt")
 }
 
 // [project].dependencies is read, and a dynamic field that is not a dependency list does

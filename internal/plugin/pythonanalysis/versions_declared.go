@@ -74,7 +74,8 @@ func isCondaToolPackage(spec string) bool {
 
 // pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
-// dependency tables, and the uv and pdm dev-dependencies.
+// dependency tables, the uv and pdm dev-dependencies, and the hatch environments'
+// dependencies.
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -99,6 +100,13 @@ type pyprojectDoc struct {
 		PDM struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
 		} `toml:"pdm"`
+		Hatch struct {
+			Envs map[string]struct {
+				Dependencies      any `toml:"dependencies"`
+				ExtraDependencies any `toml:"extra-dependencies"`
+				Overrides         any `toml:"overrides"`
+			} `toml:"envs"`
+		} `toml:"hatch"`
 	} `toml:"tool"`
 }
 
@@ -181,12 +189,14 @@ func pyprojectDynamicDeps(doc pyprojectDoc) bool {
 }
 
 // pyprojectToolDeps reads the pyproject tables that declare installs outside [project]: PEP 735
-// [dependency-groups], [tool.uv] dev-dependencies and [tool.pdm] dev-dependencies as PEP 508
-// strings, and the [tool.poetry] dependencies, dev-dependencies and group tables as poetry
-// constraints. Each declaration is covered only by its own tool's lock in the same directory
-// (PEP 735 groups by groupLocks). ok is false when an entry is not a well-formed
-// requirement, a group is malformed (dependencyGroupSpecs), a poetry constraint does not
-// translate, or a poetry entry installs a local path or file.
+// [dependency-groups], [tool.uv] dev-dependencies, [tool.pdm] dev-dependencies and each
+// [tool.hatch.envs] environment's dependencies and extra-dependencies as PEP 508 strings, and
+// the [tool.poetry] dependencies, dev-dependencies and group tables as poetry constraints. Each
+// declaration is covered only by its own tool's lock in the same directory (PEP 735 groups by
+// groupLocks); hatch has no lock, so nothing covers its environments. ok is false when an
+// entry is not a well-formed requirement, a group is malformed (dependencyGroupSpecs), a
+// poetry constraint does not translate, a poetry entry installs a local path or file, or a
+// hatch environment's overrides set dependencies (hatchOverridesDeps).
 func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var (
 		deps    []plugin.ResolvedDependency
@@ -227,6 +237,12 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {
 		addAny(doc.Tool.PDM.DevDependencies[g], []string{"pdm.lock"})
 	}
+	for _, e := range slices.Sorted(maps.Keys(doc.Tool.Hatch.Envs)) {
+		env := doc.Tool.Hatch.Envs[e]
+		addAny(env.Dependencies, nil)
+		addAny(env.ExtraDependencies, nil)
+		ok = ok && !hatchOverridesDeps(env.Overrides)
+	}
 
 	p := doc.Tool.Poetry
 	tables := []map[string]any{p.Dependencies, p.DevDependencies}
@@ -258,6 +274,19 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	return deps, origins, ok
+}
+
+// hatchOverridesDeps reports whether a hatch environment's overrides table sets dependencies
+// or extra-dependencies anywhere in it: matrix and environment-variable overrides add
+// requirements this reader does not evaluate.
+func hatchOverridesDeps(v any) bool {
+	t, _ := v.(map[string]any)
+	for k, sub := range t {
+		if k == "dependencies" || k == "extra-dependencies" || hatchOverridesDeps(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // poetryInstallsLocal reports whether a [tool.poetry] dependency value, or any element of an

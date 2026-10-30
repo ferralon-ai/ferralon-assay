@@ -840,6 +840,7 @@ func TestCallGraph_StringLoaders(t *testing.T) {
 		{"unbound import_string", "def import_string(name):\n    return name\n\nimport_string('acme.views')\n", nil, false},
 		{"run on an unrelated module", "import server\nserver.run('acme.asgi:app')\n", nil, false},
 		{"attribute named like a loader", "import werkzeug\nobj.werkzeug.import_string('acme.views')\n", nil, false},
+		{"loader name on a call receiver", "import uvicorn\nimport werkzeug\nmake().werkzeug.import_string(name)\nservers[0].uvicorn.run('acme.asgi:app')\n", nil, false},
 		{"bare config.from_object name", "from acme import config\nconfig.from_object('acme.settings')\n", nil, false},
 		{"uvicorn Config as a type", "from typing import Optional\nimport uvicorn\nfrom uvicorn import Config\n\ndef build(cfg: uvicorn.Config, alt: Optional[Config]) -> Config:\n    assert isinstance(cfg, uvicorn.config.Config)\n    return cfg\n", nil, false},
 		{"uvicorn Config subclassed", "import uvicorn\n\nclass Settings(uvicorn.Config):\n    pass\n", nil, true},

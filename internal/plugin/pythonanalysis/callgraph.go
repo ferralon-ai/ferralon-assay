@@ -359,8 +359,9 @@ func loadProgram(buildDir string) (*program, error) {
 		scan.refs.scanFStrings(clean, lits)
 		roots, opaque := dynamicImports(clean, lits)
 		lookupRoots, lookups, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
-		roots = sortedDedup(append(roots, lookupRoots...))
-		opaque = opaque || lookupOpaque
+		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings)
+		roots = sortedDedup(append(append(roots, lookupRoots...), loaderRoots...))
+		opaque = opaque || lookupOpaque || loaderOpaque
 		if opaque {
 			prog.dynamicImportOpaque = true
 		}

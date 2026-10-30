@@ -797,6 +797,54 @@ func TestCallGraph_ModuleLevelCallsGetModuleInitCaller(t *testing.T) {
 // TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
 // program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
 // reason.
+func TestCallGraph_StringLoaders(t *testing.T) {
+	cases := []struct {
+		name      string
+		src       string
+		roots     []string
+		dynReason bool
+	}{
+		{"werkzeug import_string literal", "from werkzeug.utils import import_string\nview = import_string('acme.views.Index')\n", []string{"acme.views", "acme.views.Index"}, false},
+		{"werkzeug import_string colon form", "import werkzeug\nview = werkzeug.import_string('acme.views:Index')\n", []string{"acme.views"}, false},
+		{"django import_string through an alias", "from django.utils.module_loading import import_string as load\nBackend = load(dotted_path='acme.backends.Mail')\n", []string{"acme.backends", "acme.backends.Mail"}, false},
+		{"import_string computed", "from werkzeug.utils import import_string\n\ndef view(name):\n    return import_string(name)\n", nil, true},
+		{"import_string unpacked", "from werkzeug.utils import import_string\n\ndef view(kw):\n    return import_string(**kw)\n", nil, true},
+		{"uvicorn.run literal", "import uvicorn\n\nif __name__ == '__main__':\n    uvicorn.run('acme.asgi:app', port=8000)\n", []string{"acme.asgi"}, false},
+		{"uvicorn Config keyword", "from uvicorn import Config\ncfg = Config(app='acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"uvicorn.run f-string", "import uvicorn\n\ndef serve(m):\n    uvicorn.run(f'{m}:app')\n", nil, true},
+		{"uvicorn.run from the environment", "import os\nimport uvicorn\nuvicorn.run(os.environ['APP'])\n", nil, true},
+		{"uvicorn.run from getenv", "import os\nimport uvicorn\nuvicorn.run(os.getenv('APP', 'acme.asgi:app'))\n", nil, true},
+		{"uvicorn.run app object", "import uvicorn\nfrom acme.asgi import app\nuvicorn.run(app, host='0.0.0.0')\n", nil, false},
+		{"flask from_object literal", "from flask import Flask\napp = Flask(__name__)\napp.config.from_object('acme.settings.Prod')\n", []string{"acme.settings", "acme.settings.Prod"}, false},
+		{"flask from_object on a call", "def make():\n    create_app().config.from_object('acme.settings')\n", []string{"acme", "acme.settings"}, false},
+		{"flask from_object class", "from flask import Flask\nfrom acme.settings import Prod\napp = Flask(__name__)\napp.config.from_object(Prod)\n", nil, false},
+		{"flask from_object from the environment", "import os\n\ndef make(app):\n    app.config.from_object(os.environ.get('SETTINGS'))\n", nil, true},
+		{"celery config_from_object literal", "from celery import Celery\napp = Celery('acme')\napp.config_from_object('django.conf:settings', namespace='CELERY')\n", []string{"django.conf"}, false},
+		{"celery config_from_object variable", "def make(app, settings):\n    app.config_from_object(settings)\n", nil, false},
+		{"subprocess.run is not a loader", "import subprocess\n\ndef go(cmd):\n    subprocess.run(cmd)\n    subprocess.run('acme.tool')\n", nil, false},
+		{"unbound import_string", "def import_string(name):\n    return name\n\nimport_string('acme.views')\n", nil, false},
+		{"run on an unrelated module", "import server\nserver.run('acme.asgi:app')\n", nil, false},
+		{"attribute named like a loader", "import werkzeug\nobj.werkzeug.import_string('acme.views')\n", nil, false},
+		{"bare config.from_object name", "from acme import config\nconfig.from_object('acme.settings')\n", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"m.py": c.src})
+			prog, err := loadProgram(dir)
+			if err != nil {
+				t.Fatalf("loadProgram: %v", err)
+			}
+			if got := prog.files[0].loadRoots; !reflect.DeepEqual(got, c.roots) {
+				t.Errorf("loadRoots = %v, want %v", got, c.roots)
+			}
+			res := callGraphOf(prog)
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != c.dynReason {
+				t.Errorf("dynamic_import reason = %v, want %v (reasons %v)", got, c.dynReason, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
 func TestCallGraph_DynamicImports(t *testing.T) {
 	cases := []struct {
 		name      string

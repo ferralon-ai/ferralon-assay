@@ -537,6 +537,195 @@ func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaq
 	return sortedDedup(roots), opaque
 }
 
+// stringLoaderArg says what a string loader's first argument may be.
+type stringLoaderArg int
+
+const (
+	// loaderNameOnly: the argument is always a dotted name, so a computed one is a dynamic
+	// import the scanner cannot name.
+	loaderNameOnly stringLoaderArg = iota
+	// loaderNameOrObject: the argument may be the object itself (an app, a config class),
+	// so a computed one is a dynamic import only when it is provably a string.
+	loaderNameOrObject
+)
+
+// stringLoaders are library callables that import the module a dotted-name argument
+// ("pkg.mod.attr" or "pkg.mod:attr") names, keyed by the full dotted name the file's
+// imports resolve the call to, so an unrelated run() or import_string() is not one.
+var stringLoaders = map[string]stringLoaderArg{
+	"werkzeug.import_string":                    loaderNameOnly,
+	"werkzeug.utils.import_string":              loaderNameOnly,
+	"django.utils.module_loading.import_string": loaderNameOnly,
+	"uvicorn.run":                               loaderNameOrObject,
+	"uvicorn.Config":                            loaderNameOrObject,
+	"uvicorn.main.run":                          loaderNameOrObject,
+	"uvicorn.config.Config":                     loaderNameOrObject,
+}
+
+// stringLoaderMethods are loader methods called on an instance the scanner cannot type,
+// keyed by the attribute chain that ends the call: Flask's app.config.from_object and
+// Celery's app.config_from_object, which both take a dotted name or the object itself.
+var stringLoaderMethods = map[string]bool{
+	"config.from_object": true,
+	"config_from_object": true,
+}
+
+// stringLoaderImports scans one file's cleaned source for calls to stringLoaders and
+// stringLoaderMethods. It returns the module names literal arguments import (a dotted name
+// may end in an attribute, so its parent module is named too) and whether a computed
+// argument may name a module the scanner cannot see. bindings resolve the head of each
+// dotted call to the module the file imported it from.
+func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots []string, opaque bool) {
+	targets := map[string][]string{}
+	for _, b := range bindings {
+		if b.target != "" && !slices.Contains(targets[b.local], b.target) {
+			targets[b.local] = append(targets[b.local], b.target)
+		}
+	}
+	r := []rune(clean)
+	n := len(r)
+	for i := 0; i < n; {
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		qualified := i > 0 && r[i-1] == '.'
+		var segs []string
+		end := i
+		for {
+			var w string
+			w, end = readWordRunes(r, end)
+			segs = append(segs, w)
+			if end+1 < n && r[end] == '.' && isIdentStartRune(r[end+1]) {
+				end++
+				continue
+			}
+			break
+		}
+		open := skipAllSpace(r, end)
+		if open >= n || r[open] != '(' || precededByDef(r, i) {
+			i = end
+			continue
+		}
+		kind, ok := stringLoaderKind(segs, qualified, targets)
+		if !ok {
+			i = end
+			continue
+		}
+		arg, named := loaderArgStart(r, open+1)
+		name, lit := literalArg(r, arg, lits)
+		lit = lit && named
+		switch {
+		case lit && name != "":
+			mod, _, colon := strings.Cut(name, ":")
+			roots = append(roots, mod)
+			if parent, _, dotted := cutLast(mod, "."); !colon && dotted {
+				roots = append(roots, parent)
+			}
+		case lit:
+		case kind == loaderNameOnly || named && provablyString(r, arg, lits):
+			opaque = true
+		}
+		i = end
+	}
+	return sortedDedup(roots), opaque
+}
+
+// stringLoaderKind reports whether the dotted call segs is a string loader: its head
+// resolved through the file's import targets names a stringLoaders entry, or its trailing
+// attributes are a stringLoaderMethods chain on some receiver. qualified says segs follow
+// a '.' (a call or subscript receiver), so the head is an attribute, not a name to resolve.
+func stringLoaderKind(segs []string, qualified bool, targets map[string][]string) (stringLoaderArg, bool) {
+	k := len(segs)
+	if k >= 2 && segs[k-2] == "config" && stringLoaderMethods["config."+segs[k-1]] && (k >= 3 || qualified) ||
+		stringLoaderMethods[segs[k-1]] && (k >= 2 || qualified) {
+		return loaderNameOrObject, true
+	}
+	if qualified {
+		return 0, false
+	}
+	rest := strings.Join(segs[1:], ".")
+	for _, t := range targets[segs[0]] {
+		full := t
+		if rest != "" {
+			full += "." + rest
+		}
+		if kind, ok := stringLoaders[full]; ok {
+			return kind, true
+		}
+	}
+	return 0, false
+}
+
+// loaderKeywords are the parameter names string loaders give the argument that names the
+// module: uvicorn's app, werkzeug's and django's import_name and dotted_path, Flask's and
+// Celery's obj.
+var loaderKeywords = map[string]bool{"app": true, "import_name": true, "dotted_path": true, "obj": true}
+
+// loaderArgStart returns where a loader call's name argument starts, given the index just
+// past its '('. A leading loaderKeywords keyword is skipped; named is false when the first
+// argument is some other keyword or an unpacking, so where the name is cannot be told.
+func loaderArgStart(r []rune, i int) (start int, named bool) {
+	i = skipAllSpace(r, i)
+	if i < len(r) && r[i] == '*' {
+		return i, false
+	}
+	if i >= len(r) || !isIdentStartRune(r[i]) {
+		return i, true
+	}
+	w, end := readWordRunes(r, i)
+	eq := skipAllSpace(r, end)
+	if eq >= len(r) || r[eq] != '=' || eq+1 < len(r) && r[eq+1] == '=' {
+		return i, true
+	}
+	return eq + 1, loaderKeywords[w]
+}
+
+// provablyString reports whether the call argument starting at r[i] is a string even
+// though it is not a plain literal: it opens with a string literal (an f-string, a
+// concatenation, a %-format, a .format call) or reads the environment (os.environ[...],
+// os.environ.get(...), os.getenv(...)).
+func provablyString(r []rune, i int, lits map[int]strLiteral) bool {
+	i = skipAllSpace(r, i)
+	for j := i; j < len(r) && j-i < 2 && strings.ContainsRune("rRbBuUfFtT", r[j]); j++ {
+		if _, ok := lits[j+1]; ok {
+			return true
+		}
+	}
+	if _, ok := lits[i]; ok {
+		return true
+	}
+	var segs []string
+	end := i
+	for end < len(r) && isIdentStartRune(r[end]) {
+		var w string
+		w, end = readWordRunes(r, end)
+		segs = append(segs, w)
+		if end+1 < len(r) && r[end] == '.' && isIdentStartRune(r[end+1]) {
+			end++
+			continue
+		}
+		break
+	}
+	chain := strings.TrimPrefix(strings.Join(segs, "."), "os.")
+	p := skipAllSpace(r, end)
+	switch chain {
+	case "environ":
+		return p < len(r) && r[p] == '['
+	case "environ.get", "getenv":
+		return p < len(r) && r[p] == '('
+	}
+	return false
+}
+
+// cutLast slices s around the last instance of sep.
+func cutLast(s, sep string) (before, after string, found bool) {
+	if k := strings.LastIndex(s, sep); k >= 0 {
+		return s[:k], s[k+len(sep):], true
+	}
+	return s, "", false
+}
+
 // lookupKind classifies a name moduleLookups watches.
 type lookupKind int
 

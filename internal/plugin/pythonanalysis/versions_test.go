@@ -1542,6 +1542,30 @@ func TestResolveVersions_UVOverrides(t *testing.T) {
 			"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt @ git+https://github.com/example/pyjwt@abc"]`))}, "", false},
 		{"constraint not a list", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`"pyjwt<3"`))}, "", false},
 		{"constraint entry not a string", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`[3]`))}, "", false},
+		// A file: URL installs that tree whatever the lock pins.
+		{"override file URL with a lock", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lockless override file URL", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`))}, "", false},
+		{"constraint file URL with a lock", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt @ file:///opt/forks/pyjwt"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lockless constraint file URL", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt @ file:///opt/forks/pyjwt"]`))}, "", false},
+		// A scoped override replaces the pin wherever its package requests it, so each of its
+		// dependencies is read as an override.
+		{"lockless scoped override", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask", version = "3.0.0" }, dependencies = ["pyjwt==2.9.0"] }]`))}, "", false},
+		{"lock predates scoped override", map[string]string{"pyproject.toml": pp("pyjwt>=2",
+			ov(`[{ package = { name = "flask", version = "3.0.0" }, dependencies = ["pyjwt>=2.9"] }]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"scoped override package not a table", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = "flask", dependencies = ["requests==2.0.0"] }]`))}, "", false},
+		{"scoped override with another key", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask" }, dependencies = ["requests==2.0.0"], marker = "x" }]`))}, "", false},
+		{"scoped override dependency not a requirement", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask" }, dependencies = ["not a requirement!!"] }]`))}, "", false},
+		{"constraint in scoped form", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			cs(`[{ package = { name = "flask" }, dependencies = ["requests==2.0.0"] }]`))}, "", false},
+		// Guard: a scoped override of another name leaves pyjwt alone.
+		{"scoped override for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask", version = "3.0.0" }, dependencies = ["requests==2.0.0"] }]`))}, "2.8.0", false},
 		// Guards: a constraint is no override, so a pin it admits still stands, and a lock pin
 		// inside both the declaration and the constraint is a complete set.
 		{"lockless constraint admits the pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt<3"]`))}, "2.8.0", false},
@@ -1588,6 +1612,12 @@ func TestResolveVersions_UVResolverStaleLockExhaustive(t *testing.T) {
 		{"lock satisfies constraint", "constraint-dependencies = [\"pyjwt>=2.8\"]", "2.8.0", true},
 		{"constraint on a name nothing installs", "constraint-dependencies = [\"urllib3<2\"]", "2.8.0", true},
 		{"override not a list", "override-dependencies = \"pyjwt>=2.8\"", "2.8.0", false},
+		{"direct-reference override", "override-dependencies = [\"pyjwt @ git+https://github.com/example/pyjwt@abc\"]", "2.8.0", false},
+		{"direct-reference constraint", "constraint-dependencies = [\"pyjwt @ git+https://github.com/example/pyjwt@abc\"]", "2.8.0", false},
+		{"file URL constraint", "constraint-dependencies = [\"pyjwt @ file:///opt/forks/pyjwt\"]", "2.8.0", false},
+		{"lock predates scoped override", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.9\"] }]", "2.8.0", false},
+		{"lock satisfies scoped override", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.8\"] }]", "2.8.0", true},
+		{"constraint in scoped form", "constraint-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.8\"] }]", "2.8.0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := writeTree(t, map[string]string{

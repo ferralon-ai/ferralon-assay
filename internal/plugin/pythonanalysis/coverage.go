@@ -171,8 +171,8 @@ type pyprojectAll struct {
 	Tool             struct {
 		UV struct {
 			DevDependencies        []string `toml:"dev-dependencies"`
-			OverrideDependencies   []string `toml:"override-dependencies"`
-			ConstraintDependencies []string `toml:"constraint-dependencies"`
+			OverrideDependencies   any      `toml:"override-dependencies"`
+			ConstraintDependencies any      `toml:"constraint-dependencies"`
 		} `toml:"uv"`
 		Poetry struct {
 			Dependencies    map[string]any `toml:"dependencies"`
@@ -248,7 +248,9 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	// alone admitted. A plain uv sync re-locks past it, and a version or extras change moves the
 	// set of names the lock records.
 	n := len(out.reqs)
-	if !add(all.Tool.UV.OverrideDependencies) || !add(all.Tool.UV.ConstraintDependencies) {
+	overrides, overridesOK := uvResolverSpecs(all.Tool.UV.OverrideDependencies, true)
+	constraints, constraintsOK := uvResolverSpecs(all.Tool.UV.ConstraintDependencies, false)
+	if !overridesOK || !constraintsOK || !add(overrides) || !add(constraints) {
 		return out, false
 	}
 	for i := n; i < len(out.reqs); i++ {
@@ -607,6 +609,9 @@ func (l *pyLock) coversDecl(d pyDecl) bool {
 	versions, ok := l.versions[d.Name]
 	if !ok {
 		return d.Resolver
+	}
+	if d.Resolver && d.Direct { // re-locking installs the reference in place of the locked release
+		return false
 	}
 	if !d.Direct && d.Specifier != "" {
 		some, every := false, true

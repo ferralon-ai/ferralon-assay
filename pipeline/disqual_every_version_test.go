@@ -51,6 +51,9 @@ func poetryLockOf(flask string) string {
 	return "[[package]]\nname = \"flask\"\nversion = \"" + flask + "\"\n"
 }
 
+// poetryProject is the pyproject.toml a poetry.lock sits beside, declaring only the main group.
+const poetryProject = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
 func lockWithLeftPads(top, nested string) string {
 	return `{
   "name": "app",
@@ -102,10 +105,12 @@ func TestDisqualify_EveryResolvedVersion(t *testing.T) {
 			"package-lock.json": lockWithLeftPads("1.4.0", "1.5.0"),
 		}, want: true},
 		{name: "pypi: one service lock patched, another affected", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
-			"poetry.lock": poetryLockOf("2.3.2"), "worker/poetry.lock": poetryLockOf("2.3.1"),
+			"poetry.lock": poetryLockOf("2.3.2"), "pyproject.toml": poetryProject,
+			"worker/poetry.lock": poetryLockOf("2.3.1"), "worker/pyproject.toml": poetryProject,
 		}, want: false},
 		{name: "pypi: every service lock patched", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
-			"poetry.lock": poetryLockOf("2.3.2"), "worker/poetry.lock": poetryLockOf("2.3.3"),
+			"poetry.lock": poetryLockOf("2.3.2"), "pyproject.toml": poetryProject,
+			"worker/poetry.lock": poetryLockOf("2.3.3"), "worker/pyproject.toml": poetryProject,
 		}, want: true},
 		{name: "pypi: every requirements pin patched, nothing locked", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
 			"requirements.txt": "flask==2.3.2\n", "worker/requirements.txt": "flask==2.3.3\n",

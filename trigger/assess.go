@@ -1020,9 +1020,11 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
-// refutation its completed search would have supported: each says code the search did not cover may
-// contradict it. A limit that can also mean a step failed (cgo:env_unresolved, which the Go load
-// declares when `go env` fails) is not listed, so any such limit keeps analysis_did_not_run.
+// refutation its completed search would have supported: each leaves that search intact and says code
+// it did not cover may contradict it. A limit can also be declared when its coverage check cannot run
+// (excluded_files when `go mod graph` fails), still in place of a refutation. cgo:env_unresolved is
+// not listed: it means `go env` failed, which puts the search's own build configuration in doubt, so
+// it keeps analysis_did_not_run.
 var refutationWithheldReasons = map[string]bool{
 	plugin.PartialReasonExcludedFiles:     true,
 	plugin.PartialReasonUnsearchedMethods: true,

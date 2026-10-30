@@ -619,16 +619,16 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			}
 			break
 		}
-		kind, ok := stringLoaderKind(segs, qualified, targets)
-		if !ok || precededByDef(r, i) || assignedTo(r, end) {
+		kind, name, ok := stringLoaderKind(segs, qualified, targets)
+		if !ok || precededByDef(r, i) || precededByWord(r, i, "class") || assignedTo(r, end) {
 			i = end
 			continue
 		}
 		open := skipAllSpace(r, end)
 		if open >= n || r[open] != '(' {
 			// A loader passed or bound as a value may be called anywhere. A Config class
-			// named as a type (an annotation, isinstance) is no call; only a subclass is.
-			opaque = opaque || segs[len(segs)-1] != "Config" || inClassBases(r, i)
+			// named as a type (an annotation, isinstance) is no call.
+			opaque = opaque || !strings.HasSuffix(name, ".Config") || !typePosition(r, i)
 			i = end
 			continue
 		}
@@ -647,17 +647,18 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 }
 
 // stringLoaderKind reports whether the dotted call segs is a string loader: its head
-// resolved through the file's import targets names a stringLoaders entry, or its trailing
-// attributes are a stringLoaderMethods chain on some receiver. qualified says segs follow
-// a '.' (a call or subscript receiver), so the head is an attribute, not a name to resolve.
-func stringLoaderKind(segs []string, qualified bool, targets map[string][]string) (stringLoaderArg, bool) {
+// resolved through the file's import targets names a stringLoaders entry, returned as
+// name, or its trailing attributes are a stringLoaderMethods chain on some receiver (name
+// empty). qualified says segs follow a '.' (a call or subscript receiver), so the head is
+// an attribute, not a name to resolve.
+func stringLoaderKind(segs []string, qualified bool, targets map[string][]string) (kind stringLoaderArg, name string, ok bool) {
 	k := len(segs)
 	if k >= 2 && segs[k-2] == "config" && stringLoaderMethods["config."+segs[k-1]] && (k >= 3 || qualified) ||
 		stringLoaderMethods[segs[k-1]] && (k >= 2 || qualified) {
-		return loaderNameOrObject, true
+		return loaderNameOrObject, "", true
 	}
 	if qualified {
-		return 0, false
+		return 0, "", false
 	}
 	rest := strings.Join(segs[1:], ".")
 	for _, t := range targets[segs[0]] {
@@ -666,10 +667,10 @@ func stringLoaderKind(segs []string, qualified bool, targets map[string][]string
 			full += "." + rest
 		}
 		if kind, ok := stringLoaders[full]; ok {
-			return kind, true
+			return kind, full, true
 		}
 	}
-	return 0, false
+	return 0, "", false
 }
 
 // loaderNameArg returns the span of a loader call's name argument, given the index of its
@@ -825,34 +826,79 @@ func topLevelKeyword(r []rune, s, e int, kw string, lits map[int]strLiteral) int
 	return -1
 }
 
-// inClassBases reports whether r[i] sits in the bases of a class statement on its line
-// (class Server(uvicorn.Config):).
-func inClassBases(r []rune, i int) bool {
-	k := i
-	for k > 0 && r[k-1] != '\n' {
-		k--
+// typePosition reports whether the expression starting at r[i] is a type, not a value: a
+// return annotation (-> T), a parameter or annotated-assignment annotation (x: T), a type
+// subscript (Optional[T]), or an isinstance, issubclass or cast argument, directly or in a
+// tuple. Any other position, a class base among them, is a value.
+func typePosition(r []rune, i int) bool {
+	p := i - 1
+	for p >= 0 && unicode.IsSpace(r[p]) {
+		p--
 	}
-	k = skipAllSpace(r, k)
-	w, end := readWordRunes(r, k)
-	return w == "class" && end < i && slices.Contains(r[end:i], '(')
-}
-
-// definesName reports whether the file defines a function or class named name, which
-// shadows a star import's binding of it.
-func definesName(r []rune, name string) bool {
-	for i := 0; i+len(name) <= len(r); i++ {
-		if (i == 0 || !isIdentPart(r[i-1])) && isIdentStartRune(r[i]) {
-			if w, _ := readWordRunes(r, i); w == name && precededByDef(r, i) || w == name && precededByClass(r, i) {
-				return true
+	if p >= 1 && r[p] == '>' && r[p-1] == '-' {
+		return true
+	}
+	open := enclosingOpen(r, i)
+	if p >= 0 && r[p] == ':' {
+		// The annotated name starts its statement, or is a def parameter.
+		q := p - 1
+		for q >= 0 && (r[q] == ' ' || r[q] == '\t') {
+			q--
+		}
+		e := q + 1
+		for q >= 0 && isIdentPart(r[q]) {
+			q--
+		}
+		if q+1 == e {
+			return false
+		}
+		if open < 0 {
+			for q >= 0 && (r[q] == ' ' || r[q] == '\t') {
+				q--
 			}
+			return q < 0 || r[q] == '\n' || r[q] == ';'
+		}
+		return r[open] == '(' && isDefParams(r, open)
+	}
+	for open >= 0 {
+		w, before := wordBefore(r, open)
+		switch {
+		case r[open] == '[':
+			return w != "" || before >= 0 && r[before] == ']'
+		case r[open] != '(':
+			return false
+		case w == "isinstance" || w == "issubclass" || w == "cast":
+			return true
+		case w == "" && before >= 0 && (r[before] == ',' || r[before] == '('):
+			open = enclosingOpen(r, open) // a tuple argument
+		default:
+			return false
 		}
 	}
 	return false
 }
 
-// precededByClass reports whether the identifier at r[i] is the name in a class statement.
-func precededByClass(r []rune, i int) bool {
-	j := i - 1
+// enclosingOpen returns the index of the innermost unclosed bracket before r[i], or -1.
+func enclosingOpen(r []rune, i int) int {
+	depth := 0
+	for j := i - 1; j >= 0; j-- {
+		switch r[j] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			if depth == 0 {
+				return j
+			}
+			depth--
+		}
+	}
+	return -1
+}
+
+// wordBefore returns the identifier ending just before r[open] (spaces skipped), and the
+// index of the last non-space rune before that word, or -1.
+func wordBefore(r []rune, open int) (string, int) {
+	j := open - 1
 	for j >= 0 && unicode.IsSpace(r[j]) {
 		j--
 	}
@@ -860,7 +906,48 @@ func precededByClass(r []rune, i int) bool {
 	for j >= 0 && isIdentPart(r[j]) {
 		j--
 	}
-	return string(r[j+1:end]) == "class"
+	w := string(r[j+1 : end])
+	if w != "" {
+		for j >= 0 && unicode.IsSpace(r[j]) {
+			j--
+		}
+	}
+	return w, j
+}
+
+// isDefParams reports whether the '(' at r[open] opens a def's parameter list.
+func isDefParams(r []rune, open int) bool {
+	j := open
+	for j > 0 && unicode.IsSpace(r[j-1]) {
+		j--
+	}
+	k := j
+	for k > 0 && isIdentPart(r[k-1]) {
+		k--
+	}
+	return k < j && precededByDef(r, k)
+}
+
+// definesName reports whether the file defines a module-level function or class named
+// name, which shadows a star import's binding of it. A method or nested definition does not.
+func definesName(r []rune, name string) bool {
+	for i := 0; i < len(r); {
+		if i > 0 && r[i-1] != '\n' {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if w == "async" {
+			w, end = readWordRunes(r, skipAllSpace(r, end))
+		}
+		if w == "def" || w == "class" {
+			if n, _ := readWordRunes(r, skipAllSpace(r, end)); n == name {
+				return true
+			}
+		}
+		i = max(end, i+1)
+	}
+	return false
 }
 
 // wholeLiteral returns the value of r[s:e] when it is one plain string literal

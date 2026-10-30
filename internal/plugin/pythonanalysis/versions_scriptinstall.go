@@ -39,8 +39,8 @@ import (
 // (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
 // every other tool laneToken names, run wrappers whose argv names one included. A
 // PIP_* or UV_* variable set in any script surface withholds, since every pip or uv the build
-// runs reads it. How a surface is read, and what binds a command to a file, is lane-neutral,
-// in scriptsurface.
+// runs reads it, unless laneEnvKeeps keeps it. How a surface is read, and what binds a command
+// to a file, is lane-neutral, in scriptsurface.
 //
 // One more pip form installs nothing but pip itself, so it withholds the pip coordinate alone
 // (pipSelfUpgrade):
@@ -68,8 +68,9 @@ import (
 // no self-upgrade.
 func newScriptSpec(installs pipInstalls, tooling map[string]bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
-		Token: laneToken,
-		Env:   laneEnvRE,
+		Token:    laneToken,
+		Env:      laneEnvRE,
+		EnvKeeps: laneEnvKeeps,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
 			return installs.allowed(words, b, tooling)
 		},
@@ -91,8 +92,42 @@ type pipInstall struct {
 type pipInstalls map[string][]pipInstall
 
 // laneEnvRE matches a PIP_* or UV_* name that is not a $, ${ or attribute reference, so is
-// being set.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`)
+// being set. pip lowercases what follows PIP_ before it looks the option up, so PIP_index_url
+// sets --index-url too; uv reads only the exact upper-case name.
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP_[A-Za-z0-9_]+|UV_[A-Z0-9_]+)`)
+
+// laneEnvKept are the PIP_* and UV_* names whose option changes only output, prompts, caching,
+// timing, bytecode, how a file is copied into the environment, or whether the run fails: none
+// changes which distributions the build installs, the versions, or the environment it installs
+// them into. pip maps PIP_<NAME> to the option --<name> of whatever command it runs, and uv
+// maps each UV_* name to one setting, so a name either sets its one option or none.
+var laneEnvKept = map[string]bool{
+	// pip: global options.
+	"PIP_NO_CACHE_DIR": true, "PIP_CACHE_DIR": true, "PIP_DISABLE_PIP_VERSION_CHECK": true,
+	"PIP_QUIET": true, "PIP_VERBOSE": true, "PIP_LOG": true, "PIP_LOG_FILE": true,
+	"PIP_NO_COLOR": true, "PIP_NO_INPUT": true, "PIP_PROGRESS_BAR": true,
+	"PIP_TIMEOUT": true, "PIP_DEFAULT_TIMEOUT": true, "PIP_RETRIES": true, "PIP_RESUME_RETRIES": true,
+	"PIP_REQUIRE_VIRTUALENV": true, "PIP_REQUIRE_VENV": true, "PIP_ROOT_USER_ACTION": true,
+	// pip: install options. --user is a flag every allowed form already carries.
+	"PIP_USER": true, "PIP_COMPILE": true, "PIP_NO_COMPILE": true,
+	"PIP_NO_WARN_SCRIPT_LOCATION": true, "PIP_NO_WARN_CONFLICTS": true,
+	// uv.
+	"UV_NO_CACHE": true, "UV_CACHE_DIR": true, "UV_LINK_MODE": true,
+	"UV_COMPILE_BYTECODE": true, "UV_COMPILE_BYTECODE_TIMEOUT": true, "UV_NO_PROGRESS": true,
+	"UV_HTTP_TIMEOUT": true, "UV_HTTP_CONNECT_TIMEOUT": true, "UV_REQUEST_TIMEOUT": true,
+	"UV_HTTP_RETRIES": true, "UV_CONCURRENT_DOWNLOADS": true, "UV_CONCURRENT_BUILDS": true,
+	"UV_CONCURRENT_INSTALLS": true, "UV_LOCK_TIMEOUT": true, "UV_FROZEN": true, "UV_LOCKED": true,
+	"UV_NO_INSTALLER_METADATA": true, "UV_PYTHON_DOWNLOADS": true,
+}
+
+// laneEnvKeeps reports whether name, which laneEnvRE matched, is one of laneEnvKept, reading
+// what follows PIP_ in any case as pip does.
+func laneEnvKeeps(name string) bool {
+	if rest, ok := strings.CutPrefix(name, "PIP_"); ok {
+		name = "PIP_" + strings.ToUpper(rest)
+	}
+	return laneEnvKept[name]
+}
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch

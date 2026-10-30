@@ -84,9 +84,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 			"Dockerfile": "FROM python:3.12\nENV PIP_INDEX_URL=https://pkgs.example.com/simple\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}, false, ""},
 		{"UV_ variable in CI", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
 			".github/workflows/ci.yml": "on: push\nenv:\n  UV_INDEX_URL: https://pkgs.example.com/simple\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync --locked\n"}, false, ""},
-		{"UV_NO_DEV in CI: this lane keeps no variable", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
+		{"UV_NO_DEV in CI: not kept", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
 			".github/workflows/ci.yml": "on: push\nenv:\n  UV_NO_DEV: \"1\"\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync --locked\n"}, false, ""},
-		{"PIP_ONLY_BINARY exported: this lane keeps no variable", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_ONLY_BINARY=:all:\npip install -r requirements.txt\n"}, false, ""},
+		{"PIP_ONLY_BINARY exported: not kept", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_ONLY_BINARY=:all:\npip install -r requirements.txt\n"}, false, ""},
 		{"flag outside the allowed set", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --index-url https://x -r requirements.txt\n"}, false, ""},
 
 		{"folded run joins a pin to an allowed form", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: >\n          pip install -r requirements.txt\n          jinja2==3.1.2\n"}, false, ""},
@@ -137,6 +137,78 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := resolveVersion(t, filepath.Join(writeTree(t, tt.files), tt.root), "jinja2")
+			if !r.Found {
+				t.Fatalf("jinja2 not found: %+v", r.All)
+			}
+			if r.Match.Resolved != tt.want {
+				t.Fatalf("Resolved = %v, want %v (match %+v)", r.Match.Resolved, tt.want, r.Match)
+			}
+		})
+	}
+}
+
+// A PIP_* or UV_* variable whose option changes nothing the build installs, or where, is kept:
+// it resolves beside an allowed install. Every other name still withholds, beside a kept one or
+// not, and a kept name is matched exactly, with pip's case-folding of what follows PIP_.
+func TestResolveVersions_LaneEnvKept(t *testing.T) {
+	const (
+		reqs   = "jinja2==3.1.4\n"
+		lockUV = "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n\n" +
+			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
+	)
+	pip := func(env string) map[string]string {
+		return map[string]string{"requirements.txt": reqs,
+			"Dockerfile": "FROM python:3.12\nENV " + env + "\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}
+	}
+	uv := func(env string) map[string]string {
+		return map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
+			"Dockerfile": "FROM python:3.12\nENV " + env + "\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen\n"}
+	}
+	type row struct {
+		name  string
+		files map[string]string
+		want  bool
+	}
+	var tests []row
+	for _, v := range []string{"PIP_NO_CACHE_DIR", "PIP_CACHE_DIR", "PIP_DISABLE_PIP_VERSION_CHECK", "PIP_QUIET", "PIP_VERBOSE",
+		"PIP_LOG", "PIP_LOG_FILE", "PIP_NO_COLOR", "PIP_NO_INPUT", "PIP_PROGRESS_BAR", "PIP_TIMEOUT", "PIP_DEFAULT_TIMEOUT",
+		"PIP_RETRIES", "PIP_RESUME_RETRIES", "PIP_REQUIRE_VIRTUALENV", "PIP_REQUIRE_VENV", "PIP_ROOT_USER_ACTION", "PIP_USER",
+		"PIP_COMPILE", "PIP_NO_COMPILE", "PIP_NO_WARN_SCRIPT_LOCATION", "PIP_NO_WARN_CONFLICTS"} {
+		tests = append(tests, row{v + " kept", pip(v + "=1"), true})
+	}
+	for _, v := range []string{"UV_NO_CACHE", "UV_CACHE_DIR", "UV_LINK_MODE", "UV_COMPILE_BYTECODE", "UV_COMPILE_BYTECODE_TIMEOUT",
+		"UV_NO_PROGRESS", "UV_HTTP_TIMEOUT", "UV_HTTP_CONNECT_TIMEOUT", "UV_REQUEST_TIMEOUT", "UV_HTTP_RETRIES",
+		"UV_CONCURRENT_DOWNLOADS", "UV_CONCURRENT_BUILDS", "UV_CONCURRENT_INSTALLS", "UV_LOCK_TIMEOUT", "UV_FROZEN", "UV_LOCKED",
+		"UV_NO_INSTALLER_METADATA", "UV_PYTHON_DOWNLOADS"} {
+		tests = append(tests, row{v + " kept", uv(v + "=1"), true})
+	}
+	for _, v := range []string{"PIP_INDEX_URL", "PIP_CONSTRAINT", "PIP_UPGRADE", "PIP_PRE", "PIP_NO_DEPS", "PIP_REQUIRE_HASHES",
+		"PIP_TARGET", "PIP_PREFIX", "PIP_BREAK_SYSTEM_PACKAGES", "PIP_CONFIG_FILE", "PIP_NO_CACHE_DIRS"} {
+		tests = append(tests, row{v + " withholds", pip(v + "=1"), false})
+	}
+	for _, v := range []string{"UV_INDEX_URL", "UV_CONSTRAINT", "UV_PYTHON", "UV_SYSTEM_PYTHON", "UV_PROJECT_ENVIRONMENT",
+		"UV_BREAK_SYSTEM_PACKAGES", "UV_NO_DEV", "UV_PRERELEASE", "UV_NO_CACHE_X"} {
+		tests = append(tests, row{v + " withholds", uv(v + "=1"), false})
+	}
+	tests = append(tests,
+		row{"the common pip Dockerfile ENV", pip("PYTHONDONTWRITEBYTECODE=1 \\\n    PYTHONUNBUFFERED=1 \\\n    PIP_NO_CACHE_DIR=1 \\\n    PIP_DISABLE_PIP_VERSION_CHECK=1 \\\n    PIP_DEFAULT_TIMEOUT=100"), true},
+		row{"the common uv Dockerfile ENV", uv("UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0"), true},
+		row{"kept name in a workflow env", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
+			".github/workflows/ci.yml": "on: push\nenv:\n  UV_NO_PROGRESS: \"1\"\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync --locked\n"}, true},
+		row{"kept name exported in a script", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_NO_INPUT=1\npip install -r requirements.txt\n"}, true},
+		row{"PIP_ suffix in lower case kept", pip("PIP_no_cache_dir=1"), true},
+		row{"PIP_ suffix in lower case withholds", pip("PIP_index_url=https://pkgs.example.com/simple"), false},
+		row{"UV_ name in lower case is not uv's", uv("UV_no_cache=1"), true},
+		row{"kept pip name beside one that is not", pip("PIP_NO_CACHE_DIR=1 PIP_EXTRA_INDEX_URL=https://pkgs.example.com/simple"), false},
+		row{"kept uv name beside one that is not", uv("UV_COMPILE_BYTECODE=1 UV_INDEX_URL=https://pkgs.example.com/simple"), false},
+		row{"kept name in one surface, unkept in another", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_NO_INPUT=1\npip install -r requirements.txt\n",
+			"Makefile": "deps:\n\tPIP_FIND_LINKS=./wheels pip install -r requirements.txt\n"}, false},
+		row{"kept pip and uv names together", uv("UV_NO_CACHE=1 PIP_NO_CACHE_DIR=1"), true},
+	)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "jinja2")
 			if !r.Found {
 				t.Fatalf("jinja2 not found: %+v", r.All)
 			}

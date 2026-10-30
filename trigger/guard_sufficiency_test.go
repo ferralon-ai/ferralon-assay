@@ -119,7 +119,7 @@ func seedGuardCandidate(t *testing.T, store artifact.Store, assessmentID, frameS
 		}
 	}
 	put(artifact.TypeCandidatePair, `{}`) // makes hasCandidate true
-	// One TypeReachability artifact carries BOTH the path-presence trace (firstReachPath → frames) and
+	// One TypeReachability artifact carries BOTH the path-presence trace (reachPaths → frames) and
 	// the call graph (callGraphEdges → guard-on-path intersection).
 	edges := ""
 	for i, g := range guardSCIPs {

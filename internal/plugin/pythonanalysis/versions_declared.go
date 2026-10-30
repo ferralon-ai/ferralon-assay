@@ -340,6 +340,8 @@ func hatchOverridesInstall(v any) bool {
 		}
 	case []any:
 		return slices.ContainsFunc(t, hatchOverridesInstall)
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchOverridesInstall(m) })
 	}
 	return false
 }
@@ -355,6 +357,8 @@ func hatchCommandsInstall(v any) bool {
 		return slices.ContainsFunc(t, hatchCommandsInstall)
 	case map[string]any:
 		return slices.ContainsFunc(slices.Collect(maps.Values(t)), hatchCommandsInstall)
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchCommandsInstall(m) })
 	}
 	return false
 }
@@ -375,6 +379,8 @@ func hatchEnvVarsInstall(v any) bool {
 				return true
 			}
 		}
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchEnvVarsInstall(m) })
 	}
 	return false
 }

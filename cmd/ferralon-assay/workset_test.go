@@ -448,6 +448,63 @@ func TestWorkSet_StdlibQueryPoint(t *testing.T) {
 	}
 }
 
+// TestWorkSet_StdlibQueryPointFromBuildToolchain pins the analyzer-resolved build toolchain as a
+// stdlib query point: exact only under trust, consulted only under trust, and ignored when go.mod's
+// directives bind the toolchain.
+func TestWorkSet_StdlibQueryPointFromBuildToolchain(t *testing.T) {
+	const byName = ""
+	for _, tc := range []struct {
+		name      string
+		gomod     string
+		trust     bool
+		want      string
+		wantCalls int
+	}{
+		{name: "two-part go line, trusted", gomod: "module m\n\ngo 1.21\n", trust: true, want: "1.20.14", wantCalls: 1},
+		{name: "two-part go line, untrusted", gomod: "module m\n\ngo 1.21\n", want: byName, wantCalls: 0},
+		{name: "binding go line, trusted", gomod: "module m\n\ngo 1.21.0\n", trust: true, want: byName, wantCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acq := goFixture(t, tc.gomod)
+			acq.goToolchain = subjectGoToolchain{trustObserved: tc.trust}
+			build := &buildToolchainAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: "go"}, resolved: "go1.20.14"}
+			acq.plugin = build
+			osv := &fakeOSV{}
+
+			resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+
+			var queried []report.Package
+			for _, p := range osv.seen {
+				if p.Name == goStdlibPackage {
+					queried = append(queried, p)
+				}
+			}
+			if len(queried) != 1 {
+				t.Fatalf("stdlib queried %d times (%+v), want once", len(queried), queried)
+			}
+			if got := queried[0].Version; got != tc.want {
+				t.Errorf("stdlib query point = %q, want %q (\"\" is by name)", got, tc.want)
+			}
+			if build.calls != tc.wantCalls {
+				t.Errorf("BuildManifest called %d times, want %d", build.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// buildToolchainAnalyzer is an unsearchingAnalyzer whose build manifest reports one Go runtime the
+// build environment resolves to resolved, counting the calls.
+type buildToolchainAnalyzer struct {
+	unsearchingAnalyzer
+	resolved string
+	calls    int
+}
+
+func (a *buildToolchainAnalyzer) BuildManifest(context.Context, plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	a.calls++
+	return plugin.BuildManifestResult{Runtimes: []plugin.RuntimeSpec{{Name: "go", Resolved: a.resolved}}}, nil
+}
+
 // TestScanWorkSet_DeclaredToolchainReachesStdlibQuery proves -subject-go-version reaches the OSV
 // widening's stdlib query point on the scan path, at the transport.
 func TestScanWorkSet_DeclaredToolchainReachesStdlibQuery(t *testing.T) {

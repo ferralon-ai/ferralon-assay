@@ -1354,6 +1354,44 @@ func closeOf(clean []rune, o int) int {
 	return len(clean)
 }
 
+// bracketIndex answers enclosingOpen and closeOf for one text in constant time. Both walks
+// pair brackets regardless of kind, each closer with the nearest unpaired opener before it,
+// and that pairing does not depend on which end it is read from, so one forward pass with a
+// stack gives the same answers; a closer with nothing open pairs with nothing.
+type bracketIndex struct {
+	encl  []int32 // position → enclosingOpen
+	close []int32 // position of an opening bracket → closeOf
+}
+
+func newBracketIndex(clean []rune) *bracketIndex {
+	n := len(clean)
+	bi := &bracketIndex{encl: make([]int32, n), close: make([]int32, n)}
+	var open []int32
+	for i, c := range clean {
+		bi.encl[i] = -1
+		if k := len(open); k > 0 {
+			bi.encl[i] = open[k-1]
+		}
+		switch c {
+		case '(', '[', '{':
+			bi.close[i] = int32(n)
+			open = append(open, int32(i))
+		case ')', ']', '}':
+			if k := len(open); k > 0 {
+				bi.close[open[k-1]] = int32(i)
+				open = open[:k-1]
+			}
+		}
+	}
+	return bi
+}
+
+// enclosingOpen is enclosingOpen(clean, i) for 0 <= i < len(clean).
+func (bi *bracketIndex) enclosingOpen(i int) int { return int(bi.encl[i]) }
+
+// closeOf is closeOf(clean, o) for an opening bracket at o.
+func (bi *bracketIndex) closeOf(o int) int { return int(bi.close[o]) }
+
 // constructorRead reports whether the constructor member read by the operator starting at
 // op ('.', the '?' of `?.`, or the '[' of a literal key) and ending before next is used only
 // where its value is neither called nor handed on: read for a further member other than

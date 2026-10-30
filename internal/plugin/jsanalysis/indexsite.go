@@ -570,7 +570,7 @@ func (j *keyJudge) identDecls(name string, ds []int) bool {
 			continue
 		}
 		next := o + len([]rune(name))
-		if rebound(clean, o, next) {
+		if rebound(clean, gs.bracketsOf(clean), o, next) {
 			return false
 		}
 		p := skipSpace(clean, next)
@@ -781,6 +781,14 @@ func (j *keyJudge) callbackParam(d int) bool {
 }
 
 // occurrences returns the positions of name in clean other than as a member.
+// bracketsOf returns the bracket index of clean, the text gs was built from.
+func (gs *globalScope) bracketsOf(clean []rune) *bracketIndex {
+	if gs.brackets == nil {
+		gs.brackets = newBracketIndex(clean)
+	}
+	return gs.brackets
+}
+
 func (gs *globalScope) occurrences(clean []rune, name string) []int {
 	if gs.occ == nil {
 		gs.occ = map[string][]int{}
@@ -990,7 +998,7 @@ func (gs *globalScope) literalReceiver(clean, src []rune, name string, i int) bo
 			continue
 		}
 		next := o + len([]rune(name))
-		if rebound(clean, o, next) || compoundAfter(clean, skipSpace(clean, next)) || updateBefore(clean, o) {
+		if rebound(clean, gs.bracketsOf(clean), o, next) || compoundAfter(clean, skipSpace(clean, next)) || updateBefore(clean, o) {
 			return false
 		}
 	}

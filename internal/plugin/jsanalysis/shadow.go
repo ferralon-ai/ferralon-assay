@@ -99,7 +99,7 @@ func newReboundIndex(clean []rune, gs *globalScope, mb moduleBindings, calls []c
 		}
 		word, next := readWord(clean, i)
 		// A declaration's own name (const { f } = o) is in scopes; rebound reads the rest.
-		if wanted[word] && !ri.retarget[word] && !gs.sites[i] && rebound(clean, i, next) {
+		if wanted[word] && !ri.retarget[word] && !gs.sites[i] && rebound(clean, gs.bracketsOf(clean), i, next) {
 			ri.retarget[word] = true
 		}
 		i = next

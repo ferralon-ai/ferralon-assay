@@ -50,6 +50,7 @@ type globalScope struct {
 	keyMemo  map[keyMemoKey]keyMemoVal
 	withs    int              // 0 not yet scanned, 1 no with statement, 2 a with statement
 	fnScopes map[string][]int // function name → the function scope of each function keyword naming it (lazy)
+	brackets *bracketIndex    // (lazy)
 }
 
 // globalDecl is one declared name; start == end when it has no initialiser.
@@ -899,7 +900,7 @@ func (gs *globalScope) plainObject(clean []rune, name string, i int) bool {
 			continue
 		}
 		word, next := readWord(clean, at)
-		if word == name && !gs.sites[at] && rebound(clean, at, next) {
+		if word == name && !gs.sites[at] && rebound(clean, gs.bracketsOf(clean), at, next) {
 			return false
 		}
 		at = next
@@ -909,8 +910,9 @@ func (gs *globalScope) plainObject(clean []rune, name string, i int) bool {
 
 // rebound reports whether the name at [at, next) may be given a new value other than by a
 // plain assignment: the head of a for-in or for-of, or an entry of a bracket that is
-// assigned from or iterated. A member read or an object key is never rebound.
-func rebound(clean []rune, at, next int) bool {
+// assigned from or iterated. A member read or an object key is never rebound. bi is clean's
+// bracket index.
+func rebound(clean []rune, bi *bracketIndex, at, next int) bool {
 	n := len(clean)
 	if b := skipSpaceBack(clean, at-1); b >= 0 && clean[b] == '.' {
 		return false
@@ -922,8 +924,8 @@ func rebound(clean []rune, at, next int) bool {
 	if w, _ := peekWord(clean, p); w == "of" || w == "in" {
 		return true
 	}
-	for o := enclosingOpen(clean, at); o >= 0 && (clean[o] == '[' || clean[o] == '{'); o = enclosingOpen(clean, o) {
-		q := skipSpace(clean, closeOf(clean, o)+1)
+	for o := bi.enclosingOpen(at); o >= 0 && (clean[o] == '[' || clean[o] == '{'); o = bi.enclosingOpen(o) {
+		q := skipSpace(clean, bi.closeOf(o)+1)
 		if q < n && clean[q] == '=' && !(q+1 < n && (clean[q+1] == '=' || clean[q+1] == '>')) {
 			return true
 		}

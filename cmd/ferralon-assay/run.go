@@ -657,6 +657,7 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 	if err != nil {
 		return workSet{}, err
 	}
+	acq.goToolchain = f.subjectGoToolchain()
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
 	if ctx.Err() != nil {
 		if len(ws.advisories) == 0 {
@@ -937,16 +938,28 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 // resolution, so a typo degrades to the go.mod floors rather than to a stronger claim than the
 // operator asserted.
 func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
+	tc := f.subjectGoToolchain()
+	if tc == (subjectGoToolchain{}) {
+		return nil
+	}
+	return pipeline.WithSubjectToolchain(tc.declared, tc.observed, tc.trustObserved)
+}
+
+// subjectGoToolchain is the caller's statement of the subject's Go toolchain, unvalidated.
+type subjectGoToolchain struct {
+	declared      string
+	observed      string
+	trustObserved bool
+}
+
+// subjectGoToolchain reads the declared value (-subject-go-version, then envSubjectGoVersion), the
+// observed value (envCIGoVersion) and the observation's trust (envTrustObservedGo).
+func (f *runFlags) subjectGoToolchain() subjectGoToolchain {
 	declared := *f.subjectGo
 	if declared == "" {
 		declared = os.Getenv(envSubjectGoVersion)
 	}
-	observed := os.Getenv(envCIGoVersion)
-	trust := trustObservedGo()
-	if declared == "" && observed == "" && !trust {
-		return nil
-	}
-	return pipeline.WithSubjectToolchain(declared, observed, trust)
+	return subjectGoToolchain{declared: declared, observed: os.Getenv(envCIGoVersion), trustObserved: trustObservedGo()}
 }
 
 // subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.

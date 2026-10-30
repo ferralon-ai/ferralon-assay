@@ -157,12 +157,15 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 			return nil, fmt.Errorf("trigger: read the stored SBOM: %w", err)
 		}
 		if len(prior.Packages) > 0 {
+			// The stored build list is another commit's, so it is never this build's whole module list.
 			sbom = prior
+			sbom.GoBuildList, sbom.GoMainModule, sbom.GoWorkspaceModules = "", "", nil
 			b.AddPartiality(priorSBOMNote)
 		}
 	}
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
+	b.SetGoBuildList(sbom)
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 

@@ -132,6 +132,14 @@ func TestFinding_LabelTraceEntryFromOnePath(t *testing.T) {
 			wantGrade: report.GradeControlFlowOnly,
 		},
 		{
+			name:      "one route, internal path only",
+			ingresses: oneRoute,
+			reach:     []plugin.ReachPath{internal},
+			wantLabel: "advisory symbol reachable",
+			wantTrace: []string{mainSym, midSym, sinkSym},
+			wantGrade: report.GradeControlFlowOnly,
+		},
+		{
 			name:      "no recorded path",
 			ingresses: map[string]string{"entrypoint": "GET /"},
 			stubReach: true,
@@ -197,8 +205,27 @@ func TestFinding_LabelTraceEntryFromOnePath(t *testing.T) {
 			if anchored := len(trace) > 0 && trace[0] != mainSym; len(trace) > 0 && anchored != (ev.ReachablePath == "entrypoint → advisory symbol") {
 				t.Errorf("label %q disagrees with the trace head %q", ev.ReachablePath, trace[0])
 			}
+			// An entry point shown beside a trace is an ingress on that trace.
+			if ev.EntryPoint != nil && len(trace) > 0 && !entryOnTrace(ev.EntryPoint, tc.ingresses, trace) {
+				t.Errorf("entry_point %+v is not on the call path %v", ev.EntryPoint, trace)
+			}
 		})
 	}
+}
+
+// entryOnTrace reports whether an ingress in the map that entry was rendered from has its
+// symbol among the trace frames.
+func entryOnTrace(entry *report.EntryPoint, ingresses any, trace []string) bool {
+	res, ok := ingresses.(plugin.IngressResult)
+	if !ok {
+		return false
+	}
+	for _, in := range res.Ingresses {
+		if *entryPointOf(in) == *entry && slices.Contains(trace, in.Symbol.SCIP) {
+			return true
+		}
+	}
+	return false
 }
 
 func taintDiscoveryFor(paths []plugin.ReachPath) any {

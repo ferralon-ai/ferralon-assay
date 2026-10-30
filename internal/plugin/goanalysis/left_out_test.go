@@ -10,6 +10,8 @@ import (
 	"slices"
 	"testing"
 
+	"golang.org/x/tools/go/packages"
+
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -563,31 +565,75 @@ func TestLoadForBuild_SubjectToolchain(t *testing.T) {
 	}
 }
 
-// TestReleaseExcluded: a constraint is excluded by the release alone when it holds for some tags
-// but for none with the release tags at the build's values, the build's own minor included.
-func TestReleaseExcluded(t *testing.T) {
-	r := goRelease{1, 26, 3}
+// TestToolchainExcluded: a constraint is excluded by the toolchain alone when it holds for some tags
+// but for none with the toolchain-fixed tags at the values every described build gives them: goN.M
+// from the release (its own minor included) or, when that is unknown, true up to and including the
+// go-directive floor; gc true; gccgo false.
+func TestToolchainExcluded(t *testing.T) {
+	r := &goRelease{1, 26, 3}
 	cases := []struct {
-		expr string
-		want bool
+		expr    string
+		release *goRelease
+		floor   int
+		want    bool
 	}{
-		{"go1.26", false},
-		{"!go1.26", true},
-		{"go1.27", true},
-		{"!go1.27", false},
-		{"go1.27 && plan9", true},
-		{"go1.27 || plan9", false},
-		{"go1.1 && !go1.1", false},
-		{"plan9", false},
+		{"go1.26", r, 0, false},
+		{"!go1.26", r, 0, true},
+		{"go1.27", r, 0, true},
+		{"!go1.27", r, 0, false},
+		{"go1.27 && plan9", r, 0, true},
+		{"go1.27 || plan9", r, 0, false},
+		{"go1.1 && !go1.1", r, 0, false},
+		{"plan9", r, 0, false},
+		// Release unknown: the floor fixes goN.M up to and including the directive's minor.
+		{"!go1.23", nil, 26, true},
+		{"!go1.26", nil, 26, true},
+		{"!go1.27", nil, 26, false},
+		{"go1.27", nil, 26, false},
+		{"!go1.23", nil, 0, false},
+		// gc is the compiler every described build uses; gccgo is none's.
+		{"gccgo", nil, 0, true},
+		{"gccgo && linux", r, 0, true},
+		{"!gc", nil, 0, true},
+		{"gc && windows", nil, 0, false},
+		{"gccgo || windows", nil, 0, false},
 	}
 	for _, tc := range cases {
 		x, err := constraint.Parse("//go:build " + tc.expr)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := releaseExcluded(x, r); got != tc.want {
-			t.Errorf("releaseExcluded(%q, go1.26.3) = %v, want %v", tc.expr, got, tc.want)
+		if got := toolchainExcluded(x, tc.release, tc.floor); got != tc.want {
+			t.Errorf("toolchainExcluded(%q, %v, floor %d) = %v, want %v", tc.expr, tc.release, tc.floor, got, tc.want)
 		}
+	}
+}
+
+// TestGoDirectiveFloor: the floor is the main module's go directive minor only when go.mod's
+// directives bind the toolchain.
+func TestGoDirectiveFloor(t *testing.T) {
+	cases := []struct {
+		gomod string
+		want  int
+	}{
+		{"module m\n\ngo 1.26.0\n", 26},
+		{"module m\n\ngo 1.22\n", 0},
+		{"module m\n\ngo 1.22\n\ntoolchain go1.23.4\n", 22},
+		{"module m\n\ngo 1.20.1\n", 0},
+		{"module m\n", 0},
+	}
+	for _, tc := range cases {
+		path := filepath.Join(t.TempDir(), "go.mod")
+		if err := os.WriteFile(path, []byte(tc.gomod), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		pkgs := []*packages.Package{{PkgPath: "m", Module: &packages.Module{Path: "m", Main: true, GoMod: path}}}
+		if got := goDirectiveFloor(pkgs); got != tc.want {
+			t.Errorf("goDirectiveFloor(%q) = %d, want %d", tc.gomod, got, tc.want)
+		}
+	}
+	if got := goDirectiveFloor(nil); got != 0 {
+		t.Errorf("goDirectiveFloor(no main module) = %d, want 0", got)
 	}
 }
 

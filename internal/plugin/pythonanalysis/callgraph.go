@@ -43,6 +43,17 @@ type program struct {
 	named    map[string]bool
 	// leafMemo caches aliasLeaves by import path.
 	leafMemo map[string][]string
+	// entryModules holds the modules a declared entrypoint runs (entrypoints.go), which
+	// are production code whatever their name; entryRoots the callables those entrypoints
+	// name, which a launcher calls with no call site.
+	entryModules map[string]bool
+	entryRoots   []funcDecl
+}
+
+// testCode reports whether a module is test code: named as a test (isTestModule) and run
+// by no declared entrypoint.
+func (prog *program) testCode(module string) bool {
+	return isTestModule(module) && !prog.entryModules[module]
 }
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
@@ -361,6 +372,10 @@ func loadProgram(buildDir string) (*program, error) {
 	var rawBindings [][]scopedBinding
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
+	eps, epsUnread := declaredEntrypoints(buildDir)
+	if epsUnread {
+		prog.readFailed = true
+	}
 	for _, p := range paths {
 		data, readErr := readRegular(p)
 		if readErr != nil {
@@ -369,6 +384,12 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, p)
+		if !isTestModule(module) {
+			for _, ep := range settingEntrypoints(string(data)) {
+				ep.dir = parentModule(module)
+				eps = append(eps, ep)
+			}
+		}
 		clean, lits := stripPythonLiterals(string(data))
 		lines := logicalLines(clean)
 
@@ -467,6 +488,7 @@ func loadProgram(buildDir string) (*program, error) {
 	for i := range prog.files {
 		prog.bindFirstParty(i, rawBindings[i], relBindings[i], modRefs[i])
 	}
+	prog.resolveEntrypoints(eps)
 	return prog, nil
 }
 
@@ -692,11 +714,11 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			callee, ok, escapeLeaves := prog.siteCallee(f, cs)
-			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
+			if !prog.testCode(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true
 					for _, fd := range prog.declsNamed(escapeLeaves) {
-						if s := fd.scip(); s != callee && !isTestModule(fd.module) {
+						if s := fd.scip(); s != callee && !prog.testCode(fd.module) {
 							escapedSet[s] = true
 						}
 					}
@@ -772,12 +794,13 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 }
 
 // escapeFrames adds to out the frames code the lane does not see may call (escape.go):
-// every runtime module's top-level frame and every escaping function outside test code.
+// every runtime module's top-level frame, every escaping function outside test code, and
+// every callable a declared entrypoint names.
 // The call sites' own contribution (a declaration a site names without an edge to it) is
 // added by callGraphOf.
 func (prog *program) escapeFrames(out map[string]bool) {
 	escape := func(fd funcDecl) {
-		if !isTestModule(fd.module) {
+		if !prog.testCode(fd.module) {
 			out[fd.scip()] = true
 		}
 	}
@@ -819,9 +842,12 @@ func (prog *program) escapeFrames(out map[string]bool) {
 			}
 		}
 	}
+	for _, fd := range prog.entryRoots {
+		escape(fd)
+	}
 	for fi := range prog.files {
 		f := &prog.files[fi]
-		if isTestModule(f.module) {
+		if prog.testCode(f.module) {
 			continue
 		}
 		out[moduleInitSCIP(f.module)] = true
@@ -952,7 +978,7 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 }
 
 // productionReached reports, per file, whether production code may run it: every file
-// outside test code (isTestModule), and every file a reached file imports (importPaths,
+// outside test code (testCode), and every file a reached file imports (importPaths,
 // matched like any import path through byModule) or has an edge into (calls, per caller
 // file). A star import or an __import__ fromlist may load any submodule of its package
 // (packagePaths), so it reaches every file under that package, and a file with an import
@@ -970,7 +996,7 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 	}
 	for i, f := range prog.files {
-		if !isTestModule(f.module) {
+		if !prog.testCode(f.module) {
 			reach(i)
 		}
 	}
@@ -1025,12 +1051,12 @@ func (prog *program) resolvedCallFiles() [][]int {
 // isTestModule reports whether a module path names test code: a test_*.py, *_test.py or
 // conftest.py file, or any module under a tests/ or test/ directory.
 func isTestModule(module string) bool {
-	segs := strings.Split(module, "/")
-	for _, s := range segs {
-		if s == "tests" || s == "test" {
-			return true
-		}
-	}
-	leaf := segs[len(segs)-1]
-	return strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
+	leaf := module[strings.LastIndexByte(module, '/')+1:]
+	return inTestDir(module) || strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
+}
+
+// inTestDir reports whether a slash path names, or lies under, a tests/ or test/
+// directory.
+func inTestDir(p string) bool {
+	return slices.ContainsFunc(strings.Split(p, "/"), func(s string) bool { return s == "tests" || s == "test" })
 }

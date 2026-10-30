@@ -6,8 +6,10 @@ import (
 	"go/build"
 	"go/build/constraint"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -372,6 +374,68 @@ func TestSourceImports_ListFails(t *testing.T) {
 	src.read(context.Background(), dir, append(env, "GOFLAGS=-modfile="+filepath.Join(dir, "nosuch.mod")), []string{"example.com/m/dep"}, all)
 	if got, ok := src["example.com/m/dep"]; ok {
 		t.Fatalf("go list failed, yet the package was read: %v", got)
+	}
+}
+
+// TestSourceImports_RunCache: within a scan, a second read of the same packages from the same tree
+// and environment reuses the first `go list`; any other tree, environment or package set runs its
+// own, and a failed one is never reused.
+func TestSourceImports_RunCache(t *testing.T) {
+	goroot, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
+	script := "#!/bin/sh\necho >> '" + calls + "'\nexec '" + filepath.Join(strings.TrimSpace(string(goroot)), "bin", "go") + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shim, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	files := map[string]string{
+		"go.mod":         "module example.com/m\n\ngo 1.22\n",
+		"dep/dep.go":     "package dep\n\nimport _ \"strings\"\n",
+		"other/other.go": "package other\n\nimport _ \"bytes\"\n",
+	}
+	dir, dir2 := writeTree(t, files), writeTree(t, files)
+	all := func(constraint.Expr) bool { return true }
+	env := append(os.Environ(), "GOWORK=off")
+	failing := append(slices.Clip(env), "GOFLAGS=-modfile="+filepath.Join(dir, "nosuch.mod"))
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+
+	steps := []struct {
+		name      string
+		dir       string
+		env       []string
+		paths     []string
+		wantCalls int
+		want      []string // dep's imports; nil when it must stay unread
+	}{
+		{"first read", dir, env, []string{"example.com/m/dep"}, 1, []string{"strings"}},
+		{"same tree, env and packages", dir, env, []string{"example.com/m/dep"}, 1, []string{"strings"}},
+		{"another environment", dir, append(slices.Clip(env), "GOFLAGS=-mod=mod"), []string{"example.com/m/dep"}, 2, []string{"strings"}},
+		{"another package set", dir, env, []string{"example.com/m/dep", "example.com/m/other"}, 3, []string{"strings"}},
+		{"another tree", dir2, env, []string{"example.com/m/dep"}, 4, []string{"strings"}},
+		{"a failed list", dir, failing, []string{"example.com/m/dep"}, 5, nil},
+		{"the failed list again", dir, failing, []string{"example.com/m/dep"}, 6, nil},
+	}
+	for _, st := range steps {
+		src := sourceImports{}
+		src.read(ctx, st.dir, st.env, st.paths, all)
+		b, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(string(b), "\n"); got != st.wantCalls {
+			t.Fatalf("%s: go ran %d times in all, want %d", st.name, got, st.wantCalls)
+		}
+		got, ok := src["example.com/m/dep"]
+		if st.want == nil && ok {
+			t.Fatalf("%s: go list failed, yet the package was read: %v", st.name, got)
+		}
+		if st.want != nil && !slices.Equal(got, st.want) {
+			t.Fatalf("%s: read imports = %v, want %v", st.name, got, st.want)
+		}
 	}
 }
 

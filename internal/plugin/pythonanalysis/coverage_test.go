@@ -248,6 +248,53 @@ func TestResolveVersions_ExhaustiveUnreadSurfaces(t *testing.T) {
 	}
 }
 
+// TestResolveVersions_ExhaustiveHatchInstallsPast: a hatch environment that can install past
+// its dependency lists leaves the pyproject not fully read, so a name no manifest declares is
+// not proven absent. Every row keeps the uv.lock and pyproject that would otherwise prove PyJWT
+// absent, plus a hatch environment whose listed dependency the lock holds.
+func TestResolveVersions_ExhaustiveHatchInstallsPast(t *testing.T) {
+	const env = "[tool.hatch.envs.default]\ndependencies = [\"jinja2\"]\n"
+	tests := []struct {
+		name  string
+		extra string
+		want  bool
+	}{
+		{"quiet env", "type = \"virtual\"\npost-install-commands = [\"pre-commit install\"]\nenv-vars = { PYTHONWARNINGS = \"error\" }\n[tool.hatch.envs.default.scripts]\ntest = \"pytest {args}\"\n[[tool.hatch.envs.default.matrix]]\npython = [\"3.11\", \"3.12\"]\n[tool.hatch.envs.default.overrides]\nmatrix.python.scripts = [{ key = \"test\", value = \"pytest -x\" }]\n", true},
+		{"post-install pip", "post-install-commands = [\"pip install 'pyjwt<2'\"]\n", false},
+		{"pre-install python -m pip", "pre-install-commands = [\"python -m pip install pyjwt\"]\n", false},
+		{"script runs uv pip", "[tool.hatch.envs.default.scripts]\nsetup = \"uv pip install pyjwt\"\n", false},
+		{"extra-script runs pip", "[tool.hatch.envs.default.extra-scripts]\nsetup = \"pip install pyjwt\"\n", false},
+		{"PIP_* env-var", "env-vars = { PIP_INDEX_URL = \"https://mirror.example/simple\" }\n", false},
+		{"plugin env type", "type = \"conda\"\n", false},
+		{"override sets dependencies", "[tool.hatch.envs.default.overrides]\nplatform.linux.dependencies = [\"pyjwt\"]\n", false},
+		{"set- override", "[tool.hatch.envs.default.overrides]\nenv.CI.set-dependencies = [\"pyjwt\"]\n", false},
+		{"env sources", "sources = { jinja2 = { path = \"../jinja2\" } }\n", false},
+		{"env workspace", "workspace = { members = [\"libs/*\"] }\n", false},
+		{"top-level sources", "[tool.hatch.sources]\njinja2 = { path = \"../jinja2\" }\n", false},
+		{"custom collector", "[tool.hatch.env.collectors.custom]\n", false},
+		{"script override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.scripts]]\nkey = \"setup\"\nvalue = \"pip install pyjwt\"\n", false},
+		{"dependency override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.custom]]\ndependencies = [\"pyjwt<2\"]\n", false},
+		{"env-var override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.env-vars]]\nkey = \"PIP_INDEX_URL\"\nvalue = \"https://mirror.example/simple\"\n", false},
+		{"env dependencies not an array", "[tool.hatch.envs.lint]\ndependencies = \"ruff\"\n", false},
+		{"env extra-dependencies not an array", "[tool.hatch.envs.lint]\nextra-dependencies = \"ruff\"\n", false},
+		{"env dependency not a string", "[tool.hatch.envs.lint]\ndependencies = [1]\n", false},
+		{"env dependency the lock lacks", "[tool.hatch.envs.lint]\ndependencies = [\"ruff\"]\n", false},
+		{"env extra-dependency the lock lacks", "[tool.hatch.envs.lint]\nextra-dependencies = [\"ruff\"]\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{"uv.lock": exUVLock, "pyproject.toml": exPyproject + env + tt.extra})
+			r := resolveVersion(t, root, "PyJWT")
+			if r.Found {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
 // TestResolveVersions_ExhaustiveSymlinks: a symlinked manifest is not fully read even when its
 // target is, and a symlink leaving the build dir is a surface the walk cannot read: the
 // .venv/bin/python link uv sync leaves to an interpreter outside the build dir included. A

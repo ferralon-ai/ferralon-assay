@@ -160,8 +160,16 @@ func TestResolveInventory_UnderWorkspace_RaisedByMember(t *testing.T) {
 	if !ws.Partiality.Complete || ws.BuildList != plugin.BuildListGoModGraph || ws.MainModule != "example.test/a" || !slices.Equal(ws.WorkspaceModules, []string{"example.test/b"}) {
 		t.Errorf("workspace partiality = %+v, build list %q for %q and %q; want complete, %q for example.test/a and [example.test/b]", ws.Partiality, ws.BuildList, ws.MainModule, ws.WorkspaceModules, plugin.BuildListGoModGraph)
 	}
-	if got, want := nodePURLs(resolveUnder(t, a, "off")), []string{"pkg:golang/example.test/x@v1.0.0"}; !slices.Equal(got, want) {
+	// x@v1.2.0 is pinned only in b's go.sum, so that is the lockfile the digest came from.
+	if len(ws.Nodes) == 1 && (ws.Nodes[0].Provenance.Lockfile != "../b/go.sum" || ws.Nodes[0].Artifact.Digest == "") {
+		t.Errorf("workspace node lockfile %q, digest %q; want ../b/go.sum with a digest", ws.Nodes[0].Provenance.Lockfile, ws.Nodes[0].Artifact.Digest)
+	}
+	off := resolveUnder(t, a, "off")
+	if got, want := nodePURLs(off), []string{"pkg:golang/example.test/x@v1.0.0"}; !slices.Equal(got, want) {
 		t.Errorf("off nodes = %q, want %q", got, want)
+	}
+	if len(off.Nodes) == 1 && off.Nodes[0].Provenance.Lockfile != "go.sum" {
+		t.Errorf("off node lockfile = %q, want go.sum", off.Nodes[0].Provenance.Lockfile)
 	}
 }
 

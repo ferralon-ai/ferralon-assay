@@ -122,9 +122,8 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 	if work != nil {
 		sums = work.sums
 	}
-	haveLockfile := len(sums) > 0
 	lockfile := ""
-	if haveLockfile {
+	if len(sums) > 0 && work == nil {
 		lockfile = "go.sum"
 	}
 
@@ -187,6 +186,12 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		// declared partial (source_unpinned) at the artifact bullet, never blank-posing.
 		if dig, ok := sums[path+" "+n.Version]; ok && n.Version != "" {
 			n.Artifact = plugin.DependencyArtifact{Identity: path + "@" + n.Version, Digest: dig}
+			// Under a workspace the digest is from go.work.sum or one member's go.sum; name that one.
+			if work != nil {
+				if rel, err := filepath.Rel(req.BuildDir, work.sumFiles[path+" "+n.Version]); err == nil {
+					n.Provenance.Lockfile = filepath.ToSlash(rel)
+				}
+			}
 		} else if !contains(nodeReasons, plugin.PartialReasonSourceUnpinned) {
 			nodeReasons = append(nodeReasons, plugin.PartialReasonSourceUnpinned)
 		}
@@ -311,6 +316,7 @@ type goWorkspace struct {
 	// replaces holds the go.work's replace directives, which win, then each used module's go.mod.
 	replaces []*modfile.File
 	sums     map[string]string // go.work.sum and every used module's go.sum
+	sumFiles map[string]string // the file each of sums was read from
 }
 
 // readGoWorkspace reads the go.work at file and the go.mod of every module it uses.
@@ -328,10 +334,9 @@ func readGoWorkspace(file string) (*goWorkspace, error) {
 		mains:    map[string]bool{},
 		replaces: []*modfile.File{{Replace: wf.Replace}},
 		sums:     map[string]string{},
+		sumFiles: map[string]string{},
 	}
-	for k, v := range readGoSum(filepath.Join(dir, "go.work.sum")) {
-		w.sums[k] = v
-	}
+	w.addSums(filepath.Join(dir, "go.work.sum"))
 	for _, u := range wf.Use {
 		use := u.Path
 		if !filepath.IsAbs(use) {
@@ -351,11 +356,15 @@ func readGoWorkspace(file string) (*goWorkspace, error) {
 		}
 		w.mains[mf.Module.Mod.Path] = true
 		w.replaces = append(w.replaces, mf)
-		for k, v := range readGoSum(filepath.Join(use, "go.sum")) {
-			w.sums[k] = v
-		}
+		w.addSums(filepath.Join(use, "go.sum"))
 	}
 	return w, nil
+}
+
+func (w *goWorkspace) addSums(file string) {
+	for k, v := range readGoSum(file) {
+		w.sums[k], w.sumFiles[k] = v, file
+	}
 }
 
 // others returns, sorted, the path of every module the workspace uses except main.

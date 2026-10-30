@@ -42,6 +42,7 @@ func TestVeto_RecognisedCI(t *testing.T) {
 		{"Earthfile new target inherits no stage", tree(map[string]string{"Earthfile": earth + "deps:\n    RUN inst sync\n"}), true, ""},
 		{"Earthfile function call before install", tree(map[string]string{"Earthfile": earth + "    DO +SETUP\n    RUN inst sync\n"}), true, ""},
 		{"Earthfile artifact naming an installer is inert", tree(map[string]string{"Earthfile": earth + "    RUN inst sync\n    SAVE ARTIFACT /root/.cache/inst AS LOCAL inst-cache\n"}), false, "inst sync"},
+		{"Earthfile binds in its own directory only", tree(map[string]string{"svc/Earthfile": earth + "    RUN inst sync\n"}), true, ""},
 		{"Earthfile LOCALLY", tree(map[string]string{"Earthfile": "VERSION 0.8\ndev:\n    LOCALLY\n    RUN inst sync\n"}), true, ""},
 		{"Earthfile artifact copied from a target", tree(map[string]string{"Earthfile": earth + "    COPY +deps/inst.lock ./\n    RUN inst sync\n"}), true, ""},
 		{"Earthfile DO naming an installer", tree(map[string]string{"Earthfile": earth + "    DO --pass-args ./lib+INST --cmd=\"inst add x\"\n"}), true, ""},

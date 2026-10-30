@@ -2,6 +2,7 @@ package scriptsurface
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,29 +16,36 @@ import (
 // The backstop reads the files surfaceOf does not recognise for a lane installer in a command
 // position, and withholds on one as the rule withholds on a surface it cannot read: the file is
 // vetoed, so FullyRead reports it unread, and the lane's versions and Exhaustive fall with it.
-// Each installer it finds is gated as a command whose directory is unknown (v.command), so a
-// form a lane allows without binding a manifest, such as a pip self-upgrade, passes, and every
-// other install withholds. It binds nothing, so nothing it reads feeds a lane's claims.
+// Every command in a command position a word of which names a lane token, as its program, an
+// argument, a path, or text a shell, eval or interpreter runs, goes to v.command from a
+// directory it does not know, as the same line in install.sh would: a form a lane allows
+// without binding a manifest, such as a pip self-upgrade, passes, a command that only reports
+// passes (readOnly), and everything else withholds.
 //
 // A command position is one of these:
 //
-//   - in a file with a Dockerfile-style FROM line (an Earthfile, a Dockerfile-prod), a RUN
-//     instruction; an ENV or ARG there that sets one of the lane's installer variables
-//     withholds too;
+//   - every line of a file with a Dockerfile-style FROM line, in any case, which the
+//     Dockerfile rule reads as it reads a Dockerfile (dockerfileAt), binding what its COPY and
+//     ADD bring in;
 //   - in any other text file, the value of a key that holds commands (cmdKey: run, script,
-//     command, commands, cmd, entry, shell, before_install, ...) as a scalar, a block scalar, a
-//     list or an array, and every top-level value of a TOML task table ([tool.poe.tasks],
-//     [tool.pdm.scripts], [tool.hatch.envs.<env>.scripts], [tasks]); a key that is itself an
-//     installer variable withholds too;
+//     command, commands, cmd, entry, shell, before_install, post-install-commands, *_script,
+//     and content in a Bitrise config, ...) as a scalar, a block scalar, a list or an array,
+//     and every top-level value of a TOML task table ([tool.poe.tasks], [tool.pdm.scripts],
+//     [tool.hatch.envs.<env>.scripts], [tasks]); in a decodable JSON file the same keys
+//     whatever the layout; a key that sets an installer variable in an environment map
+//     withholds too;
 //   - a tab-indented make recipe line after a rule line;
+//   - every line of a Husky hook or a Buildkite agent hook (shellDirs);
 //   - in source code a build runs as its own script (buildScript), a string literal given to a
-//     name that runs commands (subprocess.run, c.run, execSync, exec.Command, sh), or an argv
-//     of literals given to one (["pip", "install", ...], [sys.executable, "-m", "pip", ...]).
+//     name that runs commands (subprocess.run, c.run, execSync, exec.Command, sh, a zx $), an
+//     argv of literals given to one (["pip", "install", ...], [sys.executable, "-m", "pip",
+//     ...]) or to an installer's own API (pip.main), and a nox session's install helpers.
 //
 // It does not read what no build runs as a command: binary and empty files, inertName files,
 // lockfiles, prose and rendered text (proseExts, proseNames), a Read the Docs config, a file
 // past its buildtree.Head once it is over backstopMax, inside a .git directory everything but
-// the active hooks, and any source file that is not a build script.
+// the active hooks, and any source file that is not a build script. The Dockerfile rule's
+// binding is the only binding it does; nothing else it reads feeds a lane's claims.
 
 // backstopMax is the size past which the backstop reads only a file's buildtree.Head. A build
 // script is far smaller; what is larger is generated output or data.
@@ -75,7 +83,7 @@ var sourceExts = map[string]bool{
 var hashComment = map[string]bool{".py": true, ".pyi": true, ".rb": true, ".rake": true, ".pl": true, ".pm": true}
 
 // sourceShebangs are the interpreters a "#!" line can name that run source code.
-var sourceShebangs = regexp.MustCompile(`^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|ts-node|tsx|ruby|perl|php|groovy|lua)$`)
+var sourceShebangs = regexp.MustCompile(`^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|ts-node|tsx|ruby|perl|php|groovy|lua|zx)$`)
 
 // buildScriptStems are the base names, before the extension, of source files build runners
 // and maintainers run as the build's own scripts: invoke, fabric, doit, paver, setuptools,
@@ -192,8 +200,9 @@ func sourceKind(path string, head []byte) (source, hash bool) {
 }
 
 // buildScript reports whether a source file is one a build runs as its own script: it starts
-// with "#!", its stem is a buildScriptStems name, or a directory above it, inside the build, is
-// a toolDirs name.
+// with "#!", its stem is a buildScriptStems name, it is a tool's config a build loads as code
+// (vite.config.ts, webpack.config.js), or a directory above it, inside the build, is a toolDirs
+// name.
 func (v *Veto) buildScript(path string, head []byte) bool {
 	lower := strings.ToLower(filepath.Base(path))
 	rel, err := filepath.Rel(v.root, filepath.Dir(path))
@@ -208,6 +217,9 @@ func (v *Veto) buildScript(path string, head []byte) bool {
 		return true
 	}
 	if i := strings.IndexByte(lower, '.'); i > 0 && buildScriptStems[lower[:i]] || buildScriptStems[lower] {
+		return true
+	}
+	if strings.Contains(lower, ".config.") {
 		return true
 	}
 	for _, d := range dirs {
@@ -270,15 +282,81 @@ func (v *Veto) backstop(path string, head []byte) (string, bool) {
 	}
 	var line int
 	var why string
-	if source {
+	switch {
+	case source:
 		line, why = v.backstopLiterals(src, hash, !hash)
-	} else {
-		line, why = v.backstopLines(src)
+	case shellDir(v.root, path):
+		line, why = v.valueText(src, true)
+		line++
+	default:
+		if dockerLike(src) {
+			line, why = v.backstopDocker(path, src)
+		}
+		if why == "" && json.Valid([]byte(src)) {
+			line, why = v.backstopJSON(src)
+		}
+		if why == "" {
+			line, why = v.backstopLines(src, strings.HasPrefix(strings.ToLower(filepath.Base(path)), "bitrise."))
+		}
 	}
 	if why != "" {
 		return v.unrecognised(path, line, why), true
 	}
 	return "", false
+}
+
+// shellDirs are the directories, as slash-separated paths from the build root, whose files a
+// hook manager or CI agent runs as shell scripts that need no #! line: Husky hooks and
+// Buildkite agent hooks.
+var shellDirs = []string{".husky/", ".buildkite/hooks/"}
+
+// shellDir reports whether the file at path is in one of shellDirs, so the backstop reads each
+// of its lines as shell text.
+func shellDir(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	for _, d := range shellDirs {
+		if strings.HasPrefix(rel, d) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// fromRE finds a Dockerfile-style FROM line.
+	fromRE = regexp.MustCompile(`(?m)^[ \t]*FROM[ \t]+\S`)
+	// fromAnyRE finds a FROM line in any case shaped as one: an image after its flags, an
+	// optional stage name, and nothing after but a comment.
+	fromAnyRE = regexp.MustCompile(`(?im)^[ \t]*from[ \t]+(?:--\S+[ \t]+)*\S+(?:[ \t]+as[ \t]+\S+)?[ \t]*(?:#.*)?\r?$`)
+)
+
+// dockerLike reports whether a file that is not source code holds a Dockerfile-style FROM
+// line, so the Dockerfile rule reads it.
+func dockerLike(src string) bool { return fromRE.MatchString(src) || fromAnyRE.MatchString(src) }
+
+// backstopDocker applies the Dockerfile rule to a file with a FROM line that surfaceOf does
+// not recognise, as classify applies it to a Dockerfile, and returns the 1-based line it
+// withholds on and why. The rule follows heredocs, instructions in any case, and what its
+// COPY and ADD instructions bind, so a bound install passes here as it does in a Dockerfile.
+func (v *Veto) backstopDocker(path, src string) (int, string) {
+	if v.spec.Text != nil {
+		v.spec.Text(src)
+	}
+	if v.setsEnv(src) {
+		for i, l := range strings.Split(src, "\n") {
+			if v.setsEnv(l) {
+				return i + 1, "sets an installer variable"
+			}
+		}
+		return 0, "sets an installer variable"
+	}
+	v.trigger(src)
+	why, line := v.dockerfileAt(path, src, false)
+	return line, why
 }
 
 // unrecognised records the first file and line the backstop withholds on, and phrases why.
@@ -303,12 +381,6 @@ func (v *Veto) unrecognised(path string, line int, why string) string {
 func (v *Veto) Unrecognised() string { return v.unrecognisedAt }
 
 var (
-	// fromRE finds a Dockerfile-style FROM line, which makes a file's RUN lines commands.
-	fromRE = regexp.MustCompile(`(?m)^[ \t]*FROM[ \t]+\S`)
-	// runRE matches a Dockerfile-style RUN and its flags.
-	runRE = regexp.MustCompile(`^RUN(?:\s+--\S+)*\s+`)
-	// envInstrRE matches a Dockerfile-style ENV or ARG.
-	envInstrRE = regexp.MustCompile(`^(?:ENV|ARG)\s`)
 	// ruleRE matches a make rule line: targets, a colon, and no assignment.
 	ruleRE = regexp.MustCompile(`^[^\s:#=][^:=]*:(?:[^=]|$)`)
 	// tableRE matches a TOML table header; its group is the table's name.
@@ -316,9 +388,12 @@ var (
 	// taskTableRE matches the name of a TOML table every value of which is a command: poe
 	// and taskipy tasks, pdm, hatch and rye scripts, pixi tasks.
 	taskTableRE = regexp.MustCompile(`(?:^|\.)(?:tasks|scripts)$`)
-	// cmdKeyRE matches the keys, lowercased, whose values are commands, beside cmdKeys.
-	cmdKeyRE = regexp.MustCompile(`^(?:(?:pre|post|before|after)[_-]?(?:install|build|script|test|deploy|run|checkout)|` +
-		`(?:install|build|test|deploy|setup)[_-]?(?:script|scripts|command|commands|cmd|cmds|step|steps)|commands[_-](?:pre|post))$`)
+	// cmdKeyRE matches the keys, lowercased, whose values are commands, beside cmdKeys: a
+	// hook before or after a phase (before_install, hatch's post-install-commands), a phase's
+	// commands (install_script), tox's commands_pre, and any key ending in _script or -script
+	// (Cirrus CI's test_script).
+	cmdKeyRE = regexp.MustCompile(`^(?:(?:pre|post|before|after)[_-]?(?:install|build|script|test|deploy|run|checkout)(?:[_-]?(?:commands?|cmds?|scripts?|steps?))?|` +
+		`(?:install|build|test|deploy|setup)[_-]?(?:script|scripts|command|commands|cmd|cmds|step|steps)|commands[_-](?:pre|post)|.+[_-]scripts?)$`)
 )
 
 // cmdKeys are the keys, lowercased, whose values a CI system, task runner or hook manager runs
@@ -339,9 +414,8 @@ func indentOf(s string) int { return len(s) - len(strings.TrimLeft(s, " \t")) }
 
 // backstopLines reads a file that is not source code for its command positions, and returns
 // the first 1-based line that runs an installer, or sets an installer variable, and why.
-func (v *Veto) backstopLines(src string) (int, string) {
+func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
-	docker := fromRE.MatchString(src)
 	table, rule := "", false
 	for i := 0; i < len(lines); i++ {
 		raw := lines[i]
@@ -363,19 +437,6 @@ func (v *Veto) backstopLines(src string) (int, string) {
 		if lineComment(t) {
 			continue
 		}
-		if docker {
-			if m := runRE.FindString(t); m != "" {
-				text, end := joined(lines, i)
-				if why := v.runText(strings.TrimSpace(text)[len(m):]); why != "" {
-					return i + 1, why
-				}
-				i = end
-				continue
-			}
-			if envInstrRE.MatchString(t) && v.setsEnv(t) {
-				return i + 1, "sets an installer variable"
-			}
-		}
 		if m := tableRE.FindStringSubmatch(t); m != nil {
 			table = strings.ToLower(strings.ReplaceAll(m[1], `"`, ""))
 			continue
@@ -396,7 +457,7 @@ func (v *Veto) backstopLines(src string) (int, string) {
 			return i + 1, "sets an installer variable"
 		}
 		inTable := taskTableRE.MatchString(table) && !strings.HasPrefix(table, "project.") && indentOf(raw) == 0
-		if !cmdKey(strings.ToLower(name)) && !inTable {
+		if !cmdKey(strings.ToLower(name)) && !inTable && !(bitrise && strings.EqualFold(name, "content")) {
 			continue
 		}
 		val := strings.TrimSpace(item[len(m[0]):])
@@ -433,6 +494,74 @@ func (v *Veto) backstopLines(src string) (int, string) {
 		}
 	}
 	return 0, ""
+}
+
+// backstopJSON reads a decodable JSON file for the command positions backstopLines reads in
+// text, whatever its layout, so one written on a single line is read too: every string under a
+// cmdKey key or a tasks map is shell text, every array of strings there an argv whose items may
+// be shell text, and a key that sets an installer variable in an environment map withholds. It
+// returns the 1-based line of the value that withholds, and why.
+func (v *Veto) backstopJSON(src string) (int, string) {
+	var doc any
+	d := json.NewDecoder(strings.NewReader(src))
+	d.UseNumber()
+	if d.Decode(&doc) != nil {
+		return 0, ""
+	}
+	why, val := v.jsonValue(doc, false, false)
+	if why == "" {
+		return 0, ""
+	}
+	at := strings.Index(src, val)
+	if at < 0 {
+		if b, err := json.Marshal(val); err == nil {
+			at = strings.Index(src, string(b))
+		}
+	}
+	return strings.Count(src[:max(at, 0)], "\n") + 1, why
+}
+
+// jsonValue gates one decoded JSON value: cmd marks a value under a command key, env an
+// environment map. It returns why it withholds and the text that does.
+func (v *Veto) jsonValue(x any, cmd, env bool) (string, string) {
+	switch t := x.(type) {
+	case map[string]any:
+		for _, k := range sortedKeys(t) {
+			lk := strings.ToLower(k)
+			if env && v.setsEnv(k) {
+				return "sets an installer variable", k
+			}
+			c := cmdKey(lk) || lk == "tasks"
+			if cmd && !c && dataKeys[lk] {
+				continue
+			}
+			if why, at := v.jsonValue(t[k], cmd || c, envKey(k)); why != "" {
+				return why, at
+			}
+		}
+	case []any:
+		var words []string
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				words = append(words, s)
+			} else if why, at := v.jsonValue(e, cmd, false); why != "" {
+				return why, at
+			}
+		}
+		if cmd && len(words) > 0 {
+			segs := []segment{{words: words, expands: hasExpansion(words)}}
+			if why := v.segments(append(segs, listCommands(segs)...)); why != "" {
+				return why, words[0]
+			}
+		}
+	case string:
+		if cmd {
+			if why := v.shellText(t, false); why != "" {
+				return why, t
+			}
+		}
+	}
+	return "", ""
 }
 
 // envKeys are the keys, lowercased with - and _ dropped, whose values are environment
@@ -517,27 +646,13 @@ func closing(lines []string, i int, val string) int {
 	return j
 }
 
-// runText gates the text of a Dockerfile-style RUN: an exec form, or shell text.
-func (v *Veto) runText(text string) string {
-	if strings.HasPrefix(text, "[") {
-		if segs, ok := execForm(text); ok {
-			return v.segments(segs)
-		}
-	}
-	return v.shellText(text, false)
-}
-
 // shellText gates shell text: a line that sets an installer variable withholds, and so does
 // each simple command that runs an installer. recipe strips a make recipe prefix.
 func (v *Veto) shellText(text string, recipe bool) string {
 	if v.setsEnv(text) {
 		return "sets an installer variable"
 	}
-	segs, ok, _ := shellSegments(text)
-	if !ok {
-		segs = []segment{{words: strings.Fields(text), expands: strings.ContainsAny(text, "$`")}}
-	}
-	for _, seg := range segs {
+	for _, seg := range backstopSegments(text) {
 		if why := v.installAt(seg, recipe); why != "" {
 			return why
 		}
@@ -569,9 +684,7 @@ func (v *Veto) valueText(text string, shell bool) (int, string) {
 			// An inline table or a fragment of an array: each string in it is a command.
 			segs = nil
 			for _, lit := range literals(t, false, false) {
-				if more, ok, _ := shellSegments(lit.text); ok {
-					segs = append(segs, more...)
-				}
+				segs = append(segs, backstopSegments(lit.text)...)
 			}
 		}
 		if why := v.segments(append(segs, listCommands(segs)...)); why != "" {
@@ -590,6 +703,16 @@ func (v *Veto) segments(segs []segment) string {
 	return ""
 }
 
+// backstopSegments splits shell text into its simple commands, or, when it does not split
+// (a brace group, an unclosed quote), returns its words as one command, so a name in it still
+// reaches the rule.
+func backstopSegments(text string) []segment {
+	if segs, ok, _ := shellSegments(text); ok {
+		return segs
+	}
+	return []segment{{words: strings.Fields(text), expands: strings.ContainsAny(text, "$`")}}
+}
+
 // listCommands returns the commands a list value holds when its items are shell text, not one
 // argv: a hatch script's ["pip install x", "pytest"].
 func listCommands(segs []segment) []segment {
@@ -599,16 +722,17 @@ func listCommands(segs []segment) []segment {
 			if !strings.ContainsAny(w, " \t") {
 				continue
 			}
-			if more, ok, _ := shellSegments(w); ok {
-				out = append(out, more...)
-			}
+			out = append(out, backstopSegments(w)...)
 		}
 	}
 	return out
 }
 
-// installAt returns why the command seg withholds when it runs a lane installer as its program,
-// or "". recipe strips a make recipe prefix (@, - or +) from the program.
+// installAt returns why the command seg withholds, or "". Any command a word of which names a
+// lane token, as program, argument, path or the text a shell, eval or interpreter runs, or
+// that runs an install verb after an expansion, goes to v.command from a directory it does not
+// know, as the same line in install.sh would, unless it only reports (readOnly). recipe strips
+// a make recipe prefix (@, - or +) from the program.
 func (v *Veto) installAt(seg segment, recipe bool) string {
 	words := seg.words
 	if len(words) > 0 && recipe {
@@ -617,7 +741,7 @@ func (v *Veto) installAt(seg segment, recipe bool) string {
 			seg.words = words
 		}
 	}
-	if !v.installerAt(words) || readOnly(words) {
+	if !v.segmentHasToken(words) && !expandedInstall(words) || v.readOnly(seg) {
 		return ""
 	}
 	return v.command(seg, &hostCursor{v: v, unknown: true}, 0)
@@ -631,23 +755,41 @@ var readOnlyVerbs = map[string]bool{
 	"search": true, "outdated": true, "why": true, "help": true, "audit": true,
 }
 
-// readOnly reports whether words, a command installerAt accepts, only report: the installer's
-// first operand, past its flags (and past pip or tool for uv pip and uv tool), is a
-// readOnlyVerbs verb, or every argument is --version, -v, -V or --help. A pip run through
-// python -m is read past the interpreter.
-func readOnly(words []string) bool {
+// readOnly reports whether seg only reports: it expands nothing and redirects nothing, its
+// program past environment assignments and launchers (and past a Python interpreter's -m, or
+// a leading -m, an argv after sys.executable) is a lane token, and that installer's first
+// operand, past its flags (and past pip or tool for uv pip and uv tool), is a readOnlyVerbs
+// verb, or every argument is --version, -v, -V or --help. Any other command naming a token,
+// as an argument, in the text a shell or interpreter runs, or after a launcher's value, is not
+// read-only.
+func (v *Veto) readOnly(seg segment) bool {
+	words := seg.words
+	if seg.expands || hasRedirect(words) {
+		return false
+	}
 	i := programAt(words)
 	if i >= len(words) {
 		return false
 	}
-	if name, ok := CommandName(words[i]); ok && (pythonRE.MatchString(name) || name == "py") {
-		for i++; i < len(words) && strings.HasPrefix(words[i], "-") && words[i] != "-m"; i++ {
-		}
-		if i < len(words) && words[i] == "-m" {
-			i++
-		}
+	name, ok := CommandName(words[i])
+	if !ok {
+		return false
 	}
-	rest := words[min(i+1, len(words)):]
+	if pythonRE.MatchString(name) || name == "py" || name == "-m" {
+		if name != "-m" {
+			for i++; i < len(words) && strings.HasPrefix(words[i], "-") && words[i] != "-m"; i++ {
+			}
+		}
+		if i+1 >= len(words) || words[i] != "-m" {
+			return false
+		}
+		i++
+		name = words[i]
+	}
+	if !v.spec.Token(name) {
+		return false
+	}
+	rest := words[i+1:]
 	if len(rest) == 0 {
 		return false
 	}
@@ -700,53 +842,11 @@ func programAt(words []string) int {
 // assignRE matches a leading NAME=value environment assignment.
 var assignRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 
-// plainRE matches a word that can name a program.
-var plainRE = regexp.MustCompile(`^[A-Za-z0-9_.+-]+$`)
-
 // launchers run the command that follows them, after their own flags.
 var launchers = map[string]bool{
 	"sudo": true, "doas": true, "env": true, "exec": true, "time": true, "nohup": true,
 	"command": true, "nice": true, "xargs": true, "stdbuf": true, "chronic": true,
 	"ionice": true, "timeout": true, "then": true, "do": true, "else": true, "!": true,
-}
-
-// installerAt reports whether words run one of the lane's installers as their program: the
-// first word past environment assignments and launchers names a token and is followed by an
-// argument that does not start with = or : (text that assigns to the name, inst = 1.0, or
-// keys it, inst: 1.0); a Python interpreter runs one with -m, an attached -m or setup.py; a run
-// of words starting -m does the same (an argv after sys.executable); or a word that expands is
-// followed by an install verb.
-func (v *Veto) installerAt(words []string) bool {
-	i := programAt(words)
-	if i >= len(words) {
-		return false
-	}
-	if expandedInstall(words[i:]) {
-		return true
-	}
-	name, ok := CommandName(words[i])
-	rest := words[i+1:]
-	switch {
-	case !ok || len(rest) == 0:
-		return false
-	case name == "-m":
-		return v.spec.Token(rest[0])
-	case pythonRE.MatchString(name) || name == "py":
-		for j, a := range rest {
-			switch {
-			case a == "-m":
-				return j+1 < len(rest) && v.spec.Token(rest[j+1])
-			case a == "setup.py" || strings.HasPrefix(a, "-") && v.spec.Token(a):
-				return v.spec.Token(a)
-			case !strings.HasPrefix(a, "-"):
-				return false
-			}
-		}
-		return false
-	case !plainRE.MatchString(name) || !v.spec.Token(name):
-		return false
-	}
-	return rest[0] != "" && !strings.ContainsAny(rest[0][:1], "=:")
 }
 
 // literal is one string literal of a file: its text and the byte offsets of its quotes.
@@ -884,7 +984,14 @@ func (v *Veto) backstopLiterals(src string, hash, slash bool) (int, string) {
 		l := lits[i]
 		before := src[max(0, l.off-120):l.off]
 		m := callerRE.FindStringSubmatch(before)
-		if m == nil || !execName(m[1]) {
+		var api string
+		if m != nil {
+			if noxInstall(m[1]) {
+				return lineOf(l.off), "installs through a nox session: " + m[1]
+			}
+			api = v.apiToken(m[1])
+		}
+		if (m == nil || !execName(m[1])) && api == "" {
 			if a := assignRunRE.FindStringSubmatch(before); a == nil || !argvVar(a[1], a[2]) {
 				continue
 			}
@@ -898,19 +1005,18 @@ func (v *Veto) backstopLiterals(src string, hash, slash bool) (int, string) {
 		}
 		var segs []segment
 		if j > i {
-			words := make([]string, 0, j-i+1)
+			words := make([]string, 0, j-i+2)
+			if api != "" {
+				words = append(words, api)
+			}
 			for k := i; k <= j; k++ {
 				words = append(words, lits[k].text)
 			}
-			// A list of installer names (["npm", "yarn", "pnpm"]) runs none of them.
-			if slices.ContainsFunc(words, func(w string) bool { return !v.spec.Token(w) }) {
-				segs = []segment{{words: words, expands: hasExpansion(words)}}
-			}
+			segs = []segment{{words: words, expands: hasExpansion(words)}}
+		} else if api != "" {
+			segs = []segment{{words: []string{api, l.text}, expands: strings.ContainsAny(l.text, "$`")}}
 		} else {
-			var ok bool
-			if segs, ok, _ = shellSegments(l.text); !ok {
-				segs = []segment{{words: strings.Fields(l.text), expands: strings.ContainsAny(l.text, "$`")}}
-			}
+			segs = backstopSegments(l.text)
 		}
 		if why := v.segments(segs); why != "" {
 			return lineOf(l.off), why
@@ -918,6 +1024,28 @@ func (v *Veto) backstopLiterals(src string, hash, slash bool) (int, string) {
 		i = j
 	}
 	return 0, ""
+}
+
+// noxInstall reports whether name is a nox session's install helper (session.install,
+// session.run_install), which a helper module a noxfile imports may call.
+func noxInstall(name string) bool {
+	recv, method, ok := strings.Cut(strings.ToLower(name), ".")
+	for ok && strings.Contains(method, ".") {
+		recv, method, _ = strings.Cut(method, ".")
+	}
+	return ok && strings.HasSuffix(recv, "session") && (method == "install" || method == "run_install")
+}
+
+// apiToken returns the lane token a dotted call's receiver names, a package manager driven
+// through its own API (pip.main, npm.commands.install), or "".
+func (v *Veto) apiToken(name string) string {
+	parts := strings.Split(name, ".")
+	for _, p := range parts[:len(parts)-1] {
+		if p = strings.Trim(p, "_"); v.spec.Token(p) {
+			return p
+		}
+	}
+	return ""
 }
 
 func singleWord(s string) bool { return s != "" && !strings.ContainsAny(s, " \t\n") }

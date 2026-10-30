@@ -652,9 +652,9 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 	units := []unit{{text: src}}
 	switch {
 	case s.kind == kindDockerfile:
-		why = v.dockerfile(path, src)
+		why, _ = v.dockerfileAt(path, src, false)
 	case s.kind == kindEarthfile:
-		why = v.dockerfile(path, v.earthfileAsDockerfile(src))
+		why, _ = v.dockerfileAt(path, v.earthfileAsDockerfile(src), true)
 	case s.kind == kindOpaque:
 		why = v.opaque(src)
 	case strings.EqualFold(filepath.Ext(path), ".json"):

@@ -28,6 +28,8 @@ func TestResolveVersions_UnrecognisedInstallSurface(t *testing.T) {
 		{"scripts/*.js execSync", "scripts/setup.js", "const { execSync } = require('child_process')\nexecSync('npm install express@4.18.2', { stdio: 'inherit' })\n", true, "scripts/setup.js:2"},
 		{"scripts/*.mjs spawn argv", "scripts/setup.mjs", "import { spawnSync } from 'node:child_process'\nspawnSync('npm', ['install', 'express@4.18.2'])\n", true, "scripts/setup.mjs:2"},
 		{"Dockerfile-prod", "Dockerfile-prod", "FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci && npm install express@4.18.2\n", true, "Dockerfile-prod:4"},
+		{"bare yarn installs", "ci/steps.yml", "steps:\n  - command: yarn\n", true, "ci/steps.yml:2"},
+		{"lowercase Dockerfile-like heredoc", "Dockerfile-prod", "from node:20\nRUN <<EOF\nnpm install express@4.18.2\nEOF\n", true, "Dockerfile-prod:2"},
 		{"README.md", "README.md", "## Install\n\n```\nnpm install express@4.18.2\nRUN npm install express\n```\n", false, ""},
 		{"docs/*.rst", "docs/install.rst", "Install\n=======\n\n.. code-block:: console\n\n   $ npm install express@4.18.2\n", false, ""},
 		{"CHANGELOG", "CHANGELOG", "1.0\n- run: npm install express now works\n", false, ""},

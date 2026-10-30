@@ -27,6 +27,8 @@ func TestResolveVersions_UnrecognisedInstallSurface(t *testing.T) {
 		{"Dockerfile-prod", "Dockerfile-prod", "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN uv sync --frozen && pip install PyJWT==1.0.0\n", true, "Dockerfile-prod:4"},
 		{"poe task", "pyproject.toml", exPyproject + "\n[tool.poe.tasks]\nsetup = \"pip install PyJWT==1.0.0\"\n", true, "pyproject.toml:6"},
 		{"uv run in a pre-commit config", ".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: lint\n        entry: uv run ruff\n        language: system\n", true, ".pre-commit-config.yaml:5"},
+		{"pip under bash -c", "ci/steps.yml", "steps:\n  - command: bash -c \"pip install PyJWT==1.0.0\"\n", true, "ci/steps.yml:2"},
+		{"pip by a venv path", "ci/steps.yml", "steps:\n  - command: ./venv/bin/pip install PyJWT==1.0.0\n", true, "ci/steps.yml:2"},
 		{"README.md", "README.md", "## Install\n\n```\npip install PyJWT==1.0.0\nRUN pip install PyJWT\n```\n", false, ""},
 		{"docs/*.rst", "docs/install.rst", "Install\n=======\n\n.. code-block:: console\n\n   $ pip install PyJWT==1.0.0\n", false, ""},
 		{"CHANGELOG", "CHANGELOG", "1.0\n- run: pip install PyJWT now works\n", false, ""},

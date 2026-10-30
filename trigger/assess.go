@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -228,6 +229,16 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 // narrows attention, but the finding stays reachable_candidate because presence ≠
 // sufficiency — whether the guard actually closes the hole is a runtime question only
 // the Prove tier settles. Returns guards in the advisory's declared order.
+//
+// Guards are matched against the one chain shown (frames), never against other chains
+// from the ingress to the sink. For a taint finding, when chains of the same length tie,
+// the one shown is picked by symbol (see taintFrames), so a guard called only on a tied
+// chain that is not shown is not listed: which guards are listed can then follow the
+// symbols' names, never the verdict. A reachability-only candidate (no taint path) shows
+// its first stored reachability path, with no length or symbol comparison, so its guard
+// list follows the order the lane stored its paths in. A guard on one chain does not
+// cover another, so listing it beside frames that never call it would claim more than
+// the evidence shows.
 func guardsOnPath(store artifact.Store, assessmentID string, frames []report.CallFrame) []string {
 	declared := advisoryGuards(store, assessmentID)
 	if len(declared) == 0 || len(frames) == 0 {
@@ -597,7 +608,7 @@ func withSignals(p report.Provenance, sig *intel.Signals) report.Provenance {
 // taint path-presence to the sink; anything less is control_flow_only.
 func reachabilityEvidence(store artifact.Store, assessmentID string) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
 	ingresses := ingressMap(store, assessmentID)
-	frames, ingressSym := candidateTrace(store, assessmentID)
+	frames, credit, ingressSym := candidateTrace(store, assessmentID)
 
 	// attacker_tainted requires an attacker-controllable ingress to lie ON the
 	// ingress→sink path-presence trace (the call path IS the path-presence evidence,
@@ -606,7 +617,9 @@ func reachabilityEvidence(store artifact.Store, assessmentID string) (report.Rea
 	// stronger candidate grade. Otherwise the sink is only reachable via internal
 	// entries (main/cli) or an unknown ingress → control_flow_only. Either way it
 	// stays a candidate (inv. 5): the strong grade is evidence strength, not a proof.
-	entry := attackerIngressInTrace(frames, ingresses)
+	// The entry is read off credit, the path's own trace: for a taint path that is the
+	// taint's [ingress, sink], so the frames shown between them never move the credit.
+	entry := attackerIngressInTrace(credit, ingresses)
 	grade := report.GradeControlFlowOnly
 	if entry != nil {
 		grade = report.GradeAttackerTainted
@@ -677,17 +690,113 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 	return nil
 }
 
-// candidateTrace returns the ingress→sink call frames and the ingress symbol for the
-// representative candidate path. It prefers the taint artifact's path-presence trace
-// (populated for first-party taint flows), then the govulncheck reachability paths.
-func candidateTrace(store artifact.Store, assessmentID string) ([]report.CallFrame, string) {
+// candidateTrace returns the representative candidate path's ingress→sink call frames, the
+// frames its entry point is credited from, and its ingress symbol. It prefers the taint
+// artifact's path (populated for first-party taint flows), then the reachability paths.
+//
+// A taint path names its ingress and its sink but none of the calls between them: its trace
+// is the two frames [ingress, sink], which reads as a direct call even when there is none. So
+// a taint path's frames come from taintFrames, while its entry point is still credited from
+// the taint path's own trace. guardsOnPath matches guards against the frames, so a guard
+// called from a frame inside that chain is listed too, and a guard called only on another
+// chain, even one of the same length, is not; it is evidence, never a verdict.
+func candidateTrace(store artifact.Store, assessmentID string) (frames, credit []report.CallFrame, ingressSym string) {
+	paths := reachPaths(store, assessmentID)
 	if p, ok := firstTaintPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+		edges := func() []plugin.CallEdge { return callGraphEdges(store, assessmentID) }
+		return framesOf(taintFrames(p, paths, edges)), framesOf(p.Trace), p.Ingress.SCIP
 	}
-	if p, ok := firstReachPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+	if len(paths) > 0 {
+		f := framesOf(paths[0].Trace)
+		return f, f, paths[0].Ingress.SCIP
 	}
-	return nil, ""
+	return nil, nil, ""
+}
+
+// taintFrames returns the frames shown for taint path tp: a real call chain from tp's ingress
+// to its sink, not necessarily the calls the tainted value passed through. It is the shortest
+// suffix, from the ingress on, of a reachability path that ends at the sink and holds the
+// ingress, else the shortest chain of call-graph edges (edges) from the ingress to the sink,
+// which is searched whether or not any reachability path ends at the sink. Either is made only
+// of a reachability path's own frames or of call-graph edges, so it never shows a call the
+// graph does not have. tp's own trace stays only when neither yields a chain.
+//
+// Ties are broken by the symbols themselves, never by the order the paths or edges are
+// stored in, which this package does not control: every lane writes its own. Only the
+// chain picked is shown, and guardsOnPath lists the guards its frames call, so of two
+// chains of the same length the one whose symbols sort first decides the guard list.
+func taintFrames(tp plugin.ReachPath, paths []plugin.ReachPath, edges func() []plugin.CallEdge) []plugin.Symbol {
+	ingress, sink := tp.Ingress.SCIP, tp.Sink.SCIP
+	var best []plugin.Symbol
+	for _, p := range paths {
+		if len(p.Trace) == 0 || p.Trace[len(p.Trace)-1].SCIP != sink {
+			continue
+		}
+		if i := slices.IndexFunc(p.Trace, func(s plugin.Symbol) bool { return s.SCIP == ingress }); i >= 0 {
+			if best == nil || compareTraces(p.Trace[i:], best) < 0 {
+				best = p.Trace[i:]
+			}
+		}
+	}
+	if best != nil {
+		return best
+	}
+	if ingress == "" || ingress == sink {
+		return tp.Trace
+	}
+	if chain := callChain(edges(), tp.Ingress, sink); chain != nil {
+		return chain
+	}
+	return tp.Trace
+}
+
+// compareTraces orders two traces by length, then by their symbols' SCIP ids in turn.
+func compareTraces(a, b []plugin.Symbol) int {
+	if c := cmp.Compare(len(a), len(b)); c != 0 {
+		return c
+	}
+	return slices.CompareFunc(a, b, func(x, y plugin.Symbol) int { return strings.Compare(x.SCIP, y.SCIP) })
+}
+
+// callChain returns the shortest chain of call-graph edges from from to the callee to, both
+// ends included, or nil when the graph holds none. The edges are searched sorted by (caller,
+// callee), so a tie goes to the callee that sorts first and the chain is the same whatever
+// order the edges were stored in.
+func callChain(edges []plugin.CallEdge, from plugin.Symbol, to string) []plugin.Symbol {
+	edges = slices.Clone(edges)
+	slices.SortFunc(edges, func(a, b plugin.CallEdge) int {
+		return cmp.Or(strings.Compare(a.Caller.SCIP, b.Caller.SCIP), strings.Compare(a.Callee.SCIP, b.Callee.SCIP))
+	})
+	callees := make(map[string][]plugin.Symbol)
+	for _, e := range edges {
+		callees[e.Caller.SCIP] = append(callees[e.Caller.SCIP], e.Callee)
+	}
+	type step struct {
+		sym    plugin.Symbol
+		parent string
+	}
+	seen := map[string]step{from.SCIP: {sym: from}}
+	queue := []string{from.SCIP}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == to {
+			var chain []plugin.Symbol
+			for n := to; n != from.SCIP; n = seen[n].parent {
+				chain = append(chain, seen[n].sym)
+			}
+			chain = append(chain, from)
+			slices.Reverse(chain)
+			return chain
+		}
+		for _, c := range callees[cur] {
+			if _, ok := seen[c.SCIP]; !ok {
+				seen[c.SCIP] = step{sym: c, parent: cur}
+				queue = append(queue, c.SCIP)
+			}
+		}
+	}
+	return nil
 }
 
 func framesOf(trace []plugin.Symbol) []report.CallFrame {
@@ -752,18 +861,19 @@ func firstTaintPath(store artifact.Store, assessmentID string) (plugin.ReachPath
 	return td.Result.Paths[0], true
 }
 
-func firstReachPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+// reachPaths reads the reachability artifact's resolved paths, in their stored order.
+func reachPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
 	arts, err := store.Query(assessmentID, artifact.TypeReachability)
 	if err != nil || len(arts) == 0 {
-		return plugin.ReachPath{}, false
+		return nil
 	}
 	var payload struct {
 		Reachability plugin.ReachabilityResult `json:"reachability"`
 	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil || len(payload.Reachability.Paths) == 0 {
-		return plugin.ReachPath{}, false
+	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
+		return nil
 	}
-	return payload.Reachability.Paths[0], true
+	return payload.Reachability.Paths
 }
 
 // disqualResult reads the disqualification_discovery artifact (TypeDiscovery).

@@ -603,7 +603,16 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 // TestGoModRequires_WorkspaceMembers: the go.work in force puts every module it uses, and what
 // each requires, in the build, so none of them is absent; a module only the root's own use claims,
 // that a nested module owns instead, still is, and a go.work that cannot be read proves nothing.
+// The build list is the one the go command computes for the workspace fixture, stubbed so the test
+// does not depend on the module cache.
 func TestGoModRequires_WorkspaceMembers(t *testing.T) {
+	stubGoList(t, func(context.Context, string, GoWorkspace) ([]listedModule, error) {
+		return []listedModule{
+			{Path: "example.com/mono", Main: true},
+			{Path: "example.com/mono/b", Main: true},
+			{Path: "golang.org/x/text", Version: "v0.3.6"},
+		}, nil
+	})
 	workspace := map[string]string{
 		"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
 		"a/go.mod": "module example.com/mono\n\ngo 1.22\n",

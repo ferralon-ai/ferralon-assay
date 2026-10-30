@@ -74,8 +74,12 @@ import (
 // use too) withholds every pin (installTypesAbbrevRE). A mypy config can set install_types as
 // well, and mypy reads a config where it lands and by any name --config-file gives it, so a
 // file under the build dir whose head names mypy and an install_types key, however it is set,
-// withholds every pin (mypyConfigInstalls). A config the build fetches or the base image
-// holds is not observed.
+// withholds every pin (mypyConfigInstalls). mypy also reads arguments one per line from a
+// file an @ argument names, whatever that file is called and whether or not it names mypy, so
+// a file under the build dir holding a line that is a prefix of --install-types from --ins on
+// withholds every pin (installTypesLineRE). A config or arguments file the build fetches or
+// the base image holds is not observed, nor is a prefix shorter than --install- that reaches
+// mypy through a variable another file sets.
 
 // newScriptSpec is the Python lane's part of the rule, recording into installs every pip
 // install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
@@ -138,7 +142,11 @@ const installTypesFlag, installTypesMin = "--install-types", "--install-"
 
 // installTypesAbbrevRE matches, in a script surface's text, a word mypy's parser reads as
 // --install-types that is shorter than installTypesMin; mypyNamedRE must match the same text.
-var installTypesAbbrevRE = regexp.MustCompile(`(?:^|[\s"'(;&|])--ins(?:t(?:a(?:ll?)?)?)?(?:$|[\s"'=;&|)])`)
+var installTypesAbbrevRE = regexp.MustCompile(`(?:^|[^\w-])--ins(?:t(?:a(?:ll?)?)?)?(?:$|[^\w-])`)
+
+// installTypesLineRE matches a line that is a prefix of --install-types from --ins on, as
+// mypy reads one argument per line from an @ file.
+var installTypesLineRE = regexp.MustCompile(`(?m)^--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?\r?$`)
 
 // mypyNamedRE matches mypy anywhere, dmypy and mypy.api included.
 var mypyNamedRE = regexp.MustCompile(`(?i)mypy`)

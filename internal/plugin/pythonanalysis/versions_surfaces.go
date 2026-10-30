@@ -70,7 +70,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	veto := scriptsurface.New(root, read, spec)
 	classify := veto.Classify(pyInstallSurface)
 	match := func(path string, head []byte) (string, bool) {
-		mypyInstalls = mypyInstalls || mypyConfigInstalls(head)
+		mypyInstalls = mypyInstalls || mypyConfigInstalls(head) || installTypesLineRE.Match(head)
 		return classify(path, head)
 	}
 	for _, c := range buildtree.Candidates(root, match, veto.FullyRead) {

@@ -427,6 +427,14 @@ func TestResolveVersions_MypyInstallTypes(t *testing.T) {
 		{"config with install_types off", map[string]string{"mypy.ini": "[mypy]\ninstall_types = False\n", "install.sh": "mypy .\n"}, false},
 		{"abbreviation, mypy.__main__", map[string]string{"install.sh": "python -m mypy.__main__ --ins --non-interactive .\n"}, false},
 		{"abbreviation, -mmypy", map[string]string{"install.sh": "python -mmypy --install --non-interactive .\n"}, false},
+		{"abbreviated --inst", map[string]string{"install.sh": "mypy --inst --non-interactive .\n"}, false},
+		{"abbreviated --insta", map[string]string{"install.sh": "mypy --insta --non-interactive .\n"}, false},
+		{"abbreviated --instal", map[string]string{"install.sh": "mypy --instal --non-interactive .\n"}, false},
+		{"abbreviated --install-", map[string]string{"install.sh": "mypy --install- --non-interactive .\n"}, false},
+		{"abbreviation in a shell variable", map[string]string{"install.sh": "FLAGS=--install\nmypy $FLAGS --non-interactive .\n"}, false},
+		{"abbreviation in a Makefile variable", map[string]string{"Makefile": "MYPYFLAGS:=--ins\nlint:\n\tmypy $(MYPYFLAGS) --non-interactive src\n"}, false},
+		{"@ file with --install-types", map[string]string{"ci/mypy-args": "--install-types\n--non-interactive\n", "install.sh": "mypy @ci/mypy-args .\n"}, false},
+		{"@ file with --install, CRLF", map[string]string{"ci/mypy-args": "--install\r\n--non-interactive\r\n", "install.sh": "mypy @ci/mypy-args .\n"}, false},
 
 		// Guards.
 		{"plain mypy", map[string]string{"install.sh": "mypy --strict .\n"}, true},
@@ -435,6 +443,7 @@ func TestResolveVersions_MypyInstallTypes(t *testing.T) {
 		{"--no-install-types", map[string]string{".github/workflows/mypy.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: mypy --no-install-types .\n"}, true},
 		{"--install without mypy", map[string]string{"install.sh": "helm upgrade --install app ./chart\n"}, true},
 		{"--", map[string]string{"install.sh": "pytest -- tests\n"}, true},
+		{"--install-types mid-line in a file mypy is not named in", map[string]string{"notes.txt": "pass --install-types to fetch stubs\n", "install.sh": "pytest\n"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

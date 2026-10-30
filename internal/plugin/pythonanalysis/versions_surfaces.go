@@ -31,7 +31,9 @@ import (
 // read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
 // is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
 // or a script surface names one (pipConfigNamedRE). A script surface that names a uv config
-// (uvConfigNamedRE) withholds when an allowed uv sync runs.
+// (uvConfigNamedRE) withholds when an allowed uv sync runs, and one that names a poetry or pdm
+// config (toolConfigNamedRE) when an allowed poetry install or pdm sync runs. A poetry or pdm
+// config in the tree is read when it sets only that tool's settings (toolConfigClean).
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
@@ -63,23 +65,25 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		if wideMarked(path) {
 			return false
 		}
-		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
+		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path) || toolConfigClean(path)
 	}
 	installs = pipInstalls{}
 	if !pipConfigInTree(root) {
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed, uvConfigNamed, uvSynced := false, false, false
+	configNamed, uvConfigNamed, toolConfigNamed, uvSynced, toolSynced := false, false, false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
 		uvConfigNamed = uvConfigNamed || uvConfigNamedRE.MatchString(src)
+		toolConfigNamed = toolConfigNamed || toolConfigNamedRE.MatchString(src)
 	}
 	allowed := spec.Allowed
 	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
 		ok := allowed(words, b)
-		if head, _ := scriptsurface.CommandName(words[0]); ok && head == "uv" {
-			uvSynced = true
+		if head, _ := scriptsurface.CommandName(words[0]); ok {
+			uvSynced = uvSynced || head == "uv"
+			toolSynced = toolSynced || (head == "poetry" || head == "pdm") && words[1] != "config"
 		}
 		return ok
 	}
@@ -93,7 +97,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	if uvConfigNamed && uvSynced {
+	if uvConfigNamed && uvSynced || toolConfigNamed && toolSynced {
 		scriptWithheld = true
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
@@ -143,6 +147,9 @@ func pySurfaceName(path string) (string, bool) {
 	lower := strings.ToLower(filepath.Base(path))
 	ext := filepath.Ext(lower)
 	dir := strings.ToLower(filepath.Base(filepath.Dir(path)))
+	if _, ok := toolConfigName(lower, dir); ok {
+		return "tool config name", true
+	}
 	switch {
 	case isManifest(lower):
 		return "manifest name", true

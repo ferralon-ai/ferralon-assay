@@ -66,6 +66,34 @@ func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 	return nil, pathAbsent
 }
 
+// clear reports whether no event may have put anything at or under the container path f: no
+// COPY or taint at or under it, and no directory copied over it from a host directory that
+// holds f's place or may. A command's taint of everything is left to the mentions that bind
+// reads, as a host script's commands are.
+func (st *dockerStage) clear(v *Veto, f string) bool {
+	for _, e := range st.events {
+		switch {
+		case e.all:
+		case e.dst == f || strings.HasPrefix(e.dst, f+"/"):
+			return false
+		case e.dst == "/" || strings.HasPrefix(f, e.dst+"/"):
+			if !e.dir {
+				continue
+			}
+			if e.taint {
+				return false
+			}
+			rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(f, e.dst), "/"))
+			for _, h := range e.hosts {
+				if _, there, known := v.stat(filepath.Join(h, rel)); there || !known {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 func (st *dockerStage) taintAll() { st.events = append(st.events, dockerEvent{all: true}) }
 
 // resolve returns a container path for p, from the WORKDIR when relative.
@@ -292,6 +320,34 @@ func (c *dockerCursor) Nearest(name string, locks ...string) []string {
 		}
 		if d == "/" {
 			return nil
+		}
+	}
+}
+
+func (c *dockerCursor) Clear(name, p string) bool {
+	if !c.known || !plainRel(p) {
+		return false
+	}
+	for d := c.dir; ; d = path.Dir(d) {
+		hosts, state := c.st.lookup(c.v, path.Join(d, name))
+		switch state {
+		case pathTainted:
+			return false
+		case pathBound:
+			for _, h := range hosts {
+				if !c.v.read(h) {
+					return false
+				}
+			}
+			if !c.st.clear(c.v, path.Join(d, filepath.ToSlash(p))) {
+				return false
+			}
+			c.v.bind(name)
+			c.v.bindAll(p)
+			return true
+		}
+		if d == "/" {
+			return false
 		}
 	}
 }

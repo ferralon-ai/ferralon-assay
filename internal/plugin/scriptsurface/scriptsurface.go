@@ -465,6 +465,15 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
+// bindAll binds every element of a relative path.
+func (v *Veto) bindAll(p string) {
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
+		if part != "" && part != "." {
+			v.bind(part)
+		}
+	}
+}
+
 // mention records the base names of a command's arguments, a redirect's or an option's
 // target included.
 func (v *Veto) mention(args []string) {

@@ -24,6 +24,11 @@ type Binder interface {
 	// as a surface on its own. With locks given, each of them that is there in dir must be a
 	// regular file read here, reached through no symlink. nil when any is not.
 	Prefixed(dir, name string, locks ...string) []string
+	// Clear reports whether nothing is at p, a relative path with no .. part, beside each
+	// file Nearest(name) returns: nothing in the build tree there and, under a Dockerfile,
+	// nothing copied there. It binds every element of p, so a command that names one
+	// withholds. false when Nearest(name) is nil or p may be there.
+	Clear(name, p string) bool
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -217,6 +222,33 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 		c.v.bind(l)
 	}
 	return found
+}
+
+func (c *hostCursor) Clear(name, p string) bool {
+	hits := c.Nearest(name)
+	if hits == nil || !plainRel(p) {
+		return false
+	}
+	for _, h := range hits {
+		if _, there, known := c.v.stat(filepath.Join(filepath.Dir(h), p)); there || !known {
+			return false
+		}
+	}
+	c.v.bindAll(p)
+	return true
+}
+
+// plainRel reports whether p is a relative path with no .., shell expansion or glob.
+func plainRel(p string) bool {
+	if p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$`*?[{~") {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {

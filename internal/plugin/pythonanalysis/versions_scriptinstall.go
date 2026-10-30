@@ -37,7 +37,9 @@ import (
 // with only --no-cache-dir, --user and -q added (and, to pip, --no-deps and --require-hashes,
 // which only narrow what it installs), and with the manifest each binds to (the
 // nearest pyproject.toml or Pipfile at or above the command's directory) and the lock it
-// installs (the nearest at or above that) read here. Anything
+// installs (the nearest at or above that) read here; and, for uv sync, poetry install and pdm
+// sync, with a root project whose build runs no code from the tree and loads no plugin
+// (rootBuildClean). Anything
 // else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
 // (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
 // every other tool laneToken names, run wrappers whose argv names one included. A
@@ -227,6 +229,140 @@ func pdmScripts(data []byte) (map[string]any, error) {
 	return nil, errors.New("tool.pdm.scripts is not a table")
 }
 
+// rootProject is what rootBuildClean reads from a pyproject.toml.
+type rootProject struct {
+	BuildSystem *struct {
+		Backend     string `toml:"build-backend"`
+		BackendPath any    `toml:"backend-path"`
+	} `toml:"build-system"`
+	Tool struct {
+		Poetry struct {
+			Build           any `toml:"build"`
+			RequiresPlugins any `toml:"requires-plugins"`
+		} `toml:"poetry"`
+		PDM struct {
+			Distribution *bool `toml:"distribution"`
+			Build        struct {
+				CustomHook    any `toml:"custom-hook"`
+				RunSetuptools any `toml:"run-setuptools"`
+			} `toml:"build"`
+		} `toml:"pdm"`
+		Hatch map[string]any `toml:"hatch"`
+		UV    struct {
+			Package   *bool `toml:"package"`
+			Workspace any   `toml:"workspace"`
+		} `toml:"uv"`
+	} `toml:"tool"`
+}
+
+// rootBuildClean reports whether tool's allowed install (poetry, pdm or uv) of the root
+// project its nearest pyproject.toml declares runs no code from the tree, and loads no
+// plugin, that could install a package the lock does not name. A manifest this cannot decode
+// fails.
+//
+// poetry installs the root with a builder of its own, not the PEP 517 backend, and the only
+// tree code that runs is a tool.poetry.build script. Any poetry command loads plugins from a
+// .poetry/plugins directory beside the manifest, and poetry install installs
+// tool.poetry.requires-plugins there from the index. pdm loads plugins from a .pdm-plugins
+// directory there (releases before 2.27; the release a build runs is not known here), and pdm
+// and uv build the root through its PEP 517 backend unless tool.pdm.distribution or
+// tool.uv.package is false. That build is clean only for a backend that runs nothing from the
+// tree but what tool tables or files named here ask it to (backendClean). A uv workspace
+// builds its members as well, so a workspace root fails.
+func rootBuildClean(tool string, b scriptsurface.Binder) bool {
+	pyprojects := b.Nearest("pyproject.toml")
+	if pyprojects == nil {
+		return false
+	}
+	for _, m := range pyprojects {
+		data, err := readRegular(m)
+		if err != nil {
+			return false
+		}
+		var doc rootProject
+		if _, err := toml.Decode(string(data), &doc); err != nil {
+			return false
+		}
+		switch tool {
+		case "poetry":
+			if doc.Tool.Poetry.Build != nil || doc.Tool.Poetry.RequiresPlugins != nil || !b.Clear("pyproject.toml", ".poetry/plugins") {
+				return false
+			}
+		case "pdm":
+			if !b.Clear("pyproject.toml", ".pdm-plugins") {
+				return false
+			}
+			if d := doc.Tool.PDM.Distribution; (d == nil || *d) && !backendClean(doc, b) {
+				return false
+			}
+		case "uv":
+			if doc.Tool.UV.Workspace != nil {
+				return false
+			}
+			if p := doc.Tool.UV.Package; (p == nil || *p) && !backendClean(doc, b) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// backendClean reports whether the PEP 517 backend a manifest names runs no code from the
+// tree when it builds the project: setuptools (also the backend when none is named) with no
+// setup.py beside the manifest; pdm-backend with no pdm_build.py and no custom-hook or
+// run-setuptools; hatchling with no hooks table anywhere in tool.hatch and no hatch_build.py;
+// poetry-core with no tool.poetry.build; flit_core; or uv_build. A backend-path, which loads
+// the backend itself from the tree, or any other backend fails.
+func backendClean(doc rootProject, b scriptsurface.Binder) bool {
+	backend := ""
+	if bs := doc.BuildSystem; bs != nil {
+		if bs.BackendPath != nil {
+			return false
+		}
+		backend = strings.TrimSpace(bs.Backend)
+	}
+	switch backend {
+	case "", "setuptools.build_meta", "setuptools.build_meta:__legacy__":
+		return b.Clear("pyproject.toml", "setup.py")
+	case "pdm.backend":
+		return doc.Tool.PDM.Build.CustomHook == nil && doc.Tool.PDM.Build.RunSetuptools == nil && b.Clear("pyproject.toml", "pdm_build.py")
+	case "hatchling.build":
+		return !hasKey(doc.Tool.Hatch, "hooks") && b.Clear("pyproject.toml", "hatch_build.py")
+	case "poetry.core.masonry.api":
+		return doc.Tool.Poetry.Build == nil
+	case "flit_core.buildapi", "uv_build":
+		return true
+	}
+	return false
+}
+
+// hasKey reports whether key names a table or value anywhere in v.
+func hasKey(v any, key string) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, sub := range t {
+			if k == key || hasKey(sub, key) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, sub := range t {
+			if hasKey(sub, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, sub := range t {
+			if hasKey(sub, key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // laneRunBinds reports whether a run wrapper's argv is the command it runs rather than a
 // script a manifest names: pdm run and pipenv run look a name up in pyproject.toml's
 // tool.pdm.scripts and a Pipfile's scripts table first, pdm runs that table's pre_run and
@@ -278,11 +414,11 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 	case len(words) < 2:
 		return false
 	case head == "uv" && words[1] == "sync":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--locked", "--frozen") && b.Nearest("pyproject.toml", "uv.lock") != nil
+		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--locked", "--frozen") && b.Nearest("pyproject.toml", "uv.lock") != nil && rootBuildClean(head, b)
 	case head == "poetry" && words[1] == "install":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("pyproject.toml", "poetry.lock") != nil
+		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("pyproject.toml", "poetry.lock") != nil && rootBuildClean(head, b)
 	case head == "pdm" && words[1] == "sync":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags) && pdmSyncNoHooks(b.Nearest("pyproject.toml", "pdm.lock"))
+		return scriptsurface.FlagsOnly(words[2:], laneFlags) && pdmSyncNoHooks(b.Nearest("pyproject.toml", "pdm.lock")) && rootBuildClean(head, b)
 	case head == "pipenv" && words[1] == "install":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--deploy") && b.Nearest("Pipfile", "Pipfile.lock") != nil
 	case head == "pipenv" && words[1] == "sync":

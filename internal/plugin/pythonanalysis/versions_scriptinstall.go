@@ -73,9 +73,10 @@ import (
 // surface whose text holds one, wherever it sits in that text: a ${FLAGS:-} default, or a line
 // a printf writes into an @ file (installTypesTextRE). A shorter prefix, --ins to --install,
 // is a flag helm and others use too, so it withholds every pin only in a surface whose text
-// names mypy (installTypesAbbrevRE). A mypy config can set install_types as well, and mypy reads a config where it lands and by any name --config-file gives it, so a
-// file under the build dir whose head names mypy and an install_types key, however it is set,
-// withholds every pin (mypyConfigInstalls). mypy also reads arguments one per line from a
+// names mypy (installTypesAbbrevRE). A mypy config can set install_types as well, and mypy
+// reads a config where it lands and by any name --config-file gives it, so a file under the
+// build dir whose head names mypy and an install_types key, however it is set, withholds
+// every pin (mypyConfigInstalls). mypy also reads arguments one per line from a
 // file an @ argument names, whatever that file is called and whether or not it names mypy, so
 // a file under the build dir holding a line that is a prefix of --install-types from --ins on
 // withholds every pin (installTypesLineRE). A config or arguments file the build fetches or

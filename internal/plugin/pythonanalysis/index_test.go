@@ -197,3 +197,17 @@ class Svc:
 		t.Errorf("nested def inner not parsed; got %v", displays(res))
 	}
 }
+
+// A lone CR is a line break to CPython, so a file written with CR line endings still
+// declares each of its defs.
+func TestIndexSymbols_LoneCRLineBreaks(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"app.py": "import os\rdef first():\r    pass\rdef second():\r    pass\r",
+	})
+	res := indexOf(t, dir)
+	for _, want := range []string{"first()", "second()"} {
+		if !hasDisplay(res, want) {
+			t.Errorf("%s not indexed; got %v", want, displays(res))
+		}
+	}
+}

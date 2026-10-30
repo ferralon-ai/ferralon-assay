@@ -105,6 +105,17 @@ func TestFinding_VersionLimitsScopedToInventory(t *testing.T) {
 			wantReason: report.ReasonAdvisoryUnknownToAnalyzer,
 		},
 		{
+			// Only a limit the footprint lists counts as removed; an inventory flag alone does not.
+			name: "the analyzer does not know the advisory, and the footprint lists no version limit",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				unresolved(fx)
+				fx.footprint = []string{plugin.PartialReasonAdvisoryUnknownToAnalyzer}
+				fx.inventory = []string{failed}
+			},
+			wantReason: report.ReasonAdvisoryUnknownToAnalyzer,
+		},
+		{
 			name: "a footprint that does not list the inventory's limit",
 			base: yamlSearched,
 			mutate: func(fx *groundsFixture) {
@@ -122,6 +133,7 @@ func TestFinding_VersionLimitsScopedToInventory(t *testing.T) {
 				fx.footprint = append(fx.footprint, failed)
 				fx.inventory = []string{failed}
 			},
+			wantReason: report.ReasonPackageVersionUnresolved,
 		},
 	}
 	for _, tc := range cases {

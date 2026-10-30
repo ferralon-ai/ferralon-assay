@@ -552,6 +552,17 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 		{"a build directory under an underscore directory", map[string]string{
 			"_examples/a/go.mod": gomod, "_examples/a/mods/x/go.mod": claimX,
 		}, "_examples/a", "example.com/mono/x", goOwnedElsewhere},
+		{"a go.mod under an underscore directory a go.work member replaces into", map[string]string{
+			"go.work":   "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
+			"a/go.mod":  gomod,
+			"b/go.mod":  "module example.com/mono/b\n\ngo 1.22\n\nrequire example.com/mono/x v0.0.0\n\nreplace example.com/mono/x => ../_x\n",
+			"_x/go.mod": claimX,
+		}, "a", "example.com/mono/x", goOwnerAmbiguous},
+		{"a go.mod under an underscore directory the go.work replaces into", map[string]string{
+			"go.work":   "go 1.22\n\nuse ./a\n\nreplace example.com/mono/x => ./_x\n",
+			"a/go.mod":  gomod,
+			"_x/go.mod": claimX,
+		}, "a", "example.com/mono/x/pkg", goOwnerAmbiguous},
 		{"a build directory under a testdata directory", map[string]string{
 			"testdata/a/go.mod": gomod, "testdata/b/go.mod": claimX,
 		}, "testdata/a", "example.com/mono/x", goOwnerAmbiguous},
@@ -605,6 +616,11 @@ func TestGoModRequires_WorkspaceMembers(t *testing.T) {
 		{"a go.work using a directory with no go.mod", map[string]string{
 			"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./gone\n)\n",
 			"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+		}, "example.com/never", false, false},
+		{"a go.work using a module whose go.mod declares no module", map[string]string{
+			"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
+			"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+			"b/go.mod": "go 1.22\n",
 		}, "example.com/never", false, false},
 	}
 	for _, tc := range cases {

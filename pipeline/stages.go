@@ -2478,7 +2478,7 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if declares(mf) {
 		return true, true
 	}
-	uses, ok := goWorkUses(buildDir)
+	uses, _, ok := goWorkUses(buildDir)
 	if !ok {
 		return false, false
 	}

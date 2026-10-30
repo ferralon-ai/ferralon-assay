@@ -105,8 +105,8 @@ const (
 // first element is not a major-version suffix (example.com/m/v2 is a different module from
 // example.com/m) and that no other module claims: none another go.mod below buildDir declares, none
 // a go.work at or above buildDir uses, and none go.mod requires or replaces. A longer module path
-// go.sum records but go.mod does not name, or one a go.mod elsewhere in the repository declares,
-// leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
+// go.sum records but go.mod does not name, one a go.mod elsewhere in the repository declares, or
+// one a go.work member requires or replaces or the go.work replaces, leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
 // in the build, so the path may still be the root's, but it may also be the other module's at
 // another version.
 func goPathOwner(buildDir, mod, p string) goOwner {
@@ -158,7 +158,11 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 			return goOwnedElsewhere
 		}
 	}
-	for _, m := range outside {
+	work, ok := goWorkRequires(buildDir)
+	if !ok {
+		return goOwnerAmbiguous
+	}
+	for _, m := range append(outside, work...) {
 		if claims(m) {
 			return goOwnerAmbiguous
 		}
@@ -224,7 +228,7 @@ func goIgnoredDir(name string) bool {
 // from buildDir (the nearest at or above it) uses; ok is false when that go.work does not parse or
 // a module it uses declares no module path.
 func goWorkModules(buildDir string) ([]string, bool) {
-	uses, ok := goWorkUses(buildDir)
+	uses, _, ok := goWorkUses(buildDir)
 	if !ok {
 		return nil, false
 	}
@@ -239,21 +243,50 @@ func goWorkModules(buildDir string) ([]string, bool) {
 	return mods, true
 }
 
+// goWorkRequires returns the module path every go.mod of a module the go.work in force uses
+// requires or replaces, and every one that go.work replaces; ok is false when one cannot be read.
+func goWorkRequires(buildDir string) ([]string, bool) {
+	uses, paths, ok := goWorkUses(buildDir)
+	if !ok {
+		return nil, false
+	}
+	for _, use := range uses {
+		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
+		if err != nil {
+			return nil, false
+		}
+		mf, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return nil, false
+		}
+		for _, r := range mf.Require {
+			paths = append(paths, r.Mod.Path)
+		}
+		for _, r := range mf.Replace {
+			paths = append(paths, r.Old.Path)
+		}
+	}
+	return paths, true
+}
+
 // goWorkUses returns the directory of every module the go.work the go command would find from
-// buildDir uses; ok is false when that go.work cannot be read or does not parse.
-func goWorkUses(buildDir string) ([]string, bool) {
+// buildDir uses, and the module path of everything it replaces; ok is false when that go.work
+// cannot be read or does not parse.
+func goWorkUses(buildDir string) (uses, replaced []string, ok bool) {
 	dir, err := filepath.Abs(buildDir)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	for {
 		data, err := os.ReadFile(filepath.Join(dir, "go.work"))
 		if err == nil {
 			wf, err := modfile.ParseWork("go.work", data, nil)
 			if err != nil {
-				return nil, false
+				return nil, nil, false
 			}
-			var uses []string
+			for _, r := range wf.Replace {
+				replaced = append(replaced, r.Old.Path)
+			}
 			for _, u := range wf.Use {
 				use := filepath.FromSlash(u.Path)
 				if !filepath.IsAbs(use) {
@@ -261,14 +294,14 @@ func goWorkUses(buildDir string) ([]string, bool) {
 				}
 				uses = append(uses, use)
 			}
-			return uses, true
+			return uses, replaced, true
 		}
 		if !os.IsNotExist(err) {
-			return nil, false
+			return nil, nil, false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return nil, true
+			return nil, nil, true
 		}
 		dir = parent
 	}

@@ -145,6 +145,25 @@ var dataNames = map[string]string{
 	"package.json": baseDir, "tox.ini": baseDir, "noxfile.py": baseDir,
 }
 
+// dockerfileNamed reports whether a lowercased base name is "dockerfile" or "containerfile",
+// either of them followed by ".", "-" or "_" and more, or either of them preceded by more
+// and ".", "-" or "_" (Dockerfile.prod, Dockerfile-prod, Dockerfile_api, api.Dockerfile).
+// surfaceOf checks it after every other case, so a name, extension, shebang or path that
+// one of those claims is read as that kind.
+func dockerfileNamed(lower string) bool {
+	for _, n := range []string{"dockerfile", "containerfile"} {
+		if lower == n {
+			return true
+		}
+		for _, sep := range []string{".", "-", "_"} {
+			if strings.HasPrefix(lower, n+sep) || strings.HasSuffix(lower, sep+n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // surfaceOf reports whether the file at path, with its buildtree.Head, is one whose
 // lines a build runs as commands.
 func surfaceOf(path string, head []byte) (surfaceType, bool) {
@@ -153,9 +172,6 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 	ext := filepath.Ext(lower)
 	yaml := ext == ".yml" || ext == ".yaml"
 	switch {
-	case lower == "dockerfile", lower == "containerfile", strings.HasPrefix(lower, "dockerfile."),
-		strings.HasPrefix(lower, "containerfile."), ext == ".dockerfile", ext == ".containerfile":
-		return surfaceType{kindDockerfile, baseNone}, true
 	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", ext == ".make", lower == "justfile", lower == ".justfile":
 		return surfaceType{kindMakefile, baseDir}, true
 	case ext == ".ps1", ext == ".bat", ext == ".cmd":
@@ -173,6 +189,8 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		strings.Contains(slash, "/.github/actions/") && (lower == "action.yml" || lower == "action.yaml"),
 		strings.HasPrefix(lower, "jenkinsfile"):
 		return surfaceType{kindData, baseRoot}, true
+	case dockerfileNamed(lower):
+		return surfaceType{kindDockerfile, baseNone}, true
 	}
 	if base, ok := dataNames[lower]; ok {
 		return surfaceType{kindData, base}, true

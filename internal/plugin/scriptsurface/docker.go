@@ -433,7 +433,7 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 		case dockerPlain[instr]:
 		default: // ONBUILD, HEALTHCHECK and anything unknown run elsewhere or not at all
-			if hasTok {
+			if v.hasToken(line) { // the whole line: a file read as a Dockerfile may be a script
 				return "install command in " + instr
 			}
 		}

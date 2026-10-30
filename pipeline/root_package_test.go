@@ -457,6 +457,35 @@ func TestGoPathOwner_ModulesOutsideTheRootGoMod(t *testing.T) {
 	}
 }
 
+// TestGoPathOwner_SiblingModuleOutsideTheBuildDir: a module beside the build directory's, with no
+// go.mod at the repository root and no go.work, still owns its own paths, so an advisory against it
+// is never evaluated at the root module's tag.
+func TestGoPathOwner_SiblingModuleOutsideTheBuildDir(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+		"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
+	})
+	gitTree(t, dir, "a/v1.0.0")
+	buildDir := filepath.Join(dir, "a")
+	root, ok := goRootPackage(context.Background(), buildDir)
+	if !ok || root.Version != "v1.0.0" {
+		t.Fatalf("goRootPackage = %+v, %v; want example.com/mono at v1.0.0", root, ok)
+	}
+	for _, tc := range []struct {
+		module      string
+		want        bool
+		wantVersion string
+	}{
+		{"example.com/mono/b/pkg", false, ""},
+		{"example.com/mono/b", false, ""},
+		{"example.com/mono/internal", true, "v1.0.0"},
+	} {
+		if v, got := root.Matches(buildDir, tc.module, "", ""); got != tc.want || v != tc.wantVersion {
+			t.Errorf("Matches(%q) = %q, %v; want %q, %v", tc.module, v, got, tc.wantVersion, tc.want)
+		}
+	}
+}
+
 // TestGradleRootPackage_VersionAllowlist: the version is read only when every statement that runs
 // before publishing is on the allowlist: settings holds only rootProject.name, and the root script
 // only literal group and version assignments and plain dependencies and repositories blocks.

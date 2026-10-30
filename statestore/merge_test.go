@@ -2,9 +2,11 @@ package statestore
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
@@ -242,6 +244,54 @@ func TestMergeKeepsGoBuildList(t *testing.T) {
 				len(s.GoWorkspaceModules) != 1 || s.GoWorkspaceModules[0] != "example.com/a" {
 				t.Errorf("%s: %s SBOM = %+v, want the newer report's Go build list", name, where, s)
 			}
+		}
+	}
+}
+
+// mergeOrders merges an older report with no SBOM edges or entry points against newer, with each
+// side as the committed one.
+func mergeOrders(newer report.Report) map[string]*State {
+	older := report.NewBuilder(report.Subject{ResolvedCommit: "old"}).
+		WithProvenance(report.Provenance{Timestamp: newer.Provenance.Timestamp.Add(-time.Hour)}).
+		Build()
+	return map[string]*State{
+		"newer committed": Merge(&State{Report: &newer, CommitSHA: "x"}, &State{Report: &older}),
+		"newer retrying":  Merge(&State{Report: &older, CommitSHA: "x"}, &State{Report: &newer}),
+	}
+}
+
+// A merged state keeps the later report's SBOM relationships, so the next PR diff does not read
+// every package with edges as changed.
+func TestMergeKeepsRelationships(t *testing.T) {
+	app := report.Package{Ecosystem: "Go", Name: "example.com/app", Version: "v1.0.0", PURL: "pkg:golang/example.com/app@v1.0.0", Direct: true}
+	dep := report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.15.0", PURL: "pkg:golang/golang.org/x/net@v0.15.0"}
+	rels := []report.Relationship{{Parent: app.Key(), Child: dep.Key()}}
+	newer := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).
+		AddPackages(app, dep).
+		SetRelationships(rels).
+		WithProvenance(report.Provenance{Timestamp: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)}).
+		Build()
+
+	for name, out := range mergeOrders(newer) {
+		for where, s := range map[string]report.SBOM{"report": out.Report.SBOM, "state": out.SBOM} {
+			if !reflect.DeepEqual(s.Relationships, rels) {
+				t.Errorf("%s: %s relationships = %v, want %v", name, where, s.Relationships, rels)
+			}
+		}
+	}
+}
+
+// A merged state keeps the later report's library entry points.
+func TestMergeKeepsLibraryEntrypoints(t *testing.T) {
+	eps := []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "example.com/app/api", Packages: []string{"example.com/app/api"}}}
+	newer := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).
+		WithLibraryEntrypoints(eps...).
+		WithProvenance(report.Provenance{Timestamp: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)}).
+		Build()
+
+	for name, out := range mergeOrders(newer) {
+		if !reflect.DeepEqual(out.Report.LibraryEntrypoints, eps) {
+			t.Errorf("%s: library entry points = %v, want %v", name, out.Report.LibraryEntrypoints, eps)
 		}
 	}
 }

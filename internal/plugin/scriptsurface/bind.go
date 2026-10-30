@@ -1,6 +1,7 @@
 package scriptsurface
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,9 +35,14 @@ type cursor interface {
 	// fork returns a cursor for a command started from here in a shell of its own, whose
 	// directory changes do not reach this one.
 	fork() cursor
-	// sourced reports whether p, from every directory the command may run in, names an in-tree
-	// script surface the walk checks on its own.
-	sourced(p string) bool
+	// script returns the build-tree files a shell run or . of the literal path p reads, one per
+	// directory the command may run in or Dockerfile source it was copied from: each inside the
+	// build, reached through no symlink and not a sample hook. false when p names anything else.
+	// It binds nothing.
+	script(p string) ([]string, bool)
+	// globReach reports whether a glob the shell expands at p, in a command that carries what
+	// it matches somewhere (cp, mv) when carries, may name a build-tree file.
+	globReach(p string, carries bool) bool
 	// at returns the one place a literal path names from the directory the command runs in,
 	// keyed so that two keys are equal only when they name the same place; false when it names
 	// no one place.
@@ -46,6 +52,9 @@ type cursor interface {
 	present(p string) bool
 	// venv is the state of the venv rule at this command.
 	venv() *venvMark
+	// where describes where the shell is, so that two descriptions are equal only when a
+	// directory change between them moved nothing.
+	where() string
 }
 
 // venvMark is what the venv rule carries from command to command in one shell.
@@ -98,6 +107,10 @@ func (c *hostCursor) cd(words []string) {
 
 func (c *hostCursor) other() {}
 
+func (c *hostCursor) where() string {
+	return fmt.Sprintf("%t %t %q %q", c.unknown, c.mark.lost, c.dirs, c.wd)
+}
+
 func (c *hostCursor) fork() cursor {
 	f := *c
 	f.dirs = append([]string(nil), c.dirs...)
@@ -119,16 +132,26 @@ func (c *hostCursor) merge(o *hostCursor) {
 
 func (c *hostCursor) File(p string) bool { return c.Hosts(p) != nil }
 
-func (c *hostCursor) sourced(p string) bool {
-	if c.unknown || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "*?[~") {
-		return false
+func (c *hostCursor) script(p string) ([]string, bool) {
+	if c.unknown || c.mark.lost || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$`*?[~") {
+		return nil, false
 	}
+	hosts := make([]string, 0, len(c.dirs))
 	for _, d := range c.dirs {
-		if !c.v.walkedSurface(filepath.Join(d, p)) {
-			return false
+		f := filepath.Join(d, p)
+		if !c.v.inRoot(f) || !c.v.unlinked(f) || c.v.sampleHook(f) {
+			return nil, false
 		}
+		hosts = append(hosts, f)
 	}
-	return true
+	return hosts, true
+}
+
+// globReach is true for a relative glob, which may match a build-tree file wherever the
+// command runs, and for an absolute one inside the build root. One outside it matches files
+// outside the build, which reach a bound file only through a command that carries them in.
+func (c *hostCursor) globReach(p string, carries bool) bool {
+	return !filepath.IsAbs(p) || carries || c.v.inRoot(filepath.Clean(p))
 }
 
 func (c *hostCursor) at(p string) (string, bool) {

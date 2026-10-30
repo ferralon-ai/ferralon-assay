@@ -2,6 +2,7 @@ package scriptsurface
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -206,6 +207,10 @@ func (c *dockerCursor) cd(words []string) {
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintAll() }
 
+func (c *dockerCursor) where() string {
+	return fmt.Sprintf("%t %t %q", c.known, c.mark.lost, c.dir)
+}
+
 func (c *dockerCursor) fork() cursor {
 	f := *c
 	return &f
@@ -217,8 +222,50 @@ func (c *dockerCursor) Prefixed(string, string, ...string) []string { return nil
 
 func (c *dockerCursor) File(p string) bool { return c.Hosts(p) != nil }
 
-// sourced is false: a file in the image is not one the walk checks.
-func (c *dockerCursor) sourced(string) bool { return false }
+// script maps a container path to the build-context files a COPY put there, unchanged since.
+func (c *dockerCursor) script(p string) ([]string, bool) {
+	f, ok := c.at(p)
+	if !ok {
+		return nil, false
+	}
+	hosts, state := c.st.lookup(c.v, f)
+	if state != pathBound || len(hosts) == 0 {
+		return nil, false
+	}
+	for _, h := range hosts {
+		if !c.v.inRoot(h) || !c.v.unlinked(h) || c.v.sampleHook(h) {
+			return nil, false
+		}
+	}
+	return hosts, true
+}
+
+// globReach reports whether a glob in the image may match a file a COPY put there: its
+// directory is not one place, or a COPY's destination lies at, under or above it. What a
+// command carries elsewhere in the image is the stage's, which the command taints anyway.
+func (c *dockerCursor) globReach(p string, _ bool) bool {
+	dir := path.Dir(p)
+	if strings.ContainsAny(dir, "$`*?[~") {
+		return true
+	}
+	switch {
+	case path.IsAbs(dir):
+		dir = path.Clean(dir)
+	case !c.known || c.mark.lost:
+		return true
+	default:
+		dir = path.Join(c.dir, dir)
+	}
+	for _, e := range c.st.events {
+		if e.all || e.taint {
+			continue
+		}
+		if dir == "/" || e.dst == dir || strings.HasPrefix(e.dst, dir+"/") || e.dir && (e.dst == "/" || strings.HasPrefix(dir, e.dst+"/")) {
+			return true
+		}
+	}
+	return false
+}
 
 func (c *dockerCursor) at(p string) (string, bool) {
 	switch {
@@ -369,6 +416,24 @@ func (v *Veto) dockerfile(file, src string) string {
 			if v.hasToken(body) {
 				return "install command in a heredoc"
 			}
+			if instr == "RUN" {
+				// A RUN's heredoc expands as the shell reads it, whatever it feeds.
+				if why := textExpands(body); why != "" {
+					return why
+				}
+			}
+			script := rest
+			for strings.HasPrefix(script, "--") {
+				_, script, _ = strings.Cut(script, " ")
+				script = strings.TrimSpace(script)
+			}
+			if instr == "RUN" && heredocScript(script) {
+				// The heredoc is the script the RUN's shell reads: its lines are commands.
+				cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown}
+				if why := v.runText(script+body[len(line):], cur, 0); why != "" {
+					return why
+				}
+			}
 			v.mention(strings.Fields(body))
 			st.taintAll()
 			continue
@@ -404,6 +469,9 @@ func (v *Veto) dockerfile(file, src string) string {
 				_, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
 			}
+			if why := expansion(rest, false); why != "" {
+				return why + ": " + line
+			}
 			var segs []segment
 			ok := true
 			if strings.HasPrefix(rest, "[") {
@@ -415,7 +483,10 @@ func (v *Veto) dockerfile(file, src string) string {
 				if hasTok {
 					return "install command that does not tokenise"
 				}
-				v.mention(strings.Fields(rest))
+				cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown}
+				if why := v.untokenised(rest, cur); why != "" {
+					return why
+				}
 				if instr == "RUN" {
 					st.taintAll()
 				}
@@ -439,4 +510,32 @@ func (v *Veto) dockerfile(file, src string) string {
 		}
 	}
 	return flush()
+}
+
+// heredocScript reports whether a RUN's heredoc is the script its shell reads: the RUN is the
+// heredoc alone, or a command handing it to a shell on standard input.
+func heredocScript(rest string) bool {
+	if strings.HasPrefix(rest, "<<") {
+		return true
+	}
+	segs, ok, _ := shellSegments(rest)
+	if !ok {
+		return false
+	}
+	for _, seg := range segs {
+		all, rs := redirects(seg)
+		args, _, ok := unwrap(all)
+		if !ok || len(args) == 0 {
+			continue
+		}
+		if name, _ := CommandName(args[0]); !shells[name] {
+			continue
+		}
+		for _, r := range rs {
+			if (r.op == "<<" || r.op == "<<-") && (r.fd == "" || r.fd == "0") {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -1005,13 +1005,45 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 		return report.ReasonAnalysisDidNotRun, true
 	}
 	reasons := didNotRunReasons(store, assessmentID, pkg)
+	versionHeld := false
+	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
+		kept := withoutVersionLimits(store, assessmentID, reasons)
+		versionHeld = len(kept) < len(reasons)
+		reasons = kept
+	}
 	switch {
 	case len(reasons) == 0:
 		return "", false
 	case !slices.ContainsFunc(reasons, func(r string) bool { return r != plugin.PartialReasonAdvisoryUnknownToAnalyzer }):
+		// An unresolved version is the more precise statement still, and notExploitableGrounds
+		// names it.
+		if versionHeld {
+			return "", false
+		}
 		return report.ReasonAdvisoryUnknownToAnalyzer, true
 	}
 	return report.ReasonAnalysisDidNotRun, true
+}
+
+// withoutVersionLimits drops, one occurrence each, the limits the inventory recorded against
+// resolving this package's version. They are why the version is unresolved, and for a package
+// admittedPackage cannot admit that is already the whole answer: notExploitableGrounds stops at
+// package_version_unresolved whatever else was declared. outsideBuildGrounds, the one refutation
+// that needs no admitted package, is held by outsideBuildBlocked, which still weighs them. Another
+// axis's copy of the same reason stays, since the footprint appends each axis's limits unmerged,
+// so the row still says analysis_did_not_run when a step other than version resolution did not run.
+func withoutVersionLimits(store artifact.Store, assessmentID string, reasons []string) []string {
+	inv, ok := inventory(store, assessmentID)
+	if !ok {
+		return reasons
+	}
+	out := slices.Clone(reasons)
+	for _, r := range inv.PartialityFlags {
+		if i := slices.Index(out, r); i >= 0 {
+			out = slices.Delete(out, i, i+1)
+		}
+	}
+	return out
 }
 
 // emptyGraphUncalledComplete reports whether the call graph is empty and the analyzer declined to

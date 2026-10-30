@@ -23,6 +23,7 @@ type groundsFixture struct {
 	reach           plugin.ReachabilityResult
 	callGraph       *plugin.CallGraphResult // nil = a complete graph with one edge
 	footprint       []string
+	inventory       []string  // the inventory's partiality_flags; nil = no inventory artifact
 	mods            goModules // the build's Go modules
 	scoped          []artifact.ScopedPartialityFlag
 	provenance      string // symbol_provenance; "" = osv-declared
@@ -62,6 +63,9 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 		putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{
 			PartialityFlags: fx.footprint, ScopedPartiality: fx.scoped,
 		})
+	}
+	if fx.inventory != nil {
+		putJSON(t, store, aid, artifact.TypeInventory, inventoryFacts{PartialityFlags: fx.inventory})
 	}
 	return findingInBuild(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg, fx.mods)
 }

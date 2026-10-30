@@ -1624,7 +1624,8 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		// Persist WHY the resolution was incomplete (e.g. "no_manifest"): a degraded resolve leaves
 		// the version empty, which downstream is indistinguishable from "this codebase has no such
 		// dependency". Carrying the reason is what makes an unresolvable scan distinguishable from a
-		// clean one at the customer surface — the flags are disclosure only and gate no verdict.
+		// clean one at the customer surface. They hold a refutation only while the version resolved
+		// anyway; an unresolved version is its own undetermined reason (trigger withoutVersionLimits).
 		var flags []string
 		if !vr.Partiality.Complete {
 			flags = append(flags, vr.Partiality.Reasons...)

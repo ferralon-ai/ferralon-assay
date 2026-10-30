@@ -267,8 +267,11 @@ type rootProject struct {
 				Source        any `toml:"source"`
 				VersionFormat any `toml:"version_format"`
 			} `toml:"version"`
-			Workspace any              `toml:"workspace"`
-			Source    []map[string]any `toml:"source"`
+			Workspace  any              `toml:"workspace"`
+			Source     []map[string]any `toml:"source"`
+			Resolution struct {
+				Overrides any `toml:"overrides"`
+			} `toml:"resolution"`
 		} `toml:"pdm"`
 		Hatch map[string]any `toml:"hatch"`
 		UV    struct {
@@ -330,8 +333,10 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 			}
 		case "pdm":
 			// pdm installs from a pylock.toml there instead of pdm.lock when lock.format,
-			// which pdm config can set, is pylock.
-			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") || !pdmSourcesRemote(doc) {
+			// which pdm config can set, is pylock. It resolves build requirements through
+			// tool.pdm.resolution.overrides, which may name a directory in the tree.
+			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") || !pdmSourcesRemote(doc) ||
+				doc.Tool.PDM.Resolution.Overrides != nil {
 				return false
 			}
 			builds := doc.Tool.PDM.Distribution == nil || *doc.Tool.PDM.Distribution
@@ -388,7 +393,18 @@ func uvSettingsClean(data []byte, sources map[string]bool) bool {
 		case "index":
 			ts, ok := v.([]map[string]any)
 			if !ok {
-				return false
+				// An inline array of tables decodes as []any.
+				vs, ok := v.([]any)
+				if !ok {
+					return false
+				}
+				for _, t := range vs {
+					m, ok := t.(map[string]any)
+					if !ok {
+						return false
+					}
+					ts = append(ts, m)
+				}
 			}
 			for _, t := range ts {
 				if !remoteURLs(t["url"]) {
@@ -459,7 +475,7 @@ var toolLocks = map[string]string{"uv": "uv.lock", "poetry": "poetry.lock", "pdm
 // build or written with a variable, a lock that is not beside the manifest (uv then installs
 // the workspace that lock is for), or a source of a kind this does not know.
 func localBuildsClean(tool string, b scriptsurface.Binder, sources map[string]bool) bool {
-	if !standalone(tool, b) {
+	if !standalone(tool, b, sources) {
 		return false
 	}
 	locks := b.Beside("pyproject.toml", toolLocks[tool])
@@ -487,8 +503,10 @@ func localBuildsClean(tool string, b scriptsurface.Binder, sources map[string]bo
 // standalone reports whether the directories the tool walks up from the command's directory
 // are the ones named here (Enclosing), and no pyproject.toml above the nearest one declares a
 // uv or pdm workspace. uv or pdm run inside a workspace member installs from the workspace's
-// lock, not the one beside the member's manifest; poetry has no workspaces.
-func standalone(tool string, b scriptsurface.Binder) bool {
+// lock, not the one beside the member's manifest; poetry has no workspaces. uv takes its
+// settings from the nearest pyproject.toml holding a tool.uv table, which may be one above, so
+// each above passes uvSettingsClean.
+func standalone(tool string, b scriptsurface.Binder, sources map[string]bool) bool {
 	above, ok := b.Enclosing("pyproject.toml")
 	if !ok {
 		return false
@@ -503,7 +521,8 @@ func standalone(tool string, b scriptsurface.Binder) bool {
 		}
 		var doc rootProject
 		if _, err := toml.Decode(string(data), &doc); err != nil ||
-			tool == "uv" && doc.Tool.UV.Workspace != nil || tool == "pdm" && doc.Tool.PDM.Workspace != nil {
+			tool == "uv" && (doc.Tool.UV.Workspace != nil || !uvSettingsClean(data, sources)) ||
+			tool == "pdm" && doc.Tool.PDM.Workspace != nil {
 			return false
 		}
 	}

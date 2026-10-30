@@ -339,6 +339,13 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 		{"uv, a uv config copied into the image under another name", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
 			"ci/settings": "native-tls = true\n", "Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY . .\nCOPY ci/settings /etc/uv/uv.toml\nRUN uv sync --locked\n"},
 			nil, false},
+		{"uv, find-links in a pyproject.toml above the manifest", map[string]string{"app/pyproject.toml": project + uvBuild, "app/uv.lock": uvLock(""),
+			"pyproject.toml": "[tool.uv]\nfind-links = [\"wheels\"]\n", "install.sh": "#!/bin/sh\ncd app\nuv sync --locked\n"}, nil, false},
+		{"uv, extra-build-variables in a pyproject.toml above the manifest in an image", map[string]string{"app/pyproject.toml": project + uvBuild,
+			"app/uv.lock": uvLock(""), "pyproject.toml": "[tool.uv.extra-build-variables]\napp = { PYTHONPATH = \"hack\" }\n",
+			"Dockerfile": "FROM python:3.12\nCOPY . /src\nWORKDIR /src/app\nRUN uv sync --locked\n"}, nil, false},
+		{"pdm, an override served from the tree", map[string]string{"pyproject.toml": project + "[tool.pdm]\ndistribution = false\n" +
+			"[tool.pdm.resolution.overrides]\npdm-backend = \"file:///${PROJECT_ROOT}/be\"\n", "pdm.lock": pdmLock, "install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
 		{"uv, the config directory moved by the script", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
 			"ci/settings": "native-tls = true\n", "install.sh": "#!/bin/sh\nexport XDG_CONFIG_HOME=/opt/conf\nuv sync --locked\n"}, nil, false},
 
@@ -354,6 +361,11 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 			"[tool.uv]\nindex-url = \"https://pypi.example/simple\"\nfind-links = [\"https://pypi.example/wheels\"]\n" +
 			"constraint-dependencies = [\"markupsafe<3\"]\nnative-tls = true\n[[tool.uv.index]]\nname = \"x\"\nurl = \"https://idx.example/simple\"\n",
 			"uv.lock": uvLock(""), "install.sh": uvSync}, nil, true},
+		{"uv, an inline index table over https", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv]\nindex = [{ name = \"x\", url = \"https://idx.example/simple\" }]\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, true},
+		{"uv, a pyproject.toml above the manifest with settings that leave the build alone", map[string]string{"app/pyproject.toml": project + uvBuild,
+			"app/uv.lock": uvLock(""), "pyproject.toml": "[project]\nname = \"top\"\nversion = \"1\"\n[tool.uv]\nnative-tls = true\n",
+			"install.sh": "#!/bin/sh\ncd app\nuv sync --locked\n"}, nil, true},
 		{"pdm, a source over https", map[string]string{"pyproject.toml": pdmSource("https://pypi.example/simple"), "pdm.lock": pdmLock,
 			"install.sh": "#!/bin/sh\npdm sync\n"}, nil, true},
 		{"uv, a symlink off the path the build runs in", map[string]string{"app/pyproject.toml": project + uvBuild, "app/uv.lock": uvLock(""),

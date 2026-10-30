@@ -30,6 +30,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/checkout/gomodtree"
 	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
@@ -2447,7 +2448,16 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 // whether the manifest was readable at all. manifestKnown=false — no build dir, or an absent /
 // unparseable go.mod — forces the caller to fail OPEN, because absence is only PROVABLE against a
 // manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
-func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
+//
+// buildDir/go.mod is the whole manifest only when no other module of the checkout can build against
+// module, so a module it does not declare is unknown, not absent, when:
+//   - a go.work sits in buildDir: its members' requirements are not in buildDir/go.mod;
+//   - nested reports a module outside buildDir's module graph that may require it (gomodtree.Tree's
+//     MayRequire: one whose go.mod names it, declares go below 1.17 or does not parse), or a walk that
+//     could not read the whole tree.
+//
+// nested is called only when buildDir/go.mod does not declare module.
+func goModRequires(buildDir, module string, nested func() gomodtree.Tree) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
 	}
@@ -2466,6 +2476,12 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 		if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
 			return true, true
 		}
+	}
+	if fi, err := os.Stat(filepath.Join(buildDir, "go.work")); err == nil && !fi.IsDir() {
+		return false, false
+	}
+	if nested().MayRequire(module) {
+		return false, false
 	}
 	return false, true
 }
@@ -3011,7 +3027,7 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 		return err
 	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
-	coordinate, manifestHas, manifestKnown := intakeManifestMembership(store, c.ID, buildDir, advModule)
+	coordinate, manifestHas, manifestKnown := intakeManifestMembership(ctx, store, c.ID, buildDir, advModule)
 	if disq, reason := intakeDisqualify(
 		extractAdvisoryEcosystem(store, c.ID),
 		extractCodebaseEcosystem(store, c.ID),

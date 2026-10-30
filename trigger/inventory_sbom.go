@@ -1,9 +1,11 @@
 package trigger
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -130,16 +132,22 @@ func inventoryLimits(notes []report.PartialityNote) []report.PartialityNote {
 // A package absent from the manifest has no Package to match a limit's ecosystem against, so any
 // did-not-run limit demotes it. Any other row with no Package is a Go toolchain row, whose version
 // is the toolchain's rather than the inventory's, so it stands.
-func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNote) report.AdvisoryFinding {
+//
+// A limit bounded by Targets (a Go module nested below the build root, whose go.mod lists all it
+// builds against) demotes only a row whose packages could be one of them. purls is every package
+// the row's advisory affects, beside the row's own Package; with none known, a bounded limit
+// demotes as an unbounded one does.
+func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNote, purls []string) report.AdvisoryFinding {
 	absent := f.Verdict == report.VerdictDisqualified && f.Evidence.Detail == disqualDetail(pipeline.ReasonNoManifestEntry)
 	if !(f.Verdict == report.VerdictNotExploitable || restsOnInventory(f)) || (f.Package == nil && !absent) {
 		return f
 	}
+	keys, known := rowKeys(f.Package, purls)
 	for _, n := range limits {
 		if n.Ecosystem != "" && f.Package != nil && n.Ecosystem != f.Package.Ecosystem {
 			continue
 		}
-		if report.ClassifyPartialityReason(n.Reason) != report.PartialityDidNotRun {
+		if report.ClassifyPartialityReason(n.Reason) != report.PartialityDidNotRun || !limitCovers(n, keys, known) {
 			continue
 		}
 		f.Verdict = report.VerdictUndetermined
@@ -148,6 +156,69 @@ func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNot
 		return f
 	}
 	return f
+}
+
+// rowKeys returns the packages a row could be about: every one of purls, and the row's own
+// package. known is false when purls is empty or any of them is not a package URL.
+func rowKeys(pkg *report.Package, purls []string) (keys []pkgKey, known bool) {
+	if len(purls) == 0 {
+		return nil, false
+	}
+	for _, p := range purls {
+		key, ok := purlKey(p)
+		if !ok {
+			return nil, false
+		}
+		keys = append(keys, key)
+	}
+	if pkg != nil {
+		key, ok := purlKey(pkg.PURL)
+		if !ok {
+			typ, typed := purlTypeFor[pkg.Ecosystem]
+			if !typed || pkg.Name == "" {
+				return nil, false
+			}
+			key = pkgKey{typ: typ, name: normalizePackageName(typ, pkg.Name)}
+		}
+		keys = append(keys, key)
+	}
+	return keys, true
+}
+
+// limitCovers reports whether an inventory limit could hide a row about keys: it could unless it is
+// bounded and none of its Targets could be one of them (scopedLimitCounts' rule). A row whose
+// packages are not known could be about anything.
+func limitCovers(n report.PartialityNote, keys []pkgKey, known bool) bool {
+	if len(n.Targets) == 0 || !known {
+		return true
+	}
+	bound := artifact.ScopedPartialityFlag{Targets: n.Targets}
+	return slices.ContainsFunc(keys, func(k pkgKey) bool { return scopedLimitCounts(bound, k, true, false) })
+}
+
+// inheritedLimits returns the limits of head to apply to a row a Report re-emits from base. A row
+// of base was judged under every limit base carries, with its advisory's packages known; re-applying
+// a bounded one now, with only the row in hand, could only lose that bound's precision. So a bounded
+// limit base carries is left out, and every other limit of head applies as to a fresh row.
+func inheritedLimits(head []report.PartialityNote, base *report.Report) []report.PartialityNote {
+	var carried []report.PartialityNote
+	if base != nil {
+		carried = inventoryLimits(base.Partiality)
+	}
+	var out []report.PartialityNote
+	for _, n := range head {
+		if len(n.Targets) > 0 && slices.ContainsFunc(carried, func(c report.PartialityNote) bool { return sameLimit(n, c) }) {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// sameLimit reports whether a and b declare one limit with one bound.
+func sameLimit(a, b report.PartialityNote) bool {
+	return a.Reason == b.Reason && a.Ecosystem == b.Ecosystem && a.Detail == b.Detail &&
+		a.Package == b.Package && a.Path == b.Path && slices.Equal(a.Targets, b.Targets)
 }
 
 // restsOnInventory reports whether f is a disqualification whose grounds are inventory facts.
@@ -165,21 +236,49 @@ func restsOnInventory(f report.AdvisoryFinding) bool {
 // no_language_plugin / any partial) names the limit. A partial that carries no reason still emits a
 // note (unspecified_limit) rather than nothing: silence here is the shrunken-CVE-watch failure §4.1
 // exists to prevent.
+//
+// A reason the inventory also scoped (a Go module nested below the build root, one limit per module)
+// stays one note, whose Path names every scoped location, comma-separated, in the inventory's order.
+// Its Targets are the union of the scoped limits' Targets: none, so unbounded, when the reason is
+// also run-wide or any one of them is unbounded.
 func inventoryPartialityNotes(p plugin.Partiality, ecosystem string) []report.PartialityNote {
 	if p.Complete {
 		return nil
 	}
-	reasons := p.Reasons
+	reasons := append([]string(nil), p.Reasons...)
+	paths := map[string][]string{}
+	targets := map[string][]string{}
+	unbounded := map[string]bool{}
+	for _, r := range p.Reasons {
+		unbounded[r] = true
+	}
+	for _, sr := range p.Scoped {
+		if !slices.Contains(reasons, sr.Reason) {
+			reasons = append(reasons, sr.Reason)
+		}
+		if sr.Path != "" {
+			paths[sr.Reason] = append(paths[sr.Reason], sr.Path)
+		}
+		if len(sr.Targets) == 0 {
+			unbounded[sr.Reason] = true
+		}
+		targets[sr.Reason] = append(targets[sr.Reason], sr.Targets...)
+	}
 	if len(reasons) == 0 {
 		reasons = []string{report.ReasonUnspecifiedLimit}
 	}
 	notes := make([]report.PartialityNote, 0, len(reasons))
 	for _, r := range reasons {
-		notes = append(notes, report.PartialityNote{
+		n := report.PartialityNote{
 			Reason:    r,
 			Ecosystem: ecosystem,
 			Detail:    inventoryLimitDetail,
-		})
+			Path:      strings.Join(paths[r], ", "),
+		}
+		if !unbounded[r] {
+			n.Targets = slices.Compact(slices.Sorted(slices.Values(targets[r])))
+		}
+		notes = append(notes, n)
 	}
 	return notes
 }

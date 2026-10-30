@@ -868,6 +868,11 @@ type PartialityNote struct {
 	// limit) and the location inside it. Disclosure only, and part of the note's identity.
 	Package string `json:"package,omitempty"`
 	Path    string `json:"path,omitempty"`
+	// Targets bounds which packages the limit could hide, as PURLs without a version: a reader
+	// applies it only to a row whose package could be one of them. Empty (nil or []) is unbounded,
+	// which applies to every row, and is what every note carried before the field existed. Not
+	// part of the note's identity: notes merged on it keep the widest bound (Builder.Build).
+	Targets []string `json:"targets,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report

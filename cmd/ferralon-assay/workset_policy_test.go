@@ -1,6 +1,6 @@
 // workset_policy_test.go
 //
-// A DECLARED advisory policy defines the scan's work set: the floor, plus every id the policy
+// A DECLARED advisory policy defines the scan's work set: the built-in set, plus every id the policy
 // carries whose affected package is one of the repository's own dependencies. These tests pin that
 // the policy narrows to the repository (a `full`-shaped corpus does not become the work set), that no
 // OSV query is made in that mode, that a corpus which cannot enumerate falls back with a disclosure,
@@ -200,7 +200,7 @@ func extraIDs(ws workSet, floorLen int) []string {
 }
 
 // TestPolicyWorkSet_FullDoesNotExpandToCorpus is the acceptance gate: a `full`-shaped policy defines
-// the work set as floor ∪ the few ids matching this repository, never the whole corpus. Both corpus
+// the work set as built-in set ∪ the few ids matching this repository, never the whole corpus. Both corpus
 // shapes the Action can hand the scanner are exercised, through the same entrypoint a run uses.
 func TestPolicyWorkSet_FullDoesNotExpandToCorpus(t *testing.T) {
 	entries, want := fullShapedCorpus()
@@ -232,7 +232,7 @@ func TestPolicyWorkSet_FullDoesNotExpandToCorpus(t *testing.T) {
 			}
 			for i, a := range acq.advisories {
 				if ws.advisories[i].ID != a.ID {
-					t.Fatalf("floor not preserved in order at %d: got %q, want %q", i, ws.advisories[i].ID, a.ID)
+					t.Fatalf("built-in set not preserved in order at %d: got %q, want %q", i, ws.advisories[i].ID, a.ID)
 				}
 			}
 			if got := extraIDs(ws, floorLen); !reflect.DeepEqual(got, want) {
@@ -312,7 +312,7 @@ func TestPolicyWorkSet_NonEnumerableCorpusFallsBack(t *testing.T) {
 
 			got := selectWorkSet(context.Background(), acq, corpus, chain, "full", tc.osvEnabled, &countingOSV{fakeOSV: fakeOSV{ids: osvIDs}})
 
-			want := floorWorkSet(acq.advisories)
+			want := builtinWorkSet(acq.advisories)
 			if tc.osvEnabled {
 				want = resolveWorkSet(context.Background(), acq, &fakeOSV{ids: osvIDs}, chain)
 			}
@@ -405,7 +405,7 @@ func TestPolicyWorkSet_UnjudgeableIDsAreDisclosed(t *testing.T) {
 }
 
 // TestPolicyWorkSet_NoInventoryIsDisclosed proves a policy run on a repository whose dependencies
-// cannot be read stays on the floor and says why, instead of reporting a policy pass that matched
+// cannot be read stays on the built-in set and says why, instead of reporting a policy pass that matched
 // nothing.
 func TestPolicyWorkSet_NoInventoryIsDisclosed(t *testing.T) {
 	entries, _ := fullShapedCorpus()
@@ -418,10 +418,10 @@ func TestPolicyWorkSet_NoInventoryIsDisclosed(t *testing.T) {
 	ws := selectWorkSet(context.Background(), acq, corpus, corpus, "full", false, &fakeOSV{})
 
 	if len(ws.advisories) != len(acq.advisories) {
-		t.Errorf("work set = %d, want the floor's %d", len(ws.advisories), len(acq.advisories))
+		t.Errorf("work set = %d, want the built-in set's %d", len(ws.advisories), len(acq.advisories))
 	}
 	if ws.source != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q: only the floor ran", ws.source, report.WorkSetBuiltinLanguageSet)
+		t.Errorf("WorkSetSource = %q, want %q: only the built-in set ran", ws.source, report.WorkSetBuiltinLanguageSet)
 	}
 	if len(ws.partiality) == 0 {
 		t.Fatal("an unreadable inventory on a policy run was not disclosed")
@@ -435,8 +435,8 @@ func TestSelectWorkSet_NoCorpusIsUnchanged(t *testing.T) {
 	osvIDs := []string{"CVE-2023-39325", "GHSA-nope-nope-nope"}
 
 	acq := goFixture(t, fixtureGoMod)
-	if got, want := selectWorkSet(context.Background(), acq, nil, table, "", false, &fakeOSV{ids: osvIDs}), floorWorkSet(acq.advisories); !reflect.DeepEqual(got, want) {
-		t.Errorf("no corpus, OSV off: got %+v, want the floor %+v", got, want)
+	if got, want := selectWorkSet(context.Background(), acq, nil, table, "", false, &fakeOSV{ids: osvIDs}), builtinWorkSet(acq.advisories); !reflect.DeepEqual(got, want) {
+		t.Errorf("no corpus, OSV off: got %+v, want the built-in set %+v", got, want)
 	}
 	got := selectWorkSet(context.Background(), acq, nil, table, "", true, &fakeOSV{ids: osvIDs})
 	want := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: osvIDs}, table)
@@ -488,8 +488,8 @@ func TestSelectWorkSet_CorpusWithoutPolicyIsUnchanged(t *testing.T) {
 			if err != nil {
 				t.Fatalf("scanWorkSet: %v", err)
 			}
-			if !reflect.DeepEqual(ws, floorWorkSet(acq.advisories)) {
-				t.Errorf("no declared policy, OSV off: got %+v, want the floor", ws)
+			if !reflect.DeepEqual(ws, builtinWorkSet(acq.advisories)) {
+				t.Errorf("no declared policy, OSV off: got %+v, want the built-in set", ws)
 			}
 			if p := f.intelProvenance(ws); p.CorpusPolicy != "" {
 				t.Errorf("Report CorpusPolicy = %q, want empty with no declared policy", p.CorpusPolicy)
@@ -538,7 +538,7 @@ func TestAdvisoryCorpusPolicy_Precedence(t *testing.T) {
 			if f.resolvedPolicy != tc.want {
 				t.Errorf("resolved policy = %q, want %q", f.resolvedPolicy, tc.want)
 			}
-			if p := f.intelProvenance(floorWorkSet(nil)); p.CorpusPolicy != tc.want {
+			if p := f.intelProvenance(builtinWorkSet(nil)); p.CorpusPolicy != tc.want {
 				t.Errorf("Report CorpusPolicy = %q, want %q", p.CorpusPolicy, tc.want)
 			}
 		})

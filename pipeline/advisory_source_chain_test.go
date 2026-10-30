@@ -75,7 +75,7 @@ func TestChain_CorpusMissFallsBackToTable(t *testing.T) {
 
 	// The full scan work set with the house canaries opted IN (cmd/ferralon-assay/acquire.go):
 	// Go 11, Java 6, JS 5, Python 5, .NET 4. Every one of them must keep its facts through the
-	// chain. The DEFAULT floors — the first rows of each language, the real published advisories —
+	// chain. The built-in test sets — the first rows of each language, the real published advisories —
 	// matter most: they are what a customer scan evaluates, and a chain that dropped them would
 	// empty the work set and halt the run.
 	workSet := []string{

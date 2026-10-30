@@ -245,6 +245,7 @@ func renderSummary(r report.Report) string {
 	}
 	b.WriteString("\n")
 
+	b.WriteString(builtinOnlyNotice(r))
 	b.WriteString(headline(c, headlineTail(r)))
 	b.WriteString("\n\n")
 
@@ -287,6 +288,30 @@ func renderSummary(r report.Report) string {
 	b.WriteString(limitsFooter(r))
 
 	return b.String()
+}
+
+// builtinOnlyNotice leads the headline of a run that evaluated only the scanner's built-in test
+// advisories, so a reader who stops at the top learns that "no reachable candidates" covers a
+// handful of test cases, not the repository's known vulnerabilities. Empty for every other run.
+func builtinOnlyNotice(r report.Report) string {
+	if !r.Provenance.Intel.BuiltinTestAdvisoriesOnly() {
+		return ""
+	}
+	return "**This is not a vulnerability scan.** " + builtinOnlyBody(r.Provenance.Intel.WorkSetSize) + "\n\n"
+}
+
+// builtinOnlyBody is the explanation under the notice. report.html carries the same words.
+func builtinOnlyBody(n int) string {
+	set := "a small set of test advisories"
+	switch {
+	case n == 1:
+		set = "1 test advisory"
+	case n > 1:
+		set = fmt.Sprintf("%d test advisories", n)
+	}
+	return "This run evaluated only " + set + " built into the scanner, there to show it working end to end. " +
+		"They say nothing about which known vulnerabilities affect this repository: " +
+		"no advisory corpus policy defined this run's work set."
 }
 
 // partialHeadlineTail qualifies a headline whose counts a disclosed coverage limit

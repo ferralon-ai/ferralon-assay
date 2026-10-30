@@ -102,12 +102,12 @@ func TestOSVWorkSet_OptInStillReachesOSV(t *testing.T) {
 		}
 	}
 	// The trap refuses the request, so this is also the OSV-unreachable path: it must degrade to
-	// the floor WITH disclosure, never fail the run and never render as a complete scan.
+	// the built-in set WITH disclosure, never fail the run and never render as a complete scan.
 	if !hasNote(ws.partiality, reasonWorkSetNotWidened) {
 		t.Errorf("an unreachable OSV produced no %q note; notes = %+v", reasonWorkSetNotWidened, ws.partiality)
 	}
 	if len(ws.advisories) != len(acq.advisories) {
-		t.Errorf("work set = %d, want the floor's %d", len(ws.advisories), len(acq.advisories))
+		t.Errorf("work set = %d, want the built-in set's %d", len(ws.advisories), len(acq.advisories))
 	}
 }
 

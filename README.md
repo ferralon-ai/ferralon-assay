@@ -52,12 +52,12 @@ jobs:
         with:
           mode: baseline
           target: .
-          # Recommended: consume the public advisory corpus for real coverage.
-          # Left on its default ref (main) on purpose — new advisories land there
-          # continuously, so pinning this ref would freeze your vulnerability intel.
-          # Omit it and the scan falls back to a small built-in table (a standalone
-          # floor, not coverage).
-          advisory-corpus-repo: ferralon-ai/vulnerability-corpus
+          # The scan reads the public advisory corpus by default: the latest
+          # signed release of ferralon-ai/vulnerability-corpus, policy `full`,
+          # verified before use. To skip the corpus download, set
+          # `builtin-test-advisories-only: true` instead; that run evaluates a
+          # few test advisories built into the scanner and is not a
+          # vulnerability scan.
 
       # The Action materializes report.sarif.json; the upload to code scanning is this
       # step, so drop it and the `code-scanning` surface produces a file and nothing else.
@@ -130,9 +130,11 @@ go install ./cmd/assay-plugin-go
 ./ferralon-assay baseline -target /path/to/repo -out ./scan-out
 ```
 
-This scans every advisory in the built-in Go advisory set against the target and writes `report.json`
-plus its projections — `report.html`, `report.sarif.json` (SARIF 2.1.0), and `openvex.json`
-(OpenVEX) — into `-out`.
+This evaluates the scanner's built-in Go test advisories against the target, a small set that shows
+the scanner working end to end, and writes `report.json` plus its projections — `report.html`,
+`report.sarif.json` (SARIF 2.1.0), and `openvex.json` (OpenVEX) — into `-out`. For a vulnerability
+scan, hand it a corpus with a policy, as the Action does by default (see
+[Advisory corpus](#advisory-corpus)).
 
 A language analyzer is a separate subprocess binary spoken to over a small stdin/stdout JSON
 protocol; the scanner never links analysis libraries such as `golang.org/x/tools` into its own
@@ -141,8 +143,8 @@ binary. The CLI resolves the analyzer for the detected language on `PATH` under 
 so the quickstart installs it with `go install` (keep `go env GOBIN`, or `$(go env GOPATH)/bin` when
 that is unset, on `PATH`). The other analyzers install the same way from
 `./cmd/assay-plugin-<lang>` for `java`, `kotlin`, `js`, `python` and `dotnet`; install one
-and a default scan of that ecosystem completes against the same populated advisory floor the shipped
-Action uses. What halts a run is a *resolved* work set of zero advisories — for example pointing
+and a default scan of that ecosystem completes against that ecosystem's built-in test advisories.
+What halts a run is a *resolved* work set of zero advisories — for example pointing
 `-advisory-corpus` at a table that has nothing for your detected language. See [Scope](#scope).
 
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
@@ -226,16 +228,25 @@ stops analysis and gives the scan a few seconds to publish what it assessed. The
 
 ## Advisory corpus
 
-Advisories load from an external advisory corpus, and **a real run should consume one** — point the
-Action's `advisory-corpus-repo` at the public [`ferralon-ai/vulnerability-corpus`](https://github.com/ferralon-ai/vulnerability-corpus),
-which the Action fetches unauthenticated at run time, or hand an already-checked-out corpus directory
-to `advisory-corpus`. Advisory sourcing does not vary by language; a corpus supplies whatever
-advisories it carries for whichever languages it covers, and the `Report` records the corpus's own
-`corpus_digest` so a run's advisory state is independently identifiable. With neither input set the
-scan falls back to a small built-in table so the engine still runs standalone — Go carries 10 of
-these, and each of the other five languages carries 3
-([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)); that built-in table is a
-standalone default floor, so consume the corpus for real coverage.
+Advisories load from an external advisory corpus. By default the Action reads the public
+[`ferralon-ai/vulnerability-corpus`](https://github.com/ferralon-ai/vulnerability-corpus) under its
+`full` policy: it downloads that policy's bundle from the corpus's latest signed release, verifies
+it against the corpus publisher's signature, and evaluates every advisory in it whose affected
+package is one of your repository's dependencies. `advisory-corpus-repo` names a different public
+corpus, and `advisory-corpus` takes a corpus directory your workflow checked out itself. Advisory
+sourcing does not vary by language; a corpus supplies whatever advisories it carries for whichever
+languages it covers, and the `Report` records the corpus's own `corpus_digest` so a run's advisory
+state is independently identifiable.
+
+The scanner itself fetches no corpus: the default lives in the Action, and the CLI reads only the
+corpus it is handed. Without one, the CLI evaluates a small set of test advisories built into the
+scanner — Go carries 10, and each of the other five languages carries 3
+([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)) — which show it working end to end.
+The Action's `builtin-test-advisories-only: true` does the same: it drops the corpus release
+download, cosign and the Sigstore TUF CDN. It does not make the run offline; the scanner download and
+the scan's own network reads remain ([Network egress](#network-egress)). A run on the built-in test
+advisories alone is not a vulnerability scan, and its
+PR comment, job summary and `report.html` say so at the top.
 
 Let the corpus track its default `main` (`advisory-corpus-ref` defaults to `main`). New advisories land
 in it continuously, so pinning the corpus ref would freeze your vulnerability intel and miss everything
@@ -250,9 +261,9 @@ they were selected from, and the `generator` and `generated_at` of the manifest 
 recorded as the corpus wrote it, for audit, and has no effect on any verdict. A bundle file carries
 no manifest, so a scan that reads a bundle records its digest without this block.
 
-To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
-example `published-7d` or `full`). The policy then defines what the scan evaluates, not only which
-advisory facts are available: the work set is the built-in floor plus every advisory in the policy
+To scan against a different corpus policy, set `advisory-corpus-policy` (for example
+`published-7d`). The policy defines what the scan evaluates, not only which advisory facts are
+available: the work set is the built-in test advisories plus every advisory in the policy
 whose affected package is one of your repository's own dependencies — matched by package identity
 (the Go module path, or the Go standard library for a toolchain advisory; otherwise the ecosystem
 coordinate) — and each advisory's affected version range is then checked during the scan. Choosing
@@ -261,14 +272,16 @@ advisory in the policy that names no affected package cannot be matched against 
 so it is not assessed. That is a limit of the corpus data rather than of your scan, so the `Report`
 discloses it in the analysis-limits footer, with how many there were and the first twelve ids,
 without qualifying the headline. Without
-a policy, the corpus supplies facts only and does not change what the scan evaluates. For a policy
+a policy — a corpus named by `advisory-corpus-repo` other than the default, or an `advisory-corpus`
+directory — the corpus supplies facts only and does not change what the scan evaluates. For a policy
 the corpus release publishes a bundle for, the Action downloads that single `<policy>.jsonl.gz` from
 the `corpus-*` release named by `advisory-corpus-ref` (the default `main` resolves to the most recent
 release) instead of git-fetching the record tree, and verifies it before the scan. First it checks
 the release's signature: `bundles.json` is verified with cosign against `bundles.json.sigstore.json`
-for the exact signer you name in `corpus-signer-identity` and `corpus-signer-issuer`, which this route
-requires and which have no default; Assay does not choose whose signature you trust, so take the values
-from the corpus's own consumer documentation. Then the bundle's sha256 is checked against that
+for the exact signer in `corpus-signer-identity` and `corpus-signer-issuer`. For the default corpus
+these default to its publisher, `ferralon-intel-publisher@ferralon.iam.gserviceaccount.com` issued by
+`https://accounts.google.com`; for any other corpus this route requires them, so take the values from
+that corpus's own consumer documentation. Then the bundle's sha256 is checked against that
 `bundles.json`, and its member set against the policy manifest at the release's git tag. A missing
 signer input, a missing or failing signature, or any mismatch fails the run; there is no unverified
 mode. The `Report` records the verified signer as `corpus_signer` (`identity`, `issuer`), and has no
@@ -280,15 +293,18 @@ with no bundle. A release that cannot supply verified signals fails the run: a `
 than `bundle_version` 1.1.0 (which predates the signals asset), a missing `signals` object or asset,
 or a sha256 mismatch. Verified is not fresh: the check proves the file is the one the signed
 release names, not that its values are recent, so a stale signals file still loads, with a warning
-in the scan log. Passing the signals needs a scanner release carrying the `-advisory-signals` flag;
-one that lacks it fails the scan with "flag provided but not defined", so raise `scanner-version`
-if you see that. On the git route, with `advisory-corpus-repo` and no `advisory-corpus-policy`, no
+in the scan log. The Action passes the signals only to a scanner release that carries the
+`-advisory-signals` flag; an older release scans without EPSS/KEV priority and the job log warns,
+so raise `scanner-version` if you see that.
+On the git route, with `advisory-corpus-repo` and no `advisory-corpus-policy`, no
 signals are fetched, so findings carry no EPSS/KEV priority; to get priority, set
 `advisory-corpus-policy` (the release route). A corpus directory handed to `advisory-corpus` is
 ranked with its own root `signals.json`, when it has one
 ([operator guide](docs/operator-guide.md#epss-and-kev)). What stays trusted rather than verified is
-the Sigstore trust root and the identity you supply. A policy with no bundle, or a ref that names no
-release, is read through the git fetch, which is not signature-checked. On the CLI,
+the Sigstore trust root and the signer identity. The default run reads only a signed bundle: a ref
+that names no release, or a release with no `full` bundle, fails the run. With
+`advisory-corpus-policy` set explicitly, a policy with no bundle, or a ref that names no release, is
+read through the git fetch instead, which is not signature-checked. On the CLI,
 `-advisory-corpus` takes either a corpus directory or a bundle file; for a bundle the `Report`'s
 corpus digest is the sha256 of the `.gz`, the value `bundles.json` publishes for it.
 
@@ -300,7 +316,8 @@ set, and the `Report` records it as `corpus_policy`. A corpus supplements the bu
 an advisory it lacks still resolves from the table. To make a missing corpus a failure instead of a
 quiet fall-back to the built-in table, pass `-require-advisory-corpus` or set
 `ASSAY_ADVISORY_CORPUS_REQUIRED` to `true`; the flag wins over the variable. The Action sets that
-declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
+declaration for you on every run that reads a corpus, which is every run without
+`builtin-test-advisories-only: true`.
 
 ## Scope
 
@@ -371,9 +388,15 @@ host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a def
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
-`api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
-GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. A JS scan also fetches each lock-pinned package tarball by name and version from the
+`api.osv.dev`. Every Action run downloads the scanner from this repository's GitHub release. By
+default, with no corpus input set, the Action also reads the advisory corpus: it downloads the corpus
+release's `bundles.json`, its signature, the policy bundle and `signals.json.gz` from `github.com`
+(served from `release-assets.githubusercontent.com`), reads the policy manifest from
+`raw.githubusercontent.com`, downloads cosign from the `sigstore/cosign` GitHub release, and reaches
+the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus signature. A corpus read
+through the git fetch clones from `github.com` instead. `builtin-test-advisories-only: true` removes
+the corpus, cosign and Sigstore requests and nothing else.
+A JS scan also fetches each lock-pinned package tarball by name and version from the
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token

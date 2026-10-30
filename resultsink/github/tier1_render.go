@@ -42,6 +42,7 @@ func renderTier1Body(r report.Report) string {
 	}
 	b.WriteString("\n")
 
+	b.WriteString(builtinOnlyNotice(r))
 	b.WriteString(headline(c, headlineTail(r)))
 	b.WriteString("\n\n")
 

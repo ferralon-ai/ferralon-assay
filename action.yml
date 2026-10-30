@@ -8,7 +8,11 @@
 #
 # WHAT IT NEEDS
 #   - The repository already checked out (run actions/checkout before this action).
-#   - Network access to GitHub releases, to fetch the pinned scanner artifact.
+#   - Network access to GitHub releases, to fetch the pinned scanner artifact and, by default, the
+#     public advisory corpus release; and to the Sigstore TUF CDN (tuf-repo-cdn.sigstore.dev), to
+#     verify that release's signature. `builtin-test-advisories-only: true` drops the corpus,
+#     cosign and Sigstore requests; the scanner download remains, and so do the scan's own network
+#     reads (README "Network egress": proxy.golang.org and vuln.go.dev on every default run).
 #   - A write token only if you want the SARIF, PR-comment or Issue surfaces; the job summary is
 #     written regardless.
 #
@@ -56,42 +60,52 @@
 # does not — so we do not ship a default. Every release publishes its tarball sha256 as a `.sha256`
 # companion asset, for anyone who chooses to pin.
 #
-# ADVISORY CORPUS (optional, OFF by default). With `advisory-corpus-repo` set, the run fetches a
-# PUBLIC advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner
-# at it; `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty
-# by default, in which case the scan resolves advisory facts from the scanner's built-in table.
-# Setting either DECLARES the run requires a corpus, and that declaration is computed from these
-# inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the run
-# instead of silently degrading to built-in intel. Both inputs require a scanner release carrying
-# the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below. On its own a corpus
-# supplies advisory FACTS; it does not change which advisories the scan evaluates.
+# ADVISORY CORPUS (ON by default). With no corpus input set, the run reads the public
+# ferralon-ai/vulnerability-corpus under its `full` policy: it downloads that policy's bundle from the
+# corpus's latest `corpus-*` release, verifies the release signature against the publisher's
+# identity, and evaluates every advisory in it whose affected package is one of the repository's own
+# dependencies (scripts/resolve-advisory-corpus.sh holds the defaults). `advisory-corpus-repo`
+# names another public corpus to fetch instead — unauthenticated, shallow, sparse — and
+# `advisory-corpus` takes a directory the workflow checked out itself. A run with a corpus REQUIRES
+# it, so a broken fetch fails the run instead of silently degrading to the built-in test advisories.
+# Both corpus inputs require a scanner release carrying the `-advisory-corpus` flag; see the note on
+# `advisory-corpus-repo` below. Without a policy, a corpus supplies advisory FACTS; it does not
+# change which advisories the scan evaluates.
 #
-# With `advisory-corpus-policy` also set, the policy defines the scan's work set: the built-in floor
-# plus every advisory in the policy whose affected package is one of the repository's own
-# dependencies. The repo fetch downloads that policy's prebuilt bundle
+# BUILT-IN ONLY. `builtin-test-advisories-only: true` fetches no corpus and runs on the small set of
+# test advisories built into the scanner. It removes the corpus release download, cosign and the
+# Sigstore TUF CDN; it does not make the run offline (see WHAT IT NEEDS). That run is not a
+# vulnerability scan, and the PR comment and job summary say so.
+#
+# With a policy (the default `full`, or `advisory-corpus-policy`), the policy defines the scan's work
+# set: the built-in test advisories plus every advisory in the policy whose affected package is one
+# of the repository's own dependencies. The repo fetch downloads that policy's prebuilt bundle
 # (`<policy>.jsonl.gz`) from a `corpus-*` release instead of git-fetching the record tree, and
 # verifies it before the scan. First the release's bundles.json is verified with cosign (v3.1.3,
 # fetched by scripts/install-cosign.sh and checked against a pinned sha256) against its
 # bundles.json.sigstore.json, for the exact `corpus-signer-identity` and `corpus-signer-issuer` the
-# caller supplies; then the bundle's sha256 against that bundles.json, and its member set against the
-# policy manifest read from the git commit the release tag points at. Any failure fails the run, and
-# a release is never used unverified. The scanner records the verified signer on the Report.
+# run resolves (the publisher's, for the default corpus); then the bundle's sha256 against that
+# bundles.json, and its member set against the policy manifest read from the git commit the
+# release tag points at. Any failure fails the run, and a release is never used unverified.
+# The scanner records the verified signer on the Report.
 # The same release supplies the EPSS/KEV signals the scanner ranks findings with: its
 # signals.json.gz, downloaded only after the signature check and pinned to the sha256 the signed
 # bundles.json names (bundle_version 1.1.0 or later), is passed to the scanner as -advisory-signals.
 # A release that cannot supply verified signals (an older bundle_version, no `signals` object, no
-# asset, a mismatch) fails the run. VERSION REQUIREMENT: a scanner release carrying the
-# `-advisory-signals` flag, which the scan step passes whenever a release is read; see the note on
-# `advisory-corpus-policy` below. Verified is not fresh: a stale signals file still loads, with a
+# asset, a mismatch) fails the run. The scan step passes them only to a scanner release whose
+# usage lists `-advisory-signals`; an older release scans without EPSS/KEV priority, and the job
+# log carries a warning saying so. Verified is not fresh: a stale signals file still loads, with a
 # warning in the scan log. A corpus directory handed to `advisory-corpus` is ranked with its own root
 # signals.json, when it has one. The git fetch fetches no signals, so a run on that route alone (no
 # `advisory-corpus-policy`) ranks nothing.
-# TRUST LIMIT: the signature proves bundles.json came from the identity the CALLER names, as
-# certified by the Sigstore public-good trust root; both are trusted, not verified, here. Assay
-# names no signer of its own. A ref that names no release, and a policy the release publishes no
-# bundle for, take the git fetch, which is not signature-checked. See
-# scripts/fetch-corpus-bundle.sh for the full chain. Reading a bundle needs a scanner release whose
-# -advisory-corpus accepts a bundle file.
+# TRUST LIMIT: the signature proves bundles.json came from the named identity, as certified by the
+# Sigstore public-good trust root; both are trusted, not verified, here. The only signer this Action
+# defaults is the default corpus's own publisher; a corpus repository you name gets none.
+# A DEFAULT RUN READS ONLY A SIGNED BUNDLE: with no policy set, a ref that names no release, or a
+# release that publishes no `full` bundle, fails the run. With `advisory-corpus-policy` set
+# explicitly, those two cases take the git fetch instead, which is not signature-checked. See
+# scripts/fetch-corpus-bundle.sh for the full chain.
+# Reading a bundle needs a scanner release whose -advisory-corpus accepts a bundle file.
 #
 # SURFACE TOGGLES. The `issue` / `pr-comment` / `code-scanning` inputs are mapped onto the
 # scanner's own ASSAY_* env vars inside this action, so a caller's workflow never writes them.
@@ -296,10 +310,21 @@ inputs:
     description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
     required: false
     default: "true"
-  # --- advisory corpus (optional; default OFF = the built-in advisory table) --------------------
-  # Two ways to supply one, and a REQUIREMENT that is declared from configuration alone. Both carry
-  # the same version requirement — a scanner release that carries the -advisory-corpus flag. Read
-  # the note on advisory-corpus-repo before wiring either.
+  # --- advisory corpus (default: the public corpus, `full` policy, signature-verified) ----------
+  # scripts/resolve-advisory-corpus.sh turns these inputs into the corpus the run reads, and into a
+  # REQUIREMENT declared from configuration alone. Every corpus route carries the same version
+  # requirement — a scanner release that carries the -advisory-corpus flag. Read the note on
+  # advisory-corpus-repo before changing them.
+  builtin-test-advisories-only:
+    description: >-
+      Set to 'true' to fetch no advisory corpus and run on the small set of test advisories built
+      into the scanner. It removes the corpus release download, cosign and the Sigstore TUF CDN;
+      the scanner download and the scan's own network reads (proxy.golang.org, vuln.go.dev; see
+      the README's Network egress section) remain. That run is not a vulnerability scan,
+      and the PR comment, job summary and report say so. Setting it together with any corpus input
+      below fails the run. Default 'false': the run reads the public ferralon-ai/vulnerability-corpus.
+    required: false
+    default: "false"
   advisory-corpus:
     description: >-
       Path to an ALREADY-checked-out advisory corpus (a directory holding manifest.json plus the
@@ -308,21 +333,25 @@ inputs:
       precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. The corpus
       supplies advisory facts; it does not change which advisories the scan evaluates. Findings are
       ranked by EPSS/KEV from the signals.json at the directory's root when it has one (and carry
-      no priority when it has none); nothing is fetched or verified for it. Empty (default) = no
-      corpus, and the scan resolves advisory facts from the built-in table.
+      no priority when it has none); nothing is fetched or verified for it. Empty (default) = the
+      corpus advisory-corpus-repo names.
     required: false
     default: ""
   advisory-corpus-repo:
     description: >-
-      owner/repo of a PUBLIC advisory-corpus repository to fetch before the scan. The fetch is
+      owner/repo of a PUBLIC advisory-corpus repository to fetch before the scan. Empty (default) =
+      ferralon-ai/vulnerability-corpus, read under advisory-corpus-policy (default full) and
+      verified against its publisher's signer. A different repository takes no default policy or
+      signer: set advisory-corpus-policy, corpus-signer-identity and corpus-signer-issuer for it
+      yourself. The git fetch is
       UNAUTHENTICATED by construction — it presents no token, so the repository must be readable
       anonymously — and is shallow (--depth 1) and sparse (the manifest and the record partitions
-      only). Empty (default) = no fetch. Setting this OR advisory-corpus DECLARES that this run
-      requires a corpus, which is forwarded to the scanner out of band
+      only). Every run that reads a corpus — the default, this input, or advisory-corpus — REQUIRES
+      it, which is forwarded to the scanner out of band
       (ASSAY_ADVISORY_CORPUS_REQUIRED) so that a corpus which is missing or carries zero records
       FAILS the run rather than quietly falling back to the built-in table. VERSION REQUIREMENT: a
       scanner release carrying the -advisory-corpus flag — confirm the release named by the
-      scanner-version default carries it before you opt in. A release that lacks it fails the scan
+      scanner-version default carries it. A release that lacks it fails the scan
       loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
       input; if that is what you get, raise scanner-version to a release that
       carries it. On this git route without advisory-corpus-policy, no EPSS/KEV signals are
@@ -338,33 +367,36 @@ inputs:
       run read. With advisory-corpus-policy set, a corpus release tag (corpus-<12 hex>) is the
       reproducible choice, and the default main (or latest) resolves to the most recent corpus
       release rather than the branch head; a branch or commit SHA names no release, so it takes the
-      git fetch.
+      git fetch when advisory-corpus-policy is set, and fails the run under the default policy,
+      which reads only a signed bundle.
     required: false
     default: main
   advisory-corpus-policy:
     description: >-
       Policy of advisory-corpus-repo that defines what the scan evaluates (e.g. published-7d,
-      full), in place of the whole corpus. Every advisory in the policy whose affected package is
-      one of this repository's own dependencies joins the scan's work set, alongside the scanner's
-      built-in floor; an advisory that names no affected package cannot be matched; it is disclosed
-      as an analysis limit (count and ids) without qualifying the report headline. When the corpus release named by advisory-corpus-ref publishes a bundle for the
-      policy, the run downloads that one file instead of git-fetching the record tree, and verifies
-      it first (sha256 against the release's bundles.json; members against the policy manifest at
-      the release's git tag), after verifying the release's signature with cosign against
-      corpus-signer-identity and corpus-signer-issuer, which this route then requires. A bundle that
-      fails any check FAILS the run. Whenever a release is read, its EPSS/KEV signals come from it
+      full). Every advisory in the policy whose affected package is one of this repository's own
+      dependencies joins the scan's work set, alongside the scanner's built-in test advisories; an
+      advisory that names no affected package cannot be matched; it is disclosed as an analysis
+      limit (count and ids) without qualifying the report headline. When the corpus release named
+      by advisory-corpus-ref publishes a bundle for the policy, the run downloads that one file
+      instead of git-fetching the record tree, and verifies it first (sha256 against the
+      release's bundles.json; members against the policy manifest at the release's git tag),
+      after verifying the release's signature with cosign against corpus-signer-identity and
+      corpus-signer-issuer, which this route then requires. A bundle that fails any check FAILS the
+      run. Whenever a release is read, its EPSS/KEV signals come from it
       too, verified: the release's signals.json.gz must match the sha256 its signed bundles.json
       names, and is passed to the scanner as -advisory-signals. A release that cannot supply them
       (bundles.json older than bundle_version 1.1.0, no signals object, no asset, or a mismatch)
       FAILS the run. Verified is not fresh: the check proves the file is the one the signed release
       names, not that its values are recent, so a stale signals file still loads, with a warning in
-      the scan log. VERSION REQUIREMENT: a scanner release carrying the -advisory-signals flag —
-      confirm the release named by the scanner-version default carries it before you set this
-      input. A release that lacks it fails the scan loudly ("flag provided but not defined:
-      -advisory-signals") rather than ranking without the verified signals; if that is what you
-      get, raise scanner-version to a release that carries it. A policy the release
+      the scan log. The signals are passed only to a scanner release whose usage lists
+      -advisory-signals; an older release scans without EPSS/KEV priority, with a warning in the
+      job log, and raising scanner-version restores it. A policy set here that the release
       publishes no bundle for is read from the git fetch, using the policy's manifest. Empty
-      (default) = the whole corpus via the git fetch, exactly as without this input. Ignored when
+      (default) = full for the default corpus, read only from a verified bundle: a ref that names
+      no release, or a release with no full bundle, fails the run rather than taking the unsigned
+      git fetch. For a different advisory-corpus-repo, no policy, so the corpus
+      supplies advisory facts without changing which advisories the scan evaluates. Ignored when
       advisory-corpus is set. Bundles need a scanner release whose -advisory-corpus accepts a
       bundle file.
     required: false
@@ -376,16 +408,20 @@ inputs:
       advisory-corpus-ref names a corpus release, which the default main does: the bundle route
       verifies the release's bundles.json against bundles.json.sigstore.json with cosign before it
       trusts anything in it, and fails the run when this is empty, the signature is missing, or it
-      does not verify. There is no default: Assay does not choose whose signature you trust. Take the
-      value from the corpus's own consumer documentation. Verification needs the runner to reach
-      github.com (the pinned cosign release) and the Sigstore TUF CDN (tuf-repo-cdn.sigstore.dev),
-      which serves the Sigstore trust root.
+      does not verify. Empty (default) = the default corpus's publisher,
+      ferralon-intel-publisher@ferralon.iam.gserviceaccount.com, when advisory-corpus-repo is empty
+      or names ferralon-ai/vulnerability-corpus; for any other repository there is no default, so
+      take the value from that corpus's own consumer documentation. Verification needs the
+      runner to reach github.com (the pinned cosign release) and the Sigstore TUF CDN
+      (tuf-repo-cdn.sigstore.dev), which serves the Sigstore trust root.
     required: false
     default: ""
   corpus-signer-issuer:
     description: >-
       OIDC issuer of corpus-signer-identity (cosign's --certificate-oidc-issuer, matched exactly).
-      Required on the same bundle route as corpus-signer-identity; no default.
+      Required on the same bundle route as corpus-signer-identity. Empty (default) =
+      https://accounts.google.com for the default corpus, as for corpus-signer-identity; no default
+      for any other repository.
     required: false
     default: ""
   link-to-console:
@@ -578,6 +614,23 @@ runs:
         echo "bin-dir=$WORK" >> "$GITHUB_OUTPUT"
         echo "plugin-path-dir=$PLUGIN_PATH_DIR" >> "$GITHUB_OUTPUT"
 
+    # Resolve which corpus this run reads, and whether it requires one, from the inputs alone: the
+    # defaults (the public corpus, policy full, its publisher's signer) live in this script and
+    # nowhere in the scanner. Its outputs are a pure function of the inputs, never of a fetch, and a
+    # resolve that fails fails the job, so they are configuration in the sense the next comment
+    # demands: consuming them cannot turn a failed fetch into an unconfigured run.
+    - name: Resolve the advisory corpus
+      id: corpus
+      shell: bash
+      env:
+        IN_CORPUS_DIR: ${{ inputs.advisory-corpus }}
+        IN_CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
+        IN_CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        IN_SIGNER_IDENTITY: ${{ inputs.corpus-signer-identity }}
+        IN_SIGNER_ISSUER: ${{ inputs.corpus-signer-issuer }}
+        IN_BUILTIN_ONLY: ${{ inputs.builtin-test-advisories-only }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/resolve-advisory-corpus.sh"
+
     # The corpus checkout directory is a FIXED, configuration-derived path, spelled out identically
     # here and in the run step below. It is deliberately NOT passed between the steps as a step
     # output: a step output only exists when the step ran and succeeded, so consuming one would make
@@ -594,7 +647,8 @@ runs:
     #
     # Its signals-path output is the release's signals.json.gz, verified against the signed
     # bundles.json; it is set whenever the step read a release, on route=bundle and on a
-    # manifest-only policy's route=git, and the run step passes it as -advisory-signals. A release
+    # manifest-only policy's route=git, and the run step passes it as -advisory-signals to a scanner
+    # whose usage lists that flag. A release
     # that cannot supply verified signals fails this step, so the output never stands for "no
     # signals": a run that reaches the scan with a release behind it has them.
     #
@@ -604,14 +658,15 @@ runs:
     # signature the scanner's bundle was verified under.
     - name: Fetch the advisory corpus bundle (release asset, signature-verified, digest-pinned)
       id: corpus-bundle
-      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '' && inputs.advisory-corpus-policy != ''
+      if: steps.corpus.outputs.repo != '' && steps.corpus.outputs.policy != ''
       shell: bash
       env:
-        CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
+        CORPUS_REPO: ${{ steps.corpus.outputs.repo }}
         CORPUS_REF: ${{ inputs.advisory-corpus-ref }}
-        CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
-        CORPUS_SIGNER_IDENTITY: ${{ inputs.corpus-signer-identity }}
-        CORPUS_SIGNER_ISSUER: ${{ inputs.corpus-signer-issuer }}
+        CORPUS_POLICY: ${{ steps.corpus.outputs.policy }}
+        CORPUS_SIGNER_IDENTITY: ${{ steps.corpus.outputs.signer-identity }}
+        CORPUS_SIGNER_ISSUER: ${{ steps.corpus.outputs.signer-issuer }}
+        CORPUS_REQUIRE_BUNDLE: ${{ steps.corpus.outputs.require-bundle }}
       run: |
         set -euo pipefail
         COSIGN_DIR="$RUNNER_TEMP/ferralon-assay-cosign"
@@ -622,14 +677,14 @@ runs:
       # A CONFIGURATION condition, not a success condition: it asks whether a corpus was requested,
       # never whether anything succeeded. The one exception is the bundle route above having
       # delivered a verified bundle, which makes this fetch redundant.
-      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '' && steps.corpus-bundle.outputs.route != 'bundle'
+      if: steps.corpus.outputs.repo != '' && steps.corpus-bundle.outputs.route != 'bundle'
       shell: bash
       env:
-        CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
+        CORPUS_REPO: ${{ steps.corpus.outputs.repo }}
         # The bundle step's resolved release tag when it ran (so a manifest-only policy reads the
         # same corpus state the release names), else the input ref unchanged.
         CORPUS_REF: ${{ steps.corpus-bundle.outputs.git-ref || inputs.advisory-corpus-ref }}
-        CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        CORPUS_POLICY: ${{ steps.corpus.outputs.policy }}
       run: |
         set -euo pipefail
         DEST="$RUNNER_TEMP/ferralon-assay-corpus"
@@ -811,33 +866,36 @@ runs:
         IN_STATE_TOKEN: ${{ inputs.state-token }}
         IN_INCLUDE_HOUSE_CANARIES: ${{ inputs.include-house-canaries }}
         IN_ADVISORY_CORPUS: ${{ inputs.advisory-corpus }}
-        IN_ADVISORY_CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
-        IN_ADVISORY_CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        IN_ADVISORY_CORPUS_REPO: ${{ steps.corpus.outputs.repo }}
+        IN_ADVISORY_CORPUS_POLICY: ${{ steps.corpus.outputs.policy }}
         # The release's signals.json.gz, verified by the bundle step; empty when no release was read.
         IN_ADVISORY_SIGNALS: ${{ steps.corpus-bundle.outputs.signals-path }}
-        # THE REQUIREMENT DECLARATION. Computed from this action's INPUTS ALONE — it names no step,
-        # reads no step output, and consults no step status, so it says "this workflow was
-        # configured to scan against a corpus", never "a fetch worked". That distinction is the
+        # THE REQUIREMENT DECLARATION. Computed from this action's INPUTS ALONE, by the resolve step,
+        # whose output is a pure function of them — it reads no fetch output and consults no fetch
+        # status, so it says "this workflow was configured to scan against a corpus", never "a
+        # fetch worked". That distinction is the
         # whole mechanism: if the requirement were derived from the fetch's success, a failed fetch
         # would be byte-identical to an unconfigured run and the scan would silently degrade to
         # built-in intel with nothing to show for it. Under a declared requirement the scanner fails
         # the run when no corpus resolves, and equally when one resolves with zero records.
         # '1'/'0' rather than '1'/'': the scanner parses this as a boolean and REFUSES to guess on an
         # unparseable value, so the falsey branch has to be a real boolean literal, not an empty
-        # string. '0' is exactly equivalent to leaving it unset, which keeps the built-in-intel path
-        # — a supported, unchanged configuration — working for every consumer who sets no corpus.
-        ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || inputs.advisory-corpus-repo != '') && '1' || '0' }}
+        # string. '0' is exactly equivalent to leaving it unset, and comes only from
+        # builtin-test-advisories-only. An empty output (a resolve that never ran) reads as '1', so
+        # the requirement fails closed.
+        ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ steps.corpus.outputs.required || '1' }}
         # THE POLICY DECLARATION. Declaring the policy is what makes the scanner build its work set
-        # from the corpus; without it the corpus is a fact source only. It is set only for the
-        # repo-fetch route, because advisory-corpus-policy is ignored when advisory-corpus is set.
+        # from the corpus; without it the corpus is a fact source only. The resolve step sets it only
+        # for the repo-fetch route, because advisory-corpus-policy is ignored when advisory-corpus is
+        # set.
         # Passed as an env var rather than a flag on purpose: a scanner release that predates it
         # ignores an unknown env var, whereas an unknown flag fails the run.
-        ASSAY_ADVISORY_CORPUS_POLICY: ${{ (inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '') && inputs.advisory-corpus-policy || '' }}
+        ASSAY_ADVISORY_CORPUS_POLICY: ${{ steps.corpus.outputs.policy }}
         # THE VERIFIED SIGNER. Unlike the two declarations above, these ARE step outputs on purpose:
         # they exist only when the bundle step verified the release signature and produced the
         # bundle this run reads, so the Report records a signer exactly when one was verified, and
-        # never the corpus-signer-* inputs echoed back. Env vars, like the policy, so a scanner release
-        # that predates them ignores them.
+        # never the resolved corpus-signer-* values echoed back. Env vars, like the policy, so a
+        # scanner release that predates them ignores them.
         ASSAY_ADVISORY_CORPUS_SIGNER_IDENTITY: ${{ steps.corpus-bundle.outputs.route == 'bundle' && steps.corpus-bundle.outputs.corpus-signer-identity || '' }}
         ASSAY_ADVISORY_CORPUS_SIGNER_ISSUER: ${{ steps.corpus-bundle.outputs.route == 'bundle' && steps.corpus-bundle.outputs.corpus-signer-issuer || '' }}
         # --- self-cleanup + advisory-rescan plumbing -------------------------------------------------
@@ -911,7 +969,7 @@ runs:
         if [ "$IN_INCLUDE_HOUSE_CANARIES" = "true" ]; then
           args+=(-include-house-canaries)
         fi
-        # Advisory corpus. An explicit path wins; otherwise a requested repo fetch lands at the
+        # Advisory corpus. An explicit path wins; otherwise the resolved repo fetch lands at the
         # fixed path the fetch step above uses. That path is RECOMPUTED here from configuration
         # rather than read back from the fetch step, so a fetch that failed or was skipped still
         # produces the flag and the scanner hits its own missing-corpus error under the requirement
@@ -930,11 +988,17 @@ runs:
         fi
         # EPSS/KEV signals. The release's verified signals.json.gz when the bundle step read a
         # release; otherwise nothing is passed, and a corpus directory's own signals.json is the
-        # scanner's default. A flag rather than the env channel on purpose: verified signals a
-        # scanner release could not read must fail the run ("flag provided but not defined:
-        # -advisory-signals"), not be ignored, as an unknown env var would be.
+        # scanner's default. The flag is passed only to a scanner whose usage lists it: a release
+        # that predates it would reject the whole run ("flag provided but not defined"), so on one
+        # the scan runs without EPSS/KEV priority and the job log says why. The usage is captured
+        # first, so neither the -h exit status nor pipefail decides the match.
         if [ -n "$IN_ADVISORY_SIGNALS" ]; then
-          args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
+          scanner_usage="$("$BIN" "$IN_MODE" -h 2>&1 || true)"
+          if grep -qE '^[[:space:]]+-advisory-signals[[:space:]]' <<<"$scanner_usage"; then
+            args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
+          else
+            echo "::warning title=Advisory signals not passed::This scanner release has no -advisory-signals flag, so findings carry no EPSS/KEV priority. Raise scanner-version to a release that carries it."
+          fi
         fi
 
         # The marker dates the launch, so the outputs below name only files this run wrote.

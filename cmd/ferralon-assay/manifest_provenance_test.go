@@ -75,7 +75,7 @@ func TestIntelProvenance_CorpusManifest(t *testing.T) {
 				t.Fatalf("advisoryCorpusOption err = %v", err)
 			}
 
-			got := f.intelProvenance(floorWorkSet(nil))
+			got := f.intelProvenance(builtinWorkSet(nil))
 			if got.CorpusDigest == "" {
 				t.Fatal("CorpusDigest empty; the corpus did not resolve")
 			}
@@ -106,7 +106,7 @@ func TestIntelProvenance_CorpusManifestNoCorpus(t *testing.T) {
 	if _, err := f.advisoryCorpusOption(); err != nil {
 		t.Fatalf("advisoryCorpusOption err = %v", err)
 	}
-	if got := f.intelProvenance(floorWorkSet(nil)); got.CorpusManifest != nil {
+	if got := f.intelProvenance(builtinWorkSet(nil)); got.CorpusManifest != nil {
 		t.Errorf("CorpusManifest = %+v, want nil with no corpus", *got.CorpusManifest)
 	}
 }
@@ -121,7 +121,7 @@ func TestIntelProvenance_CorpusManifestBundle(t *testing.T) {
 	if _, err := f.advisoryCorpusOption(); err != nil {
 		t.Fatalf("advisoryCorpusOption err = %v", err)
 	}
-	got := f.intelProvenance(floorWorkSet(nil))
+	got := f.intelProvenance(builtinWorkSet(nil))
 	if got.CorpusDigest == "" {
 		t.Fatal("CorpusDigest empty; the bundle did not resolve")
 	}

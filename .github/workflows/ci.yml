@@ -7,7 +7,8 @@ name: CI
 # The self-scan job runs this checkout's own action.yml (`uses: ./`) against this repository with
 # the default scanner-version, so every change exercises the Action end to end: the minor alias
 # resolving to its current patch release, the download, the plugin wiring and a real scan. That
-# release may lag main; the job tests the Action, not main's unreleased scanner.
+# release may lag main; the job tests the Action, not main's unreleased scanner. It runs twice: with
+# the Action's defaults (the public advisory corpus) and with builtin-test-advisories-only.
 
 on:
   pull_request: {}
@@ -67,6 +68,22 @@ jobs:
     # so the job behaves the same on a fork's pull request.
     permissions:
       contents: read
+    # Two legs: the default (the public corpus under its `full` policy, signature-verified) and the
+    # built-in-only opt-out. Each asserts the work set its report.json records, so a wiring bug that
+    # only a real run reaches (an expression in an `if:` or env line) fails here.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: default
+            builtin-only: "false"
+            work-set-source: builtin_language_set_union_policy
+            corpus-policy: full
+          - leg: builtin-only
+            builtin-only: "true"
+            work-set-source: builtin_language_set
+            corpus-policy: ""
+    name: self-scan (${{ matrix.leg }})
     steps:
       - uses: actions/checkout@v4
 
@@ -76,6 +93,7 @@ jobs:
       # turn a newly published advisory into a red check on every unrelated pull request. The
       # verdicts land in the job summary and in the ferralon-assay-out directory.
       - name: Run the Ferralon Assay against this repository
+        id: assay
         uses: ./
         with:
           mode: baseline
@@ -84,3 +102,19 @@ jobs:
           issue: "false"
           pr-comment: "false"
           code-scanning: "false"
+          builtin-test-advisories-only: ${{ matrix.builtin-only }}
+
+      - name: Check the work set the scan recorded
+        env:
+          WANT_SOURCE: ${{ matrix.work-set-source }}
+          WANT_POLICY: ${{ matrix.corpus-policy }}
+          REPORT: ${{ steps.assay.outputs.out-dir }}/report.json
+        run: |
+          set -euo pipefail
+          got_source="$(jq -r '.provenance.intel.work_set_source // ""' "$REPORT")"
+          got_policy="$(jq -r '.provenance.intel.corpus_policy // ""' "$REPORT")"
+          echo "work_set_source=$got_source corpus_policy=$got_policy"
+          if [ "$got_source" != "$WANT_SOURCE" ] || [ "$got_policy" != "$WANT_POLICY" ]; then
+            echo "::error::want work_set_source=$WANT_SOURCE corpus_policy=$WANT_POLICY"
+            exit 1
+          fi

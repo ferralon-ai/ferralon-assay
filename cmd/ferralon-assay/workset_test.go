@@ -1,7 +1,7 @@
 // workset_test.go
 //
 // I-17(b): the scan path's work set is no longer 16 compiled-in ids. These tests pin the three
-// properties that keep the widening honest — the compiled-in set is a floor that cannot be lost, a
+// properties that keep the widening honest — the built-in test set cannot be lost, a
 // widening that did not happen is disclosed rather than rendered clean, and only ids the advisory
 // source can actually answer for are admitted.
 package main
@@ -95,7 +95,7 @@ func hasReason(notes []report.PartialityNote, reason string) bool {
 	return false
 }
 
-// --- Property 1: the compiled-in set is a FLOOR --------------------------------------------
+// --- Property 1: the compiled-in set is never lost -----------------------------------------
 
 // TestWorkSet_FloorIsNeverLost is the acceptance gate the handoff states: no id that was evaluated
 // before may stop being evaluated. It is asserted against the hostile cases — OSV returning nothing,
@@ -110,7 +110,7 @@ func TestWorkSet_FloorIsNeverLost(t *testing.T) {
 		{"osv returns nothing", &fakeOSV{}},
 		{"osv returns only ids we have no facts for", &fakeOSV{ids: []string{"GHSA-zzzz-zzzz-zzzz", "CVE-1999-0001"}}},
 		{"osv fails", &fakeOSV{err: errors.New("dial tcp: no route to host")}},
-		{"osv returns ids already in the floor", &fakeOSV{ids: []string{"CVE-2024-45337", "GO-2021-0113"}}},
+		{"osv returns ids already in the built-in set", &fakeOSV{ids: []string{"CVE-2024-45337", "GO-2021-0113"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			acq := goFixture(t, fixtureGoMod)
@@ -118,17 +118,17 @@ func TestWorkSet_FloorIsNeverLost(t *testing.T) {
 
 			for _, want := range floor {
 				if !hasID(ws.advisories, want.ID) {
-					t.Errorf("floor id %q lost from the work set — the union must never narrow", want.ID)
+					t.Errorf("built-in set id %q lost from the work set — the union must never narrow", want.ID)
 				}
 			}
 			if len(ws.advisories) < len(floor) {
-				t.Errorf("work set = %d ids, floor = %d: a widening cannot shrink the set", len(ws.advisories), len(floor))
+				t.Errorf("work set = %d ids, built-in set = %d: a widening cannot shrink the set", len(ws.advisories), len(floor))
 			}
 		})
 	}
 }
 
-// TestWorkSet_NoDuplicateIDs proves the union de-duplicates: an OSV id already in the floor must not
+// TestWorkSet_NoDuplicateIDs proves the union de-duplicates: an OSV id already in the built-in set must not
 // be evaluated twice (each evaluation is a full S1-S6 pass).
 func TestWorkSet_NoDuplicateIDs(t *testing.T) {
 	acq := goFixture(t, fixtureGoMod)
@@ -159,7 +159,7 @@ func TestWorkSet_UnreachableOSVIsDisclosed(t *testing.T) {
 		t.Fatalf("an unreachable OSV emitted no partiality note; notes = %+v", ws.partiality)
 	}
 	if ws.source != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q — only the floor actually ran", ws.source, report.WorkSetBuiltinLanguageSet)
+		t.Errorf("WorkSetSource = %q, want %q — only the built-in set actually ran", ws.source, report.WorkSetBuiltinLanguageSet)
 	}
 	if ws.widened != 0 {
 		t.Errorf("widened = %d, want 0", ws.widened)
@@ -222,7 +222,7 @@ func TestWorkSet_DisabledIsNotAPartiality(t *testing.T) {
 		t.Errorf("WorkSetSource = %q, want %q", ws.source, report.WorkSetBuiltinLanguageSet)
 	}
 	if len(ws.advisories) != len(acq.advisories) {
-		t.Errorf("work set = %d, want the floor's %d", len(ws.advisories), len(acq.advisories))
+		t.Errorf("work set = %d, want the built-in set's %d", len(ws.advisories), len(acq.advisories))
 	}
 }
 
@@ -353,7 +353,7 @@ func TestWorkSet_ProvenanceRecordsSourceAndSize(t *testing.T) {
 		t.Errorf("WorkSetSize = %d, want %d", got.WorkSetSize, len(ws.advisories))
 	}
 	if got.WorkSetSize <= len(goAdvisoryCorpus(false)) {
-		t.Errorf("WorkSetSize = %d did not exceed the %d-id floor — nothing was widened",
+		t.Errorf("WorkSetSize = %d did not exceed the %d-id built-in set — nothing was widened",
 			got.WorkSetSize, len(goAdvisoryCorpus(false)))
 	}
 }
@@ -426,7 +426,7 @@ func TestToolchainVersion_StripsGoPrefix(t *testing.T) {
 }
 
 // TestInventory_UnknownLanguageQueriesNothing proves a language with no inventory path degrades to
-// the floor rather than querying OSV with an empty or wrong-ecosystem package list.
+// the built-in set rather than querying OSV with an empty or wrong-ecosystem package list.
 func TestInventory_UnknownLanguageQueriesNothing(t *testing.T) {
 	acq := &acquired{buildDir: t.TempDir(), language: checkout.LangUnknown, advisories: nil}
 	osv := &fakeOSV{ids: []string{"CVE-2023-39325"}}
@@ -442,16 +442,16 @@ func TestInventory_UnknownLanguageQueriesNothing(t *testing.T) {
 }
 
 // TestWorkSet_EveryLanguageFloorSurvives is the handoff's "Java, JS and Python scans produce at
-// least what they produce today" gate, generalized to every language that has a floor.
+// least what they produce today" gate, generalized to every language that has a built-in set.
 //
-// It matters most for the three non-Go ecosystems, whose floors are entirely first-party FERRALON-*
+// It matters most for the three non-Go ecosystems, whose built-in sets are entirely first-party FERRALON-*
 // fixtures that OSV.dev has never heard of and never will. Any design that REPLACED the compiled-in
 // set with the OSV answer — rather than unioning with it — would silently delete all seven of them
 // and turn those scans from demo-quality into nothing.
 //
-// The three non-Go floors are requested with the house canaries ON because that is now the only way
+// The three non-Go built-in sets are requested with the house canaries ON because that is now the only way
 // they are non-empty: their corpora are house canaries in their entirety. The property under test is
-// union-not-replace, which needs a non-empty floor to have anything to say.
+// union-not-replace, which needs a non-empty built-in set to have anything to say.
 func TestWorkSet_EveryLanguageFloorSurvives(t *testing.T) {
 	for _, tc := range []struct {
 		language string
@@ -464,21 +464,21 @@ func TestWorkSet_EveryLanguageFloorSurvives(t *testing.T) {
 	} {
 		t.Run(tc.language, func(t *testing.T) {
 			if len(tc.floor) == 0 {
-				t.Fatalf("%s floor is empty — the fixture is wrong, not the code", tc.language)
+				t.Fatalf("%s built-in set is empty — the fixture is wrong, not the code", tc.language)
 			}
 			// plugin is nil: no manifest parser for this language in a hermetic test. The
-			// inventory is therefore absent, which is the WORST case for floor preservation.
+			// inventory is therefore absent, which is the WORST case for built-in set preservation.
 			acq := &acquired{buildDir: t.TempDir(), language: tc.language, advisories: tc.floor}
 
 			ws := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: []string{"CVE-2023-39325"}}, pipeline.NewTableSource())
 
 			for _, want := range tc.floor {
 				if !hasID(ws.advisories, want.ID) {
-					t.Errorf("%s floor id %q lost", tc.language, want.ID)
+					t.Errorf("%s built-in set id %q lost", tc.language, want.ID)
 				}
 			}
 			if len(ws.advisories) != len(tc.floor) {
-				t.Errorf("%s work set = %d, want exactly the %d-id floor when no inventory resolves",
+				t.Errorf("%s work set = %d, want exactly the %d-id built-in set when no inventory resolves",
 					tc.language, len(ws.advisories), len(tc.floor))
 			}
 		})

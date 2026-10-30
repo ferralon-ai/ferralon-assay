@@ -340,7 +340,7 @@ func repoIdentity(target string) string {
 	return s
 }
 
-// advisoryCorpus returns the compiled-in advisory FLOOR for a target of the given language — the
+// advisoryCorpus returns the built-in test advisories for a target of the given language — the
 // starting point a run's work set is resolved from, not the set it ends up evaluating (the OSV
 // widening in workset.go can add to it). Emptiness is therefore judged downstream, on the resolved
 // work set, by the gate in run.go; nothing here refuses a scan.
@@ -349,11 +349,11 @@ func repoIdentity(target string) string {
 // (pkg:golang / pkg:maven / pkg:npm / pkg:pypi / pkg:nuget); running Go advisories against a Java
 // tree would resolve nothing.
 //
-// EVERY SUPPORTED LANGUAGE HAS A NON-EMPTY DEFAULT FLOOR. That is what makes a default scan of a
+// EVERY SUPPORTED LANGUAGE HAS A NON-EMPTY BUILT-IN SET. That is what makes a default scan of a
 // Java, JS, Python or .NET repository complete instead of halting on an empty work set, and it is a
 // property the five-language regression table in language_support_test.go holds in place.
 //
-// includeHouseCanaries opts the first-party house canaries into the corpus, ON TOP of that floor
+// includeHouseCanaries opts the first-party house canaries into the corpus, ON TOP of that set
 // (default OFF). Every ecosystem honors it: Go carries the FERRALON-APP-* application-sink
 // canaries, and Java/JS/Python/.NET carry synthetic first-party sinks and synthetic dependency
 // advisories over com.example / tegron-corpus / stand-in packages, none of them public CVE/GHSA/OSV
@@ -374,12 +374,12 @@ func advisoryCorpus(language string, includeHouseCanaries bool) []assessment.Vul
 		return dotnetAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangCFamily:
 		// Row zero (Phase 0): the C-family lane is a detection+routing skeleton with no analysis
-		// and no advisory floor yet. C/C++ advisories are version-range-only (no vulnerable-symbol
+		// and no built-in test advisories yet. C/C++ advisories are version-range-only (no vulnerable-symbol
 		// identifier) and there is no C/C++ ecosystem wired, so there is nothing honest to seed here.
-		// A floor is NOT a coverage claim; fabricating one to force a completing scan is exactly the
+		// A built-in set is NOT a coverage claim; fabricating one to force a completing scan is exactly the
 		// dishonesty this codebase forbids. cfamily is therefore deliberately NOT in the release
 		// supportedLanguages set (language_support_test.go) — it routes and fails open (a scan of a
-		// C/C++ tree halts at the empty-work-set gate, never a false clean verdict), and a real floor
+		// C/C++ tree halts at the empty-work-set gate, never a false clean verdict), and a real set
 		// lands with the Phase-1 engine.
 		return nil
 	default:
@@ -432,20 +432,20 @@ func goAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	return corpus
 }
 
-// mavenAdvisoryFloor is the DEFAULT floor for every JVM/Maven-ecosystem language — three real,
+// mavenTestAdvisories is the built-in test advisory set for every JVM/Maven-ecosystem language — three real,
 // public Maven advisories, the same kind of membership the Go corpus has always had. Until
-// 2026-08-05 javaAdvisoryCorpus returned nil unless the canary flag was set, which made the default
-// floor empty and halted every default Java scan at the empty-work-set gate in run.go. The OSV
+// 2026-08-05 javaAdvisoryCorpus returned nil unless the canary flag was set, which made the built-in
+// set empty and halted every default Java scan at the empty-work-set gate in run.go. The OSV
 // widening did not rescue it: admitByFacts admits only ids the fact source can resolve, and the
 // table held no Maven facts at all, so a live query that returned 55 real GHSA ids for a
 // jackson-databind tree admitted none of them. See the block of twelve in pipeline.AdvisoryTable for
 // where these came from and how their ranges were verified.
 //
-// Kotlin shares this floor rather than carrying its own: a Kotlin build resolves its dependencies
+// Kotlin shares this set rather than carrying its own: a Kotlin build resolves its dependencies
 // through the same Maven coordinate system (Gradle/Maven repositories, group:artifact:version) as
 // Java, so a Maven-ecosystem advisory names a real package in a Kotlin tree exactly as it does in a
-// Java one — this is the correct ecosystem floor for Kotlin, not a borrowed placeholder.
-func mavenAdvisoryFloor() []assessment.VulnRef {
+// Java one — this is the correct ecosystem set for Kotlin, not a borrowed placeholder.
+func mavenTestAdvisories() []assessment.VulnRef {
 	return []assessment.VulnRef{
 		{ID: "CVE-2019-14540", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — HikariConfig deserialization gadget
 		{ID: "CVE-2020-36518", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — nested-object StackOverflow DoS
@@ -454,14 +454,14 @@ func mavenAdvisoryFloor() []assessment.VulnRef {
 }
 
 // javaAdvisoryCorpus is the set of Java/Maven advisories the OSS tool evaluates a Java source tree
-// against (pipeline.AdvisoryTable, pkg:maven ecosystem). See mavenAdvisoryFloor for the DEFAULT
-// floor's provenance.
+// against (pipeline.AdvisoryTable, pkg:maven ecosystem). See mavenTestAdvisories for the built-in
+// set's provenance.
 //
 // includeHouseCanaries adds the synthetic first-party advisories on top: two SSRF sinks resolved by
 // call-graph reachability plus one version-resolvable dependency, all over com.example.* packages
 // and none carrying a CVE. They stay off the default surface.
 func javaAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := mavenAdvisoryFloor()
+	corpus := mavenTestAdvisories()
 	if includeHouseCanaries {
 		corpus = append(corpus,
 			assessment.VulnRef{ID: "FERRALON-JAVA-SSRF-0001", Source: "osv"},        // com.example.web/ssrf — UrlFetcher.fetch taint reachability
@@ -472,17 +472,17 @@ func javaAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	return corpus
 }
 
-// kotlinAdvisoryCorpus is the default advisory floor for the Kotlin lane (pkg:maven ecosystem):
-// the SAME real, public mavenAdvisoryFloor the Java lane ships, because a Kotlin build resolves its
-// dependencies through the same Maven coordinate system as Java (see mavenAdvisoryFloor). Sharing
-// it is the honest ecosystem floor for Kotlin — not a fabricated one, and not a .NET-style synthetic
+// kotlinAdvisoryCorpus is the built-in test advisory set for the Kotlin lane (pkg:maven ecosystem):
+// the SAME real, public mavenTestAdvisories the Java lane ships, because a Kotlin build resolves its
+// dependencies through the same Maven coordinate system as Java (see mavenTestAdvisories). Sharing
+// it is the honest ecosystem set for Kotlin — not a fabricated one, and not a .NET-style synthetic
 // stand-in.
 //
 // includeHouseCanaries adds one synthetic first-party advisory on top, honoring the same opt-in
 // contract every other ecosystem's canary honors (see javaAdvisoryCorpus): a version-resolvable
 // dependency over a com.example.* package, carrying no CVE, off the default surface.
 func kotlinAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := mavenAdvisoryFloor()
+	corpus := mavenTestAdvisories()
 	if includeHouseCanaries {
 		corpus = append(corpus,
 			assessment.VulnRef{ID: "FERRALON-KOTLIN-DEP-0001", Source: "osv"}, // com.example.lib:widget — version-resolvable Maven dependency
@@ -542,7 +542,7 @@ func dotnetAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	}
 	if includeHouseCanaries {
 		corpus = append(corpus,
-			assessment.VulnRef{ID: "FERRALON-NET-DEP-0001", Source: "osv"}, // Newtonsoft.Json — synthetic stand-in for the real CVE-2024-21907 in the default floor above
+			assessment.VulnRef{ID: "FERRALON-NET-DEP-0001", Source: "osv"}, // Newtonsoft.Json — synthetic stand-in for the real CVE-2024-21907 in the built-in set above
 		)
 	}
 	return corpus

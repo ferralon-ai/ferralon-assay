@@ -100,7 +100,7 @@ func corpusDigest(advisories map[string]corpusManifestEntry) string {
 //
 // It used to be the table PLUS twelve authored non-Go fixtures that existed only here. Those twelve
 // were the real Maven/npm/PyPI/NuGet advisories the shipped scanner needed and never had: the table
-// carried no non-Go facts at all, so the default advisory floor for four of the five supported
+// carried no non-Go facts at all, so the built-in test set for four of the five supported
 // languages was empty and every default Java/JS/Python/.NET scan halted on an empty work set. They
 // were promoted into AdvisoryTable on 2026-08-05 (ranges re-verified against api.osv.dev on the
 // way), which is why this function is now a straight copy. The corpus and the table are one set.
@@ -282,7 +282,7 @@ func TestAdvisoryCorpus_Valid(t *testing.T) {
 	// The real non-Go advisories must carry what Wave D's engines consume: a PURL whose ecosystem
 	// scheme derives, and a version axis or a reachability axis (or both). This is what lets each
 	// actually light an engine rather than only assert a fail-open — and since these twelve are now
-	// the DEFAULT advisory floor for Java, JS, Python and .NET, it is also what stops that floor
+	// the DEFAULT built-in test set for Java, JS, Python and .NET, it is also what stops that built-in set
 	// from becoming membership that assesses nothing.
 	for _, id := range realNonGoAdvisoryIDs() {
 		f, ok := decoded[id]
@@ -346,9 +346,9 @@ func missingDeclaredKeys(want, got []byte) []string {
 }
 
 // realNonGoAdvisoryIDs returns the sorted ids of every REAL Maven/npm/PyPI/NuGet advisory in the
-// table — the default advisory floor for the four non-Go languages.
+// table — the built-in test set for the four non-Go languages.
 //
-// It is derived rather than listed so an advisory added to that floor is covered by the properties
+// It is derived rather than listed so an advisory added to that built-in set is covered by the properties
 // below automatically. First-party synthetic ids are excluded: the FERRALON-* house
 // canaries share those ecosystems but are gated off the default surface and are deliberately
 // version-axis-only or reachability-only fixtures, so the "lights an engine" property does not

@@ -104,8 +104,8 @@ provided input, read from, in order:
 2. the `ASSAY_ADVISORY_SIGNALS` environment variable;
 3. the `signals.json` at the root of an `-advisory-corpus` **directory**, when it has one.
 
-The Action supplies the first of these on its bundle route (`advisory-corpus-repo` with
-`advisory-corpus-policy`, reading a `corpus-*` release): it downloads the release's `signals.json.gz`
+The Action supplies the first of these on its bundle route (a corpus with a policy, reading a
+`corpus-*` release — the Action's default): it downloads the release's `signals.json.gz`
 only after verifying the release's signed `bundles.json`, checks the asset's sha256 against the
 `signals` object there, and passes it as `-advisory-signals`. A release that cannot supply verified
 signals — a `bundles.json` older than `bundle_version` 1.1.0, no `signals` object, no asset, or a
@@ -293,8 +293,8 @@ Writing through the Refs API needs `contents: write`.
 
 ### `baseline`
 
-A full scan of every advisory in the work set: the built-in floor, plus — when an advisory policy is
-declared (`advisory-corpus-policy`) — every advisory in that policy whose affected package is one of
+A full scan of every advisory in the work set: the built-in test advisories, plus — when an advisory
+policy is declared (the Action declares `full` by default) — every advisory in that policy whose affected package is one of
 the repository's own dependencies. With a store selected, the result is persisted so later
 runs can read it. With **no** store selected, `baseline` uses a throwaway store in a temporary
 directory: the scan runs and the output directory is written, but nothing persists. That is the

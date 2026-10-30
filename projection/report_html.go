@@ -53,7 +53,11 @@ type reportHTMLView struct {
 	// together they gate the "not assessed" heading, which must read as a first-class result and
 	// not as a footnote: an advisory unassessed for honesty that renders nowhere is
 	// indistinguishable from one that was never in the corpus.
-	Limits            []reportHTMLLimit
+	Limits []reportHTMLLimit
+	// BuiltinOnly is set when the pass evaluated only the scanner's built-in test advisories;
+	// BuiltinCount is how many. The page then opens by saying it is not a vulnerability scan.
+	BuiltinOnly       bool
+	BuiltinCount      int
 	WithheldCount     int
 	UndeterminedCount int
 	DataJSON          template.JS
@@ -159,6 +163,10 @@ func ProjectReportHTML(r report.Report) ([]byte, error) {
 		GeneratedAt: r.Provenance.Timestamp.UTC().Format("2006-01-02 15:04:05 UTC"),
 		Total:       len(r.Advisories),
 		DataJSON:    template.JS(safe), //nolint:gosec // defanged above; html/template would double-escape JSON in a <script type=application/json> block.
+	}
+	if in := r.Provenance.Intel; in.BuiltinTestAdvisoriesOnly() {
+		view.BuiltinOnly = true
+		view.BuiltinCount = in.WorkSetSize
 	}
 
 	for i := range r.Advisories {

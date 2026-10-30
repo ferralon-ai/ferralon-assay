@@ -331,12 +331,21 @@ func TestFetchCorpusBundle(t *testing.T) {
 		wantRef   string
 		wantErr   string
 		noSignals bool // a successful run that read no release, so has no signals to hand over
+		// requireBundle sets CORPUS_REQUIRE_BUNDLE=1, as action.yml does for the default policy.
+		requireBundle bool
 	}{
 		{name: "verified bundle", ref: fakeTag, wantRoute: "bundle", wantRef: fakeTag},
 		{name: "manifest-only policy falls back to git at the tag", ref: fakeTag,
 			mutate: func(c *fakeCorpus) { c.omitPolicy = true }, wantRoute: "git", wantRef: fakeTag},
 		{name: "branch or SHA ref names no release", ref: "0123456789abcdef0123456789abcdef01234567",
 			wantRoute: "git", wantRef: "0123456789abcdef0123456789abcdef01234567", noSignals: true},
+		{name: "required bundle: a verified bundle still passes", ref: fakeTag, requireBundle: true,
+			wantRoute: "bundle", wantRef: fakeTag},
+		{name: "required bundle: a manifest-only policy fails instead of the git fetch", ref: fakeTag,
+			requireBundle: true, mutate: func(c *fakeCorpus) { c.omitPolicy = true },
+			wantErr: "refusing the unsigned git fetch"},
+		{name: "required bundle: a ref that names no release fails", ref: "0123456789abcdef0123456789abcdef01234567",
+			requireBundle: true, wantErr: "names no corpus release, and the default policy reads only a signed release bundle"},
 		{name: "gz does not match its bundles.json digest", ref: fakeTag,
 			mutate:  func(c *fakeCorpus) { c.gzDigest = func(string) string { return "sha256:" + strings.Repeat("a", 64) } },
 			wantErr: "but bundles.json says"},
@@ -388,6 +397,9 @@ func TestFetchCorpusBundle(t *testing.T) {
 				"CORPUS_SIGNER_IDENTITY="+fakeSignerID, "CORPUS_SIGNER_ISSUER="+fakeSignerIssuer,
 				"PATH="+stubCosign(t)+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"COSIGN_STUB_LOG="+filepath.Join(root, "cosign.log"))
+			if tc.requireBundle {
+				cmd.Env = append(cmd.Env, "CORPUS_REQUIRE_BUNDLE=1")
+			}
 			out, err := cmd.CombinedOutput()
 			bundle := filepath.Join(dest, fakePolicy+".jsonl.gz")
 			_, statErr := os.Stat(bundle)

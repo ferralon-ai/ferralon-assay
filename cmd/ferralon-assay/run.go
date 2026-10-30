@@ -548,7 +548,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		advisoryCorpus: fs.String("advisory-corpus", "", "path to an advisory corpus consulted BEFORE the built-in advisory table: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz). Without -advisory-corpus-policy it supplies facts only and does not change what is scanned; overrides "+envAdvisoryCorpusDir),
 		// corpusPolicy declares which advisory policy the corpus was selected by. Declaring one makes
 		// the corpus define the work set (selectWorkSet); without it the corpus is fact scope only.
-		corpusPolicy: fs.String("advisory-corpus-policy", "", "the advisory policy -advisory-corpus was selected by (e.g. published-7d, full). When set, the work set is the built-in floor plus every advisory in the corpus whose affected package is one of the repository's dependencies, and no OSV.dev query is made; requires -advisory-corpus; overrides "+envAdvisoryCorpusPolicy),
+		corpusPolicy: fs.String("advisory-corpus-policy", "", "the advisory policy -advisory-corpus was selected by (e.g. published-7d, full). When set, the work set is the built-in test advisories plus every advisory in the corpus whose affected package is one of the repository's dependencies, and no OSV.dev query is made; requires -advisory-corpus; overrides "+envAdvisoryCorpusPolicy),
 		// signalsPath is the EPSS/KEV signals file findings are ranked with. The scanner holds no
 		// signals of its own and fetches none: without one, no finding carries a priority.
 		signalsPath:   fs.String("advisory-signals", "", "path to an EPSS/KEV signals file (signals.json or signals.json.gz, signals_version 1.x) used to rank findings; each value is reported with its own date. Default: the signals.json of an -advisory-corpus directory, when it has one. Without signals no finding carries EPSS/KEV priority; overrides "+envAdvisorySignals),
@@ -564,7 +564,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// osvWorkSet widens the scan's work set with the advisories OSV.dev reports against the
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
-		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
+		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in test advisories, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
 
 		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
@@ -626,8 +626,8 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 	return v, nil
 }
 
-// scanWorkSet resolves the work set for a SCAN-path run (baseline / pr-inherit): the compiled-in
-// language floor, widened with the ids of the declared advisory policy that match the repository's
+// scanWorkSet resolves the work set for a SCAN-path run (baseline / pr-inherit): the built-in test
+// advisories, widened with the ids of the declared advisory policy that match the repository's
 // own dependencies when a policy is declared, or otherwise OPTIONALLY with the advisories OSV.dev
 // reports against those dependencies (selectWorkSet). The OSV widening is off unless it is
 // explicitly switched on (osvWorkSetDefault) and never runs when the policy defines the work set, so
@@ -637,9 +637,9 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 // (against the stored SBOM, diffed against a cursor) and its behaviour is unchanged here.
 //
 // A RESOLVED WORK SET OF ZERO HALTS THE RUN. This is the one place that judgement is made, and it is
-// made HERE rather than at acquisition because the compiled-in floor is not the set the pass
-// evaluates: the widening above takes the acquired target as input and can populate a floor that
-// resolved to nothing. Gating the floor failed every Java/JS/Python scan that asked for the widening,
+// made HERE rather than at acquisition because the built-in set is not the set the pass evaluates:
+// the widening above takes the acquired target as input and can populate a built-in set that
+// resolved to nothing. Gating the built-in set failed every Java/JS/Python scan that asked for the widening,
 // with an error naming remedies the user had not asked for.
 //
 // It is a HARD error, not a warning, on the precedent this CLI already sets for a degraded advisory
@@ -1094,7 +1094,7 @@ func envEnabled(v string) bool {
 // BuildDir as a vendored_repro path, so no Checkout seam is injected — the acquisition
 // already happened here.
 // widen selects whether this run's work set is widened by an OSV query over the repository's real
-// dependencies (the scan path) or is the compiled-in floor alone (cve-watch, which drives its own
+// dependencies (the scan path) or is the built-in test advisories alone (cve-watch, which drives its own
 // OSV query against the stored SBOM and must be left alone).
 // ctx is the run's analysis context.
 func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) {
@@ -1122,7 +1122,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 
 	// Resolved AFTER advisoryCorpusOption, which is what decides the fact source the widener
 	// consults when admitting an OSV-reported id.
-	ws := floorWorkSet(acq.advisories)
+	ws := builtinWorkSet(acq.advisories)
 	if widen {
 		if ws, err = f.scanWorkSet(ctx, acq); err != nil {
 			acq.cleanup()
@@ -1313,7 +1313,8 @@ func runCVEWatch(args []string) error {
 		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		publishStart := time.Now()
-		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
+		intel := cveWatchIntel(f.intelProvenance(cfg.workSet), cfg.workSet, res.NewAdvisories)
+		if err := publishResult(ctx, cfg.outDir, res.Report, intel, cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
 			return err
 		}
 		logPhase(os.Stderr, "publish", time.Since(publishStart))
@@ -1323,6 +1324,32 @@ func runCVEWatch(args []string) error {
 	}
 	// Heartbeat or earnest, a run without its build graph exits red.
 	return runExit(cfg.graph, cfg.deps)
+}
+
+// cveWatchIntel is the disclosure an earnest cve-watch pass publishes. That pass assesses the run's
+// work set plus the advisories OSV.dev newly reported, so a built-in work set it added to is no
+// longer built-in only: it is stamped as the built-in set unioned with the OSV query, sized by the
+// ids it actually covered. Any other work set is left as resolved.
+func cveWatchIntel(p report.IntelProvenance, ws workSet, newIDs []string) report.IntelProvenance {
+	if p.WorkSetSource != report.WorkSetBuiltinLanguageSet {
+		return p
+	}
+	have := make(map[string]struct{}, len(ws.advisories))
+	for _, a := range ws.advisories {
+		have[a.ID] = struct{}{}
+	}
+	added := 0
+	for _, id := range newIDs {
+		if _, ok := have[id]; !ok {
+			have[id] = struct{}{}
+			added++
+		}
+	}
+	if added > 0 {
+		p.WorkSetSource = workSetSourceBuiltinUnionOSV
+		p.WorkSetSize += added
+	}
+	return p
 }
 
 // cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories

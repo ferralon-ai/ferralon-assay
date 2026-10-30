@@ -331,7 +331,7 @@ func TestScanWorkSet_Stopped(t *testing.T) {
 		empty   bool
 		wantErr string
 	}{
-		{name: "floor chosen before the stop"},
+		{name: "built-in set chosen before the stop"},
 		{name: "nothing chosen", empty: true, wantErr: "the scan stopped while choosing advisories, before any was chosen: test stop"},
 	}
 	for _, tc := range cases {
@@ -352,7 +352,7 @@ func TestScanWorkSet_Stopped(t *testing.T) {
 				return
 			}
 			if err != nil || len(ws.advisories) == 0 {
-				t.Fatalf("scanWorkSet = %d advisories, %v; want the floor", len(ws.advisories), err)
+				t.Fatalf("scanWorkSet = %d advisories, %v; want the built-in set", len(ws.advisories), err)
 			}
 			if !scanTruncated(&report.Report{Partiality: ws.partiality}) {
 				t.Errorf("partiality = %+v, want a scan_cut_short note", ws.partiality)

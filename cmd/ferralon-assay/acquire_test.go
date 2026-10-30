@@ -92,10 +92,10 @@ func TestSelectPlugin(t *testing.T) {
 }
 
 // TestAdvisoryCorpusByLanguage proves the corpus is language-scoped: each language sees only its own
-// ecosystem's advisories, EVERY supported language has a non-empty default floor, and the canary
+// ecosystem's advisories, EVERY supported language has a non-empty built-in test set, and the canary
 // opt-in only ever adds to it.
 //
-// The floors used to be Go-only: Java, JS, Python and .NET returned nil unless the canary flag was
+// The built-in sets used to be Go-only: Java, JS, Python and .NET returned nil unless the canary flag was
 // set, which is what halted a default scan of those languages on an empty work set. The counts below
 // are the load-bearing part — a language whose default count returns to zero cannot complete a scan.
 func TestAdvisoryCorpusByLanguage(t *testing.T) {
@@ -107,7 +107,7 @@ func TestAdvisoryCorpusByLanguage(t *testing.T) {
 		// Go: five original entries, four real vuln.go.dev advisories, and the gogs chain's
 		// successor CVE (the chain is two advisories, not one), plus the DOS canary on the opt-in.
 		{checkout.LangGo, 10, 11},
-		// The four non-Go floors are three real public advisories each (two for the ecosystems'
+		// The four non-Go built-in sets are three real public advisories each (two for the ecosystems'
 		// house canaries below), promoted from the authored corpus fixtures on 2026-08-05.
 		{checkout.LangJava, 3, 6},
 		{checkout.LangJS, 3, 5},
@@ -230,7 +230,7 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		}
 		bare.cleanup()
 		if len(bare.advisories) != 3 {
-			t.Fatalf("default java floor = %d advisories, want 3 (the real Maven corpus)", len(bare.advisories))
+			t.Fatalf("default java built-in set = %d advisories, want 3 (the real Maven corpus)", len(bare.advisories))
 		}
 
 		acq, err := acquireTarget(context.Background(), dir, "", "acme/app", "/fake/bin", true, graphRequest{mode: buildGraphOff})
@@ -253,7 +253,7 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		}
 	})
 
-	t.Run("c tree → cfamily plugin, honest-absent floor", func(t *testing.T) {
+	t.Run("c tree → cfamily plugin, honest-absent built-in set", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "main.c"), "int main(void){return 0;}\n")
 		writeFile(t, filepath.Join(dir, "util.h"), "#pragma once\n")
@@ -270,11 +270,11 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		if acq.plugin.Language() != "cfamily" {
 			t.Fatalf("plugin = %q, want cfamily", acq.plugin.Language())
 		}
-		// Row-zero fail-open: the skeleton lane has no advisory floor. An empty floor makes a scan of
+		// Row-zero fail-open: the skeleton lane has no built-in test set. An empty built-in set makes a scan of
 		// a C/C++ tree halt at the empty-work-set gate (never a false clean verdict), which is the
-		// honest Phase-0 posture — NOT a fabricated floor forced in to make the scan complete.
+		// honest Phase-0 posture — NOT a fabricated built-in set forced in to make the scan complete.
 		if len(acq.advisories) != 0 {
-			t.Fatalf("cfamily default floor = %d advisories, want 0 (honest-absent skeleton)", len(acq.advisories))
+			t.Fatalf("cfamily built-in test set = %d advisories, want 0 (honest-absent skeleton)", len(acq.advisories))
 		}
 	})
 

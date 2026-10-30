@@ -6,7 +6,7 @@
 // The scanner shipped analyzer plugins for Go, Java, JavaScript, Python and .NET, and only Go could
 // complete a run. The compiled-in advisory table held no Maven, npm, PyPI or NuGet facts at all —
 // the only entries in those ecosystems were FERRALON-* house canaries, gated off the default surface
-// because they carry no CVE — so the default advisory floor for four of the five languages was
+// because they carry no CVE — so the built-in test set for four of the five languages was
 // empty, and scanWorkSet halts a run whose work set resolves to zero. A default Java, JS, Python or
 // .NET scan exited non-zero.
 //
@@ -31,7 +31,7 @@
 // A full S1–S6 baseline against the REAL per-language analyzer is not hermetic — it wants the
 // plugin binaries on PATH, a git binary, and (for Go) the govulncheck database over the network.
 // The completion table therefore asserts everything decidable in-process, which is precisely the
-// layer that defect lived in: per-language wiring, a non-empty default floor, and a work set that
+// layer that defect lived in: per-language wiring, a non-empty built-in test set, and a work set that
 // resolves without halting. The verdict-honesty table below runs the real baseline path with the
 // analyzer seam filled by a double, which is how the pipeline's own hermetic tests carry a
 // measured analyzer shape across the inv.8 boundary (see pipeline/disqual_java_test.go).
@@ -95,14 +95,14 @@ func TestEverySupportedLanguageCompletesAScan(t *testing.T) {
 			}
 
 			// 2. A dependency ecosystem. Without one the OSV widening has nothing to query and
-			//    dependencyInventory returns early, so the language can never widen past its floor.
+			//    dependencyInventory returns early, so the language can never widen past its built-in set.
 			if ecosystemForLanguage(language) == "" {
 				t.Fatal("no dependency ecosystem is mapped for this language")
 			}
 
-			// 3. A NON-EMPTY DEFAULT FLOOR. This is the line the defect crossed.
+			// 3. A NON-EMPTY BUILT-IN TEST SET. This is the line the defect crossed.
 			if len(acq.advisories) == 0 {
-				t.Fatal("the default advisory floor is empty, so scanWorkSet will halt the run and " +
+				t.Fatal("the built-in test set is empty, so scanWorkSet will halt the run and " +
 					"a default scan of this language cannot complete — this is the exact defect " +
 					"this file exists to catch")
 			}
@@ -177,7 +177,7 @@ func (unsearchingAnalyzer) BuildManifest(context.Context, plugin.BuildManifestRe
 // names was reported not exploitable, which is the worst thing this scanner can say.
 //
 // It runs the real baseline path (trigger.RunBaseline → assess → S1–S6 → the verdict rule) over a
-// real tree of each language and each language's real default advisory floor. The one seam filled
+// real tree of each language and each language's real built-in test set. The one seam filled
 // by a double is the analyzer, because the real one is a separate binary; trapEgress proves the
 // pass reaches no network.
 //
@@ -230,11 +230,11 @@ func TestNoLanguageRefutesWithoutASearch(t *testing.T) {
 	}
 }
 
-// TestDefaultFloorResolvesFacts pins the other way a floor can be hollow: membership without facts.
+// TestDefaultFloorResolvesFacts pins the other way a built-in set can be hollow: membership without facts.
 //
 // An id in the work set that no fact source can resolve spends a full S1–S6 pass to produce an empty
 // finding — it is work-set membership that assesses nothing, which reads to a user exactly like
-// coverage. So every id in every default floor must resolve through the built-in table, and must
+// coverage. So every id in every built-in test set must resolve through the built-in table, and must
 // carry a version axis or a reachability axis to resolve it ON.
 func TestDefaultFloorResolvesFacts(t *testing.T) {
 	src := pipeline.NewTableSource()
@@ -243,12 +243,12 @@ func TestDefaultFloorResolvesFacts(t *testing.T) {
 			for _, ref := range advisoryCorpus(language, false) {
 				facts, ok := src.Lookup(ref.ID)
 				if !ok {
-					t.Errorf("%s floor names %s, which the built-in advisory table cannot resolve",
+					t.Errorf("%s built-in set names %s, which the built-in advisory table cannot resolve",
 						language, ref.ID)
 					continue
 				}
 				if len(facts.AffectedRanges) == 0 && facts.UpperExclusive == "" && len(facts.Symbols) == 0 {
-					t.Errorf("%s floor advisory %s carries neither a version range nor a symbol: it "+
+					t.Errorf("%s built-in set advisory %s carries neither a version range nor a symbol: it "+
 						"can only ever fail open, so it is membership that assesses nothing",
 						language, ref.ID)
 				}
@@ -257,12 +257,12 @@ func TestDefaultFloorResolvesFacts(t *testing.T) {
 	}
 }
 
-// TestDefaultFloorCarriesNoHouseCanary is the standing ruling, re-asserted against the new floors.
+// TestDefaultFloorCarriesNoHouseCanary is the standing ruling, re-asserted against the new built-in sets.
 //
 // The house canaries are synthetic first-party advisories over packages that do not exist
 // (com.example.*, tegron-corpus-*). They carry no CVE, so a finding naming one reads as noise at
 // best and as a fabricated result at worst, and they were deliberately gated off the default surface.
-// Populating the floors is not a licence to reopen that: every default-floor advisory must be a real
+// Populating the built-in sets is not a licence to reopen that: every built-in test advisory must be a real
 // published one, identified by carrying a CVE or GHSA identifier as its id or an alias.
 func TestDefaultFloorCarriesNoHouseCanary(t *testing.T) {
 	src := pipeline.NewTableSource()
@@ -270,7 +270,7 @@ func TestDefaultFloorCarriesNoHouseCanary(t *testing.T) {
 		t.Run(language, func(t *testing.T) {
 			for _, ref := range advisoryCorpus(language, false) {
 				if strings.HasPrefix(ref.ID, "FERRALON-") {
-					t.Errorf("%s default floor names the house canary %s", language, ref.ID)
+					t.Errorf("%s built-in test set names the house canary %s", language, ref.ID)
 					continue
 				}
 				facts, ok := src.Lookup(ref.ID)
@@ -285,7 +285,7 @@ func TestDefaultFloorCarriesNoHouseCanary(t *testing.T) {
 					}
 				}
 				if !public {
-					t.Errorf("%s default floor names %s, which carries no CVE/GHSA/GO identifier: "+
+					t.Errorf("%s built-in test set names %s, which carries no CVE/GHSA/GO identifier: "+
 						"the default findings surface takes real published advisories only",
 						language, ref.ID)
 				}
@@ -296,7 +296,7 @@ func TestDefaultFloorCarriesNoHouseCanary(t *testing.T) {
 
 // TestHouseCanariesStillOptIn pins the other half of that ruling: the canaries are ADDED by
 // -include-house-canaries, never removed by it, and every ecosystem that has one still honours the
-// flag. A floor that stopped growing under the flag would mean the demo path had been silently
+// flag. A built-in set that stopped growing under the flag would mean the demo path had been silently
 // unwired while populating the default surface.
 func TestHouseCanariesStillOptIn(t *testing.T) {
 	for _, language := range supportedLanguages {
@@ -307,11 +307,11 @@ func TestHouseCanariesStillOptIn(t *testing.T) {
 				t.Fatalf("%s corpus is %d with canaries off and %d with them on: the opt-in must ADD",
 					language, len(off), len(on))
 			}
-			// The floor is a prefix of the opted-in set: the flag adds, it never reorders or drops.
+			// The built-in set is a prefix of the opted-in set: the flag adds, it never reorders or drops.
 			for i, ref := range off {
 				if on[i] != ref {
 					t.Fatalf("%s corpus index %d is %v with canaries off but %v with them on: the "+
-						"opt-in must leave the default floor untouched", language, i, ref, on[i])
+						"opt-in must leave the built-in test set untouched", language, i, ref, on[i])
 				}
 			}
 		})

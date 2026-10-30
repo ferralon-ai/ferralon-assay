@@ -2,14 +2,14 @@
 //
 // The halt-on-empty gate, and above all its ORDERING against the OSV work-set widening.
 //
-// The gate used to sit in acquireTarget, where it measured the compiled-in language floor. That is
+// The gate used to sit in acquireTarget, where it measured the language's built-in test set. That is
 // not the set a pass evaluates: -osv-work-set widens the set afterwards, in resolveWorkSet, taking
-// the acquired target as INPUT. Java/JS/Python floors were house canaries in their entirety at the
+// the acquired target as INPUT. Java/JS/Python built-in sets were house canaries in their entirety at the
 // time, so with the canary gate on they resolved to zero and every such scan that asked for the
 // widening died at acquisition — before OSV was ever queried — telling the user to add advisories to
 // the corpus or pass -include-house-canaries, neither of which is what they had asked for.
 //
-// Those floors now carry real advisories (acquire.go), so the empty floor these tests turn on is
+// Those built-in sets now carry real advisories (acquire.go), so the empty built-in set these tests turn on is
 // constructed rather than borrowed from an ecosystem — see emptyFloorFor.
 //
 // TestEmptyWorkSet_WideningRunsBeforeTheGate and TestEmptyWorkSet_WideningPopulatesAnEmptyFloor are
@@ -73,9 +73,9 @@ func languageFixture(t *testing.T, language string) (file, content string) {
 	return "", ""
 }
 
-// emptyFloorFor acquires a real tree of the given language and then empties its advisory floor.
+// emptyFloorFor acquires a real tree of the given language and then empties its built-in test set.
 //
-// THERE IS NO LONGER A LANGUAGE WHOSE FLOOR IS NATURALLY EMPTY, and that is the point of the change
+// THERE IS NO LONGER A LANGUAGE WHOSE BUILT-IN TEST SET IS NATURALLY EMPTY, and that is the point of the change
 // that made this helper necessary. These tests used to use .NET as their empty-in-both-directions
 // specimen; .NET now carries three real NuGet advisories by default, as do Java, JS and Python, so
 // every supported language resolves a non-empty work set. That property is what makes a default
@@ -87,7 +87,7 @@ func languageFixture(t *testing.T, language string) (file, content string) {
 //
 // So the empty set is constructed rather than found. That is a FAITHFUL model of the state the gate
 // exists for, not a weaker one: the gate's condition is strictly "the resolved set is empty", never
-// a language and never a flag, and a floor that resolved to nothing is exactly what it must catch.
+// a language and never a flag, and a built-in set that resolved to nothing is exactly what it must catch.
 // It is also the same manoeuvre the widening tests below already use on acq.plugin, and it is
 // durable — an empty specimen sourced from a real ecosystem is a fixture that breaks every time
 // coverage improves, which is precisely how these tests broke.
@@ -95,7 +95,7 @@ func emptyFloorFor(t *testing.T, language string, canaries bool) *acquired {
 	t.Helper()
 	acq := treeFor(t, language, canaries)
 	if len(acq.advisories) == 0 {
-		t.Fatalf("%s floor (canaries=%v) is already empty — the default floor for every supported "+
+		t.Fatalf("%s built-in set (canaries=%v) is already empty — the built-in test set for every supported "+
 			"language must be non-empty, or a default scan of it cannot complete", language, canaries)
 	}
 	acq.advisories = nil
@@ -158,7 +158,7 @@ func TestEmptyWorkSet_MessageDoesNotBranch(t *testing.T) {
 		t.Run(language, func(t *testing.T) {
 			trapEgress(t)
 
-			// The floor is emptied on both sides (see emptyFloorFor), so the two runs differ ONLY in
+			// The built-in set is emptied on both sides (see emptyFloorFor), so the two runs differ ONLY in
 			// the flag the message must not read. The flag is genuinely set on the second runFlags —
 			// what is pinned is that errEmptyWorkSet does not consult it.
 			off := runFlagsFor(t)
@@ -186,7 +186,7 @@ func TestEmptyWorkSet_DormantOnANonEmptySet(t *testing.T) {
 		language string
 		canaries bool
 	}{
-		// EVERY supported language's default floor carries real advisories, so the gate must never
+		// EVERY supported language's built-in test set carries real advisories, so the gate must never
 		// fire on any of them in either flag direction. This is the halt-side mirror of
 		// language_support_test.go: the same property, asserted through the gate rather than
 		// through the corpus.
@@ -220,7 +220,7 @@ func TestEmptyWorkSet_DormantOnANonEmptySet(t *testing.T) {
 
 // TestEmptyWorkSet_WideningRunsBeforeTheGate is the regression test for the defect.
 //
-// A Java run with -osv-work-set set and the house canaries off has an EMPTY compiled-in floor. Under
+// A Java run with -osv-work-set set and the house canaries off has an EMPTY built-in test set. Under
 // the old placement it died inside acquireTarget and never reached the widening at all. It must now
 // acquire, query OSV, and only then be judged on what the work set resolved to.
 //
@@ -231,8 +231,8 @@ func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 	trap := trapEgress(t)
 	f := runFlagsFor(t, "-osv-work-set=true")
 
-	// Acquisition itself must survive an empty floor. This is the exact call that used to fail.
-	// The floor is emptied explicitly because no language has a naturally empty one any more — see
+	// Acquisition itself must survive an empty built-in set. This is the exact call that used to fail.
+	// The built-in set is emptied explicitly because no language has a naturally empty one any more — see
 	// emptyFloorFor for why that is the durable form of this fixture.
 	acq := emptyFloorFor(t, checkout.LangJava, false)
 	// A dependency inventory is what the widening has to ask OSV ABOUT; the acquired Java plugin
@@ -243,7 +243,7 @@ func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 	_, err := f.scanWorkSet(context.Background(), acq)
 
 	if len(trap.hosts) == 0 {
-		t.Fatal("a java run with -osv-work-set made no outbound request: the empty-floor gate " +
+		t.Fatal("a java run with -osv-work-set made no outbound request: the empty-work-set gate " +
 			"pre-empted the widening again, which is the defect this test exists for")
 	}
 	for _, h := range trap.hosts {
@@ -259,12 +259,12 @@ func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 
 // TestEmptyWorkSet_WideningPopulatesAnEmptyFloor is the payoff half, and the case the user in the
 // bug report was actually asking for: OSV answers, the answer resolves to facts we hold, and a Java
-// scan whose compiled-in floor is empty runs on the widened set instead of halting.
+// scan whose built-in test set is empty runs on the widened set instead of halting.
 //
 // Unreachable under the old placement for the same reason as the test above.
 func TestEmptyWorkSet_WideningPopulatesAnEmptyFloor(t *testing.T) {
 	// FERRALON-JAVA-DEP-0001 is a Maven advisory the built-in table holds facts for and that the
-	// canaries-off floor does NOT carry, so admitting it is a real widening rather than a floor hit.
+	// canaries-off built-in set does NOT carry, so admitting it is a real widening rather than a built-in hit.
 	const admitted = "FERRALON-JAVA-DEP-0001"
 	stubOSV(t, admitted)
 

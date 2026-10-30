@@ -262,7 +262,9 @@ type ReachabilityGrade string
 const (
 	// GradeControlFlowOnly — the vulnerable symbol is callable (a control-flow path
 	// exists) but the deterministic analysis found no attacker-controllable data
-	// flowing along that path to it. The weaker candidate signal.
+	// flowing along that path to it: no attacker-controllable ingress on the path, or
+	// a complete taint result with no path, as when every flow to it is sanitized.
+	// The weaker candidate signal, still a finding.
 	GradeControlFlowOnly ReachabilityGrade = "control_flow_only"
 	// GradeAttackerTainted — an attacker-controllable ingress reaches the vulnerable
 	// symbol AND tainted data flows along the path to it (taint path-presence). The

@@ -594,9 +594,21 @@ func withSignals(p report.Provenance, sig *intel.Signals) report.Provenance {
 // path head, and the ingress→sink call frames. inv. 5: this is evidence strength, not
 // a verdict — the strongest grade (attacker_tainted) still means *candidate*, never
 // exploitable. attacker_tainted requires BOTH an attacker-controllable ingress AND
-// taint path-presence to the sink; anything less is control_flow_only.
+// taint path-presence to the sink; anything less is control_flow_only. A complete
+// taint result with no path (the taint op found every flow to the sink sanitized)
+// grades control_flow_only with the reach path's frames for display; it is still a
+// candidate, never a safe verdict. Only a missing or Partial taint result leaves the
+// grade to the reach path.
 func reachabilityEvidence(store artifact.Store, assessmentID string) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
 	ingresses := ingressMap(store, assessmentID)
+	if res, ok := taintResult(store, assessmentID); ok && res.Partiality.Complete && len(res.Paths) == 0 {
+		var frames []report.CallFrame
+		var ingressSym string
+		if p, ok := firstReachPath(store, assessmentID); ok {
+			frames, ingressSym = framesOf(p.Trace), p.Ingress.SCIP
+		}
+		return report.GradeControlFlowOnly, entryPointFor(ingressSym, ingresses), frames
+	}
 	frames, ingressSym := candidateTrace(store, assessmentID)
 
 	// attacker_tainted requires an attacker-controllable ingress to lie ON the
@@ -739,17 +751,26 @@ func entryPointFor(ingressSym string, ingresses []plugin.Ingress) *report.EntryP
 }
 
 func firstTaintPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+	res, ok := taintResult(store, assessmentID)
+	if !ok || len(res.Paths) == 0 {
+		return plugin.ReachPath{}, false
+	}
+	return res.Paths[0], true
+}
+
+// taintResult reads the taint result recorded for the candidate's sink, if any.
+func taintResult(store artifact.Store, assessmentID string) (plugin.TaintResult, bool) {
 	arts, err := store.Query(assessmentID, artifact.TypeTaint)
 	if err != nil || len(arts) == 0 {
-		return plugin.ReachPath{}, false
+		return plugin.TaintResult{}, false
 	}
 	var td struct {
 		Result plugin.TaintResult `json:"result"`
 	}
-	if err := json.Unmarshal(arts[0].Payload, &td); err != nil || len(td.Result.Paths) == 0 {
-		return plugin.ReachPath{}, false
+	if err := json.Unmarshal(arts[0].Payload, &td); err != nil {
+		return plugin.TaintResult{}, false
 	}
-	return td.Result.Paths[0], true
+	return td.Result, true
 }
 
 func firstReachPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {

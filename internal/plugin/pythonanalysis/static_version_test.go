@@ -125,12 +125,18 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 			"[tool.setuptools.package-dir]\n\"\" = \"x/../../src\"\n", "src/lib/__init__.py": literal}), nil, false},
 		{"setuptools, an attr with more than the name", tree(map[string]string{"lib/pyproject.toml": dynVer + setupBE +
 			"[tool.setuptools.dynamic]\nversion = { attr = \"lib.__version__\", file = \"V\" }\n", "lib/lib/__init__.py": literal}), nil, false},
+		{"setuptools, an attr part not an identifier", tree(map[string]string{"lib/pyproject.toml": dynVer + setupBE +
+			"[tool.setuptools.dynamic]\nversion = { attr = \"my-lib.__version__\" }\n", "lib/my-lib/__init__.py": literal}), nil, false},
+		{"setuptools, an attr part opening with a digit", tree(map[string]string{"lib/pyproject.toml": dynVer + setupBE +
+			"[tool.setuptools.dynamic]\nversion = { attr = \"lib.1v.__version__\" }\n", "lib/lib/__init__.py": "", "lib/lib/1v.py": literal}), nil, false},
 		{"setuptools, attr on another dynamic key", tree(map[string]string{"lib/pyproject.toml": setupLib +
 			"description = { attr = \"lib.DESC\" }\n", "lib/lib/__init__.py": literal + "DESC = \"d\"\n"}), nil, false},
 		{"setuptools, the module through a symlinked directory", tree(map[string]string{"lib/pyproject.toml": setupLib,
 			"elsewhere/__init__.py": literal}), map[string]string{"lib/lib": "elsewhere"}, false},
 		{"setuptools, setup.py beside a literal version", tree(map[string]string{"lib/pyproject.toml": setupLib,
 			"lib/lib/__init__.py": literal, "lib/setup.py": "import setuptools\nsetuptools.setup()\n"}), nil, false},
+		{"flit, a module name not an identifier", tree(map[string]string{"lib/pyproject.toml": dynVer + flitBE +
+			"[tool.flit.module]\nname = \"my-lib\"\n", "lib/my-lib/__init__.py": literal}), nil, false},
 		{"flit, a dynamic description and no docstring", tree(map[string]string{"lib/pyproject.toml": dynBoth + flitBE,
 			"lib/lib/__init__.py": literal}), nil, false},
 		{"flit, the module both beside the manifest and under src", tree(map[string]string{"lib/pyproject.toml": dynVer + flitBE,
@@ -139,6 +145,8 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 			"lib/my_lib/__init__.py": literal, "lib/my-lib/x.txt": "x\n"}), nil, false},
 		{"flit, a project name with capitals", tree(map[string]string{"lib/pyproject.toml": "[project]\nname = \"Lib\"\ndynamic = [\"version\"]\n" + flitBE,
 			"lib/lib/__init__.py": literal}), nil, false},
+		{"setuptools, the module itself an install surface", tree(map[string]string{"lib/pyproject.toml": setupLib,
+			"lib/lib/__init__.py": "\"\"\"Helpers for setuptools install_requires.\"\"\"\n" + literal}), nil, false},
 		{"setuptools, the module also installed by pip -r", with(tree(map[string]string{"lib/pyproject.toml": setupLib,
 			"lib/lib/__init__.py": "# jinja2==3.1.2\n" + literal}), "install.sh", uvSync+"pip install -r lib/lib/__init__.py\n"), nil, false},
 		{"setuptools, the module copied to a requirements file", with(tree(map[string]string{"lib/pyproject.toml": setupLib,
@@ -191,6 +199,7 @@ func TestStaticAssigned(t *testing.T) {
 		{"whitespace literal", "__version__ = \"  \"\n", "__version__", false, false},
 		{"unterminated", "__version__ = \"1.0\n", "__version__", false, false},
 		{"continued", "__version__ = \\\n    \"1.0\"\n", "__version__", false, false},
+		{"rebound through a continued line", "__version__ = \"1.0\"\nx = \\\n__version__ = \"2.0\"\n", "__version__", false, false},
 		{"parenthesised", "__version__ = (\"1.0\")\n", "__version__", false, false},
 		{"semicolon", "__version__ = \"1.0\"; x = 1\n", "__version__", false, false},
 		{"del", "__version__ = \"1.0\"\ndel __version__\n", "__version__", false, false},
@@ -247,7 +256,7 @@ func TestSetuptoolsReadsBytes(t *testing.T) {
 		{"no specifier", `["setuptools"]`, false},
 		{"behind a marker", `["setuptools>=77; python_version >= '3.9'"]`, false},
 		{"a direct reference", `["setuptools @ https://x.test/setuptools-77.0.tar.gz"]`, false},
-		{"another project", `["setuptools-scm>=8"]`, false},
+		{"another project", `["setuptools-scm>=80"]`, false},
 		{"no requires", ``, false},
 	}
 	for _, tt := range tests {

@@ -270,14 +270,37 @@ func setupPyEntrypoints(src string) []entrypoint {
 	clean, lits := stripPythonLiterals(src)
 	cr := []rune(clean)
 	var specs []string
+	// A group holds until the bracket that opened its value closes: depth is the bracket
+	// nesting at the literal, groupDepth the nesting just inside the group's value.
 	group, prev := "", 0
+	depth, groupDepth, keyed := 0, 0, false
 	for _, start := range slices.Sorted(maps.Keys(lits)) {
 		gap := string(cr[prev:start])
-		if strings.ContainsAny(gap, "])") {
-			group = ""
+		low, opened := depth, -1
+		for _, c := range gap {
+			switch c {
+			case '[', '(', '{':
+				depth++
+				if opened < 0 {
+					opened = depth
+				}
+			case ']', ')', '}':
+				depth--
+				low = min(low, depth)
+			}
+		}
+		if low < groupDepth {
+			group, keyed = "", false
+		}
+		if keyed {
+			// A dict key's value is the bracket after its colon, or a bare literal.
+			groupDepth, keyed = depth, false
+			if opened >= 0 {
+				groupDepth = opened
+			}
 		}
 		if m := keywordList.FindStringSubmatch(gap); m != nil {
-			group = m[1]
+			group, groupDepth = m[1], depth
 		}
 		lit := lits[start]
 		prev = lit.end
@@ -286,7 +309,7 @@ func setupPyEntrypoints(src string) []entrypoint {
 			next++
 		}
 		if next < len(cr) && cr[next] == ':' {
-			group = lit.body
+			group, keyed = lit.body, true
 			continue
 		}
 		g := group
@@ -378,7 +401,11 @@ var shellSeparators = map[string]bool{"&&": true, "||": true, ";": true, "|": tr
 
 // separatorSpacer splits off the separators a shell writes attached to a word (pip install
 // -r x; gunicorn app:app).
-var separatorSpacer = strings.NewReplacer(";", " ; ", "&&", " && ", "||", " || ")
+var separatorSpacer = strings.NewReplacer(";", " ; ", "&&", " && ", "||", " || ", "&", " & ", "|", " | ")
+
+// redirection is a shell redirection (> log, 2>, &>, < in), which ends a command's
+// arguments: the file it names is no argument.
+var redirection = regexp.MustCompile(`^(?:\d*|&)[<>]`)
 
 // commandEntrypoints reads the launch commands in text. deploy admits the script forms
 // (python -m, python file.py, streamlit/fastapi run), which only a production launch file
@@ -399,11 +426,12 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 // mapping, with the block-list items under each, into one line in that order, so a
 // manifest's or compose service's launch reads as one command whichever key comes first. A
 // list item that is a mapping ("- name: web") ends the list. A compose healthcheck's test:
-// is a probe, not a launch, and is dropped with its items.
+// and a Kubernetes probe's or lifecycle hook's exec: command: are probes, not launches, and
+// are dropped with their items.
 func yamlCommandLines(lines []string) []string {
 	var out []string
 	var grp map[string]string
-	last := ""
+	last, prev := "", ""
 	flush := func() {
 		if grp != nil {
 			out = append(out, grp["entrypoint"]+" "+grp["command"]+" "+grp["args"])
@@ -418,6 +446,12 @@ func yamlCommandLines(lines []string) []string {
 			if strings.HasPrefix(key, c+":") {
 				k = c
 			}
+		}
+		if k == "command" && prev == "exec:" {
+			k = "test"
+		}
+		if t != "" && !strings.HasPrefix(t, "#") {
+			prev = t
 		}
 		switch {
 		case k == "test":
@@ -452,7 +486,9 @@ func yamlCommandLines(lines []string) []string {
 func commandTokens(line string) []string {
 	var toks []string
 	var w strings.Builder
-	var quote rune
+	// opener is the separator before the current word: a quote after "=" closes a word
+	// that opened at that quote ("SECRET_KEY=" in an exec-form list) rather than opening a value.
+	var quote, opener rune
 	for _, r := range line {
 		switch {
 		case quote != 0:
@@ -461,13 +497,14 @@ func commandTokens(line string) []string {
 			} else {
 				w.WriteRune(r)
 			}
-		case (r == '"' || r == '\'') && strings.HasSuffix(w.String(), "="):
+		case (r == '"' || r == '\'') && r != opener && strings.HasSuffix(w.String(), "="):
 			quote = r
 		case strings.ContainsRune(" \t\r[]\"',", r):
 			if w.Len() > 0 {
 				toks = append(toks, w.String())
 				w.Reset()
 			}
+			opener = r
 		default:
 			w.WriteRune(r)
 		}
@@ -579,7 +616,7 @@ func pythonLaunch(args []string, deploy bool) []entrypoint {
 // commandArgs is the words after toks[i-1] up to the end of that command.
 func commandArgs(toks []string, i int) []string {
 	j := i
-	for j < len(toks) && !shellSeparators[toks[j]] {
+	for j < len(toks) && !shellSeparators[toks[j]] && !redirection.MatchString(toks[j]) {
 		j++
 	}
 	return toks[i:j]
@@ -642,8 +679,8 @@ var serverSwitches = map[string]map[string]bool{
 
 // serverApp reads a WSGI/ASGI server's application argument: any "pkg.mod:attr" word, or,
 // for gunicorn and waitress-serve, which default the attribute, the last dotted word that
-// is no option or option value (gunicorn's usage puts the module last). --chdir and --app-dir move the directory the module is
-// read from.
+// is no option or option value (gunicorn's usage puts the module last). --chdir and
+// --app-dir move the directory the module is read from.
 func serverApp(name string, args []string) []entrypoint {
 	dir, module := "", ""
 	var eps []entrypoint
@@ -748,9 +785,9 @@ var (
 	// codeURILine is a SAM function's CodeUri, the directory its handler is read from.
 	codeURILine = regexp.MustCompile(`^([ \t]*)CodeUri:[ \t]*['"]?([\w./-]+?)/?['"]?[ \t]*(?:#.*)?\r?$`)
 	// runtimeLine is a serverless or SAM function's (or provider's) runtime.
-	runtimeLine = regexp.MustCompile(`(?m)^[ \t]*[Rr]untime:[ \t]*['"]?([\w.]+)`)
-	// manifestKind is a Kubernetes object's top-level kind.
-	manifestKind = regexp.MustCompile(`(?m)^kind:[ \t]*\w`)
+	runtimeLine = regexp.MustCompile(`^([ \t]*)[Rr]untime:[ \t]*['"]?([^'"#\s][^'"#\r]*?)['"]?[ \t]*(?:#.*)?\r?$`)
+	// manifestKind is a Kubernetes object's top-level kind, literal or templated (Helm).
+	manifestKind = regexp.MustCompile(`(?m)^kind:[ \t]*[\w{]`)
 )
 
 // yamlEntrypoints reads a YAML file that launches code: a serverless or SAM template's
@@ -759,13 +796,13 @@ func yamlEntrypoints(name, text string) []entrypoint {
 	var eps []entrypoint
 	lower := strings.ToLower(name)
 	lambda := strings.HasPrefix(lower, "serverless.") || strings.Contains(text, "AWS::Serverless::Function") || strings.Contains(text, "AWS::Lambda::Function")
-	if lambda && pythonRuntime(text) {
+	if lambda {
 		for _, loc := range handlerLine.FindAllStringSubmatchIndex(text, -1) {
 			mod := strings.ReplaceAll(text[loc[2]:loc[3]], ".", "/")
-			if strings.Contains(mod, "//") {
+			if strings.Contains(mod, "//") || !pythonRuntime(templateValue(text, loc[0], runtimeLine, "Globals:", "provider:")) {
 				continue
 			}
-			eps = append(eps, entrypoint{module: mod, attr: text[loc[4]:loc[5]], dir: launchDir(codeURI(text, loc[0]))})
+			eps = append(eps, entrypoint{module: mod, attr: text[loc[4]:loc[5]], dir: launchDir(templateValue(text, loc[0], codeURILine, "Globals:"))})
 		}
 	}
 	if strings.Contains(text, "containers:") && manifestKind.MatchString(text) {
@@ -774,26 +811,23 @@ func yamlEntrypoints(name, text string) []entrypoint {
 	return eps
 }
 
-// pythonRuntime reports whether a template's functions may run Python: it names no runtime,
-// or a python one among them (a nodejs template's handler.main is no Python module).
-func pythonRuntime(text string) bool {
-	ms := runtimeLine.FindAllStringSubmatch(text, -1)
-	for _, m := range ms {
-		if strings.HasPrefix(strings.ToLower(m[1]), "python") {
-			return true
-		}
-	}
-	return len(ms) == 0
+// pythonRuntime reports whether a function with runtime rt may run Python: it names none, a
+// python one, or one a parameter supplies (!Ref, ${...}); a nodejs function's handler.main
+// is no Python module.
+func pythonRuntime(rt string) bool {
+	lower := strings.ToLower(rt)
+	return rt == "" || strings.HasPrefix(lower, "python") || strings.HasPrefix(rt, "!") || strings.Contains(rt, "${")
 }
 
-// codeURI is the CodeUri beside the handler line at offset at: the same mapping's, else the
-// template's Globals.Function's, else "". An S3 location or intrinsic is no local directory.
-func codeURI(text string, at int) string {
+// templateValue reads the key re matches (its groups the indent and the value) for the
+// function whose handler line is at offset at: the handler's own mapping's, else the first
+// under one of the top-level sections (SAM's Globals, serverless's provider), else "".
+func templateValue(text string, at int, re *regexp.Regexp, sections ...string) string {
 	lines := strings.Split(text, "\n")
 	h := strings.Count(text[:at], "\n")
 	indent := len(lines[h]) - len(strings.TrimLeft(lines[h], " \t-"))
 	sibling := func(j int) (string, bool) {
-		m := codeURILine.FindStringSubmatch(lines[j])
+		m := re.FindStringSubmatch(lines[j])
 		if m == nil || len(m[1]) != indent {
 			return "", false
 		}
@@ -813,14 +847,13 @@ func codeURI(text string, at int) string {
 			return v
 		}
 	}
-	// Globals: Function: CodeUri: applies to every function that names none.
-	globals := false
+	in := false
 	for _, line := range lines {
 		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") && line[0] != ' ' && line[0] != '\t' {
-			globals = strings.HasPrefix(t, "Globals:")
+			in = slices.ContainsFunc(sections, func(sec string) bool { return strings.HasPrefix(t, sec) })
 			continue
 		}
-		if m := codeURILine.FindStringSubmatch(line); globals && m != nil {
+		if m := re.FindStringSubmatch(line); in && m != nil {
 			return m[2]
 		}
 	}

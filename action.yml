@@ -650,7 +650,7 @@ runs:
         # Sparse BEFORE any checkout, so excluded paths are never materialized. Non-cone
         # (gitignore-style) patterns: records are filed as <YYYY>/<MM>/<ID>.json plus
         # unknown/<ID>.json and are resolved through the root manifest. LICENSE and NOTICE carry the
-        # corpus's CC-BY attribution terms and travel with the data they cover.
+        # corpus's license, the Business Source License 1.1, and travel with the data they cover.
         sparse=(
           '/manifest.json'
           '/LICENSE'

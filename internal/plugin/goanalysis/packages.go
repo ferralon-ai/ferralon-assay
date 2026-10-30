@@ -695,10 +695,18 @@ func (s sourceImports) read(ctx context.Context, buildDir string, env []string, 
 	if len(todo) == 0 {
 		return
 	}
-	cmd := exec.CommandContext(ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Standard}}\t{{.Dir}}"}, todo...)...)
-	cmd.Dir = buildDir
-	cmd.Env = env
-	out, err := cmd.Output()
+	// Every Reachability process of a scan asks this of the same tree, mostly for the same packages.
+	keyEnv := env
+	if keyEnv == nil {
+		keyEnv = os.Environ()
+	}
+	key := append(append([]string{buildDir, strconv.Itoa(len(keyEnv))}, keyEnv...), todo...)
+	out, err := runCached(ctx, "sourceimports", key, func() ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Standard}}\t{{.Dir}}"}, todo...)...)
+		cmd.Dir = buildDir
+		cmd.Env = env
+		return cmd.Output()
+	})
 	if err != nil {
 		return
 	}

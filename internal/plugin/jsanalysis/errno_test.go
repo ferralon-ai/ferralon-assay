@@ -5,8 +5,12 @@ package jsanalysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -65,6 +69,60 @@ func dangle(t *testing.T, dir, rel string) {
 	link(t, dir, rel, "gone")
 }
 
+// pathMax is the longest path the platform's stat accepts.
+var pathMax = map[bool]int{true: 1024, false: 4096}[runtime.GOOS == "darwin"]
+
+// deepLink makes rel under dir a symlink to a directory whose real path is realLen bytes long,
+// reached through a chain of short links, so the kernel follows paths through it that are far
+// shorter than their real paths. It returns a short path to that directory.
+func deepLink(t *testing.T, dir, rel string, realLen int) string {
+	t.Helper()
+	mkdir(t, dir, ".deep")
+	at, via := filepath.Join(dir, ".deep"), ".deep"
+	real, err := filepath.EvalSymlinks(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; len(real) < realLen; i++ {
+		name := fmt.Sprintf("%03d", i)
+		name += strings.Repeat("d", min(200, realLen-len(real)-1)-len(name))
+		if err := os.Mkdir(filepath.Join(at, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s := fmt.Sprintf("s%d", i)
+		if err := os.Symlink(name, filepath.Join(at, s)); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		at, via, real = filepath.Join(at, s), via+"/"+s, real+"/"+name
+	}
+	link(t, dir, rel, via)
+	return at
+}
+
+// noCopyAbove fails the test when an ancestor of dir, logical or real, holds a candidate for
+// package name in its node_modules, or a node_modules that cannot be searched: a walk that
+// climbs past the build root would find it, and a row expecting no copy would not test that.
+func noCopyAbove(t *testing.T, dir, name string) {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, start := range []string{dir, real} {
+		for d := filepath.Dir(start); ; d = filepath.Dir(d) {
+			for _, c := range []string{name, name + ".js", name + ".json", name + ".node"} {
+				p := filepath.Join(d, "node_modules", c)
+				if _, err := os.Lstat(p); err == nil || !absent(err) {
+					t.Fatalf("%s (%v) is above the test's build root: remove it or set TMPDIR elsewhere", p, err)
+				}
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+}
+
 // mkdir creates the directory rel under dir.
 func mkdir(t *testing.T, dir, rel string) {
 	t.Helper()
@@ -84,6 +142,22 @@ func wantErr(t *testing.T, dir, rel string, want error, lstat ...bool) {
 	if _, err := stat(filepath.Join(dir, filepath.FromSlash(rel))); !errors.Is(err, want) {
 		t.Fatalf("stat %s: %v, want %v", rel, err, want)
 	}
+}
+
+// physicallyDeep returns a short path under dir to a directory whose real path is longer
+// than PATH_MAX: each level is a short symlink to a long sibling directory, so the kernel
+// resolves the short path one link at a time, but resolving its real path as a string fails
+// with ENAMETOOLONG.
+func physicallyDeep(t *testing.T, dir string) string {
+	t.Helper()
+	comp := strings.Repeat("d", 250)
+	logical := ""
+	for i := 0; i < 20; i++ {
+		mkdir(t, dir, path.Join(logical, comp))
+		link(t, dir, path.Join(logical, "l"), comp)
+		logical = path.Join(logical, "l")
+	}
+	return filepath.Join(dir, filepath.FromSlash(logical))
 }
 
 // wantListErr fails the row unless listing the directory rel under dir fails with want.
@@ -144,6 +218,29 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			fault(t, dir) // after loadProgram, whose own walk fails on an unreadable directory
 			if dirs := prog.resolver().workspaceMemberDirs([]string{"packages/*"}); len(dirs) != 0 || prog.readFailed != wantFailed {
 				t.Errorf("members = %v, readFailed = %v; want none, readFailed = %v", dirs, prog.readFailed, wantFailed)
+			}
+		}
+	}
+	// memberTree is a workspace whose member foo a.js requires; node_modules exists but holds
+	// no copy of foo.
+	memberTree := map[string]string{
+		"package.json":              `{"name":"app","workspaces":["packages/*"]}`,
+		"packages/foo/package.json": `{"name":"foo"}`,
+		"packages/foo/index.js":     js,
+		"a.js":                      "const foo = require('foo');\n",
+		"node_modules/.keep":        "",
+	}
+	memberShadowed := func(from string, want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			prog := mustLoad(t, dir)
+			if prog == nil {
+				return
+			}
+			if !want {
+				noCopyAbove(t, dir, "foo")
+			}
+			if got := prog.resolver().loadsOutOfTree(from, "foo", true); got != want {
+				t.Errorf("loadsOutOfTree = %v, want %v", got, want)
 			}
 		}
 	}
@@ -221,6 +318,58 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		}
 	}
 
+	// importKeepsLimit checks whether a dynamic import of x keeps dynamic_import_specifier,
+	// which follows from the package.json installedManifest finds for x.
+	importKeepsLimit := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != want {
+				t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonDynamicImportSpecifier, got, want, res.Partiality.Reasons)
+			}
+		}
+	}
+	const loadX = "async function load(s) { const m = await import('x'); return m.parse(s); }\nload(process.argv);\n"
+	const plainX = `{"name":"x","exports":{"import":"./i.js","default":"./i.js"}}`
+	importX := func(extra map[string]string) map[string]string {
+		m := map[string]string{"package.json": `{"name":"app"}`, "app.js": loadX}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	// shadowKeepsLimit checks uninspectable_package on a require of cfg, a bare specifier a
+	// tsconfig paths alias claims, which follows from what nodeModulesHas finds for cfg.
+	shadowKeepsLimit := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonUninspectablePackage); got != want {
+				t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonUninspectablePackage, got, want, res.Partiality.Reasons)
+			}
+		}
+	}
+	shadowedCfg := func(extra map[string]string) map[string]string {
+		m := map[string]string{
+			"package.json":  `{"name":"app"}`,
+			"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":    "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"app.js":        "const m = require('cfg');\nfunction load(s) { return m.parse(s); }\nload(process.argv);\n",
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	// longReal, the logical build dir of the ENAMETOOLONG row, is set by its fault.
+	var longReal string
+
 	type row struct {
 		name  string
 		files map[string]string
@@ -231,6 +380,55 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		site string
 		rows []row
 	}{
+		{"installedManifest", []row{
+			{"EACCES", importX(map[string]string{"node_modules/x/package.json": plainX}), func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules", "x"))
+				wantErr(t, dir, "node_modules/x/package.json", os.ErrPermission, true)
+			}, importKeepsLimit(true)},
+			{"EACCES on a nested copy that shadows a readable one", map[string]string{
+				"package.json":                    `{"name":"app"}`,
+				"src/app.js":                      loadX,
+				"src/node_modules/x/package.json": plainX,
+				"node_modules/x/package.json":     plainX,
+			}, func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "src", "node_modules", "x"))
+				wantErr(t, dir, "src/node_modules/x/package.json", os.ErrPermission, true)
+			}, importKeepsLimit(true)},
+			{"ELOOP", importX(nil), func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules/x")
+				wantErr(t, dir, "node_modules/x/package.json", syscall.ELOOP, true)
+			}, importKeepsLimit(true)},
+			{"ENOTDIR", importX(map[string]string{"node_modules/x": "not a directory"}), func(t *testing.T, dir string) {
+				wantErr(t, dir, "node_modules/x/package.json", syscall.ENOTDIR, true)
+			}, importKeepsLimit(false)},
+			{"missing", importX(nil), func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules/x")
+			}, importKeepsLimit(false)},
+		}},
+		{"nodeModulesHas", []row{
+			{"EACCES", shadowedCfg(map[string]string{"node_modules/other/package.json": `{"name":"other"}`}), func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable
+				wantErr(t, dir, "node_modules/cfg", os.ErrPermission, true)
+			}, shadowKeepsLimit(true)},
+			{"ELOOP", shadowedCfg(nil), func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules")
+				wantErr(t, dir, "node_modules/cfg", syscall.ELOOP, true)
+			}, shadowKeepsLimit(true)},
+			{"missing", shadowedCfg(nil), func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules")
+			}, shadowKeepsLimit(false)},
+			{"ELOOP above the build root", shadowedCfg(nil), func(t *testing.T, dir string) {
+				loop(t, filepath.Dir(dir), "node_modules")
+				wantErr(t, filepath.Dir(dir), "node_modules/cfg", syscall.ELOOP, true)
+			}, shadowKeepsLimit(true)},
+			{"ENAMETOOLONG resolving the real path of the importer", nil, func(t *testing.T, dir string) {
+				longReal = filepath.Join(physicallyDeep(t, dir), "app")
+				writeFiles(t, longReal, shadowedCfg(nil))
+				if _, err := filepath.EvalSymlinks(longReal); !errors.Is(err, syscall.ENAMETOOLONG) {
+					t.Fatalf("EvalSymlinks: %v, want %v", err, syscall.ENAMETOOLONG)
+				}
+			}, func(t *testing.T, _ string) { shadowKeepsLimit(true)(t, longReal) }},
+		}},
 		{"installedPackage package dir", []row{
 			{"EACCES", with(map[string]string{"node_modules/absent-package/package.json": `{"name":"absent-package"}`}), func(t *testing.T, dir string) {
 				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable
@@ -357,6 +555,63 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 				wantListErr(t, dir, "packages", os.ErrPermission)
 			}, manifestsRead("", false)},
 			{"missing", nil, nil, manifestsRead("missing", true)},
+		}},
+		{"memberShadowed node_modules candidate", []row{
+			{"EACCES", memberTree, func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable
+				wantErr(t, dir, "node_modules/foo.js", os.ErrPermission, true)
+			}, memberShadowed("a", true)},
+			{"ELOOP", memberTree, func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules/foo")
+				wantErr(t, dir, "node_modules/foo", syscall.ELOOP)
+			}, memberShadowed("a", true)},
+			{"missing", memberTree, func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules/foo")
+			}, memberShadowed("a", false)},
+		}},
+		{"memberShadowed member real path", []row{
+			// The build root is reached through short links, and its real path is long enough that
+			// the member's is past PATH_MAX while the importer's still resolves.
+			{"ENAMETOOLONG", nil, func(t *testing.T, dir string) {
+				member := "packages/" + strings.Repeat("p", 200)
+				root := filepath.Join(deepLink(t, dir, "r", pathMax-105), "repo")
+				for name, body := range map[string]string{
+					"package.json":           memberTree["package.json"],
+					member + "/package.json": `{"name":"foo"}`,
+					member + "/index.js":     js,
+					"a.js":                   memberTree["a.js"],
+					"node_modules/.keep":     "",
+				} {
+					p := filepath.Join(root, filepath.FromSlash(name))
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(member))); !errors.Is(err, syscall.ENAMETOOLONG) {
+					t.Fatalf("realpath of the member: %v, want %v", err, syscall.ENAMETOOLONG)
+				}
+				if _, err := filepath.EvalSymlinks(filepath.Join(root, "a.js")); err != nil {
+					t.Fatalf("realpath a.js: %v", err)
+				}
+			}, func(t *testing.T, dir string) {
+				memberShadowed("a", true)(t, filepath.Join(dir, "r", "repo"))
+			}},
+		}},
+		{"memberShadowed importer real path", []row{
+			{"EACCES", memberTree, func(t *testing.T, dir string) {
+				link(t, dir, "src/entry.js", denied(t))
+				wantErr(t, dir, "src/entry.js", os.ErrPermission)
+			}, memberShadowed("src/entry", true)},
+			{"ELOOP", memberTree, func(t *testing.T, dir string) {
+				loop(t, dir, "src/entry.js")
+				wantErr(t, dir, "src/entry.js", syscall.ELOOP)
+			}, memberShadowed("src/entry", true)},
+			{"missing", memberTree, func(t *testing.T, dir string) {
+				dangle(t, dir, "src/entry.js")
+			}, memberShadowed("src/entry", false)},
 		}},
 		{"installCommand lockfile", []row{
 			{"EACCES", map[string]string{"package.json": `{"name":"app"}`}, func(t *testing.T, dir string) {

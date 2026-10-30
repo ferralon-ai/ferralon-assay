@@ -42,7 +42,7 @@ func treeFor(t *testing.T, language string, canaries bool) *acquired {
 	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", file, err)
 	}
-	acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", canaries)
+	acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", canaries, graphRequest{mode: buildGraphOff})
 	if err != nil {
 		t.Fatalf("acquireTarget(%s, canaries=%v): %v", language, canaries, err)
 	}

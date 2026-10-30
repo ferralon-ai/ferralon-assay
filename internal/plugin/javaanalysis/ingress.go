@@ -118,14 +118,13 @@ func ingressPartiality(prog *program) plugin.Partiality {
 // package as their origin, and no first-party method can stand in for them by
 // sharing a name. An advisory on the project itself, or one with no Maven PURL, is
 // matched against the first-party source.
-func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
-	if coordinate, version, ok := coordinateOfPURL(req.PURL); ok && !isRootCoordinate(req.BuildDir, coordinate) {
-		dep, err := resolveDependencyJarSymbols(ctx, req.BuildDir, req.TargetEnv, coordinate, version, req.AdvisorySymbols)
-		if err != nil {
-			return plugin.SymbolResolutionResult{}, err
-		}
+func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest, opts ...Option) (plugin.SymbolResolutionResult, error) {
+	g := BuildGraph(opts...)
+	if coordinate, version, ok := CoordinateOfPURL(req.PURL); ok && !isRootCoordinate(g, coordinate) {
+		dep := resolveDependencyJarSymbols(g, req.BuildDir, coordinate, version, req.AdvisorySymbols)
 		part := dep.part
-		if multi, why := multipleProjects(req.BuildDir); multi {
+		// An absent package's reason is bounded to its own advisory; nothing about it is run-wide.
+		if multi, why := multipleProjects(req.BuildDir, opts...); multi && !notInBuild(part) {
 			part = withMultipleProjects(part, why)
 		}
 		return plugin.SymbolResolutionResult{Partiality: part, Resolved: dep.resolved, Origins: dep.origins, Matched: dep.matched}, nil

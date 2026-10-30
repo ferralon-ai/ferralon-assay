@@ -6,6 +6,7 @@
 // MeterProvider before this name is ever recorded against, and go.opentelemetry.io/otel's
 // global package upgrades already-vended instruments to it automatically, so this works
 // identically whether telemetry is enabled, disabled, or not yet configured.
+
 package pipeline
 
 import (

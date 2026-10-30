@@ -267,7 +267,7 @@ func TestReachability_Fixture_ReachableEmitsOrderedPath(t *testing.T) {
 	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{
 		BuildDir: dir,
 		Symbols:  []string{"com/example/VulnKt.sink()V"},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestReachability_Fixture_UnreachableIsCompleteAndEmpty(t *testing.T) {
 	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{
 		BuildDir: dir,
 		Symbols:  []string{"com/example/VulnKt.sink()V"},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestReachability_Fixture_ToolUnavailableIsHonestPartiality(t *testing.T) {
 	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{
 		BuildDir: dir,
 		Symbols:  []string{"com/example/VulnKt.sink()V"},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}

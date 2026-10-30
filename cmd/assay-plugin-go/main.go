@@ -1,7 +1,9 @@
 // Command assay-plugin-go is the out-of-process Go language analysis subprocess
 // (inv.8). It reads exactly one newline-delimited JSON plugin.Request from stdin,
-// dispatches on Op to the in-process goanalysis functions (the 5 live ops) or returns a
-// declared-Unsupported partiality (the 3 Phase-1 contract stubs), and writes exactly one
+// dispatches on Op to the in-process goanalysis functions (the 9 live ops: index_symbols,
+// resolve_symbols, call_graph, find_ingresses, reachability, compute_taint, generate_harness,
+// build_manifest, resolve_inventory). resolve_versions returns a declared-Unsupported partiality
+// and capability_manifest returns Supported:false. It writes exactly one
 // newline-delimited JSON plugin.Response to stdout. The analysis libraries (go/packages,
 // x/tools, x/vuln) link ONLY into this binary — never into the host binary.
 //
@@ -18,9 +20,14 @@ import (
 	"os"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
+
+// envRunCacheDir carries the per-scan run cache directory the host sets for this subprocess (see
+// plugin.WithRunCacheDir); empty or unset, nothing is cached.
+const envRunCacheDir = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
 
 func main() {
 	// This process exists ONLY to analyze a single standalone module dir (the analyzed
@@ -32,10 +39,15 @@ func main() {
 	// fail with "directory prefix . does not contain modules listed in go.work". Neutralize
 	// it once at entry so every in-process analyzer is workspace-blind.
 	_ = os.Setenv("GOWORK", "off")
-	if err := run(context.Background(), os.Stdin, os.Stdout); err != nil {
+	if err := run(analyzerContext(context.Background()), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// analyzerContext hands the analyzer the run cache directory the host set for this subprocess.
+func analyzerContext(ctx context.Context) context.Context {
+	return goanalysis.WithRunCacheDir(ctx, os.Getenv(envRunCacheDir))
 }
 
 // run reads one Request, dispatches, and writes one Response. It returns a non-nil error
@@ -160,7 +172,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveInventory == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
 		}
-		// PLAN-102: Go resolves the SELECTED dependency graph (go mod graph + go.mod),
+		// Go resolves the SELECTED dependency graph (go mod graph + go.mod),
 		// not go.mod's require list. A declared-partial result (e.g. no manifest) is a
 		// success payload; only a hard resolution failure is an error (inv.4).
 		res, err := goanalysis.ResolveInventory(ctx, *req.ResolveInventory)
@@ -170,8 +182,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		return plugin.Response{Inventory: &res}, nil
 
 	case plugin.OpCapabilityManifest:
-		// Go's capability manifest CONTENT is Phase-4 (PLAN-4x0); this cycle lands the op
-		// wired to honest absence (Supported:false), never a Supported:true manifest with
+		// Honest absence (Supported:false), never a Supported:true manifest with
 		// empty axes.
 		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "go"}}, nil
 

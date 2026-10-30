@@ -159,10 +159,10 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 	}
 }
 
-// TestScanResult_WithholdsForLeftOutFiles runs govulncheck's findings through the same path
+// TestReconciledResult_WithholdsForLeftOutFiles runs govulncheck's findings through the same path
 // Reachability takes once govulncheck returns, so it fails if the left-out-file guard is not
 // applied there.
-func TestScanResult_WithholdsForLeftOutFiles(t *testing.T) {
+func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
 		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
@@ -196,7 +196,7 @@ func TestScanResult_WithholdsForLeftOutFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := scanResult(context.Background(), tc.scanned, load, dir, append(os.Environ(), "GOWORK=off"))
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil })
 			if err != nil {
 				t.Fatal(err)
 			}

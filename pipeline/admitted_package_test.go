@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -38,6 +39,42 @@ func TestAdmittedPackagePURL(t *testing.T) {
 			}
 			if got := admittedPackagePURL(store, caseID); got != tc.want {
 				t.Fatalf("admittedPackagePURL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// affectedInstalledVersions feeds ResolveSymbolsRequest.PackageVersions when installed copies
+// disagree. It drops only a version the advisory's ranges provably exclude.
+func TestAffectedInstalledVersions(t *testing.T) {
+	qsRange := []map[string]any{{"lower_inclusive": "6.7.0", "upper_exclusive": "6.14.2", "scheme": "npm"}}
+	cases := []struct {
+		name   string
+		inv    map[string]any // nil = no inventory artifact
+		ranges []map[string]any
+		want   []string
+	}{
+		{"copies disagree", map[string]any{"resolved_versions": []string{"6.7.0", "6.5.2"}}, qsRange, []string{"6.7.0"}},
+		{"no usable range keeps every copy", map[string]any{"resolved_versions": []string{"6.7.0", "6.5.2"}}, nil, []string{"6.7.0", "6.5.2"}},
+		{"unplaceable version kept", map[string]any{"resolved_versions": []string{"6.7.0", "not-a-version"}}, qsRange, []string{"6.7.0", "not-a-version"}},
+		{"single version resolved", map[string]any{"resolved_version": "6.7.0", "resolved_versions": []string{"6.7.0"}}, qsRange, nil},
+		{"scanned project is the package", map[string]any{"resolved_versions": []string{"6.7.0", "6.5.2"}, "root": true}, qsRange, nil},
+		{"no inventory", nil, qsRange, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			caseID := "case-installed-" + tc.name
+			adv := map[string]any{"purl": "pkg:npm/qs"}
+			if tc.ranges != nil {
+				adv["affected_ranges"] = tc.ranges
+			}
+			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, adv)
+			if tc.inv != nil {
+				putJSON(t, store, caseID, artifact.TypeInventory, tc.inv)
+			}
+			if got := affectedInstalledVersions(store, caseID); !slices.Equal(got, tc.want) {
+				t.Fatalf("affectedInstalledVersions = %v, want %v", got, tc.want)
 			}
 		})
 	}

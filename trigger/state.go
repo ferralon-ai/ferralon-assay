@@ -1,13 +1,18 @@
 package trigger
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
@@ -61,13 +66,19 @@ type packageSignature struct {
 // relevant changed). Relationship changes are now visible: before this cycle the
 // comparison was keyed on {ecosystem, name} → version alone and a package that became
 // direct, or whose parent edge moved, inherited a stale Report silently.
+//
+// A name is compared over every copy the SBOM carries of it, as a multiset: one name may
+// be installed at several versions (npm nests them), and a PR that moves one copy while
+// another stays put has changed the package. Comparing one signature per name let the
+// last copy stand for the rest, so lodash {4.17.10, 4.17.21} → {4.17.4, 4.17.21} read as
+// unchanged and inherited the baseline's verdicts for a version the PR replaced.
 func changedPackages(baseline, candidate report.SBOM) []string {
 	base := indexSignatures(baseline)
 	cand := indexSignatures(candidate)
 
 	changed := make(map[string]struct{})
-	for key, bsig := range base {
-		if csig, ok := cand[key]; !ok || csig != bsig {
+	for key, bsigs := range base {
+		if csigs, ok := cand[key]; !ok || !slices.Equal(csigs, bsigs) {
 			changed[key] = struct{}{}
 		}
 	}
@@ -85,12 +96,13 @@ func changedPackages(baseline, candidate report.SBOM) []string {
 	return out
 }
 
-// indexSignatures builds the per-package relevance signature for every package in an
-// SBOM, resolving the relationship edges (keyed by Package.Key()) onto version-
-// independent ecosystem+name neighbour lists. An edge whose endpoint names no package
-// in this SBOM is dropped here exactly as report.Validate rejects it at build time, so
-// a validated SBOM loses no edge.
-func indexSignatures(s report.SBOM) map[string]packageSignature {
+// indexSignatures builds the relevance signature of every copy of every package in an
+// SBOM, keyed by ecosystem+name and sorted so two SBOMs listing the same copies compare
+// equal in any order. It resolves the relationship edges (keyed by Package.Key()) onto
+// version-independent ecosystem+name neighbour lists. An edge whose endpoint names no
+// package in this SBOM is dropped here exactly as report.Validate rejects it at build
+// time, so a validated SBOM loses no edge.
+func indexSignatures(s report.SBOM) map[string][]packageSignature {
 	keyToName := make(map[string]string, len(s.Packages))
 	for _, p := range s.Packages {
 		keyToName[p.Key()] = p.Ecosystem + "\x00" + p.Name
@@ -108,17 +120,37 @@ func indexSignatures(s report.SBOM) map[string]packageSignature {
 		parents[cn] = append(parents[cn], pn)
 	}
 
-	sigs := make(map[string]packageSignature, len(s.Packages))
+	sigs := make(map[string][]packageSignature, len(s.Packages))
 	for _, p := range s.Packages {
 		name := p.Ecosystem + "\x00" + p.Name
-		sigs[name] = packageSignature{
+		sigs[name] = append(sigs[name], packageSignature{
 			version:  p.Version,
 			direct:   p.Direct,
 			parents:  joinSortedUnique(parents[name]),
 			children: joinSortedUnique(children[name]),
-		}
+		})
+	}
+	for _, copies := range sigs {
+		slices.SortFunc(copies, func(a, b packageSignature) int {
+			return cmp.Or(
+				strings.Compare(a.version, b.version),
+				compareBool(a.direct, b.direct),
+				strings.Compare(a.parents, b.parents),
+				strings.Compare(a.children, b.children),
+			)
+		})
 	}
 	return sigs
+}
+
+func compareBool(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	}
+	return -1
 }
 
 // joinSortedUnique sorts, de-duplicates, and \x00-joins neighbour names so the
@@ -185,21 +217,31 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 		Timestamp:       time.Now().UTC(),
 	})
 	b.WithBaseline(baselinePointer(baseline, state))
+	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	rep := b.Build()
 	return &rep
 }
 
 // reanalyzeSlice re-runs S1–S6 for the advisories whose package changed, then merges
 // those fresh findings over the inherited baseline findings (changed advisories take
-// the new verdict; unchanged advisories inherit the baseline's). The PR head's SBOM
+// the new verdict; unchanged advisories inherit the baseline's; an advisory the baseline
+// holds no row for takes the new one, so it is never left rowless). The PR head's SBOM
 // becomes the Report SBOM. The Report carries a Baseline pointer.
 func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritRequest, state *statestore.State, changed []string) (*report.Report, error) {
 	changedSet := make(map[string]struct{}, len(changed))
 	for _, c := range changed {
-		changedSet[c] = struct{}{}
+		ecosystem, name, _ := strings.Cut(c, "\x00")
+		changedSet[canonicalKey(ecosystem, name)] = struct{}{}
+	}
+	// The advisories the baseline holds a row for, by merge key and, for a migrated v1 row
+	// with no source, by id (supersededByFresh's shape). Only those have a row to inherit.
+	baselineRows := make(map[string]struct{}, len(baseline.Advisories))
+	for _, f := range baseline.Advisories {
+		baselineRows[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
 	}
 
-	// Re-run only the advisories whose evaluated package is in the changed set.
+	// Every advisory is re-run. A failed or limit-bearing fresh finding always replaces the
+	// baseline's row; any other replaces it only where that row cannot stand (below).
 	reFindings := make(map[string]report.AdvisoryFinding)
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
@@ -231,10 +273,15 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 			freshIDs[advisory.ID] = struct{}{}
 			continue
 		}
-		if pkg == nil {
-			continue
+		// An advisory new to the work set has no baseline row, so skipping its fresh finding would
+		// leave it with no row at all, whatever its package. Otherwise the baseline's row stands only
+		// when no package the advisory affects changed: the selected package is one of them, but
+		// another affected package the PR moved, or removed, changes the verdict just as well.
+		_, inherited := baselineRows[advisory.ID+"\x00"+advisory.Source]
+		if !inherited {
+			_, inherited = baselineRows[advisory.ID+"\x00"]
 		}
-		if _, ok := changedSet[pkg.Ecosystem+"\x00"+pkg.Name]; !ok {
+		if inherited && !affectedPackageChanged(st, assessmentID, pkg, changedSet) {
 			continue
 		}
 		reFindings[advisory.ID+"\x00"+advisory.Source] = f
@@ -280,12 +327,86 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		Timestamp:       time.Now().UTC(),
 	})
 	b.WithBaseline(baselinePointer(baseline, state))
+	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
 	rep, err := b.BuildValidated()
 	if err != nil {
 		return nil, err
 	}
 	return &rep, nil
+}
+
+// affectedPackageChanged reports whether any package the advisory affects is in the changed set:
+// the package the head selected (pkg, nil when it selected none) and every package the normalized
+// advisory names, its scalar primary and each affected_packages[] element. Those are named as
+// advisoryFromArtifacts names the selected one, under the assessment's ecosystem; with no
+// ecosystem on record a name matches in any. Names compare under canonicalKey, since the changed
+// set carries the SBOM's spelling and the advisory keeps its own. An advisory whose package set
+// cannot be read cannot be shown unchanged, so it counts as changed: so does one with a nameless
+// affected_packages[] element, or one naming no package at all.
+func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *report.Package, changedSet map[string]struct{}) bool {
+	if pkg != nil {
+		if _, ok := changedSet[canonicalKey(pkg.Ecosystem, pkg.Name)]; ok {
+			return true
+		}
+	}
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return true
+	}
+	type named struct {
+		Module     string `json:"module"`
+		Coordinate string `json:"coordinate"`
+	}
+	var adv struct {
+		named
+		AffectedPackages []named `json:"affected_packages"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return true
+	}
+	ecosystem := ""
+	if pkg != nil {
+		ecosystem = pkg.Ecosystem
+	} else if inv, ok := inventory(store, assessmentID); ok && inv.Language != "" {
+		ecosystem = ecosystemFor(inv.Language)
+	}
+	for _, p := range adv.AffectedPackages {
+		if cmp.Or(p.Module, p.Coordinate) == "" {
+			return true
+		}
+	}
+	anyNamed := false
+	for _, p := range append(adv.AffectedPackages, adv.named) {
+		name := cmp.Or(p.Module, p.Coordinate)
+		if name == "" {
+			continue
+		}
+		anyNamed = true
+		if ecosystem != "" {
+			if _, ok := changedSet[canonicalKey(ecosystem, name)]; ok {
+				return true
+			}
+			continue
+		}
+		for key := range changedSet {
+			if eco, _, _ := strings.Cut(key, "\x00"); canonicalKey(eco, name) == key {
+				return true
+			}
+		}
+	}
+	return !anyNamed
+}
+
+// canonicalKey is the changed-set key under the ecosystem's name-equivalence rule.
+func canonicalKey(ecosystem, name string) string {
+	switch ecosystem {
+	case "PyPI":
+		name = pipeline.CanonicalName("pypi", name)
+	case "NuGet":
+		name = pipeline.CanonicalName("nuget", name)
+	}
+	return ecosystem + "\x00" + name
 }
 
 // earnestRun is the CVE-watch overlap path: re-run S1–S6 for the newly-relevant
@@ -303,6 +424,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	reFindings := make(map[string]report.AdvisoryFinding)
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
+	// The pass assesses the newly-relevant advisories, but it is asked about the run's whole work set:
+	// both claim, and so do the prior rows it inherits.
+	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
@@ -311,6 +435,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			Vulnerability: assessment.VulnRef{ID: a.ID, Source: "osv"},
 			Codebase:      req.Codebase,
 		}
+		workSet = append(workSet, areq.Vulnerability)
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
 			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
@@ -375,6 +500,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if prior.Baseline != nil {
 		b.WithBaseline(*prior.Baseline)
 	}
+	rankWith(b, req.Signals, workSet, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
 	rep, err := b.BuildValidated()
 	if err != nil {

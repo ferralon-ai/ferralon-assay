@@ -8,13 +8,13 @@
 //
 // Store.Lookup is a pure content-addressed read. It never blocks on the network and
 // never touches a credential: on a miss it returns ErrDeclaredAbsent, the honest
-// Phase-1 answer (nothing has acquired this artifact yet), NOT a failure. The
+// answer (nothing has acquired this artifact), NOT a failure. The
 // ACQUIRER — the thing that fetches from a third-party registry (Maven Central, npm,
 // PyPI, NuGet) or a customer private registry, and therefore holds a credential — is
-// a SEPARATE seam that lands in PLAN-200. Keeping acquisition out of this interface
+// the sibling package artifactcache/acquire. Keeping acquisition out of this interface
 // locates the credential trust boundary and the third-party supply-chain surface
-// entirely in that later seam (see threatmodel.md), while letting a Phase-1 lane code
-// against Store today: every Lookup simply returns ErrDeclaredAbsent.
+// entirely in that seam (see threatmodel.md). A lane codes against Store alone: Lookup
+// returns a Handle when the bytes are present and ErrDeclaredAbsent on a miss.
 //
 // # Inert Handle (mechanical no-execution)
 //
@@ -27,6 +27,6 @@
 // artifact is untrusted third-party code; to the cache it is inert data. That absence
 // of an execution capability IS the no-execution guarantee, and it is pinned
 // mechanically by the reflect-based test in this package (see noexec_test.go) plus the
-// exported ConformanceTest harness that PLAN-200 impls run against. The only sanctioned
-// execution anywhere in Assay is microVM/sandbox detonation, never here.
+// exported ConformanceTest harness that Store implementations run against. The only sanctioned
+// execution anywhere in Assay is microVM/sandbox execution, never here.
 package artifactcache

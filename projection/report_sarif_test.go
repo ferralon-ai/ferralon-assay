@@ -202,8 +202,18 @@ func TestReportSARIF_Priority_SetsRankAndProperties(t *testing.T) {
 	if v, ok := props["kev_date_added"]; !ok || v != "2024-01-15" {
 		t.Errorf("kev_date_added: got %v (ok=%v), want 2024-01-15", v, ok)
 	}
-	if v, ok := props["intel_snapshot"]; !ok || v != "2026-06-15" {
-		t.Errorf("intel_snapshot: got %v (ok=%v), want 2026-06-15", v, ok)
+	// Each value is written with its own stamp; the report-wide snapshot is gone.
+	for k, want := range map[string]any{
+		"epss_as_of":          "2026-06-15",
+		"kev_catalog_version": "2026.06.14",
+		"kev_date_released":   "2026-06-14T17:00:00Z",
+	} {
+		if v, ok := props[k]; !ok || v != want {
+			t.Errorf("%s: got %v (ok=%v), want %v", k, v, ok, want)
+		}
+	}
+	if _, ok := props["intel_snapshot"]; ok {
+		t.Error("intel_snapshot must be gone: each value carries its own stamp")
 	}
 	if v, ok := props["reachability_grade"]; !ok || v != "attacker_tainted" {
 		t.Errorf("reachability_grade: got %v (ok=%v), want attacker_tainted", v, ok)
@@ -258,5 +268,55 @@ func TestReportSARIF_NilPriority_NoRankNoIntelProps(t *testing.T) {
 		if _, ok := props["kev_listed"]; ok {
 			t.Error("nil-Priority finding unexpectedly has kev_listed property")
 		}
+	}
+}
+
+// TestReportSARIF_SourcedZeroPercentile asserts that a sourced EPSS percentile of 0 is written as
+// epss_percentile 0 with rank 0, and that an unsourced one leaves both out.
+func TestReportSARIF_SourcedZeroPercentile(t *testing.T) {
+	finding := func(id string, p *report.Priority) report.AdvisoryFinding {
+		return report.AdvisoryFinding{
+			Advisory: report.Advisory{ID: id, Source: "osv"},
+			Verdict:  report.VerdictReachableCandidate,
+			Evidence: report.EvidenceSummary{Grade: report.GradeControlFlowOnly},
+			Priority: p,
+		}
+	}
+	r := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "c"}).
+		AddFinding(finding("CVE-2026-50268", &report.Priority{EPSSScore: 0.00047, HasPercentile: true, EPSSAsOf: "2026-08-02"})).
+		AddFinding(finding("CVE-UNSOURCED", &report.Priority{EPSSScore: 0.00047, EPSSAsOf: "2026-08-02"})).
+		Build()
+	log, err := projection.ProjectReportSARIF(r)
+	if err != nil {
+		t.Fatalf("ProjectReportSARIF: %v", err)
+	}
+	results := map[string]projection.SARIFResult{}
+	for _, res := range log.Runs[0].Results {
+		results[res.RuleID] = res
+	}
+
+	sourced := results["CVE-2026-50268"]
+	if sourced.Rank == nil || *sourced.Rank != 0 {
+		t.Errorf("sourced zero percentile: rank = %v, want 0", sourced.Rank)
+	}
+	if sourced.Properties == nil {
+		t.Fatal("sourced zero percentile: properties is nil")
+	}
+	if v, ok := sourced.Properties.Scanner["epss_percentile"]; !ok || v != 0.0 {
+		t.Errorf("sourced zero percentile: epss_percentile = %v (ok=%v), want 0", v, ok)
+	}
+
+	unsourced := results["CVE-UNSOURCED"]
+	if unsourced.Rank != nil {
+		t.Errorf("unsourced percentile: rank = %v, want none", *unsourced.Rank)
+	}
+	if unsourced.Properties == nil {
+		t.Fatal("unsourced percentile: properties is nil")
+	}
+	if v, ok := unsourced.Properties.Scanner["epss_percentile"]; ok {
+		t.Errorf("unsourced percentile: epss_percentile = %v, want none", v)
+	}
+	if _, ok := unsourced.Properties.Scanner["epss_score"]; !ok {
+		t.Error("unsourced percentile: epss_score missing")
 	}
 }

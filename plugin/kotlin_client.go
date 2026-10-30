@@ -16,7 +16,8 @@ import (
 // imports neither internal/plugin/kotlinanalysis nor any bytecode-parsing code — the Kotlin
 // analysis links only into the subprocess binary (inv.8).
 type kotlinPlugin struct {
-	bin string // resolved path to the assay-plugin-kotlin binary
+	bin string   // resolved path to the assay-plugin-kotlin binary
+	env []string // KEY=VALUE pairs added to the subprocess environment
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -31,6 +32,12 @@ type KotlinOption func(*kotlinPlugin)
 // precedence over PATH lookup.
 func WithKotlinBinaryPath(path string) KotlinOption {
 	return func(p *kotlinPlugin) { p.bin = path }
+}
+
+// WithKotlinBuildGraph hands the subprocess the build graph file the scan accepted, or "" for
+// none. Like WithJavaBuildGraph it always sets the variable.
+func WithKotlinBuildGraph(file string) KotlinOption {
+	return func(p *kotlinPlugin) { p.env = append(p.env, BuildGraphEnv+"="+file) }
 }
 
 // NewKotlinPlugin constructs the subprocess-backed Kotlin plugin client. Binary discovery
@@ -58,7 +65,7 @@ func (*kotlinPlugin) Language() string { return "kotlin" }
 // plugin's run funnels through (see subprocess.go).
 func (p *kotlinPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
-	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req)
+	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 
 // ensureMetrics lazily creates the client's instruments on first use, mirroring

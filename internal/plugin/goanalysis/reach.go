@@ -937,7 +937,9 @@ type reconcileGraph struct {
 
 // reconcileSummary is the part of a reconcileGraph a result with no path reads: reconcile reads
 // edges only to corroborate a path. ID names the compute that wrote it; the reconcile marker entry
-// holds the same ID while the edges entry that compute wrote is the one in the cache.
+// holds the same ID only after that compute stored an edges entry of this key. A later compute may
+// replace that edges entry, so a trusted summary relies on every compute of a key building the same
+// graph, as every reader of the edges entry already does.
 type reconcileSummary struct {
 	ID           string              `json:"id"`
 	Partiality   plugin.Partiality   `json:"partiality"`

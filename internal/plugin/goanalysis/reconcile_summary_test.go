@@ -273,8 +273,8 @@ func TestReconcileCallGraph_EntryBytes(t *testing.T) {
 }
 
 // TestReconcileSummaryGraph_ConcurrentComputes: computes racing on one key each store a whole graph
-// and its summary; whatever a reader is served, from the summary or the edges entry, its partiality
-// and reflect reach come from one compute.
+// and its summary while readers run, under the race detector; each read is served whole from one
+// entry, never torn.
 func TestReconcileSummaryGraph_ConcurrentComputes(t *testing.T) {
 	cache := t.TempDir()
 	ctx := WithRunCacheDir(context.Background(), cache)

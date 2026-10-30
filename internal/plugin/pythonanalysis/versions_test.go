@@ -1546,6 +1546,10 @@ func TestResolveVersions_UVOverrides(t *testing.T) {
 		{"override file URL with a lock", map[string]string{
 			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`)), "uv.lock": lock("2.8.0")}, "", false},
 		{"lockless override file URL", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`))}, "", false},
+		{"root override file URL over a member pin", map[string]string{
+			"pyproject.toml":        pp("requests>=2", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`)),
+			"member/pyproject.toml": "[project]\nname = \"member\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt==2.8.0\"]\n",
+			"uv.lock":               lock("2.8.0")}, "", false},
 		{"constraint file URL with a lock", map[string]string{
 			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt @ file:///opt/forks/pyjwt"]`)), "uv.lock": lock("2.8.0")}, "", false},
 		{"lockless constraint file URL", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt @ file:///opt/forks/pyjwt"]`))}, "", false},
@@ -1618,6 +1622,9 @@ func TestResolveVersions_UVResolverStaleLockExhaustive(t *testing.T) {
 		{"lock predates scoped override", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.9\"] }]", "2.8.0", false},
 		{"lock satisfies scoped override", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.8\"] }]", "2.8.0", true},
 		{"constraint in scoped form", "constraint-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.8\"] }]", "2.8.0", false},
+		// A scoped override can add a dependency its package does not declare.
+		{"scoped override adds a name the lock lacks", "override-dependencies = [{ package = { name = \"pyjwt\" }, dependencies = [\"cryptography>=41\"] }]", "2.8.0", false},
+		{"versioned scoped override adds a name the lock lacks", "override-dependencies = [{ package = { name = \"pyjwt\", version = \"2.8.0\" }, dependencies = [\"cryptography>=41\"] }]", "2.8.0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := writeTree(t, map[string]string{

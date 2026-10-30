@@ -199,12 +199,12 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 // the declarations, so its names mark nothing here; it is read for its shape alone. ok is false
 // when the value does not read (uvResolverSpecs).
 func uvResolverNames(v any, scoped bool) (map[string]bool, bool) {
-	specs, ok := uvResolverSpecs(v, scoped)
+	specs, added, ok := uvResolverSpecs(v, scoped)
 	if !ok {
 		return nil, false
 	}
-	names := make(map[string]bool, len(specs))
-	for _, s := range specs {
+	names := make(map[string]bool, len(specs)+len(added))
+	for _, s := range append(specs, added...) {
 		r, _ := parsePEP508(s)
 		names[normalizePyCoordinate(r.Name)] = true
 	}
@@ -215,18 +215,19 @@ func uvResolverNames(v any, scoped bool) (map[string]bool, bool) {
 // constraint-dependencies list, each well-formed PEP 508. With scoped, an entry may also be a
 // scoped override, { package = { name = ..., version = ... }, dependencies = [...] }
 // (https://docs.astral.sh/uv/reference/settings/#override-dependencies): each of its dependencies
-// is read as an override, conditional on the package or not, since it may replace the pin. ok is
-// false when an entry matches neither form.
-func uvResolverSpecs(v any, scoped bool) ([]string, bool) {
+// is read as an override, conditional on the package or not, since it may replace the pin. Those
+// come back in added rather than specs: a scoped override can also add a dependency the package
+// does not declare, so unlike a plain override it can put a name in the build. ok is false when
+// an entry matches neither form.
+func uvResolverSpecs(v any, scoped bool) (specs, added []string, ok bool) {
 	if v == nil {
-		return nil, true
+		return nil, nil, true
 	}
 	entries, isList := v.([]any)
 	if !isList {
-		return nil, false
+		return nil, nil, false
 	}
-	var specs []string
-	addSpec := func(e any) bool {
+	addSpec := func(e any, to *[]string) bool {
 		s, isStr := e.(string)
 		if !isStr {
 			return false
@@ -235,24 +236,24 @@ func uvResolverSpecs(v any, scoped bool) ([]string, bool) {
 		if _, ok := parsePEP508(s); !ok {
 			return false
 		}
-		specs = append(specs, s)
+		*to = append(*to, s)
 		return true
 	}
 	for _, e := range entries {
-		if addSpec(e) {
+		if addSpec(e, &specs) {
 			continue
 		}
 		t, isTable := e.(map[string]any)
 		if !scoped || !isTable || !uvScopedOverrideShape(t) {
-			return nil, false
+			return nil, nil, false
 		}
 		for _, d := range t["dependencies"].([]any) {
-			if !addSpec(d) {
-				return nil, false
+			if !addSpec(d, &added) {
+				return nil, nil, false
 			}
 		}
 	}
-	return specs, true
+	return specs, added, true
 }
 
 // uvScopedOverrideShape reports whether t has a scoped override's keys alone: a package table
@@ -296,8 +297,8 @@ func uvOverrideEntries(manifests []string, want string) ([]plugin.ResolvedDepend
 			continue
 		}
 		read := func(v any, scoped bool, add func(plugin.ResolvedDependency, manifestOrigin)) {
-			specs, _ := uvResolverSpecs(v, scoped)
-			for _, s := range specs {
+			specs, added, _ := uvResolverSpecs(v, scoped)
+			for _, s := range append(specs, added...) {
 				r, _ := parsePEP508(s)
 				if normalizePyCoordinate(r.Name) != want {
 					continue

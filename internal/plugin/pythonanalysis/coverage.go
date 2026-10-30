@@ -248,13 +248,17 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	// alone admitted. A plain uv sync re-locks past it, and a version or extras change moves the
 	// set of names the lock records.
 	n := len(out.reqs)
-	overrides, overridesOK := uvResolverSpecs(all.Tool.UV.OverrideDependencies, true)
-	constraints, constraintsOK := uvResolverSpecs(all.Tool.UV.ConstraintDependencies, false)
+	overrides, scopedAdds, overridesOK := uvResolverSpecs(all.Tool.UV.OverrideDependencies, true)
+	constraints, _, constraintsOK := uvResolverSpecs(all.Tool.UV.ConstraintDependencies, false)
 	if !overridesOK || !constraintsOK || !add(overrides) || !add(constraints) {
 		return out, false
 	}
 	for i := n; i < len(out.reqs); i++ {
 		out.reqs[i].Resolver = true
+	}
+	// A scoped override's dependencies can add a name, so they are declarations like any other.
+	if !add(scopedAdds) {
+		return out, false
 	}
 	for _, g := range slices.Sorted(maps.Keys(all.Tool.PDM.DevDependencies)) {
 		if !add(all.Tool.PDM.DevDependencies[g]) {

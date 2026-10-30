@@ -535,10 +535,21 @@ func TestLostCASWithholdsWhatTheMergeLists(t *testing.T) {
 			if published != nil {
 				reps["published"] = published
 			}
+			// The merge keys rows by ID and source, so a new OSV row sits beside the winner's corpus
+			// row for the same advisory; every one of them is withheld.
 			for name, rep := range reps {
-				f := rowByID(rep, wiringAdvisory.ID)
-				if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonDependencyNotFetched {
-					t.Fatalf("%s row %s/%q, want undetermined/%q", name, f.Verdict, f.UndeterminedReason, report.ReasonDependencyNotFetched)
+				n := 0
+				for _, f := range rep.Advisories {
+					if f.Advisory.ID != wiringAdvisory.ID {
+						continue
+					}
+					n++
+					if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonDependencyNotFetched {
+						t.Fatalf("%s %s row %s/%q, want undetermined/%q", name, f.Advisory.Source, f.Verdict, f.UndeterminedReason, report.ReasonDependencyNotFetched)
+					}
+				}
+				if n == 0 {
+					t.Fatalf("%s report has no %s row", name, wiringAdvisory.ID)
 				}
 			}
 			if stored.Remerge != nil {

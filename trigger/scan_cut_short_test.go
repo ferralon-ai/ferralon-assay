@@ -230,6 +230,142 @@ func TestPRReanalysis_CutShort(t *testing.T) {
 	}
 }
 
+// storedCorpus is a stored baseline on wiringPkg holding a not_exploitable row for each of
+// assessed and a scan_cut_short row for each of cut, counted with the cause "test stop", as a
+// baseline stopped after assessed would store them.
+func storedCorpus(assessed, cut []assessment.VulnRef) *memStore {
+	pkg := wiringPkg
+	b := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "base-sha"}).AddPackage(pkg)
+	for _, adv := range assessed {
+		b.NotExploitable(report.Advisory{ID: adv.ID, Source: adv.Source}, &pkg, "vulnerable_symbol_absent", baselineDetail)
+	}
+	for _, adv := range cut {
+		b.AddFinding(cutShortFinding(adv))
+	}
+	if len(cut) > 0 {
+		b.AddPartiality(cutShortNote(len(cut), len(assessed)+len(cut), errTestStop.Error()))
+	}
+	baseline := b.WithProvenance(report.Provenance{CommitSHA: "base-sha"}).Build()
+	return &memStore{state: &statestore.State{Report: &baseline, SBOM: baseline.SBOM}}
+}
+
+// fastPathOverCorpus runs PR re-analysis of advisories over a head identical to store's baseline,
+// so it takes the fast path, with the stopping plugin stopAt and mode.
+func fastPathOverCorpus(t *testing.T, store *memStore, advisories []assessment.VulnRef, stopAt string, mode stopMode) *report.Report {
+	t.Helper()
+	opts, analysis := stoppingOptions(t, stopAt, mode)
+	res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		PRSBOM:        report.SBOM{Packages: slices.Clone(store.state.Report.SBOM.Packages)},
+		Advisories:    advisories,
+		AssessOptions: opts,
+		Analysis:      analysis,
+	})
+	if err != nil {
+		t.Fatalf("RunPRInherit: %v", err)
+	}
+	if !res.Inherited {
+		t.Fatalf("took the slow path (changed = %q); the head is the baseline's", res.ChangedPackages)
+	}
+	if err := res.Report.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	return res.Report
+}
+
+// checkCutShort fails the test unless rep holds one row per id in verdicts, with that verdict
+// (an undetermined one cut short), and one scan-level scan_cut_short note with detail cutNote,
+// or none when cutNote is "".
+func checkCutShort(t *testing.T, rep *report.Report, verdicts map[string]report.Verdict, cutNote string) {
+	t.Helper()
+	rows := rowsByID(rep)
+	if len(rows) != len(verdicts) {
+		t.Errorf("rows for %d advisories, want %d: %+v", len(rows), len(verdicts), rep.Advisories)
+	}
+	for id, v := range verdicts {
+		if len(rows[id]) != 1 || rows[id][0].Verdict != v {
+			t.Errorf("%s rows = %+v, want one %q", id, rows[id], v)
+			continue
+		}
+		if v == report.VerdictUndetermined && rows[id][0].UndeterminedReason != report.ReasonScanCutShort {
+			t.Errorf("%s reason = %q, want scan_cut_short", id, rows[id][0].UndeterminedReason)
+		}
+	}
+	notes := cutShortNotes(rep)
+	switch {
+	case cutNote == "" && len(notes) != 0:
+		t.Errorf("scan_cut_short notes = %+v, want none", notes)
+	case cutNote != "" && (len(notes) != 1 || notes[0].Detail != cutNote):
+		t.Errorf("scan_cut_short notes = %+v, want one %q", notes, cutNote)
+	}
+}
+
+// TestInheritFastPath_CutShort: the fast path's fresh rows run under the scan's time budget, as
+// the slow path's do. Over a complete baseline holding GO-T-1 and an unchanged head, GO-T-2 and
+// GO-T-3 are assessed fresh; a stop inside one of them gives it, and every advisory after it, a
+// scan_cut_short row, discards a refutation returned after the stop, and is counted once.
+func TestInheritFastPath_CutShort(t *testing.T) {
+	cases := []struct {
+		name     string
+		stopAt   string
+		mode     stopMode
+		verdicts map[string]report.Verdict
+		cutNote  string // "" for none
+	}{
+		{
+			name: "control: no stop", stopAt: "never",
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictNotExploitable},
+		},
+		{
+			name: "stopped inside the last fresh assessment", stopAt: "GO-T-3", mode: stopAndWait,
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "1 of 3 advisories were not assessed: test stop",
+		},
+		{
+			name: "a refutation returned after the stop is discarded", stopAt: "GO-T-2", mode: stopAndSucceed,
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictUndetermined, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "2 of 3 advisories were not assessed: test stop",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := fastPathOverCorpus(t, storedCorpus(cutShortCorpus[:1], nil), cutShortCorpus, tc.stopAt, tc.mode)
+			checkCutShort(t, rep, tc.verdicts, tc.cutNote)
+		})
+	}
+}
+
+// TestInheritFastPath_RecountsCutShort: TestPRReanalysis_RecountsCutShort on the fast path. A
+// stored baseline cut short after GO-T-1 holds scan_cut_short rows for GO-T-2 and GO-T-3, and the
+// head is unchanged. A cut row is no row to inherit, so each one in the work set is assessed fresh
+// and replaced, and the scan_cut_short note counts the cut rows left, with the baseline's cause,
+// or is gone when none is left.
+func TestInheritFastPath_RecountsCutShort(t *testing.T) {
+	cases := []struct {
+		name       string
+		advisories []assessment.VulnRef
+		verdicts   map[string]report.Verdict
+		cutNote    string
+	}{
+		{
+			name: "a complete run clears the note", advisories: cutShortCorpus,
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictNotExploitable},
+		},
+		{
+			name: "a partial run recounts it", advisories: cutShortCorpus[1:2],
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "1 of 3 advisories were not assessed: test stop",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := fastPathOverCorpus(t, storedCorpus(cutShortCorpus[:1], cutShortCorpus[1:]), tc.advisories, "never", stopAndWait)
+			checkCutShort(t, rep, tc.verdicts, tc.cutNote)
+		})
+	}
+}
+
 // TestResolveSBOM_CutShort: a head inventory the stop interrupted is declared, not failed.
 func TestResolveSBOM_CutShort(t *testing.T) {
 	opts, analysis := stoppingOptions(t, "inventory", stopAndWait)

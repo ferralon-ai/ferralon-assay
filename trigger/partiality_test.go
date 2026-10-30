@@ -82,7 +82,7 @@ func TestInheritBaseline_CarriesPartiality(t *testing.T) {
 
 	got, err := inheritBaseline(&baseline, PRInheritRequest{
 		Subject: Subject{Repo: "github.com/example/widget", ResolvedCommit: "head"},
-	}, &statestore.State{}, nil, nil)
+	}, &statestore.State{}, nil, nil, "")
 	if err != nil {
 		t.Fatalf("inheritBaseline: %v", err)
 	}

@@ -134,9 +134,10 @@ type toolchainInputs struct {
 	buildResolved      string
 	toolchainDirective string
 	goDirective        string
-	// bazel is how a Bazel workspace around the module ties its Go SDK to go.mod (resolveBazelSDK).
-	// Inside one, the directives bound the SDK only through go_sdk.from_file.
-	bazel bazelSDKBinding
+	// bazelWorkspace is set when a Bazel workspace sits at or above the module root
+	// (bazelWorkspaceAbove). rules_go then compiles with the SDK the workspace declares, which
+	// go.mod's directives do not bound.
+	bazelWorkspace bool
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
@@ -256,24 +257,17 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 // when no directive resolves, in which case the returned fact is the explicit unresolved one and no
 // exact claim can be refuted.
 //
-// Inside a Bazel workspace rules_go compiles with the SDK the workspace declares, so the directives
-// floor it only when go_sdk.from_file reads this go.mod, and then at bazelFromFileVersion: the lower
-// of that build's release and the go line a go command in the same repository enforces, not their
-// maximum. Any other workspace takes no floor.
+// Inside a Bazel workspace (bazelWorkspace) neither directive is a floor.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	best := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	var bestParsed goToolchainVersion
 	var haveFloor bool
 	var floors []struct{ raw, source string }
-	switch in.bazel {
-	case bazelSDKNone:
+	if !in.bazelWorkspace {
 		floors = append(floors, struct{ raw, source string }{in.toolchainDirective, ToolchainSourceToolchainDirective})
 		if directivesBindToolchain(in) {
 			floors = append(floors, struct{ raw, source string }{in.goDirective, ToolchainSourceGoDirective})
 		}
-	case bazelSDKFromGoMod:
-		raw, source := bazelFromFileVersion(in)
-		floors = append(floors, struct{ raw, source string }{raw, source})
 	}
 	for _, floor := range floors {
 		parsed, ok := parseGoToolchainVersion(floor.raw)

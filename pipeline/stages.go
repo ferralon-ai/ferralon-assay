@@ -1858,10 +1858,10 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			buildResolved:      buildToolchain,
 			toolchainDirective: toolchainDirective,
 			goDirective:        goVersion,
-			bazel:              resolveBazelSDK(buildDir, checkoutRoot),
+			bazelWorkspace:     bazelWorkspaceAbove(buildDir, checkoutRoot),
 		}
 		toolchain = resolveToolchainFact(in)
-		if !bazelWorkspaceAbove(buildDir, checkoutRoot) {
+		if !in.bazelWorkspace {
 			goFloor = goLineFloor(in)
 		}
 	}

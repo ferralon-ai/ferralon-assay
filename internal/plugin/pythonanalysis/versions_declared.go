@@ -101,26 +101,71 @@ type pyprojectDoc struct {
 		PDM struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
 		} `toml:"pdm"`
-		Hatch struct {
-			Sources any `toml:"sources"`
-			Env     struct {
-				Collectors map[string]any `toml:"collectors"`
-			} `toml:"env"`
-			Envs map[string]struct {
-				Type              any `toml:"type"`
-				Dependencies      any `toml:"dependencies"`
-				ExtraDependencies any `toml:"extra-dependencies"`
-				PreInstall        any `toml:"pre-install-commands"`
-				PostInstall       any `toml:"post-install-commands"`
-				Scripts           any `toml:"scripts"`
-				ExtraScripts      any `toml:"extra-scripts"`
-				EnvVars           any `toml:"env-vars"`
-				Sources           any `toml:"sources"`
-				Workspace         any `toml:"workspace"`
-				Overrides         any `toml:"overrides"`
-			} `toml:"envs"`
-		} `toml:"hatch"`
+		Hatch hatchConfig `toml:"hatch"`
 	} `toml:"tool"`
+}
+
+// hatchConfig is pyproject.toml's [tool.hatch], as version resolution and the coverage
+// check both read it.
+type hatchConfig struct {
+	Sources any `toml:"sources"`
+	Env     struct {
+		Collectors map[string]any `toml:"collectors"`
+	} `toml:"env"`
+	Envs map[string]struct {
+		Type              any `toml:"type"`
+		Dependencies      any `toml:"dependencies"`
+		ExtraDependencies any `toml:"extra-dependencies"`
+		PreInstall        any `toml:"pre-install-commands"`
+		PostInstall       any `toml:"post-install-commands"`
+		Scripts           any `toml:"scripts"`
+		ExtraScripts      any `toml:"extra-scripts"`
+		EnvVars           any `toml:"env-vars"`
+		Sources           any `toml:"sources"`
+		Workspace         any `toml:"workspace"`
+		Overrides         any `toml:"overrides"`
+	} `toml:"envs"`
+}
+
+// installsPast reports whether hatch can install what its environments' dependency lists do
+// not say. Sources and workspace members redirect a declared dependency to a local path, a
+// git ref or a URL at install time; a collector other than the built-in default is a plugin
+// that can rewrite any environment; and an environment can install past its lists itself
+// (hatchEnvInstalls).
+func (h hatchConfig) installsPast() bool {
+	if h.Sources != nil {
+		return true
+	}
+	for c := range h.Env.Collectors {
+		if c != "default" {
+			return true
+		}
+	}
+	for _, env := range h.Envs {
+		if env.Sources != nil || env.Workspace != nil ||
+			hatchEnvInstalls(env.Type, env.Overrides, env.EnvVars, env.PreInstall, env.PostInstall, env.Scripts, env.ExtraScripts) {
+			return true
+		}
+	}
+	return false
+}
+
+// stringArray returns v as the array of strings a TOML dependency list must be; nil is an
+// empty list.
+func stringArray(v any) ([]string, bool) {
+	entries, isList := v.([]any)
+	if v != nil && !isList {
+		return nil, false
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		s, isStr := e.(string)
+		if !isStr {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
 }
 
 // parsePyprojectVersions reads pyproject.toml's [project] dependencies and
@@ -226,17 +271,9 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	addAny := func(v any, lockedBy []string) {
-		entries, isList := v.([]any)
-		if v != nil && !isList {
-			ok = false
-			return
-		}
-		for _, e := range entries {
-			s, isStr := e.(string)
-			if !isStr {
-				ok = false
-				return
-			}
+		entries, isList := stringArray(v)
+		ok = ok && isList
+		for _, s := range entries {
 			addPEP508(s, lockedBy)
 		}
 	}
@@ -250,19 +287,11 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {
 		addAny(doc.Tool.PDM.DevDependencies[g], []string{"pdm.lock"})
 	}
-	// Hatch sources and workspace members redirect a declared dependency to a local path, a
-	// git ref or a URL at install time, so the declaration no longer says what installs.
-	ok = ok && doc.Tool.Hatch.Sources == nil
-	// A collector other than the built-in default is a plugin that can rewrite any env.
-	for c := range doc.Tool.Hatch.Env.Collectors {
-		ok = ok && c == "default"
-	}
+	ok = ok && !doc.Tool.Hatch.installsPast()
 	for _, e := range slices.Sorted(maps.Keys(doc.Tool.Hatch.Envs)) {
 		env := doc.Tool.Hatch.Envs[e]
 		addAny(env.Dependencies, nil)
 		addAny(env.ExtraDependencies, nil)
-		ok = ok && env.Sources == nil && env.Workspace == nil &&
-			!hatchEnvInstalls(env.Type, env.Overrides, env.EnvVars, env.PreInstall, env.PostInstall, env.Scripts, env.ExtraScripts)
 	}
 
 	p := doc.Tool.Poetry

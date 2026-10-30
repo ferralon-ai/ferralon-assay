@@ -181,20 +181,16 @@ type pyprojectAll struct {
 		PDM struct {
 			DevDependencies map[string][]string `toml:"dev-dependencies"`
 		} `toml:"pdm"`
-		Hatch struct {
-			Envs map[string]struct {
-				Dependencies      []string `toml:"dependencies"`
-				ExtraDependencies []string `toml:"extra-dependencies"`
-			} `toml:"envs"`
-		} `toml:"hatch"`
-		Pixi map[string]any `toml:"pixi"`
+		Hatch hatchConfig    `toml:"hatch"`
+		Pixi  map[string]any `toml:"pixi"`
 	} `toml:"tool"`
 }
 
 func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	var pp pyprojectDeps
 	var all pyprojectAll
-	if toml.Unmarshal(data, &pp) != nil || toml.Unmarshal(data, &all) != nil || all.Tool.Pixi != nil {
+	if toml.Unmarshal(data, &pp) != nil || toml.Unmarshal(data, &all) != nil || all.Tool.Pixi != nil ||
+		all.Tool.Hatch.installsPast() {
 		return out, false
 	}
 	add := func(specs []string) bool {
@@ -248,7 +244,9 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	}
 	for _, e := range slices.Sorted(maps.Keys(all.Tool.Hatch.Envs)) {
 		env := all.Tool.Hatch.Envs[e]
-		if !add(env.Dependencies) || !add(env.ExtraDependencies) {
+		deps, depsOK := stringArray(env.Dependencies)
+		extra, extraOK := stringArray(env.ExtraDependencies)
+		if !depsOK || !extraOK || !add(deps) || !add(extra) {
 			return out, false
 		}
 	}

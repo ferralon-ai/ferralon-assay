@@ -230,6 +230,83 @@ func TestPRReanalysis_CutShort(t *testing.T) {
 	}
 }
 
+// TestInheritFastPath_CutShort: the fast path's fresh rows run under the scan's time budget, as
+// the slow path's do. Over a complete baseline holding GO-T-1 and an unchanged head, GO-T-2 and
+// GO-T-3 are assessed fresh; a stop inside one of them gives it, and every advisory after it, a
+// scan_cut_short row, discards a refutation returned after the stop, and is counted once.
+func TestInheritFastPath_CutShort(t *testing.T) {
+	cases := []struct {
+		name     string
+		stopAt   string
+		mode     stopMode
+		verdicts map[string]report.Verdict
+		cutNote  string // "" for none
+	}{
+		{
+			name: "control: no stop", stopAt: "never",
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictNotExploitable},
+		},
+		{
+			name: "stopped inside the last fresh assessment", stopAt: "GO-T-3", mode: stopAndWait,
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "1 of 3 advisories were not assessed: test stop",
+		},
+		{
+			name: "a refutation returned after the stop is discarded", stopAt: "GO-T-2", mode: stopAndSucceed,
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictUndetermined, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "2 of 3 advisories were not assessed: test stop",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseOpts, baseAnalysis := stoppingOptions(t, "never", stopAndWait)
+			baseline, err := buildBaselineReport(context.Background(), BaselineRequest{
+				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				Advisories:    cutShortCorpus[:1],
+				AssessOptions: baseOpts,
+				Analysis:      baseAnalysis,
+			})
+			if err != nil {
+				t.Fatalf("buildBaselineReport: %v", err)
+			}
+			store := &memStore{state: &statestore.State{Report: baseline, SBOM: baseline.SBOM}}
+
+			opts, analysis := stoppingOptions(t, tc.stopAt, tc.mode)
+			res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+				Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				PRSBOM:        report.SBOM{Packages: slices.Clone(baseline.SBOM.Packages)},
+				Advisories:    cutShortCorpus,
+				AssessOptions: opts,
+				Analysis:      analysis,
+			})
+			if err != nil {
+				t.Fatalf("RunPRInherit: %v", err)
+			}
+			if !res.Inherited {
+				t.Fatalf("took the slow path (changed = %q); the head is the baseline's", res.ChangedPackages)
+			}
+			rows := rowsByID(res.Report)
+			for id, v := range tc.verdicts {
+				if len(rows[id]) != 1 || rows[id][0].Verdict != v {
+					t.Fatalf("%s rows = %+v, want one %q", id, rows[id], v)
+				}
+				if v == report.VerdictUndetermined && rows[id][0].UndeterminedReason != report.ReasonScanCutShort {
+					t.Errorf("%s reason = %q, want scan_cut_short", id, rows[id][0].UndeterminedReason)
+				}
+			}
+			notes := cutShortNotes(res.Report)
+			switch {
+			case tc.cutNote == "" && len(notes) != 0:
+				t.Errorf("scan_cut_short notes = %+v, want none", notes)
+			case tc.cutNote != "" && (len(notes) != 1 || notes[0].Detail != tc.cutNote):
+				t.Errorf("scan_cut_short notes = %+v, want one %q", notes, tc.cutNote)
+			}
+		})
+	}
+}
+
 // TestResolveSBOM_CutShort: a head inventory the stop interrupted is declared, not failed.
 func TestResolveSBOM_CutShort(t *testing.T) {
 	opts, analysis := stoppingOptions(t, "inventory", stopAndWait)
@@ -375,16 +452,20 @@ func TestRunCVEWatch_CompleteBaselineHeartbeat(t *testing.T) {
 // TestPRReanalysis_RecountsCutShort: a stored baseline cut short after GO-T-1 leaves GO-T-2 and
 // GO-T-3 unassessed. A PR re-analysis replaces each cut row it re-assesses, even on an unchanged
 // package, and its scan_cut_short note counts the cut rows left, with the baseline's cause, or is
-// gone when none is left.
+// gone when none is left. The fast path (an unchanged head) does the same: a cut row is no row to
+// inherit, so its advisory is assessed fresh.
 func TestPRReanalysis_RecountsCutShort(t *testing.T) {
 	cases := []struct {
 		name       string
+		fast       bool // the head's packages are the baseline's
 		advisories []assessment.VulnRef
 		wantCut    []string
 		wantNote   string
 	}{
 		{name: "a complete run clears the note", advisories: cutShortCorpus},
 		{name: "a partial run recounts it", advisories: cutShortCorpus[1:2], wantCut: []string{"GO-T-3"}, wantNote: "1 of 3 advisories were not assessed: test stop"},
+		{name: "fast path: a complete run clears the note", fast: true, advisories: cutShortCorpus},
+		{name: "fast path: a partial run recounts it", fast: true, advisories: cutShortCorpus[1:2], wantCut: []string{"GO-T-3"}, wantNote: "1 of 3 advisories were not assessed: test stop"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -402,7 +483,10 @@ func TestPRReanalysis_RecountsCutShort(t *testing.T) {
 			store := &memStore{state: &statestore.State{Report: baseline, SBOM: baseline.SBOM}}
 
 			opts, analysis := stoppingOptions(t, "never", stopAndWait)
-			head := append(slices.Clone(baseline.SBOM.Packages), report.Package{Ecosystem: "Go", Name: "example.com/other", Version: "v1.0.0"})
+			head := slices.Clone(baseline.SBOM.Packages)
+			if !tc.fast {
+				head = append(head, report.Package{Ecosystem: "Go", Name: "example.com/other", Version: "v1.0.0"})
+			}
 			res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
 				Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
 				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
@@ -413,6 +497,9 @@ func TestPRReanalysis_RecountsCutShort(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("RunPRInherit: %v", err)
+			}
+			if res.Inherited != tc.fast {
+				t.Fatalf("Inherited = %v, want %v", res.Inherited, tc.fast)
 			}
 			var cut []string
 			for id, rows := range rowsByID(res.Report) {

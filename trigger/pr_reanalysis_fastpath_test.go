@@ -143,6 +143,12 @@ func TestInheritFastPath_AssessedAdvisories(t *testing.T) {
 	if got := unrowedAdvisories(migrated, []assessment.VulnRef{wiringAdvisory}); len(got) != 0 {
 		t.Errorf("unrowed = %+v, want none: the migrated v1 row stands for it", got)
 	}
+
+	// A scan_cut_short row is no row: its advisory is assessed like one the baseline never held.
+	cut := &report.Report{Advisories: []report.AdvisoryFinding{cutShortFinding(wiringAdvisory)}}
+	if got := unrowedAdvisories(cut, []assessment.VulnRef{wiringAdvisory}); !slices.Equal(got, []assessment.VulnRef{wiringAdvisory}) {
+		t.Errorf("unrowed = %+v, want %s: a cut row stands for nothing", got, wiringAdvisory.ID)
+	}
 }
 
 // TestInheritFastPath_CursorClaimsOnlyRowedOrDisclosed: the Report's cursor names A and C; after
@@ -259,13 +265,16 @@ func TestInheritFastPath_FreshRowIsTheHeads(t *testing.T) {
 	}
 }
 
-// TestInheritBaseline_ValidatesFreshRows: a Report carrying fresh rows is validated, as the slow
-// path's is; a pure inherit re-emits the baseline's rows unvalidated, as it always has.
+// TestInheritBaseline_ValidatesFreshRows: the fresh rows are validated, as the slow path's are;
+// the baseline's rows are re-emitted unvalidated, as they always have been, whether or not fresh
+// rows sit beside them, so a stored row today's Validate rejects never fails the run.
 func TestInheritBaseline_ValidatesFreshRows(t *testing.T) {
 	valid := report.AdvisoryFinding{Advisory: report.Advisory{ID: "FERRALON-TEST-357", Source: "corpus"},
 		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonAnalysisDidNotRun}
 	invalid := valid
 	invalid.UndeterminedReason = "" // an undetermined row must say why
+	storedInvalid := invalid
+	storedInvalid.Advisory.ID = "FERRALON-TEST-STORED"
 	cases := []struct {
 		name    string
 		stored  []report.AdvisoryFinding
@@ -275,12 +284,14 @@ func TestInheritBaseline_ValidatesFreshRows(t *testing.T) {
 		{"an invalid fresh row", nil, []report.AdvisoryFinding{invalid}, true},
 		{"a valid fresh row", nil, []report.AdvisoryFinding{valid}, false},
 		{"pure inherit of an invalid stored row", []report.AdvisoryFinding{invalid}, nil, false},
+		{"an invalid stored row beside a valid fresh row", []report.AdvisoryFinding{storedInvalid}, []report.AdvisoryFinding{valid}, false},
+		{"an invalid fresh row beside an invalid stored row", []report.AdvisoryFinding{storedInvalid}, []report.AdvisoryFinding{invalid}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			baseline := report.Report{SchemaVersion: report.SchemaVersion, Advisories: tc.stored}
 			_, err := inheritBaseline(&baseline, PRInheritRequest{Subject: Subject{Repo: "r", ResolvedCommit: "pr-sha"}},
-				&statestore.State{}, tc.fresh, nil)
+				&statestore.State{}, tc.fresh, nil, "")
 			if (err != nil) != tc.wantErr {
 				t.Errorf("inheritBaseline err = %v, want error: %v", err, tc.wantErr)
 			}

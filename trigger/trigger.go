@@ -314,8 +314,8 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 		// Nothing changed, so every baseline row stands; but an advisory new to the work set has
 		// no row to inherit, and the Report's cursor covers it all the same.
 		unrowed := unrowedAdvisories(baseline, req.Advisories)
-		fresh, notes := assessUnrowed(ctx, req, unrowed)
-		rep, err := inheritBaseline(baseline, req, state, fresh, notes)
+		fresh, notes, cause := assessUnrowed(ctx, req, unrowed)
+		rep, err := inheritBaseline(baseline, req, state, fresh, notes, cause)
 		if err != nil {
 			return nil, err
 		}

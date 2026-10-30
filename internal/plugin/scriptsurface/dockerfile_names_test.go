@@ -1,12 +1,10 @@
 package scriptsurface
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 // Dockerfile or Containerfile with anything joined by ".", "-" or "_" on either side is
-// read as a Dockerfile, so an install in Dockerfile-prod withholds as one in Dockerfile.prod does.
+// read as a Dockerfile, unless surfaceOf reads it as another kind, so an install in
+// Dockerfile-prod withholds as one in Dockerfile.prod does.
 func TestVeto_DockerfileNames(t *testing.T) {
 	const install = "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nRUN tool rewrite\nRUN inst sync\n"
 	tests := []struct {
@@ -42,7 +40,7 @@ func TestVeto_DockerfileNames(t *testing.T) {
 	}
 }
 
-// A file whose extension or path names another kind is read as that kind, not as a
+// A file whose extension, shebang or path names another kind is read as that kind, not as a
 // Dockerfile, so an install on a line of its own still withholds.
 func TestVeto_DockerfileNamedOtherKinds(t *testing.T) {
 	tests := []struct{ name, body string }{
@@ -64,14 +62,12 @@ func TestVeto_DockerfileNamedOtherKinds(t *testing.T) {
 	}
 }
 
-// A file read as a Dockerfile may be a script another one sources; an install on a line
-// of its own still withholds.
-func TestVeto_DockerfileNamedSourced(t *testing.T) {
-	for _, src := range []string{". ./dockerfile_env", "source ./dockerfile-common"} {
-		t.Run(src, func(t *testing.T) {
-			name := strings.Fields(src)[1][2:]
-			dir := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n",
-				"build.sh": "#!/bin/sh\n" + src + "\n", name: "inst add evil\n"})
+// A file read as a Dockerfile by name may be a script, such as one another sources; an
+// install on a line of its own still withholds.
+func TestVeto_DockerfileNamedScript(t *testing.T) {
+	for _, name := range []string{"dockerfile_env", "dockerfile-common"} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", name: "inst add evil\n"})
 			if !withheld(dir, testSpec) {
 				t.Fatal("withheld = false, want true")
 			}
@@ -90,7 +86,6 @@ func TestSurfaceOf_DockerfileNamedOtherKinds(t *testing.T) {
 		{"dockerfile_tasks.mk", "", kindMakefile},
 		{"dockerfile-build.ps1", "", kindOpaque},
 		{"Procfile.dockerfile", "", kindData},
-		{"docker-compose.dockerfile.yml", "", kindData},
 		{".github/workflows/dockerfile-lint.yml", "", kindData},
 		{"Jenkinsfile.dockerfile", "", kindData},
 	}

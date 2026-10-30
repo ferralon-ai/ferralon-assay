@@ -1498,6 +1498,8 @@ func TestResolveVersions_UVOverrides(t *testing.T) {
 	wsRoot := func(extra string) string {
 		return "[project]\nname = \"root\"\nversion = \"0.1.0\"\n[tool.uv.workspace]\nmembers = [\"packages/*\"]\n" + extra
 	}
+	// A forked lock pins both versions, so a marked entry has one it admits and one it excludes.
+	forked := lock("2.8.0") + "\n[[package]]\nname = \"pyjwt\"\nversion = \"2.9.0\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
 	const pdmLock = "[metadata]\nlock_version = \"4.4\"\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n"
 	cases := []struct {
 		name         string
@@ -1575,6 +1577,10 @@ func TestResolveVersions_UVOverrides(t *testing.T) {
 		{"lockless constraint admits the pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt<3"]`))}, "2.8.0", false},
 		{"lock inside declaration and constraint", map[string]string{
 			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt>=2.8"]`)), "uv.lock": lock("2.8.0")}, "2.8.0", true},
+		{"forked lock predates a marked override", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt>=2.9; python_version < '3.10'"]`)), "uv.lock": forked}, "", false},
+		{"forked lock predates a marked constraint", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt>=2.9; python_version < '3.10'"]`)), "uv.lock": forked}, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

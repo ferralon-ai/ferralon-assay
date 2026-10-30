@@ -1,6 +1,9 @@
 package pythonanalysis
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // markModuleStores records, on each parsed module, the names a store through a module object
 // may rebind in its namespace: an assignment to an attribute of the module ("import pkg.a;
@@ -90,7 +93,7 @@ func (prog *program) markModuleStores() {
 				exposed = append(exposed, j)
 			}
 		}
-		for _, p := range prog.attrTargets(i, nil, map[int]bool{}) {
+		for _, p := range prog.attrTargets(i, "") {
 			for _, q := range prog.modulesAt(p, nil) {
 				exposed = append(exposed, prog.byModule[q]...)
 			}
@@ -98,30 +101,44 @@ func (prog *program) markModuleStores() {
 	}
 }
 
-// attrTargets is the first-party paths a parsed module's import bindings give the module
-// attributes along a dotted chain, or along every chain when attr is nil: its module-scope
-// imports, a def's import of a name it declares global, an import in a module-level class
-// body, and the same in each first-party module it star-imports, which may rebind the name.
-func (prog *program) attrTargets(i int, attr []string, seen map[int]bool) []string {
+// attrTargets is the first-party paths a parsed module's import bindings give its attribute
+// name, or every attribute when name is empty: its module-scope imports, a def's import of a
+// name it declares global, and the same in each first-party module it star-imports, which
+// may rebind the name.
+func (prog *program) attrTargets(i int, name string) []string {
+	k := attrKey{i, name}
+	if out, ok := prog.attrMemo[k]; ok {
+		return out
+	}
+	out := prog.attrTargetsSeen(i, name, map[int]bool{})
+	prog.attrMemo[k] = out
+	return out
+}
+
+type attrKey struct {
+	file int
+	name string
+}
+
+func (prog *program) attrTargetsSeen(i int, name string, seen map[int]bool) []string {
 	if seen[i] {
 		return nil
 	}
 	seen[i] = true
 	f := &prog.files[i]
 	var out []string
-	for name, paths := range f.fpBinds[""] {
-		if attr == nil || len(attr) == 1 && attr[0] == name {
-			out = append(out, paths...)
-		}
-	}
-	for chain, paths := range f.attrBinds {
-		if attr == nil || chain == strings.Join(attr, ".") {
-			out = append(out, paths...)
+	if name != "" {
+		out = append(slices.Clone(f.fpBinds[""][name]), f.globalBinds[name]...)
+	} else {
+		for _, binds := range []map[string][]string{f.fpBinds[""], f.globalBinds} {
+			for _, paths := range binds {
+				out = append(out, paths...)
+			}
 		}
 	}
 	for _, star := range f.starPaths {
 		for _, j := range prog.byModule[star] {
-			out = append(out, prog.attrTargets(j, attr, seen)...)
+			out = append(out, prog.attrTargetsSeen(j, name, seen)...)
 		}
 	}
 	return out
@@ -129,10 +146,9 @@ func (prog *program) attrTargets(i int, attr []string, seen map[int]bool) []stri
 
 // modulesAt is the parsed modules a dotted chain names whole, given the path base an import
 // binds its head to: the longest prefix of the chain that names a module, followed on
-// through an attribute chain the module binds by a first-party import (attrTargets). A base
-// that names no module
-// ("from pkg import mod" where pkg binds mod by import) is read as an attribute chain from
-// its first segment.
+// through an attribute the module binds by a first-party import (attrTargets). A base that
+// names no module ("from pkg import mod" where pkg binds mod by import) is read as an
+// attribute chain from its first segment.
 func (prog *program) modulesAt(base string, rest []string) []string {
 	return prog.modulesAtSeen(base, rest, map[string]bool{})
 }
@@ -163,10 +179,8 @@ func (prog *program) modulesAtSeen(base string, rest []string, seen map[string]b
 		}
 		var out []string
 		for _, i := range prog.byModule[path] {
-			for j := k + 1; j <= len(rest); j++ {
-				for _, p := range prog.attrTargets(i, rest[k:j], map[int]bool{}) {
-					out = append(out, prog.modulesAtSeen(p, rest[j:], seen)...)
-				}
+			for _, p := range prog.attrTargets(i, rest[k]) {
+				out = append(out, prog.modulesAtSeen(p, rest[k+1:], seen)...)
 			}
 		}
 		return out

@@ -709,6 +709,9 @@ type DependencyInventory struct {
 	// MainModule is the path of the module the build list was resolved for (Go), which is part of
 	// the build but not one of Nodes; set with BuildList.
 	MainModule string `json:"main_module,omitempty"`
+	// WorkspaceModules are the other modules of the go.work the build list was resolved under (Go),
+	// sorted: main modules like MainModule, part of the build but not among Nodes; set with BuildList.
+	WorkspaceModules []string `json:"workspace_modules,omitempty"`
 }
 
 // BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected

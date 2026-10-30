@@ -238,6 +238,9 @@ type SBOM struct {
 	GoBuildList string `json:"go_build_list,omitempty"`
 	// GoMainModule is the path of the module GoBuildList was resolved for; set with it.
 	GoMainModule string `json:"go_main_module,omitempty"`
+	// GoWorkspaceModules are the go.work's other main modules when GoBuildList was resolved under one;
+	// set with it.
+	GoWorkspaceModules []string `json:"go_workspace_modules,omitempty"`
 }
 
 // Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are

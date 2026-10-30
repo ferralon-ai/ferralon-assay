@@ -157,8 +157,8 @@ func TestResolveInventory_UnderWorkspace_RaisedByMember(t *testing.T) {
 	if got, want := nodePURLs(ws), []string{"pkg:golang/example.test/x@v1.2.0"}; !slices.Equal(got, want) {
 		t.Errorf("workspace nodes = %q, want %q", got, want)
 	}
-	if !ws.Partiality.Complete || ws.BuildList != "" {
-		t.Errorf("workspace partiality = %+v, build list %q; want complete, no build list (the other members are main modules no node lists)", ws.Partiality, ws.BuildList)
+	if !ws.Partiality.Complete || ws.BuildList != plugin.BuildListGoModGraph || ws.MainModule != "example.test/a" || !slices.Equal(ws.WorkspaceModules, []string{"example.test/b"}) {
+		t.Errorf("workspace partiality = %+v, build list %q for %q and %q; want complete, %q for example.test/a and [example.test/b]", ws.Partiality, ws.BuildList, ws.MainModule, ws.WorkspaceModules, plugin.BuildListGoModGraph)
 	}
 	if got, want := nodePURLs(resolveUnder(t, a, "off")), []string{"pkg:golang/example.test/x@v1.0.0"}; !slices.Equal(got, want) {
 		t.Errorf("off nodes = %q, want %q", got, want)
@@ -222,8 +222,8 @@ func TestResolveInventory_UnderWorkspace_Unreadable(t *testing.T) {
 		"a/main.go": "package main\n\nfunc main() {}\n",
 	})
 	inv := resolveUnder(t, filepath.Join(root, "a"), filepath.Join(root, "go.work"))
-	if inv.Partiality.Complete || !invHasReason(inv.Partiality, plugin.PartialReasonToolFailure) || len(inv.Nodes) != 0 {
-		t.Errorf("inventory = %+v; want tool_failure and no nodes", inv)
+	if inv.Partiality.Complete || !invHasReason(inv.Partiality, plugin.PartialReasonToolFailure) || len(inv.Nodes) != 0 || inv.BuildList != "" {
+		t.Errorf("inventory = %+v; want tool_failure, no nodes and no build list", inv)
 	}
 	if _, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: filepath.Join(root, "a"), GoWork: "go.work"}); err == nil {
 		t.Error("a relative go.work was accepted")

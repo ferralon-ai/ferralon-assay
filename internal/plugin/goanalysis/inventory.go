@@ -223,10 +223,13 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		Nodes:      nodes,
 		Edges:      depEdges,
 	}
-	// Under a workspace the other members are main modules no node lists, so the nodes are not the
-	// whole build list.
-	if !workspace && mainPath != "" {
+	// Under the build's workspace the other members are main modules no node lists; with them the
+	// nodes are the whole build list. A go.work the graph did not resolve leaves it incomplete.
+	if mainPath != "" && (!workspace || work != nil) {
 		inv.BuildList, inv.MainModule = plugin.BuildListGoModGraph, mainPath
+		if work != nil {
+			inv.WorkspaceModules = work.others(mainPath)
+		}
 	}
 	return inv, nil
 }
@@ -351,6 +354,18 @@ func readGoWorkspace(file string) (*goWorkspace, error) {
 		}
 	}
 	return w, nil
+}
+
+// others returns, sorted, the path of every module the workspace uses except main.
+func (w *goWorkspace) others(main string) []string {
+	var paths []string
+	for p := range w.mains {
+		if p != main {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // replacement returns the replace directive that governs module at version under the workspace.

@@ -94,7 +94,7 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 	}
 	sbom := report.SBOM{Packages: pkgs, Relationships: rels}
 	if ecosystem == "Go" {
-		sbom.GoBuildList, sbom.GoMainModule = inv.BuildList, inv.MainModule
+		sbom.GoBuildList, sbom.GoMainModule, sbom.GoWorkspaceModules = inv.BuildList, inv.MainModule, inv.WorkspaceModules
 	}
 	return sbom, notes
 }

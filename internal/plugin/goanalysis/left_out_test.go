@@ -111,7 +111,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 				Partiality: plugin.Complete(),
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 			}
-			res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, release, dir, append(os.Environ(), "GOWORK=off"))
+			res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, release, nil, dir, append(os.Environ(), "GOWORK=off"))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -202,12 +202,22 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/stdlib"},
 			}
 			scanned := vulnScan{imports: map[string][]string{"stdlib": tc.vulnerable}}
-			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), nil, dir, append(os.Environ(), "GOWORK=off"))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
 			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
+			}
+			load.buildGoVersion = load.goVersion
+			_, _, reached, err := wholeProgramOf(load)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res = withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), reached, dir, append(os.Environ(), "GOWORK=off"))
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				v := leftOutReachesSymbols(context.Background(), load.Packages, scanned.vulnerableSymbols("stdlib"), reached, *load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+				t.Errorf("per symbol: withheld = %v, want %v (%+v)", withheld, tc.withheld, v)
 			}
 		})
 	}
@@ -278,7 +288,7 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 			}
 			scanned := vulnScan{imports: map[string][]string{"example.com/vulnmod": tc.vulnerable}, wholeModule: map[string]bool{"example.com/vulnmod": tc.wholeModule}}
-			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), nil, dir, append(os.Environ(), "GOWORK=off"))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -319,7 +329,7 @@ func TestWithholdForLeftOutFiles_UnreadableModuleGraph(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := append(append(os.Environ(), "GOWORK=off"), tc.env...)
-			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, env)
+			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), nil, dir, env)
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -347,7 +357,7 @@ func TestWithholdForLeftOutFiles_NoAdvisoryEntry(t *testing.T) {
 		Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 	}
 	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod/blake"}}}}}
-	res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+	res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), nil, dir, append(os.Environ(), "GOWORK=off"))
 	if res.Refutation != nil {
 		t.Fatal("refutation stands, want it withheld")
 	}

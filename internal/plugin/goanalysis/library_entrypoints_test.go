@@ -182,7 +182,7 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 					t.Fatalf("ill-typed load: refutation %+v, partiality %+v, want it withheld as reflection:call", res.Refutation, res.Partiality)
 				}
 				escaped := withholdRefutation(context.Background(), plugin.ReachabilityResult{Refutation: moduleRefutation(tc.scanned.findings, env)},
-					tc.scanned, load.Packages, load.buildRelease(), dir, env, resolveEntrypoints(load.Packages, entry, dir))
+					tc.scanned, load.Packages, load.buildRelease(), nil, dir, env, resolveEntrypoints(load.Packages, entry, dir))
 				res.Refutation, res.Partiality = escaped.Refutation, escaped.Partiality
 			}
 			if withheld := res.Refutation == nil; withheld != tc.withheld {

@@ -38,23 +38,25 @@ var (
 	}
 )
 
-// reflectReachOf builds res's whole program, dependencies included, and returns its reflectReach. The
-// call graph reconciliation reads holds code for the loaded module's own packages only, and the calls
-// reflection makes are mostly in the standard library (encoding/json, text/template).
-func reflectReachOf(res *LoadResult) (reasons []string, reach map[string][]string, err error) {
+// wholeProgramOf builds res's whole program, dependencies included, and returns its reflectReach and
+// what it reaches (reachedBase). The call graph reconciliation reads holds code for the loaded
+// module's own packages only, and the calls reflection makes are mostly in the standard library
+// (encoding/json, text/template).
+func wholeProgramOf(res *LoadResult) (reasons []string, reach map[string][]string, base *reachedBase, err error) {
 	sp, err := buildSSAWith(res, ssautil.AllPackages)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	reasons, reach = sp.reflectReach()
-	// AllPackages builds no bodies for a package that does not type-check, so what the fixpoint did not
-	// see there is unknown: the reach is too.
+	reasons, reach, roots := sp.reflectReach()
+	base = sp.reachedBase(roots)
+	// AllPackages builds no bodies for a package that does not type-check, so what the fixpoint and
+	// the call graph did not see there is unknown: the reach and the base are too.
 	packages.Visit(res.Packages, nil, func(p *packages.Package) {
 		if p.IllTyped {
-			reach = nil
+			reach, base = nil, nil
 		}
 	})
-	return reasons, reach, nil
+	return reasons, reach, base, nil
 }
 
 // reflectReach finds the functions the program can run through calls the call graph cannot follow
@@ -78,8 +80,8 @@ func reflectReachOf(res *LoadResult) (reasons []string, reach map[string][]strin
 //
 // Each of those becomes live in turn, until nothing changes. It returns the reasons runTimeCallees
 // declares for the live functions, and what the roots of those calls reach outside govulncheck's own
-// entry points, by package path and vulnerability-database symbol name ("F", "T.M").
-func (s *ssaProgram) reflectReach() (reasons []string, reach map[string][]string) {
+// entry points, by package path and vulnerability-database symbol name ("F", "T.M"), and those roots.
+func (s *ssaProgram) reflectReach() (reasons []string, reach map[string][]string, roots []*ssa.Function) {
 	f := &reflectFixpoint{
 		s:       s,
 		live:    map[*ssa.Function]bool{},
@@ -102,7 +104,7 @@ func (s *ssaProgram) reflectReach() (reasons []string, reach map[string][]string
 			start = append(start, fn)
 		}
 	}
-	return sortedKeys(f.reasons), s.reachedSymbols(start)
+	return sortedKeys(f.reasons), s.reachedSymbols(start), start
 }
 
 type reflectFixpoint struct {

@@ -124,7 +124,7 @@ func TestReflectReachOf(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, reach, err := reflectReachOf(load)
+			_, reach, _, err := wholeProgramOf(load)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,8 +185,8 @@ func TestReflectReachOf_IllTyped(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, reach, _ := reflectReachOf(load); (reach == nil) != tc.unknown {
-				t.Errorf("reflectReachOf reach unknown = %v, want %v", reach == nil, tc.unknown)
+			if _, reach, _, _ := wholeProgramOf(load); (reach == nil) != tc.unknown {
+				t.Errorf("wholeProgramOf reach unknown = %v, want %v", reach == nil, tc.unknown)
 			}
 		})
 	}

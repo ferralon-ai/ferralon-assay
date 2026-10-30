@@ -212,7 +212,7 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 			res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
 		} else {
 			entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
-			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
+			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), g.Reached, buildDir, env, entrypoints)
 			res.LibraryEntrypoints = entrypoints.record()
 		}
 	}
@@ -271,10 +271,11 @@ func searchedReflectMayReach(reach map[string][]string, scanned vulnScan) bool {
 
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
 // govulncheck never searched, or a library's callers may contradict it. release is the Go release the
-// build compiles under, or nil when the load is not established to have run under it. entry is the
-// build's resolved library entry points.
-func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
-	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, buildDir, env)
+// build compiles under, or nil when the load is not established to have run under it. reached is what
+// the build's whole program reaches, or nil when that is unknown. entry is the build's resolved
+// library entry points.
+func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, reached *reachedBase, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
+	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, reached, buildDir, env)
 	res = withholdForUnsearchedMethods(res, scanned, pkgs)
 	return withholdForLibraryEscape(res, scanned, pkgs, entry)
 }
@@ -576,7 +577,12 @@ func isMain(p *packages.Package) bool {
 // packages in the refuted module was never traced, so the refutation holds only for builds that
 // leave it out. The result then declares excluded_files instead. An advisory that lists no vulnerable
 // package in the module, or lists the module once with none, makes every package of it count.
-func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
+//
+// A refutation is withheld when a left-out file may import a vulnerable package (leftOutCallers). A
+// standard-library one, built under a known release with what the whole program reaches (reached)
+// known, is then withheld only when left-out code may also reach one of the advisory's vulnerable
+// symbols (leftOutReachesSymbols).
+func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, reached *reachedBase, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
@@ -586,7 +592,17 @@ func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult,
 	if scanned.wholeModule[module] || len(scanned.imports[module]) == 0 {
 		vulnerable = nil
 	}
-	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {
+	var withhold bool
+	switch {
+	case !ok:
+		withhold = true
+	default:
+		withhold = leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env)
+		if withhold && module == "stdlib" && release != nil && reached != nil && len(vulnerable) > 0 {
+			withhold = leftOutReachesSymbols(ctx, pkgs, scanned.vulnerableSymbols(module), reached, *release, buildDir, env).Withhold
+		}
+	}
+	if withhold {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 	}
@@ -915,10 +931,12 @@ func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]by
 }
 
 // reconcileGraph is the call graph Reachability reconciles paths against, with what reflection's
-// calls reach (reflectReach) by package path and symbol name. ReflectReach is nil when it is unknown.
+// calls reach (reflectReach) by package path and symbol name, and what the whole program reaches
+// (reachedBase). ReflectReach and Reached are nil when they are unknown.
 type reconcileGraph struct {
 	CallGraph    plugin.CallGraphResult `json:"call_graph"`
 	ReflectReach map[string][]string    `json:"reflect_reach"`
+	Reached      *reachedBase           `json:"reached"`
 }
 
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
@@ -935,7 +953,7 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 		if err != nil {
 			return nil, err
 		}
-		reasons, reach, err := reflectReachOf(loaded)
+		reasons, reach, base, err := wholeProgramOf(loaded)
 		if err != nil {
 			return nil, err
 		}
@@ -944,7 +962,7 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 				cg.Partiality = withReason(cg.Partiality, r)
 			}
 		}
-		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
+		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach, Reached: base})
 	})
 	if err != nil {
 		return reconcileGraph{}, err

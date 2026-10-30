@@ -9,7 +9,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 )
 
-// TestAdvisoryTargetConditionalSymbols_Intake carries the floor's target-conditional symbols
+// TestAdvisoryTargetConditionalSymbols_Intake carries the built-in set's target-conditional symbols
 // through the normalized advisory, and none for an advisory that declares none.
 func TestAdvisoryTargetConditionalSymbols_Intake(t *testing.T) {
 	for _, id := range []string{"CVE-2024-21907", "FERRALON-JAVA-DEP-0001"} {

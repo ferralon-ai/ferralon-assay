@@ -108,7 +108,7 @@ var (
 	widgetResolved  = plugin.ResolvedDependency{Coordinate: widget, Version: "1.0.0", Resolved: true}
 )
 
-// javaTree writes a Java source tree and returns an *acquired with an empty floor, so the work set
+// javaTree writes a Java source tree and returns an *acquired with an empty built-in set, so the work set
 // is exactly what admission added.
 func javaTree(t *testing.T, p plugin.LanguagePlugin) *acquired {
 	t.Helper()

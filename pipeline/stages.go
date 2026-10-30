@@ -292,11 +292,11 @@ type AdvisoryFacts struct {
 	// built-in table answered, BuiltIn) may ground on the listed symbols' absence. Carries no verdict.
 	//
 	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
-	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are this module's own
-	// curated entries and carry none, so "" is the permanent state for every floor entry, not a field
+	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable test advisories are this module's own
+	// curated entries and carry none, so "" is the permanent state for every built-in entry, not a field
 	// the corpus fell behind on. Serializing it as ""/present on ~40 fixtures would be misrepresentative
 	// noise, and the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does not apply to a tag
-	// the floor never populates. When the published feed carries it, a non-empty value round-trips.
+	// the built-in table never populates. When the published feed carries it, a non-empty value round-trips.
 	SymbolProvenance string `json:",omitempty"`
 	// TargetConditionalSymbols are the Symbols that some build target of the package does not
 	// compile (an async entry on a framework target without async, an XmlNode entry on one without
@@ -1127,7 +1127,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	//
 	// Until 2026-08-05 the only Maven/npm/PyPI/NuGet entries in this table were the FERRALON-* house
 	// canaries below, which are gated off the default surface because they carry no CVE. That left
-	// the default floor for four of the five supported languages EMPTY, and scanWorkSet halts a run
+	// the built-in test set for four of the five supported languages EMPTY, and scanWorkSet halts a run
 	// whose work set resolves to zero — so a default Java, JS, Python or .NET scan could not
 	// complete at all.
 	//
@@ -1135,7 +1135,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// and nobody measured. admitByFacts admits only ids this table can already resolve, so with no
 	// non-Go facts it admits nothing. Measured 2026-08-05 against api.osv.dev: a jackson-databind
 	// tree got 55 real GHSA ids back and admitted 0; a requests/pyyaml tree 8 and 0; a
-	// Newtonsoft.Json tree 1 and 0. All four still halted. The floor was the missing piece.
+	// Newtonsoft.Json tree 1 and 0. All four still halted. The built-in entries were the missing piece.
 	//
 	// These twelve were already AUTHORED, as on-disk fixtures under corpus/testdata/advisories/,
 	// and never wired into the table — the work was done and left unconnected. Promoting them

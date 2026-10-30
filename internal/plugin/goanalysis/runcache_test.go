@@ -438,7 +438,7 @@ func TestComputeTaintFromCachedClosure(t *testing.T) {
 				t.Fatal(err)
 			}
 			ingresses := sp.resolveIngressFuncs(ingressesOf(sp, res).Ingresses)
-			reached, _ := runTaint(sp, ingresses, nil)
+			reached, _, _ := runTaint(sp, ingresses, nil)
 			if len(reached) == 0 {
 				t.Fatal("no callee reached; the fixture proves nothing")
 			}
@@ -484,7 +484,7 @@ func taintForSinksAlone(sp *ssaProgram, res *LoadResult, ingresses map[string]*s
 			want[s] = true
 		}
 	}
-	hits, pathReasons := runTaint(sp, ingresses, want)
+	hits, pathReasons, sanitized := runTaint(sp, ingresses, want)
 	reasons := map[string]bool{}
 	for _, r := range res.Partiality.Reasons {
 		reasons[r] = true
@@ -504,7 +504,7 @@ func taintForSinksAlone(sp *ssaProgram, res *LoadResult, ingresses map[string]*s
 		})
 	}
 	for s := range want {
-		if _, ok := hits[s]; !ok {
+		if _, ok := hits[s]; !ok && !sanitized[s] {
 			reasons[plugin.PartialReasonNoIngress] = true
 		}
 	}

@@ -29,9 +29,10 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // source->sink flow is fully resolved in SSA AND no partiality trigger
 // (reflection / cgo / unresolved dynamic dispatch) lies on the tainted path. It
 // degrades to Partial WITH a reason when any trigger is on the path, or when a
-// requested sink has no resolved tainted flow from any ingress
-// (no_known_ingress). It NEVER renders an unknown as "safe" (inv.5). A load/SSA
-// failure is a hard error (inv.4).
+// requested sink has no flow from any ingress, tainted or sanitized
+// (no_known_ingress). A sink only sanitized flows reach adds no reason and no
+// path. It NEVER renders an unknown as "safe" (inv.5). A load/SSA failure is a
+// hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
 	c, err := taintClosureOf(ctx, req.BuildDir)
 	if err != nil {
@@ -47,6 +48,8 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 type taintClosure struct {
 	// Hits maps each callee a tainted argument reaches to the ingress attributed to it.
 	Hits map[string]string `json:"hits,omitempty"`
+	// Sanitized lists each callee a sanitizer's result reaches as an argument.
+	Sanitized []string `json:"sanitized,omitempty"`
 	// Reasons is the partiality no sink changes: the load's, with its scoped limits counted
 	// run-wide, and the triggers on the tainted flow.
 	Reasons []string `json:"reasons,omitempty"`
@@ -77,7 +80,7 @@ func computeTaintClosure(ctx context.Context, buildDir string) (taintClosure, er
 	if err != nil {
 		return taintClosure{}, err
 	}
-	hits, pathReasons := runTaint(sp, sp.resolveIngressFuncs(ingressesOf(sp, res).Ingresses), nil)
+	hits, pathReasons, sanitized := runTaint(sp, sp.resolveIngressFuncs(ingressesOf(sp, res).Ingresses), nil)
 
 	reasons := map[string]bool{}
 	// Fold in load-level partiality (a degraded load is never hidden, inv.5).
@@ -92,7 +95,7 @@ func computeTaintClosure(ctx context.Context, buildDir string) (taintClosure, er
 	for r := range pathReasons {
 		reasons[r] = true
 	}
-	return taintClosure{Hits: hits, Reasons: sortedKeys(reasons)}, nil
+	return taintClosure{Hits: hits, Sanitized: sortedKeys(sanitized), Reasons: sortedKeys(reasons)}, nil
 }
 
 // result is the taint result for sinks: a path for each sink the closure reached, attributed to its
@@ -101,6 +104,10 @@ func (c taintClosure) result(sinks []string) plugin.TaintResult {
 	reasons := make(map[string]bool, len(c.Reasons))
 	for _, r := range c.Reasons {
 		reasons[r] = true
+	}
+	sanitized := make(map[string]bool, len(c.Sanitized))
+	for _, s := range c.Sanitized {
+		sanitized[s] = true
 	}
 	want := map[string]bool{}
 	for _, s := range sinks {
@@ -112,9 +119,13 @@ func (c taintClosure) result(sinks []string) plugin.TaintResult {
 	for _, s := range sortedKeys(want) {
 		ingress, ok := c.Hits[s]
 		if !ok {
-			// A requested sink with no resolved tainted flow from any ingress is UNKNOWN,
-			// never "safe" (inv.5): declare no_known_ingress.
-			reasons[plugin.PartialReasonNoIngress] = true
+			// A sink only sanitized flows reach adds no path and no reason: on its account
+			// the result is complete with zero paths, which grades control_flow_only. That
+			// is still a finding, never a safe verdict (inv.5). A sink no flow reached is
+			// unknown: no_known_ingress.
+			if !sanitized[s] {
+				reasons[plugin.PartialReasonNoIngress] = true
+			}
 			continue
 		}
 		paths = append(paths, plugin.ReachPath{

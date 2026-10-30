@@ -26,6 +26,13 @@ type taintAnalysis struct {
 	onPath map[*ssa.Function]bool
 	// hits maps a sink SCIP id to the ingress SCIP id that reached it.
 	hits map[string]string
+	// clearing marks the pass that follows sanitized values rather than tainted ones: a
+	// sanitizer's result stays in the flow instead of leaving it.
+	clearing bool
+	// cleared holds the result of every sanitizer call a tainted value reached; the clearing
+	// pass is seeded from them.
+	cleared []ssa.Value
+	work    []ssa.Value
 }
 
 type taintOrigin struct {
@@ -34,31 +41,12 @@ type taintOrigin struct {
 }
 
 // runTaint seeds sources from ingress functions and propagates taint to a
-// fixpoint, returning each sink reached mapped to its attributed ingress, and the
-// path-scoped partiality. ingresses maps an ingress SCIP id to its SSA function;
-// a nil sinks records every static callee a tainted argument reaches.
-func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[string]bool) (map[string]string, map[string]bool) {
-	ta := &taintAnalysis{
-		sp:      sp,
-		sinks:   sinks,
-		tainted: map[ssa.Value]bool{},
-		origin:  map[ssa.Value]taintOrigin{},
-		onPath:  map[*ssa.Function]bool{},
-		hits:    map[string]string{},
-	}
-
-	var work []ssa.Value
-	seed := func(v ssa.Value, o taintOrigin) {
-		if v == nil || ta.tainted[v] {
-			return
-		}
-		ta.tainted[v] = true
-		ta.origin[v] = o
-		if o.enclFn != nil {
-			ta.onPath[o.enclFn] = true
-		}
-		work = append(work, v)
-	}
+// fixpoint, returning each sink reached mapped to its attributed ingress, the
+// path-scoped partiality, and the sinks a sanitized value was observed reaching as
+// an argument. ingresses maps an ingress SCIP id to its SSA function; a nil sinks
+// records every static callee a tainted (or sanitized) argument reaches.
+func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[string]bool) (map[string]string, map[string]bool, map[string]bool) {
+	ta := newTaintAnalysis(sp, sinks)
 
 	// Sources: every parameter of every ingress function is attacker-controllable. A sink keeps the
 	// first ingress that reaches it, so seeding in map order would attribute a sink reached by two
@@ -80,13 +68,9 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		// Method ingresses also expose free vars / the receiver is generally not
 		// attacker-controlled, so only parameters are seeded.
 		for _, p := range fn.Params {
-			seed(p, o)
+			ta.seed(p, o)
 		}
-		for len(work) > 0 {
-			v := work[len(work)-1]
-			work = work[:len(work)-1]
-			ta.propagate(v, seed)
-		}
+		ta.drain()
 	}
 
 	reasons := map[string]bool{}
@@ -94,7 +78,52 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		classifyFuncPartiality(fn, reasons)
 	}
 
-	return ta.hits, reasons
+	// The clearing pass follows each sanitizer result the tainted flow produced, over the same
+	// propagation, and records the sinks it reaches. Its path carries no partiality of its own: a
+	// trigger that could hide an unsanitized flow lies on the tainted flow, already counted above.
+	cl := newTaintAnalysis(sp, sinks)
+	cl.clearing = true
+	for _, v := range ta.cleared {
+		cl.seed(v, taintOrigin{})
+	}
+	cl.drain()
+	sanitized := make(map[string]bool, len(cl.hits))
+	for s := range cl.hits {
+		sanitized[s] = true
+	}
+
+	return ta.hits, reasons, sanitized
+}
+
+func newTaintAnalysis(sp *ssaProgram, sinks map[string]bool) *taintAnalysis {
+	return &taintAnalysis{
+		sp:      sp,
+		sinks:   sinks,
+		tainted: map[ssa.Value]bool{},
+		origin:  map[ssa.Value]taintOrigin{},
+		onPath:  map[*ssa.Function]bool{},
+		hits:    map[string]string{},
+	}
+}
+
+func (ta *taintAnalysis) seed(v ssa.Value, o taintOrigin) {
+	if v == nil || ta.tainted[v] {
+		return
+	}
+	ta.tainted[v] = true
+	ta.origin[v] = o
+	if o.enclFn != nil {
+		ta.onPath[o.enclFn] = true
+	}
+	ta.work = append(ta.work, v)
+}
+
+func (ta *taintAnalysis) drain() {
+	for len(ta.work) > 0 {
+		v := ta.work[len(ta.work)-1]
+		ta.work = ta.work[:len(ta.work)-1]
+		ta.propagate(v, ta.seed)
+	}
 }
 
 // propagate pushes taint from a tainted value v to the values its referrers
@@ -177,13 +206,22 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		}
 	}
 
-	// Inter-procedural forwarding: taint flows from the actual arg to the callee's
-	// formal parameter. A sanitizer call clears taint — its result is not seeded,
-	// and we do not forward into its body for sink purposes.
-	if callee == nil || callee.Blocks == nil {
+	// A sanitizer call clears taint: its result is not seeded and its body is not
+	// entered. The result is kept for the clearing pass, which carries it on.
+	if isSanitizer(callee) {
+		if val, ok := in.(ssa.Value); ok {
+			if ta.clearing {
+				seed(val, o)
+			} else {
+				ta.cleared = append(ta.cleared, val)
+			}
+		}
 		return
 	}
-	if isSanitizer(callee) {
+
+	// Inter-procedural forwarding: taint flows from the actual arg to the callee's
+	// formal parameter.
+	if callee == nil || callee.Blocks == nil {
 		return
 	}
 	ta.onPath[callee] = true

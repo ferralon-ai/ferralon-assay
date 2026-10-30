@@ -70,32 +70,77 @@ func TestComputeTaint_PositiveValueFlowNonPartial(t *testing.T) {
 	}
 }
 
-// TestComputeTaint_SanitizerClears is proof #2: the same source/sink shape routed
-// through a modeled sanitizer (strconv.Atoi) yields NO taint path to the sink —
-// a true negative that must not be reported. The sink is reached only by the
-// SanitizedHandler in this fixture, so a no_known_ingress partiality is expected
-// (never "safe"), with zero reported paths.
-func TestComputeTaint_SanitizerClears(t *testing.T) {
-	// Resolve the sink from the sanitized-only fixture so the test does not
-	// depend on the positive handler's presence.
-	sink := sinkSCIPIn(t, sanitizerOnlyDir(t), "/Sink().")
-	res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{
-		BuildDir: sanitizerOnlyDir(t),
-		Sinks:    []string{sink},
-	})
-	if err != nil {
-		t.Fatalf("ComputeTaint: %v", err)
+// TestComputeTaint_SanitizedSinks is proof #2: a sink only a sanitized flow reaches comes back with
+// no path and, on its account, complete; it grades control_flow_only, still a finding and never a
+// safe verdict (inv.5). A sink no flow reaches at all stays no_known_ingress.
+func TestComputeTaint_SanitizedSinks(t *testing.T) {
+	for _, c := range []struct {
+		name, dir, sink string
+		wantComplete    bool
+		wantNoIngr      bool
+	}{
+		// The ingress's only flow to Sink is html.EscapeString's result.
+		{name: "sanitized only", dir: sanitizerOnlyDir(t), sink: "/Sink().", wantComplete: true},
+		// The sanitized value reaches Opaque only through a dependency call the
+		// analysis cannot follow: no flow is observed, so it is never inferred.
+		{name: "sanitized through an unfollowed call", dir: sanitizerOnlyDir(t), sink: "/Opaque().", wantNoIngr: true},
+		// Sink is reached by literals, never by ingress input.
+		{name: "no flow", dir: fixtureDir, sink: "/Sink().", wantNoIngr: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sink := sinkSCIPIn(t, c.dir, c.sink)
+			res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{
+				BuildDir: c.dir,
+				Sinks:    []string{sink},
+			})
+			if err != nil {
+				t.Fatalf("ComputeTaint: %v", err)
+			}
+			if len(res.Paths) != 0 {
+				t.Errorf("want no taint path to %q; got %+v", sink, res.Paths)
+			}
+			if res.Partiality.Complete != c.wantComplete {
+				t.Errorf("Complete = %v, want %v (reasons %v)", res.Partiality.Complete, c.wantComplete, res.Partiality.Reasons)
+			}
+			if got := hasReason(res.Partiality.Reasons, plugin.PartialReasonNoIngress); got != c.wantNoIngr {
+				t.Errorf("no_known_ingress = %v, want %v (reasons %v)", got, c.wantNoIngr, res.Partiality.Reasons)
+			}
+		})
 	}
-	for _, p := range res.Paths {
-		if p.Sink.SCIP == sink {
-			t.Fatalf("sanitized flow must yield NO taint path to %q; got %+v", sink, p)
-		}
-	}
-	if res.Partiality.Complete {
-		t.Error("a sink with no tainted (only sanitized) flow is no_known_ingress, never reported complete/safe (inv.5)")
-	}
-	if !hasReason(res.Partiality.Reasons, plugin.PartialReasonNoIngress) {
-		t.Errorf("want no_known_ingress for a sanitized-only sink; got %v", res.Partiality.Reasons)
+}
+
+// TestTaintClosureResult_SanitizedPredicate pins the per-sink rule over a closure: a tainted hit
+// always reports its path, a sanitized-only sink adds nothing, and a sink with neither is
+// no_known_ingress.
+func TestTaintClosureResult_SanitizedPredicate(t *testing.T) {
+	const sink, ingress = "scip:sink", "scip:ing"
+	for _, c := range []struct {
+		name       string
+		closure    taintClosure
+		wantPaths  int
+		wantNoIngr bool
+	}{
+		{name: "sanitized only", closure: taintClosure{Sanitized: []string{sink}}},
+		{name: "no flow", closure: taintClosure{}, wantNoIngr: true},
+		{name: "sanitized elsewhere", closure: taintClosure{Sanitized: []string{"scip:other"}}, wantNoIngr: true},
+		{name: "mixed sanitized and unsanitized", closure: taintClosure{Hits: map[string]string{sink: ingress}, Sanitized: []string{sink}}, wantPaths: 1},
+		{name: "unsanitized", closure: taintClosure{Hits: map[string]string{sink: ingress}}, wantPaths: 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			res := c.closure.result([]string{sink})
+			if len(res.Paths) != c.wantPaths {
+				t.Fatalf("paths = %+v, want %d", res.Paths, c.wantPaths)
+			}
+			if c.wantPaths > 0 && (res.Paths[0].Sink.SCIP != sink || res.Paths[0].Ingress.SCIP != ingress) {
+				t.Errorf("path = %+v, want %s -> %s", res.Paths[0], ingress, sink)
+			}
+			if got := hasReason(res.Partiality.Reasons, plugin.PartialReasonNoIngress); got != c.wantNoIngr {
+				t.Errorf("no_known_ingress = %v, want %v", got, c.wantNoIngr)
+			}
+			if res.Partiality.Complete == c.wantNoIngr {
+				t.Errorf("Complete = %v with no other reason, want %v", res.Partiality.Complete, !c.wantNoIngr)
+			}
+		})
 	}
 }
 
@@ -192,17 +237,15 @@ func TestRunTaint_AttributesLowestIngress(t *testing.T) {
 		t.Fatalf("want AlphaHandler, ZetaHandler and zetaHelper as resolved ingresses; got %v", ingresses)
 	}
 	for run := range 20 {
-		hits, _ := runTaint(sp, ingresses, map[string]bool{sink: true, deep: true})
+		hits, _, _ := runTaint(sp, ingresses, map[string]bool{sink: true, deep: true})
 		if len(hits) != 2 || !strings.Contains(hits[sink], "AlphaHandler") || !strings.Contains(hits[deep], "AlphaHandler") {
 			t.Fatalf("run %d: want Sink and Deep attributed to AlphaHandler; got %v", run, hits)
 		}
 	}
 }
 
-// sanitizerOnlyDir returns the build dir for the sanitizer proof. The taintmod
-// fixture contains BOTH a tainted and a sanitized handler reaching the same Sink,
-// which would let the tainted handler's path mask the sanitizer. The sanitizer
-// proof therefore uses a dedicated single-handler fixture.
+// sanitizerOnlyDir returns the build dir for the sanitizer proof: a single handler whose every flow
+// to a sink passes through a sanitizer.
 func sanitizerOnlyDir(t *testing.T) string {
 	t.Helper()
 	return "testdata/sanitizermod"

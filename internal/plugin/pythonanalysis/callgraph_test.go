@@ -852,6 +852,13 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"after a leading continuation", map[string]string{"app.py": "\\\nimport tests.helpers\n", "tests/helpers.py": opaque}, true, false},
 		{"spaces around a dot", map[string]string{"app.py": "import tests . helpers\n", "tests/other.py": opaque}, true, false},
 		{"edge through another test module", map[string]string{"app.py": "def main():\n    return relay('1')\n", "tests/relay.py": "def relay(s):\n    return run_eval(s)\n", "tests/helpers.py": evals}, false, true},
+		{"qualified builtins.exec in production", map[string]string{"app.py": "import builtins\n\ndef run(s):\n    builtins.exec(s)\n"}, false, true},
+		{"qualified builtins.eval in production", map[string]string{"app.py": "import builtins\n\ndef run(s):\n    return builtins.eval(s)\n"}, false, true},
+		{"dynamic import in an f-string", map[string]string{"app.py": "import importlib\n\ndef run(n):\n    return f\"{importlib.import_module(n)}\"\n"}, true, true},
+		{"__import__ in an f-string", map[string]string{"app.py": "def run(n):\n    return f\"{__import__(n)}\"\n"}, true, true},
+		{"plain call in an f-string", map[string]string{"app.py": "def run(s):\n    return f\"{len(s)}\"\n"}, false, true},
+		{"loader in an f-string", map[string]string{"app.py": "import runpy\n\ndef run(p):\n    return f\"{runpy.run_path(p)}\"\n"}, true, true},
+		{"method named eval", map[string]string{"app.py": "def run(m):\n    m.eval()\n"}, false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -902,6 +909,101 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 			res := callGraphOf(prog)
 			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != c.dynReason {
 				t.Errorf("dynamic_import reason = %v, want %v (reasons %v)", got, c.dynReason, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// TestCallGraph_TestModuleIngresses: a framework route in test code production never runs is
+// neither a call-graph root nor an ingress; one in a test module production imports or calls
+// stays both.
+func TestCallGraph_TestModuleIngresses(t *testing.T) {
+	const (
+		route   = "from flask import Flask\napp = Flask(__name__)\n\n@app.route('/x')\ndef handle():\n    return 1\n\ndef helper():\n    return 2\n"
+		fastapi = "from fastapi import APIRouter\nrouter = APIRouter()\n\n@router.get('/x')\nasync def handle():\n    return 1\n"
+		method  = "class Views:\n    @app.route('/x')\n    def handle(self):\n        return 1\n"
+		mainApp = "def main():\n    return 1\n"
+	)
+	cases := []struct {
+		name      string
+		module    string
+		enclosing []string
+		arity     int
+		files     map[string]string
+		want      bool
+	}{
+		{"under tests", "tests/conftest", nil, 0, map[string]string{"app.py": mainApp, "tests/conftest.py": route}, false},
+		{"test_ file at the root", "test_app", nil, 0, map[string]string{"app.py": mainApp, "test_app.py": route}, false},
+		{"root conftest", "conftest", nil, 0, map[string]string{"conftest.py": route}, false},
+		{"imported only by tests", "tests/routes", nil, 0, map[string]string{"tests/routes.py": route, "tests/test_a.py": "from tests.routes import app\n"}, false},
+		{"fastapi under tests", "tests/routes", nil, 0, map[string]string{"app.py": mainApp, "tests/routes.py": fastapi}, false},
+		{"method handler under tests", "tests/views", []string{"Views"}, 1, map[string]string{"app.py": mainApp, "tests/views.py": method}, false},
+		{"production module", "app", nil, 0, map[string]string{"app.py": route, "tests/test_a.py": "from app import app\n"}, true},
+		{"imported by production", "tests/routes", nil, 0, map[string]string{"app.py": "from tests.routes import app\n", "tests/routes.py": route}, true},
+		{"edge from production", "tests/routes", nil, 0, map[string]string{"app.py": "def main():\n    return helper()\n", "tests/routes.py": route}, true},
+		{"through another test module", "tests/routes", nil, 0, map[string]string{"app.py": "import tests.util\n", "tests/util.py": "from tests.routes import app\n", "tests/routes.py": route}, true},
+		{"relative import by production", "pkg/tests/routes", nil, 0, map[string]string{"pkg/__init__.py": "", "pkg/app.py": "from .tests import routes\n", "pkg/tests/routes.py": route}, true},
+		{"fastapi imported by production", "tests/routes", nil, 0, map[string]string{"app.py": "from tests.routes import router\n", "tests/routes.py": fastapi}, true},
+		{"method handler imported by production", "tests/views", []string{"Views"}, 1, map[string]string{"app.py": "from tests.views import Views\n", "tests/views.py": method}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			handle := funcSCIP(c.module, c.enclosing, "handle", c.arity)
+			res := mustCallGraph(t, c.files)
+			isRoot := false
+			for _, r := range res.Roots {
+				isRoot = isRoot || r.SCIP == handle
+			}
+			if isRoot != c.want {
+				t.Errorf("handle is a root = %v, want %v (roots %v)", isRoot, c.want, res.Roots)
+			}
+			ings, err := FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: writeTree(t, c.files)})
+			if err != nil {
+				t.Fatalf("FindIngresses: %v", err)
+			}
+			if _, ok := ingressFor(ings.Ingresses, handle); ok != c.want {
+				t.Errorf("handle is an ingress = %v, want %v (ingresses %v)", ok, c.want, ings.Ingresses)
+			}
+		})
+	}
+}
+
+// TestFindIngresses_HiddenRouteDynamicImport: ingress discovery is partial (dynamic_import)
+// when it leaves out an unreached test-module route and a reached file holds a dynamic
+// import the scanner cannot name, or evaluates code, either of which may load that route.
+func TestFindIngresses_HiddenRouteDynamicImport(t *testing.T) {
+	const (
+		route  = "from flask import Flask\napp = Flask(__name__)\n\n@app.route('/x')\ndef handle():\n    return 1\n"
+		opaque = "import importlib\n\ndef load(n):\n    return importlib.import_module(n)\n"
+	)
+	cases := []struct {
+		name    string
+		files   map[string]string
+		dynamic bool
+	}{
+		{"hidden route and production dynamic import", map[string]string{"app.py": opaque, "tests/routes.py": route}, true},
+		{"hidden route only", map[string]string{"app.py": "def main():\n    return 1\n", "tests/routes.py": route}, false},
+		{"production dynamic import only", map[string]string{"app.py": opaque + route}, false},
+		{"dynamic import in unreached test code", map[string]string{"app.py": "def main():\n    return 1\n", "tests/load.py": opaque, "tests/routes.py": route}, false},
+		{"hidden route and production exec", map[string]string{"app.py": "def run(src):\n    exec(src)\n", "tests/routes.py": route}, true},
+		{"hidden route and production eval", map[string]string{"app.py": "def run(src):\n    return eval(src)\n", "tests/routes.py": route}, true},
+		{"exec in unreached test code", map[string]string{"app.py": "def main():\n    return 1\n", "tests/load.py": "def run(src):\n    exec(src)\n", "tests/routes.py": route}, false},
+		{"hidden route and production builtins.exec", map[string]string{"app.py": "import builtins\n\ndef run(src):\n    builtins.exec(src)\n", "tests/routes.py": route}, true},
+		{"hidden route and production f-string dynamic import", map[string]string{"app.py": "import importlib\n\ndef run(n):\n    return f\"{importlib.import_module(n)}\"\n", "tests/routes.py": route}, true},
+		{"hidden route and production getattr", map[string]string{"app.py": "def run(o, n):\n    return getattr(o, n)\n", "tests/routes.py": route}, false},
+		{"hidden route and production f-string call", map[string]string{"app.py": "def run(s):\n    return f\"{len(s)}\"\n", "tests/routes.py": route}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: writeTree(t, c.files)})
+			if err != nil {
+				t.Fatalf("FindIngresses: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != c.dynamic {
+				t.Errorf("dynamic_import = %v, want %v (partiality %+v)", got, c.dynamic, res.Partiality)
+			}
+			if !c.dynamic && !res.Partiality.Complete {
+				t.Errorf("want Complete, got %+v", res.Partiality)
 			}
 		})
 	}

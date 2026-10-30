@@ -14,6 +14,9 @@ import (
 // pipeline's firstPartyReachPaths BFS can connect an ingress to a reachable sink. A
 // missing build dir is a hard error (inv.4).
 //
+// A handler in test code production never runs (productionReached) is registered by no
+// production app, so it is no ingress.
+//
 // Unlike JS route handlers (which name a handler by REFERENCE in a registration call),
 // Python route decorators sit directly above the def, so the handler def — and thus its
 // exact SCIP id — is known at the decorator site; no reference re-resolution is needed.
@@ -28,9 +31,16 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 		return plugin.IngressResult{}, err
 	}
 
+	reached := prog.productionReached(prog.resolvedCallFiles())
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress
-	for _, f := range prog.files {
+	hidden, opaque := false, false
+	for fi, f := range prog.files {
+		if !reached[fi] {
+			hidden = hidden || len(f.ingresses) > 0
+			continue
+		}
+		opaque = opaque || f.opaque || f.refs.evaluated
 		for _, in := range f.ingresses {
 			scip := funcSCIP(f.module, in.enclosing, in.name, in.arity)
 			key := in.kind + "\x00" + scip + "\x00" + in.selector
@@ -56,16 +66,18 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 		return ingresses[i].Selector < ingresses[j].Selector
 	})
 
-	return plugin.IngressResult{Partiality: ingressPartiality(prog), Ingresses: ingresses}, nil
+	return plugin.IngressResult{Partiality: ingressPartiality(prog, hidden && opaque), Ingresses: ingresses}, nil
 }
 
 // ingressPartiality declares completeness of ingress discovery. Unlike the call graph
 // (always partial), ingress discovery over a cleanly parsed source IS complete for the
 // decorator idioms the scanner models: the ingresses found are exactly the Flask/FastAPI
-// route handlers present. A read failure or a skipped construct degrades to partial with
-// the matching machine-readable reason.
-func ingressPartiality(prog *program) plugin.Partiality {
-	var reasons []string
+// route handlers present in code production may run. A read failure or a skipped
+// construct degrades to partial with the matching machine-readable reason, and so does a
+// handler left out as unreached (hidden) when a reached file holds a dynamic import the
+// scanner cannot name, or evaluates code (eval/exec), either of which may load it.
+func ingressPartiality(prog *program, mayLoadHidden bool) plugin.Partiality {
+	reasons := dynamicImportReasons(mayLoadHidden)
 	if prog.readFailed {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}

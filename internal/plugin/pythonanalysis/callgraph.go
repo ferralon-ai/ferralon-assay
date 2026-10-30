@@ -82,6 +82,14 @@ func (p *program) declsNamed(leaves []string) []funcDecl {
 	return out
 }
 
+// siteCallee resolves a call site to the one declaration its edge ends at, if any, and
+// returns the leaf names the escape scan uses for it (siteLeaves).
+func (p *program) siteCallee(f *fileParse, cs callSite) (callee string, ok bool, escape []string) {
+	edge, escape := p.siteLeaves(f, cs)
+	callee, ok = resolveCallee(p.declsNamed(edge), cs.calleeArity)
+	return callee, ok, escape
+}
+
 // siteLeaves is the leaf names a call site may stand for. A name always stands for the
 // declarations under it. It stands for a first-party function an import binds to it under
 // another name only where the caller holds that binding (aliasBound): a bare call whose
@@ -370,7 +378,7 @@ func loadProgram(buildDir string) (*program, error) {
 		roots, opaque := dynamicImports(clean, lits)
 		lookupRoots, lookups, lookupPackages, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
 		roots = sortedDedup(append(roots, lookupRoots...))
-		opaque = opaque || lookupOpaque
+		opaque = opaque || lookupOpaque || scan.refs.hiddenImport
 
 		var fds []funcDecl
 		topNames := map[string]bool{}
@@ -683,8 +691,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
-			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
-			callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity)
+			callee, ok, escapeLeaves := prog.siteCallee(f, cs)
 			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true
@@ -716,9 +723,17 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				calls[fi] = append(calls[fi], declFile[callee])
 			}
 		}
-		// Framework ingress handler functions are call-graph roots (static-reachability
-		// entry points), so a reverse BFS can terminate at them even when no caller in the
-		// source invokes them.
+	}
+
+	// Framework ingress handler functions are call-graph roots (static-reachability entry
+	// points), so a reverse BFS can terminate at them even when no caller in the source
+	// invokes them. A handler in test code production never runs (productionReached) is
+	// registered by no production app, so it is no entry point.
+	reached := prog.productionReached(calls)
+	for fi, f := range prog.files {
+		if !reached[fi] {
+			continue
+		}
 		for _, in := range f.ingresses {
 			rootsSet[funcSCIP(f.module, in.enclosing, in.name, in.arity)] = true
 		}
@@ -747,7 +762,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	})
 
 	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, prog.productionReached(calls)),
+		Partiality: callGraphPartiality(prog, reached),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      sortedSymbols(rootsSet),
@@ -982,6 +997,29 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 	}
 	return reached
+}
+
+// resolvedCallFiles lists, per caller file, the files declaring the function each call site
+// with an edge resolves to (siteCallee): the calls argument productionReached takes, for a
+// caller that does not build the graph. callGraphOf collects the same lists as it adds the
+// edges.
+func (prog *program) resolvedCallFiles() [][]int {
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	calls := make([][]int, len(prog.files))
+	for fi := range prog.files {
+		f := &prog.files[fi]
+		for _, cs := range f.calls {
+			if callee, ok, _ := prog.siteCallee(f, cs); ok {
+				calls[fi] = append(calls[fi], declFile[callee])
+			}
+		}
+	}
+	return calls
 }
 
 // isTestModule reports whether a module path names test code: a test_*.py, *_test.py or

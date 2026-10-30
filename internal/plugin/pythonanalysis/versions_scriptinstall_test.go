@@ -364,7 +364,7 @@ func TestResolveVersions_SeededExhaustive(t *testing.T) {
 				t.Fatalf("PyJWT = found %v exhaustive %v, want absent and exhaustive", r.Found, r.Exhaustive)
 			}
 			names, _, _ := declaredDistributions(dir)
-			for _, c := range seededDistributions {
+			for _, c := range []string{"pip", "setuptools", "wheel"} {
 				if r := resolveVersion(t, dir, c); r.Found || r.Exhaustive {
 					t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)
 				}
@@ -400,7 +400,7 @@ func TestResolveVersions_SeededPins(t *testing.T) {
 			if r := resolveVersion(t, dir, "jinja2"); !r.Found || !r.Match.Resolved || !r.Partiality.Complete {
 				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete", r.Match, r.Partiality)
 			}
-			for _, c := range seededDistributions {
+			for _, c := range []string{"pip", "setuptools", "wheel"} {
 				if r := resolveVersion(t, dir, c); !r.Found || r.Match.Resolved || r.Partiality.Complete {
 					t.Fatalf("%s = %+v partiality %+v, want found, unresolved and partial", c, r.Match, r.Partiality)
 				}

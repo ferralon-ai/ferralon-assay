@@ -1005,13 +1005,21 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 		return report.ReasonAnalysisDidNotRun, true
 	}
 	reasons := didNotRunReasons(store, assessmentID, pkg)
+	versionHeld := false
 	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
-		reasons = withoutVersionLimits(store, assessmentID, reasons)
+		kept := withoutVersionLimits(store, assessmentID, reasons)
+		versionHeld = len(kept) < len(reasons)
+		reasons = kept
 	}
 	switch {
 	case len(reasons) == 0:
 		return "", false
 	case !slices.ContainsFunc(reasons, func(r string) bool { return r != plugin.PartialReasonAdvisoryUnknownToAnalyzer }):
+		// An unresolved version is the more precise statement still, and notExploitableGrounds
+		// names it.
+		if versionHeld {
+			return "", false
+		}
 		return report.ReasonAdvisoryUnknownToAnalyzer, true
 	}
 	return report.ReasonAnalysisDidNotRun, true

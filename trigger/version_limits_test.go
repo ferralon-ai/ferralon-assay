@@ -85,6 +85,36 @@ func TestFinding_VersionLimitsScopedToInventory(t *testing.T) {
 			wantReason: report.ReasonAnalysisDidNotRun,
 		},
 		{
+			name: "the analyzer does not know the advisory either",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				unresolved(fx)
+				fx.footprint = []string{plugin.PartialReasonAdvisoryUnknownToAnalyzer, failed}
+				fx.inventory = []string{failed}
+			},
+			wantReason: report.ReasonPackageVersionUnresolved,
+		},
+		{
+			name: "the analyzer does not know the advisory, and no version limit",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				unresolved(fx)
+				fx.footprint = []string{plugin.PartialReasonAdvisoryUnknownToAnalyzer}
+				fx.inventory = []string{}
+			},
+			wantReason: report.ReasonAdvisoryUnknownToAnalyzer,
+		},
+		{
+			name: "a footprint that does not list the inventory's limit",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				unresolved(fx)
+				fx.footprint = []string{plugin.PartialReasonRelationshipUnexpressed + ":unlisted_sites"}
+				fx.inventory = []string{failed}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
 			// outsideBuildGrounds needs no admitted package, so the limit still holds it.
 			name: "a module search with version resolution failed",
 			base: gogsOutsideBuild,

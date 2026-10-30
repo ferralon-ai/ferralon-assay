@@ -160,7 +160,7 @@ var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_fil
 // of them. Every Python build runs on some interpreter, and where it comes from (a base image,
 // a runner, .python-version, a platform runtime) is not read, nor is its site-packages, which
 // keeps whatever it ships whatever --without-pip, --no-setuptools or --no-wheel leave out of a
-// venv. So each is installed at a version nothing read here records, in every build.
+// venv. So each may be installed, at a version nothing read here records, in every build.
 var seededDistributions = []string{"pip", "setuptools", "wheel"}
 
 // laneFlags are the flags every allowed form may carry.

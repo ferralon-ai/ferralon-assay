@@ -300,7 +300,7 @@ Writing through the Refs API needs `contents: write`.
 
 ### `baseline`
 
-A full scan of every advisory in the work set: the built-in floor, plus — when an advisory policy is
+A full scan of every advisory in the work set: the scanner's built-in advisory set, plus — when an advisory policy is
 declared (`advisory-corpus-policy`) — every advisory in that policy whose affected package is one of
 the repository's own dependencies. With a store selected, the result is persisted so later
 runs can read it. With **no** store selected, `baseline` uses a throwaway store in a temporary

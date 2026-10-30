@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
@@ -299,8 +300,8 @@ func setupPyEntrypoints(src string) []entrypoint {
 				groupDepth = opened
 			}
 		}
-		if m := keywordList.FindStringSubmatch(gap); m != nil {
-			group, groupDepth = m[1], depth
+		if m := keywordList.FindStringSubmatchIndex(gap); m != nil {
+			group, groupDepth = gap[m[2]:m[3]], depth-strings.Count(gap[m[5]:], "(")
 		}
 		lit := lits[start]
 		prev = lit.end
@@ -328,7 +329,8 @@ func setupPyEntrypoints(src string) []entrypoint {
 
 // keywordList is a keyword argument opening a list or tuple at the end of the text before a
 // literal (pytest11=[).
-var keywordList = regexp.MustCompile(`([A-Za-z_]\w*)\s*=\s*[\[(]\s*$`)
+// A call may open the list (pytest11=[str(...), ...]).
+var keywordList = regexp.MustCompile(`([A-Za-z_]\w*)\s*=\s*([\[(])(?:\s*[A-Za-z_][\w.]*\s*\()?\s*$`)
 
 var (
 	// settingLine is a WSGI/ASGI application setting, annotated or not, at the start of a
@@ -401,11 +403,34 @@ var shellSeparators = map[string]bool{"&&": true, "||": true, ";": true, "|": tr
 
 // separatorSpacer splits off the separators a shell writes attached to a word (pip install
 // -r x; gunicorn app:app).
-var separatorSpacer = strings.NewReplacer(";", " ; ", "&&", " && ", "||", " || ", "&", " & ", "|", " | ")
+var separatorSpacer = strings.NewReplacer(";", " ; ", "&&", " && ", "||", " || ")
 
-// redirection is a shell redirection (> log, 2>, &>, < in), which ends a command's
-// arguments: the file it names is no argument.
-var redirection = regexp.MustCompile(`^(?:\d*|&)[<>]`)
+// spaceLoneSeparators splits off a single & or | that touches whitespace on one side
+// (pip install x& gunicorn app:app). One inside a word (a URL's query, a quoted log
+// format, 2>&1) is left alone.
+func spaceLoneSeparators(line string) string {
+	rs := []rune(line)
+	var b strings.Builder
+	at := func(i int) rune {
+		if i < 0 || i >= len(rs) {
+			return ' '
+		}
+		return rs[i]
+	}
+	for i, r := range rs {
+		lone := (r == '&' || r == '|') && !strings.ContainsRune("&|>", at(i-1)) && !strings.ContainsRune("&|", at(i+1))
+		if lone && (unicode.IsSpace(at(i-1)) || unicode.IsSpace(at(i+1))) {
+			b.WriteString(" " + string(r) + " ")
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// redirection is a shell redirection word (> log, >log, 2>&1, &>, < in), which ends a
+// command's arguments: the file it names is no argument. A word like <host>:8000 is not.
+var redirection = regexp.MustCompile(`^(?:\d*|&)(?:>>?|<)(?:&\d+|[^<>]*)$`)
 
 // commandEntrypoints reads the launch commands in text. deploy admits the script forms
 // (python -m, python file.py, streamlit/fastapi run), which only a production launch file
@@ -414,7 +439,7 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 	text = strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(text)
 	var eps []entrypoint
 	for _, line := range yamlCommandLines(strings.Split(text, "\n")) {
-		toks := commandTokens(separatorSpacer.Replace(line))
+		toks := commandTokens(spaceLoneSeparators(separatorSpacer.Replace(line)))
 		for i := 0; i < len(toks); i++ {
 			eps = append(eps, launchAt(toks, i, deploy)...)
 		}
@@ -431,7 +456,7 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 func yamlCommandLines(lines []string) []string {
 	var out []string
 	var grp map[string]string
-	last, prev := "", ""
+	last, prev, parent := "", "", ""
 	flush := func() {
 		if grp != nil {
 			out = append(out, grp["entrypoint"]+" "+grp["command"]+" "+grp["args"])
@@ -447,11 +472,12 @@ func yamlCommandLines(lines []string) []string {
 				k = c
 			}
 		}
-		if k == "command" && prev == "exec:" {
+		if k == "command" && prev == "exec:" && probeKeys[strings.TrimSuffix(parent, ":")] ||
+			strings.HasPrefix(key, "exec:") && probeKeys[strings.TrimSuffix(prev, ":")] {
 			k = "test"
 		}
-		if t != "" && !strings.HasPrefix(t, "#") {
-			prev = t
+		if bare, _, _ := strings.Cut(t, " #"); bare != "" && !strings.HasPrefix(bare, "#") {
+			parent, prev = prev, strings.TrimSpace(bare)
 		}
 		switch {
 		case k == "test":
@@ -463,7 +489,7 @@ func yamlCommandLines(lines []string) []string {
 				flush()
 				grp = map[string]string{}
 			}
-			grp[k] = strings.TrimPrefix(key, k+":")
+			grp[k] = yamlAnchor.ReplaceAllString(strings.TrimPrefix(key, k+":"), "")
 			last = k
 			continue
 		case last != "" && strings.HasPrefix(t, "- ") && !strings.Contains(t, ": ") && !strings.HasSuffix(t, ":"):
@@ -479,6 +505,13 @@ func yamlCommandLines(lines []string) []string {
 	flush()
 	return out
 }
+
+// yamlAnchor is a YAML anchor (&cmd) leading a key's value, which is no shell separator.
+var yamlAnchor = regexp.MustCompile(`^\s*&[\w-]+`)
+
+// probeKeys are the Kubernetes keys whose exec: command: checks or hooks a container
+// rather than launching it.
+var probeKeys = map[string]bool{"livenessProbe": true, "readinessProbe": true, "startupProbe": true, "postStart": true, "preStop": true}
 
 // commandTokens splits a command line into words, reading a Dockerfile or YAML exec-form
 // list ("["gunicorn", "app:app"]") as the words it lists. A value quoted right after an
@@ -784,8 +817,9 @@ var (
 	handlerLine = regexp.MustCompile(`(?m)^[ \t-]*[Hh]andler:[ \t]*['"]?([A-Za-z_][\w/.]*)\.([A-Za-z_]\w*)['"]?[ \t]*(?:#.*)?\r?$`)
 	// codeURILine is a SAM function's CodeUri, the directory its handler is read from.
 	codeURILine = regexp.MustCompile(`^([ \t]*)CodeUri:[ \t]*['"]?([\w./-]+?)/?['"]?[ \t]*(?:#.*)?\r?$`)
-	// runtimeLine is a serverless or SAM function's (or provider's) runtime.
-	runtimeLine = regexp.MustCompile(`^([ \t]*)[Rr]untime:[ \t]*['"]?([^'"#\s][^'"#\r]*?)['"]?[ \t]*(?:#.*)?\r?$`)
+	// runtimeLine is a serverless or SAM function's (or provider's) runtime. An empty value
+	// opens a long form (Fn::If) whose runtime is unknown.
+	runtimeLine = regexp.MustCompile(`^([ \t]*)[Rr]untime:[ \t]*['"]?([^'"#\s][^'"#\r]*?)?['"]?[ \t]*(?:#.*)?\r?$`)
 	// manifestKind is a Kubernetes object's top-level kind, literal or templated (Helm).
 	manifestKind = regexp.MustCompile(`(?m)^kind:[ \t]*[\w{]`)
 )
@@ -812,11 +846,11 @@ func yamlEntrypoints(name, text string) []entrypoint {
 }
 
 // pythonRuntime reports whether a function with runtime rt may run Python: it names none, a
-// python one, or one a parameter supplies (!Ref, ${...}); a nodejs function's handler.main
+// python one, or one a parameter supplies (!Ref, ${...}, {{resolve:...}}); a nodejs function's handler.main
 // is no Python module.
 func pythonRuntime(rt string) bool {
 	lower := strings.ToLower(rt)
-	return rt == "" || strings.HasPrefix(lower, "python") || strings.HasPrefix(rt, "!") || strings.Contains(rt, "${")
+	return rt == "" || strings.HasPrefix(lower, "python") || strings.HasPrefix(rt, "!") || strings.Contains(rt, "${") || strings.Contains(rt, "{{")
 }
 
 // templateValue reads the key re matches (its groups the indent and the value) for the

@@ -197,7 +197,8 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	}
 	if in.trustCIObserved {
 		exactSources = append(exactSources, struct{ raw, source string }{in.ciObserved, ToolchainSourceCIObserved})
-		if !directivesBindToolchain(in) {
+		// Under Bazel the host go command's resolution says nothing about the SDK rules_go compiles with.
+		if !directivesBindToolchain(in) && !in.bazelWorkspace {
 			exactSources = append(exactSources, struct{ raw, source string }{in.buildResolved, ToolchainSourceBuildResolved})
 		}
 	}

@@ -33,6 +33,11 @@ func TestResolveToolchainFact_Bazel(t *testing.T) {
 			in:   toolchainInputs{subjectDeclared: "go1.21.13", goDirective: "1.22.0", bazelWorkspace: true},
 			want: ToolchainFact{Version: "go1.21.13", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
+		{
+			name: "a workspace takes no exact bound from the host go command",
+			in:   toolchainInputs{goDirective: "1.22", buildResolved: "go1.23.4", trustCIObserved: true, bazelWorkspace: true},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,11 +49,13 @@ func TestResolveToolchainFact_Bazel(t *testing.T) {
 }
 
 // TestCodebaseInventory_BazelWorkspaceFloor runs tracker#610's scenario through the real stage: a
-// go.mod beside a MODULE.bazel resolves no floor, whichever SDK declaration the module makes.
+// go.mod beside a MODULE.bazel resolves no floor, whichever SDK declaration the module makes, and
+// so does one whose checkout is a subdirectory of the workspace (an Action `target:` in a monorepo).
 func TestCodebaseInventory_BazelWorkspaceFloor(t *testing.T) {
 	tests := []struct {
 		name   string
 		module string
+		above  bool // MODULE.bazel sits in the directory above the checkout
 		want   ToolchainFact
 	}{
 		{
@@ -65,11 +72,23 @@ go_sdk.from_file(go_mod = "//:go.mod")
 `,
 			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
+		{
+			name: "workspace above the checkout",
+			module: `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.21.13")
+`,
+			above: true,
+			want:  ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			buildDir := writeGoModFixture(t, "module example.com/target\n\ngo 1.22.0\n")
-			if err := os.WriteFile(filepath.Join(buildDir, "MODULE.bazel"), []byte(tc.module), 0o644); err != nil {
+			workspace := buildDir
+			if tc.above {
+				workspace = filepath.Dir(buildDir)
+			}
+			if err := os.WriteFile(filepath.Join(workspace, "MODULE.bazel"), []byte(tc.module), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			inv := runRealInventory(t, codebaseInventory{

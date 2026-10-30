@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -196,6 +197,30 @@ func uvSourceNames(sources any) (map[string]bool, bool) {
 		names[normalizePyCoordinate(name)] = true
 	}
 	return names, true
+}
+
+// uvSourced reports whether any pyproject.toml among manifests names want in [tool.uv.sources].
+// A workspace root's sources apply to every member, and a lock written before the source was
+// added still pins an index release, so a source anywhere leaves the coordinate unresolved and
+// its lock entries incomplete. A pyproject that does not decode is already read as a failure.
+func uvSourced(manifests []string, want string) bool {
+	for _, m := range manifests {
+		if filepath.Base(m) != "pyproject.toml" {
+			continue
+		}
+		data, err := os.ReadFile(m)
+		if err != nil {
+			continue
+		}
+		var doc pyprojectDoc
+		if toml.Unmarshal(data, &doc) != nil {
+			continue
+		}
+		if names, _ := uvSourceNames(doc.Tool.UV.Sources); names[want] {
+			return true
+		}
+	}
+	return false
 }
 
 // pyprojectDynamicDeps reports whether [project].dynamic lists dependencies or

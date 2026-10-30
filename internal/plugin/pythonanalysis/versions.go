@@ -111,15 +111,23 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
 		append(origins[:len(origins):len(origins)], copyOrigins...), want)
-	if parseFailed && res.Found {
+	sourced := uvSourced(manifests, want)
+	if (parseFailed || sourced) && res.Found {
 		res.Match.Version = ""
 		res.Match.Resolved = false
 	}
 	// Under coverage every other manifest's declaration is one its governing lock pins at a version
-	// the declaration admits, so the lock entries and the installed copies are every version.
+	// the declaration admits, so the lock entries and the installed copies are every version. A
+	// direct reference is the exception: whatever the lock pins, the build installs the reference.
+	directRef := false
 	for i, d := range all {
-		if want != "" && origins[i].lock != "" && normalizePyCoordinate(d.Coordinate) == want {
+		if want == "" || normalizePyCoordinate(d.Coordinate) != want {
+			continue
+		}
+		if origins[i].lock != "" {
 			res.Matches = append(res.Matches, d)
+		} else if origins[i].directRef {
+			directRef = true
 		}
 	}
 	for _, d := range copies {
@@ -127,7 +135,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			res.Matches = append(res.Matches, d)
 		}
 	}
-	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !installedCopyPresent(req.BuildDir, want, false)
+	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !sourced && !directRef &&
+		!installedCopyPresent(req.BuildDir, want, false)
 	return res, nil
 }
 

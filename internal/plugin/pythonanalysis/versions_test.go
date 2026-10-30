@@ -1391,6 +1391,13 @@ func TestResolveVersions_UVSourcesRedirectUnresolved(t *testing.T) {
 		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
 			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = " + src + "\n"
 	}
+	wsRoot := func(extra string) string {
+		return "[project]\nname = \"root\"\nversion = \"0.1.0\"\n[tool.uv.workspace]\nmembers = [\"packages/*\"]\n" + extra
+	}
+	wsLock := func(src string) string {
+		return "version = 1\n[[package]]\nname = \"a\"\nversion = \"0.1.0\"\nsource = { editable = \"packages/a\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = " + src + "\n"
+	}
 	const (
 		gitSrc    = "[tool.uv.sources]\npyjwt = { git = \"https://github.com/example/pyjwt\", rev = \"abc\" }\n"
 		gitLocked = `{ git = "https://github.com/example/pyjwt?rev=abc#abcdef" }`
@@ -1422,6 +1429,28 @@ func TestResolveVersions_UVSourcesRedirectUnresolved(t *testing.T) {
 			"uv.lock":                   lock(gitLocked),
 			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
 		}, false},
+		{"stale registry lock under a git source", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", gitSrc), "uv.lock": lock(pypi)}, false},
+		{"named index source with a lock", map[string]string{"pyproject.toml": pp("pyjwt>=2",
+			"[tool.uv.sources]\npyjwt = { index = \"internal\" }\n"), "uv.lock": lock(`{ registry = "https://internal.example/simple" }`)}, false},
+		{"direct reference beside a registry lock", map[string]string{
+			"pyproject.toml": pp("pyjwt @ git+https://github.com/example/pyjwt@abc", ""), "uv.lock": lock(pypi)}, false},
+		{"lockless workspace root redirects member", map[string]string{
+			"pyproject.toml": wsRoot(gitSrc), "packages/a/pyproject.toml": pp("pyjwt==2.8.0", "")}, false},
+		{"workspace root named index, registry lock", map[string]string{
+			"pyproject.toml":            wsRoot("[tool.uv.sources]\npyjwt = { index = \"internal\" }\n"),
+			"uv.lock":                   wsLock(`{ registry = "https://internal.example/simple" }`),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
+		{"workspace root editable path, editable lock", map[string]string{
+			"pyproject.toml":            wsRoot("[tool.uv.sources]\npyjwt = { path = \"vendor/pyjwt\", editable = true }\n"),
+			"uv.lock":                   wsLock(`{ editable = "vendor/pyjwt" }`),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
+		{"workspace root virtual path, virtual lock", map[string]string{
+			"pyproject.toml":            wsRoot("[tool.uv.sources]\npyjwt = { path = \"vendor/pyjwt\", package = false }\n"),
+			"uv.lock":                   wsLock(`{ virtual = "vendor/pyjwt" }`),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
 		// Guards: a source for another name, or a sibling workspace member, leaves pyjwt alone.
 		{"lockless sources for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
 			"[tool.uv.sources]\nrequests = { git = \"https://github.com/example/requests\" }\n")}, true},
@@ -1440,6 +1469,12 @@ func TestResolveVersions_UVSourcesRedirectUnresolved(t *testing.T) {
 			}
 			if tc.wantResolved && res.Match.Version != "2.8.0" {
 				t.Fatalf("Match.Version = %q, want 2.8.0", res.Match.Version)
+			}
+			// The set axis is what refutes: a redirect must never leave a complete set of
+			// resolved lock pins, while a registry lock stays complete.
+			complete := res.MatchesComplete && !slices.ContainsFunc(res.Matches, func(d plugin.ResolvedDependency) bool { return !d.Resolved })
+			if wantComplete := tc.name == "lock registry range"; complete != wantComplete {
+				t.Fatalf("complete resolved set = %v (Matches %+v, MatchesComplete %v), want %v", complete, res.Matches, res.MatchesComplete, wantComplete)
 			}
 		})
 	}

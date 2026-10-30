@@ -2,7 +2,9 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -170,5 +172,79 @@ func TestRunCVEWatch_HookSeesWithheldVerdict(t *testing.T) {
 	}
 	if len(got.Undetermined) != 0 {
 		t.Fatalf("after a full read: Undetermined = %v, want none", got.Undetermined)
+	}
+}
+
+// secondCallPlugin is refutingGoPlugin whose second reachability pass misbehaves: it fails when
+// cancel is nil, and otherwise cancels the scan's analysis before it returns, cutting it short.
+type secondCallPlugin struct {
+	refutingGoPlugin
+	calls  *atomic.Int32
+	cancel context.CancelFunc
+}
+
+func (p secondCallPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if p.calls.Add(1) == 2 {
+		if p.cancel == nil {
+			return plugin.ReachabilityResult{}, errors.New("reachability failed")
+		}
+		p.cancel()
+	}
+	return p.refutingGoPlugin.Reachability(ctx, req)
+}
+
+// An advisory under two sources whose one assessment completes and whose other fails or is cut
+// short is undetermined, so a partial read keeps it listed for the row the run did not reach.
+func TestRunCVEWatch_HookSeesUnreachedSibling(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cut  bool
+	}{{"failed", false}, {"cut short", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := wiringPkg
+			stored := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "base-sha"}).
+				AddPackage(pkg).
+				NotExploitable(report.Advisory{ID: wiringAdvisory.ID, Source: "corpus"}, &pkg, "vulnerable_symbol_absent", "no path").
+				NotExploitable(report.Advisory{ID: wiringAdvisory.ID, Source: "osv"}, &pkg, "vulnerable_symbol_absent", "no path").
+				WithProvenance(report.Provenance{CommitSHA: "base-sha", AdvisoryCursor: wiringAdvisory.ID}).
+				Build()
+			store := &memStore{state: &statestore.State{Report: &stored, SBOM: stored.SBOM, Cursor: wiringAdvisory.ID,
+				DepFetch: &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}}}
+			osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
+			analysis, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			p := secondCallPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, calls: &atomic.Int32{}}
+			if tc.cut {
+				p.cancel = cancel
+			}
+			var got *DependencyFetchRun
+			_, err := RunCVEWatch(context.Background(), store, osv, CVEWatchRequest{
+				Subject:  Subject{Repo: "r", ResolvedCommit: "sha"},
+				Analysis: analysis,
+				AssessOptions: []pipeline.AssessOption{
+					pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+					pipeline.WithPlugin(p),
+				},
+				DependencyFetch: func(prior *statestore.DepFetch, r DependencyFetchRun) *statestore.DepFetch {
+					got = &r
+					return prior
+				},
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			if got == nil {
+				t.Fatal("the hook was not called")
+			}
+			if n := p.calls.Load(); n != 2 {
+				t.Fatalf("reachability ran %d times, want 2", n)
+			}
+			if len(got.Assessed) != 1 || got.Assessed[0].ID != wiringAdvisory.ID {
+				t.Fatalf("Assessed = %+v, want only the completed %s", got.Assessed, wiringAdvisory.ID)
+			}
+			if !got.Undetermined[wiringAdvisory.ID] {
+				t.Fatalf("Undetermined = %v, want %s", got.Undetermined, wiringAdvisory.ID)
+			}
+		})
 	}
 }

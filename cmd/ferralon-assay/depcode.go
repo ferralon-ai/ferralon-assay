@@ -454,10 +454,11 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 // concerning one it missed. Every other refutation the run reached without some package's code is
 // the JS lane's to withhold: each unread package scopes an unbounded uninspectable_package limit,
 // so a not_exploitable on a read package comes out undetermined, and stays listed for a run that
-// reads more to reach again. A baseline that read less neither adds nor removes. An advisory whose assessment fails is
-// not among the assessed, so an assessment that fails on every run leaves its entry listed and its
-// row retried on every cve-watch run: the failure leaves the row undetermined, and nothing reached
-// with its package's code has replaced it.
+// reads more to reach again; so does one with a cut-short or failed assessment beside a completed
+// one. A baseline that read less neither adds nor removes. An advisory whose every assessment
+// fails is not among the assessed, so an assessment that fails on every run leaves its entry listed
+// and its row retried on every cve-watch run: the failure leaves the row undetermined, and nothing
+// reached with its package's code has replaced it.
 //
 // A lost CAS can leave the count higher than the runs that held since the registry last served:
 // Merge keeps the larger held_runs and the earliest first_held_at, so a reset written by a

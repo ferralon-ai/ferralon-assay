@@ -102,9 +102,10 @@ type DependencyFetchRun struct {
 	// packages a record with no affected_packages[] set may affect beyond the one it names. Set
 	// only for a cve-watch earnest run.
 	Packages map[string][]string
-	// Undetermined holds each advisory ID in Assessed with a completed assessment whose fresh
-	// finding is undetermined, before any dependency_not_fetched projection: a verdict the run
-	// withheld, which a later run that reads more may reach. Set only for a cve-watch earnest run.
+	// Undetermined holds each advisory ID with an assessment this run whose fresh finding is
+	// undetermined, before any dependency_not_fetched projection, a cut-short or failed assessment
+	// included: a verdict the run withheld or did not reach, which a later run may reach. It can
+	// name an ID absent from Assessed. Set only for a cve-watch earnest run.
 	Undetermined map[string]bool
 }
 

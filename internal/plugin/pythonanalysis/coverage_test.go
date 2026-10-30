@@ -146,7 +146,10 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"pyproject extra the lock does not record", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests[socks]>=2.31")}, false},
 		{"pyproject extra recorded, its package unlocked", map[string]string{"uv.lock": covUVLockExtraUnlocked, "pyproject.toml": covPyproject("requests[socks]>=2.31")}, false},
 		{"requirements extra the lock does not record", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3\n"}, false},
-		{"requirements extra recorded", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3\n"}, true},
+		{"requirements extra recorded", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3\n"}, false},
+		{"requirements extra recorded, hashed", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"requirements extra recorded, hashed with a space", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3 --hash sha256:aaa\n"}, true},
+		{"requirements extra recorded, hash after another option", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3 --no-binary=:all: --hash=sha256:aaa\n"}, true},
 		{"poetry extra recorded, its package locked", map[string]string{"poetry.lock": covPoetryLock, "pyproject.toml": "[tool.poetry.dependencies]\npython = \"^3.12\"\nrequests = { version = \"^2.31\", extras = [\"socks\"] }\n"}, true},
 		{"poetry extra recorded, its package unlocked", map[string]string{"poetry.lock": covPoetryLockNoPySocks, "pyproject.toml": "[tool.poetry.dependencies]\npython = \"^3.12\"\nrequests = { version = \"^2.31\", extras = [\"socks\"] }\n"}, false},
 		{"pdm extra recorded", map[string]string{"pdm.lock": covPDMLock, "pyproject.toml": covPyproject("requests[socks]>=2.31")}, true},
@@ -156,7 +159,8 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"pyproject range admits the locked version", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests>=2.31,<3")}, true},
 		{"pyproject range excludes the locked version", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests>=2.40")}, false},
 		{"requirements pin disagrees", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests==2.31.0\n"}, false},
-		{"requirements compatible-release admits", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests~=2.32.0\n"}, true},
+		{"requirements compatible-release admits", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests~=2.32.0\n"}, false},
+		{"requirements compatible-release admits, hashed", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests~=2.32.0 --hash=sha256:aaa\n"}, true},
 		{"poetry caret admits", map[string]string{"poetry.lock": covPoetryLock, "pyproject.toml": "[tool.poetry.dependencies]\nrequests = \"^2.31\"\n"}, true},
 		{"poetry caret excludes", map[string]string{"poetry.lock": covPoetryLock, "pyproject.toml": "[tool.poetry.dependencies]\nrequests = \"^3.0\"\n"}, false},
 		{"poetry alternation is not read", map[string]string{"poetry.lock": covPoetryLock, "pyproject.toml": "[tool.poetry.dependencies]\nrequests = \"^2.31 || ^3.0\"\n"}, false},
@@ -166,7 +170,8 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		// Nested project definitions.
 		{"nested pyproject the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, false},
 		{"nested pyproject that is a workspace member", map[string]string{"uv.lock": covUVLockMember, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, true},
-		{"nested requirements file", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3\n"}, true},
+		{"nested requirements file", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3\n"}, false},
+		{"nested requirements file, hashed", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"nested setup.py the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"requests\"])\n"}, false},
 		{"nested project with its own lock", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n", "svc/uv.lock": covUVLockNoExtra}, true},
 
@@ -262,7 +267,7 @@ func TestResolveVersions_ExhaustiveSymlinks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := writeTree(t, map[string]string{
-				"uv.lock": exUVLock, "pyproject.toml": exPyproject, "requirements-base.txt": "flask==3.0.0\n",
+				"uv.lock": exUVLock, "pyproject.toml": exPyproject, "requirements-base.txt": "flask==3.0.0 --hash=sha256:aaa\n",
 				".venv/lib/python3.12/site-packages/flask-3.0.0.dist-info/METADATA": "Name: flask\n",
 			})
 			if r := resolveVersion(t, root, "PyJWT"); !r.Exhaustive {

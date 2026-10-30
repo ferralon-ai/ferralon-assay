@@ -52,7 +52,10 @@ func sinkNoMethod(v string)  { sunk = append(sunk, v) }
 func sinkTwice(v string)     { sunk = append(sunk, v) }
 func sinkDynamic(v string)   { sunk = append(sunk, v) }
 
-// Negative sinks: no gin-registered handler reaches these.
+// Negative sinks: no taint reaches these. ctxStoreForm, a registered handler, hands
+// sinkCtxStore only a value the application stored on the context; no gin-registered
+// handler calls the others.
+func sinkCtxStore(v string)        { sunk = append(sunk, v) }
 func sinkNeverRegistered(v string) { sunk = append(sunk, v) }
 func sinkMiddleware(v string)      { sunk = append(sunk, v) }
 func sinkLookalike(v string)       { sunk = append(sunk, v) }
@@ -114,6 +117,14 @@ func unregisteredFunc(c *gin.Context) { sinkNeverRegistered(c.Param("id")) }
 // are no route ingress.
 func useMiddleware(c *gin.Context)   { sinkMiddleware(c.Query("trace")) }
 func groupMiddleware(c *gin.Context) { sinkMiddleware(c.Query("auth")) }
+
+// recovery is handed to gin.CustomRecovery, a one-argument gin function that is no
+// net/http adapter (WrapF / WrapH): it handles panics, and is no route ingress.
+func recovery(c *gin.Context, err any) { sinkMiddleware(c.Query("r")) }
+
+// ctxStoreForm is a route handler, but GetString reads what the application stored on
+// the context, no request data: no taint reaches sinkCtxStore.
+func (s *server) ctxStoreForm(c *gin.Context) { sinkCtxStore(c.GetString("user")) }
 
 // Handlers registered only on (or wrapped only by) the look-alike: no ingress.
 func (s *server) lookalikeGet(c *gin.Context)    { sinkLookalike(c.Param("id")) }
@@ -185,6 +196,8 @@ func main() {
 	r.GET("/wraph", gin.WrapH(&wrappedHandler{}))
 	// gin's own Engine.ServeHTTP mounted through WrapH is no ingress.
 	r.Any("/engine/*path", gin.WrapH(gin.New()))
+	r.GET("/rec", gin.CustomRecovery(recovery))
+	r.GET("/ctx-store", s.ctxStoreForm)
 	(&fwdRouter{r: r}).Get("/fwd", s.neverRegistered)
 
 	fake := lookalike.New()

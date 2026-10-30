@@ -1,0 +1,12 @@
+#!/bin/sh
+# A stand-in for cosign, for fetch_corpus_bundle_test.go. It records its arguments one per line in
+# $COSIGN_STUB_LOG, then the files present beside its last argument (the blob) when it ran, and exits
+# with $COSIGN_STUB_EXIT (default 0). Committed rather than written per test: macOS scans a new
+# executable on its first run, which alone costs more than a fast test's whole budget.
+{
+  for a in "$@"; do printf '%s\n' "$a"; done
+  echo '--- beside the blob:'
+  for a in "$@"; do last="$a"; done
+  ls "$(dirname "$last")"
+} >"$COSIGN_STUB_LOG"
+exit "${COSIGN_STUB_EXIT:-0}"

@@ -54,11 +54,13 @@ func fixtureReport() report.Report {
 func fixtureReportWithPriority() report.Report {
 	pkgNet := report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.17.0", PURL: "pkg:golang/golang.org/x/net@v0.17.0"}
 	p := &report.Priority{
-		EPSSScore:      0.940,
-		EPSSPercentile: 0.98,
-		KEVListed:      true,
-		KEVDateAdded:   "2024-01-15",
-		Snapshot:       "2026-06-15",
+		EPSSScore:         0.940,
+		EPSSPercentile:    0.98,
+		EPSSAsOf:          "2026-06-15",
+		KEVListed:         true,
+		KEVDateAdded:      "2024-01-15",
+		KEVCatalogVersion: "2026.06.14",
+		KEVDateReleased:   "2026-06-14T17:00:00Z",
 	}
 	entry := &report.EntryPoint{
 		Symbol:               "net/http.HandlerFunc",

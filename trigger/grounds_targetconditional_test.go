@@ -52,6 +52,7 @@ func (fx targetConditionalFixture) finding(t *testing.T) report.AdvisoryFinding 
 		"purl":                       "pkg:nuget/Newtonsoft.Json",
 		"advisory_symbols":           fx.symbols,
 		"target_conditional_symbols": fx.conditional,
+		"symbol_provenance":          "osv-declared",
 	})
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.res)
 	seedFootprint(t, store, aid, fx.flags)

@@ -186,7 +186,7 @@ func installRewriteConfig(path string, head []byte) bool {
 			return true
 		}
 	}
-	return false
+	return strings.HasPrefix(lower, ".npmrc") && npmrcNamesAny(head, rewriteConfigWords)
 }
 
 func jsCandidateName(path string) (string, bool) {

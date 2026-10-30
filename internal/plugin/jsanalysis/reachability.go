@@ -29,7 +29,7 @@ import (
 //
 // A load failure is a hard error (inv.4).
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir, DependencyCache: req.DependencyCache})
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
@@ -41,19 +41,20 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	adj := buildAdjacency(cg.Edges)
 	nodes := graphNodes(cg.Edges)
 	sources := entrySymbols(ing.Ingresses, cg.Roots)
+	ingressSources := entrySymbols(ing.Ingresses, nil)
 
 	reasons := map[string]bool{}
 	for _, r := range cg.Partiality.Reasons {
 		reasons[r] = true
 	}
-	if !cg.Partiality.Complete && len(cg.Partiality.Reasons) == 0 {
+	if !cg.Partiality.Complete && len(cg.Partiality.Reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		reasons[plugin.PartialReasonDynamicDispatch] = true
 	}
 
 	var paths []plugin.ReachPath
 	for _, s := range req.Symbols {
 		sink := sym(s)
-		trace := shortestPath(adj, sources, sink)
+		trace, ingress := ingressFirstPath(adj, ingressSources, sources, sink)
 		if trace == nil {
 			// A sink the lexical graph cannot connect to any ingress is UNKNOWN, never
 			// "safe": the sink may be absent from the source graph (library/dynamic) or
@@ -64,10 +65,6 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 			reasons[plugin.PartialReasonNoIngress] = true
 			continue
 		}
-		var ingress plugin.Symbol
-		if len(trace) > 0 {
-			ingress = trace[0]
-		}
 		paths = append(paths, plugin.ReachPath{
 			Sink:    sink,
 			Ingress: ingress,
@@ -75,10 +72,23 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		})
 	}
 
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths}, nil
 	}
-	return plugin.ReachabilityResult{Partiality: plugin.Partial(sortedReasons(reasons)...), Paths: paths}, nil
+	part := plugin.Partial(sortedReasons(reasons)...)
+	part.Scoped = cg.Partiality.Scoped
+	return plugin.ReachabilityResult{Partiality: part, Paths: paths}, nil
+}
+
+// ingressFirstPath finds the shortest path to sink from a discovered ingress, falling back
+// to any call-graph root. Roots include module top-level frames and escape roots, which are
+// searched so no callback edge hides a sink but are not attacker ingresses: the returned
+// ingress is set only when the path starts at one.
+func ingressFirstPath(adj map[plugin.Symbol][]plugin.Symbol, ingresses, sources []plugin.Symbol, sink plugin.Symbol) ([]plugin.Symbol, plugin.Symbol) {
+	if trace := shortestPath(adj, ingresses, sink); trace != nil {
+		return trace, trace[0]
+	}
+	return shortestPath(adj, sources, sink), plugin.Symbol{}
 }
 
 // entrySymbols is the set of static-reachability entry points: every discovered ingress

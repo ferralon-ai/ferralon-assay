@@ -63,7 +63,7 @@ import (
 // installedCopyPresent(root, coord, true). perFile maps each manifest path to what
 // parseManifestCoverage returned for it. The cheap manifest checks run before the walk of the
 // build dir.
-func manifestSetCovers(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool) bool {
+func manifestSetCovers(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool, installs pipInstalls) bool {
 	if parseFailed || len(manifests) == 0 {
 		return false
 	}
@@ -88,6 +88,7 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 	if len(locks) == 0 {
 		return false
 	}
+	reqs := newReqInstalls(root, manifests, installs)
 	for _, m := range manifests {
 		if completeLockfiles[filepath.Base(m)] {
 			continue
@@ -98,6 +99,9 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 		}
 		decls, ok := manifestDecls(m)
 		if !ok {
+			return false
+		}
+		if isRequirementsName(filepath.Base(m)) && (len(decls.reqs) > 0 || len(decls.nested) > 0) && !reqs.refused(m) {
 			return false
 		}
 		for _, l := range governing {

@@ -3,7 +3,7 @@
 // Recognition is ADVISORY ONLY — it shapes the model's framing and selects the proof route, but
 // NEVER decides a verdict and NEVER touches the proven gate (inv.5). A class that is recognized but
 // cannot be soundly routed is surfaced as an honest partiality, never as "clear" (ROADMAP §scope
-// honesty). The pure CWE→class recognizer is the free/OSS half of the former proof.vulnclass; the
+// honesty). The pure CWE→class recognizer is the free/OSS half of vulnclass recognition; the
 // proprietary class→proof-route table stays Service-side.
 package vulnclass
 

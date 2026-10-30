@@ -8,11 +8,37 @@ surfaces a run publishes to under which permissions. The Action's own inputs are
 
 ## Reading the Report
 
-Every finding carries one verdict. [Language support](language-support.md#the-three-valued-verdict)
-explains the three-valued core — `reachable_candidate`, `disqualified`, `undetermined` — and why an
-`undetermined` row is an open question, never a clean bill. The rest of this section is the evidence
-that sits next to the verdict. None of it changes the verdict; it tells you which findings to look at
-first.
+Every finding carries one of five verdicts: `reachable_candidate`, `not_exploitable`, `disqualified`,
+`malicious_package_present` and `undetermined`. [Language support](language-support.md#verdicts)
+defines each. The rest of this section is the evidence that sits next to the verdict. None of it
+changes the verdict; it tells you which findings to look at first.
+
+### `not_exploitable` grounds
+
+A `not_exploitable` row stands on named grounds in every ecosystem. It needs an admitted package with a
+resolved version, and either every advisory symbol resolved inside that package and searched from the
+entry points, or a positive refutation of the package. In Go it can also rest on the build itself: no
+module in the build holds the advisory's package, and none of the build's modules declares an advisory
+symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
+`undetermined`, with the missing ground as its reason.
+
+### `undetermined` reasons
+
+An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what
+the scan did not establish:
+
+| Reason | What was missing |
+|---|---|
+| `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
+| `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. |
+| `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
+| `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
+| `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
+| `advisory_range_absent` | A path reaches the advisory's code, but the advisory records no version range the scan can bound. The path stays as evidence, and `advisory_bounds` records what the advisory does state. |
+| `go_toolchain_unresolved`, `go_toolchain_not_scanned` | A Go standard-library advisory could not be adjudicated against your toolchain; see [the Go toolchain](#the-go-toolchain-your-repository-builds-with). |
+
+To close a row, supply the missing fact: resolve the version, state the build condition, or fix the
+failing step.
 
 ### Reachability grade
 
@@ -32,21 +58,56 @@ exploited.
 
 ### EPSS and KEV
 
-A finding whose advisory has a CVE identifier (as its id or one of its aliases) may carry a `priority`
-block:
+A finding may carry a `priority` block when the run was given an EPSS/KEV **signals file** and that
+file has a value for the advisory's id or one of its aliases:
 
-- **EPSS** — FIRST.org's probability-of-exploitation score and percentile for the CVE.
-- **KEV** — whether the CVE is in CISA's Known Exploited Vulnerabilities catalog, and the date it was
-  added.
-- **Snapshot** — the date of the data the values came from.
+- **EPSS** — FIRST.org's probability-of-exploitation score and percentile, with `epss_as_of`, the
+  EPSS model date they come from.
+- **KEV** — whether the CVE was in CISA's Known Exploited Vulnerabilities catalog (and the date it was
+  added), with `kev_catalog_version` and `kev_date_released`, the catalog it was read from. A KEV stamp
+  without `kev_listed` means the CVE was not in **that** catalog, released at that time — not that it
+  is unlisted today.
 
-The values come from EPSS and KEV snapshots embedded in the scanner binary
-([`internal/intel`](../internal/intel)), so the lookup is offline and a given scanner release always
-returns the same values. The snapshot moves when a release refreshes it. A finding with no match in
-either feed carries no `priority` block at all.
+Every value carries its own date because the values are captures of different ages; there is no
+report-wide "as of" date. `provenance.intel.signals_digest` names the signals file once. Assay
+recomputes that digest from the file's payload when it loads the file, and refuses a file whose
+stated `signals_digest` does not match, so the digest a report names is one the scan verified. It
+also refuses a file with a key the digest and the loader would read differently: a key repeated in
+one object, two keys that differ only in case, or a field's name spelled in another case (`"Score"`
+for `"score"`), so every value a report ranks by is one the digest covered.
+
+The scanner holds no EPSS or KEV data of its own and never contacts FIRST or CISA. Signals are a
+provided input, read from, in order:
+
+1. `-advisory-signals <path>` — a `signals.json` or `signals.json.gz` (gzip is detected from the
+   content);
+2. the `ASSAY_ADVISORY_SIGNALS` environment variable;
+3. the `signals.json` at the root of an `-advisory-corpus` **directory**, when it has one.
+
+The Action supplies the first of these on its bundle route (`advisory-corpus-repo` with
+`advisory-corpus-policy`, reading a `corpus-*` release): it downloads the release's `signals.json.gz`
+only after verifying the release's signed `bundles.json`, checks the asset's sha256 against the
+`signals` object there, and passes it as `-advisory-signals`. A release that cannot supply verified
+signals — a `bundles.json` older than `bundle_version` 1.1.0, no `signals` object, no asset, or a
+sha256 mismatch — fails the run. With an `advisory-corpus` directory the Action passes nothing, so
+the directory's own `signals.json` applies.
+
+The file is the corpus's signals sidecar (`signals_version` 1.x — see the vulnerability corpus's
+`CONSUMING.md`, "The signals sidecar"). Any other `signals_version`, or a file that is malformed or
+carries a value without its stamp, fails the run: a broken signals file never turns silently into no
+priority. A corpus directory without a `signals.json` is not an error.
+
+Every run summary has a `signals:` line. With no signals source it says so, and **no finding carries a
+`priority` block**: a run without signals reports no priority rather than an old one. When the newest
+EPSS `as_of` in the file is older than `-advisory-signals-max-age` (default `168h`, 7 days), the line
+carries a warning naming its age; the file still loads.
+
+Every run re-ranks every finding with its own signals, including findings a PR run inherits from the
+baseline, so no row keeps a value from a signals file this run did not read.
 
 EPSS and KEV describe how often a CVE is exploited in the wild, across all software. They say nothing
 about whether this codebase calls the vulnerable code — that is what the verdict and grade are for.
+Nothing that decides a verdict reads them; they only order the findings.
 
 ### Ordering
 
@@ -64,9 +125,9 @@ Findings are sorted most-actionable first, and every projection keeps that order
 | Output | What it carries |
 |---|---|
 | `report.json` | The full `evidence` block (grade, entry point, call path) and the `priority` block. See [sample-report.md](sample-report.md) for the shape. |
-| `report.sarif.json` | Under each result's `properties.scanner`: `reachability_grade`, `entry_point`, `attacker_controllable`, `epss_score`, `epss_percentile`, `kev_listed`, `kev_date_added`, `intel_snapshot`. The SARIF `rank` is the EPSS percentile × 100, and KEV-listed findings get a `CISA-KEV` tag. |
-| `report.html` | Grade and EPSS/KEV badges, the call path, and a note on where the intel came from. |
-| PR comment and pinned Issue | The grade and EPSS/KEV columns, with a one-line reminder that neither is an exploitability claim. |
+| `report.sarif.json` | Under each result's `properties.scanner`: `reachability_grade`, `entry_point`, `attacker_controllable`, `epss_score`, `epss_percentile` and `epss_as_of` when there is an EPSS value, and `kev_listed`, `kev_date_added`, `kev_catalog_version` and `kev_date_released` when there is a KEV observation. The SARIF `rank` is the EPSS percentile × 100, and KEV-listed findings get a `CISA-KEV` tag. |
+| `report.html` | Grade and EPSS/KEV badges, each with its own date, the call path, and a note on where the intel came from. |
+| PR comment and pinned Issue | The grade and EPSS/KEV columns, each value with its own date, and a one-line reminder that neither is an exploitability claim. |
 | `openvex.json` | No priority data. OpenVEX has no field for it, so none is projected. |
 
 ## The Go toolchain your repository builds with
@@ -117,6 +178,67 @@ Before turning it on:
 - **Go 1.20 is the floor.** The analyzer cannot drive an older `go` command; below 1.20 the advisory
   stays `undetermined` whatever you set.
 - **The first run is slower.** It downloads a Go toolchain from the module proxy.
+
+### Observed CI toolchain
+
+The CLI also reads `ASSAY_CI_GO_VERSION`, the Go the CI runner has installed. The scan uses it as a
+toolchain source only when you also set `ASSAY_TRUST_OBSERVED_GO=true`, which asserts that the
+observed Go is the one your repository builds with: true in a job that ran `actions/setup-go` ahead
+of the scan, false in a dedicated scan workflow where the observed Go is the runner image's. Any
+other value leaves the observation out and resolution falls back to your `go.mod` directives. When
+trusted, it counts as an exact toolchain, ranked after your declaration and above your `go.mod`
+directives. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
+like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
+toolchain from `go.mod` alone.
+
+## Subject build conditions for Java and Maven
+
+Maven profile activation depends on the JVM and the profile selection your build runs with, which the
+scan does not look up. State them:
+
+| What you state | CLI flag | Environment variable |
+|---|---|---|
+| The `java.version` of the JDK your program runs on, the same major version as the JVM that runs your build, as `mvn -v` reports it (for example `17.0.12` or `1.8.0_382`) | `-subject-java-version` | `ASSAY_SUBJECT_JAVA_VERSION` |
+| The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
+
+The flag wins over the environment variable. The Action has no inputs for these; set the variables in
+the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. Profiles activated by `<jdk>`
+stay undecided until you state the Java version, and every profile of the reactor and its parents stays
+undecided until you state the selection.
+
+The Java version you state is also the JDK your program runs on. It must be the same major version
+as the JVM that runs the build, or the run fails. When your program runs on another JDK than the build,
+including a runtime image newer than the build JDK, leave the version unstated. Don't state the build's
+JDK in its place: the scan checks the statement against the build's JVM and toolchains, never against
+the image you deploy, so a wrong statement goes unnoticed.
+Bytecode reachability uses its table of the JDK's own methods only when the stated JDK is the release
+that table describes, so on any other release, or none, more methods count as possible entry points.
+The scan does the same for the whole build when a module's Maven or Gradle toolchain selects a JDK
+other than the stated one, or when the graph cannot say which JDK a module uses: an Android project,
+or a graph file written before toolchains were recorded.
+
+## Resolving the JVM build graph
+
+`resolve-graph` runs your repository's own Maven or Gradle and writes the resolved dependency graph as
+`assay.buildgraph/v2` JSON, with the sha256 of each build file in the repository the tool read (POMs, Gradle scripts, properties,
+version catalogs and lockfiles):
+
+```sh
+ferralon-assay resolve-graph -dir . -out "$RUNNER_TEMP/graph"
+```
+
+| Flag | Meaning |
+|---|---|
+| `-dir` | Repository root (default `.`). |
+| `-out` | Output directory for `buildgraph.json` and its sidecars (required). It must be empty and outside the repository; the command rejects any other path, so a previous run's files are never read as this one's. |
+| `-tool` | `auto` (default), `maven` or `gradle`. |
+| `-profiles` | Comma-separated Maven profiles to activate. |
+| `-java-version` | The JDK the job states, which the program runs on; a build tool on a different major version fails. |
+
+A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan reads the
+graph with `-build-graph <out>/buildgraph.json`, and accepts it only when the scan states the same JDK
+and profiles (`-subject-java-version`, `-subject-maven-profiles`). This command runs your build's scripts and plugins, and the build tool fetches from
+the repositories your build configures; see [threat-model.md](threat-model.md).
 
 ## State and run modes
 
@@ -201,8 +323,8 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        # Pin the same ref as your main workflow (see the README Quickstart).
-        uses: ferralon-ai/ferralon-assay@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0
+        # Use the same ref as your main workflow (see the README Quickstart).
+        uses: ferralon-ai/ferralon-assay@v0.5
         with:
           mode: cve-watch
           state-repo: ${{ github.repository }}

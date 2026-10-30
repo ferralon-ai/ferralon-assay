@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // jsPlugin is the out-of-process client for the JavaScript/TypeScript language
@@ -17,6 +18,7 @@ import (
 // heavy parsing code — the JS analysis links only into the subprocess binary (inv.8).
 type jsPlugin struct {
 	bin string // resolved path to the assay-plugin-js binary
+	env []string
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -33,11 +35,22 @@ func WithJSBinaryPath(path string) JSOption {
 	return func(p *jsPlugin) { p.bin = path }
 }
 
+// WithJSRunCacheDir hands the subprocess a directory, owned by the caller for one scan over one
+// checkout, where it keeps the call graph every advisory's analysis would otherwise rebuild. The
+// caller removes the directory after the scan. An empty dir turns the cache off, including one the
+// host process's own environment would otherwise pass down.
+func WithJSRunCacheDir(dir string) JSOption {
+	return func(p *jsPlugin) { p.env = append(p.env, jsRunCacheDirEnv+"="+dir) }
+}
+
+// jsRunCacheDirEnv is read by cmd/assay-plugin-js, which hands it to the analyzer.
+const jsRunCacheDirEnv = brand.EnvPrefix + "_JS_RUN_CACHE_DIR"
+
 // NewJSPlugin constructs the subprocess-backed JS plugin client. Binary discovery
 // mirrors NewGoPlugin/NewJavaPlugin: an explicit path via WithJSBinaryPath takes
 // precedence; otherwise exec.LookPath resolves BinaryName("js") on PATH.
 func NewJSPlugin(opts ...JSOption) (LanguagePlugin, error) {
-	p := &jsPlugin{}
+	p := &jsPlugin{env: []string{jsRunCacheDirEnv + "="}}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -59,7 +72,7 @@ func (*jsPlugin) Language() string { return "js" }
 // identical in shape to goPlugin.run/javaPlugin.run/pythonPlugin.run/dotnetPlugin.run.
 func (p *jsPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
-	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req)
+	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 
 // ensureMetrics lazily creates the client's instruments on first use, mirroring

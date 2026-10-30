@@ -17,13 +17,7 @@ import (
 // graphFileName is the graph's name inside the -out directory, beside its sidecars.
 const graphFileName = "buildgraph.json"
 
-// listFlag collects a repeatable flag.
-type listFlag []string
-
-func (l *listFlag) String() string     { return strings.Join(*l, ",") }
-func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
-
-// runResolveGraph runs the repository's Maven or Gradle and writes its assay.buildgraph/v1
+// runResolveGraph runs the repository's Maven or Gradle and writes its assay.buildgraph/v2
 // graph. A failed resolution prints its typed cause and exits nonzero; nothing is written in
 // its place.
 func runResolveGraph(args []string) error {
@@ -32,27 +26,16 @@ func runResolveGraph(args []string) error {
 	out := fs.String("out", "", "output directory for "+graphFileName+" and its sidecars (required)")
 	tool := fs.String("tool", buildgraph.ToolAuto, "build tool: auto, maven or gradle")
 	profiles := fs.String("profiles", "", "comma-separated Maven profiles to activate")
-	jdk := fs.String("java-version", "", "the JDK the job states; a different major version fails")
-	var props, envs listFlag
-	fs.Var(&props, "D", "build property key=value (repeatable): Maven -D, Gradle -P")
-	fs.Var(&envs, "env", "environment variable key=value overlaid on the job's (repeatable)")
+	jdk := fs.String("java-version", "", "the JDK the job states, which the program runs on; a build tool on a different major version fails. Leave it unstated when the program runs on another JDK than the build")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *out == "" {
 		return errors.New("-out is required")
 	}
-	c := buildgraph.Conditions{JDK: *jdk}
-	if *profiles != "" {
-		c.Profiles = strings.Split(*profiles, ",")
-	}
-	var err error
-	if c.Properties, err = keyValues("-D", props); err != nil {
-		return err
-	}
-	if c.Env, err = keyValues("-env", envs); err != nil {
-		return err
-	}
+	// The conditions are the ones a scan can state, normalised the same way, so a scan stating
+	// them accepts the graph.
+	c := buildgraph.Conditions{JDK: strings.TrimSpace(*jdk), Profiles: splitProfiles(*profiles)}
 
 	g, err := buildgraph.Resolve(context.Background(), buildgraph.Request{
 		Dir:        *dir,
@@ -68,6 +51,9 @@ func runResolveGraph(args []string) error {
 		}
 		return err
 	}
+	if err := writableGraph(g); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(g, "", "  ")
 	if err != nil {
 		return err
@@ -75,17 +61,11 @@ func runResolveGraph(args []string) error {
 	return os.WriteFile(filepath.Join(*out, graphFileName), append(b, '\n'), 0o644)
 }
 
-func keyValues(name string, kvs []string) (map[string]string, error) {
-	if len(kvs) == 0 {
-		return nil, nil
+// writableGraph refuses a graph no scan could load from a file: one whose build logic lies
+// outside the checkout.
+func writableGraph(g *buildgraph.Graph) error {
+	if u := g.Subject.UnbindableIncludedBuilds; len(u) > 0 {
+		return fmt.Errorf("included build outside the checkout (%s): resolve the graph in the scan with -build-graph auto", u[0])
 	}
-	m := make(map[string]string, len(kvs))
-	for _, kv := range kvs {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" {
-			return nil, fmt.Errorf("%s %q: want key=value", name, kv)
-		}
-		m[k] = v
-	}
-	return m, nil
+	return nil
 }

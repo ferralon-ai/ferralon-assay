@@ -6,7 +6,7 @@
 // The sink here is RunSnapshot: the run-snapshot PUSH counterpart to the backend's
 // /runs endpoint. The push is the ONLY run-frozen source — re-reading refs/assay/state
 // later is deliberately not done, because the ref moves and the run does not. It POSTs the verbatim
-// tegron.report.v2 verdict layer so the backend can persist a report_runs row — the
+// tegron.report.v3 verdict layer so the backend can persist a report_runs row — the
 // spine the console fleet view renders an assessment from. Absent this push a
 // green field scan surfaces as "INSTALLED · NO ASSESSMENT YET".
 package ferralon
@@ -37,7 +37,7 @@ type httpDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// RunSnapshot is a ResultSink that pushes the run's tegron.report.v2 report to the
+// RunSnapshot is a ResultSink that pushes the run's tegron.report.v3 report to the
 // backend run-snapshot endpoint (/runs). The run identity + provenance (owner, repo,
 // run_id, ref, sha) are taken by the backend from the VERIFIED OIDC token, never the
 // body, so the sink sends ONLY the report bytes — no envelope.
@@ -69,7 +69,7 @@ type result struct {
 	RunID  string `json:"run_id"`
 }
 
-// Publish marshals res.Report to its tegron.report.v2 JSON and POSTs it to the
+// Publish marshals res.Report to its tegron.report.v3 JSON and POSTs it to the
 // run-snapshot endpoint with Content-Type application/json and the OIDC token as a
 // Bearer credential. It is fail-open: every error path logs and returns nil.
 func (s *RunSnapshot) Publish(ctx context.Context, res resultsink.Result) error {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -212,4 +213,16 @@ func hasReason(reasons []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestAnalyzerContextCarriesRunCacheDir pins that the run cache directory the host sets on this
+// subprocess's environment, under the name plugin.WithRunCacheDir writes, reaches the analyzer,
+// and that an empty value leaves the cache off.
+func TestAnalyzerContextCarriesRunCacheDir(t *testing.T) {
+	for _, dir := range []string{"/tmp/run-cache", ""} {
+		t.Setenv("ASSAY_GO_RUN_CACHE_DIR", dir)
+		if got := goanalysis.RunCacheDir(analyzerContext(context.Background())); got != dir {
+			t.Errorf("run cache dir = %q, want %q", got, dir)
+		}
+	}
 }

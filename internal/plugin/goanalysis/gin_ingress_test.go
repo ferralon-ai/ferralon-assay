@@ -107,7 +107,8 @@ func TestGin_RegistrationFormsAreRouteIngresses(t *testing.T) {
 // parameter and carried through its Param/Query/PostForm accessors and its Request
 // field, exactly as from a net/http handler's *http.Request — so
 // attackerIngressInTrace finds an attacker-controllable ingress on it; and that the
-// negatives' sinks get no path.
+// negatives' sinks get no path. sinkCtxStore pins the accessor set: a registered
+// handler feeds it c.GetString, a *gin.Context method that reads no request data.
 func TestGin_RouteIngressHeadsTaintTrace(t *testing.T) {
 	var sinks []string
 	for _, f := range ginForms {
@@ -117,6 +118,7 @@ func TestGin_RouteIngressHeadsTaintTrace(t *testing.T) {
 		ginFixtureSCIP + "sinkNeverRegistered().",
 		ginFixtureSCIP + "sinkMiddleware().",
 		ginFixtureSCIP + "sinkLookalike().",
+		ginFixtureSCIP + "sinkCtxStore().",
 	}
 	res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{
 		BuildDir: ginFixtureDir,
@@ -142,7 +144,7 @@ func TestGin_RouteIngressHeadsTaintTrace(t *testing.T) {
 	}
 	for _, s := range negSinks {
 		if p, ok := bySink[s]; ok {
-			t.Errorf("no gin-registered handler reaches %s, yet a path exists from %q", s, p.Ingress.SCIP)
+			t.Errorf("no taint reaches %s, yet a path exists from %q", s, p.Ingress.SCIP)
 		}
 	}
 }
@@ -222,10 +224,13 @@ func TestGin_UnregisteredHandlerIsNoIngress(t *testing.T) {
 // TestGin_MiddlewareIsNoIngress proves middleware is no route ingress: neither the
 // engine's Use middleware nor the handler arguments of Group, which are the group's
 // middleware. Both run for every route under them and register none of their own.
+// Nor is the function a route's gin.CustomRecovery wraps: only WrapF and WrapH, by
+// name, are unwrapped to the handler they take.
 func TestGin_MiddlewareIsNoIngress(t *testing.T) {
 	assertNoGinIngress(t, ginIngresses(t),
 		"useMiddleware().",
 		"groupMiddleware().",
+		"recovery().",
 	)
 }
 

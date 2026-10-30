@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -24,11 +26,13 @@ import (
 // deno, a pnpmfile, a copy under .yarn or .pnpm-store, a lock in a directory lockFiles skips)
 // vetoes by default instead of being listed one name at a time.
 
-// unreadSurfaces reports whether any install surface under root goes unread; locks is what
-// lockFiles(root) returned.
-func unreadSurfaces(root string, locks []string) bool {
+// unreadSurfaces reports whether any install surface under root goes unread, and whether a
+// script surface may install a package no lock or manifest read here names
+// (scriptsurface.Veto.Withheld); locks maps each path lockFiles(root) returned to what
+// parseLockfile read from it.
+func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithheld bool) {
 	read := make(map[string]bool, len(locks))
-	for _, l := range locks {
+	for l := range locks {
 		read[l] = true
 	}
 	for _, m := range packageManifests(root) {
@@ -36,12 +40,41 @@ func unreadSurfaces(root string, locks []string) bool {
 			read[m] = true
 		}
 	}
-	for _, c := range buildtree.Candidates(root, npmInstallSurface, func(path string) bool { return read[path] }) {
+	veto := scriptsurface.New(root, func(path string) bool { return read[path] }, scriptSpec(root, locks))
+	for _, c := range buildtree.Candidates(root, veto.Classify(npmInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
-			return true
+			unread = true
 		}
 	}
-	return false
+	scriptWithheld = veto.Withheld()
+	return unread || scriptWithheld, scriptWithheld
+}
+
+// installSurfaces is unreadSurfaces for the build at root, computed once per scan through the
+// run cache and shared by the versions op and the dependency layout. locks returns what
+// lockFiles(root) and parseLockfile read; it is called only when the cache holds no answer.
+func installSurfaces(ctx context.Context, root string, locks func() map[string]lockInfo) (unread, scriptWithheld bool) {
+	type answer struct{ Unread, ScriptWithheld bool }
+	b, err := runCached(ctx, "installsurfaces", []string{root}, func() ([]byte, error) {
+		var a answer
+		a.Unread, a.ScriptWithheld = unreadSurfaces(root, locks())
+		return json.Marshal(a)
+	})
+	var a answer
+	if err != nil || json.Unmarshal(b, &a) != nil {
+		return unreadSurfaces(root, locks())
+	}
+	return a.Unread, a.ScriptWithheld
+}
+
+// parsedLocks reads every lockfile lockFiles finds under root, keyed by path.
+func parsedLocks(root string) map[string]lockInfo {
+	locks := lockFiles(root)
+	parsed := make(map[string]lockInfo, len(locks))
+	for _, l := range locks {
+		parsed[l], _ = parseLockfile(l)
+	}
+	return parsed
 }
 
 // npmSurfaceNames are the lowercased manifests and lockfiles npm, yarn, pnpm, bun, deno and
@@ -70,8 +103,45 @@ var npmDocExts = map[string]bool{
 }
 
 // npmRewriteWords are the settings through which .npmrc, .yarnrc* and pnpm-workspace.yaml add
-// or swap packages at install time.
-var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile"}
+// or swap packages, or move where packages are stored, at install time. pnpm 10 reads
+// global-virtual-store from .npmrc, and only in that exact case; the camelCase form is the
+// pnpm-workspace.yaml key.
+var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile",
+	"global-virtual-store", "GlobalVirtualStore"}
+
+// npmrcKeyIndirect reports whether an .npmrc line spells its key through an expansion or an
+// escape, as "${K}=true" with K in the environment or "enable-global-\u0076irtual-store"=true
+// do. pnpm 10 resolves both before it matches the key, so no word in npmRewriteWords can match
+// the text. Lines split on \r and \n alike, as pnpm's ini decoder does (/[\r\n]+/); a lone CR
+// separates lines. The value side is exempt: "_authToken=${TOKEN}" and Windows paths are common
+// there.
+//
+// A key whose raw text, after the BOM and surrounding space, begins with "//" (a registry's
+// credentials, //${HOST}/:_authToken) or "@" (a scoped registry, @${SCOPE}:registry) is exempt
+// too. pnpm cuts the line at the first "=" and only then expands ${...} in the key; unquoting
+// applies only to a key that starts with a quote, so the resolved key keeps its first
+// characters, and no pnpm 10 or 11 setting name starts with "/" or "@" (checked against both
+// binaries and their ini decoders: //${K}=v and @${K}=v with K naming a layout setting leave
+// enable-global-virtual-store, virtual-store-dir, node-linker and store-dir unset). The rule is
+// literal: a quoted "//${X}", a lone "/${X}" and a key that merely contains "//" later still
+// withhold.
+func npmrcKeyIndirect(head []byte) bool {
+	for _, line := range bytes.FieldsFunc(head, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("\xef\xbb\xbf")))
+		if len(line) == 0 || line[0] == ';' || line[0] == '#' {
+			continue
+		}
+		key, _, _ := bytes.Cut(line, []byte("="))
+		if !bytes.Contains(key, []byte("${")) && bytes.IndexByte(key, '\\') < 0 {
+			continue
+		}
+		if npmrcKeyCarved(string(key)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
 
 // npmInstallSurface reports whether the file at path, with its buildtree.Head (nil when binary,
 // empty or not a regular file, and then judged through buildtree.NULHeadMatch), names or holds
@@ -94,6 +164,9 @@ func npmSurface(path string, head []byte) (string, bool) {
 			if bytes.Contains(head, []byte(w)) {
 				return "install rewrite config", true
 			}
+		}
+		if strings.HasPrefix(lower, ".npmrc") && npmrcKeyIndirect(head) {
+			return "install rewrite config", true
 		}
 		return "", false
 	}

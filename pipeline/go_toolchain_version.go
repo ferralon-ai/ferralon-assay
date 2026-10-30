@@ -22,6 +22,7 @@
 // v-prefixed module semver (v0.17.0 — the WRONG scheme), too few/many segments, or any exotic
 // token. A mis-parsed version must never yield a confident, possibly-wrong ordering that
 // fabricates a not-affected.
+
 package pipeline
 
 import "strings"

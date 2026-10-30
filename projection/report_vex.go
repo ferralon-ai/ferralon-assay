@@ -6,7 +6,7 @@
 // This is the only VEX projector this module ships. The Service-tier projector
 // over a single verdict.PoE lives service-side; it shares the OpenVEX document
 // shapes declared in vex.go but not this file. The OSS tool never produces a
-// PoE: it produces a Report carrying only the four deterministic verdicts
+// PoE: it produces a Report carrying only the five deterministic verdicts
 // invariant 5 permits the runner to emit. This projector maps FROM
 // report.Verdict, never from verdict.PoE.
 //

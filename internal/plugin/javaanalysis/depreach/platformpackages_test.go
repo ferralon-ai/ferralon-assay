@@ -265,7 +265,8 @@ func TestEngine_Platform(t *testing.T) {
 }
 
 // TestClasspath_AddAndMerge: an entry that could not be listed marks the classpath
-// unlisted, and merging keeps both sides' packages and that mark.
+// unlisted, and merging keeps both sides' packages and that mark, and a JDK both sides
+// agree on or only one records.
 func TestClasspath_AddAndMerge(t *testing.T) {
 	var a, b Classpath
 	a.Add(map[string]bool{"com/a": true}, true)
@@ -277,5 +278,18 @@ func TestClasspath_AddAndMerge(t *testing.T) {
 	a.Merge(b)
 	if !a.Unlisted || !a.Packages["com/a"] || !a.Packages["com/b"] {
 		t.Fatalf("Merge: %+v", a)
+	}
+
+	for _, tc := range []struct{ a, b, want int }{
+		{a: 0, b: 21, want: 21},
+		{a: 21, b: 0, want: 21},
+		{a: 21, b: 21, want: 21},
+		{a: 17, b: 21, want: 0},
+	} {
+		c := Classpath{JDK: tc.a}
+		c.Merge(Classpath{JDK: tc.b})
+		if c.JDK != tc.want {
+			t.Errorf("Merge JDK %d with %d = %d, want %d", tc.a, tc.b, c.JDK, tc.want)
+		}
 	}
 }

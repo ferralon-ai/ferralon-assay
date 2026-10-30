@@ -23,8 +23,8 @@
 //     collapse in goanalysis/packages.go:35 — no distinct wire id yet), the
 //     harness records a diagnostic note. It NEVER fails equality on it.
 //
-// GoReferenceProfile is the Go reference instance the four language lanes
-// (java/dotnet/js/python) copy for their PLAN-0x0. Its rows target the fully
+// GoReferenceProfile is the Go reference instance the java, kotlin and dotnet
+// lanes copy. Its rows target the fully
 // structured canonical identity the field-contract froze; since no Go producer
 // populates the structured fields today, every row carries a KnownGap and the
 // profile is GREEN under xfail semantics.

@@ -3,9 +3,10 @@
 // with an HTML-comment marker so they can find-or-update their single artifact on a
 // re-run rather than spamming a new one per push.
 //
-// The body renders only the four deterministic verdicts (inv. 5) via the same
-// tally/headline/candidates helpers Tier 0 uses; it can never surface
-// affected/error/exploitable or any Case/Assessment/living-verdict concept.
+// The body renders only the five deterministic verdicts (disqualified /
+// not_exploitable / reachable_candidate / undetermined / malicious_package_present)
+// (inv. 5) via the same tally/headline/candidates helpers Tier 0 uses; it can never
+// surface exploitable or any Case/Assessment/living-verdict concept.
 package github
 
 import (
@@ -79,9 +80,6 @@ func renderTier1Body(r report.Report) string {
 			)
 		}
 		b.WriteString("\n")
-		if snap := intelSnapshot(cands); snap != "" {
-			fmt.Fprintf(&b, "_EPSS/KEV intel snapshot: %s._\n\n", mdCell(snap))
-		}
 	}
 
 	// The same collapsed footer the Tier-0 panel renders, from the same helper: an
@@ -145,39 +143,32 @@ func entryPointCell(e *report.EntryPoint) string {
 	return mdCell(out)
 }
 
-// epssCell renders the EPSS score and percentile as exploitation-likelihood
-// context (inv. 5), never an exploitability claim. Nil Priority → em-dash.
+// epssCell renders the EPSS score and percentile, with the model date they are from, as
+// exploitation-likelihood context (inv. 5), never an exploitability claim. Each value carries its
+// own date because values in one run can be of different ages. No EPSS value → em-dash.
 func epssCell(p *report.Priority) string {
-	if p == nil {
+	if !p.HasEPSS() {
 		return "—"
 	}
-	return fmt.Sprintf("%.3f (p%d)", p.EPSSScore, int(p.EPSSPercentile*100+0.5))
+	score := fmt.Sprintf("%.3f", p.EPSSScore)
+	if p.EPSSPercentile != 0 {
+		score += fmt.Sprintf(" (p%d)", int(p.EPSSPercentile*100+0.5))
+	}
+	return mdCell(fmt.Sprintf("%s as of %s", score, p.EPSSAsOf))
 }
 
-// kevCell renders a CISA KEV-listed marker (with date-added when present) when
-// the CVE is in the catalog, and nothing otherwise — an unlisted CVE prints an
-// em-dash rather than asserting "not KEV". KEV is in-the-wild context (inv. 5).
+// kevCell renders a CISA KEV-listed marker (with date-added when present) and the catalog version
+// it was read from when the CVE is in that catalog, and nothing otherwise — an unlisted CVE prints
+// an em-dash rather than asserting "not KEV". KEV is in-the-wild context (inv. 5).
 func kevCell(p *report.Priority) string {
-	if p == nil || !p.KEVListed {
+	if !p.HasKEV() || !p.KEVListed {
 		return "—"
 	}
+	listed := "KEV-listed"
 	if p.KEVDateAdded != "" {
-		return mdCell(fmt.Sprintf("KEV-listed (%s)", p.KEVDateAdded))
+		listed = fmt.Sprintf("KEV-listed (%s)", p.KEVDateAdded)
 	}
-	return "KEV-listed"
-}
-
-// intelSnapshot returns the pinned EPSS/KEV snapshot date shared by the
-// candidates' Priority records (rendered once as a footer, not per finding). It
-// returns the first non-empty Snapshot it finds; empty when no candidate carried
-// matched intel.
-func intelSnapshot(cands []report.AdvisoryFinding) string {
-	for i := range cands {
-		if cands[i].Priority != nil && cands[i].Priority.Snapshot != "" {
-			return cands[i].Priority.Snapshot
-		}
-	}
-	return ""
+	return mdCell(fmt.Sprintf("%s, catalog %s", listed, p.KEVCatalogVersion))
 }
 
 // withMarker wraps a rendered body with an HTML-comment marker line so a re-run can

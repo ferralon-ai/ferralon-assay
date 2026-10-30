@@ -94,6 +94,14 @@ func TestReaders_FIFO(t *testing.T) {
 			},
 		},
 		{
+			name: "parseManifestCoverage poetry.lock", fifo: "poetry.lock",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := parseManifestCoverage(pipe); ok {
+					t.Error("parseManifestCoverage read a pipe")
+				}
+			},
+		},
+		{
 			name: "manifestDecls pyproject.toml", fifo: "pyproject.toml",
 			check: func(t *testing.T, _, pipe string) {
 				if _, ok := manifestDecls(pipe); ok {

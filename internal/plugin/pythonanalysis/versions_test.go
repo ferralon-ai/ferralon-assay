@@ -1570,3 +1570,50 @@ func TestInventoryLockSourceRedirectKeepsVersion(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveVersions_PoetryLockDecodeFailsClosed: a poetry.lock is read only through its TOML
+// decode, so one that does not decode as a lock is unread. That holds both for a syntax error
+// and for a file that parses as TOML with the wrong shape. The version result is then partial,
+// a pinned declaration it would govern stays unresolved, and no name reads as absent.
+func TestResolveVersions_PoetryLockDecodeFailsClosed(t *testing.T) {
+	const pp = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt==2.8.0\"]\n"
+	for _, tc := range []struct{ name, lock string }{
+		{"syntax error", "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n[package.dependencies\n"},
+		{"version not a string", "[[package]]\nname = \"pyjwt\"\nversion = 2\n"},
+		{"name not a string", "[[package]]\nname = 1\nversion = \"2.8.0\"\n"},
+		{"package not an array of tables", "package = \"pyjwt\"\n"},
+		{"source not a table", "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = \"git\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{"pyproject.toml": pp, "poetry.lock": tc.lock})
+			res := resolveVersion(t, root, "pyjwt")
+			if res.Partiality.Complete {
+				t.Error("Partiality complete, want partial")
+			}
+			if res.Match.Resolved {
+				t.Errorf("Match resolved %q, want unresolved", res.Match.Version)
+			}
+			// Alone, so no uncovered pyproject pin withholds Exhaustive in its place.
+			lone := writeTree(t, map[string]string{"poetry.lock": tc.lock})
+			if r := resolveVersion(t, lone, "absent-package"); r.Exhaustive {
+				t.Error("absent-package Exhaustive, want not")
+			}
+		})
+	}
+}
+
+// TestResolveVersions_PoetryLockDuplicateDisagrees: two entries for one name at different
+// versions are two pins, never one resolved version or a complete set of one.
+func TestResolveVersions_PoetryLockDuplicateDisagrees(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n",
+		"poetry.lock":    "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n\n[[package]]\nname = \"PyJWT\"\nversion = \"2.9.0\"\n",
+	})
+	res := resolveVersion(t, root, "pyjwt")
+	if res.Match.Resolved {
+		t.Errorf("Match resolved %q, want unresolved", res.Match.Version)
+	}
+	if len(res.Matches) != 2 {
+		t.Errorf("Matches = %+v, want both locked versions", res.Matches)
+	}
+}

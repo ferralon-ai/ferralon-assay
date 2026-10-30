@@ -435,6 +435,7 @@ func TestResolveVersions_MypyInstallTypes(t *testing.T) {
 		{"abbreviation in a Makefile variable", map[string]string{"Makefile": "MYPYFLAGS:=--ins\nlint:\n\tmypy $(MYPYFLAGS) --non-interactive src\n"}, false},
 		{"abbreviation as a ${:-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS:---install} --non-interactive .\n"}, false},
 		{"flag as a ${:-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS:---install-types} --non-interactive .\n"}, false},
+		{"flag in an @ file a printf writes", map[string]string{"install.sh": "printf 'src\\n--install-types\\n' > a && mypy @a\n"}, false},
 		{"abbreviation as a ${-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS---ins} --non-interactive .\n"}, false},
 		{"@ file with --install-types", map[string]string{"ci/mypy-args": "src/app\n--install-types\n--non-interactive\n", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},
 		{"@ file with --install, CRLF", map[string]string{"ci/mypy-args": "src/app\r\n--install\r\n--non-interactive\r\n", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},

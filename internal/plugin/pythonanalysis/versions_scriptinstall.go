@@ -70,8 +70,9 @@ import (
 // mypy --install-types runs pip on the stub packages mypy finds missing, which can pull in
 // runtime dependencies. Its parser accepts any unambiguous prefix of a long flag, so a word
 // from --install- up to --install-types is a token wherever it appears, and a script surface
-// whose text names mypy and holds a shorter prefix (--ins to --install, which helm and others
-// use too) withholds every pin (installTypesAbbrevRE). A mypy config can set install_types as
+// whose text names mypy and holds any prefix from --ins on, wherever it sits in that text (a
+// word, a ${FLAGS:-} default, a line a printf writes; --ins to --install are flags helm and
+// others use too), withholds every pin (installTypesAbbrevRE). A mypy config can set install_types as
 // well, and mypy reads a config where it lands and by any name --config-file gives it, so a
 // file under the build dir whose head names mypy and an install_types key, however it is set,
 // withholds every pin (mypyConfigInstalls). mypy also reads arguments one per line from a
@@ -142,9 +143,9 @@ const installTypesFlag, installTypesMin = "--install-types", "--install-"
 
 // installTypesAbbrevRE matches, in a script surface's text, a prefix of --install-types from
 // --ins on that mypy's parser reads as it, wherever it sits: a word laneToken does not see,
-// such as one a variable holds or the default in ${FLAGS:---install}. mypyNamedRE must match
-// the same text.
-var installTypesAbbrevRE = regexp.MustCompile(`(?:^|\W)--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?(?:$|[^\w-])`)
+// such as one a variable holds, the default in ${FLAGS:---install}, or an @ file line a printf
+// writes after a \n. mypyNamedRE must match the same text.
+var installTypesAbbrevRE = regexp.MustCompile(`--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?(?:$|[^\w-])`)
 
 // installTypesLineRE matches a line that is a prefix of --install-types from --ins on, as
 // mypy reads one argument per line from an @ file, split where Python's str.splitlines splits.

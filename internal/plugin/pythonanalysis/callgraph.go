@@ -82,6 +82,14 @@ func (p *program) declsNamed(leaves []string) []funcDecl {
 	return out
 }
 
+// siteCallee resolves a call site to the one declaration its edge ends at, if any, and
+// returns the leaf names the escape scan uses for it (siteLeaves).
+func (p *program) siteCallee(f *fileParse, cs callSite) (callee string, ok bool, escape []string) {
+	edge, escape := p.siteLeaves(f, cs)
+	callee, ok = resolveCallee(p.declsNamed(edge), cs.calleeArity)
+	return callee, ok, escape
+}
+
 // siteLeaves is the leaf names a call site may stand for. A name always stands for the
 // declarations under it. It stands for a first-party function an import binds to it under
 // another name only where the caller holds that binding (aliasBound): a bare call whose
@@ -683,8 +691,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
-			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
-			callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity)
+			callee, ok, escapeLeaves := prog.siteCallee(f, cs)
 			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true
@@ -993,8 +1000,9 @@ func (prog *program) productionReached(calls [][]int) []bool {
 }
 
 // resolvedCallFiles lists, per caller file, the files declaring the function each call site
-// with an edge resolves to: the calls argument productionReached takes, for a caller that
-// does not build the graph. callGraphOf collects the same lists as it adds the edges.
+// with an edge resolves to (siteCallee): the calls argument productionReached takes, for a
+// caller that does not build the graph. callGraphOf collects the same lists as it adds the
+// edges.
 func (prog *program) resolvedCallFiles() [][]int {
 	declFile := map[string]int{}
 	for fi, f := range prog.files {
@@ -1006,8 +1014,7 @@ func (prog *program) resolvedCallFiles() [][]int {
 	for fi := range prog.files {
 		f := &prog.files[fi]
 		for _, cs := range f.calls {
-			edgeLeaves, _ := prog.siteLeaves(f, cs)
-			if callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity); ok {
+			if callee, ok, _ := prog.siteCallee(f, cs); ok {
 				calls[fi] = append(calls[fi], declFile[callee])
 			}
 		}

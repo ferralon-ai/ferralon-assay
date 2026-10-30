@@ -111,6 +111,7 @@ func TestVeto_CommandKeys(t *testing.T) {
 		{"appveyor value", tree(map[string]string{"appveyor.yml": "dir: .\n"}), true},
 		{"noxfile value", tree(map[string]string{"noxfile.py": "x = \".\"\n"}), true},
 		{"Jenkinsfile value", tree(map[string]string{"Jenkinsfile": "dir: .\n"}), true},
+		{"JSON surface with no key set, top-level .", tree(map[string]string{"Jenkinsfile.json": `"."`}), true},
 		{"undecodable vercel.json", tree(map[string]string{"vercel.json": "{\n\"outputDirectory\": \".\"\n"}), true},
 	}
 	for _, tt := range tests {

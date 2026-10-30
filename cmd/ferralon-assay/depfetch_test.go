@@ -333,7 +333,8 @@ func TestDepCodeRunRecord(t *testing.T) {
 // missed, and clears an entry for an advisory it re-assessed with every package it concerns read.
 // An advisory it cannot tie to npm packages stays listed, and when the missed packages cannot be
 // established every advisory it assessed is listed. An advisory it left undetermined stays listed
-// whatever packages it concerns, so a run that reads them all reaches its verdict again.
+// whatever packages it concerns, so a run that reads them all reaches its verdict again; that
+// run clears it.
 func TestDepCodeRunRecordScopesPartialRead(t *testing.T) {
 	const npmjs, corp = "https://registry.npmjs.org/", "https://npm.corp.example/"
 	out := func(purl, reg, outcome string) pipeline.DependencyOutcome {
@@ -406,6 +407,19 @@ func TestDepCodeRunRecordScopesPartialRead(t *testing.T) {
 				return r
 			}(),
 			want: []string{"U", "V"},
+		},
+		{
+			name:  "a full read clears an advisory that came out undetermined",
+			prior: []string{"U", "Z"},
+			results: []pipeline.DependencyAcquisitionResult{{Outcomes: []pipeline.DependencyOutcome{
+				out("pkg:npm/a@1.0.0", npmjs, pipeline.OutcomeReadNetwork), out("pkg:npm/@corp/b@1.0.0", corp, pipeline.OutcomeReadNetwork),
+			}}},
+			run: func() trigger.DependencyFetchRun {
+				r := watch(map[string][]string{"U": {"pkg:npm/@corp/b"}}, "U")
+				r.Undetermined = map[string]bool{"U": true}
+				return r
+			}(),
+			want: []string{"Z"},
 		},
 		{
 			name: "an acquisition that fell back lists everything assessed",

@@ -47,6 +47,16 @@ try-import %workspace%/user.bazelrc
 `}, bazelSDKFromGoMod},
 		{"a .bazelrc setting an Apple SDK version", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --macos_sdk_version=14.0
 `}, bazelSDKFromGoMod},
+		{"a .bazelrc word that is not an import verb", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `future-import %workspace%/ci.bazelrc
+`, "ci.bazelrc": `build --extra_toolchains=//toolchains:go
+`}, bazelSDKFromGoMod},
+		{"a .bazelrc import with a trailing comment", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `import %workspace%/ci.bazelrc # CI only
+`, "ci.bazelrc": `build --jobs=8
+`}, bazelSDKFromGoMod},
+		{"a .bazelrc tab-separated try-import of a missing file", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": "try-import\t%workspace%/user.bazelrc\n"}, bazelSDKFromGoMod},
+		{"a .bazelrc setting rules_go and dependency build settings", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --@rules_go//go/config:pure --@aspect_rules_lint//lint:fail_on_violation
+`}, bazelSDKFromGoMod},
+		{"a .bazeliskrc without a wrapper directory", map[string]string{"MODULE.bazel": fromFileModule, ".bazeliskrc": "USE_BAZEL_VERSION=9.3.1\n"}, bazelSDKFromGoMod},
 		{"a docstring with a quote in it", map[string]string{"MODULE.bazel": `"""Module for svc; "go_sdk" pins the "SDK"."""
 ` + fromFileModule}, bazelSDKFromGoMod},
 
@@ -77,9 +87,6 @@ pinned.from_file(name = "pinned_sdk", go_mod = "//tools:go.mod")
 `}, bazelSDKUnbound},
 		{"a .bazelrc import after a tab", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": "import\t%workspace%/ci.bazelrc\n", "ci.bazelrc": `build --extra_toolchains=//toolchains:go
 `}, bazelSDKUnbound},
-		{"a .bazelrc import verb this does not follow", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `future-import %workspace%/ci.bazelrc
-`, "ci.bazelrc": `build --jobs=8
-`}, bazelSDKUnbound},
 		{"a tools/bazel wrapper", map[string]string{"MODULE.bazel": fromFileModule, "tools/bazel": "#!/bin/sh\nexec \"$BAZEL_REAL\" \"$@\"\n"}, bazelSDKUnbound},
 		{"register_toolchains with a space", map[string]string{"MODULE.bazel": fromFileModule + `register_toolchains ("//toolchains:all")
 `}, bazelSDKUnbound},
@@ -91,6 +98,35 @@ pinned.from_file(name = "pinned_sdk", go_mod = "//tools:go.mod")
 `}, bazelSDKUnbound},
 		{"a .bazelrc importing a file outside the workspace", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `try-import /etc/ci.bazelrc
 `}, bazelSDKUnbound},
+		{"a .bazelrc setting a main-repository build setting", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --//:gosdk=1.26.7
+`}, bazelSDKUnbound},
+		{"a .bazelrc setting a main-repository build setting by @//", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --@//:gosdk=1.26.7
+`}, bazelSDKUnbound},
+		{"a .bazelrc clearing a main-repository build setting", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --no@@//:pure
+`}, bazelSDKUnbound},
+		{"a .bazelrc setting a build setting by the module's name", map[string]string{"MODULE.bazel": `module(name = "svc", version = "1.0")
+` + fromFileModule, ".bazelrc": `build --@svc//:gosdk=1.26.7
+`}, bazelSDKUnbound},
+		{"a .bazelrc setting a build setting by the module's repo_name", map[string]string{"MODULE.bazel": `module(name = "svc", repo_name = "me")
+` + fromFileModule, ".bazelrc": `build --@me//:gosdk=1.26.7
+`}, bazelSDKUnbound},
+		{"a module name this cannot read", map[string]string{"MODULE.bazel": `NAME = "svc"
+module(name = NAME)
+` + fromFileModule}, bazelSDKUnbound},
+		{"a .bazelrc import whose comment names another file", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `import %workspace%/a.bazelrc # %workspace%/b.bazelrc
+`, "a.bazelrc": `build --@rules_go//go/toolchain:sdk_version=1.26.7
+`, "b.bazelrc": `build --jobs=8
+`}, bazelSDKUnbound},
+		{"a .bazelrc flag with a quoted part", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --@rules_go//go/toolchain:"sdk_version"=1.26.7
+`}, bazelSDKUnbound},
+		{"a .bazelrc flag with an escaped byte", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --extra\_toolchains=//toolchains:go
+`}, bazelSDKUnbound},
+		{"a .bazelrc flag continued before the match", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": "build --extra_tool\\\nchains=//toolchains:go\n"}, bazelSDKUnbound},
+		{"an indented .bazelrc import", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": "  import %workspace%/ci.bazelrc\n", "ci.bazelrc": `build --extra_toolchains=//toolchains:go
+`}, bazelSDKUnbound},
+		{"an import with an extra word", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `import %workspace%/a.bazelrc %workspace%/b.bazelrc
+`, "a.bazelrc": "build --jobs=8\n", "b.bazelrc": "build --jobs=8\n"}, bazelSDKUnbound},
+		{"a .bazeliskrc moving the wrapper directory", map[string]string{"MODULE.bazel": fromFileModule, ".bazeliskrc": "BAZELISK_WRAPPER_DIRECTORY=scripts\n", "scripts/bazel": "#!/bin/sh\n"}, bazelSDKUnbound},
 		{"go_sdk.download", map[string]string{"MODULE.bazel": `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.download(version = "1.21.13")
 `}, bazelSDKUnbound},

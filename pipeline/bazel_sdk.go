@@ -66,7 +66,7 @@ var bazelrcSDKFlags = []string{"go/toolchain:sdk_", "extra_toolchains", "ignore_
 // is bazelSDKFromGoMod: exactly one workspace directory up to checkoutRoot; in it a MODULE.bazel and
 // no WORKSPACE, WORKSPACE.bazel or WORKSPACE.bzlmod with content (any of which could register an SDK
 // under --enable_workspace); no tools/bazel wrapper, which the launcher runs in Bazel's place; no
-// .bazelrc setting a bazelrcSDKFlags flag; no include() and no
+// .bazelrc setting a bazelrcSDKFlags flag or a main-repository build setting; no include() and no
 // register_toolchains other than @go_toolchains//:all; every go_sdk binding recognized, without
 // arguments, and named only where it is bound, tagged or passed to use_repo; and across them exactly
 // one SDK tag, a from_file whose only arguments are an optional name and a go_mod label naming
@@ -110,14 +110,16 @@ func resolveBazelSDK(moduleRoot, checkoutRoot string) bazelSDKBinding {
 			return bazelSDKUnbound
 		}
 	}
-	if hasBazelWrapper(ws) || bazelrcSetsSDK(ws, ".bazelrc", 0) {
-		return bazelSDKUnbound
-	}
 	data, err := os.ReadFile(filepath.Join(ws, "MODULE.bazel"))
 	if err != nil {
 		return bazelSDKUnbound
 	}
-	if goModLabelFromModule(stripStarlarkComments(string(data)), ws) != filepath.Join(filepath.Clean(moduleRoot), "go.mod") {
+	module := stripStarlarkComments(string(data))
+	mainRepos, ok := mainRepoNames(module)
+	if !ok || hasBazelWrapper(ws) || bazelrcSetsSDK(ws, ".bazelrc", 0, mainRepos) {
+		return bazelSDKUnbound
+	}
+	if goModLabelFromModule(module, ws) != filepath.Join(filepath.Clean(moduleRoot), "go.mod") {
 		return bazelSDKUnbound
 	}
 	return bazelSDKFromGoMod
@@ -211,9 +213,47 @@ func resolveRootLabel(label, ws string) string {
 	return ""
 }
 
+// moduleCall matches the root module() call, moduleArgs its arguments, and moduleRepoName and
+// moduleNameArg its name and repo_name arguments as string literals and in any form.
+var (
+	moduleCall     = regexp.MustCompile(`\bmodule\s*\(`)
+	moduleArgs     = regexp.MustCompile(`\bmodule\s*\(([^()]*)\)`)
+	moduleRepoName = regexp.MustCompile(`\b(?:name|repo_name)\s*=\s*"([^"]*)"`)
+	moduleNameArg  = regexp.MustCompile(`\b(?:name|repo_name)\s*=`)
+)
+
+// mainRepoNames returns the repository names a label in the main repository can carry: the empty
+// one (//pkg, @//pkg, @@//pkg) and the root module's name and repo_name. ok is false when a
+// module() call is not in a form this reads.
+func mainRepoNames(module string) (map[string]bool, bool) {
+	names := map[string]bool{"": true}
+	calls := moduleArgs.FindAllStringSubmatch(module, -1)
+	if len(calls) != len(moduleCall.FindAllStringIndex(module, -1)) {
+		return nil, false
+	}
+	for _, call := range calls {
+		named := moduleRepoName.FindAllStringSubmatch(call[1], -1)
+		if len(named) != len(moduleNameArg.FindAllStringIndex(call[1], -1)) {
+			return nil, false
+		}
+		for _, m := range named {
+			names[m[1]] = true
+		}
+	}
+	return names, true
+}
+
 // hasBazelWrapper reports whether ws has a tools/bazel wrapper (tools/bazel or tools/bazel.<ext>),
-// which the Bazel launcher and bazelisk run in Bazel's place with any flags it adds.
+// which the Bazel launcher and bazelisk run in Bazel's place with any flags it adds, or a
+// .bazeliskrc that moves bazelisk's wrapper directory elsewhere.
 func hasBazelWrapper(ws string) bool {
+	if rc, err := os.ReadFile(filepath.Join(ws, ".bazeliskrc")); err == nil {
+		if strings.Contains(string(rc), "BAZELISK_WRAPPER_DIRECTORY") {
+			return true
+		}
+	} else if !os.IsNotExist(err) {
+		return true
+	}
 	entries, err := os.ReadDir(filepath.Join(ws, "tools"))
 	if err != nil {
 		return !os.IsNotExist(err)
@@ -227,11 +267,12 @@ func hasBazelWrapper(ws string) bool {
 }
 
 // bazelrcSetsSDK reports whether the bazelrc file name under ws, or a %workspace% file it imports,
-// sets one of bazelrcSDKFlags, or imports a file this cannot read. A missing top-level .bazelrc sets
-// nothing. Lines are joined and split as Bazel's rc_file.cc does: a trailing backslash continues the
-// line, and words are separated by any whitespace. try-import-if-bazel-version is followed like
-// try-import, whatever version it names.
-func bazelrcSetsSDK(ws, name string, depth int) bool {
+// sets one of bazelrcSDKFlags or a build setting in the main repository (whose alias of a rules_go
+// setting this does not follow), or imports a file this cannot read. A missing top-level .bazelrc
+// sets nothing. Lines are read as Bazel's rc_file.cc reads them: a trailing backslash continues the
+// line and bazelrcWords splits it. try-import-if-bazel-version is followed like try-import, whatever
+// version it names.
+func bazelrcSetsSDK(ws, name string, depth int, mainRepos map[string]bool) bool {
 	if depth > 8 || strings.Contains(name, "..") {
 		return true
 	}
@@ -241,54 +282,125 @@ func bazelrcSetsSDK(ws, name string, depth int) bool {
 	}
 	src := strings.NewReplacer("\\\r\n", "", "\\\n", "").Replace(string(data))
 	for _, line := range strings.Split(src, "\n") {
-		words := strings.Fields(line)
-		if len(words) == 0 || strings.HasPrefix(words[0], "#") {
+		words := bazelrcWords(line)
+		if len(words) == 0 {
 			continue
 		}
-		for _, flag := range bazelrcSDKFlags {
-			if strings.Contains(line, flag) {
+		var rel string
+		switch words[0] {
+		case "import", "try-import":
+			if len(words) != 2 {
 				return true
 			}
-		}
-		verb := words[0]
-		if !strings.Contains(verb, "import") {
+			rel = words[1]
+		case "try-import-if-bazel-version":
+			if len(words) != 3 {
+				return true
+			}
+			rel = words[2]
+		default:
+			for _, word := range words[1:] {
+				if setsSDKFlag(word, mainRepos) {
+					return true
+				}
+			}
 			continue
 		}
-		optional := verb == "try-import" || verb == "try-import-if-bazel-version"
-		if !optional && verb != "import" || len(words) < 2 {
-			return true
-		}
-		rel, ok := strings.CutPrefix(words[len(words)-1], "%workspace%/")
+		rel, ok := strings.CutPrefix(rel, "%workspace%/")
 		if !ok {
 			return true
 		}
-		if optional {
+		if words[0] != "import" {
 			if _, err := os.Stat(filepath.Join(ws, filepath.FromSlash(rel))); os.IsNotExist(err) {
 				continue
 			}
 		}
-		if bazelrcSetsSDK(ws, rel, depth+1) {
+		if bazelrcSetsSDK(ws, rel, depth+1, mainRepos) {
 			return true
 		}
 	}
 	return false
 }
 
+// setsSDKFlag reports whether a bazelrc option word names one of bazelrcSDKFlags, or is a build
+// setting (--[no]@repo//pkg:name or --[no]//pkg:name) whose repository is one of mainRepos.
+func setsSDKFlag(word string, mainRepos map[string]bool) bool {
+	for _, flag := range bazelrcSDKFlags {
+		if strings.Contains(word, flag) {
+			return true
+		}
+	}
+	label, ok := strings.CutPrefix(word, "--")
+	if !ok {
+		return false
+	}
+	label = strings.TrimPrefix(label, "no")
+	if !strings.HasPrefix(label, "@") && !strings.HasPrefix(label, "//") {
+		return false
+	}
+	repo, _, ok := strings.Cut(strings.TrimLeft(label, "@"), "//")
+	return !ok || mainRepos[repo]
+}
+
+// bazelrcWords splits a bazelrc line into words as Bazel's blaze_util::Tokenize does: words are
+// separated by space, tab, CR or LF; a quote groups up to its match and is dropped; a backslash
+// takes the next byte literally; an unquoted # ends the line.
+func bazelrcWords(line string) []string {
+	var words []string
+	var word strings.Builder
+	quote := byte(0)
+	flush := func() {
+		if word.Len() > 0 {
+			words = append(words, word.String())
+			word.Reset()
+		}
+	}
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\':
+			if i+1 < len(line) {
+				i++
+				word.WriteByte(line[i])
+			}
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				word.WriteByte(c)
+			}
+		case c == '#':
+			flush()
+			return words
+		case c == '"' || c == '\'':
+			quote = c
+		case strings.IndexByte(" \t\r\n", c) >= 0:
+			flush()
+		default:
+			word.WriteByte(c)
+		}
+	}
+	flush()
+	return words
+}
+
+// Byte classes starlarkMask assigns.
+const (
+	starlarkCode byte = iota
+	starlarkString
+	starlarkComment
+)
+
 // starlarkMask classifies each byte of src as code, string contents (between the quotes, which stay
 // code) or comment. It reads single-, double- and triple-quoted strings with backslash escapes.
 func starlarkMask(src string) []byte {
-	const (
-		code byte = iota
-		str
-		comment
-	)
 	mask := make([]byte, len(src))
 	for i := 0; i < len(src); {
 		c := src[i]
 		switch {
 		case c == '#':
 			for ; i < len(src) && src[i] != '\n'; i++ {
-				mask[i] = comment
+				mask[i] = starlarkComment
 			}
 		case c == '"' || c == '\'':
 			delim := src[i : i+1]
@@ -297,10 +409,10 @@ func starlarkMask(src string) []byte {
 			}
 			i += len(delim)
 			for i < len(src) && !strings.HasPrefix(src[i:], delim) && (len(delim) == 3 || src[i] != '\n') {
-				mask[i] = str
+				mask[i] = starlarkString
 				if src[i] == '\\' && i+1 < len(src) {
 					i++
-					mask[i] = str
+					mask[i] = starlarkString
 				}
 				i++
 			}
@@ -315,12 +427,12 @@ func starlarkMask(src string) []byte {
 // blankStarlarkStrings replaces the contents of string literals with spaces, keeping the quotes and
 // line breaks, so a name inside a string does not read as a reference.
 func blankStarlarkStrings(src string) string {
-	return maskStarlark(src, 1)
+	return maskStarlark(src, starlarkString)
 }
 
 // stripStarlarkComments replaces # comments outside string literals with spaces.
 func stripStarlarkComments(src string) string {
-	return maskStarlark(src, 2)
+	return maskStarlark(src, starlarkComment)
 }
 
 func maskStarlark(src string, class byte) string {

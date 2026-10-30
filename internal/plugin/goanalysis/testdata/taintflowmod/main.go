@@ -1,19 +1,24 @@
 // Command taintflowmod is a stdlib-only fixture where each sink is reached by one sanitized flow
 // and one raw flow from the attacker-controlled request method. The raw flow takes a shape the
-// taint pass must carry: a dependency call whose body it does not hold, an append read back by
-// index, a copy, a field written in a callee, a concatenation, and a conditional that sanitizes on one
-// branch only. Every sink must come back with a taint path.
+// taint pass must carry: a dependency call whose body it does not hold, a path cleaning, an append
+// read back by index, a copy, a field written in a callee, a concatenation, and a conditional that
+// sanitizes on one branch only. Every sink must come back with a taint path.
 package main
 
 import (
 	"fmt"
 	"html"
 	"net/http"
+	"path/filepath"
 	"strings"
 )
 
 // Upper is reached raw through strings.ToUpper, whose body the analysis does not hold.
 func Upper(s string) { fmt.Println(s) }
+
+// Cleaned is reached raw through filepath.Clean, which keeps a relative path's
+// leading .. segments.
+func Cleaned(s string) { fmt.Println(s) }
 
 // Appended is reached raw through an append read back by index.
 func Appended(s string) { fmt.Println(s) }
@@ -38,6 +43,12 @@ func set(h *holder, v string) { h.f = v }
 func UpperHandler(w http.ResponseWriter, r *http.Request) {
 	Upper(html.EscapeString(r.Method))
 	Upper(strings.ToUpper(r.Method))
+}
+
+// CleanHandler hands Cleaned a sanitized method and a cleaned path built from it.
+func CleanHandler(w http.ResponseWriter, r *http.Request) {
+	Cleaned(html.EscapeString(r.Method))
+	Cleaned(filepath.Clean(r.Method))
 }
 
 // AppendHandler hands Appended a sanitized method and one read back out of a slice.
@@ -80,6 +91,7 @@ func BranchHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	http.HandleFunc("/upper", UpperHandler)
+	http.HandleFunc("/clean", CleanHandler)
 	http.HandleFunc("/append", AppendHandler)
 	http.HandleFunc("/copy", CopyHandler)
 	http.HandleFunc("/field", FieldHandler)

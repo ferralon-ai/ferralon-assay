@@ -25,8 +25,6 @@ import "golang.org/x/tools/go/ssa"
 //     template escapers, same contract for HTML/JS/URL contexts.
 //   - net/url.QueryEscape / PathEscape — percent-encode the input for URL contexts.
 //   - regexp.QuoteMeta — escapes regex metacharacters; result is a literal pattern.
-//   - path.Clean / path/filepath.Clean — normalize a path, collapsing traversal
-//     segments; defensible for path-traversal sinks.
 //
 // Anything outside this list is NOT a sanitizer: an unmodeled transform forwards
 // taint (honesty over reach). To extend, add an entry with its justification.
@@ -52,12 +50,6 @@ var sanitizerFuncs = map[string]map[string]bool{
 	},
 	"regexp": {
 		"QuoteMeta": true,
-	},
-	"path": {
-		"Clean": true,
-	},
-	"path/filepath": {
-		"Clean": true,
 	},
 }
 

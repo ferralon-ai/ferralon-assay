@@ -120,6 +120,7 @@ func TestComputeTaint_RawFlowBesideSanitized(t *testing.T) {
 	const dir = "testdata/taintflowmod"
 	for _, c := range []struct{ name, sink string }{
 		{name: "dependency call", sink: "/Upper()."},
+		{name: "path cleaning", sink: "/Cleaned()."},
 		{name: "append then index", sink: "/Appended()."},
 		{name: "copy", sink: "/Copied()."},
 		{name: "field set in a callee", sink: "/Field()."},

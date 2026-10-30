@@ -329,7 +329,6 @@ func TestDepCodeRunRecord(t *testing.T) {
 	}
 }
 
-// A nil run (not JS) records nothing: its hook is nil and the stored record is carried.
 // A cve-watch run that read part of its lock lists only the advisories concerning a package it
 // missed, and clears an entry for an advisory it re-assessed with every package it concerns read.
 // An advisory it cannot tie to npm packages stays listed, and when the missed packages cannot be
@@ -497,6 +496,7 @@ func TestDepCodeRunMissedLocked(t *testing.T) {
 	}
 }
 
+// A nil run (not JS) records nothing: its hook is nil and the stored record is carried.
 func TestDepCodeRunFetchUpdateNilForNonJS(t *testing.T) {
 	var run *depCodeRun
 	if run.fetchUpdate() != nil {

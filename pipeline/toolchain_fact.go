@@ -134,6 +134,9 @@ type toolchainInputs struct {
 	buildResolved      string
 	toolchainDirective string
 	goDirective        string
+	// bazel is how a Bazel workspace around the module ties its Go SDK to go.mod (resolveBazelSDK).
+	// Inside one, the directives bound the SDK only through go_sdk.from_file.
+	bazel bazelSDKBinding
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
@@ -252,15 +255,24 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 // directive that does not bind (directivesBindToolchain) is no floor and is left out. ok is false
 // when no directive resolves, in which case the returned fact is the explicit unresolved one and no
 // exact claim can be refuted.
+//
+// Inside a Bazel workspace no go command enforces the directives: rules_go compiles with the SDK the
+// workspace declares. Their one floor there is the version go_sdk.from_file reads from this go.mod
+// (bazelFromFileVersion), which is not their maximum; any other workspace takes no floor.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	best := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	var bestParsed goToolchainVersion
 	var haveFloor bool
-	floors := []struct{ raw, source string }{
-		{in.toolchainDirective, ToolchainSourceToolchainDirective},
-	}
-	if directivesBindToolchain(in) {
-		floors = append(floors, struct{ raw, source string }{in.goDirective, ToolchainSourceGoDirective})
+	var floors []struct{ raw, source string }
+	switch in.bazel {
+	case bazelSDKNone:
+		floors = append(floors, struct{ raw, source string }{in.toolchainDirective, ToolchainSourceToolchainDirective})
+		if directivesBindToolchain(in) {
+			floors = append(floors, struct{ raw, source string }{in.goDirective, ToolchainSourceGoDirective})
+		}
+	case bazelSDKFromGoMod:
+		raw, source := bazelFromFileVersion(in)
+		floors = append(floors, struct{ raw, source string }{raw, source})
 	}
 	for _, floor := range floors {
 		parsed, ok := parseGoToolchainVersion(floor.raw)

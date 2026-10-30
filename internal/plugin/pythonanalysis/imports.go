@@ -849,7 +849,7 @@ func importStatements(r []rune) (spans [][2]int, stars map[string]bool) {
 		stop := statementEnd(r, end)
 		spans = append(spans, [2]int{i, stop})
 		if w == "from" {
-			fields := strings.Fields(string(r[end:stop]))
+			fields := strings.Fields(strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(string(r[end:stop])))
 			if len(fields) >= 3 && fields[1] == "import" && strings.Trim(fields[2], "()") == "*" {
 				stars[fields[0]] = true
 			}

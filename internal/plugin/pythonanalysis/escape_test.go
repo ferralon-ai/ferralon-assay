@@ -1313,6 +1313,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"sys.modules values", "import sys\n\ndef go(n, x):\n    for m in list(sys.modules.values()):\n        fn = getattr(m, n, None)\n        if fn:\n            return fn(x)\n", false, false, true},
 		{"from sys import modules computed", "from sys import modules\n\ndef go(mod, n, x):\n    return getattr(modules[mod], n)(x)\n", false, false, true},
 		{"star import of sys", "from sys import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"star import of sys continued before import", "from sys \\\n    import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"star import of sys continued after import", "from sys import \\\n    *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
 		{"sys aliased", "import sys as s\n\ndef go(mod, n, x):\n    return getattr(s.modules[mod], n)(x)\n", false, false, true},
 		{"importlib aliased", "import importlib as il\n\ndef go(mod, n, x):\n    return getattr(il.import_module(mod), n)(x)\n", false, false, true},
 		{"import_module renamed", "from importlib import import_module as load\n\ndef go(mod, n, x):\n    return getattr(load(mod), n)(x)\n", false, false, true},

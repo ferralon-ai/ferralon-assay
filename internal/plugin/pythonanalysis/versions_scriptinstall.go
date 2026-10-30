@@ -175,6 +175,14 @@ var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_fil
 // and build environment, so an allowed one withholds where a script names one (versionSurfaces).
 var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|xdg_config_(?:home|dirs)`)
 
+// pdmConfigNamedRE matches, in a script surface's text, a pdm config file or the directory pdm
+// reads its user or site config from (pdm.toml, .pdm.toml, pdm/config.toml, .config/pdm,
+// /etc/xdg/pdm, Application Support/pdm, AppData or ProgramData's pdm), or an XDG variable that
+// moves where pdm looks. A pdm sync reads the settings there, which can name an index or turn
+// off build isolation, so an allowed one withholds where a script names one (versionSurfaces).
+// PDM_CONFIG_FILE falls under laneEnvRE.
+var pdmConfigNamedRE = regexp.MustCompile(`(?i)pdm\.toml|pdm[\\/]config\.toml|(?:\.config|/etc/xdg|application support|appdata[\\/](?:local|roaming)|localappdata%?|programdata%?)[\\/]pdm\b|xdg_config_(?:home|dirs)`)
+
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}
 
@@ -346,8 +354,8 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 			// pdm installs from a pylock.toml there instead of pdm.lock when lock.format,
 			// which pdm config can set, is pylock. It resolves build requirements through
 			// tool.pdm.resolution.overrides, which may name a directory in the tree. It adds
-			// tool.pdm.options to a command's flags, and reads a pdm.toml (.pdm.toml before 2.0)
-			// beside the manifest, either of which may turn off build isolation.
+			// tool.pdm.options to a command's flags, and reads a pdm.toml and a legacy .pdm.toml
+			// beside the manifest, any of which may turn off build isolation.
 			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") || !pdmSourcesRemote(doc) ||
 				doc.Tool.PDM.Resolution.Overrides != nil || len(doc.Tool.PDM.Options) > 0 ||
 				!b.Clear("pyproject.toml", "pdm.toml") || !b.Clear("pyproject.toml", ".pdm.toml") {

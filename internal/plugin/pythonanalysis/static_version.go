@@ -149,8 +149,9 @@ var setuptoolsBytes, _ = pep440.Parse("65.4.1")
 // setuptoolsBytes or later: a setuptools requirement, with no marker or direct reference, one
 // of whose clauses sets a floor (>=, >, ==, ~=, ===) at that release or past it. The build's
 // own environment installs it from that requirement. A build without isolation uses another,
-// and every way to ask for one withholds before this is read (uvSettingsClean, the pdm case
-// of rootBuildClean, laneEnvRE).
+// and every way to ask for one withholds before this is read: an installer flag (laneFlags), a
+// tool table (uvSettingsClean, the pdm case of rootBuildClean), a config file a script names
+// (uvConfigNamedRE, pdmConfigNamedRE), or an environment variable (laneEnvRE).
 func setuptoolsReadsBytes(doc rootProject) bool {
 	if doc.BuildSystem == nil {
 		return false

@@ -70,16 +70,18 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed, uvConfigNamed, uvSynced := false, false, false
+	configNamed, uvConfigNamed, pdmConfigNamed, uvSynced, pdmSynced := false, false, false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
 		uvConfigNamed = uvConfigNamed || uvConfigNamedRE.MatchString(src)
+		pdmConfigNamed = pdmConfigNamed || pdmConfigNamedRE.MatchString(src)
 	}
 	allowed := spec.Allowed
 	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
 		ok := allowed(words, b)
-		if head, _ := scriptsurface.CommandName(words[0]); ok && head == "uv" {
-			uvSynced = true
+		if head, _ := scriptsurface.CommandName(words[0]); ok {
+			uvSynced = uvSynced || head == "uv"
+			pdmSynced = pdmSynced || head == "pdm"
 		}
 		return ok
 	}
@@ -93,7 +95,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	if uvConfigNamed && uvSynced {
+	if uvConfigNamed && uvSynced || pdmConfigNamed && pdmSynced {
 		scriptWithheld = true
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling

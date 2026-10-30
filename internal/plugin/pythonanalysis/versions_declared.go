@@ -2,7 +2,6 @@ package pythonanalysis
 
 import (
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -208,7 +207,7 @@ func uvSourced(manifests []string, want string) bool {
 		if filepath.Base(m) != "pyproject.toml" {
 			continue
 		}
-		data, err := os.ReadFile(m)
+		data, err := readRegular(m)
 		if err != nil {
 			continue
 		}

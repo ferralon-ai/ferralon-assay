@@ -27,7 +27,7 @@ const (
 	bazelSDKUnbound
 	// bazelSDKFromGoMod: the root MODULE.bazel's one SDK declaration is
 	// go_sdk.from_file(go_mod = <this module's go.mod>), so the SDK release is the one rules_go
-	// reads from it (bazelFromFileVersion).
+	// reads from it, and bazelFromFileVersion floors it.
 	bazelSDKFromGoMod
 )
 
@@ -37,24 +37,36 @@ var bazelWorkspaceMarkers = []string{"MODULE.bazel", "WORKSPACE", "WORKSPACE.baz
 // repository names rules_go is published as, with no further arguments. The binding's name is
 // group 1. dev_dependency = True drops the binding's tags under --ignore_dev_dependency, and
 // isolate = True keeps its toolchains unregistered, so either leaves rules_go's default SDK.
-var goSDKExtension = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*use_extension\(\s*"@(?:rules_go|io_bazel_rules_go)//go:extensions\.bzl"\s*,\s*"go_sdk"\s*,?\s*\)`)
+var goSDKExtension = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*use_extension\s*\(\s*"@(?:rules_go|io_bazel_rules_go)//go:extensions\.bzl"\s*,\s*"go_sdk"\s*,?\s*\)`)
 
-// useExtensionLiteral matches a use_extension call whose first argument is a string literal.
-var useExtensionLiteral = regexp.MustCompile(`use_extension\(\s*"`)
+// useExtensionCall and useExtensionLiteral match a use_extension call, and one whose first
+// argument is a string literal.
+var (
+	useExtensionCall    = regexp.MustCompile(`\buse_extension\s*\(`)
+	useExtensionLiteral = regexp.MustCompile(`\buse_extension\s*\(\s*"`)
+)
+
+// includeCall and registerToolchainsCall match the MODULE.bazel calls that can bring in SDK
+// declarations or toolchains this does not read.
+var (
+	includeCall            = regexp.MustCompile(`\binclude\s*\(`)
+	registerToolchainsCall = regexp.MustCompile(`\bregister_toolchains\s*\(`)
+)
 
 // registerGoToolchains is the one register_toolchains call a module may make beside from_file: the
 // go_sdk extension's own toolchains. Any other can register a Go toolchain ahead of them.
-var registerGoToolchains = regexp.MustCompile(`register_toolchains\(\s*"@go_toolchains//:all"\s*,?\s*\)`)
+var registerGoToolchains = regexp.MustCompile(`\bregister_toolchains\s*\(\s*"@go_toolchains//:all"\s*,?\s*\)`)
 
 // bazelrcSDKFlags are the flags that change which Go SDK a Bazel build selects or whether the root
-// module's go_sdk tags apply: rules_go's sdk_version setting, an extra toolchain, a dev-dependency
-// drop, or a repository or module override.
-var bazelrcSDKFlags = []string{"sdk_version", "extra_toolchains", "ignore_dev_dependency", "override_repository", "override_module"}
+// module's go_sdk tags apply: rules_go's sdk_version and sdk_name settings (go/toolchain:sdk_), an
+// extra toolchain, a dev-dependency drop, or a repository or module override.
+var bazelrcSDKFlags = []string{"go/toolchain:sdk_", "extra_toolchains", "ignore_dev_dependency", "override_repository", "override_module"}
 
 // resolveBazelSDK classifies the Bazel workspace around moduleRoot (bazelSDKBinding). Only one shape
 // is bazelSDKFromGoMod: exactly one workspace directory up to checkoutRoot; in it a MODULE.bazel and
 // no WORKSPACE, WORKSPACE.bazel or WORKSPACE.bzlmod with content (any of which could register an SDK
-// under --enable_workspace); no .bazelrc setting a bazelrcSDKFlags flag; no include() and no
+// under --enable_workspace); no tools/bazel wrapper, which the launcher runs in Bazel's place; no
+// .bazelrc setting a bazelrcSDKFlags flag; no include() and no
 // register_toolchains other than @go_toolchains//:all; every go_sdk binding recognized, without
 // arguments, and named only where it is bound, tagged or passed to use_repo; and across them exactly
 // one SDK tag, a from_file whose only arguments are an optional name and a go_mod label naming
@@ -98,7 +110,7 @@ func resolveBazelSDK(moduleRoot, checkoutRoot string) bazelSDKBinding {
 			return bazelSDKUnbound
 		}
 	}
-	if bazelrcSetsSDK(ws, ".bazelrc", 0) {
+	if hasBazelWrapper(ws) || bazelrcSetsSDK(ws, ".bazelrc", 0) {
 		return bazelSDKUnbound
 	}
 	data, err := os.ReadFile(filepath.Join(ws, "MODULE.bazel"))
@@ -115,15 +127,15 @@ func resolveBazelSDK(moduleRoot, checkoutRoot string) bazelSDKBinding {
 // names, resolved against the workspace directory ws, or "" when the module's SDK declarations are
 // not exactly that one tag in a form this reads.
 func goModLabelFromModule(src, ws string) string {
-	if strings.Contains(src, "include(") ||
-		strings.Count(src, "register_toolchains(") != len(registerGoToolchains.FindAllStringIndex(src, -1)) {
+	if includeCall.MatchString(src) ||
+		len(registerToolchainsCall.FindAllStringIndex(src, -1)) != len(registerGoToolchains.FindAllStringIndex(src, -1)) {
 		return ""
 	}
 	// Every use_extension names its file as a literal, and every one that names rules_go's is a
 	// binding goSDKExtension recognized, so no SDK tag hides behind a binding this did not read.
 	bindings := goSDKExtension.FindAllStringSubmatch(src, -1)
 	if len(bindings) == 0 ||
-		len(useExtensionLiteral.FindAllStringIndex(src, -1)) != strings.Count(src, "use_extension(") ||
+		len(useExtensionLiteral.FindAllStringIndex(src, -1)) != len(useExtensionCall.FindAllStringIndex(src, -1)) ||
 		len(bindings) != strings.Count(src, `//go:extensions.bzl"`) {
 		return ""
 	}
@@ -199,9 +211,26 @@ func resolveRootLabel(label, ws string) string {
 	return ""
 }
 
+// hasBazelWrapper reports whether ws has a tools/bazel wrapper (tools/bazel or tools/bazel.<ext>),
+// which the Bazel launcher and bazelisk run in Bazel's place with any flags it adds.
+func hasBazelWrapper(ws string) bool {
+	entries, err := os.ReadDir(filepath.Join(ws, "tools"))
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	for _, e := range entries {
+		if e.Name() == "bazel" || strings.HasPrefix(e.Name(), "bazel.") {
+			return true
+		}
+	}
+	return false
+}
+
 // bazelrcSetsSDK reports whether the bazelrc file name under ws, or a %workspace% file it imports,
 // sets one of bazelrcSDKFlags, or imports a file this cannot read. A missing top-level .bazelrc sets
-// nothing.
+// nothing. Lines are joined and split as Bazel's rc_file.cc does: a trailing backslash continues the
+// line, and words are separated by any whitespace. try-import-if-bazel-version is followed like
+// try-import, whatever version it names.
 func bazelrcSetsSDK(ws, name string, depth int) bool {
 	if depth > 8 || strings.Contains(name, "..") {
 		return true
@@ -210,9 +239,10 @@ func bazelrcSetsSDK(ws, name string, depth int) bool {
 	if err != nil {
 		return depth > 0 || !os.IsNotExist(err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+	src := strings.NewReplacer("\\\r\n", "", "\\\n", "").Replace(string(data))
+	for _, line := range strings.Split(src, "\n") {
+		words := strings.Fields(line)
+		if len(words) == 0 || strings.HasPrefix(words[0], "#") {
 			continue
 		}
 		for _, flag := range bazelrcSDKFlags {
@@ -220,15 +250,19 @@ func bazelrcSetsSDK(ws, name string, depth int) bool {
 				return true
 			}
 		}
-		verb, target, _ := strings.Cut(line, " ")
-		if verb != "import" && verb != "try-import" {
+		verb := words[0]
+		if !strings.Contains(verb, "import") {
 			continue
 		}
-		rel, ok := strings.CutPrefix(strings.TrimSpace(target), "%workspace%/")
+		optional := verb == "try-import" || verb == "try-import-if-bazel-version"
+		if !optional && verb != "import" || len(words) < 2 {
+			return true
+		}
+		rel, ok := strings.CutPrefix(words[len(words)-1], "%workspace%/")
 		if !ok {
 			return true
 		}
-		if verb == "try-import" {
+		if optional {
 			if _, err := os.Stat(filepath.Join(ws, filepath.FromSlash(rel))); os.IsNotExist(err) {
 				continue
 			}
@@ -240,58 +274,63 @@ func bazelrcSetsSDK(ws, name string, depth int) bool {
 	return false
 }
 
-// blankStarlarkStrings replaces the contents of string literals with spaces, keeping the quotes, so
-// a name inside a string does not read as a reference.
-func blankStarlarkStrings(src string) string {
-	b := []byte(src)
-	var quote byte
-	for i := 0; i < len(b); i++ {
+// starlarkMask classifies each byte of src as code, string contents (between the quotes, which stay
+// code) or comment. It reads single-, double- and triple-quoted strings with backslash escapes.
+func starlarkMask(src string) []byte {
+	const (
+		code byte = iota
+		str
+		comment
+	)
+	mask := make([]byte, len(src))
+	for i := 0; i < len(src); {
+		c := src[i]
 		switch {
-		case quote != 0:
-			if b[i] == '\\' && i+1 < len(b) {
-				b[i], b[i+1] = ' ', ' '
-				i++
-			} else if b[i] == quote {
-				quote = 0
-			} else if b[i] != '\n' {
-				b[i] = ' '
+		case c == '#':
+			for ; i < len(src) && src[i] != '\n'; i++ {
+				mask[i] = comment
 			}
-		case b[i] == '"' || b[i] == '\'':
-			quote = b[i]
+		case c == '"' || c == '\'':
+			delim := src[i : i+1]
+			if strings.HasPrefix(src[i:], strings.Repeat(delim, 3)) {
+				delim = strings.Repeat(delim, 3)
+			}
+			i += len(delim)
+			for i < len(src) && !strings.HasPrefix(src[i:], delim) && (len(delim) == 3 || src[i] != '\n') {
+				mask[i] = str
+				if src[i] == '\\' && i+1 < len(src) {
+					i++
+					mask[i] = str
+				}
+				i++
+			}
+			i += len(delim)
+		default:
+			i++
+		}
+	}
+	return mask
+}
+
+// blankStarlarkStrings replaces the contents of string literals with spaces, keeping the quotes and
+// line breaks, so a name inside a string does not read as a reference.
+func blankStarlarkStrings(src string) string {
+	return maskStarlark(src, 1)
+}
+
+// stripStarlarkComments replaces # comments outside string literals with spaces.
+func stripStarlarkComments(src string) string {
+	return maskStarlark(src, 2)
+}
+
+func maskStarlark(src string, class byte) string {
+	b := []byte(src)
+	for i, m := range starlarkMask(src) {
+		if m == class && b[i] != '\n' {
+			b[i] = ' '
 		}
 	}
 	return string(b)
-}
-
-// stripStarlarkComments drops # comments outside string literals.
-func stripStarlarkComments(src string) string {
-	var b strings.Builder
-	var quote byte
-	for i := 0; i < len(src); i++ {
-		c := src[i]
-		switch {
-		case quote != 0:
-			if c == '\\' && i+1 < len(src) {
-				b.WriteByte(c)
-				i++
-				c = src[i]
-			} else if c == quote {
-				quote = 0
-			}
-		case c == '"' || c == '\'':
-			quote = c
-		case c == '#':
-			for i < len(src) && src[i] != '\n' {
-				i++
-			}
-			if i < len(src) {
-				b.WriteByte('\n')
-			}
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
 }
 
 // bazelFromFileVersion is the floor go.mod sets beside go_sdk.from_file. rules_go's from_file reads

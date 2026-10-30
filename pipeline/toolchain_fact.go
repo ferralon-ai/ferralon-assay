@@ -256,9 +256,10 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 // when no directive resolves, in which case the returned fact is the explicit unresolved one and no
 // exact claim can be refuted.
 //
-// Inside a Bazel workspace no go command enforces the directives: rules_go compiles with the SDK the
-// workspace declares. Their one floor there is the version go_sdk.from_file reads from this go.mod
-// (bazelFromFileVersion), which is not their maximum; any other workspace takes no floor.
+// Inside a Bazel workspace rules_go compiles with the SDK the workspace declares, so the directives
+// floor it only when go_sdk.from_file reads this go.mod, and then at bazelFromFileVersion: the lower
+// of that build's release and the go line a go command in the same repository enforces, not their
+// maximum. Any other workspace takes no floor.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	best := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	var bestParsed goToolchainVersion

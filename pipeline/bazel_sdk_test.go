@@ -45,6 +45,10 @@ go_sdk.from_file(name = "go_sdk", go_mod = "//svc:go.mod")
 build --jobs=8
 try-import %workspace%/user.bazelrc
 `}, bazelSDKFromGoMod},
+		{"a .bazelrc setting an Apple SDK version", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --macos_sdk_version=14.0
+`}, bazelSDKFromGoMod},
+		{"a docstring with a quote in it", map[string]string{"MODULE.bazel": `"""Module for svc; "go_sdk" pins the "SDK"."""
+` + fromFileModule}, bazelSDKFromGoMod},
 
 		{"a dev_dependency binding", map[string]string{"MODULE.bazel": `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk", dev_dependency = True)
 go_sdk.from_file(go_mod = "//svc:go.mod")
@@ -64,6 +68,26 @@ pinned.from_file(name = "pinned_sdk", go_mod = "//tools:go.mod")
 `}, bazelSDKUnbound},
 		{"a .bazelrc importing extra_toolchains", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `import %workspace%/tools/ci.bazelrc
 `, "tools/ci.bazelrc": `build:ci --extra_toolchains=//toolchains:go
+`}, bazelSDKUnbound},
+		{"a .bazelrc selecting an sdk_name", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --@rules_go//go/toolchain:sdk_name=go_default_sdk
+`}, bazelSDKUnbound},
+		{"a .bazelrc flag continued over lines", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": "build --@rules_go//go/toolchain:sdk_\\\nversion=1.26.7\n"}, bazelSDKUnbound},
+		{"a .bazelrc try-import-if-bazel-version", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `try-import-if-bazel-version >=8.0.0 %workspace%/ci.bazelrc
+`, "ci.bazelrc": `build --@rules_go//go/toolchain:sdk_version=1.26.7
+`}, bazelSDKUnbound},
+		{"a .bazelrc import after a tab", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": "import\t%workspace%/ci.bazelrc\n", "ci.bazelrc": `build --extra_toolchains=//toolchains:go
+`}, bazelSDKUnbound},
+		{"a .bazelrc import verb this does not follow", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `future-import %workspace%/ci.bazelrc
+`, "ci.bazelrc": `build --jobs=8
+`}, bazelSDKUnbound},
+		{"a tools/bazel wrapper", map[string]string{"MODULE.bazel": fromFileModule, "tools/bazel": "#!/bin/sh\nexec \"$BAZEL_REAL\" \"$@\"\n"}, bazelSDKUnbound},
+		{"register_toolchains with a space", map[string]string{"MODULE.bazel": fromFileModule + `register_toolchains ("//toolchains:all")
+`}, bazelSDKUnbound},
+		{"include with a space", map[string]string{"MODULE.bazel": fromFileModule + `include ("//:go.MODULE.bazel")
+`}, bazelSDKUnbound},
+		{"an alias after a docstring with an odd quote", map[string]string{"MODULE.bazel": fromFileModule + `DOC = """a "quote"""
+pinned = go_sdk
+pinned.from_file(name = "pinned_sdk", go_mod = "//tools:go.mod")
 `}, bazelSDKUnbound},
 		{"a .bazelrc importing a file outside the workspace", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `try-import /etc/ci.bazelrc
 `}, bazelSDKUnbound},

@@ -674,7 +674,8 @@ const (
 
 // ResolveInventoryRequest carries the buildable module to resolve the whole dependency graph for.
 type ResolveInventoryRequest struct {
-	BuildDir string `json:"build_dir"` // checked-out module/workspace root
+	BuildDir string `json:"build_dir"`         // checked-out module/workspace root
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 
 	// TargetEnv is the §4.6 target-environment override the resolver evaluates environment-conditional
 	// dependencies against (onyx-q6). It rides on the REQUEST, not on BuildDir: the override is Assay

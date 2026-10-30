@@ -44,6 +44,10 @@ import (
 // than the single-coordinate moduleVersionFromGoMod it augments, and would make a
 // later CVE-watch read "we could not resolve this" as "this dependency is absent".
 func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.DependencyInventory{}, err
+	}
 	if fi, err := os.Stat(req.BuildDir); err != nil || !fi.IsDir() {
 		// No buildable directory: a hard error (inv.4), never a silent empty graph.
 		if err == nil {
@@ -78,11 +82,18 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 
 	var graphReasons []string
 
-	// A go.work root is a multi-module workspace. The dependency graph below is resolved
-	// for this module alone (runModGraph), not the workspace, so declare the rest rather
-	// than silently omit it.
+	// Under the build's go.work the graph is the workspace's, and its other members are main modules,
+	// not dependencies. With the workspace off, a go.work root is still a multi-module workspace the
+	// graph below does not resolve, so declare the rest rather than silently omit it.
+	var work *goWorkspace
 	workspace := false
-	if fi, statErr := os.Stat(filepath.Join(req.BuildDir, "go.work")); statErr == nil && !fi.IsDir() {
+	if file := goWork(ctx); file != "off" {
+		w, err := readGoWorkspace(file)
+		if err != nil {
+			return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonToolFailure)}, nil
+		}
+		work, workspace = w, true
+	} else if fi, statErr := os.Stat(filepath.Join(req.BuildDir, "go.work")); statErr == nil && !fi.IsDir() {
 		workspace = true
 		graphReasons = append(graphReasons, plugin.PartialReasonUnsupported)
 	}
@@ -106,6 +117,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 
 	// go.sum supplies the artifact integrity digest without acquisition (C2 bullet 4).
 	sums := readGoSum(filepath.Join(req.BuildDir, "go.sum"))
+	if work != nil {
+		sums = work.sums
+	}
 	haveLockfile := len(sums) > 0
 	lockfile := ""
 	if haveLockfile {
@@ -119,7 +133,7 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 	// unpruned (pre-1.17) case.
 	selected := map[string]string{} // path -> selected version (original graph label)
 	consider := func(tok graphNode) {
-		if tok.version == "" || isToolchainPseudo(tok.path) || tok.path == mainPath {
+		if tok.version == "" || isToolchainPseudo(tok.path) || tok.path == mainPath || work != nil && work.mains[tok.path] {
 			return
 		}
 		if cur, ok := selected[tok.path]; !ok || semver.Compare(tok.version, cur) > 0 {
@@ -156,7 +170,11 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 
 		// Apply a replace (versioned key first, then wildcard) — the redirect the
 		// graph does not show. A filesystem replace has no verifiable version.
-		if rep, ok := gomod.Replacement(mf, path, ver); ok {
+		rep, ok := gomod.Replacement(mf, path, ver)
+		if work != nil {
+			rep, ok = work.replacement(path, ver)
+		}
+		if ok {
 			applyReplace(&n, path, rep, &nodeReasons)
 		}
 
@@ -205,6 +223,8 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		Nodes:      nodes,
 		Edges:      depEdges,
 	}
+	// Under a workspace the other members are main modules no node lists, so the nodes are not the
+	// whole build list.
 	if !workspace && mainPath != "" {
 		inv.BuildList, inv.MainModule = plugin.BuildListGoModGraph, mainPath
 	}
@@ -243,14 +263,17 @@ type graphEdge struct {
 	to   graphNode
 }
 
-// runModGraph invokes `go mod graph` in buildDir and parses its edge list. GOWORK
-// is off: the inventory lists this module's own dependency graph, not the
-// workspace's. This RESOLVES the
-// module graph (§3.3 permits it) and executes no target code (C4).
+// runModGraph invokes `go mod graph` in buildDir under the build's GOWORK and parses its edge
+// list. Under a go.work it runs offline and read-only, as the host's own read of the workspace
+// build list does, so the two name the same build. This RESOLVES the module graph (§3.3 permits
+// it) and executes no target code (C4).
 func runModGraph(ctx context.Context, buildDir string) ([]graphEdge, error) {
 	cmd := exec.CommandContext(ctx, "go", "mod", "graph")
 	cmd.Dir = buildDir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = analyzerEnv(ctx)
+	if goWork(ctx) != "off" {
+		cmd.Env = append(cmd.Env, "GOPROXY=off", "GOFLAGS=-mod=readonly")
+	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -275,6 +298,69 @@ func runModGraph(ctx context.Context, buildDir string) ([]graphEdge, error) {
 		return nil, err
 	}
 	return edges, nil
+}
+
+// goWorkspace is what a go.work makes of the graph `go mod graph` prints under it.
+type goWorkspace struct {
+	mains map[string]bool // the module path of every module the workspace uses
+	// replaces holds the go.work's replace directives, which win, then each used module's go.mod.
+	replaces []*modfile.File
+	sums     map[string]string // go.work.sum and every used module's go.sum
+}
+
+// readGoWorkspace reads the go.work at file and the go.mod of every module it uses.
+func readGoWorkspace(file string) (*goWorkspace, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	wf, err := modfile.ParseWork(file, data, nil)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Dir(file)
+	w := &goWorkspace{
+		mains:    map[string]bool{},
+		replaces: []*modfile.File{{Replace: wf.Replace}},
+		sums:     map[string]string{},
+	}
+	for k, v := range readGoSum(filepath.Join(dir, "go.work.sum")) {
+		w.sums[k] = v
+	}
+	for _, u := range wf.Use {
+		use := u.Path
+		if !filepath.IsAbs(use) {
+			use = filepath.Join(dir, use)
+		}
+		path := filepath.Join(use, "go.mod")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		mf, err := modfile.Parse(path, data, nil)
+		if err != nil {
+			return nil, err
+		}
+		if mf.Module == nil {
+			return nil, &os.PathError{Op: "parse", Path: path, Err: os.ErrInvalid}
+		}
+		w.mains[mf.Module.Mod.Path] = true
+		w.replaces = append(w.replaces, mf)
+		for k, v := range readGoSum(filepath.Join(use, "go.sum")) {
+			w.sums[k] = v
+		}
+	}
+	return w, nil
+}
+
+// replacement returns the replace directive that governs module at version under the workspace.
+func (w *goWorkspace) replacement(module, version string) (gomod.Target, bool) {
+	for _, f := range w.replaces {
+		if t, ok := gomod.Replacement(f, module, version); ok {
+			return t, true
+		}
+	}
+	return gomod.Target{}, false
 }
 
 // parseGraphNode splits "path@version" into its parts; a bare token (the main

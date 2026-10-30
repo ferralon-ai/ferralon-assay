@@ -61,8 +61,18 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		work = append(work, v)
 	}
 
-	// Sources: every parameter of every ingress function is attacker-controllable.
-	for sym, fn := range ingresses {
+	// Sources: every parameter of every ingress function is attacker-controllable. A sink keeps the
+	// first ingress that reaches it, so seeding in map order would attribute a sink reached by two
+	// ingresses to either one from run to run. The work list is a stack and each ingress's flow runs
+	// to completion before the one seeded under it, so seeding in reverse symbol order attributes
+	// every sink to the lowest ingress symbol that reaches it.
+	syms := make([]string, 0, len(ingresses))
+	for sym := range ingresses {
+		syms = append(syms, sym)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(syms)))
+	for _, sym := range syms {
+		fn := ingresses[sym]
 		if fn == nil {
 			continue
 		}

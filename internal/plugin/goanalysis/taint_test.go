@@ -165,6 +165,37 @@ func TestComputeTaint_BrokenDirIsHardError(t *testing.T) {
 	}
 }
 
+// TestRunTaint_AttributesLowestIngress pins that a sink two ingresses reach is attributed to the
+// lowest ingress symbol on every run, not to whichever the ingress map yields first.
+func TestRunTaint_AttributesLowestIngress(t *testing.T) {
+	const dir = "testdata/taintmultimod"
+	ctx := context.Background()
+	sink := sinkSCIPIn(t, dir, "/Sink().")
+	sp, _, err := loadSSA(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingresses := sp.resolveIngressFuncs(ing.Ingresses)
+	var alpha, zeta bool
+	for sym := range ingresses {
+		alpha = alpha || strings.Contains(sym, "AlphaHandler")
+		zeta = zeta || strings.Contains(sym, "ZetaHandler")
+	}
+	if !alpha || !zeta {
+		t.Fatalf("want both handlers as resolved ingresses; got %v", ingresses)
+	}
+	for run := range 20 {
+		paths, _ := runTaint(sp, ingresses, map[string]bool{sink: true})
+		if len(paths) != 1 || !strings.Contains(paths[0].Ingress.SCIP, "AlphaHandler") {
+			t.Fatalf("run %d: want Sink attributed to AlphaHandler; got %+v", run, paths)
+		}
+	}
+}
+
 // sanitizerOnlyDir returns the build dir for the sanitizer proof. The taintmod
 // fixture contains BOTH a tainted and a sanitized handler reaching the same Sink,
 // which would let the tainted handler's path mask the sanitizer. The sanitizer

@@ -226,6 +226,7 @@ func runBaseline(args []string) error {
 		Signals:         f.resolvedSignals,
 		Analysis:        analysis,
 		DependencyFetch: f.depRun.forLanguage(acq.language).fetchUpdate(),
+		Disclose:        f.depRun.forLanguage(acq.language).disclose(),
 	}
 
 	rep, err := trigger.RunBaseline(ctx, store, req)

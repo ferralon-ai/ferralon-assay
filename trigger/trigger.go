@@ -67,7 +67,18 @@ type BaselineRequest struct {
 	// DependencyFetch, when set, computes the dependency-fetch record the run writes from the
 	// stored one, after every assessment and before the write. Nil carries the stored record.
 	DependencyFetch DependencyFetchUpdate
+	// Disclose, when set, records on the run's Report what the caller observed of the run that the
+	// pipeline does not report itself, after every assessment and before the write. See Disclosure.
+	Disclose Disclosure
 }
+
+// Disclosure records on a writing run's Report a disclosure only the caller can make: the dependency
+// code the run read, which the caller observed through its acquisition hook. It runs before the
+// state write so the stored report.json carries it, and with it every later run that publishes the
+// stored rows: a cve-watch earnest run carries the stored partiality into its Report, and a
+// pr-inherit run publishes the stored Report. It may add partiality and set disclosure fields; it
+// must not change a verdict.
+type Disclosure func(rep *report.Report)
 
 // DependencyFetchUpdate computes the dependency-fetch record a writing run leaves in state from
 // the stored record (nil when there is none) and what the run did. It must not modify prior.
@@ -108,6 +119,9 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 	})
 	if err != nil {
 		return nil, err
+	}
+	if req.Disclose != nil {
+		req.Disclose(rep)
 	}
 
 	next, err := readForUpdate(ctx, store)
@@ -383,6 +397,9 @@ type CVEWatchRequest struct {
 	// the stored one, after the hold is decided and before the write. A heartbeat never calls it
 	// and carries the stored record. Nil carries the stored record.
 	DependencyFetch DependencyFetchUpdate
+	// Disclose, when set, records the caller's disclosure on an earnest run's Report before the
+	// write (Disclosure). A heartbeat writes the stored Report unchanged and never calls it.
+	Disclose Disclosure
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -480,6 +497,9 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	rep, assessed, err := earnestRun(ctx, state, req, osvResult, newIDs, retry, cursor)
 	if err != nil {
 		return nil, err
+	}
+	if req.Disclose != nil {
+		req.Disclose(rep)
 	}
 	held := rep.Provenance.AdvisoryCursor == state.Cursor
 	state.SBOM = rep.SBOM

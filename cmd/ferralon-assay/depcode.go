@@ -285,6 +285,11 @@ func (d *depCodeRun) cause() *report.DependencyCodeCause {
 // the verdicts are the ones the scan reached reading no dependency code. A partial read adds
 // neither: it read the code it fetched, and the JS lane withholds each package it did not as
 // uninspectable_package.
+//
+// A writing run stamps twice: before the state write (disclose), so the stored report.json and
+// every later run that publishes its rows carry the note, and again on publish, which also covers a
+// run that writes nothing (pr-inherit). The second adds nothing: the notes deduplicate and the field
+// is set to the same value.
 func (d *depCodeRun) stamp(rep *report.Report) {
 	if d == nil {
 		return
@@ -295,6 +300,15 @@ func (d *depCodeRun) stamp(rep *report.Report) {
 		rep.AddPartiality(report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: describeCause(c)})
 	}
 	rep.DependencyCode = dc
+}
+
+// disclose is the run's trigger Disclosure, or nil for a scan with no dependency code to record
+// (not JS).
+func (d *depCodeRun) disclose() trigger.Disclosure {
+	if d == nil {
+		return nil
+	}
+	return d.stamp
 }
 
 // err is the run's exit error once its Report is published: a *depFetchError when a registry

@@ -553,7 +553,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		b.AddFinding(f)
 	}
 	// CVE-watch re-resolves no dependencies, so the prior pass's limits still bound
-	// every inherited finding; the fresh notes cover the newly-relevant advisories.
+	// every inherited finding; the fresh notes cover the newly-relevant advisories. That holds
+	// for a stored tool_failure:dependency_code_unavailable too, even when this run read all the
+	// dependency code: the note covers every row the run that fell back reached, and this run
+	// replaces only the rows it assessed. Only a baseline, which rebuilds every row, drops it.
 	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)

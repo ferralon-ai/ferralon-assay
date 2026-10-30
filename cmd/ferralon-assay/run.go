@@ -1334,5 +1334,6 @@ func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchReq
 		HoldCursor:      cfg.graph.err() != nil,
 		Hold:            cfg.deps.holds,
 		DependencyFetch: cfg.deps.fetchUpdate(),
+		Disclose:        cfg.deps.disclose(),
 	}
 }

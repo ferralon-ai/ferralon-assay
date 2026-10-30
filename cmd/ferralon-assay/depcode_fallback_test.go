@@ -250,3 +250,92 @@ func TestDependencyCodeFetchFailureRunsAsOff(t *testing.T) {
 		}
 	})
 }
+
+// A run whose fetch fell back stores the dependency_code_unavailable note with its report.json, so
+// a later run that publishes the stored rows discloses it, and publishing stamps it once more
+// without a second copy. Each run is wired the way runBaseline and runCVEWatch wire it, against a
+// registry nothing listens on.
+func TestDependencyCodeNoteIsStored(t *testing.T) {
+	ctx := context.Background()
+	subject := trigger.Subject{Repo: "app", Revision: "main", ResolvedCommit: "abc123"}
+	fetchRun := func(t *testing.T) (*depCodeRun, []pipeline.AssessOption) {
+		t.Helper()
+		t.Setenv(envDependencyCode, "")
+		t.Setenv(envDependencyCache, "")
+		t.Setenv(envDependencyUncredCache, "")
+		t.Setenv(envDependencyNPMRCEnv, "")
+		t.Setenv(envDependencyTimeout, "")
+		mode, cache, npmrcEnv, timeout := "", t.TempDir(), "", ""
+		f := &runFlags{depCode: &mode, depCache: &cache, depUncredCache: new(string), depNPMRCEnv: &npmrcEnv, depTimeout: &timeout}
+		depOpt, err := f.dependencyCodeOption()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.depRun.forLanguage("js"), []pipeline.AssessOption{pipeline.WithPlugin(&inProcessJS{}), depOpt}
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T, store statestore.StateStore, codebase assessment.CodebaseRef) (*report.Report, *depCodeRun)
+	}{
+		{name: "baseline", run: func(t *testing.T, store statestore.StateStore, codebase assessment.CodebaseRef) (*report.Report, *depCodeRun) {
+			run, opts := fetchRun(t)
+			rep, err := trigger.RunBaseline(ctx, store, trigger.BaselineRequest{
+				Subject: subject, Codebase: codebase, AssessOptions: opts,
+				Advisories:      []assessment.VulnRef{{ID: "FERRALON-JS-DEP-0001", Source: "corpus"}},
+				DependencyFetch: run.fetchUpdate(),
+				Disclose:        run.disclose(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return rep, run
+		}},
+		{name: "cve-watch earnest", run: func(t *testing.T, store statestore.StateStore, codebase assessment.CodebaseRef) (*report.Report, *depCodeRun) {
+			off := report.DependencyCodeSourceOff
+			if _, err := trigger.RunBaseline(ctx, store, trigger.BaselineRequest{
+				Subject: subject, Codebase: codebase, AssessOptions: []pipeline.AssessOption{pipeline.WithPlugin(&inProcessJS{})},
+				DependencyFetch: (&depCodeRun{source: off}).fetchUpdate(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			run, opts := fetchRun(t)
+			res, err := trigger.RunCVEWatch(ctx, store, leftPadOSV{}, cveWatchRequest(&runConfig{
+				subject: subject, codebase: codebase, assessOptions: opts, deps: run,
+				advisories: []assessment.VulnRef{{ID: "FERRALON-JAVA-DEP-0001", Source: "corpus"}},
+			}, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Heartbeat {
+				t.Fatal("heartbeat; the fixture did not set up an earnest run")
+			}
+			return res.Report, run
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLeftPadApp(t, "registry=https://127.0.0.1:1/\n")
+			codebase := assessment.CodebaseRef{Repo: "app", Revision: "main", Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: dir}}
+			store := statestore.NewMemStore()
+			published, run := tc.run(t, store, codebase)
+			if run.cause() == nil {
+				t.Fatal("the fetch did not fall back; the fixture did not set up the case")
+			}
+			st, err := store.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.stamp(published)
+			for name, rep := range map[string]*report.Report{"stored": st.Report, "published": published} {
+				n := 0
+				for _, p := range rep.Partiality {
+					if p.Reason == report.PartialReasonDependencyCodeUnavailable {
+						n++
+					}
+				}
+				if n != 1 {
+					t.Errorf("%s report carries %d dependency_code_unavailable notes, want 1: %+v", name, n, rep.Partiality)
+				}
+			}
+		})
+	}
+}

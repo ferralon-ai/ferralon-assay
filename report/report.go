@@ -1070,6 +1070,10 @@ const (
 // on its own. It is plugin.PartialReasonToolFailure narrowed the way
 // the JVM lane narrows it to build_graph_absent: the step that did not run is the dependency
 // code read, whatever stopped it (the registry, a credential, the deadline).
+//
+// The note is stored with the Report, and a cve-watch earnest run carries it into its own Report
+// with the rest of the stored partiality: it re-assesses only some rows, so the rest are still the
+// verdicts the run that fell back reached. Only a baseline, which rebuilds every row, drops it.
 const PartialReasonDependencyCodeUnavailable = plugin.PartialReasonToolFailure + ":dependency_code_unavailable"
 
 // DependencyCode is the provenance of the dependency code a JS scan read.

@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -483,6 +485,73 @@ func TestResolveVersions_PoetryInstallFlags(t *testing.T) {
 			}
 			if r := resolveVersion(t, dir, "PyJWT"); r.Found || r.Exhaustive != tt.want {
 				t.Fatalf("PyJWT found %v exhaustive %v, want not found and exhaustive %v", r.Found, r.Exhaustive, tt.want)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_PoetryInstallGroups pins that a poetry.lock package resolves only when
+// the poetry install puts it in place: a package only unselected groups or an extra pull in is
+// found at no version, and the exhaustive claim stands.
+func TestResolveVersions_PoetryInstallGroups(t *testing.T) {
+	const (
+		pyproject = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2==3.1.4\"]\n" +
+			"[tool.poetry.group.dev.dependencies]\npytest = \"8.3.2\"\n" +
+			"[tool.poetry.group.docs]\noptional = true\n[tool.poetry.group.docs.dependencies]\nsphinx = \"7.4.7\"\n"
+		lock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ngroups = [\"main\"]\n\n" +
+			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ngroups = [\"dev\"]\n\n" +
+			"[[package]]\nname = \"sphinx\"\nversion = \"7.4.7\"\ngroups = [\"docs\"]\n\n" +
+			"[[package]]\nname = \"colorama\"\nversion = \"0.4.6\"\ngroups = [\"main\", \"dev\"]\n"
+		legacyProject = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\njinja2 = \"3.1.4\"\n" +
+			"[tool.poetry.dev-dependencies]\npytest = \"8.3.2\"\n"
+		categoryLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ncategory = \"main\"\noptional = false\n\n" +
+			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ncategory = \"dev\"\noptional = false\n"
+		bareLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\n"
+	)
+	all := []string{"jinja2", "pytest", "sphinx", "colorama"}
+	tests := []struct {
+		name     string
+		files    map[string]string // over pyproject.toml and poetry.lock
+		resolved []string          // the packages of all that resolve; every other one is found unresolved
+	}{
+		{"--only main leaves dev out, keeps what main shares with it", map[string]string{"install.sh": "poetry install --only main\n"}, []string{"jinja2", "colorama"}},
+		{"--without dev", map[string]string{"install.sh": "poetry install --without dev\n"}, []string{"jinja2", "colorama"}},
+		{"--no-dev is --only main", map[string]string{"install.sh": "poetry install --no-dev\n"}, []string{"jinja2", "colorama"}},
+		{"--with an optional group", map[string]string{"install.sh": "poetry install --with docs --without dev\n"}, []string{"jinja2", "sphinx", "colorama"}},
+		{"bare install leaves an optional group out", map[string]string{"install.sh": "poetry install\n"}, []string{"jinja2", "pytest", "colorama"}},
+		{"--only ignores --with", map[string]string{"install.sh": "poetry install --only main --with docs\n"}, []string{"jinja2", "colorama"}},
+		{"--with a group as the manifest does not spell it", map[string]string{"install.sh": "poetry install --with Docs\n"}, []string{"jinja2", "pytest", "colorama"}},
+		{"--without drops every spelling", map[string]string{"install.sh": "poetry install --without Dev\n"}, []string{"jinja2", "colorama"}},
+		{"each surface's install must install it", map[string]string{"install.sh": "poetry install --with docs\n", "ci.sh": "poetry install --only main\n"}, []string{"jinja2", "colorama"}},
+		{"a package only an extra pulls in", map[string]string{"install.sh": "poetry install --with docs\n",
+			"poetry.lock": lock + "\n" + "[[package]]\nname = \"sphinx\"\nversion = \"7.4.7\"\ngroups = [\"docs\"]\noptional = true\n"}, []string{"jinja2", "pytest", "colorama"}},
+		{"a lock group the manifest does not declare", map[string]string{"install.sh": "poetry install --with docs\n",
+			"poetry.lock": strings.Replace(lock, `groups = ["main"]`, `groups = ["main", "ghost"]`, 1)}, []string{"pytest", "sphinx", "colorama"}},
+		{"poetry 1.x category, --only main", map[string]string{"install.sh": "poetry install --only main\n", "pyproject.toml": legacyProject, "poetry.lock": categoryLock}, []string{"jinja2"}},
+		{"poetry 1.x category, bare install", map[string]string{"install.sh": "poetry install\n", "pyproject.toml": legacyProject, "poetry.lock": categoryLock}, []string{"jinja2", "pytest"}},
+		{"no membership keys under a group flag", map[string]string{"install.sh": "poetry install --only main\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, nil},
+		{"no membership keys, every group installed", map[string]string{"install.sh": "poetry install\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, []string{"jinja2", "pytest"}},
+		{"no install script leaves the lock as it is", nil, all},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"pyproject.toml": pyproject, "poetry.lock": lock}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			dir := writeTree(t, files)
+			for _, name := range all {
+				if !strings.Contains(files["poetry.lock"], "\""+name+"\"") {
+					continue
+				}
+				want := slices.Contains(tt.resolved, name)
+				r := resolveVersion(t, dir, name)
+				if !r.Found || r.Match.Resolved != want || r.Exhaustive != true {
+					t.Errorf("%s = %+v found %v exhaustive %v, want found, resolved %v, exhaustive", name, r.Match, r.Found, r.Exhaustive, want)
+				}
+			}
+			if r := resolveVersion(t, dir, "PyJWT"); r.Found || !r.Exhaustive {
+				t.Errorf("PyJWT found %v exhaustive %v, want not found and exhaustive", r.Found, r.Exhaustive)
 			}
 		})
 	}

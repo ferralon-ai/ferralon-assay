@@ -42,17 +42,17 @@ import (
 //
 // with only --no-cache-dir, --user and -q added (and, to pip, --no-deps and --require-hashes,
 // which only narrow what it installs; to poetry install, what poetryInstallArgs allows), and
-// with the manifest each binds to (the
-// nearest pyproject.toml or Pipfile at or above the command's directory) and the lock it
-// installs (the nearest at or above that) read here; and, for uv sync, poetry install and pdm
-// sync, with a root project, and every local source the lock names, whose build runs no code
-// from the tree and loads no plugin (rootBuildClean). Anything
-// else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
-// (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
-// every other tool laneToken names, run wrappers whose argv names one included. A
-// PIP_*, UV_*, PDM_* or POETRY_* variable set in any script surface withholds, since every pip,
-// uv, pdm or poetry the build runs reads it, unless laneEnvKeeps keeps it. How a surface is
-// read, and what binds a command to a file, is lane-neutral, in scriptsurface.
+// with the manifest each binds to (the nearest pyproject.toml or Pipfile at or above the
+// command's directory) and the lock it installs (the nearest at or above that) read here; and,
+// for uv sync, poetry install and pdm sync, with a root project, and every local source the
+// lock names, whose build runs no code from the tree and loads no plugin (rootBuildClean).
+// Anything else that names an installer withholds: a package argument, another flag, pipx,
+// uvx, uv run (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba,
+// easy_install, and every other tool laneToken names, run wrappers whose argv names one
+// included. A PIP_*, UV_*, PDM_* or POETRY_* variable set in any script surface withholds,
+// since every pip, uv, pdm or poetry the build runs reads it, unless laneEnvKeeps keeps it.
+// How a surface is read, and what binds a command to a file, is lane-neutral, in
+// scriptsurface.
 //
 // One more pip form installs nothing but pip itself, so it withholds the pip coordinate alone
 // (pipSelfUpgrade):
@@ -75,16 +75,16 @@ import (
 // targets: wheel requires packaging.
 
 // newScriptSpec is the Python lane's part of the rule, recording into installs every pip
-// install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
-// a caller that allows a self-upgrade must withhold what tooling names. A nil tooling allows
-// no self-upgrade.
-func newScriptSpec(installs pipInstalls, tooling map[string]bool) scriptsurface.Spec {
+// install -r it allows, into poetry every poetry install it allows, and into tooling the
+// distribution each allowed self-upgrade installs: a caller that allows a self-upgrade must
+// withhold what tooling names. A nil tooling allows no self-upgrade.
+func newScriptSpec(installs pipInstalls, poetry poetryInstalls, tooling map[string]bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
 		Token:    laneToken,
 		Env:      laneEnvRE,
 		EnvKeeps: laneEnvKeeps,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
-			return installs.allowed(words, b, tooling)
+			return installs.allowed(words, b, poetry, tooling)
 		},
 		RunWrapper:  laneRunWrapper,
 		RunBinds:    laneRunBinds,
@@ -204,34 +204,50 @@ var poetryGroupsRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:,[A-Za-z
 
 // poetryInstallArgs reports whether poetry install's arguments are laneFlags, poetryFlags,
 // --no-root, --no-dev and poetryGroupFlags, each group flag with its value attached by = or
-// as the next word; and whether the install builds the root project (no --no-root).
+// as the next word, and returns the groups they select and whether the install builds the
+// root project (no --no-root).
 //
 // A group selection installs a subset of poetry.lock, which resolves every group, optional
-// ones included, so the lock still names every package it can install. A pin for a package
-// the selection leaves out over-approximates what is installed, as one in an optional group
-// does under a bare poetry install; it never makes the lock miss a package. --no-dev is the
-// legacy spelling of --without dev. --no-root skips only the project itself: its
-// dependencies, path sources among them, install as before.
-func poetryInstallArgs(args []string) (ok, buildsRoot bool) {
-	buildsRoot = true
+// ones included, so the lock still names every package the install can put in place. A pin
+// for a package the selection leaves out would claim a version the run never installed, so
+// version resolution resolves only the packages the selection installs (poetryInstalls).
+// --no-dev is poetry 1.x's spelling of --only main (poetry 2 rejects it). --no-root skips
+// only the project itself: its dependencies, path sources among them, install as before.
+func poetryInstallArgs(args []string) (sel poetrySelection, ok bool) {
+	sel.buildsRoot = true
+	add := func(flag, value string) {
+		groups := strings.Split(value, ",")
+		switch flag {
+		case "--only":
+			sel.only = append(sel.only, groups...)
+		case "--with":
+			sel.with = append(sel.with, groups...)
+		case "--without":
+			sel.without = append(sel.without, groups...)
+		}
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		name, value, attached := strings.Cut(a, "=")
 		switch {
-		case laneFlags[a] || poetryFlags[a] || a == "--no-dev":
+		case laneFlags[a] || poetryFlags[a]:
+		case a == "--no-dev":
+			add("--only", "main")
 		case a == "--no-root":
-			buildsRoot = false
+			sel.buildsRoot = false
 		case poetryGroupFlags[name] && attached:
 			if !poetryGroupsRE.MatchString(value) {
-				return false, false
+				return poetrySelection{}, false
 			}
+			add(name, value)
 		case poetryGroupFlags[a] && i+1 < len(args) && poetryGroupsRE.MatchString(args[i+1]):
+			add(a, args[i+1])
 			i++
 		default:
-			return false, false
+			return poetrySelection{}, false
 		}
 	}
-	return true, buildsRoot
+	return sel, true
 }
 
 // laneRunWrapper returns the command a run wrapper runs, and whether words is one.
@@ -358,20 +374,19 @@ type rootProject struct {
 // poetry installs the root with a builder of its own, not the PEP 517 backend, and the only
 // tree code that runs is a tool.poetry.build script; buildsRoot is false for an install that
 // skips the root (poetry install --no-root), which runs no such script. Any poetry command
-// loads plugins from a
-// .poetry/plugins directory beside the manifest, and poetry install installs
-// tool.poetry.requires-plugins there from the index. pdm loads plugins from a .pdm-plugins
-// directory there (releases before 2.27; the release a build runs is not known here). pdm
-// builds the root through its PEP 517 backend when tool.pdm.package-type is "library" or,
-// with none, unless tool.pdm.distribution is false; uv does when tool.uv.package is true or,
-// with none, when the manifest has a build-system table. That build is clean only for a
-// backend that runs nothing from the tree but what tool tables or files named here ask it to
-// (backendClean). Every local source the lock names, a uv workspace member included, must
+// loads plugins from a .poetry/plugins directory beside the manifest, and poetry install
+// installs tool.poetry.requires-plugins there from the index. pdm loads plugins from a
+// .pdm-plugins directory there (releases before 2.27; the release a build runs is not known
+// here). pdm builds the root through its PEP 517 backend when tool.pdm.package-type is
+// "library" or, with none, unless tool.pdm.distribution is false; uv does when tool.uv.package
+// is true or, with none, when the manifest has a build-system table. That build is clean only
+// for a backend that runs nothing from the tree but what tool tables or files named here ask it
+// to (backendClean). Every local source the lock names, a uv workspace member included, must
 // build clean as well (localBuildsClean). uv lowers every build requirement, a member's
-// included, through the root's tool.uv.sources as well as the member's own, so those names
-// are the root's to every backendClean check. uv, poetry and pdm resolve build requirements
-// from the indexes the manifest names, and uv builds with the environment its tool.uv
-// settings give, built root or not (uvSettingsClean, poetrySourcesRemote, pdmSourcesRemote).
+// included, through the root's tool.uv.sources as well as the member's own, so those names are
+// the root's to every backendClean check. uv, poetry and pdm resolve build requirements from
+// the indexes the manifest names, and uv builds with the environment its tool.uv settings give,
+// built root or not (uvSettingsClean, poetrySourcesRemote, pdmSourcesRemote).
 func rootBuildClean(tool string, b scriptsurface.Binder, buildsRoot bool) bool {
 	pyprojects := b.Nearest("pyproject.toml")
 	if pyprojects == nil {
@@ -944,7 +959,7 @@ func laneRunBinds(words []string, b scriptsurface.Binder) bool {
 
 // allowed reports whether a command holding an installer token, already free of
 // expansions and redirects, is one of the allowed forms and binds to files read here.
-func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tooling map[string]bool) bool {
+func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, poetry poetryInstalls, tooling map[string]bool) bool {
 	head, ok := scriptsurface.CommandName(words[0])
 	if !ok {
 		return false
@@ -959,8 +974,9 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 	case head == "uv" && words[1] == "sync":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--locked", "--frozen") && b.Nearest("pyproject.toml", "uv.lock") != nil && rootBuildClean(head, b, true)
 	case head == "poetry" && words[1] == "install":
-		ok, buildsRoot := poetryInstallArgs(words[2:])
-		return ok && b.Nearest("pyproject.toml", "poetry.lock") != nil && rootBuildClean(head, b, buildsRoot)
+		sel, ok := poetryInstallArgs(words[2:])
+		return ok && b.Nearest("pyproject.toml", "poetry.lock") != nil && rootBuildClean(head, b, sel.buildsRoot) &&
+			poetry.record(sel, b)
 	case head == "poetry" && words[1] == "config":
 		return configSet(words[2:], poetryConfigFlags, poetrySettings)
 	case head == "pdm" && words[1] == "config":

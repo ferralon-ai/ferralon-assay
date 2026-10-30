@@ -99,6 +99,7 @@ type pyprojectDoc struct {
 		PDM struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
 		} `toml:"pdm"`
+		Pixi any `toml:"pixi"`
 	} `toml:"tool"`
 }
 
@@ -108,8 +109,9 @@ type pyprojectDoc struct {
 // table names, and [build-system].requires, which no lock covers. The bool is false when the
 // file does not decode, when an entry installs a local path other than the project itself or
 // ends in a backslash (setuptoolsJoins),
-// when dynamic dependencies name no file this reader can read, or when a dependency group or
-// tool dependency table holds an entry it cannot read (pyprojectToolDeps).
+// when dynamic dependencies name no file this reader can read, when a dependency group or
+// tool dependency table holds an entry it cannot read (pyprojectToolDeps), or when the file
+// configures pixi, whose dependency tables this reader does not read.
 func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -118,7 +120,7 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	var (
 		deps     []plugin.ResolvedDependency
 		origins  []manifestOrigin
-		readable = true
+		readable = doc.Tool.Pixi == nil
 	)
 	addSpec := func(spec string) {
 		d, o, keep, ok := pep508Entry(spec, dir)

@@ -282,3 +282,25 @@ func TestResolveVersions_WideMarkedManifestVetoes(t *testing.T) {
 		t.Run(name, func(t *testing.T) { mustVetoedPy(t, writeTree(t, files), "flask") })
 	}
 }
+
+// A pyproject.toml that configures pixi is unread on the version path, as a pixi.toml is: pixi
+// installs from its own dependency tables, which can name another version of a [project]
+// dependency, and this reader does not read them. The declared pin is unresolved.
+func TestResolveVersions_PyprojectPixiUnread(t *testing.T) {
+	const project = "[project]\nname = \"app\"\ndependencies = [\"pyjwt==2.8.0\"]\n"
+	for name, pixi := range map[string]string{
+		"pypi-dependencies":         "[tool.pixi.pypi-dependencies]\npyjwt = \"==2.10.0\"\n",
+		"conda dependencies":        "[tool.pixi.dependencies]\npyjwt = \"2.10.0.*\"\n",
+		"feature pypi-dependencies": "[tool.pixi.feature.dev.pypi-dependencies]\npyjwt = \"==2.10.0\"\n",
+		"workspace only":            "[tool.pixi.workspace]\nchannels = [\"conda-forge\"]\nplatforms = [\"linux-64\"]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			mustVetoedPy(t, writeTree(t, map[string]string{"pyproject.toml": project + pixi}), "pyjwt")
+		})
+	}
+	t.Run("another tool table still resolves", func(t *testing.T) {
+		mustResolvedCompletePy(t, writeTree(t, map[string]string{
+			"pyproject.toml": project + "[tool.ruff]\nline-length = 100\n",
+		}), "pyjwt", "2.8.0")
+	})
+}

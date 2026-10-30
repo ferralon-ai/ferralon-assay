@@ -1480,6 +1480,96 @@ func TestResolveVersions_UVSourcesRedirectUnresolved(t *testing.T) {
 	}
 }
 
+// TestResolveVersions_UVOverrides covers [tool.uv] override-dependencies. uv installs an
+// overridden name at what the override admits whatever the declarations say, so a declaration
+// resolves only through a lock pin both it and the override admit, and a lock pin outside an
+// override is never part of a complete version set.
+func TestResolveVersions_UVOverrides(t *testing.T) {
+	pp := func(spec, extra string) string {
+		return "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"" + spec + "\"]\n" + extra
+	}
+	ov := func(specs string) string { return "[tool.uv]\noverride-dependencies = " + specs + "\n" }
+	lock := func(version string) string {
+		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"" + version + "\"\n" +
+			"source = { registry = \"https://pypi.org/simple\" }\n"
+	}
+	wsRoot := func(extra string) string {
+		return "[project]\nname = \"root\"\nversion = \"0.1.0\"\n[tool.uv.workspace]\nmembers = [\"packages/*\"]\n" + extra
+	}
+	const pdmLock = "[metadata]\nlock_version = \"4.4\"\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n"
+	cases := []struct {
+		name         string
+		files        map[string]string
+		wantVersion  string // "" wants pyjwt unresolved
+		wantComplete bool
+	}{
+		{"lockless override pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt==2.9.0"]`))}, "", false},
+		{"lockless override range", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt>=2.9"]`))}, "", false},
+		{"lockless override agreeing pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt==2.8.0"]`))}, "", false},
+		{"override name normalizes", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["PyJWT==2.9.0"]`))}, "", false},
+		{"lockless workspace root override", map[string]string{
+			"pyproject.toml": wsRoot(ov(`["pyjwt==2.9.0"]`)), "packages/a/pyproject.toml": pp("pyjwt==2.8.0", "")}, "", false},
+		{"lock predates override pin", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lock predates override range", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt>=2.9"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"override direct reference", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt @ git+https://github.com/example/pyjwt@abc"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"override beside a pdm.lock", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt==2.9.0"]`)), "pdm.lock": pdmLock}, "", false},
+		// uv installs the override, any other installer the declared pin: a lock that agrees with
+		// only one of them is no resolution of both.
+		{"lock agrees with the override, not the pin", map[string]string{
+			"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.9.0")}, "", false},
+		{"override not a list", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`"pyjwt==2.9.0"`))}, "", false},
+		{"override entry not a string", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`[3]`))}, "", false},
+		{"override entry not a requirement", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["not a requirement!!"]`))}, "", false},
+		{"lock resolves override and declared range", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.9.0")}, "2.9.0", true},
+		// Guard: an override for another name leaves pyjwt alone.
+		{"override for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["requests==2.0.0"]`))}, "2.8.0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, tc.files), "pyjwt")
+			if !res.Found {
+				t.Fatalf("pyjwt not found: %+v", res)
+			}
+			if got := map[bool]string{true: res.Match.Version}[res.Match.Resolved]; got != tc.wantVersion {
+				t.Fatalf("Match = %+v, want resolved version %q", res.Match, tc.wantVersion)
+			}
+			complete := res.MatchesComplete && !slices.ContainsFunc(res.Matches, func(d plugin.ResolvedDependency) bool { return !d.Resolved })
+			if complete != tc.wantComplete {
+				t.Fatalf("complete resolved set = %v (Matches %+v, MatchesComplete %v), want %v", complete, res.Matches, res.MatchesComplete, tc.wantComplete)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_UVOverrideInventoryUnresolved: the work-set inventory reads All directly, so
+// an overridden declaration must not be left there as a resolved pin.
+func TestResolveVersions_UVOverrideInventoryUnresolved(t *testing.T) {
+	root := writeTree(t, map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+		"dependencies = [\"pyjwt==2.8.0\"]\n[tool.uv]\noverride-dependencies = [\"pyjwt==2.9.0\"]\n"})
+	res := resolveVersion(t, root, "pyjwt")
+	for _, d := range res.All {
+		if normalizePyCoordinate(d.Coordinate) == "pyjwt" && d.Resolved {
+			t.Fatalf("All keeps the overridden pin resolved: %+v", d)
+		}
+	}
+}
+
+// TestResolveVersions_UVOverrideNotFound guards that an override alone never makes a name Found:
+// uv overrides a requirement only where something already requires it.
+func TestResolveVersions_UVOverrideNotFound(t *testing.T) {
+	root := writeTree(t, map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+		"dependencies = [\"requests==2.31.0\"]\n[tool.uv]\noverride-dependencies = [\"pyjwt==2.9.0\"]\n"})
+	if res := resolveVersion(t, root, "pyjwt"); res.Found {
+		t.Fatalf("pyjwt Found from an override alone: %+v", res)
+	}
+}
+
 // TestResolveVersions_UVSourcesKeepExhaustive guards the other axis: a redirected source still
 // declares its name, so a uv.lock that records it keeps coverage, and Exhaustive is unchanged.
 func TestResolveVersions_UVSourcesKeepExhaustive(t *testing.T) {

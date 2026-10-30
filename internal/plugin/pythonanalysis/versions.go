@@ -116,6 +116,17 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		res.Match.Version = ""
 		res.Match.Resolved = false
 	}
+	// An override only vetoes: it never makes a name Found, and a Match stands only when every
+	// override entry agrees with it.
+	overrides, overrideOrigins := uvOverrideEntries(manifests, want)
+	if res.Found && len(overrides) > 0 {
+		m, _ := matchCoordinate(append(all[:len(all):len(all)], append(copies[:len(copies):len(copies)], overrides...)...),
+			append(origins[:len(origins):len(origins)], append(copyOrigins[:len(copyOrigins):len(copyOrigins)], overrideOrigins...)...), want)
+		if !m.Resolved {
+			res.Match.Version = ""
+			res.Match.Resolved = false
+		}
+	}
 	// Under coverage every other manifest's declaration is one its governing lock pins at a version
 	// the declaration admits, so the lock entries and the installed copies are every version. A
 	// direct reference is the exception: whatever the lock pins, the build installs the reference.
@@ -136,8 +147,23 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		}
 	}
 	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !sourced && !directRef &&
-		!installedCopyPresent(req.BuildDir, want, false)
+		!installedCopyPresent(req.BuildDir, want, false) && overridesAdmit(overrideOrigins, res.Matches)
 	return res, nil
+}
+
+// overridesAdmit reports whether every version in matches satisfies every override entry. A lock
+// written before an override was added still pins what the declarations admitted, so its pins
+// are every version only when each override admits them all. An override that is a direct
+// reference admits none.
+func overridesAdmit(overrides []manifestOrigin, matches []plugin.ResolvedDependency) bool {
+	for _, o := range overrides {
+		for _, d := range matches {
+			if !lockPinSatisfies(o, d.Version) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // manifestOrigin records where an entry of All was read: its manifest's directory, the

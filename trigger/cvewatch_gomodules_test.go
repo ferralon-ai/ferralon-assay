@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -70,7 +71,7 @@ func TestCVEWatch_GoModuleListFromStoredState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunBaseline: %v", err)
 	}
-	assertNotExploitable(t, base, scanned)
+	fresh := assertNotExploitable(t, base, scanned)
 	for _, sbom := range []report.SBOM{store.state.Report.SBOM, store.state.SBOM} {
 		if sbom.GoBuildList != plugin.BuildListGoModGraph || sbom.GoMainModule != "example.com/app" ||
 			len(sbom.GoWorkspaceModules) != 1 || sbom.GoWorkspaceModules[0] != "example.com/a" {
@@ -94,13 +95,15 @@ func TestCVEWatch_GoModuleListFromStoredState(t *testing.T) {
 	if res.Heartbeat {
 		t.Fatal("want an earnest run: the disclosed advisory is not in the stored cursor")
 	}
-	assertNotExploitable(t, res.Report, disclosed)
+	if watched := assertNotExploitable(t, res.Report, disclosed); !reflect.DeepEqual(watched.Evidence, fresh.Evidence) {
+		t.Errorf("watch evidence = %+v, want the fresh scan's %+v", watched.Evidence, fresh.Evidence)
+	}
 	if got := res.Report.SBOM.GoBuildList; got != plugin.BuildListGoModGraph {
 		t.Errorf("re-assessed SBOM GoBuildList = %q, want it kept for the next watch", got)
 	}
 }
 
-func assertNotExploitable(t *testing.T, rep *report.Report, id string) {
+func assertNotExploitable(t *testing.T, rep *report.Report, id string) report.AdvisoryFinding {
 	t.Helper()
 	for _, f := range rep.Advisories {
 		if f.Advisory.ID != id {
@@ -109,7 +112,8 @@ func assertNotExploitable(t *testing.T, rep *report.Report, id string) {
 		if f.Verdict != report.VerdictNotExploitable {
 			t.Fatalf("%s = %s/%q (%s), want not_exploitable", id, f.Verdict, f.UndeterminedReason, f.Evidence.Detail)
 		}
-		return
+		return f
 	}
 	t.Fatalf("%s has no row", id)
+	return report.AdvisoryFinding{}
 }

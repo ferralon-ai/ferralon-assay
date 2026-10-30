@@ -219,3 +219,29 @@ func TestWithoutSignalsDigest(t *testing.T) {
 		})
 	}
 }
+
+// A merged state keeps the later report's Go build-list fields, in both the report and the state's
+// SBOM, so a CVE-watch reading it can still tie an advisory's package path to its build module.
+func TestMergeKeepsGoBuildList(t *testing.T) {
+	t0 := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	goSBOM := report.SBOM{GoBuildList: "go mod graph", GoMainModule: "example.com/app", GoWorkspaceModules: []string{"example.com/a"}}
+	older := report.NewBuilder(report.Subject{ResolvedCommit: "old"}).
+		WithProvenance(report.Provenance{Timestamp: t0}).
+		Build()
+	newer := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).
+		SetGoBuildList(goSBOM).
+		WithProvenance(report.Provenance{Timestamp: t0.Add(time.Hour)}).
+		Build()
+
+	for name, out := range map[string]*State{
+		"newer committed": Merge(&State{Report: &newer, CommitSHA: "x"}, &State{Report: &older}),
+		"newer retrying":  Merge(&State{Report: &older, CommitSHA: "x"}, &State{Report: &newer}),
+	} {
+		for where, s := range map[string]report.SBOM{"report": out.Report.SBOM, "state": out.SBOM} {
+			if s.GoBuildList != goSBOM.GoBuildList || s.GoMainModule != goSBOM.GoMainModule ||
+				len(s.GoWorkspaceModules) != 1 || s.GoWorkspaceModules[0] != "example.com/a" {
+				t.Errorf("%s: %s SBOM = %+v, want the newer report's Go build list", name, where, s)
+			}
+		}
+	}
+}

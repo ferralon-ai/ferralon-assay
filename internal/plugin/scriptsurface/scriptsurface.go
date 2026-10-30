@@ -145,10 +145,11 @@ var dataNames = map[string]string{
 	"package.json": baseDir, "tox.ini": baseDir, "noxfile.py": baseDir,
 }
 
-// dockerfileNamed reports whether a lowercased base name is dockerfile or containerfile,
-// starts with one followed by ".", "-" or "_", or ends with one of those followed by one
-// (Dockerfile.prod, Dockerfile-prod, Dockerfile_api, api.Dockerfile, api-Dockerfile).
-// surfaceOf checks it last, so an extension, shebang or path that names another kind wins.
+// dockerfileNamed reports whether a lowercased base name is "dockerfile" or "containerfile",
+// either of them followed by ".", "-" or "_" and more, or either of them preceded by more
+// and ".", "-" or "_" (Dockerfile.prod, Dockerfile-prod, Dockerfile_api, api.Dockerfile).
+// surfaceOf checks it after every other case, so a name, extension, shebang or path that
+// one of those claims is read as that kind.
 func dockerfileNamed(lower string) bool {
 	for _, n := range []string{"dockerfile", "containerfile"} {
 		if lower == n {

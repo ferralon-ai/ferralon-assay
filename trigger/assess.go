@@ -107,8 +107,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	case hasCandidate(store, assessmentID):
-		path, _ := candidatePath(store, assessmentID)
-		grade, entry, frames := reachabilityEvidence(store, assessmentID)
+		shown, shownOK := evidencePath(store, assessmentID)
+		path := reachableLabel(store, assessmentID, shown, shownOK)
+		grade, entry, frames := reachabilityEvidenceOn(store, assessmentID, shown, shownOK)
 		guards := guardsOnPath(store, assessmentID, frames)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
@@ -591,13 +592,26 @@ func withSignals(p report.Provenance, sig *intel.Signals) report.Provenance {
 
 // reachabilityEvidence derives the structured reachability evidence for a candidate
 // from the deterministic discovery artifacts: the strength grade, the ingress at the
-// path head, and the ingress→sink call frames. inv. 5: this is evidence strength, not
-// a verdict — the strongest grade (attacker_tainted) still means *candidate*, never
-// exploitable. attacker_tainted requires BOTH an attacker-controllable ingress AND
-// taint path-presence to the sink; anything less is control_flow_only.
+// path head, and the ingress→sink call frames, all read from the path evidencePath
+// selects. inv. 5: this is evidence strength, not a verdict — the strongest grade
+// (attacker_tainted) still means *candidate*, never exploitable. attacker_tainted
+// requires BOTH an attacker-controllable ingress AND taint path-presence to the sink;
+// anything less is control_flow_only.
 func reachabilityEvidence(store artifact.Store, assessmentID string) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
+	p, ok := evidencePath(store, assessmentID)
+	return reachabilityEvidenceOn(store, assessmentID, p, ok)
+}
+
+// reachabilityEvidenceOn is reachabilityEvidence over an already selected path p (ok false
+// when no artifact records one), so the caller can read the reachable_path label from the
+// same path.
+func reachabilityEvidenceOn(store artifact.Store, assessmentID string, p plugin.ReachPath, ok bool) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
 	ingresses := ingressMap(store, assessmentID)
-	frames, ingressSym := candidateTrace(store, assessmentID)
+	var frames []report.CallFrame
+	var ingressSym string
+	if ok {
+		frames, ingressSym = framesOf(p.Trace), p.Ingress.SCIP
+	}
 
 	// attacker_tainted requires an attacker-controllable ingress to lie ON the
 	// ingress→sink path-presence trace (the call path IS the path-presence evidence,
@@ -677,17 +691,40 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 	return nil
 }
 
-// candidateTrace returns the ingress→sink call frames and the ingress symbol for the
-// representative candidate path. It prefers the taint artifact's path-presence trace
-// (populated for first-party taint flows), then the govulncheck reachability paths.
-func candidateTrace(store artifact.Store, assessmentID string) ([]report.CallFrame, string) {
-	if p, ok := firstTaintPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+// evidencePath selects the one path a candidate's Report evidence is read from: the
+// reachable_path label, the call path and the entry point. A path anchored at an ingress
+// wins over one that is not; within each, the taint artifact's path-presence trace
+// (populated for first-party taint flows) wins over the reachability paths, and each
+// artifact's own path order breaks ties. ok is false when neither artifact records a path.
+func evidencePath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+	sources := [][]plugin.ReachPath{taintPaths(store, assessmentID), reachPaths(store, assessmentID)}
+	for _, paths := range sources {
+		for _, p := range paths {
+			if p.Ingress.SCIP != "" {
+				return p, true
+			}
+		}
 	}
-	if p, ok := firstReachPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+	for _, paths := range sources {
+		if len(paths) > 0 {
+			return paths[0], true
+		}
 	}
-	return nil, ""
+	return plugin.ReachPath{}, false
+}
+
+// reachableLabel is the reachable_path label for the path evidencePath selected: it names an
+// entrypoint exactly when that path is anchored at one. When no artifact records a path there
+// is no trace to agree with, and the label is read from the candidate pairs (candidatePath).
+func reachableLabel(store artifact.Store, assessmentID string, p plugin.ReachPath, ok bool) string {
+	if !ok {
+		label, _ := candidatePath(store, assessmentID)
+		return label
+	}
+	if p.Ingress.SCIP != "" {
+		return labelEntrypoint
+	}
+	return labelReachable
 }
 
 func framesOf(trace []plugin.Symbol) []report.CallFrame {
@@ -738,32 +775,32 @@ func entryPointFor(ingressSym string, ingresses []plugin.Ingress) *report.EntryP
 	return nil
 }
 
-func firstTaintPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+func taintPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
 	arts, err := store.Query(assessmentID, artifact.TypeTaint)
 	if err != nil || len(arts) == 0 {
-		return plugin.ReachPath{}, false
+		return nil
 	}
 	var td struct {
 		Result plugin.TaintResult `json:"result"`
 	}
-	if err := json.Unmarshal(arts[0].Payload, &td); err != nil || len(td.Result.Paths) == 0 {
-		return plugin.ReachPath{}, false
+	if err := json.Unmarshal(arts[0].Payload, &td); err != nil {
+		return nil
 	}
-	return td.Result.Paths[0], true
+	return td.Result.Paths
 }
 
-func firstReachPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+func reachPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
 	arts, err := store.Query(assessmentID, artifact.TypeReachability)
 	if err != nil || len(arts) == 0 {
-		return plugin.ReachPath{}, false
+		return nil
 	}
 	var payload struct {
 		Reachability plugin.ReachabilityResult `json:"reachability"`
 	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil || len(payload.Reachability.Paths) == 0 {
-		return plugin.ReachPath{}, false
+	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
+		return nil
 	}
-	return payload.Reachability.Paths[0], true
+	return payload.Reachability.Paths
 }
 
 // disqualResult reads the disqualification_discovery artifact (TypeDiscovery).
@@ -837,15 +874,21 @@ func candidatePath(store artifact.Store, assessmentID string) (string, bool) {
 			continue
 		}
 		if pair.Ingress != nil {
-			return "entrypoint → advisory symbol", true
+			return labelEntrypoint, true
 		}
 		found = true
 	}
 	if !found {
 		return "", false
 	}
-	return "advisory symbol reachable", true
+	return labelReachable, true
 }
+
+// The reachable_path labels: a path anchored at an entrypoint, and one that is not.
+const (
+	labelEntrypoint = "entrypoint → advisory symbol"
+	labelReachable  = "advisory symbol reachable"
+)
 
 // advisoryFromArtifacts reads the normalized-advisory artifact and returns the
 // report.Advisory identity plus the resolved SBOM package the scan evaluated. When

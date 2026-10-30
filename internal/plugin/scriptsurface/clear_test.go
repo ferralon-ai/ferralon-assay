@@ -27,6 +27,7 @@ func TestVeto_Clear(t *testing.T) {
 		{"committed", map[string]string{"plug/sub/x": "x\n"}, "", true},
 		{"written by a command", map[string]string{"install.sh": "#!/bin/sh\nmkdir -p plug/sub/x\ninst build\n"}, "", true},
 		{"written by a command through an absolute path", map[string]string{"install.sh": "#!/bin/sh\nmkdir -p /w/plug/sub\ninst build\n"}, "", true},
+		{"written through a variable", map[string]string{"install.sh": "#!/bin/sh\nD=plug\nmkdir -p $D/sub\ninst build\n"}, "", true},
 		{"a command naming another path's sub", map[string]string{"install.sh": "#!/bin/sh\nls tests/sub\ninst build\n"}, "", false},
 		{"whole context copied, nothing there", nil, "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN inst build\n", false},
 		{"whole context copied", map[string]string{"plug/sub/x": "x\n"}, "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN inst build\n", true},
@@ -36,6 +37,10 @@ func TestVeto_Clear(t *testing.T) {
 		{"copied to a destination not known", map[string]string{"plug/sub/x": "x\n"}, "FROM python:3.12\nARG D=/app\nWORKDIR /app\nCOPY plug $D/\nCOPY inst.toml inst.lock ./\nRUN inst build\n", true},
 		{"a file copied onto a directory above it", map[string]string{"other/sub": "x\n"}, "FROM python:3.12\nWORKDIR /app/plug\nWORKDIR /app\nCOPY other/sub /app/plug\nCOPY inst.toml inst.lock ./\nRUN inst build\n", true},
 		{"the context bind-mounted over the workdir", map[string]string{"plug/sub/x": "x\n"}, head + "RUN --mount=type=bind,source=.,target=/app inst build\n", true},
+		{"a quoted mount target", map[string]string{"plug/sub/x": "x\n"}, head + "RUN --mount=type=bind,source=.,target=\"/app\" inst build\n", true},
+		{"written after a cd", nil, "FROM python:3.12\nWORKDIR /app\nRUN cd plug && mkdir sub\n" + head + "RUN inst build\n", true},
+		{"written under a WORKDIR inside it", nil, "FROM python:3.12\nWORKDIR /app/plug\nRUN mkdir sub\n" + head + "RUN inst build\n", true},
+		{"made by a WORKDIR", nil, "FROM python:3.12\nWORKDIR /app/plug/sub\n" + head + "RUN inst build\n", true},
 		{"a mount with no target", nil, head + "RUN --mount=type=bind,source=. inst build\n", true},
 		{"a cache mounted elsewhere", nil, head + "RUN --mount=type=cache,target=/root/.cache inst build\n", false},
 	}
@@ -58,15 +63,22 @@ func TestVeto_Clear(t *testing.T) {
 	}
 }
 
-// A dangling symlink at the path is something there: its target may be made before the build
-// reads it.
-func TestClear_DanglingSymlink(t *testing.T) {
-	root := writeTree(t, map[string]string{"inst.toml": "x\n", "plug/.keep": ""})
-	if err := os.Symlink(filepath.Join(root, "later"), filepath.Join(root, "plug", "sub")); err != nil {
-		t.Fatal(err)
-	}
-	c := &hostCursor{v: New(root, func(string) bool { return true }, testSpec), dirs: []string{root}}
-	if c.Clear("inst.toml", "plug/sub") {
-		t.Fatal("Clear = true, want false")
+// A symlink at the path or on the way to it is something there, dangling or not: its target
+// may be made before the build reads it.
+func TestClear_Symlink(t *testing.T) {
+	for _, link := range []string{"plug/sub", "plug"} {
+		t.Run(link, func(t *testing.T) {
+			root := writeTree(t, map[string]string{"inst.toml": "x\n", "other/.keep": ""})
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(root, link)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(root, "later"), filepath.Join(root, link)); err != nil {
+				t.Fatal(err)
+			}
+			c := &hostCursor{v: New(root, func(string) bool { return true }, testSpec), dirs: []string{root}}
+			if c.Clear("inst.toml", "plug/sub") {
+				t.Fatal("Clear = true, want false")
+			}
+		})
 	}
 }

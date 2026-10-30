@@ -929,6 +929,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	switch words[0] {
 	case "cd", "pushd", "popd":
 		mark.made = made // the venv's key was taken where it was made
+		// What runs after it names paths from where it went.
+		v.mention(words[1:])
 		if seg.expands {
 			cur.cd(nil)
 		} else {
@@ -960,7 +962,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words[1:])
+		v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
 		cur.other()
 		return ""
 	}

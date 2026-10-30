@@ -87,7 +87,7 @@ func (st *dockerStage) clear(v *Veto, f string) bool {
 			}
 			rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(f, e.dst), "/"))
 			for _, h := range e.hosts {
-				if there, known := v.lstat(filepath.Join(h, rel)); there || !known {
+				if there, known := v.lstat(h, rel); there || !known {
 					return false
 				}
 			}
@@ -116,10 +116,14 @@ func (st *dockerStage) resolve(p string) (string, bool) {
 
 // mountTarget returns the container path a RUN --mount value puts a filesystem at: its
 // target, or for a secret with none, its file under /run/secrets. ok is false when that is
-// not known.
+// not known, a value quoted or escaped inside included.
 func (st *dockerStage) mountTarget(m string) (string, bool) {
+	m = strings.Trim(m, `"'`)
+	if strings.ContainsAny(m, `"'\`) {
+		return "", false
+	}
 	var typ, target, id string
-	for _, kv := range strings.Split(strings.Trim(m, `"'`), ",") {
+	for _, kv := range strings.Split(m, ",") {
 		k, val, _ := strings.Cut(kv, "=")
 		switch strings.ToLower(k) {
 		case "type":
@@ -488,6 +492,7 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 		case instr == "WORKDIR":
 			p := strings.Trim(rest, `"`)
+			v.mention([]string{p}) // WORKDIR makes the directory, and what runs there writes into it
 			if c, ok := st.resolve(p); ok {
 				st.wd, st.wdKnown = c, true
 			} else {

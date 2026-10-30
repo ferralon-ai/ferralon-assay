@@ -230,7 +230,7 @@ func (c *hostCursor) Clear(name, p string) bool {
 		return false
 	}
 	for _, h := range hits {
-		if there, known := c.v.lstat(filepath.Join(filepath.Dir(h), p)); there || !known {
+		if there, known := c.v.lstat(filepath.Dir(h), p); there || !known {
 			return false
 		}
 	}
@@ -321,11 +321,22 @@ func (v *Veto) stat(p string) (regular, there, known bool) {
 	return fi.Mode().IsRegular(), true, true
 }
 
-// lstat reports whether anything is at p, a dangling symlink included, and whether that is
-// known.
-func (v *Veto) lstat(p string) (there, known bool) {
-	if _, err := os.Lstat(p); err != nil {
-		return false, v.spec.Absent(err)
+// lstat reports whether rel may be there under root: true when rel or a symlink on the way
+// to it is, so a link, dangling or not, counts as there.
+func (v *Veto) lstat(root, rel string) (there, known bool) {
+	p := root
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		p = filepath.Join(p, part)
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return false, v.spec.Absent(err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return true, true
+		}
 	}
 	return true, true
 }

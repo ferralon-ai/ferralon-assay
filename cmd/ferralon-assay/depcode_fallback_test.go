@@ -217,7 +217,7 @@ func TestDependencyCodeFetchFailureRunsAsOff(t *testing.T) {
 					note = &rep.Partiality[i]
 				}
 			}
-			if note == nil || note.Ecosystem != "npm" || note.Class != report.PartialityDidNotRun || note.Detail != describeCause(dc.Cause) {
+			if note == nil || note.Ecosystem != "npm" || note.Class != report.PartialityDidNotRun || note.Detail != dc.Cause.Describe() {
 				t.Fatalf("note = %+v, want tool_failure:dependency_code_unavailable (npm, did_not_run) naming %+v", note, dc.Cause)
 			}
 			if got, off := withoutDependencyCode(t, rep), withoutDependencyCode(t, offRep); got != off {

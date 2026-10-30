@@ -218,7 +218,7 @@ func (d *depCodeRun) observe(res pipeline.DependencyAcquisitionResult) {
 		return
 	}
 	d.fell = &report.DependencyCodeCause{Kind: res.Fallback.Kind, Detail: res.Fallback.Detail}
-	fmt.Fprintf(os.Stderr, "%s: dependency code not read, scanning as with it off: %s\n", brand.Name, describeCause(d.fell))
+	fmt.Fprintf(os.Stderr, "%s: dependency code not read, scanning as with it off: %s\n", brand.Name, d.fell.Describe())
 }
 
 // hintLocked tells the operator, once per registry, that a registry answered 401 or 403 to a
@@ -297,7 +297,7 @@ func (d *depCodeRun) stamp(rep *report.Report) {
 	dc := &report.DependencyCode{Source: d.source}
 	if c := d.cause(); c != nil {
 		dc.Cause = c
-		rep.AddPartiality(report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: describeCause(c)})
+		rep.AddPartiality(report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: c.Describe()})
 	}
 	rep.DependencyCode = dc
 }
@@ -587,13 +587,6 @@ func namesAny(advs []report.Advisory, id string) bool {
 // fail-closed error joined with the dependency-code policy's.
 func runExit(graph *jvmGraph, deps *depCodeRun) error {
 	return errors.Join(graph.err(), deps.err())
-}
-
-func describeCause(c *report.DependencyCodeCause) string {
-	if c.Detail == "" {
-		return c.Kind
-	}
-	return c.Kind + ": " + c.Detail
 }
 
 // dependencyAcquisitionConfig resolves -dependency-code, -dependency-cache,

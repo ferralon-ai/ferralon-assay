@@ -1098,6 +1098,18 @@ type DependencyCodeCause struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// Describe is the cause as one string, "kind" or "kind: detail": the Detail of the
+// dependency_code_unavailable note a run that fell back carries.
+func (c *DependencyCodeCause) Describe() string {
+	if c == nil {
+		return ""
+	}
+	if c.Detail == "" {
+		return c.Kind
+	}
+	return c.Kind + ": " + c.Detail
+}
+
 // Build graph sources.
 const (
 	// BuildGraphSourceTool is a graph the scan resolved by running the repository's own Maven or

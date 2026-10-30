@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -408,13 +409,37 @@ func plural(n int, one, many string) string {
 // in the Report's stable order. It returns nil when nothing in this run failed to
 // happen — a clean scan must render nothing at all, or a disclosure that appears on
 // every run stops carrying any signal.
+//
+// Every dependency_code_unavailable note of one ecosystem renders as a single line where the
+// first of them stands: a cve-watch run carries the notes of the earlier runs whose verdicts it
+// keeps, so several can arrive with different causes, and the run itself may have read its code.
 func didNotRunLines(r report.Report) []string {
 	out := make([]string, 0, len(r.Partiality))
+	depCode := map[string][]string{}
+	for _, n := range r.Partiality {
+		if n.EffectiveClass() == report.PartialityDidNotRun && n.Reason == report.PartialReasonDependencyCodeUnavailable {
+			depCode[partialityScope(n)] = append(depCode[partialityScope(n)], n.Detail)
+		}
+	}
+	var own string
+	if r.DependencyCode != nil {
+		own = r.DependencyCode.Cause.Describe()
+	}
 	for _, n := range r.Partiality {
 		if n.EffectiveClass() != report.PartialityDidNotRun {
 			continue
 		}
-		if line := partialityLine(n); line != "" {
+		line := partialityLine(n)
+		if n.Reason == report.PartialReasonDependencyCodeUnavailable {
+			scope := partialityScope(n)
+			details, first := depCode[scope]
+			if !first {
+				continue
+			}
+			delete(depCode, scope)
+			line = dependencyCodeUnavailableLine(scope, details, own)
+		}
+		if line != "" {
 			out = append(out, line)
 		}
 	}
@@ -449,10 +474,7 @@ func inherentLimitLines(r report.Report) []string {
 // rather than dropped — silently omitting an unknown limit is exactly the
 // clean-looking-but-unassessed scan the field exists to prevent.
 func partialityLine(n report.PartialityNote) string {
-	scope := "dependency"
-	if n.Ecosystem != "" {
-		scope = n.Ecosystem + " dependency"
-	}
+	scope := partialityScope(n)
 	switch n.Reason {
 	case plugin.PartialReasonNoManifest:
 		return fmt.Sprintf("Installed %s versions could not be pinned: no lockfile or pinned-version manifest was found. Advisories for those dependencies were kept in scope rather than ruled out on version, so this run is not a complete dependency assessment.", scope)
@@ -464,7 +486,7 @@ func partialityLine(n report.PartialityNote) string {
 		}
 		return "The scan was cut short before it finished, so one or more advisories have no verdict and are counted as not assessed."
 	case report.PartialReasonDependencyCodeUnavailable:
-		return dependencyCodeUnavailableLine(scope, n.Detail)
+		return dependencyCodeUnavailableLine(scope, []string{n.Detail}, n.Detail)
 	case report.ReasonDependencyNotFetched:
 		return fmt.Sprintf("Some advisories were last assessed on a run that did not read all the %s code the lockfile pins, so the verdicts that run reached are withheld and counted as not assessed. A later run that reads that code assesses them again.", scope)
 	case plugin.PartialReasonToolFailure:
@@ -482,45 +504,96 @@ func partialityLine(n report.PartialityNote) string {
 	}
 }
 
-// dependencyCodeUnavailableLine phrases tool_failure:dependency_code_unavailable: the scan read none
-// of its dependencies' code, as with dependency code off. detail is "kind" or "kind: package...";
-// the kind picks the fix hint. The Report names no registry, so neither does this line: the job
-// summary's dependency code block names it where the run has one to name.
-func dependencyCodeUnavailableLine(scope, detail string) string {
-	line := fmt.Sprintf("The scan read none of its %s code, as with dependency code off, so every verdict below was reached without looking inside dependencies.", scope)
-	if detail != "" {
-		line = fmt.Sprintf("The scan read none of its %s code (`%s`), as with dependency code off, so every verdict below was reached without looking inside dependencies.", scope, mdCell(detail))
+// partialityScope names what a note's line is about: "dependency", or "<ecosystem> dependency".
+func partialityScope(n report.PartialityNote) string {
+	if n.Ecosystem != "" {
+		return n.Ecosystem + " dependency"
 	}
+	return "dependency"
+}
+
+// dependencyCodeUnavailableLine phrases the tool_failure:dependency_code_unavailable notes of one
+// scope as one line. details are the notes' Details, each "kind" or "kind: package..."; own is the
+// cause of the run's own fall-back, or "" when it read its code. A note other than own was carried
+// from an earlier run whose verdicts this run keeps, so the line says some verdicts were reached
+// on an earlier run rather than that this scan read none. Each distinct kind adds its fix hint. The
+// Report names no registry, so neither does this line: the job summary's dependency code block
+// names it where the run has one to name.
+func dependencyCodeUnavailableLine(scope string, details []string, own string) string {
+	var carried []string
+	ownSeen := false
+	for _, d := range details {
+		if own != "" && d == own {
+			ownSeen = true
+			continue
+		}
+		carried = append(carried, d)
+	}
+	var line string
+	if ownSeen {
+		line = fmt.Sprintf("The scan read none of its %s code (`%s`), as with dependency code off, so every verdict below was reached without looking inside dependencies.", scope, mdCell(own))
+		if len(carried) > 0 {
+			line += fmt.Sprintf(" Some were reached on an earlier run that did not read it either%s.", causeList(carried))
+		}
+	} else {
+		line = fmt.Sprintf("Some verdicts below were reached on an earlier run that did not read its %s code%s, as with dependency code off, so they were reached without looking inside dependencies.", scope, causeList(carried))
+	}
+	var hints []string
+	for _, d := range append([]string{own}, carried...) {
+		if h := dependencyCodeHint(d); h != "" && !slices.Contains(hints, h) {
+			hints = append(hints, h)
+		}
+	}
+	return line + strings.Join(hints, "")
+}
+
+// causeList renders note Details as " (`a`; `b`)", skipping empty ones, or "" when none is left.
+func causeList(details []string) string {
+	var causes []string
+	for _, d := range details {
+		if d != "" && !slices.Contains(causes, "`"+mdCell(d)+"`") {
+			causes = append(causes, "`"+mdCell(d)+"`")
+		}
+	}
+	if len(causes) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(causes, "; ") + ")"
+}
+
+// dependencyCodeHint is the fix hint, with its leading space, for a dependency_code_unavailable
+// Detail, or "" when its kind names no setting the operator could change.
+func dependencyCodeHint(detail string) string {
 	kind, _, _ := strings.Cut(detail, ":")
 	switch kind {
 	case "policy_refused":
 		switch {
 		case strings.HasSuffix(detail, artifactcache.PolicyMissingCredential):
-			return line + " A registry asked for a token the run did not have: give the scan step the registry's token variable, or point the npm configuration at a registry it can read."
+			return " A registry asked for a token the run did not have: give the scan step the registry's token variable, or point the npm configuration at a registry it can read."
 		case strings.HasSuffix(detail, artifactcache.PolicyCredentialRejected):
-			return line + " A registry refused the token the run sent: renew the token or give it read access to the package, and if a curation proxy fronts the registry, check whether it blocks the package."
+			return " A registry refused the token the run sent: renew the token or give it read access to the package, and if a curation proxy fronts the registry, check whether it blocks the package."
 		}
-		return line + " The fetch policy refused a package for the reason named: check the npm configuration's registry for that package."
+		return " The fetch policy refused a package for the reason named: check the npm configuration's registry for that package."
 	case "registry_unavailable", "registry_unreachable":
-		return line + " A registry could not be reached or did not answer: check that it is up and reachable from the runner."
+		return " A registry could not be reached or did not answer: check that it is up and reachable from the runner."
 	case "not_served":
-		return line + " A registry does not serve a package the lockfile pins: check the npm configuration names the registry that serves it."
+		return " A registry does not serve a package the lockfile pins: check the npm configuration names the registry that serves it."
 	case "integrity_mismatch":
-		return line + " A fetched package did not match the lockfile's integrity hash: check the lockfile against the registry it resolves from."
+		return " A fetched package did not match the lockfile's integrity hash: check the lockfile against the registry it resolves from."
 	case "npmrc_malformed":
-		return line + " The npm configuration could not be read: fix the file and line it names."
+		return " The npm configuration could not be read: fix the file and line it names."
 	case "fetch_failed":
-		return line + " A package fetch failed outside any registry answer, such as a dropped transfer or a cache that could not be written: check the runner's network and that the dependency cache directory is writable."
+		return " A package fetch failed outside any registry answer, such as a dropped transfer or a cache that could not be written: check the runner's network and that the dependency cache directory is writable."
 	case "cancelled":
-		return line + dependencyTimeoutHint
+		return dependencyTimeoutHint
 	case "inventory_failed":
 		if strings.HasSuffix(detail, "cancelled") {
-			return line + dependencyTimeoutHint
+			return dependencyTimeoutHint
 		}
 		// Otherwise the JS analyzer failed to list the locked packages, for a reason of its own
 		// that names no setting the operator could change, so the line names the cause and stops.
 	}
-	return line
+	return ""
 }
 
 // dependencyTimeoutHint is the fix for dependency fetching that ran out of time.

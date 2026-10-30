@@ -54,6 +54,7 @@ the scan did not establish:
 | `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
 | `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
 | `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
+| `refutation_withheld` | The analysis ran and found no path, but the build may run code the search did not cover: files left out of this build, methods the search never started from, importers of a library package, or calls made through reflection. The scan-level `partiality` notes name which. |
 | `advisory_range_absent` | A path reaches the advisory's code, but the advisory records no version range the scan can bound. The path stays as evidence, and `advisory_bounds` records what the advisory does state. |
 | `go_toolchain_unresolved`, `go_toolchain_not_scanned` | A Go standard-library advisory could not be adjudicated against your toolchain; see [the Go toolchain](#the-go-toolchain-your-repository-builds-with). |
 

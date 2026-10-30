@@ -968,6 +968,11 @@ const (
 	// reported nothing about the advisory at all. It may not know the advisory, or may never have
 	// analyzed the affected module. Its silence is not a search that came back empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// ReasonRefutationWithheld: the analysis ran and found no path to the advisory's vulnerable
+	// code, but the build may run code that search did not cover (files the build left out, methods
+	// it never started from, importers of a library package, calls made through reflection), so the
+	// refutation was withheld. The scan-level PartialityNote list names which.
+	ReasonRefutationWithheld = "refutation_withheld"
 	// ReasonAdvisoryRangeAbsent: a path reaches the advisory's vulnerable code, but the advisory
 	// records no affected version range the version axis can bound, so it was admitted at every installed
 	// version and nothing establishes that this version is affected. The path stays on the finding

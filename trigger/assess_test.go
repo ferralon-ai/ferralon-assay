@@ -354,7 +354,7 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 				fx.reach.Refutation = nil
 				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonReflectiveCall}
 			},
-			wantReason: report.ReasonAnalysisDidNotRun,
+			wantReason: report.ReasonRefutationWithheld,
 		},
 		{
 			name: "govulncheck has no finding for a program that uses reflection",
@@ -369,7 +369,7 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 			mutate: func(fx *groundsFixture) {
 				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonReflectiveCall}
 			},
-			wantReason: report.ReasonAnalysisDidNotRun,
+			wantReason: report.ReasonRefutationWithheld,
 		},
 		{
 			name:       "a plugin load blocks the refutation",
@@ -379,6 +379,66 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 		{
 			name:       "files the build left out block the refutation",
 			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonExcludedFiles} },
+			wantReason: report.ReasonRefutationWithheld,
+		},
+		{
+			name: "files the build left out withheld the refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonExcludedFiles}
+			},
+			wantReason: report.ReasonRefutationWithheld,
+		},
+		{
+			name: "unsearched methods withheld the refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonUnsearchedMethods}
+			},
+			wantReason: report.ReasonRefutationWithheld,
+		},
+		{
+			name: "every withheld limit together, beside inherent ones",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{
+					plugin.PartialReasonReflection, plugin.PartialReasonExcludedFiles, plugin.PartialReasonUnsearchedMethods,
+					plugin.PartialReasonLibraryEscape, plugin.PartialReasonReflectiveCall,
+				}
+			},
+			wantReason: report.ReasonRefutationWithheld,
+		},
+		{
+			name: "a withheld refutation beside a step that did not run",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonExcludedFiles, plugin.PartialReasonToolFailure}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a withheld refutation beside an advisory unknown to the analyzer",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonUnsearchedMethods, plugin.PartialReasonAdvisoryUnknownToAnalyzer}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "an unresolved cgo setting is a step that did not run",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonCgoUnresolved}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "an empty graph not called complete outranks a withheld refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.callGraph = &plugin.CallGraphResult{Partiality: plugin.Partial(plugin.PartialReasonExcludedFiles)}
+				fx.footprint = []string{plugin.PartialReasonExcludedFiles}
+			},
 			wantReason: report.ReasonAnalysisDidNotRun,
 		},
 		{
@@ -602,6 +662,16 @@ func TestFinding_ScopedLimits(t *testing.T) {
 func TestLimitNoteFor_AdvisoryUnknownToAnalyzerOwesNoNote(t *testing.T) {
 	if note, ok := limitNoteFor(report.AdvisoryFinding{
 		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonAdvisoryUnknownToAnalyzer,
+	}); ok {
+		t.Errorf("note = %+v, want none", note)
+	}
+}
+
+// A refutation_withheld row stands on the limits the lane declared in place of its refutation, which
+// partialityNotes already publishes at scan scope; the row owes no second note.
+func TestLimitNoteFor_RefutationWithheldOwesNoNote(t *testing.T) {
+	if note, ok := limitNoteFor(report.AdvisoryFinding{
+		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonRefutationWithheld,
 	}); ok {
 		t.Errorf("note = %+v, want none", note)
 	}

@@ -242,7 +242,7 @@ type partialFlags struct {
 	evaluated     bool // eval or the Function constructor (evaluated_code)
 	stylesheet    bool // a stylesheet import whose only code is the loader runtime (scoped uninspectable_package)
 	unlisted      bool // a declined site Unresolved cannot list (unlisted_sites)
-	toolFailure   bool // dependency code the read budget cut off with no package to attribute it to (tool_failure)
+	toolFailure   bool // dependency code the read budget or a file's parse backstop cut off (tool_failure)
 	unsupported   bool // a skipped construct in dependency code (unsupported_phase1)
 	scoped        []plugin.ScopedReason
 }

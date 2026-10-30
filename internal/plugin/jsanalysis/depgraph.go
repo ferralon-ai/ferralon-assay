@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"runtime"
@@ -463,11 +464,12 @@ func (rs *resolver) depModuleOfSpecifier(fromModule, spec string, viaRequire boo
 
 // depParse is the outcome of reading one package.
 type depParse struct {
-	pkg    *depPackage
-	files  []parseResult
-	err    error
-	budget bool // the read budget ran out before the package was read
-	capped bool // the run's parsed-source cap was reached before the package was parsed
+	pkg     *depPackage
+	files   []parseResult
+	err     error
+	budget  bool // the read budget ran out before the package was read
+	capped  bool // the run's parsed-source cap was reached before the package was parsed
+	overran bool // a file's parse ran past depFileParseBackstop
 }
 
 // readDeps reads and parses every readable layout entry from store across GOMAXPROCS workers.
@@ -531,8 +533,11 @@ func readOneDep(ctx context.Context, store artifactcache.Store, e *depEntry, par
 	}
 	files := make([]parseResult, 0, len(pkg.sources))
 	for _, f := range pkg.sources {
-		pr, ok := parseDepSource(ctx, e.path+"/"+f.module, f)
-		if !ok {
+		pr, err := parseDepSource(ctx, e.path+"/"+f.module, f)
+		if errors.Is(err, errParseBackstop) {
+			return depParse{overran: true}
+		}
+		if err != nil {
 			return depParse{budget: true}
 		}
 		files = append(files, pr)
@@ -620,8 +625,11 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		case e.unreadable || p.err != nil && !p.budget:
 			unread(plugin.PartialReasonUninspectablePackage, e)
 			continue
-		case p.budget || p.capped:
+		case p.budget || p.capped || p.overran:
 			unread(plugin.PartialReasonToolFailure, e)
+			if p.overran {
+				dflags.toolFailure = true
+			}
 			continue
 		}
 		switch {

@@ -413,7 +413,7 @@ func TestSourceImports_RunCache(t *testing.T) {
 	}{
 		{"first read", dir, env, []string{"example.com/m/dep"}, 1, []string{"strings"}},
 		{"same tree, env and packages", dir, env, []string{"example.com/m/dep"}, 1, []string{"strings"}},
-		{"another environment", dir, append(slices.Clip(env), "GOFLAGS=-mod=mod"), []string{"example.com/m/dep"}, 2, []string{"strings"}},
+		{"another environment of the same length", dir, append(slices.Clip(env[:len(env)-1]), "GOWORK=auto"), []string{"example.com/m/dep"}, 2, []string{"strings"}},
 		{"another package set", dir, env, []string{"example.com/m/dep", "example.com/m/other"}, 3, []string{"strings"}},
 		{"another tree", dir2, env, []string{"example.com/m/dep"}, 4, []string{"strings"}},
 		{"a failed list", dir, failing, []string{"example.com/m/dep"}, 5, nil},

@@ -1115,7 +1115,7 @@ source = { registry = "https://pypi.org/simple" }
 		{"setup.py literal name, other package", map[string]string{"poetry.lock": poetryLock, "setup.py": "setup(name=\"svc\")\n"}, "aiohttp", true},
 		{"setup.py computed name fails open", map[string]string{"poetry.lock": poetryLock, "setup.py": "Extension(name=\"svc._c\")\nsetup(name=NAME)\n"}, "aiohttp", false},
 		{"setup.py shim with setup.cfg name", map[string]string{"poetry.lock": poetryLock, "setup.py": "setup()\n", "setup.cfg": "[metadata]\nname = svc\n"}, "aiohttp", true},
-		{"poetry lexical read disagrees with TOML", map[string]string{"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, "aiohttp", false},
+		{"poetry.lock keys without spaces", map[string]string{"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, "aiohttp", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1492,5 +1492,81 @@ func TestResolveVersions_UVSourcesKeepExhaustive(t *testing.T) {
 	})
 	if res := resolveVersion(t, root, "requests"); res.Found || !res.Exhaustive {
 		t.Fatalf("requests: Found=%v Exhaustive=%v, want absent and exhaustive", res.Found, res.Exhaustive)
+	}
+}
+
+// TestResolveVersions_LockSourceRedirect covers poetry.lock and pdm.lock entries installed from a
+// git ref, a URL, an archive or a local tree. Their locked version is whatever that source's
+// metadata says, so pyjwt must come out unresolved and its lock pins must not form a complete
+// set. A PyPI or other-index entry still resolves 2.8.0 with a complete set.
+func TestResolveVersions_LockSourceRedirect(t *testing.T) {
+	const pp = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n"
+	poetry := func(extra string) map[string]string {
+		return map[string]string{"pyproject.toml": pp,
+			"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\ndescription = \"\"\n" + extra +
+				"\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"*\"\n"}
+	}
+	pdm := func(extra string) map[string]string {
+		return map[string]string{"pyproject.toml": pp,
+			"pdm.lock": "[metadata]\nlock_version = \"4.4\"\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n" + extra}
+	}
+	tests := []struct {
+		name         string
+		files        map[string]string
+		wantResolved bool
+	}{
+		{"poetry git", poetry("\n[package.source]\ntype = \"git\"\nurl = \"https://github.com/jpadilla/pyjwt\"\nreference = \"main\"\nresolved_reference = \"abc123\"\n"), false},
+		{"poetry url", poetry("\n[package.source]\ntype = \"url\"\nurl = \"https://example.com/pyjwt-2.8.0.tar.gz\"\n"), false},
+		{"poetry file", poetry("\n[package.source]\ntype = \"file\"\nurl = \"vendor/pyjwt-2.8.0.tar.gz\"\n"), false},
+		{"poetry directory", poetry("\n[package.source]\ntype = \"directory\"\nurl = \"vendor/pyjwt\"\n"), false},
+		{"poetry unknown source type", poetry("\n[package.source]\ntype = \"hg\"\nurl = \"https://example.com/pyjwt\"\n"), false},
+		{"poetry source after dependencies", poetry("\n[package.dependencies]\ncryptography = \">=3.4\"\n\n[package.source]\ntype = \"git\"\nurl = \"https://github.com/jpadilla/pyjwt\"\n"), false},
+		{"poetry dotted source key", poetry("source.type = \"git\"\n"), false},
+		{"pdm git", pdm("git = \"https://github.com/jpadilla/pyjwt\"\nrevision = \"abc123\"\n"), false},
+		{"pdm path", pdm("path = \"./vendor/pyjwt\"\n"), false},
+		{"pdm editable path", pdm("path = \"./vendor/pyjwt\"\neditable = true\n"), false},
+		{"pdm editable alone", pdm("editable = true\n"), false},
+		{"pdm url", pdm("url = \"https://example.com/pyjwt-2.8.0.tar.gz\"\n"), false},
+		// Guards: an index entry is still the index release.
+		{"poetry pypi", poetry(""), true},
+		{"poetry legacy index", poetry("\n[package.source]\ntype = \"legacy\"\nurl = \"https://pypi.example.com/simple\"\nreference = \"internal\"\n"), true},
+		{"pdm index", pdm("files = [\n    {file = \"pyjwt-2.8.0-py3-none-any.whl\", hash = \"sha256:00\"},\n]\n"), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, tc.files), "PyJWT")
+			if !res.Found {
+				t.Fatalf("pyjwt not found: %+v", res)
+			}
+			if res.Match.Resolved != tc.wantResolved {
+				t.Fatalf("Match.Resolved = %v (version %q), want %v", res.Match.Resolved, res.Match.Version, tc.wantResolved)
+			}
+			if tc.wantResolved && res.Match.Version != "2.8.0" {
+				t.Fatalf("Match.Version = %q, want 2.8.0", res.Match.Version)
+			}
+			complete := res.MatchesComplete && !slices.ContainsFunc(res.Matches, func(d plugin.ResolvedDependency) bool { return !d.Resolved })
+			if complete != tc.wantResolved {
+				t.Fatalf("complete resolved set = %v (Matches %+v, MatchesComplete %v), want %v", complete, res.Matches, res.MatchesComplete, tc.wantResolved)
+			}
+		})
+	}
+}
+
+// TestInventoryLockSourceRedirectKeepsVersion guards the other side: the dependency inventory
+// still records a redirected entry's locked version.
+func TestInventoryLockSourceRedirectKeepsVersion(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"poetry.lock": {"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n\n[package.source]\ntype = \"git\"\nurl = \"https://github.com/jpadilla/pyjwt\"\n"},
+		"pdm.lock":    {"pdm.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\ngit = \"https://github.com/jpadilla/pyjwt\"\nrevision = \"abc123\"\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: writeTree(t, files)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := nodeByPURL(inv, "pkg:pypi/pyjwt@2.8.0"); !ok {
+				t.Fatalf("no pkg:pypi/pyjwt@2.8.0 node in %+v", inv.Nodes)
+			}
+		})
 	}
 }

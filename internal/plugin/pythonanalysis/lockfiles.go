@@ -50,6 +50,18 @@ type pdmPackage struct {
 	Marker       string    `toml:"marker"` // optional package-level environment marker
 	Dependencies []string  `toml:"dependencies"`
 	Files        []pdmFile `toml:"files"`
+	// A package installed from a VCS checkout, a URL or a local path carries git, url or path
+	// (editable = true marks a path installed in place) instead of index files.
+	Git      string `toml:"git"`
+	URL      string `toml:"url"`
+	Path     string `toml:"path"`
+	Editable bool   `toml:"editable"`
+}
+
+// redirected reports whether the package installs from a git checkout, a URL or a local path
+// rather than an index, so its locked version is not the index release an advisory describes.
+func (p pdmPackage) redirected() bool {
+	return p.Git != "" || p.URL != "" || p.Path != "" || p.Editable
 }
 
 type pdmFile struct {
@@ -105,6 +117,7 @@ func parsePDMLock(data []byte, env map[string]string, selection []string) ([]pyR
 			Hashes:       pdmHashes(p.Files),
 			Selected:     true, // a locked package is in the installed set (target-env re-selection is E5)
 			Relationship: classifyPDM(parents[name]),
+			Redirected:   p.redirected(),
 		}
 		out = append(out, r)
 	}
@@ -325,6 +338,20 @@ type poetryPackage struct {
 	Version      string                 `toml:"version"`
 	Dependencies map[string]interface{} `toml:"dependencies"`
 	Files        []pdmFile              `toml:"files"`
+	Source       poetrySource           `toml:"source"`
+}
+
+// poetrySource is a package's [package.source]. It is absent for PyPI and typed legacy for
+// another index; git, url, file and directory install whatever that ref, archive or tree holds.
+type poetrySource struct {
+	Type string `toml:"type"`
+}
+
+// redirected reports whether the package installs from somewhere other than an index. An
+// unrecognized type counts, since this reader cannot tell what it serves.
+func (s poetrySource) redirected() bool {
+	t := strings.TrimSpace(s.Type)
+	return t != "" && t != "legacy"
 }
 
 // parsePoetryLock parses a poetry.lock into the selected set for the declared environment,
@@ -378,6 +405,7 @@ func parsePoetryLockSelected(data []byte, env map[string]string, selection []str
 			Hashes:       pdmHashes(p.Files),
 			Selected:     true,
 			Relationship: classifyPDM(parents[name]),
+			Redirected:   p.Source.redirected(),
 		})
 	}
 	return out, nil

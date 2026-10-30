@@ -141,14 +141,6 @@ func TestReaders_FIFO(t *testing.T) {
 			},
 		},
 		{
-			name: "poetryLockConsistent poetry.lock", fifo: "poetry.lock",
-			check: func(t *testing.T, _, pipe string) {
-				if poetryLockConsistent(pipe, nil) {
-					t.Error("poetryLockConsistent accepted a pipe")
-				}
-			},
-		},
-		{
 			name: "firstPartyNames pyproject.toml", fifo: "pyproject.toml",
 			check: func(t *testing.T, _, pipe string) {
 				if _, ok := firstPartyNames([]string{pipe}); ok {

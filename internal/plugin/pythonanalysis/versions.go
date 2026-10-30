@@ -801,59 +801,15 @@ func stripReqComment(line string) string {
 
 // --- poetry.lock (TOML) ------------------------------------------------------
 
-// parsePoetryLock parses poetry.lock lexically (no TOML library — pure-Go,
-// dependency-free, matching the scanner ethos). Each resolved package is a
-// "[[package]]" block carrying `name = "x"` and `version = "1.2.3"`. A block missing a
-// version is UNRESOLVED.
+// parsePoetryLock adapts parsePoetryLockSelected to the advisory path. A package poetry
+// installs from a git, URL, file or directory source is UNRESOLVED, as is a block missing a
+// version. A lock that does not decode is not read.
 func parsePoetryLock(data []byte) ([]plugin.ResolvedDependency, bool) {
-	var out []plugin.ResolvedDependency
-	var name, version string
-	inPackage := false
-
-	flush := func() {
-		if inPackage && name != "" {
-			out = append(out, pyResolved(name, version, version != "", "poetry.lock"))
-		}
-		name, version = "", ""
+	reqs, err := parsePoetryLockSelected(data, nil, nil)
+	if err != nil {
+		return nil, false
 	}
-
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
-		if line == "[[package]]" {
-			flush()
-			inPackage = true
-			continue
-		}
-		if strings.HasPrefix(line, "[") { // any other table closes the package block
-			flush()
-			inPackage = false
-			continue
-		}
-		if !inPackage {
-			continue
-		}
-		if v, ok := tomlString(line, "name"); ok {
-			name = v
-		}
-		if v, ok := tomlString(line, "version"); ok {
-			version = v
-		}
-	}
-	flush()
-	return out, true
-}
-
-// tomlString matches a `key = "value"` line for the given key and returns the unquoted
-// value. It is deliberately minimal (the only shape poetry.lock/pyproject use for these
-// scalar fields).
-func tomlString(line, key string) (string, bool) {
-	prefix := key + " ="
-	if !strings.HasPrefix(line, prefix) {
-		return "", false
-	}
-	rest := strings.TrimSpace(line[len(prefix):])
-	rest = strings.Trim(rest, `"'`)
-	return rest, rest != ""
+	return pyReqsToResolved(reqs), true
 }
 
 // --- Pipfile.lock (JSON) -----------------------------------------------------
@@ -1123,16 +1079,13 @@ func normalizePyCoordinate(c string) string {
 // check accounts for itself, through manifestDecls and the install-surface walk, so a version
 // left undecided must not withhold Exhaustive on its own.
 func coverageCovers(root, coordinate string, manifests []string, installs pipInstalls) bool {
-	perFile := make(map[string][]plugin.ResolvedDependency, len(manifests))
 	failed := false
 	for _, m := range manifests {
-		deps, ok := parseManifestCoverage(m)
-		if !ok {
+		if _, ok := parseManifestCoverage(m); !ok {
 			failed = true
 		}
-		perFile[m] = deps
 	}
-	return manifestSetCovers(root, coordinate, manifests, perFile, failed, installs)
+	return manifestSetCovers(root, coordinate, manifests, failed, installs)
 }
 
 // parseManifestCoverage reads one manifest's declared entries for the coverage check and the

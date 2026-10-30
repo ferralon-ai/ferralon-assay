@@ -416,6 +416,16 @@ func TestDepCodeRunRecordScopesPartialRead(t *testing.T) {
 			want:  []string{"A", "B"},
 		},
 		{
+			name: "a failed fetch naming no npm package beside a refused npm package lists everything assessed",
+			results: []pipeline.DependencyAcquisitionResult{{Outcomes: []pipeline.DependencyOutcome{
+				out("pkg:npm/a@1.0.0", npmjs, pipeline.OutcomeReadNetwork),
+				out("pkg:npm/%40corp/b@2.0.0", corp, pipeline.UnreadPolicyRefused),
+				out("", corp, pipeline.UnreadPolicyRefused),
+			}}},
+			run:  watch(map[string][]string{"A": {"pkg:npm/a"}, "B": {"pkg:npm/@corp/b"}}, "A", "B"),
+			want: []string{"A", "B"},
+		},
+		{
 			name: "a failed fetch naming a package of another type lists everything assessed",
 			results: []pipeline.DependencyAcquisitionResult{{Outcomes: []pipeline.DependencyOutcome{
 				out("pkg:npm/a@1.0.0", npmjs, pipeline.OutcomeReadNetwork), out("pkg:pypi/b@1.0.0", corp, pipeline.UnreadUnavailable),

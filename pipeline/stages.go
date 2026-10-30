@@ -2443,10 +2443,11 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
 // guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
-// inside it, or a require), and
-// whether the manifest was readable at all. manifestKnown=false — no build dir, or an absent /
-// unparseable go.mod — forces the caller to fail OPEN, because absence is only PROVABLE against a
-// manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
+// inside it, or a require), or a module the go.work in force uses declares it the same way, and
+// whether the manifests were readable at all. manifestKnown=false — no build dir, or an absent /
+// unparseable go.mod or go.work — forces the caller to fail OPEN, because absence is only PROVABLE
+// against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
+// manifest_membership.go.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
@@ -2459,11 +2460,38 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if err != nil {
 		return false, false
 	}
-	if mf.Module != nil && goPathOwner(buildDir, mf.Module.Mod.Path, module) != goOwnedElsewhere {
+	var root string
+	if mf.Module != nil {
+		root = mf.Module.Mod.Path
+		if goPathOwner(buildDir, root, module) != goOwnedElsewhere {
+			return true, true
+		}
+	}
+	declares := func(mf *modfile.File) bool {
+		for _, r := range mf.Require {
+			if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	if declares(mf) {
 		return true, true
 	}
-	for _, r := range mf.Require {
-		if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
+	uses, _, ok := goWorkUses(buildDir)
+	if !ok {
+		return false, false
+	}
+	for _, use := range uses {
+		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
+		if err != nil {
+			return false, false
+		}
+		wm, err := modfile.Parse("go.mod", data, nil)
+		if err != nil || wm.Module == nil {
+			return false, false
+		}
+		if p := wm.Module.Mod.Path; p != root && (module == p || strings.HasPrefix(module, p+"/")) || declares(wm) {
 			return true, true
 		}
 	}

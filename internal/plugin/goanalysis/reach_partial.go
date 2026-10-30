@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/packages"
 
@@ -46,35 +48,37 @@ type partialRun struct {
 
 // govulncheckOrPartial returns the govulncheck stream for buildDir under env (govulncheckCached),
 // or, when that run's failure settles, the stream of the partial run partial computes from the
-// failure. The partial run is attempted once per tree and environment in a scan: it is stored before
-// the failure is, so a run that replays the failure finds it. A failure replayed with no partial run
-// stored is returned as it is, whether the attempt failed for good or for a transient fault, since
-// the replay no longer carries the package errors that bound a partial run. A fresh failure whose
-// partial run could not be made carries the reason, and so does every replay of it.
+// failure. The run that settles the failure attempts the partial run before the failure is stored,
+// so a run that replays the failure finds what it made. A replay that finds neither a partial run
+// nor a refusal retries it from the package errors the failure record kept, within the scan's retry
+// bound (claimPartialRetry); one that cannot retry returns the failure as it is. A failure whose
+// partial run could not be made carries the reason.
 func govulncheckOrPartial(ctx context.Context, buildDir string, env []string, settle bool, stream func() ([]byte, error), partial func(failure error) ([]byte, error)) ([]byte, *partialRun, error) {
 	key := append([]string{buildDir}, env...)
 	var run *partialRun
+	attempted := false
 	out, err := govulncheckCached(ctx, buildDir, env, settle, func() ([]byte, error) {
 		out, err := stream()
 		if settle && settledGovulncheckFailure(err) {
-			b, perr := runCached(ctx, govulncheckPartialKind, key, func() ([]byte, error) { return partial(err) })
+			attempted = true
+			var perr error
+			run, perr = firstPartialRun(ctx, key, err, partial)
 			if perr != nil {
 				// The reason goes into the failure itself, so the record the failure settles
 				// into, and every replay of it, carries it too.
-				var failed *govulncheckError
-				if errors.As(err, &failed) {
-					failed.stderr = strings.TrimSpace(failed.stderr + "\nno partial govulncheck run: " + perr.Error())
-				}
+				noteNoPartialRun(err, "no partial govulncheck run: ", perr)
 			}
-			run = decodePartialRun(b)
 		}
 		return out, err
 	})
 	if err == nil {
 		return out, nil, nil
 	}
-	if run == nil && settle && settledGovulncheckFailure(err) {
-		run = storedPartialRun(ctx, key)
+	if run == nil && !attempted && settle && settledGovulncheckFailure(err) {
+		var perr error
+		if run, perr = retryPartialRun(ctx, key, err, partial); perr != nil {
+			noteNoPartialRun(err, "no partial govulncheck run on retry: ", perr)
+		}
 	}
 	if run == nil {
 		return nil, nil, err
@@ -82,10 +86,144 @@ func govulncheckOrPartial(ctx context.Context, buildDir string, env []string, se
 	return run.Stream, run, nil
 }
 
+// noteNoPartialRun appends why no partial run was made to the govulncheck failure err.
+func noteNoPartialRun(err error, prefix string, perr error) {
+	var failed *govulncheckError
+	if errors.As(err, &failed) {
+		failed.stderr = strings.TrimSpace(failed.stderr + "\n" + prefix + perr.Error())
+	}
+}
+
 // settledGovulncheckFailure reports whether err is a settled govulncheck failure, fresh or replayed.
 func settledGovulncheckFailure(err error) bool {
 	var failed *govulncheckError
 	return errors.As(err, &failed) && failed.settled
+}
+
+// govulncheckPartialRefusedKind names the run cache entry that marks a partial run that cannot be
+// made for the key: its failure would repeat (partialRunRefusal), so no later run retries it.
+const govulncheckPartialRefusedKind = "govulncheck-partial-refused"
+
+// govulncheckPartialRefusedMarker is the whole of a refusal entry; an entry without it is none.
+const govulncheckPartialRefusedMarker = "govulncheck-partial-refused/v1"
+
+// maxPartialRunRetries bounds the partial runs a scan retries per tree and environment after the
+// first one failed transiently. A retry costs about a govulncheck run, so an outage that outlasts
+// the scan (the vulnerability database unreachable) costs at most this many runs rather than one per
+// advisory; two retries, each made by a later advisory after that advisory's own work, outlast a
+// blip.
+const maxPartialRunRetries = 2
+
+// errPartialRunRefused is the reason a run gives when an earlier run refused the partial run.
+var errPartialRunRefused = errors.New("an earlier run found the partial run cannot be made")
+
+// partialRunRefusal is a partial run failure that a run from the same failure would repeat: the
+// failure's package errors, the build's packages and govulncheck's load of them are all settled, so
+// only a fault of the machine could change the outcome, and a refusal is never one. A failure not
+// marked so may be transient and is retried within the bound.
+type partialRunRefusal struct{ err error }
+
+func (e *partialRunRefusal) Error() string { return e.err.Error() }
+func (e *partialRunRefusal) Unwrap() error { return e.err }
+
+// partialRunRefused reports whether a partial run failed for good.
+func partialRunRefused(err error) bool {
+	var refusal *partialRunRefusal
+	return errors.As(err, &refusal)
+}
+
+// partialRunsMade holds, by run cache path, the partial runs this process made, so one whose run
+// cache write failed still answers the later advisories of the scan this process serves as it
+// answered the first.
+var partialRunsMade sync.Map
+
+// firstPartialRun returns the partial run for a failure the caller has just settled: one stored or
+// made earlier, else one it makes now. A refusal stored earlier is not retried.
+func firstPartialRun(ctx context.Context, key []string, failure error, partial func(failure error) ([]byte, error)) (*partialRun, error) {
+	run, refused := knownPartialRun(ctx, key)
+	switch {
+	case run != nil:
+		return run, nil
+	case refused:
+		return nil, errPartialRunRefused
+	}
+	return makePartialRun(ctx, key, failure, partial)
+}
+
+// retryPartialRun returns the partial run for a replayed failure: one stored or made earlier, else
+// one it makes from the failure's recorded package errors, when a retry slot is left. It returns
+// neither run nor error when it makes no attempt.
+func retryPartialRun(ctx context.Context, key []string, failure error, partial func(failure error) ([]byte, error)) (*partialRun, error) {
+	if run, refused := knownPartialRun(ctx, key); run != nil || refused {
+		return run, nil
+	}
+	if len(failurePackageErrors(failure)) == 0 || !claimPartialRetry(ctx, key) {
+		return nil, nil
+	}
+	return makePartialRun(ctx, key, failure, partial)
+}
+
+// knownPartialRun returns the partial run this process made or the run cache holds for key, or
+// whether the run cache holds a refusal of it.
+func knownPartialRun(ctx context.Context, key []string) (*partialRun, bool) {
+	dir := RunCacheDir(ctx)
+	if dir == "" {
+		return nil, false
+	}
+	if run, ok := partialRunsMade.Load(runCachePath(dir, govulncheckPartialKind, key)); ok {
+		return run.(*partialRun), false
+	}
+	if run := storedPartialRun(ctx, key); run != nil {
+		return run, false
+	}
+	b, err := os.ReadFile(runCachePath(dir, govulncheckPartialRefusedKind, key))
+	return nil, err == nil && string(b) == govulncheckPartialRefusedMarker
+}
+
+// makePartialRun runs partial for failure and keeps the outcome: a run in the run cache and in this
+// process, a refusal in the run cache. A failure that may be transient is kept nowhere.
+func makePartialRun(ctx context.Context, key []string, failure error, partial func(failure error) ([]byte, error)) (*partialRun, error) {
+	dir := RunCacheDir(ctx)
+	b, err := partial(failure)
+	var run *partialRun
+	if err == nil {
+		if run = decodePartialRun(b); run == nil {
+			err = &partialRunRefusal{errors.New("the partial run record does not decode")}
+		}
+	}
+	if dir == "" {
+		return run, err
+	}
+	switch {
+	case run != nil:
+		path := runCachePath(dir, govulncheckPartialKind, key)
+		partialRunsMade.Store(path, run)
+		writeRunCacheEntry(dir, govulncheckPartialKind, path, b)
+	case partialRunRefused(err):
+		writeRunCacheEntry(dir, govulncheckPartialRefusedKind, runCachePath(dir, govulncheckPartialRefusedKind, key), []byte(govulncheckPartialRefusedMarker))
+	}
+	return run, err
+}
+
+// claimPartialRetry takes one of the scan's maxPartialRunRetries retry slots for key, reporting
+// whether one was left. A slot is a file created exclusively, so concurrent advisories never share
+// one; a slot that cannot be created for any other reason is not taken.
+func claimPartialRetry(ctx context.Context, key []string) bool {
+	dir := RunCacheDir(ctx)
+	if dir == "" {
+		return false
+	}
+	for i := range maxPartialRunRetries {
+		f, err := os.OpenFile(runCachePath(dir, fmt.Sprintf("%s-retry%d", govulncheckPartialKind, i), key), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return true
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return false
+		}
+	}
+	return false
 }
 
 // storedPartialRun returns the partial run the run cache holds for key, or nil.
@@ -143,13 +281,15 @@ func partialGovulncheck(ctx context.Context, buildDir string, env []string, fail
 
 // partialRunRecord returns the partial run record for a load that failed with perrs: the packages
 // they name (P), the roots of ./... whose imports reach one (R_P), and govulncheck's stream over the
-// other roots. It fails when the failure carries no package errors (a replayed one), when an error
-// names no package the build lists, when every root reaches P, and when a kept root's import path
-// would not reach govulncheck as itself: one holding "..." is a wildcard that could match an
-// excluded root, and one starting with "-" a flag.
+// other roots. It refuses (partialRunRefusal) when the failure carries no package errors, when an
+// error names no package the build lists, when every root reaches P, when a kept root's import path
+// would not reach govulncheck as itself (one holding "..." is a wildcard that could match an
+// excluded root, and one starting with "-" a flag), and when the run over the kept roots fails to
+// load them for good. Any other failure (the listing, a run that failed short of a settled load) may
+// be transient.
 func partialRunRecord(buildDir string, perrs []packages.Error, list func() ([]listedPackage, error), run func(patterns []string) ([]byte, error)) ([]byte, error) {
 	if len(perrs) == 0 {
-		return nil, errors.New("no package errors to bound a partial run")
+		return nil, &partialRunRefusal{errors.New("no package errors to bound a partial run")}
 	}
 	graph, err := list()
 	if err != nil {
@@ -157,18 +297,21 @@ func partialRunRecord(buildDir string, perrs []packages.Error, list func() ([]li
 	}
 	unloadable, err := unloadablePackages(buildDir, perrs, graph)
 	if err != nil {
-		return nil, err
+		return nil, &partialRunRefusal{err}
 	}
 	excluded, kept := excludedRoots(graph, unloadable)
 	if len(kept) == 0 {
-		return nil, fmt.Errorf("every root imports a package govulncheck could not load (%s)", strings.Join(unloadable, ", "))
+		return nil, &partialRunRefusal{fmt.Errorf("every root imports a package govulncheck could not load (%s)", strings.Join(unloadable, ", "))}
 	}
 	for _, p := range kept {
 		if strings.Contains(p, "...") || strings.HasPrefix(p, "-") {
-			return nil, fmt.Errorf("root %q cannot be passed to govulncheck as a literal pattern", p)
+			return nil, &partialRunRefusal{fmt.Errorf("root %q cannot be passed to govulncheck as a literal pattern", p)}
 		}
 	}
 	out, err := run(kept)
+	if settledGovulncheckFailure(err) {
+		return nil, &partialRunRefusal{err}
+	}
 	if err != nil {
 		return nil, err
 	}

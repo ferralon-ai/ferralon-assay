@@ -58,13 +58,17 @@ func runCachePath(dir, kind string, key []string) string {
 }
 
 // writeRunCacheEntry stores b at path through a rename, so a concurrent reader sees either nothing
-// or the whole entry. A write that fails leaves no entry.
-func writeRunCacheEntry(dir, kind, path string, b []byte) {
-	if tmp, err := os.CreateTemp(dir, kind+"-*.tmp"); err == nil {
-		_, wErr := tmp.Write(b)
-		cErr := tmp.Close()
-		if wErr != nil || cErr != nil || os.Rename(tmp.Name(), path) != nil {
-			_ = os.Remove(tmp.Name())
-		}
+// or the whole entry. A write that fails leaves no entry and reports false.
+func writeRunCacheEntry(dir, kind, path string, b []byte) bool {
+	tmp, err := os.CreateTemp(dir, kind+"-*.tmp")
+	if err != nil {
+		return false
 	}
+	_, wErr := tmp.Write(b)
+	cErr := tmp.Close()
+	if wErr != nil || cErr != nil || os.Rename(tmp.Name(), path) != nil {
+		_ = os.Remove(tmp.Name())
+		return false
+	}
+	return true
 }

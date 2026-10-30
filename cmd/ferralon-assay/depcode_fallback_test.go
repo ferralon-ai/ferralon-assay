@@ -320,21 +320,27 @@ func TestDependencyCodeNoteIsStored(t *testing.T) {
 			if run.cause() == nil {
 				t.Fatal("the fetch did not fall back; the fixture did not set up the case")
 			}
-			st, err := store.Read(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			run.stamp(published)
-			for name, rep := range map[string]*report.Report{"stored": st.Report, "published": published} {
+			notes := func(rep *report.Report) int {
 				n := 0
 				for _, p := range rep.Partiality {
 					if p.Reason == report.PartialReasonDependencyCodeUnavailable {
 						n++
 					}
 				}
-				if n != 1 {
-					t.Errorf("%s report carries %d dependency_code_unavailable notes, want 1: %+v", name, n, rep.Partiality)
-				}
+				return n
+			}
+			st, err := store.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The mem store may hand back the published Report itself, so count the stored notes
+			// before the publish stamp can add one.
+			if n := notes(st.Report); n != 1 {
+				t.Errorf("stored report carries %d dependency_code_unavailable notes, want 1: %+v", n, st.Report.Partiality)
+			}
+			run.stamp(published)
+			if n := notes(published); n != 1 {
+				t.Errorf("published report carries %d dependency_code_unavailable notes, want 1: %+v", n, published.Partiality)
 			}
 		})
 	}

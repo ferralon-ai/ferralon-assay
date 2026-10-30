@@ -375,6 +375,7 @@ func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
 		{"closed through a nested -r", reqs("-r requirements-base.txt\nflask==3.0.0\n", "requirements-base.txt", pins), true},
 		{"closed, a hashed -c constraints file", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", hashed), true},
 		{"stale pin: an edge to a name the file does not pin", reqs(strings.Replace(pins, "markupsafe==2.1.5\n", "", 1)), false},
+		{"stale pin, the edge's target pinned only in a -c constraints file", reqs("-c requirements-constraints.txt\n"+strings.Replace(pins, "markupsafe==2.1.5\n", "", 1), "requirements-constraints.txt", hashed), false},
 		{"stale pin in a nested -r", reqs("-r requirements-base.txt\n", "requirements-base.txt", strings.Replace(pins, "markupsafe==2.1.5\n", "", 1)), false},
 
 		// Markers.
@@ -412,8 +413,10 @@ func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
 		// A constraints file covers on its own (hashed, or naming nothing), but pip applies its
 		// options to the file that names it.
 		{"--index-url in a hashed -c constraints file", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "--index-url https://mirror.example/simple\n"+hashed), false},
-		{"--index-url alone in a -c constraints file", reqs("-c constraints.txt\n"+pins, "constraints.txt", "--index-url https://mirror.example/simple\n"), false},
-		{"--index-url in a -c file a -c file names", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "-c constraints.txt\n"+hashed, "constraints.txt", "--index-url https://mirror.example/simple\n"), false},
+		{"closed, an options-only -c constraints file", reqs("-c requirements-index.txt\n"+pins, "requirements-index.txt", "--no-index\n"), true},
+		{"--index-url alone in a -c constraints file", reqs("-c requirements-index.txt\n"+pins, "requirements-index.txt", "--index-url https://mirror.example/simple\n"), false},
+		{"closed, a -c file a -c file names", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "-c requirements-index.txt\n"+hashed, "requirements-index.txt", "--no-index\n"), true},
+		{"--index-url in a -c file a -c file names", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "-c requirements-index.txt\n"+hashed, "requirements-index.txt", "--index-url https://mirror.example/simple\n"), false},
 		{"--no-index", reqs("--no-index\n" + pins), true},
 		{"--trusted-host", reqs("--trusted-host pypi.org\n" + pins), true},
 		{"pip.conf names index-url", reqs(pins, "docker/pip.conf", "[global]\nindex-url = https://mirror.example/simple\n"), false},
@@ -427,6 +430,8 @@ func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
 		// Locks whose edges are not the index's metadata, or that are not a uv.lock.
 		{"a poetry.lock governs too", reqs(pins, "poetry.lock", poetry), false},
 		{"uv.lock with supported-markers", tree("supported-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock with resolution-markers", tree("resolution-markers = [\"python_full_version >= '3.12'\", \"python_full_version < '3.12'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock with a package's resolution-markers", tree(edit("name = \"jinja2\"\nversion = \"3.1.4\"\n", "name = \"jinja2\"\nversion = \"3.1.4\"\nresolution-markers = [\"python_full_version >= '3.12'\"]\n"), map[string]string{"requirements.txt": pins}), false},
 		{"uv.lock with required-markers", tree("required-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
 		{"uv.lock [manifest] overrides", tree(lock+"\n[manifest]\noverrides = [{ name = \"markupsafe\", specifier = \"==2.1.5\" }]\n", map[string]string{"requirements.txt": pins}), false},
 		{"uv.lock [manifest] unknown key", tree(lock+"\n[manifest]\nsomething-new = []\n", map[string]string{"requirements.txt": pins}), false},

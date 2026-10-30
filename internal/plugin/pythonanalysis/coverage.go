@@ -527,13 +527,15 @@ func readPyLock(path string) (*pyLock, bool) {
 			Extra []string `toml:"extra"`
 		}
 		var lock struct {
-			SupportedMarkers []string       `toml:"supported-markers"`
-			RequiredMarkers  []string       `toml:"required-markers"`
-			Manifest         map[string]any `toml:"manifest"`
-			Package          []struct {
-				Name    string `toml:"name"`
-				Version string `toml:"version"`
-				Source  struct {
+			SupportedMarkers  []string       `toml:"supported-markers"`
+			RequiredMarkers   []string       `toml:"required-markers"`
+			ResolutionMarkers []string       `toml:"resolution-markers"`
+			Manifest          map[string]any `toml:"manifest"`
+			Package           []struct {
+				Name              string   `toml:"name"`
+				Version           string   `toml:"version"`
+				ResolutionMarkers []string `toml:"resolution-markers"`
+				Source            struct {
 					Registry  string `toml:"registry"`
 					Editable  string `toml:"editable"`
 					Virtual   string `toml:"virtual"`
@@ -546,7 +548,8 @@ func readPyLock(path string) (*pyLock, bool) {
 		if toml.Unmarshal(data, &lock) != nil {
 			return nil, false
 		}
-		l.closable = len(lock.SupportedMarkers) == 0 && len(lock.RequiredMarkers) == 0
+		// A fork (resolution-markers) drops each entry's edges that cannot hold inside it.
+		l.closable = len(lock.SupportedMarkers) == 0 && len(lock.RequiredMarkers) == 0 && len(lock.ResolutionMarkers) == 0
 		for k := range lock.Manifest {
 			l.closable = l.closable && uvManifestKeys[k]
 		}
@@ -571,6 +574,7 @@ func readPyLock(path string) (*pyLock, bool) {
 				}
 				addExtra(n, x, names)
 			}
+			l.closable = l.closable && len(p.ResolutionMarkers) == 0
 			if p.Source.Registry != "" {
 				if l.releases[n] == nil {
 					l.releases[n] = map[string]*pyRelease{}
@@ -949,10 +953,13 @@ func (r *reqInstalls) narrowed(f string) bool {
 // registry entry whose every edge, marker or not, lands on a name the set pins with no marker,
 // recursively through the extras an edge asks for. A marked pin installs only where its marker
 // holds, so it pins its own release but no edge into it. The set, every -c constraints file
-// it names, and every in-tree pip config must name no index or find-links location: another source can serve the same
-// release with other metadata than the lock recorded. A file a file directive names installs
-// with its project, whose own dependencies pip resolves past the file. This does not depend on
-// hash-checking mode, so hashesDisabled does not touch it.
+// it names, and every in-tree pip config must name no index or find-links location: another
+// source can serve the same release with other metadata than the lock recorded. A file a file
+// directive names installs with its project, whose own dependencies pip resolves past the
+// file. This does not depend on hash-checking mode, so hashesDisabled does not touch it.
+//
+// uv drops an edge whose marker cannot hold under the lock's requires-python. That is read as
+// the build's interpreter, as declaredPython reads it for the rest of the lane.
 func (r *reqInstalls) closed(f string, locks []*pyLock) bool {
 	f = filepath.Clean(f)
 	if r.directed[f] || len(locks) == 0 || r.pipConfigNamesIndex() {

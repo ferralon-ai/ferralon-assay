@@ -3433,28 +3433,24 @@ func firstPartyReachPaths(cg plugin.CallGraphView, ingresses plugin.IngressResul
 
 	// The BFS runs over SCIP-id keys, reproducing the pre-Symbol identity exactly: CallEdge
 	// endpoints were bare SCIP ids, and the sink parameter is a SCIP id (resolvedSinkSCIP), so
-	// keying the graph on .SCIP is the same graph the old string-typed code built. symBySCIP
-	// carries the structured Symbol for each node so the ReachPath.Sink/Ingress/Trace fields —
-	// now plugin.Symbol — are reconstructed at the return boundary.
-	symBySCIP := make(map[string]plugin.Symbol)
-	callers := make(map[string][]string, cg.EdgeCount())
-	for e := range cg.Edges() {
-		symBySCIP[e.Caller.SCIP] = e.Caller
-		symBySCIP[e.Callee.SCIP] = e.Callee
-		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
-	}
-
-	ingressSyms := make(map[string]struct{}, len(ingresses.Ingresses))
+	// keying the graph on .SCIP is the same graph the old string-typed code built. The structured
+	// Symbol for each node reconstructs the ReachPath.Sink/Ingress/Trace fields — now
+	// plugin.Symbol — at the return boundary. The graph's reverse-edge index is built once per
+	// graph, not per sink; only the ingresses are overlaid here. A root's Symbol beats an
+	// ingress's, which beats an edge endpoint's.
+	ingressSyms := make(map[string]plugin.Symbol, len(ingresses.Ingresses))
 	for _, in := range ingresses.Ingresses {
 		if in.Symbol.SCIP != "" {
-			symBySCIP[in.Symbol.SCIP] = in.Symbol
-			ingressSyms[in.Symbol.SCIP] = struct{}{}
+			ingressSyms[in.Symbol.SCIP] = in.Symbol
 		}
 	}
-	roots := make(map[string]struct{})
-	for r := range cg.Roots() {
-		symBySCIP[r.SCIP] = r
-		roots[r.SCIP] = struct{}{}
+	symOf := func(id string) plugin.Symbol {
+		if !cg.IsRoot(id) {
+			if s, ok := ingressSyms[id]; ok {
+				return s
+			}
+		}
+		return cg.Symbol(id)
 	}
 
 	type node struct {
@@ -3468,20 +3464,19 @@ func firstPartyReachPaths(cg plugin.CallGraphView, ingresses plugin.IngressResul
 		queue = queue[1:]
 
 		_, isIngress := ingressSyms[cur.sym]
-		_, isRoot := roots[cur.sym]
-		if isIngress || isRoot {
+		if isIngress || cg.IsRoot(cur.sym) {
 			trace := make([]plugin.Symbol, len(cur.path))
 			for i := range cur.path {
-				trace[i] = symBySCIP[cur.path[len(cur.path)-1-i]]
+				trace[i] = symOf(cur.path[len(cur.path)-1-i])
 			}
 			var ingress plugin.Symbol
 			if isIngress {
-				ingress = symBySCIP[cur.sym]
+				ingress = symOf(cur.sym)
 			}
-			return []plugin.ReachPath{{Sink: symBySCIP[sink], Ingress: ingress, Trace: trace}}
+			return []plugin.ReachPath{{Sink: symOf(sink), Ingress: ingress, Trace: trace}}
 		}
 
-		for _, caller := range callers[cur.sym] {
+		for caller := range cg.Callers(cur.sym) {
 			if _, seen := visited[caller]; seen {
 				continue
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"iter"
 	"slices"
+	"sync"
 )
 
 // CallGraphView reads a call graph that may be shared between callers. Nothing it returns aliases
@@ -15,12 +16,51 @@ type CallGraphView struct {
 	// enc is cg's JSON encoding when the view was handed one, so marshalling the view does not
 	// re-encode the graph.
 	enc []byte
+	// rev is cg's reverse-edge index, built on first use and shared by every view of cg.
+	rev *reverseIndex
 }
 
 // NewCallGraphView is a view over cg. The view reads cg's slices in place, so cg must be the
 // caller's own, unshared result.
 func NewCallGraphView(cg CallGraphResult) CallGraphView {
-	return CallGraphView{cg: &cg}
+	return CallGraphView{cg: &cg, rev: &reverseIndex{}}
+}
+
+// reverseIndex is a graph's edges keyed by callee SCIP id, for walking back from a sink.
+type reverseIndex struct {
+	once sync.Once
+	// sym is each SCIP id's Symbol: the last root naming it, else the last edge endpoint naming it.
+	sym     map[string]Symbol
+	roots   map[string]struct{}
+	callers map[string][]string
+}
+
+// buildReverseIndex fills r from cg. It is a variable so tests can count builds.
+var buildReverseIndex = func(r *reverseIndex, cg *CallGraphResult) {
+	r.sym = make(map[string]Symbol)
+	r.roots = make(map[string]struct{})
+	if cg == nil {
+		return
+	}
+	r.callers = make(map[string][]string, len(cg.Edges))
+	for _, e := range cg.Edges {
+		r.sym[e.Caller.SCIP] = e.Caller
+		r.sym[e.Callee.SCIP] = e.Callee
+		r.callers[e.Callee.SCIP] = append(r.callers[e.Callee.SCIP], e.Caller.SCIP)
+	}
+	for _, root := range cg.Roots {
+		r.sym[root.SCIP] = root
+		r.roots[root.SCIP] = struct{}{}
+	}
+}
+
+func (v CallGraphView) index() *reverseIndex {
+	r := v.rev
+	if r == nil {
+		r = &reverseIndex{}
+	}
+	r.once.Do(func() { buildReverseIndex(r, v.cg) })
+	return r
 }
 
 // SharedCallGraph is p's call graph for req through a read-only view. A plugin from Memoize decodes
@@ -91,6 +131,30 @@ func (v CallGraphView) Roots() iter.Seq[Symbol] {
 			}
 		}
 	}
+}
+
+// Callers yields the SCIP id of the caller of each edge into scip, in edge order.
+func (v CallGraphView) Callers(scip string) iter.Seq[string] {
+	callers := v.index().callers[scip]
+	return func(yield func(string) bool) {
+		for _, c := range callers {
+			if !yield(c) {
+				return
+			}
+		}
+	}
+}
+
+// IsRoot reports whether a root has SCIP id scip.
+func (v CallGraphView) IsRoot(scip string) bool {
+	_, ok := v.index().roots[scip]
+	return ok
+}
+
+// Symbol is the Symbol the graph gives SCIP id scip, or the zero Symbol if none does. Where
+// several carry the id, the last root wins, else the last edge endpoint.
+func (v CallGraphView) Symbol(scip string) Symbol {
+	return v.index().sym[scip]
 }
 
 // MarshalJSON encodes the graph exactly as json.Marshal encodes its CallGraphResult; the zero view

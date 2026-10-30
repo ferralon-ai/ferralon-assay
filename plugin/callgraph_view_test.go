@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -252,7 +253,7 @@ func TestCallGraphViewSurface(t *testing.T) {
 	for i := 0; i < typ.NumMethod(); i++ {
 		methods = append(methods, typ.Method(i).Name)
 	}
-	want := []string{"AppendJSON", "EdgeCount", "Edges", "MarshalJSON", "Partiality", "Roots"}
+	want := []string{"AppendJSON", "Callers", "EdgeCount", "Edges", "IsRoot", "MarshalJSON", "Partiality", "Roots", "Symbol"}
 	if !slices.Equal(methods, want) {
 		t.Errorf("CallGraphView methods = %v, want %v", methods, want)
 	}
@@ -300,4 +301,150 @@ func btoi(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// countReverseIndexBuilds counts buildReverseIndex calls until the test ends.
+func countReverseIndexBuilds(t *testing.T) func() int64 {
+	var n atomic.Int64
+	build := buildReverseIndex
+	buildReverseIndex = func(r *reverseIndex, cg *CallGraphResult) {
+		n.Add(1)
+		build(r, cg)
+	}
+	t.Cleanup(func() { buildReverseIndex = build })
+	return n.Load
+}
+
+// TestCallGraphViewReverseIndexBuiltOnce pins that the reverse-edge index is built once per graph:
+// once for every view of a memoized decode, however many goroutines read it, and once per wrapped
+// view however often it is read.
+func TestCallGraphViewReverseIndexBuiltOnce(t *testing.T) {
+	ctx := context.Background()
+	req := CallGraphRequest{BuildDir: "/src"}
+	read := func(v CallGraphView) {
+		v.IsRoot("scip:p#A")
+		v.Symbol("scip:p#B")
+		for range v.Callers("scip:p#A") {
+		}
+	}
+
+	t.Run("memoized", func(t *testing.T) {
+		builds := countReverseIndexBuilds(t)
+		lp := Memoize(richGraphPlugin{newCountingPlugin()})
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				v, err := SharedCallGraph(ctx, lp, req)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				read(v)
+				read(v)
+			}()
+		}
+		wg.Wait()
+		if n := builds(); n != 1 {
+			t.Errorf("builds = %d, want 1", n)
+		}
+	})
+
+	t.Run("wrapped", func(t *testing.T) {
+		builds := countReverseIndexBuilds(t)
+		v, w := NewCallGraphView(richGraph()), NewCallGraphView(richGraph())
+		read(v)
+		read(v)
+		read(w)
+		if n := builds(); n != 2 {
+			t.Errorf("builds = %d, want 2", n)
+		}
+	})
+
+	t.Run("not built unless read", func(t *testing.T) {
+		builds := countReverseIndexBuilds(t)
+		v, err := SharedCallGraph(ctx, Memoize(richGraphPlugin{newCountingPlugin()}), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.MarshalJSON(); err != nil {
+			t.Fatal(err)
+		}
+		v.EdgeCount()
+		if n := builds(); n != 0 {
+			t.Errorf("builds = %d, want 0", n)
+		}
+	})
+}
+
+// TestCallGraphViewReverseIndex pins the index accessors over memoized, wrapped and zero views, and
+// that what they return is the caller's own.
+func TestCallGraphViewReverseIndex(t *testing.T) {
+	sym := func(scip, tag string) Symbol { return Symbol{Name: scip, DisplayName: tag, SCIP: scip} }
+	cg := CallGraphResult{
+		Edges: []CallEdge{
+			{Caller: sym("a", "e1"), Callee: sym("s", "e1")},
+			{Caller: sym("r", "e1"), Callee: sym("a", "e2")},
+			{Caller: sym("b", "e1"), Callee: sym("s", "e2")},
+			{Caller: sym("a", "e3"), Callee: sym("s", "e3")},
+		},
+		Roots: []Symbol{sym("r", "r1"), sym("r", "r2")},
+	}
+	memo, err := SharedCallGraph(context.Background(), Memoize(payloadPlugin{cg: cg}), CallGraphRequest{BuildDir: "/src"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		v       CallGraphView
+		callers map[string][]string
+		roots   []string
+		syms    map[string]Symbol
+	}{
+		{"memoized", memo, map[string][]string{"s": {"a", "b", "a"}, "a": {"r"}}, []string{"r"},
+			map[string]Symbol{"a": sym("a", "e3"), "s": sym("s", "e3"), "r": sym("r", "r2"), "b": sym("b", "e1")}},
+		{"wrapped", NewCallGraphView(cg), map[string][]string{"s": {"a", "b", "a"}, "a": {"r"}}, []string{"r"},
+			map[string]Symbol{"a": sym("a", "e3"), "s": sym("s", "e3"), "r": sym("r", "r2"), "b": sym("b", "e1")}},
+		{"zero", CallGraphView{}, nil, nil, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, id := range []string{"a", "b", "s", "r", "absent", ""} {
+				got := slices.Collect(tc.v.Callers(id))
+				if !slices.Equal(got, tc.callers[id]) {
+					t.Errorf("Callers(%q) = %v, want %v", id, got, tc.callers[id])
+				}
+				if len(got) > 0 {
+					got[0] = "mutated"
+					if again := slices.Collect(tc.v.Callers(id)); !slices.Equal(again, tc.callers[id]) {
+						t.Errorf("after editing, Callers(%q) = %v", id, again)
+					}
+				}
+				if got, want := tc.v.IsRoot(id), slices.Contains(tc.roots, id); got != want {
+					t.Errorf("IsRoot(%q) = %v, want %v", id, got, want)
+				}
+				s := tc.v.Symbol(id)
+				if s != tc.syms[id] {
+					t.Errorf("Symbol(%q) = %+v, want %+v", id, s, tc.syms[id])
+				}
+				s.DisplayName = "mutated"
+				if again := tc.v.Symbol(id); again != tc.syms[id] {
+					t.Errorf("after editing, Symbol(%q) = %+v", id, again)
+				}
+			}
+			for range tc.v.Callers("s") {
+				break
+			}
+		})
+	}
+}
+
+type payloadPlugin struct {
+	StubPlugin
+	cg CallGraphResult
+}
+
+func (p payloadPlugin) CallGraph(context.Context, CallGraphRequest) (CallGraphResult, error) {
+	return p.cg, nil
 }

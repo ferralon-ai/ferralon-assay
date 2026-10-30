@@ -148,6 +148,7 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	}
 	b := report.NewBuilder(primary.Subject).
 		AddPackages(primary.SBOM.Packages...).
+		SetGoBuildList(primary.SBOM).
 		WithProvenance(prov)
 	if primary.Baseline != nil {
 		b.WithBaseline(*primary.Baseline)

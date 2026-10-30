@@ -163,6 +163,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	}
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
+	b.SetGoBuildList(sbom)
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 

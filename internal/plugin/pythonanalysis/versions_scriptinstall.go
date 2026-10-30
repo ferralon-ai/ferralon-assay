@@ -71,8 +71,9 @@ import (
 // no self-upgrade.
 func newScriptSpec(installs pipInstalls, tooling map[string]bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
-		Token: laneToken,
-		Env:   laneEnvRE,
+		Token:    laneToken,
+		Env:      laneEnvRE,
+		EnvKeeps: laneEnvKeeps,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
 			return installs.allowed(words, b, tooling)
 		},
@@ -96,6 +97,13 @@ type pipInstalls map[string][]pipInstall
 // laneEnvRE matches a PIP_*, UV_* or PDM_* name that is not a $, ${ or attribute reference, so is
 // being set.
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV|PDM)_[A-Z0-9_]+`)
+
+// laneEnvKeeps reports whether name, which laneEnvRE matched, installs nothing a lock read here
+// does not record: PDM_CHECK_UPDATE only turns pdm's own update check off, and
+// PDM_BUILD_SCM_VERSION only sets the version pdm-backend gives the project it builds.
+func laneEnvKeeps(name string) bool {
+	return name == "PDM_CHECK_UPDATE" || name == "PDM_BUILD_SCM_VERSION"
+}
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch

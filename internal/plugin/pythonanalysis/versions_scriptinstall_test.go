@@ -376,7 +376,7 @@ func TestResolveVersions_PDMSyncUnbound(t *testing.T) {
 		"no pyproject.toml": {"requirements.txt": "jinja2==3.1.4\n", "install.sh": "#!/bin/sh\npdm sync\n"},
 		"PDM_PROJECT in a Dockerfile": {
 			"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n",
-			"pdm.lock": "[metadata]\ngroups = [\"default\"]\n",
+			"pdm.lock":   "[metadata]\ngroups = [\"default\"]\n",
 			"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY . .\nENV PDM_PROJECT=/app/sub\nRUN pdm sync\n",
 		},
 	}
@@ -385,6 +385,33 @@ func TestResolveVersions_PDMSyncUnbound(t *testing.T) {
 			r := resolveVersion(t, writeTree(t, files), "jinja2")
 			if !r.Found || r.Match.Resolved || r.Partiality.Complete {
 				t.Fatalf("jinja2 = %+v partiality %+v, want unresolved and incomplete", r.Match, r.Partiality)
+			}
+		})
+	}
+}
+
+func TestResolveVersions_PDMEnvKept(t *testing.T) {
+	base := map[string]string{
+		"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n",
+		"pdm.lock": "[metadata]\ngroups = [\"default\"]\n",
+	}
+	tests := []struct {
+		name, file, src string
+		want            bool // jinja2 resolved
+	}{
+		{"PDM_CHECK_UPDATE", "Dockerfile", "FROM python:3.12\nWORKDIR /app\nCOPY . .\nENV PDM_CHECK_UPDATE=false\nRUN pdm sync\n", true},
+		{"PDM_BUILD_SCM_VERSION", ".github/workflows/ci.yml", "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    env:\n      PDM_BUILD_SCM_VERSION: 1.0.0\n    steps:\n      - run: pdm sync\n", true},
+		{"PDM_CHECK_UPDATE beside another PDM_ name", "Dockerfile", "FROM python:3.12\nWORKDIR /app\nCOPY . .\nENV PDM_CHECK_UPDATE=false PDM_LOCKFILE=other.lock\nRUN pdm sync\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{tt.file: tt.src}
+			for k, v := range base {
+				files[k] = v
+			}
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
 			}
 		})
 	}

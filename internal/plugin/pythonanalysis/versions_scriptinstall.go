@@ -288,6 +288,7 @@ type rootProject struct {
 			Resolution struct {
 				Overrides any `toml:"overrides"`
 			} `toml:"resolution"`
+			Options map[string]any `toml:"options"`
 		} `toml:"pdm"`
 		Hatch map[string]any `toml:"hatch"`
 		UV    struct {
@@ -351,9 +352,10 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 		case "pdm":
 			// pdm installs from a pylock.toml there instead of pdm.lock when lock.format,
 			// which pdm config can set, is pylock. It resolves build requirements through
-			// tool.pdm.resolution.overrides, which may name a directory in the tree.
+			// tool.pdm.resolution.overrides, which may name a directory in the tree. It adds
+			// tool.pdm.options to a command's flags, which may turn off build isolation.
 			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") || !pdmSourcesRemote(doc) ||
-				doc.Tool.PDM.Resolution.Overrides != nil {
+				doc.Tool.PDM.Resolution.Overrides != nil || len(doc.Tool.PDM.Options) > 0 {
 				return false
 			}
 			builds := doc.Tool.PDM.Distribution == nil || *doc.Tool.PDM.Distribution

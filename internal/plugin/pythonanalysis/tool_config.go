@@ -49,12 +49,14 @@ var poetryEnvKeeps = func() map[string]bool {
 }()
 
 // toolConfigNamedRE matches, in a script surface's text, a poetry or pdm config file or the
-// directory either reads its user config from (poetry.toml, pdm.toml, .config/pypoetry,
-// pypoetry/config.toml or auth.toml, .config/pdm, /etc/xdg/pdm), or an XDG variable that moves
-// where they look. A poetry install or pdm sync reads the settings there, so an allowed one
+// directory either reads its user or site config from (poetry.toml, pdm.toml and .pdm.toml,
+// pypoetry/config.toml or auth.toml, pdm/config.toml, a pypoetry or pdm directory under
+// .config, Application Support or AppData, /etc/xdg/pdm, ProgramData's pdm), or an XDG
+// variable that moves where they look. A poetry install or pdm sync reads the settings there, so an allowed one
 // withholds where a script names one (versionSurfaces). POETRY_CONFIG_DIR and PDM_CONFIG_FILE
 // fall under laneEnvRE.
-var toolConfigNamedRE = regexp.MustCompile(`(?i)poetry\.toml|pdm\.toml|(?:\.config|application support|appdata[\\/]roaming)[\\/]pypoetry|pypoetry[\\/](?:config|auth)\.toml|\.config/pdm\b|/etc/xdg/pdm\b|xdg_config_(?:home|dirs)`)
+var toolConfigNamedRE = regexp.MustCompile(`(?i)poetry\.toml|pdm\.toml|pypoetry[\\/](?:config|auth)\.toml|pdm[\\/]config\.toml|` +
+	`(?:\.config|application support|appdata%?(?:[\\/](?:local|roaming))?|localappdata%?|programdata%?|/etc/xdg)[\\/](?:pypoetry|pdm)\b|xdg_config_(?:home|dirs)`)
 
 // toolConfigName reports which tool reads a file of this lowercased base name in directory dir
 // as its config: poetry its project poetry.toml and its user config.toml or auth.toml under
@@ -128,7 +130,8 @@ func configSet(args []string, flags map[string]bool, settings map[string]bool) b
 }
 
 // poetryConfigFlags and pdmConfigFlags are the flags poetry config and pdm config may carry:
-// the config file to write, unset or delete, and quiet or non-interactive output.
+// the project's config file to write (pdm's -g runs against the global project), unset or
+// delete, and quiet or non-interactive output.
 var (
 	poetryConfigFlags = map[string]bool{"--local": true, "--unset": true, "-n": true, "--no-interaction": true, "-q": true, "--quiet": true}
 	pdmConfigFlags    = map[string]bool{"-l": true, "--local": true, "-g": true, "--global": true, "-d": true, "--delete": true, "-q": true, "--quiet": true}

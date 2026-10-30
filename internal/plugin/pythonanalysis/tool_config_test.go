@@ -55,6 +55,7 @@ func TestResolveVersions_ToolConfig(t *testing.T) {
 
 		// POETRY_* variables.
 		{"POETRY_VIRTUALENVS_CREATE", "poetry", "", nil, "export POETRY_VIRTUALENVS_CREATE=false\npoetry install", true},
+		{"POETRY_VIRTUALENVS_IN_PROJECT", "poetry", "", nil, "export POETRY_VIRTUALENVS_IN_PROJECT=true\npoetry install", true},
 		{"POETRY_HOME and POETRY_VERSION", "poetry", "", nil,
 			"FROM python:3.12\nENV POETRY_HOME=/opt/poetry POETRY_VERSION=2.1.0 POETRY_NO_INTERACTION=1\nWORKDIR /app\nCOPY . .\nRUN poetry install\n", true},
 		{"POETRY_INSTALLER_NO_BINARY", "poetry", "", nil, "export POETRY_INSTALLER_NO_BINARY=:all:\npoetry install", false},
@@ -68,7 +69,15 @@ func TestResolveVersions_ToolConfig(t *testing.T) {
 		{"pdm user config named", "pdm", "", nil, "cp cfg.toml ~/.config/pdm/config.toml\npdm sync", false},
 		{"a config named, no poetry install", "poetry", "",
 			map[string]string{"requirements.txt": "jinja2==3.1.4\n"}, "echo ~/.config/pypoetry/config.toml\npip install -r requirements.txt", true},
-		{"a config named by poetry config alone", "poetry", "", nil, "poetry config virtualenvs.create false\necho poetry.toml\npoetry install", false},
+		{"a config named beside poetry config and poetry install", "poetry", "", nil, "poetry config virtualenvs.create false\necho poetry.toml\npoetry install", false},
+		{"a config named, poetry config and no poetry install", "poetry", "", map[string]string{"requirements.txt": "jinja2==3.1.4\n"},
+			"poetry config virtualenvs.create false\necho poetry.toml\npip install -r requirements.txt", true},
+		{"pdm user config on Windows", "pdm", "", map[string]string{"ci/pdm.cfg": "[pypi]\nurl = \"https://x.test/simple\"\n"},
+			"copy ci\\pdm.cfg %LOCALAPPDATA%\\pdm\\pdm\\config.toml\npdm sync", false},
+		{"pdm site config on Windows", "pdm", "", map[string]string{"ci/pdm.cfg": "[pypi]\nurl = \"https://x.test/simple\"\n"},
+			"copy ci\\pdm.cfg %PROGRAMDATA%\\pdm\\pdm\\config.toml\npdm sync", false},
+		{"poetry config directory on Windows", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
+			"xcopy ci\\poetrycfg %APPDATA%\\pypoetry\\ /E\npoetry install", false},
 
 		// tool.poetry.source.
 		{"source over https", "poetry", source("name = \"x\"\nurl = \"https://x.test/simple\"\n"), nil, "poetry install", true},

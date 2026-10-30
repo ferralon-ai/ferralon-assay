@@ -121,7 +121,11 @@ func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]
 		if fn.Blocks == nil {
 			continue
 		}
-		bySymbol[s.scipFunc(fn)] = fn
+		id := s.scipFunc(fn)
+		if prev, ok := bySymbol[id]; ok && !resolvesBefore(fn, prev) {
+			continue
+		}
+		bySymbol[id] = fn
 	}
 
 	out := map[string]*ssa.Function{}
@@ -134,4 +138,15 @@ func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]
 		}
 	}
 	return out
+}
+
+// resolvesBefore reports whether a, rather than b, is the function their shared SCIP id names. A
+// method's bound wrapper and thunk, and each instance of a generic function, carry the declared
+// function's id. The id names the declared function, so it wins; among synthetic functions alone
+// the lowest name does, so the choice never follows map order.
+func resolvesBefore(a, b *ssa.Function) bool {
+	if (a.Synthetic == "") != (b.Synthetic == "") {
+		return a.Synthetic == ""
+	}
+	return a.String() < b.String()
 }

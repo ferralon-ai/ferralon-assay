@@ -204,3 +204,33 @@ func sanitizerOnlyDir(t *testing.T) string {
 	t.Helper()
 	return "testdata/sanitizermod"
 }
+
+// TestResolveIngressFuncs_DeclaredMethod pins that a method handler's ingress resolves to the method
+// itself, never to its bound wrapper, which shares the method's SCIP id: seeding the wrapper would
+// report the method as a sink its own ingress reaches, on whichever runs map order picked it.
+func TestResolveIngressFuncs_DeclaredMethod(t *testing.T) {
+	const dir = "testdata/chimod"
+	ctx := context.Background()
+	sp, _, err := loadSSA(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	methods := 0
+	for run := range 20 {
+		for id, fn := range sp.resolveIngressFuncs(ing.Ingresses) {
+			if fn.Signature.Recv() != nil {
+				methods++
+			}
+			if fn.Synthetic != "" {
+				t.Fatalf("run %d: %s resolved to %s (%s)", run, id, fn, fn.Synthetic)
+			}
+		}
+	}
+	if methods == 0 {
+		t.Fatal("no method handler resolved; the fixture proves nothing")
+	}
+}

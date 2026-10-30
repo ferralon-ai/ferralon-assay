@@ -23,8 +23,9 @@ import (
 // dependency acquisition (update set, a JS scan) and none for any other. Only a JS run adds to the
 // list. A scan of another language sharing the state ref carries the list unchanged, and applying
 // it there could withhold, and retry on every cve-watch run, a row of its own whose advisory also
-// names an npm package the list holds; nothing that run assessed read less npm code than the lock
-// pins.
+// names an npm package the list holds. Such a run also retries nothing (RunCVEWatch), a row
+// withheld as dependency_not_fetched included, so every row it does not assess keeps what the JS
+// run stored.
 func appliedRecord(update DependencyFetchUpdate, dep *statestore.DepFetch) *statestore.DepFetch {
 	if update == nil {
 		return nil

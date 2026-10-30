@@ -471,7 +471,13 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		}
 	}
 
-	retry := notFetchedRetry(state.Report, appliedRecord(req.DependencyFetch, state.DepFetch), newIDs)
+	// A run that records no dependency acquisition retries nothing, a row withheld as
+	// dependency_not_fetched included: it applies no reassess list, so it could not withhold what
+	// it re-assessed, and the list would still name the advisory beside the refuting verdict.
+	var retry []report.AdvisoryFinding
+	if req.DependencyFetch != nil {
+		retry = notFetchedRetry(state.Report, state.DepFetch, newIDs)
+	}
 
 	if len(newIDs) == 0 && len(retry) == 0 {
 		state.Cursor = newCursor

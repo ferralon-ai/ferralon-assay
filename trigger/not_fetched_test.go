@@ -184,8 +184,10 @@ func TestNotFetchedRetry(t *testing.T) {
 func TestRunCVEWatch_ReassessListed(t *testing.T) {
 	listed := &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}
 	for _, tc := range []struct {
-		name          string
-		stored        *statestore.DepFetch
+		name   string
+		stored *statestore.DepFetch
+		// marked stores the row already withheld as dependency_not_fetched.
+		marked        bool
 		hook          func(prior *statestore.DepFetch) *statestore.DepFetch
 		wantHeartbeat bool
 		wantVerdict   report.Verdict
@@ -195,6 +197,10 @@ func TestRunCVEWatch_ReassessListed(t *testing.T) {
 		{
 			name: "listed, a run that records no dependency acquisition leaves it alone", stored: listed,
 			wantHeartbeat: true, wantVerdict: report.VerdictNotExploitable,
+		},
+		{
+			name: "listed and withheld, a run that records no dependency acquisition retries nothing", stored: listed, marked: true,
+			wantHeartbeat: true, wantVerdict: report.VerdictUndetermined, wantReason: report.ReasonDependencyNotFetched,
 		},
 		{
 			name: "listed, read again without dependency code",
@@ -210,6 +216,13 @@ func TestRunCVEWatch_ReassessListed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, _ := groundedBaseline()
 			store.state.DepFetch = tc.stored
+			if tc.marked {
+				rep, err := withNotFetched(store.state.Report, tc.stored)
+				if err != nil {
+					t.Fatal(err)
+				}
+				store.state.Report = rep
+			}
 			osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
 			req := CVEWatchRequest{
 				Subject:       Subject{Repo: "r", ResolvedCommit: "sha"},

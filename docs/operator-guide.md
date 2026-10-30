@@ -64,17 +64,23 @@ failing step.
 
 A `reachable_candidate` can carry a grade describing how strong its reachability evidence is:
 
-- `attacker_tainted` — an attacker-controllable ingress (for example an HTTP route) reaches the
-  vulnerable symbol, and tainted data flows along that path. The strongest candidate signal a scan
-  emits.
-- `control_flow_only` — a control-flow path to the symbol exists, but the analysis found no
-  attacker-controllable data flowing along it.
+- `attacker_tainted` — the call path to the vulnerable symbol passes through an attacker-controllable
+  ingress, for example an HTTP route or an RPC handler. The strongest candidate signal a scan emits.
+- `control_flow_only` — a call path to the symbol exists, but no attacker-controllable ingress lies on
+  it: it starts from an internal entry point such as `main` or a CLI command, or from one the analyzer
+  could not classify.
+
+The grade is decided by which entry points lie on the call path, not by tracking data values along it.
+The path is the one the language's taint analysis reported, else the one the reachability search
+found. Go's taint analysis follows values through SSA from an ingress parameter to the sink's
+argument; every other language reports call-graph path presence from an ingress to the sink. So
+`attacker_tainted` says an entry point an attacker can call leads to the symbol. On its own it does
+not say attacker-supplied data reaches the symbol.
 
 A graded candidate also reports its **entry point** — the symbol, its kind (`http_route`, `rpc`,
 `cli`, `test` or `unknown`), and whether that kind is attacker-controllable — and, when the analyzer
-resolved them, the **call path** frames from entry point to sink. Taint here is path presence on the
-call graph, not value-level dataflow. Either grade is still a candidate: neither proves the code can be
-exploited.
+resolved them, the **call path** frames from entry point to sink. Either grade is still a candidate:
+neither proves the code can be exploited.
 
 ### EPSS and KEV
 

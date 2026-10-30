@@ -75,8 +75,10 @@ const (
 	// reasonWorkSetNoInventory: the repository's dependency coordinates could not be read, so there
 	// was nothing to ask OSV about. Distinct from "OSV said nothing affects you".
 	reasonWorkSetNoInventory = "work_set_no_inventory"
-	// reasonAdvisoryFactsUnavailable: OSV reported advisories affecting this repository that the
-	// advisory source has no facts for. They were NOT evaluated.
+	// reasonAdvisoryFactsUnavailable: OSV reported advisories against this repository's dependencies
+	// that the advisory source has no facts for. They were NOT evaluated. A by-name stdlib query
+	// contributes every stdlib id OSV records, so the count can include advisories that do not
+	// affect the subject's Go release.
 	reasonAdvisoryFactsUnavailable = "advisory_facts_unavailable"
 	// reasonWorkSetPolicyNotEnumerable: a policy is declared, but the corpus reader cannot list the
 	// ids it carries, so the policy could not define the work set. The pass
@@ -137,7 +139,9 @@ type workSet struct {
 	// widened is how many ids OSV contributed beyond the floor. Reporting-only.
 	widened int
 	// unresolved is every id OSV reported against this repository's dependencies that no fact
-	// source could resolve, sorted. These advisories were NOT evaluated by this pass.
+	// source could resolve, sorted. These advisories were NOT evaluated by this pass. A by-name
+	// stdlib query contributes every stdlib id OSV records, so this can include advisories that do
+	// not affect the subject's Go release.
 	//
 	// It exists so the number and the identities survive to a surface instead of dying inside
 	// resolveWorkSet. It is rendered at the terminal by describe(), and carried into the Report —

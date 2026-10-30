@@ -35,7 +35,8 @@ func TestVeto_Clear(t *testing.T) {
 		{"a stage built on one that copied it", map[string]string{"plug/sub/x": "x\n"},
 			"FROM python:3.12 AS src\nWORKDIR /app\nCOPY . .\nFROM src\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN inst build\n", true},
 		{"copied to a destination not known", map[string]string{"plug/sub/x": "x\n"}, "FROM python:3.12\nARG D=/app\nWORKDIR /app\nCOPY plug $D/\nCOPY inst.toml inst.lock ./\nRUN inst build\n", true},
-		{"a file copied onto a directory above it", map[string]string{"other/sub": "x\n"}, "FROM python:3.12\nWORKDIR /app/plug\nWORKDIR /app\nCOPY other/sub /app/plug\nCOPY inst.toml inst.lock ./\nRUN inst build\n", true},
+		{"a file copied onto a directory above it", map[string]string{"other/sub": "x\n"}, "FROM python:3.12\nWORKDIR /app\nCOPY other/sub /app/plug\nCOPY inst.toml inst.lock ./\nRUN inst build\n", true},
+		{"a stage copied over a directory above it", nil, "FROM python:3.12 AS b\nFROM python:3.12\nWORKDIR /app\nCOPY --from=b /p /app\nCOPY inst.toml inst.lock ./\nRUN inst build\n", true},
 		{"the context bind-mounted over the workdir", map[string]string{"plug/sub/x": "x\n"}, head + "RUN --mount=type=bind,source=.,target=/app inst build\n", true},
 		{"a quoted mount target", map[string]string{"plug/sub/x": "x\n"}, head + "RUN --mount=type=bind,source=.,target=\"/app\" inst build\n", true},
 		{"written through an ENV value", nil, "FROM python:3.12\nENV P /app/plug/sub\nRUN mkdir -p $P\n" + head + "RUN inst build\n", true},
@@ -44,6 +45,8 @@ func TestVeto_Clear(t *testing.T) {
 		{"written under a WORKDIR inside it", nil, "FROM python:3.12\nWORKDIR /app/plug\nRUN mkdir sub\n" + head + "RUN inst build\n", true},
 		{"made by a WORKDIR", nil, "FROM python:3.12\nWORKDIR /app/plug/sub\n" + head + "RUN inst build\n", true},
 		{"a mount with no target", nil, head + "RUN --mount=type=bind,source=. inst build\n", true},
+		{"a mount at the root", nil, head + "RUN --mount=type=cache,target=/ inst build\n", true},
+		{"a mount under it", nil, head + "RUN --mount=type=cache,target=/app/plug/sub/c inst build\n", true},
 		{"a cache mounted elsewhere", nil, head + "RUN --mount=type=cache,target=/root/.cache inst build\n", false},
 	}
 	for _, tt := range tests {

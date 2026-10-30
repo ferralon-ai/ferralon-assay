@@ -108,6 +108,8 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 		{"uv, no build-system with setup.py", "uv", project, map[string]string{"setup.py": setupPy}, "", true},
 		{"uv, uv_build with a stub setup.py", "uv", backend("uv_build"), map[string]string{"setup.py": setupPy}, "", true},
 		{"uv, package false with setup.py", "uv", project + "[tool.uv]\npackage = false\n", map[string]string{"setup.py": setupPy}, "", true},
+		{"uv, package false over a build-system with setup.py", "uv", backend("setuptools.build_meta") + "[tool.uv]\npackage = false\n",
+			map[string]string{"setup.py": setupPy}, "", true},
 		{"uv, setuptools without setup.py", "uv", backend("setuptools.build_meta"), nil, "", true},
 	}
 	for _, tt := range tests {

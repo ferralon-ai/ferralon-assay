@@ -116,6 +116,22 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		res.Match.Version = ""
 		res.Match.Resolved = false
 	}
+	// A uv override or constraint only vetoes: it never makes a name Found. An override replaces
+	// the declarations, so a Match stands only when every override entry agrees with it; a
+	// constraint only narrows them, so a Match stands when every constraint admits it.
+	overrides, overrideOrigins, constraintOrigins := uvOverrideEntries(manifests, want)
+	if res.Found && len(overrides) > 0 {
+		m, _ := matchCoordinate(append(all[:len(all):len(all)], append(copies[:len(copies):len(copies)], overrides...)...),
+			append(origins[:len(origins):len(origins)], append(copyOrigins[:len(copyOrigins):len(copyOrigins)], overrideOrigins...)...), want)
+		if !m.Resolved {
+			res.Match.Version = ""
+			res.Match.Resolved = false
+		}
+	}
+	if res.Match.Resolved && !uvEntriesAdmit(constraintOrigins, []plugin.ResolvedDependency{res.Match}) {
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
 	// Under coverage every other manifest's declaration is one its governing lock pins at a version
 	// the declaration admits, so the lock entries and the installed copies are every version. A
 	// direct reference is the exception: whatever the lock pins, the build installs the reference.
@@ -136,8 +152,24 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		}
 	}
 	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !sourced && !directRef &&
-		!installedCopyPresent(req.BuildDir, want, false)
+		!installedCopyPresent(req.BuildDir, want, false) &&
+		uvEntriesAdmit(overrideOrigins, res.Matches) && uvEntriesAdmit(constraintOrigins, res.Matches)
 	return res, nil
+}
+
+// uvEntriesAdmit reports whether every version in matches satisfies every uv override and
+// constraint entry. A lock written before an entry was added still pins what the declarations
+// admitted, so its pins are every version only when each entry admits them all. An entry that
+// is a direct reference admits none.
+func uvEntriesAdmit(entries []manifestOrigin, matches []plugin.ResolvedDependency) bool {
+	for _, o := range entries {
+		for _, d := range matches {
+			if !lockPinSatisfies(o, d.Version) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // manifestOrigin records where an entry of All was read: its manifest's directory, the

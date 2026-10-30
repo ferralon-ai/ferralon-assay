@@ -24,14 +24,18 @@ type releaseSpan [2]int
 type interpreterRange struct {
 	releases []int // admitted modelled releases
 	newer    bool  // admits a release newer than every modelled one
+	probes   []int // the probeReleases it admits
 }
 
+// probeReleases are the releases newer than the tables that parseInterpreterRange tries.
+var probeReleases = []int{315, 316, 317, 318, 319, 320, 325, 330, 340, 400, 401, 500}
+
 // assumedInterpreter stands in when a build declares no interpreter: CPython 3.8 or later.
-var assumedInterpreter = interpreterRange{releases: releasesFrom(308), newer: true}
+var assumedInterpreter = interpreterRange{releases: releasesFrom(308), newer: true, probes: probeReleases}
 
 // anyInterpreter stands in when a build declares an interpreter this lane cannot read: every
 // modelled release and every later one.
-var anyInterpreter = interpreterRange{releases: releasesFrom(oldestModelledRelease), newer: true}
+var anyInterpreter = interpreterRange{releases: releasesFrom(oldestModelledRelease), newer: true, probes: probeReleases}
 
 func releasesFrom(first int) []int {
 	for i, r := range modelledReleases {
@@ -110,12 +114,15 @@ func parseInterpreterRange(spec string) (interpreterRange, bool) {
 			r.releases = append(r.releases, rel)
 		}
 	}
-	for _, rel := range []int{315, 316, 317, 318, 319, 320, 325, 330, 340, 400, 401, 500} {
+	for _, rel := range probeReleases {
 		hit, ok := admits(rel/100, rel%100, 20)
 		if !ok {
 			return interpreterRange{}, false
 		}
 		r.newer = r.newer || hit
+		if hit {
+			r.probes = append(r.probes, rel)
+		}
 	}
 	if len(r.releases) == 0 && !r.newer {
 		return interpreterRange{}, false

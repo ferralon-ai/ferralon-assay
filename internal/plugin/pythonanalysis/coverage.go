@@ -1116,11 +1116,11 @@ func admitsAll(spec, buildSpec string, build interpreterRange) bool {
 		return false
 	}
 	r, ok := parseInterpreterRange(spec)
-	if !ok || build.newer && !r.newer {
+	if !ok {
 		return false
 	}
-	for _, rel := range build.releases {
-		if !slices.Contains(r.releases, rel) {
+	for _, rel := range slices.Concat(build.releases, build.probes) {
+		if !slices.Contains(r.releases, rel) && !slices.Contains(r.probes, rel) {
 			return false
 		}
 	}

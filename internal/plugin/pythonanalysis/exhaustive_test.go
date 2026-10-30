@@ -109,7 +109,8 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"-r include glued", map[string]string{"requirements.txt": "-rbase.txt\n", "base.txt": "pyjwt==2.8.0\n"}, false},
 		{"--requirement= include", map[string]string{"requirements.txt": "--requirement=base.txt\n", "base.txt": "pyjwt==2.8.0\n"}, false},
 		{"-c include missing", map[string]string{"requirements.txt": "-c pins.txt\nflask==3.0.0\n"}, false},
-		{"-r include of a parsed manifest", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, false},
+		{"-r include of a parsed manifest", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask>=3\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, false},
+		{"-r include of a parsed manifest, closed under the lock", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, true},
 		{"-r include of a parsed manifest, hashed", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0 --hash=sha256:aaa\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, true},
 
 		// pyproject declarations outside [project].
@@ -267,8 +268,12 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"hash on a continued line", uv(map[string]string{"requirements.txt": "flask==3.0.0 \\\n    " + h + "\n"}), true},
 		{"-r include of a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\n", "requirements-base.txt": "flask==3.0.0" + h + "\n"}), true},
 		{"unhashed -r include inside a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n"}), true},
-		{"unhashed -r include inside a hashed file, installed alone", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), false},
-		{"requirements file that only -r's a file with no pins", uv(map[string]string{"requirements-dev.txt": "-r requirements-empty.txt\n", "requirements-empty.txt": "# nothing pinned\n"}), false},
+		{"unhashed -r include inside a hashed file, installed alone", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), true},
+		{"unhashed -r include inside a hashed file, installed alone, include not closed", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), false},
+		// An install set with no pins installs nothing, so it is closed; the index pip.conf keeps
+		// it off the closure route so the row still reaches the nested refused check.
+		{"requirements file that only -r's a file with no pins", uv(map[string]string{"requirements-dev.txt": "-r requirements-empty.txt\n", "requirements-empty.txt": "# nothing pinned\n"}), true},
+		{"requirements file that only -r's a file with no pins, index pip.conf", uv(map[string]string{"requirements-dev.txt": "-r requirements-empty.txt\n", "requirements-empty.txt": "# nothing pinned\n", "docker/pip.conf": "[global]\nindex-url = https://mirror.example/simple\n"}), false},
 		{"--require-hashes option line", uv(map[string]string{"requirements.txt": "--require-hashes\nflask==3.0.0" + h + "\n"}), true},
 		{"-c hashed constraints, unhashed requirement", uv(map[string]string{"requirements.txt": "-c requirements-constraints.txt\nflask>=3\n", "requirements-constraints.txt": "flask==3.0.0" + h + "\n"}), false},
 		{"Dockerfile installs an unhashed requirements.txt", uv(map[string]string{"requirements.txt": "flask>=3\n", "Dockerfile": docker + "RUN pip install -r requirements.txt\n"}), false},
@@ -311,6 +316,139 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 	r := resolveVersion(t, writeTree(t, uv(map[string]string{"requirements.txt": "flask>=3\n"})), "jinja2")
 	if !r.Found || !r.Match.Resolved {
 		t.Fatalf("jinja2: found=%v %+v, want resolved", r.Found, r.Match)
+	}
+}
+
+// An unhashed file of "==" pins covers when every governing lock is a uv.lock whose edges, out
+// of every pinned release, land on another pin: pip then has no name to fetch past the file.
+// Edge markers are ignored, a marked pin pins no edge into it, and an index the lock was not
+// resolved against, a lock that prunes or rewrites edges, or a line that is not a pin leaves
+// the file to the hash and --no-deps checks. Hash mode does not enter into it.
+func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
+	const (
+		reg  = "source = { registry = \"https://pypi.org/simple\" }\n"
+		lock = "version = 1\n" +
+			"[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\ndependencies = [{ name = \"flask\" }]\n\n" +
+			"[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n" + reg + "dependencies = [{ name = \"jinja2\" }, { name = \"click\" }]\n\n[package.optional-dependencies]\nasync = [{ name = \"asgiref\" }]\n\n" +
+			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n" + reg + "dependencies = [{ name = \"markupsafe\" }]\n\n" +
+			"[[package]]\nname = \"click\"\nversion = \"8.1.7\"\n" + reg + "dependencies = [{ name = \"colorama\", marker = \"sys_platform == 'win32'\" }]\n\n" +
+			"[[package]]\nname = \"colorama\"\nversion = \"0.4.6\"\n" + reg + "\n" +
+			"[[package]]\nname = \"markupsafe\"\nversion = \"2.1.5\"\n" + reg + "\n" +
+			"[[package]]\nname = \"asgiref\"\nversion = \"3.8.1\"\n" + reg + "\n" +
+			"[[package]]\nname = \"celery\"\nversion = \"5.4.0\"\n" + reg + "dependencies = [{ name = \"redis\", extra = [\"hiredis\"] }]\n\n" +
+			"[[package]]\nname = \"redis\"\nversion = \"5.0.0\"\n" + reg + "\n[package.optional-dependencies]\nhiredis = [{ name = \"hiredis\" }]\n\n" +
+			"[[package]]\nname = \"hiredis\"\nversion = \"2.3.2\"\n" + reg
+		pins   = "flask==3.0.0\njinja2==3.1.4\nclick==8.1.7\ncolorama==0.4.6\nmarkupsafe==2.1.5\n"
+		celery = "celery==5.4.0\nredis==5.0.0\n"
+		h      = " --hash=sha256:aaa"
+		docker = "FROM python:3.12\nWORKDIR /app\nCOPY . .\n"
+		poetry = "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n"
+	)
+	tree := func(lock string, extra map[string]string) map[string]string {
+		files := map[string]string{"pyproject.toml": exPyproject, "uv.lock": lock}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	reqs := func(body string, extra ...string) map[string]string {
+		files := map[string]string{"requirements.txt": body}
+		for i := 0; i+1 < len(extra); i += 2 {
+			files[extra[i]] = extra[i+1]
+		}
+		return tree(lock, files)
+	}
+	edit := func(old, new string) string {
+		if !strings.Contains(lock, old) {
+			t.Fatalf("lock fixture has no %q", old)
+		}
+		return strings.Replace(lock, old, new, 1)
+	}
+	hashed := strings.ReplaceAll(pins, "\n", h+"\n")
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"closed", reqs(pins), true},
+		{"closed, installed from a Dockerfile", reqs(pins, "Dockerfile", docker+"RUN pip install -r requirements.txt\n"), true},
+		{"closed through a nested -r", reqs("-r requirements-base.txt\nflask==3.0.0\n", "requirements-base.txt", pins), true},
+		{"closed, a hashed -c constraints file", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", hashed), true},
+		{"stale pin: an edge to a name the file does not pin", reqs(strings.Replace(pins, "markupsafe==2.1.5\n", "", 1)), false},
+		{"stale pin in a nested -r", reqs("-r requirements-base.txt\n", "requirements-base.txt", strings.Replace(pins, "markupsafe==2.1.5\n", "", 1)), false},
+
+		// Markers.
+		{"a marked edge still counts", reqs(strings.Replace(pins, "colorama==0.4.6\n", "", 1)), false},
+		{"a marked pin an edge needs", reqs(strings.Replace(pins, "colorama==0.4.6\n", "colorama==0.4.6 ; sys_platform == \"win32\"\n", 1)), false},
+		{"a marked pin no edge needs", reqs(pins + "asgiref==3.8.1 ; python_version < \"3.11\"\n"), true},
+		{"a marked pin whose release has an unpinned edge", reqs(pins + "celery==5.4.0 ; sys_platform == \"linux\"\n"), false},
+
+		// Extras.
+		{"an extra on a pin, pulled in", reqs(strings.Replace(pins, "flask==", "flask[async]==", 1) + "asgiref==3.8.1\n"), true},
+		{"an extra on a pin, its dependency unpinned", reqs(strings.Replace(pins, "flask==", "flask[async]==", 1)), false},
+		{"an extra the lock does not record", reqs(strings.Replace(pins, "flask==", "flask[nope]==", 1)), false},
+		{"an edge asks an extra, pulled in", reqs(pins + celery + "hiredis==2.3.2\n"), true},
+		{"an edge asks an extra, its dependency unpinned", reqs(pins + celery), false},
+		{"an edge asks an extra the lock does not record", tree(edit("\n[package.optional-dependencies]\nhiredis = [{ name = \"hiredis\" }]\n", ""), map[string]string{"requirements.txt": pins + celery + "hiredis==2.3.2\n"}), false},
+
+		// Lines that are not pins.
+		{"a range", reqs(strings.Replace(pins, "click==8.1.7", "click>=8", 1)), false},
+		{"a wildcard", reqs(strings.Replace(pins, "click==8.1.7", "click==8.1.*", 1)), false},
+		{"an arbitrary-equality pin", reqs(strings.Replace(pins, "click==8.1.7", "click===8.1.7", 1)), false},
+		{"a pin with a second clause", reqs(strings.Replace(pins, "click==8.1.7", "click==8.1.7,!=8.1.6", 1)), false},
+		{"a bare name", reqs(strings.Replace(pins, "click==8.1.7", "click", 1)), false},
+		{"a range in a nested -r", reqs("-r requirements-base.txt\n"+pins, "requirements-base.txt", "click>=8\n"), false},
+
+		// Another index or wheel source than the one the lock resolved against.
+		{"-i", reqs("-i https://mirror.example/simple\n" + pins), false},
+		{"-i glued", reqs("-ihttps://mirror.example/simple\n" + pins), false},
+		{"--index-url", reqs("--index-url https://mirror.example/simple\n" + pins), false},
+		{"--index-url abbreviated", reqs("--index=https://mirror.example/simple\n" + pins), false},
+		{"--extra-index-url", reqs("--extra-index-url https://mirror.example/simple\n" + pins), false},
+		{"--find-links", reqs("--find-links ./wheels\n" + pins), false},
+		{"-f glued", reqs("-f./wheels\n" + pins), false},
+		{"--find-links abbreviated, second on the line", reqs("--prefer-binary --find ./wheels\n" + pins), false},
+		{"--find-links in a nested -r", reqs("-r requirements-base.txt\n"+pins, "requirements-base.txt", "--find-links ./wheels\n"), false},
+		// A constraints file covers on its own (hashed, or naming nothing), but pip applies its
+		// options to the file that names it.
+		{"--index-url in a hashed -c constraints file", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "--index-url https://mirror.example/simple\n"+hashed), false},
+		{"--index-url alone in a -c constraints file", reqs("-c constraints.txt\n"+pins, "constraints.txt", "--index-url https://mirror.example/simple\n"), false},
+		{"--index-url in a -c file a -c file names", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "-c constraints.txt\n"+hashed, "constraints.txt", "--index-url https://mirror.example/simple\n"), false},
+		{"--no-index", reqs("--no-index\n" + pins), true},
+		{"--trusted-host", reqs("--trusted-host pypi.org\n" + pins), true},
+		{"pip.conf names index-url", reqs(pins, "docker/pip.conf", "[global]\nindex-url = https://mirror.example/simple\n"), false},
+		{"pip.ini names extra_index_url", reqs(pins, "pip.ini", "[global]\nextra_index_url = https://mirror.example/simple\n"), false},
+		{"pip.conf names find-links", reqs(pins, "pip.conf", "[install]\nfind-links = ./wheels\n"), false},
+		{"pip.conf that names no index", reqs(pins, "pip.conf", "[global]\ntimeout = 60\n"), true},
+
+		// Files that install past the file.
+		{"a file setup.cfg names", reqs(pins, "setup.cfg", "[metadata]\nname = app\n[options]\ninstall_requires = file: requirements.txt\n"), false},
+
+		// Locks whose edges are not the index's metadata, or that are not a uv.lock.
+		{"a poetry.lock governs too", reqs(pins, "poetry.lock", poetry), false},
+		{"uv.lock with supported-markers", tree("supported-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock with required-markers", tree("required-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock [manifest] overrides", tree(lock+"\n[manifest]\noverrides = [{ name = \"markupsafe\", specifier = \"==2.1.5\" }]\n", map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock [manifest] unknown key", tree(lock+"\n[manifest]\nsomething-new = []\n", map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock [manifest] members and constraints", tree(lock+"\n[manifest]\nmembers = [\"app\"]\nconstraints = [{ name = \"click\", specifier = \"<9\" }]\n", map[string]string{"requirements.txt": pins}), true},
+		{"a pin the lock holds from git, not a registry", tree(edit("name = \"markupsafe\"\nversion = \"2.1.5\"\n"+reg, "name = \"markupsafe\"\nversion = \"2.1.5\"\nsource = { git = \"https://github.com/pallets/markupsafe?rev=2.1.5\" }\n"), map[string]string{"requirements.txt": pins}), false},
+
+		// Hash mode does not enter into it (tracker#410's out-of-tree no-require-hashes included).
+		{"--no-require-hashes option line", reqs("--no-require-hashes\n" + pins), true},
+		{"pip.conf names no-require-hashes", reqs(pins, "pip.conf", "[install]\nno-require-hashes = 1\n"), true},
+		{"hashed, hashes disabled in pip.conf", reqs(hashed, "pip.conf", "[install]\nno-require-hashes = 1\n"), true},
+		{"hashed, not closed, hashes disabled in pip.conf", reqs(strings.Replace(hashed, "markupsafe==2.1.5"+h+"\n", "", 1), "pip.conf", "[install]\nno-require-hashes = 1\n"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "PyJWT")
+			if r.Found {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
 	}
 }
 

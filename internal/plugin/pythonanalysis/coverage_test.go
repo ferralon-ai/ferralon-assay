@@ -170,7 +170,8 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		// Nested project definitions.
 		{"nested pyproject the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, false},
 		{"nested pyproject that is a workspace member", map[string]string{"uv.lock": covUVLockMember, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, true},
-		{"nested requirements file", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3\n"}, false},
+		{"nested requirements file", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests>=2\n"}, false},
+		{"nested requirements file, closed under the lock", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3\n"}, true},
 		{"nested requirements file, hashed", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"nested setup.py the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"requests\"])\n"}, false},
 		{"nested project with its own lock", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n", "svc/uv.lock": covUVLockNoExtra}, true},

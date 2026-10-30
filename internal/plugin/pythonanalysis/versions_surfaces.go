@@ -65,7 +65,8 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	configNamed, mypyInstalls := false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
-		mypyInstalls = mypyInstalls || installTypesAbbrevRE.MatchString(src) && mypyNamedRE.MatchString(src)
+		mypyInstalls = mypyInstalls || installTypesTextRE.MatchString(src) ||
+			installTypesAbbrevRE.MatchString(src) && mypyNamedRE.MatchString(src)
 	}
 	veto := scriptsurface.New(root, read, spec)
 	classify := veto.Classify(pyInstallSurface)

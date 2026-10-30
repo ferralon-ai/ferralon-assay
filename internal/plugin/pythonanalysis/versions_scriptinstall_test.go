@@ -436,6 +436,7 @@ func TestResolveVersions_MypyInstallTypes(t *testing.T) {
 		{"abbreviation as a ${:-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS:---install} --non-interactive .\n"}, false},
 		{"flag as a ${:-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS:---install-types} --non-interactive .\n"}, false},
 		{"flag in an @ file a printf writes", map[string]string{"install.sh": "printf 'src\\n--install-types\\n' > a && mypy @a\n"}, false},
+		{"flag in an @ file a surface not naming mypy writes", map[string]string{"gen.sh": "printf 'src\\n--install-types\\n' > ci/args\n", "lint.sh": "cd src && mypy @../ci/args\n"}, false},
 		{"abbreviation as a ${-} default", map[string]string{"install.sh": "mypy ${MYPY_FLAGS---ins} --non-interactive .\n"}, false},
 		{"@ file with --install-types", map[string]string{"ci/mypy-args": "src/app\n--install-types\n--non-interactive\n", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},
 		{"@ file with --install, CRLF", map[string]string{"ci/mypy-args": "src/app\r\n--install\r\n--non-interactive\r\n", "install.sh": "cd src && mypy @../ci/mypy-args\n"}, false},

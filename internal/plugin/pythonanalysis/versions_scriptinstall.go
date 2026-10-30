@@ -69,18 +69,19 @@ import (
 //
 // mypy --install-types runs pip on the stub packages mypy finds missing, which can pull in
 // runtime dependencies. Its parser accepts any unambiguous prefix of a long flag, so a word
-// from --install- up to --install-types is a token wherever it appears, and a script surface
-// whose text names mypy and holds any prefix from --ins on, wherever it sits in that text (a
-// word, a ${FLAGS:-} default, a line a printf writes; --ins to --install are flags helm and
-// others use too), withholds every pin (installTypesAbbrevRE). A mypy config can set install_types as
-// well, and mypy reads a config where it lands and by any name --config-file gives it, so a
+// from --install- up to --install-types is a token wherever it appears, and so is any script
+// surface whose text holds one, wherever it sits in that text: a ${FLAGS:-} default, or a line
+// a printf writes into an @ file (installTypesTextRE). A shorter prefix, --ins to --install,
+// is a flag helm and others use too, so it withholds every pin only in a surface whose text
+// names mypy (installTypesAbbrevRE). A mypy config can set install_types as well, and mypy reads a config where it lands and by any name --config-file gives it, so a
 // file under the build dir whose head names mypy and an install_types key, however it is set,
 // withholds every pin (mypyConfigInstalls). mypy also reads arguments one per line from a
 // file an @ argument names, whatever that file is called and whether or not it names mypy, so
 // a file under the build dir holding a line that is a prefix of --install-types from --ins on
 // withholds every pin (installTypesLineRE). A config or arguments file the build fetches or
 // the base image holds is not observed, nor is a prefix shorter than --install- that reaches
-// mypy through a variable another file sets.
+// mypy from a surface that does not name it: a variable another file sets, or an @ file
+// another surface writes.
 
 // newScriptSpec is the Python lane's part of the rule, recording into installs every pip
 // install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
@@ -140,6 +141,10 @@ func laneToken(word string) bool {
 // installTypesMin is the shortest prefix of installTypesFlag that no other common tool's flag
 // shares.
 const installTypesFlag, installTypesMin = "--install-types", "--install-"
+
+// installTypesTextRE matches, in a script surface's text, a prefix of --install-types from
+// --install- on wherever it sits. No other common tool's flag shares one.
+var installTypesTextRE = regexp.MustCompile(`--install-(?:t(?:y(?:p(?:es?)?)?)?)?(?:$|[^\w-])`)
 
 // installTypesAbbrevRE matches, in a script surface's text, a prefix of --install-types from
 // --ins on that mypy's parser reads as it, wherever it sits: a word laneToken does not see,

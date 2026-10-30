@@ -29,6 +29,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/resultsink"
@@ -213,21 +214,7 @@ func runBaseline(args []string) error {
 	fmt.Fprintf(os.Stdout, "%s baseline — work set: %s\n", brand.Name, ws.describe())
 
 	revision, commit := acq.provenance(*f.revision, *f.commit)
-	req := trigger.BaselineRequest{
-		Subject: trigger.Subject{Repo: acq.repo, Revision: revision, ResolvedCommit: commit},
-		Codebase: assessment.CodebaseRef{
-			Repo:        acq.repo,
-			Revision:    revision,
-			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
-		},
-		Advisories:      ws.advisories,
-		WorkSetLimits:   ws.partiality,
-		AssessOptions:   assessOptions,
-		Signals:         f.resolvedSignals,
-		Analysis:        analysis,
-		DependencyFetch: f.depRun.forLanguage(acq.language).fetchUpdate(),
-		Disclose:        f.depRun.forLanguage(acq.language).disclose(),
-	}
+	req := baselineRequest(analysis, acq, revision, commit, ws, assessOptions, f.resolvedSignals, f.depRun)
 
 	rep, err := trigger.RunBaseline(ctx, store, req)
 	if err != nil {
@@ -247,6 +234,27 @@ func runBaseline(args []string) error {
 	printRescanContext(rescan)
 	postScan(ctx, store, req.Subject, rescan)
 	return runExit(acq.graph, f.depRun.forLanguage(acq.language))
+}
+
+// baselineRequest is the trigger request a baseline of acq at revision/commit runs. deps is the
+// run's dependency-code state, applied only when acq is a JS scan.
+func baselineRequest(analysis context.Context, acq *acquired, revision, commit string, ws workSet, assessOptions []pipeline.AssessOption, signals *intel.Signals, deps *depCodeRun) trigger.BaselineRequest {
+	deps = deps.forLanguage(acq.language)
+	return trigger.BaselineRequest{
+		Subject: trigger.Subject{Repo: acq.repo, Revision: revision, ResolvedCommit: commit},
+		Codebase: assessment.CodebaseRef{
+			Repo:        acq.repo,
+			Revision:    revision,
+			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
+		},
+		Advisories:      ws.advisories,
+		WorkSetLimits:   ws.partiality,
+		AssessOptions:   assessOptions,
+		Signals:         signals,
+		Analysis:        analysis,
+		DependencyFetch: deps.fetchUpdate(),
+		Disclose:        deps.disclose(),
+	}
 }
 
 // baselineStore resolves the StateStore the baseline writes to. When an operator selects a store

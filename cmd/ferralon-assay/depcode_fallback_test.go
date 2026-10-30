@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -279,12 +280,9 @@ func TestDependencyCodeNoteIsStored(t *testing.T) {
 	}{
 		{name: "baseline", run: func(t *testing.T, store statestore.StateStore, codebase assessment.CodebaseRef) (*report.Report, *depCodeRun) {
 			run, opts := fetchRun(t)
-			rep, err := trigger.RunBaseline(ctx, store, trigger.BaselineRequest{
-				Subject: subject, Codebase: codebase, AssessOptions: opts,
-				Advisories:      []assessment.VulnRef{{ID: "FERRALON-JS-DEP-0001", Source: "corpus"}},
-				DependencyFetch: run.fetchUpdate(),
-				Disclose:        run.disclose(),
-			})
+			acq := &acquired{repo: subject.Repo, buildDir: codebase.Acquisition.Path, language: checkout.LangJS}
+			ws := workSet{advisories: []assessment.VulnRef{{ID: "FERRALON-JS-DEP-0001", Source: "corpus"}}}
+			rep, err := trigger.RunBaseline(ctx, store, baselineRequest(ctx, acq, subject.Revision, subject.ResolvedCommit, ws, opts, nil, run))
 			if err != nil {
 				t.Fatal(err)
 			}

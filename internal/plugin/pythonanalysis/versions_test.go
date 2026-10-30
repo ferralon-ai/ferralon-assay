@@ -50,8 +50,12 @@ git+https://github.com/x/y.git#egg=z
 	}
 }
 
+// poetryProject is the pyproject.toml a poetry.lock sits beside, declaring only the main group.
+const poetryProject = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
 func TestResolveVersions_PoetryLock(t *testing.T) {
 	dir := writeTree(t, map[string]string{
+		"pyproject.toml": poetryProject,
 		"poetry.lock": `
 [[package]]
 name = "deepdiff"
@@ -215,6 +219,7 @@ func TestResolveVersions_PipfileDefaultDevelopDisagreeUnresolved(t *testing.T) {
 func TestResolveVersions_SamePinAcrossManifestsResolves(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"requirements.txt": "Flask==2.3.0\n",
+		"pyproject.toml":   poetryProject,
 		"poetry.lock":      "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
 	})
 	if r := resolveVersion(t, dir, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
@@ -563,15 +568,16 @@ func TestResolveVersions_MatchesComplete(t *testing.T) {
 		versions []string
 		complete bool
 	}{
-		{"one lock per service", map[string]string{"poetry.lock": lock300, "svc/poetry.lock": lock233}, []string{"3.0.0", "2.3.3"}, true},
+		{"one lock per service", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject,
+			"svc/poetry.lock": lock233, "svc/pyproject.toml": poetryProject}, []string{"3.0.0", "2.3.3"}, true},
 		{"a pyproject its lock pins", map[string]string{"poetry.lock": lock300, "pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask>=3\"]\n"}, []string{"3.0.0"}, true},
-		{"an installed copy joins the set", map[string]string{"poetry.lock": lock300, sitePackages + "flask-2.0.0.dist-info/METADATA": metadata200}, []string{"3.0.0", "2.0.0"}, true},
+		{"an installed copy joins the set", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, sitePackages + "flask-2.0.0.dist-info/METADATA": metadata200}, []string{"3.0.0", "2.0.0"}, true},
 		{"requirements pins with no lock", map[string]string{"requirements.txt": "flask==2.3.2\n"}, nil, false},
-		{"an unlocked service beside a locked one", map[string]string{"poetry.lock": lock300, "svc/requirements.txt": "requests==2.31.0\n"}, []string{"3.0.0"}, false},
+		{"an unlocked service beside a locked one", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, "svc/requirements.txt": "requests==2.31.0\n"}, []string{"3.0.0"}, false},
 		{"a pyproject pin its uv.lock omits", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask==2.3.1\"]\n", "uv.lock": uvNoFlask}, nil, false},
 		{"a pyproject pin its poetry.lock contradicts", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask==2.3.1\"]\n", "poetry.lock": lock232}, []string{"2.3.2"}, false},
-		{"setup.py declarations", map[string]string{"poetry.lock": lock300, "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"flask==2.0.1\"])\n"}, []string{"3.0.0"}, false},
-		{"a wheel named for the package", map[string]string{"poetry.lock": lock300, "dist/flask-2.0.0-py3-none-any.whl": "PK"}, []string{"3.0.0"}, false},
+		{"setup.py declarations", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"flask==2.0.1\"])\n"}, []string{"3.0.0"}, false},
+		{"a wheel named for the package", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, "dist/flask-2.0.0-py3-none-any.whl": "PK"}, []string{"3.0.0"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1163,8 +1169,9 @@ func TestResolveVersions_PipfileAllOrderDeterministic(t *testing.T) {
 // for development still resolves as present.
 func TestResolveVersions_DevLockedPackagePresent(t *testing.T) {
 	tests := []struct {
-		name  string
-		files map[string]string
+		name    string
+		files   map[string]string
+		version string // "" when the lock pins pytest for no install that puts it in place
 	}{
 		{"uv dev-dependencies group", map[string]string{"uv.lock": `version = 1
 [[package]]
@@ -1179,15 +1186,17 @@ dev = [{ name = "pytest" }]
 name = "pytest"
 version = "8.0.0"
 source = { registry = "https://pypi.org/simple" }
-`}},
-		{"poetry dev category", map[string]string{"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ncategory = \"dev\"\noptional = false\n"}},
-		{"pdm dev group", map[string]string{"pdm.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ngroups = [\"dev\"]\n"}},
-		{"poetry optional extra", map[string]string{"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\noptional = true\n"}},
+`}, "8.0.0"},
+		{"poetry dev category", map[string]string{"pyproject.toml": poetryProject + "[tool.poetry.dev-dependencies]\npytest = \"8.0.0\"\n",
+			"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ncategory = \"dev\"\noptional = false\n"}, "8.0.0"},
+		{"pdm dev group", map[string]string{"pdm.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ngroups = [\"dev\"]\n"}, "8.0.0"},
+		{"poetry optional extra", map[string]string{"pyproject.toml": poetryProject,
+			"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\noptional = true\n"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := resolveVersion(t, writeTree(t, tt.files), "pytest")
-			if !r.Found || r.Match.Version != "8.0.0" {
+			if !r.Found || r.Match.Version != tt.version || r.Match.Resolved != (tt.version != "") {
 				t.Fatalf("dev-locked pytest not reported present: found=%v match=%+v", r.Found, r.Match)
 			}
 		})

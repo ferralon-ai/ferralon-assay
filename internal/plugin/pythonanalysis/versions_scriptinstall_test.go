@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -506,7 +507,8 @@ func TestResolveVersions_PoetryInstallGroups(t *testing.T) {
 		legacyProject   = mainOnlyProject + "[tool.poetry.dev-dependencies]\npytest = \"8.3.2\"\n"
 		categoryLock    = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ncategory = \"main\"\noptional = false\n\n" +
 			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ncategory = \"dev\"\noptional = false\n"
-		bareLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\n"
+		bareLock  = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\n"
+		docsGroup = "[tool.poetry.group.docs]\noptional = true\n[tool.poetry.group.docs.dependencies]\njinja2 = \"3.1.4\"\n"
 	)
 	all := []string{"jinja2", "pytest", "sphinx", "colorama"}
 	tests := []struct {
@@ -539,7 +541,15 @@ func TestResolveVersions_PoetryInstallGroups(t *testing.T) {
 		{"poetry 1.x category, bare install", map[string]string{"install.sh": "poetry install\n", "pyproject.toml": legacyProject, "poetry.lock": categoryLock}, []string{"jinja2", "pytest"}},
 		{"no membership keys under a group flag", map[string]string{"install.sh": "poetry install --only main\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, nil},
 		{"no membership keys, every group installed", map[string]string{"install.sh": "poetry install\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, []string{"jinja2", "pytest"}},
-		{"no install script leaves the lock as it is", nil, all},
+		{"no install: an optional group is left out", nil, []string{"jinja2", "pytest", "colorama"}},
+		{"no install: a package only an extra pulls in", map[string]string{
+			"poetry.lock": strings.Replace(lock, `groups = ["docs"]`, "groups = [\"main\"]\noptional = true", 1)}, []string{"jinja2", "pytest", "colorama"}},
+		{"no install: poetry 1.x category, an extra", map[string]string{"pyproject.toml": legacyProject,
+			"poetry.lock": categoryLock + "\n[[package]]\nname = \"sphinx\"\nversion = \"7.4.7\"\ncategory = \"main\"\noptional = true\n"}, []string{"jinja2", "pytest"}},
+		{"no install: poetry 1.x category dev beside an optional group", map[string]string{"pyproject.toml": legacyProject + docsGroup,
+			"poetry.lock": categoryLock}, []string{"jinja2"}},
+		{"no install: no membership keys beside an optional group", map[string]string{"pyproject.toml": legacyProject + docsGroup,
+			"poetry.lock": bareLock}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -560,6 +570,98 @@ func TestResolveVersions_PoetryInstallGroups(t *testing.T) {
 			}
 			if r := resolveVersion(t, dir, "PyJWT"); r.Found || !r.Exhaustive {
 				t.Errorf("PyJWT found %v exhaustive %v, want not found and exhaustive", r.Found, r.Exhaustive)
+			}
+		})
+	}
+}
+
+// A poetry.lock no recorded poetry install names reads as one a bare poetry install from its
+// own directory installs: the same lock gives the same result whether or not a script names it.
+func TestResolveVersions_PoetryUnboundLockUniform(t *testing.T) {
+	const (
+		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2==3.1.4\"]\n" +
+			"[tool.poetry.group.dev.dependencies]\npytest = \"8.3.2\"\n" +
+			"[tool.poetry.group.docs]\noptional = true\n[tool.poetry.group.docs.dependencies]\nsphinx = \"7.4.7\"\n"
+		legacy = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\njinja2 = \"3.1.4\"\n" +
+			"[tool.poetry.dev-dependencies]\npytest = \"8.3.2\"\n"
+		lock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ngroups = [\"main\"]\n\n" +
+			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ngroups = [\"dev\"]\n\n" +
+			"[[package]]\nname = \"sphinx\"\nversion = \"7.4.7\"\ngroups = [\"docs\"]\n\n" +
+			"[[package]]\nname = \"pyyaml\"\nversion = \"6.0.2\"\ngroups = [\"main\"]\noptional = true\n"
+		categoryLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ncategory = \"main\"\noptional = false\n\n" +
+			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ncategory = \"dev\"\noptional = false\n\n" +
+			"[[package]]\nname = \"pyyaml\"\nversion = \"6.0.2\"\ncategory = \"main\"\noptional = true\n"
+		bareLock   = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\n"
+		legacyDocs = legacy + "[tool.poetry.group.docs]\noptional = true\n[tool.poetry.group.docs.dependencies]\njinja2 = \"3.1.4\"\n"
+	)
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"poetry 2 groups, an optional group and an extra", map[string]string{"pyproject.toml": project, "poetry.lock": lock}},
+		{"poetry 1.x category with an extra", map[string]string{"pyproject.toml": legacy, "poetry.lock": categoryLock}},
+		{"poetry 1.x category beside an optional group", map[string]string{"pyproject.toml": legacyDocs, "poetry.lock": categoryLock}},
+		{"no membership keys", map[string]string{"pyproject.toml": legacy, "poetry.lock": bareLock}},
+		{"no membership keys beside an optional group", map[string]string{"pyproject.toml": legacyDocs, "poetry.lock": bareLock}},
+		{"a lock in a subdirectory", map[string]string{"svc/pyproject.toml": project, "svc/poetry.lock": lock}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unbound := writeTree(t, tt.files)
+			boundFiles := map[string]string{}
+			for k, v := range tt.files {
+				boundFiles[k] = v
+				if filepath.Base(k) == "poetry.lock" {
+					boundFiles[filepath.Join(filepath.Dir(k), "install.sh")] = "poetry install\n"
+				}
+			}
+			bound := writeTree(t, boundFiles)
+			for _, name := range []string{"jinja2", "pytest", "sphinx", "pyyaml", "PyJWT"} {
+				u, b := resolveVersion(t, unbound, name), resolveVersion(t, bound, name)
+				if !reflect.DeepEqual(u, b) {
+					t.Errorf("%s unbound = %+v\nbare-bound = %+v", name, u, b)
+				}
+				if name == "PyJWT" && (u.Found || !u.Exhaustive) {
+					t.Errorf("PyJWT found %v exhaustive %v, want not found and exhaustive", u.Found, u.Exhaustive)
+				}
+			}
+		})
+	}
+}
+
+// Group scoping of an unbound lock is poetry's alone: a uv.lock or pdm.lock pin still resolves,
+// and a poetry.lock with no pyproject.toml beside it, whose groups cannot be read, resolves
+// nothing.
+func TestResolveVersions_UnboundLockScope(t *testing.T) {
+	const (
+		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n" +
+			"[dependency-groups]\ndev = [\"pytest>=8\"]\n"
+		uvLock = "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n\n" +
+			"[package.dev-dependencies]\ndev = [{ name = \"pytest\" }]\n\n" +
+			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n\n" +
+			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+		pdmLock = "[metadata]\ngroups = [\"default\", \"dev\"]\n\n" +
+			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ngroups = [\"default\"]\n\n" +
+			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ngroups = [\"dev\"]\n"
+		poetryLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ngroups = [\"main\"]\n\n" +
+			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ngroups = [\"dev\"]\n"
+	)
+	tests := []struct {
+		name     string
+		files    map[string]string
+		resolved bool
+	}{
+		{"uv.lock", map[string]string{"pyproject.toml": project, "uv.lock": uvLock}, true},
+		{"pdm.lock", map[string]string{"pyproject.toml": project, "pdm.lock": pdmLock}, true},
+		{"poetry.lock with no pyproject.toml", map[string]string{"poetry.lock": poetryLock}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, tt.files)
+			for _, name := range []string{"jinja2", "pytest"} {
+				if r := resolveVersion(t, dir, name); !r.Found || r.Match.Resolved != tt.resolved {
+					t.Errorf("%s = %+v found %v, want found, resolved %v", name, r.Match, r.Found, tt.resolved)
+				}
 			}
 		})
 	}

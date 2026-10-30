@@ -32,7 +32,8 @@ import (
 // unreadable entry is an UNRESOLVED marker (Resolved=false) the predicate fails OPEN on,
 // never fabricating a not-affected. A declared range is carried as Constraint (evidence only).
 // A poetry.lock pin resolves only for a package every poetry install a script surface runs
-// on that lock puts in place (poetryInstalls.scope).
+// on that lock puts in place, or, when none runs on it, a bare poetry install would
+// (poetryInstalls.scope).
 //
 // Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go)
 // and no script surface may install a package outside them (versionSurfaces), so a coordinate

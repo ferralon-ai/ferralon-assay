@@ -134,6 +134,10 @@ type toolchainInputs struct {
 	buildResolved      string
 	toolchainDirective string
 	goDirective        string
+	// bazelWorkspace is set when a Bazel workspace sits at or above the module root
+	// (bazelWorkspaceAbove). rules_go then compiles with the SDK the workspace declares, which
+	// go.mod's directives do not bound.
+	bazelWorkspace bool
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
@@ -193,7 +197,8 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	}
 	if in.trustCIObserved {
 		exactSources = append(exactSources, struct{ raw, source string }{in.ciObserved, ToolchainSourceCIObserved})
-		if !directivesBindToolchain(in) {
+		// Under Bazel the host go command's resolution says nothing about the SDK rules_go compiles with.
+		if !directivesBindToolchain(in) && !in.bazelWorkspace {
 			exactSources = append(exactSources, struct{ raw, source string }{in.buildResolved, ToolchainSourceBuildResolved})
 		}
 	}
@@ -252,15 +257,18 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 // directive that does not bind (directivesBindToolchain) is no floor and is left out. ok is false
 // when no directive resolves, in which case the returned fact is the explicit unresolved one and no
 // exact claim can be refuted.
+//
+// Inside a Bazel workspace (bazelWorkspace) neither directive is a floor.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	best := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	var bestParsed goToolchainVersion
 	var haveFloor bool
-	floors := []struct{ raw, source string }{
-		{in.toolchainDirective, ToolchainSourceToolchainDirective},
-	}
-	if directivesBindToolchain(in) {
-		floors = append(floors, struct{ raw, source string }{in.goDirective, ToolchainSourceGoDirective})
+	var floors []struct{ raw, source string }
+	if !in.bazelWorkspace {
+		floors = append(floors, struct{ raw, source string }{in.toolchainDirective, ToolchainSourceToolchainDirective})
+		if directivesBindToolchain(in) {
+			floors = append(floors, struct{ raw, source string }{in.goDirective, ToolchainSourceGoDirective})
+		}
 	}
 	for _, floor := range floors {
 		parsed, ok := parseGoToolchainVersion(floor.raw)

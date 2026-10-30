@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -436,8 +437,8 @@ func TestCodebaseInventory_GoFloorReachesRequest(t *testing.T) {
 	}
 }
 
-// TestBazelWorkspaceAbove: a marker in the module root or any directory up to the checkout root
-// counts; one above the checkout root does not.
+// TestBazelWorkspaceAbove: a marker file in the module root or any directory above it counts, the
+// checkout root included and passed; a sibling's or a directory of that name does not.
 func TestBazelWorkspaceAbove(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -449,7 +450,8 @@ func TestBazelWorkspaceAbove(t *testing.T) {
 		{"MODULE.bazel in the module root", "checkout/svc", "MODULE.bazel", true},
 		{"WORKSPACE at the checkout root", "checkout", "WORKSPACE", true},
 		{"WORKSPACE.bazel at the checkout root", "checkout", "WORKSPACE.bazel", true},
-		{"marker above the checkout root", ".", "MODULE.bazel", false},
+		{"marker above the checkout root", ".", "MODULE.bazel", true},
+		{"directory named WORKSPACE", "checkout", "WORKSPACE/", false},
 		{"marker in a sibling", "checkout/other", "WORKSPACE", false},
 	}
 	for _, tc := range cases {
@@ -462,12 +464,18 @@ func TestBazelWorkspaceAbove(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if tc.file != "" {
-				if err := os.WriteFile(filepath.Join(root, tc.marker, tc.file), nil, 0o644); err != nil {
+			switch path := filepath.Join(root, tc.marker, tc.file); {
+			case tc.file == "":
+			case strings.HasSuffix(tc.file, "/"):
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.WriteFile(path, nil, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if got := bazelWorkspaceAbove(moduleRoot, checkoutRoot); got != tc.want {
+			if got := bazelWorkspaceAbove(moduleRoot); got != tc.want {
 				t.Errorf("bazelWorkspaceAbove = %v, want %v", got, tc.want)
 			}
 		})

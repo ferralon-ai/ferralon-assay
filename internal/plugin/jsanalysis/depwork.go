@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"context"
+	"errors"
 	"path"
 	"time"
 )
@@ -9,16 +10,19 @@ import (
 // Per-file parse limits for dependency code. The parser's forward scans (a call's argument
 // list, an arrow body, a bracket's close, a template's substitutions) each run to their
 // terminator, so input that never terminates them costs quadratic time. A dependency file the
-// limits refuse is not parsed and surfaces as skipped: the run-wide unsupported_phase1 limit.
+// estimate refuses is not parsed and surfaces as skipped: the run-wide unsupported_phase1
+// limit. The refusal depends only on the file, so the same input always gets the same answer.
 var (
 	// depWorkPerRune and depWorkFloor bound depScanWork: a file whose estimate exceeds
 	// depWorkPerRune runes visited per rune of source, plus depWorkFloor, is refused before it
 	// is parsed.
 	depWorkPerRune int64 = 64
 	depWorkFloor   int64 = 1 << 24
-	// depFileParseTimeout bounds one file's parse for shapes the estimate does not model (an
-	// assignment chain's global-alias walk is one).
-	depFileParseTimeout = 30 * time.Second
+	// depFileParseBackstop bounds one file's parse in wall time, for a shape the estimate does
+	// not model. It sits far above any real parse measured, so whether it fires depends on host
+	// load: the package is left unread and the run carries tool_failure, scoped and run-wide,
+	// as when the read budget runs out, never a code that reads as a property of the input.
+	depFileParseBackstop = 2 * time.Minute
 	// depRunSourceCap bounds the source bytes one run parses across every dependency package.
 	// A package read past it is left unparsed with a scoped tool_failure.
 	depRunSourceCap int64 = 256 << 20
@@ -33,25 +37,28 @@ func parseDepFile(module string, f depFile) parseResult {
 	return parseFile(module, string(f.data))
 }
 
-// parseDepSource parses one dependency file under the per-file limits. ok is false when ctx
-// ended first.
-func parseDepSource(ctx context.Context, module string, f depFile) (pr parseResult, ok bool) {
+// errParseBackstop reports a dependency file parse cut off at depFileParseBackstop.
+var errParseBackstop = errors.New("dependency file parse ran past the backstop")
+
+// parseDepSource parses one dependency file under the per-file limits. It returns
+// errParseBackstop when the backstop cut the parse off, and ctx's error when ctx ended first.
+func parseDepSource(ctx context.Context, module string, f depFile) (parseResult, error) {
 	if !depWorkWithin(string(f.data)) {
-		return parseResult{module: module, skipped: true}, true
+		return parseResult{module: module, skipped: true}, nil
 	}
 	done := make(chan parseResult, 1)
 	go func() { done <- depParser(module, f) }()
-	t := time.NewTimer(depFileParseTimeout)
+	t := time.NewTimer(depFileParseBackstop)
 	defer t.Stop()
 	select {
 	case pr := <-done:
-		return pr, true
+		return pr, nil
 	case <-t.C:
 		// The parse cannot be interrupted; it runs on until it returns or the plugin process
 		// exits at the end of the op, and its result is dropped.
-		return parseResult{module: module, skipped: true}, true
+		return parseResult{}, errParseBackstop
 	case <-ctx.Done():
-		return parseResult{}, false
+		return parseResult{}, ctx.Err()
 	}
 }
 

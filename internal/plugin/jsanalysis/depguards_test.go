@@ -127,22 +127,30 @@ func blockingParser(t *testing.T, limit time.Duration) {
 	})
 }
 
-// TestDepGuards_FileParseTimeout (F1): a parse the estimate lets through but that never finishes
-// is abandoned at depFileParseTimeout and surfaces as unsupported_phase1.
-func TestDepGuards_FileParseTimeout(t *testing.T) {
+// TestDepGuards_FileParseBackstop (F1): a parse the estimate lets through but that never finishes
+// is abandoned at depFileParseBackstop. Whether the backstop fires depends on host load, so the
+// package is left unread with tool_failure, scoped and run-wide, and never unsupported_phase1,
+// which only the estimate's refusal records.
+func TestDepGuards_FileParseBackstop(t *testing.T) {
 	blockingParser(t, 20*time.Second)
-	prev := depFileParseTimeout
-	depFileParseTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { depFileParseTimeout = prev })
+	prev := depFileParseBackstop
+	depFileParseBackstop = 50 * time.Millisecond
+	t.Cleanup(func() { depFileParseBackstop = prev })
 
-	f := newDepFixture(t, map[string]string{"index.js": guardIdle}, guardPkg(nil))
+	f := newDepFixture(t, map[string]string{"index.js": "require('dep').run();\n"}, guardPkg(nil))
 	start := time.Now()
 	cg := withDeps(t, f.dir, f.memStore())
 	if d := time.Since(start); d > 5*time.Second {
 		t.Errorf("a stuck parse held the run for %v", d)
 	}
-	if !hasReason(cg.Partiality, plugin.PartialReasonUnsupported) {
-		t.Errorf("an abandoned parse must surface as %s; got %+v", plugin.PartialReasonUnsupported, cg.Partiality)
+	if readsDep(cg) {
+		t.Errorf("a package whose parse was abandoned must be left unread; edges %+v", cg.Edges)
+	}
+	if !hasScoped(cg.Partiality, plugin.PartialReasonToolFailure, guardPURL) || !hasReason(cg.Partiality, plugin.PartialReasonToolFailure) {
+		t.Errorf("an abandoned parse must carry tool_failure, scoped and run-wide; got %+v", cg.Partiality)
+	}
+	if hasReason(cg.Partiality, plugin.PartialReasonUnsupported) {
+		t.Errorf("an abandoned parse must not record %s; got %+v", plugin.PartialReasonUnsupported, cg.Partiality)
 	}
 }
 
@@ -150,9 +158,9 @@ func TestDepGuards_FileParseTimeout(t *testing.T) {
 // run returns at the budget with tool_failure instead of waiting for the parse.
 func TestDepGuards_BudgetIsReal(t *testing.T) {
 	blockingParser(t, 20*time.Second)
-	prev := depFileParseTimeout
-	depFileParseTimeout = time.Hour
-	t.Cleanup(func() { depFileParseTimeout = prev })
+	prev := depFileParseBackstop
+	depFileParseBackstop = time.Hour
+	t.Cleanup(func() { depFileParseBackstop = prev })
 
 	f := newDepFixture(t, map[string]string{"index.js": guardIdle}, guardPkg(nil))
 	start := time.Now()

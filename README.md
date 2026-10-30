@@ -54,7 +54,7 @@ jobs:
           target: .
           # The scan reads the public advisory corpus by default: the latest
           # signed release of ferralon-ai/vulnerability-corpus, policy `full`,
-          # verified before use. On an offline or air-gapped runner, set
+          # verified before use. To skip the corpus download, set
           # `builtin-test-advisories-only: true` instead; that run evaluates a
           # few test advisories built into the scanner and is not a
           # vulnerability scan.
@@ -242,8 +242,10 @@ The scanner itself fetches no corpus: the default lives in the Action, and the C
 corpus it is handed. Without one, the CLI evaluates a small set of test advisories built into the
 scanner — Go carries 10, and each of the other five languages carries 3
 ([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)) — which show it working end to end.
-For an offline or air-gapped runner, the Action's `builtin-test-advisories-only: true` does the same
-and fetches nothing. A run on the built-in test advisories alone is not a vulnerability scan, and its
+The Action's `builtin-test-advisories-only: true` does the same: it drops the corpus release
+download, cosign and the Sigstore TUF CDN. It does not make the run offline; the scanner download and
+the scan's own network reads remain ([Network egress](#network-egress)). A run on the built-in test
+advisories alone is not a vulnerability scan, and its
 PR comment, job summary and `report.html` say so at the top.
 
 Let the corpus track its default `main` (`advisory-corpus-ref` defaults to `main`). New advisories land
@@ -385,10 +387,14 @@ host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a def
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
-`api.osv.dev`. The Action's default advisory corpus read, the bundle route, downloads the corpus
-release from GitHub, and also downloads cosign from the `sigstore/cosign`
-GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. A JS scan also fetches each lock-pinned package tarball by name and version from the
+`api.osv.dev`. Every Action run downloads the scanner from this repository's GitHub release. By
+default, with no corpus input set, the Action also reads the advisory corpus: it downloads the corpus
+release's `bundles.json`, its signature, the policy bundle and `signals.json.gz` from `github.com`
+(served from `release-assets.githubusercontent.com`), reads the policy manifest from
+`raw.githubusercontent.com`, downloads cosign from the `sigstore/cosign` GitHub release, and reaches
+the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus signature. A corpus read
+through the git fetch clones from `github.com` instead. `builtin-test-advisories-only: true` removes
+the corpus, cosign and Sigstore requests and nothing else. A JS scan also fetches each lock-pinned package tarball by name and version from the
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token

@@ -77,7 +77,7 @@ emit() {
 
 if [[ "$builtin_only" == true ]]; then
   if [[ -n "$dir$repo$policy$identity$issuer" ]]; then
-    die "builtin-test-advisories-only is 'true', but an advisory-corpus input is also set. Clear the corpus inputs to run offline, or set builtin-test-advisories-only to 'false' to read the corpus."
+    die "builtin-test-advisories-only is 'true', but an advisory-corpus input is also set. Clear the corpus inputs to run on the built-in test advisories only, or set builtin-test-advisories-only to 'false' to read the corpus."
   fi
   echo "==> builtin-test-advisories-only: no advisory corpus is fetched; this run evaluates the scanner's built-in test advisories only and is not a vulnerability scan" >&2
   emit "" "" "" "" 0 0

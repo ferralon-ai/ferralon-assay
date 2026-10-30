@@ -10,7 +10,9 @@
 #   - The repository already checked out (run actions/checkout before this action).
 #   - Network access to GitHub releases, to fetch the pinned scanner artifact and, by default, the
 #     public advisory corpus release; and to the Sigstore TUF CDN (tuf-repo-cdn.sigstore.dev), to
-#     verify that release's signature. `builtin-test-advisories-only: true` needs neither.
+#     verify that release's signature. `builtin-test-advisories-only: true` drops the corpus,
+#     cosign and Sigstore requests; the scanner download remains, and so do the scan's own network
+#     reads (README "Network egress": proxy.golang.org and vuln.go.dev on every default run).
 #   - A write token only if you want the SARIF, PR-comment or Issue surfaces; the job summary is
 #     written regardless.
 #
@@ -70,8 +72,9 @@
 # `advisory-corpus-repo` below. Without a policy, a corpus supplies advisory FACTS; it does not
 # change which advisories the scan evaluates.
 #
-# OFFLINE. `builtin-test-advisories-only: true` fetches no corpus and runs on the small set of test
-# advisories built into the scanner, for an offline or air-gapped runner. That run is not a
+# BUILT-IN ONLY. `builtin-test-advisories-only: true` fetches no corpus and runs on the small set of
+# test advisories built into the scanner. It removes the corpus release download, cosign and the
+# Sigstore TUF CDN; it does not make the run offline (see WHAT IT NEEDS). That run is not a
 # vulnerability scan, and the PR comment and job summary say so.
 #
 # With a policy (the default `full`, or `advisory-corpus-policy`), the policy defines the scan's work
@@ -315,7 +318,9 @@ inputs:
   builtin-test-advisories-only:
     description: >-
       Set to 'true' to fetch no advisory corpus and run on the small set of test advisories built
-      into the scanner, for an offline or air-gapped runner. That run is not a vulnerability scan,
+      into the scanner. It removes the corpus release download, cosign and the Sigstore TUF CDN;
+      the scanner download and the scan's own network reads (proxy.golang.org, vuln.go.dev; see
+      the README's Network egress section) remain. That run is not a vulnerability scan,
       and the PR comment, job summary and report say so. Setting it together with any corpus input
       below fails the run. Default 'false': the run reads the public ferralon-ai/vulnerability-corpus.
     required: false

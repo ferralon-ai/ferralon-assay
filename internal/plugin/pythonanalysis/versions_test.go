@@ -723,6 +723,7 @@ python_req = "python_version >= '3.9'"
 func TestResolveVersions_Exhaustive(t *testing.T) {
 	const (
 		uvLock = `version = 1
+requires-python = ">=3.8"
 [[package]]
 name = "app"
 version = "0.1.0"

@@ -477,6 +477,9 @@ type pyLock struct {
 	// the edges of every registry release it locks: name → version → the union over entries.
 	releases map[string]map[string]*pyRelease
 	closable bool
+	// requiresPython is a uv.lock's requires-python: uv drops every edge whose marker cannot
+	// hold under it.
+	requiresPython string
 }
 
 // pyRelease is what a lock records a release requires: its base edges and each extra's.
@@ -530,6 +533,7 @@ func readPyLock(path string) (*pyLock, bool) {
 			SupportedMarkers  []string       `toml:"supported-markers"`
 			RequiredMarkers   []string       `toml:"required-markers"`
 			ResolutionMarkers []string       `toml:"resolution-markers"`
+			RequiresPython    string         `toml:"requires-python"`
 			Manifest          map[string]any `toml:"manifest"`
 			Package           []struct {
 				Name              string   `toml:"name"`
@@ -550,6 +554,7 @@ func readPyLock(path string) (*pyLock, bool) {
 		}
 		// A fork (resolution-markers) drops each entry's edges that cannot hold inside it.
 		l.closable = len(lock.SupportedMarkers) == 0 && len(lock.RequiredMarkers) == 0 && len(lock.ResolutionMarkers) == 0
+		l.requiresPython = lock.RequiresPython
 		for k := range lock.Manifest {
 			l.closable = l.closable && uvManifestKeys[k]
 		}
@@ -958,8 +963,8 @@ func (r *reqInstalls) narrowed(f string) bool {
 // directive names installs with its project, whose own dependencies pip resolves past the
 // file. This does not depend on hash-checking mode, so hashesDisabled does not touch it.
 //
-// uv drops an edge whose marker cannot hold under the lock's requires-python. That is read as
-// the build's interpreter, as declaredPython reads it for the rest of the lane.
+// uv drops an edge whose marker cannot hold under the lock's requires-python, so that range
+// must admit every interpreter the lane reads the build as running (buildInterpreter).
 func (r *reqInstalls) closed(f string, locks []*pyLock) bool {
 	f = filepath.Clean(f)
 	if r.directed[f] || len(locks) == 0 || r.pipConfigNamesIndex() {
@@ -1018,8 +1023,9 @@ func (r *reqInstalls) closed(f string, locks []*pyLock) bool {
 	if !walk(f, true) {
 		return false
 	}
+	build := buildInterpreter(r.root)
 	for _, l := range locks {
-		if !l.closable {
+		if !l.closable || !admitsAll(l.requiresPython, build) {
 			return false
 		}
 		done := map[[3]string]bool{}
@@ -1078,4 +1084,19 @@ func (r *reqInstalls) pipConfigNamesIndex() bool {
 		r.indexCfg = &v
 	}
 	return *r.indexCfg
+}
+
+// admitsAll reports whether the requires-python spec admits every release in build. An
+// absent or unreadable spec admits nothing.
+func admitsAll(spec string, build interpreterRange) bool {
+	r, ok := parseInterpreterRange(spec)
+	if !ok || build.newer && !r.newer {
+		return false
+	}
+	for _, rel := range build.releases {
+		if !slices.Contains(r.releases, rel) {
+			return false
+		}
+	}
+	return true
 }

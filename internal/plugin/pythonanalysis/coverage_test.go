@@ -30,6 +30,7 @@ source = { registry = "https://pypi.org/simple" }
 `
 	// covUVLockNoExtra locks requests without recording any extra.
 	covUVLockNoExtra = `version = 1
+requires-python = ">=3.8"
 [[package]]
 name = "app"
 version = "0.1.0"

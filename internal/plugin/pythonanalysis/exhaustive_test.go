@@ -11,6 +11,7 @@ import (
 
 const (
 	exUVLock = `version = 1
+requires-python = ">=3.8"
 [[package]]
 name = "app"
 version = "0.1.0"
@@ -327,7 +328,7 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
 	const (
 		reg  = "source = { registry = \"https://pypi.org/simple\" }\n"
-		lock = "version = 1\n" +
+		lock = "version = 1\nrequires-python = \">=3.8\"\n" +
 			"[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\ndependencies = [{ name = \"flask\" }]\n\n" +
 			"[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n" + reg + "dependencies = [{ name = \"jinja2\" }, { name = \"click\" }]\n\n[package.optional-dependencies]\nasync = [{ name = \"asgiref\" }]\n\n" +
 			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n" + reg + "dependencies = [{ name = \"markupsafe\" }]\n\n" +
@@ -432,6 +433,14 @@ func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
 		{"uv.lock with supported-markers", tree("supported-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
 		{"uv.lock with resolution-markers", tree("resolution-markers = [\"python_full_version >= '3.12'\", \"python_full_version < '3.12'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
 		{"uv.lock with a package's resolution-markers", tree(edit("name = \"jinja2\"\nversion = \"3.1.4\"\n", "name = \"jinja2\"\nversion = \"3.1.4\"\nresolution-markers = [\"python_full_version >= '3.12'\"]\n"), map[string]string{"requirements.txt": pins}), false},
+		// requires-python: uv drops edges it excludes, so it must admit the build's interpreter.
+		{"uv.lock requires-python wider than the project's", tree(lock, map[string]string{"pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.10\"\n", 1), "requirements.txt": pins}), true},
+		{"uv.lock requires-python narrower than the project's", tree(strings.Replace(lock, ">=3.8", ">=3.10", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.8\"\n", 1)}), false},
+		{"uv.lock requires-python with an upper bound the project's lacks", tree(strings.Replace(lock, ">=3.8", ">=3.8,<3.15", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.8\"\n", 1)}), false},
+		{"uv.lock requires-python with an upper bound, read as the build's", tree(strings.Replace(lock, ">=3.8", ">=3.8,<3.13", 1), map[string]string{"requirements.txt": pins}), true},
+		{"uv.lock without requires-python", tree(strings.Replace(lock, "requires-python = \">=3.8\"\n", "", 1), map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock in a subdirectory, the build declaring no interpreter", map[string]string{"svc/pyproject.toml": exPyproject, "svc/uv.lock": strings.Replace(lock, ">=3.8", ">=3.10", 1), "svc/requirements.txt": pins}, false},
+		{"uv.lock in a subdirectory admitting the assumed interpreter", map[string]string{"svc/pyproject.toml": exPyproject, "svc/uv.lock": lock, "svc/requirements.txt": pins}, true},
 		{"uv.lock with required-markers", tree("required-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
 		{"uv.lock [manifest] overrides", tree(lock+"\n[manifest]\noverrides = [{ name = \"markupsafe\", specifier = \"==2.1.5\" }]\n", map[string]string{"requirements.txt": pins}), false},
 		{"uv.lock [manifest] unknown key", tree(lock+"\n[manifest]\nsomething-new = []\n", map[string]string{"requirements.txt": pins}), false},

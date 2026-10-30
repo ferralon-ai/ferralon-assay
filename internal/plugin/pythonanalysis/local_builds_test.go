@@ -348,6 +348,22 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 			"[tool.pdm.resolution.overrides]\npdm-backend = \"file:///${PROJECT_ROOT}/be\"\n", "pdm.lock": pdmLock, "install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
 		{"uv, the config directory moved by the script", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
 			"ci/settings": "native-tls = true\n", "install.sh": "#!/bin/sh\nexport XDG_CONFIG_HOME=/opt/conf\nuv sync --locked\n"}, nil, false},
+		{"uv, an index that is not a list", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv]\nindex = \"https://idx.example/simple\"\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, an inline index entry that is not a table", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv]\nindex = [\"https://idx.example/simple\"]\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, an index with no url", map[string]string{"pyproject.toml": project + uvBuild +
+			"[[tool.uv.index]]\nname = \"x\"\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, overrides that are not a list", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv]\noverride-dependencies = \"uv_build @ file:///app/hack\"\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, a lock source of two kinds", map[string]string{"pyproject.toml": project, "install.sh": uvSync,
+			"uv.lock":             uvLock("[[package]]\nname = \"evil\"\nversion = \"0.1.0\"\nsource = { registry = \"https://pypi.org/simple\", editable = \"evil\" }\n\n"),
+			"evil/pyproject.toml": member, "evil/setup.py": setupPy}, nil, false},
+		{"uv, member with flit_core and a dynamic description", map[string]string{"pyproject.toml": project, "uv.lock": lib, "install.sh": uvSync,
+			"lib/pyproject.toml": "[project]\nname = \"lib\"\nversion = \"1\"\ndynamic = [\"description\"]\n" +
+				"[build-system]\nrequires = [\"flit_core\"]\nbuild-backend = \"flit_core.buildapi\"\n"}, nil, false},
+		{"uv, no lock beside the manifest", map[string]string{"app/pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
+			"install.sh": "#!/bin/sh\ncd app\nuv sync --locked\n"}, nil, false},
 
 		{"uv, build requirements from the index beside unrelated sources", map[string]string{"pyproject.toml": project + helper +
 			"[tool.uv.sources]\nother = { path = \"other\" }\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, true},

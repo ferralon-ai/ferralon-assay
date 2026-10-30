@@ -591,7 +591,7 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 		}
 	}
 	for name := range stringLoaders {
-		if mod, leaf, _ := cutLast(name, "."); stars[mod] {
+		if mod, leaf, _ := cutLast(name, "."); stars[mod] && !definesName(r, leaf) {
 			targets[leaf] = append(targets[leaf], name)
 		}
 	}
@@ -626,7 +626,9 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 		}
 		open := skipAllSpace(r, end)
 		if open >= n || r[open] != '(' {
-			opaque = true
+			// A loader passed or bound as a value may be called anywhere. A Config class
+			// named as a type (an annotation, isinstance) is no call; only a subclass is.
+			opaque = opaque || segs[len(segs)-1] != "Config" || inClassBases(r, i)
 			i = end
 			continue
 		}
@@ -745,10 +747,14 @@ func classifyLoaderArg(r []rune, s, e int, lits map[int]strLiteral) loaderArgCla
 	if s >= e {
 		return loaderArgClass{other: true}
 	}
-	if ifAt, elseAt, ok := conditionalSplit(r, s, e); ok {
-		a := classifyLoaderArg(r, s, ifAt, lits)
-		b := classifyLoaderArg(r, elseAt+len("else"), e, lits)
-		return loaderArgClass{roots: append(a.roots, b.roots...), computed: a.computed || b.computed, other: a.other || b.other}
+	if ifAt, elseAt, ok := conditionalSplit(r, s, e, lits); ok {
+		return classifyLoaderArg(r, s, ifAt, lits).or(classifyLoaderArg(r, elseAt+len("else"), e, lits))
+	}
+	// Either operand of a boolean operator may be the value (path or "pkg.asgi:app").
+	for _, op := range []string{"or", "and"} {
+		if at := topLevelKeyword(r, s, e, op, lits); at >= 0 {
+			return classifyLoaderArg(r, s, at, lits).or(classifyLoaderArg(r, at+len(op), e, lits))
+		}
 	}
 	if body, ok := wholeLiteral(r, s, e, lits); ok {
 		return loaderArgClass{roots: loaderNameRoots(body)}
@@ -757,6 +763,11 @@ func classifyLoaderArg(r []rune, s, e int, lits map[int]strLiteral) loaderArgCla
 		return loaderArgClass{computed: true}
 	}
 	return loaderArgClass{other: true}
+}
+
+// or combines the classes of two expressions the argument may evaluate to either of.
+func (c loaderArgClass) or(d loaderArgClass) loaderArgClass {
+	return loaderArgClass{roots: append(c.roots, d.roots...), computed: c.computed || d.computed, other: c.other || d.other}
 }
 
 // closingBracket returns the index of the bracket closing the one at r[i], or -1.
@@ -778,8 +789,18 @@ func closingBracket(r []rune, i int) int {
 
 // conditionalSplit finds the top-level if and else keywords of a conditional expression
 // in r[s:e].
-func conditionalSplit(r []rune, s, e int) (ifAt, elseAt int, ok bool) {
-	ifAt = -1
+func conditionalSplit(r []rune, s, e int, lits map[int]strLiteral) (ifAt, elseAt int, ok bool) {
+	ifAt = topLevelKeyword(r, s, e, "if", lits)
+	if ifAt < 0 {
+		return 0, 0, false
+	}
+	elseAt = topLevelKeyword(r, ifAt+len("if"), e, "else", lits)
+	return ifAt, elseAt, elseAt >= 0
+}
+
+// topLevelKeyword returns the index of the first keyword kw outside brackets in r[s:e], or
+// -1. A blanked literal right after it ('_' in else'pkg') does not extend the word.
+func topLevelKeyword(r []rune, s, e int, kw string, lits map[int]strLiteral) int {
 	depth := 0
 	for j := s; j < e; j++ {
 		switch c := r[j]; {
@@ -787,18 +808,59 @@ func conditionalSplit(r []rune, s, e int) (ifAt, elseAt int, ok bool) {
 			depth++
 		case c == ')' || c == ']' || c == '}':
 			depth--
-		case depth == 0 && isIdentStartRune(c) && (j == s || !isIdentPart(r[j-1])):
-			w, end := readWordRunes(r, j)
-			switch {
-			case w == "if" && ifAt < 0:
-				ifAt = j
-			case w == "else" && ifAt >= 0:
-				return ifAt, j, true
+		case isIdentStartRune(c) && (j == s || !isIdentPart(r[j-1])):
+			end := j + 1
+			for end < e && isIdentPart(r[end]) {
+				if _, lit := lits[end]; lit {
+					break
+				}
+				end++
+			}
+			if depth == 0 && string(r[j:end]) == kw {
+				return j
 			}
 			j = end - 1
 		}
 	}
-	return 0, 0, false
+	return -1
+}
+
+// inClassBases reports whether r[i] sits in the bases of a class statement on its line
+// (class Server(uvicorn.Config):).
+func inClassBases(r []rune, i int) bool {
+	k := i
+	for k > 0 && r[k-1] != '\n' {
+		k--
+	}
+	k = skipAllSpace(r, k)
+	w, end := readWordRunes(r, k)
+	return w == "class" && end < i && slices.Contains(r[end:i], '(')
+}
+
+// definesName reports whether the file defines a function or class named name, which
+// shadows a star import's binding of it.
+func definesName(r []rune, name string) bool {
+	for i := 0; i+len(name) <= len(r); i++ {
+		if (i == 0 || !isIdentPart(r[i-1])) && isIdentStartRune(r[i]) {
+			if w, _ := readWordRunes(r, i); w == name && precededByDef(r, i) || w == name && precededByClass(r, i) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// precededByClass reports whether the identifier at r[i] is the name in a class statement.
+func precededByClass(r []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && unicode.IsSpace(r[j]) {
+		j--
+	}
+	end := j + 1
+	for j >= 0 && isIdentPart(r[j]) {
+		j--
+	}
+	return string(r[j+1:end]) == "class"
 }
 
 // wholeLiteral returns the value of r[s:e] when it is one plain string literal

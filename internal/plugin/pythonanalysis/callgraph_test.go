@@ -841,6 +841,13 @@ func TestCallGraph_StringLoaders(t *testing.T) {
 		{"run on an unrelated module", "import server\nserver.run('acme.asgi:app')\n", nil, false},
 		{"attribute named like a loader", "import werkzeug\nobj.werkzeug.import_string('acme.views')\n", nil, false},
 		{"bare config.from_object name", "from acme import config\nconfig.from_object('acme.settings')\n", nil, false},
+		{"uvicorn Config as a type", "from typing import Optional\nimport uvicorn\nfrom uvicorn import Config\n\ndef build(cfg: uvicorn.Config, alt: Optional[Config]) -> Config:\n    assert isinstance(cfg, uvicorn.config.Config)\n    return cfg\n", nil, false},
+		{"uvicorn Config subclassed", "import uvicorn\n\nclass Settings(uvicorn.Config):\n    pass\n", nil, true},
+		{"uvicorn.run passed as a value", "import uvicorn\nserve = uvicorn.run\n", nil, true},
+		{"environment or literal", "import os\nimport uvicorn\n\ndef serve(path):\n    uvicorn.run(path or 'acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"literal and computed", "from werkzeug.utils import import_string\n\ndef view(name, on):\n    return import_string(on and 'acme.views' or name)\n", []string{"acme", "acme.views"}, true},
+		{"else against a literal", "from werkzeug.utils import import_string\n\ndef view(a):\n    return import_string('acme.a' if a else'acme.b')\n", []string{"acme", "acme.a", "acme.b"}, false},
+		{"star import shadowed by a def", "from uvicorn import *\n\ndef run(target):\n    return target\n\nhandlers = [run]\n", nil, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

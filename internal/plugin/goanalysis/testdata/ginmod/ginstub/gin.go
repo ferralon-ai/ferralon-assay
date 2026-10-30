@@ -43,10 +43,13 @@ func (c *Context) PostFormArray(key string) []string            { return nil }
 func (c *Context) GetHeader(key string) string                  { return "" }
 func (c *Context) Cookie(name string) (string, error)           { return "", nil }
 func (c *Context) GetRawData() ([]byte, error)                  { return nil, nil }
-func (c *Context) FullPath() string                             { return "" }
 
 // HandlerName returns the handler's name: no request data.
 func (c *Context) HandlerName() string { return "" }
+
+// FullPath returns the matched route's registered template ("/user/:id"): no request
+// data.
+func (c *Context) FullPath() string { return "" }
 
 // Binding stands in for gin's binding.Binding.
 type Binding interface{ Name() string }

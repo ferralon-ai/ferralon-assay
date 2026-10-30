@@ -64,7 +64,7 @@ var ginForms = []struct {
 // its result (or, for a binder, its bound target) reaches from accessorsForm.
 var ginAccessors = []string{
 	"DefaultQuery", "GetQuery", "QueryArray", "QueryMap", "GetPostForm", "PostFormArray",
-	"GetHeader", "Cookie", "GetRawData", "FullPath",
+	"GetHeader", "Cookie", "GetRawData",
 	"Bind", "BindJSON", "BindQuery", "BindUri", "MustBindWith",
 	"ShouldBind", "ShouldBindJSON", "ShouldBindQuery", "ShouldBindUri", "ShouldBindHeader",
 	"ShouldBindWith", "ShouldBindBodyWith",
@@ -152,16 +152,24 @@ func TestGin_RouteIngressHeadsTaintTrace(t *testing.T) {
 // TestGin_ContextAccessorsCarryTaint proves every modeled *gin.Context accessor taints
 // its result, and every Bind / ShouldBind* binder the target it decodes into, when
 // called on the handler's tainted context: each reaches its own sink from
-// accessorsForm. HandlerName, which reads no request data, does not.
+// accessorsForm. HandlerName and FullPath, which read no request data (FullPath
+// returns the registered route template), do not.
 func TestGin_ContextAccessorsCarryTaint(t *testing.T) {
 	var sinks []string
 	for _, a := range ginAccessors {
 		sinks = append(sinks, ginFixtureSCIP+"sink"+a+"().")
 	}
-	neg := ginFixtureSCIP + "sinkNotRequestData()."
+	negs := map[string]string{
+		ginFixtureSCIP + "sinkNotRequestData().": "HandlerName",
+		ginFixtureSCIP + "sinkFullPath().":       "FullPath",
+	}
+	all := append([]string(nil), sinks...)
+	for s := range negs {
+		all = append(all, s)
+	}
 	res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{
 		BuildDir: ginFixtureDir,
-		Sinks:    append(sinks, neg),
+		Sinks:    all,
 	})
 	if err != nil {
 		t.Fatalf("ComputeTaint: %v", err)
@@ -176,8 +184,10 @@ func TestGin_ContextAccessorsCarryTaint(t *testing.T) {
 			t.Errorf("gin %s: path to sink%s from %q (found %v), want from %q", a, a, got, ok, want)
 		}
 	}
-	if got, ok := bySink[neg]; ok {
-		t.Errorf("HandlerName reads no request data, yet sinkNotRequestData is reached from %q", got)
+	for s, a := range negs {
+		if got, ok := bySink[s]; ok {
+			t.Errorf("%s reads no request data, yet %s is reached from %q", a, s, got)
+		}
 	}
 }
 

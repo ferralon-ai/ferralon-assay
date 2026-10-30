@@ -239,12 +239,13 @@ func argContains(args []ssa.Value, v ssa.Value) bool {
 // request data. A gin handler's *gin.Context parameter is seeded like every ingress
 // parameter, and its Request field carries taint through the ordinary field and load
 // edges; these accessors are the reads that go through a method instead. FullPath is
-// the matched route's template, listed with them all the same.
+// not one: it returns the matched route's registered template ("/user/:id"), which
+// the application wrote, not anything the request carries.
 var ginContextAccessors = map[string]bool{
 	"Param": true, "Query": true, "PostForm": true,
 	"DefaultQuery": true, "GetQuery": true, "QueryArray": true, "QueryMap": true,
 	"GetPostForm": true, "PostFormArray": true, "GetHeader": true, "Cookie": true,
-	"GetRawData": true, "FullPath": true,
+	"GetRawData": true,
 }
 
 // isGinBinder reports whether name is one of *gin.Context's Bind / ShouldBind* family

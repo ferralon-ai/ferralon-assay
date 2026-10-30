@@ -16,7 +16,6 @@ func sinkPostFormArray(v any)      { accessorSunk = append(accessorSunk, v) }
 func sinkGetHeader(v any)          { accessorSunk = append(accessorSunk, v) }
 func sinkCookie(v any)             { accessorSunk = append(accessorSunk, v) }
 func sinkGetRawData(v any)         { accessorSunk = append(accessorSunk, v) }
-func sinkFullPath(v any)           { accessorSunk = append(accessorSunk, v) }
 func sinkBind(v any)               { accessorSunk = append(accessorSunk, v) }
 func sinkBindJSON(v any)           { accessorSunk = append(accessorSunk, v) }
 func sinkBindQuery(v any)          { accessorSunk = append(accessorSunk, v) }
@@ -30,8 +29,11 @@ func sinkShouldBindHeader(v any)   { accessorSunk = append(accessorSunk, v) }
 func sinkShouldBindWith(v any)     { accessorSunk = append(accessorSunk, v) }
 func sinkShouldBindBodyWith(v any) { accessorSunk = append(accessorSunk, v) }
 
-// sinkNotRequestData is reached only through HandlerName, which reads no request data.
+// sinkNotRequestData is reached only through HandlerName, and sinkFullPath only
+// through FullPath, which returns the registered route template: neither reads request
+// data.
 func sinkNotRequestData(v any) { accessorSunk = append(accessorSunk, v) }
+func sinkFullPath(v any)       { accessorSunk = append(accessorSunk, v) }
 
 // login is a binding target.
 type login struct{ User string }

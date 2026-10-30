@@ -83,10 +83,9 @@ func TestResolveVersions_RootBuild(t *testing.T) {
 			"FROM python:3.12\nWORKDIR /app\nCOPY pyproject.toml pdm.lock ./\nRUN --mount=type=bind,source=.,target=/app pdm sync\n", false},
 		{"pdm, .pdm-plugins when distribution is false", "pdm", project + "[tool.pdm]\ndistribution = false\n", map[string]string{".pdm-plugins/lib/p.py": "x = 1\n"}, "", false},
 
-		// uv: the root's PEP 517 backend, and a workspace.
+		// uv: the root's PEP 517 backend.
 		{"uv, setuptools with setup.py", "uv", backend("setuptools.build_meta"), map[string]string{"setup.py": setupPy}, "", false},
 		{"uv, unknown backend", "uv", backend("scikit_build_core.build"), nil, "", false},
-		{"uv, workspace root", "uv", project + "[tool.uv.workspace]\nmembers = [\"packages/*\"]\n", nil, "", false},
 		{"uv, package forced on with setup.py", "uv", project + "[tool.uv]\npackage = true\n", map[string]string{"setup.py": setupPy}, "", false},
 
 		// Guards: a backend that runs nothing from the tree, or no root build.

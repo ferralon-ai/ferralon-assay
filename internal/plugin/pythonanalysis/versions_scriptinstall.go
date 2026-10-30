@@ -38,8 +38,8 @@ import (
 // which only narrow what it installs), and with the manifest each binds to (the
 // nearest pyproject.toml or Pipfile at or above the command's directory) and the lock it
 // installs (the nearest at or above that) read here; and, for uv sync, poetry install and pdm
-// sync, with a root project whose build runs no code from the tree and loads no plugin
-// (rootBuildClean). Anything
+// sync, with a root project, and every local source the lock names, whose build runs no code
+// from the tree and loads no plugin (rootBuildClean). Anything
 // else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
 // (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
 // every other tool laneToken names, run wrappers whose argv names one included. A
@@ -253,8 +253,7 @@ type rootProject struct {
 		} `toml:"pdm"`
 		Hatch map[string]any `toml:"hatch"`
 		UV    struct {
-			Package   *bool `toml:"package"`
-			Workspace any   `toml:"workspace"`
+			Package *bool `toml:"package"`
 		} `toml:"uv"`
 	} `toml:"tool"`
 }
@@ -273,7 +272,8 @@ type rootProject struct {
 // with none, unless tool.pdm.distribution is false; uv does when tool.uv.package is true or,
 // with none, when the manifest has a build-system table. That build is clean only for a
 // backend that runs nothing from the tree but what tool tables or files named here ask it to
-// (backendClean). A uv workspace builds its members as well, so a workspace root fails.
+// (backendClean). Every local source the lock names, a uv workspace member included, must
+// build clean as well (localBuildsClean).
 func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 	pyprojects := b.Nearest("pyproject.toml")
 	if pyprojects == nil {
@@ -301,21 +301,183 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 			if t := doc.Tool.PDM.PackageType; t != nil {
 				builds = *t == "library"
 			}
-			if builds && !backendClean(doc, b) {
+			if builds && !backendClean(doc, b, "") {
 				return false
 			}
 		case "uv":
-			if doc.Tool.UV.Workspace != nil {
-				return false
-			}
-			builds := doc.BuildSystem != nil
-			if p := doc.Tool.UV.Package; p != nil {
-				builds = *p
-			}
-			if builds && !backendClean(doc, b) {
+			if uvBuilds(doc) && !backendClean(doc, b, "") {
 				return false
 			}
 		default:
+			return false
+		}
+	}
+	return localBuildsClean(tool, b)
+}
+
+// uvBuilds reports whether uv builds the project a manifest declares: when tool.uv.package is
+// true or, with none, when the manifest has a build-system table.
+func uvBuilds(doc rootProject) bool {
+	if p := doc.Tool.UV.Package; p != nil {
+		return *p
+	}
+	return doc.BuildSystem != nil
+}
+
+// toolLocks names the lock each allowed install reads.
+var toolLocks = map[string]string{"uv": "uv.lock", "poetry": "poetry.lock", "pdm": "pdm.lock"}
+
+// localBuildsClean reports whether every local directory or file the lock beside the nearest
+// pyproject.toml names (a path dependency, or a uv workspace member) builds, when tool builds
+// it, through a backend that runs no code from the tree (backendClean). uv builds an editable
+// or directory source, and a virtual one whose own manifest asks to be built (uvBuilds); poetry
+// and pdm build every directory source. A local file is clean only as a wheel, which installs
+// without a build. A path this cannot resolve to a manifest read here fails: one outside the
+// build or written with a variable, a lock that is not beside the manifest (uv then installs
+// the workspace that lock is for), or a source of a kind this does not know.
+func localBuildsClean(tool string, b scriptsurface.Binder) bool {
+	locks := b.Beside("pyproject.toml", toolLocks[tool])
+	if locks == nil {
+		return false
+	}
+	for _, l := range locks {
+		data, err := readRegular(l)
+		if err != nil {
+			return false
+		}
+		srcs, ok := localSources(tool, data)
+		if !ok {
+			return false
+		}
+		for _, src := range srcs {
+			if !localBuildClean(tool, src, b) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// localSource is a local directory or file a lock names, as written there.
+type localSource struct {
+	path    string
+	file    bool // an archive, not a directory
+	virtual bool // a uv source uv installs without building unless its manifest asks
+}
+
+// localSources returns the local sources a lock names. ok is false for a lock this cannot
+// decode, or a package source of a kind it does not know.
+func localSources(tool string, data []byte) ([]localSource, bool) {
+	var lock struct {
+		Package []map[string]any `toml:"package"`
+	}
+	if _, err := toml.Decode(string(data), &lock); err != nil {
+		return nil, false
+	}
+	var srcs []localSource
+	for _, pkg := range lock.Package {
+		switch tool {
+		case "uv":
+			src, ok := pkg["source"].(map[string]any)
+			if !ok || len(src) != 1 {
+				return nil, false
+			}
+			for kind, v := range src {
+				p, ok := v.(string)
+				if !ok {
+					return nil, false
+				}
+				switch kind {
+				case "registry", "git", "url":
+				case "editable", "directory":
+					srcs = append(srcs, localSource{path: p})
+				case "virtual":
+					srcs = append(srcs, localSource{path: p, virtual: true})
+				case "path":
+					srcs = append(srcs, localSource{path: p, file: true})
+				default:
+					return nil, false
+				}
+			}
+		case "poetry":
+			src, ok := pkg["source"]
+			if !ok {
+				continue
+			}
+			t, ok := src.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			kind, _ := t["type"].(string)
+			url, _ := t["url"].(string)
+			switch kind {
+			case "legacy", "git", "url":
+			case "directory":
+				srcs = append(srcs, localSource{path: url})
+			case "file":
+				srcs = append(srcs, localSource{path: url, file: true})
+			default:
+				return nil, false
+			}
+		case "pdm":
+			if u, ok := pkg["url"].(string); ok && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+				return nil, false
+			}
+			v, ok := pkg["path"]
+			if !ok {
+				continue
+			}
+			p, ok := v.(string)
+			if !ok {
+				return nil, false
+			}
+			srcs = append(srcs, localSource{path: p, file: isArchive(p)})
+		default:
+			return nil, false
+		}
+	}
+	return srcs, true
+}
+
+// isArchive reports whether a pdm path names a wheel or source archive rather than a directory.
+func isArchive(p string) bool {
+	l := strings.ToLower(p)
+	for _, ext := range []string{".whl", ".tar.gz", ".zip", ".tar.bz2", ".tgz"} {
+		if strings.HasSuffix(l, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// localBuildClean reports whether tool's build of one local source runs no code from the tree.
+// The project itself (".") is rootBuildClean's for uv; poetry and pdm never lock it, so for
+// them a source there is a dependency built through the backend like any other.
+func localBuildClean(tool string, src localSource, b scriptsurface.Binder) bool {
+	p := filepath.ToSlash(filepath.Clean(filepath.FromSlash(src.path)))
+	if src.file {
+		return strings.HasSuffix(strings.ToLower(p), ".whl")
+	}
+	if p == "." {
+		return tool == "uv"
+	}
+	m := b.Beside("pyproject.toml", p+"/pyproject.toml")
+	if m == nil {
+		return false
+	}
+	for _, f := range m {
+		data, err := readRegular(f)
+		if err != nil {
+			return false
+		}
+		var doc rootProject
+		if _, err := toml.Decode(string(data), &doc); err != nil {
+			return false
+		}
+		if src.virtual && !uvBuilds(doc) {
+			continue
+		}
+		if !backendClean(doc, b, p) {
 			return false
 		}
 	}
@@ -330,7 +492,13 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 // hatch_build.py or hatch.toml, which hatchling merges into tool.hatch; poetry-core with no
 // tool.poetry.build; flit_core; or uv_build. A backend-path, which loads
 // the backend itself from the tree, or any other backend fails.
-func backendClean(doc rootProject, b scriptsurface.Binder) bool {
+func backendClean(doc rootProject, b scriptsurface.Binder, dir string) bool {
+	clear := func(f string) bool {
+		if dir != "" {
+			f = dir + "/" + f
+		}
+		return b.Clear("pyproject.toml", f)
+	}
 	backend := ""
 	if bs := doc.BuildSystem; bs != nil {
 		if bs.BackendPath != nil {
@@ -340,11 +508,11 @@ func backendClean(doc rootProject, b scriptsurface.Binder) bool {
 	}
 	switch backend {
 	case "", "setuptools.build_meta", "setuptools.build_meta:__legacy__":
-		return doc.Tool.Setuptools.Cmdclass == nil && b.Clear("pyproject.toml", "setup.py") && b.Clear("pyproject.toml", "setup.cfg")
+		return doc.Tool.Setuptools.Cmdclass == nil && clear("setup.py") && clear("setup.cfg")
 	case "pdm.backend":
-		return doc.Tool.PDM.Build.CustomHook == nil && doc.Tool.PDM.Build.RunSetuptools == nil && b.Clear("pyproject.toml", "pdm_build.py")
+		return doc.Tool.PDM.Build.CustomHook == nil && doc.Tool.PDM.Build.RunSetuptools == nil && clear("pdm_build.py")
 	case "hatchling.build":
-		return !hasKey(doc.Tool.Hatch, "hooks") && b.Clear("pyproject.toml", "hatch_build.py") && b.Clear("pyproject.toml", "hatch.toml")
+		return !hasKey(doc.Tool.Hatch, "hooks") && clear("hatch_build.py") && clear("hatch.toml")
 	case "poetry.core.masonry.api":
 		return doc.Tool.Poetry.Build == nil
 	case "flit_core.buildapi", "uv_build":

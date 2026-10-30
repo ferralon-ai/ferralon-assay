@@ -465,11 +465,11 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
-// bindRoot binds the first element of a relative path, which any path a command names
-// through it mentions.
+// bindRoot binds the first element of a relative path past its leading .. parts, which any
+// path a command names through it mentions.
 func (v *Veto) bindRoot(p string) {
 	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
-		if part != "" && part != "." {
+		if part != "" && part != "." && part != ".." {
 			v.bind(part)
 			return
 		}

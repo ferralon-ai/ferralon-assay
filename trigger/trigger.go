@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -265,18 +266,25 @@ type PRInheritResult struct {
 	// Report is the run's Report — the inherited baseline (fast path) or a freshly
 	// re-analyzed Report (slow path).
 	Report *report.Report
-	// Inherited is true when the fast path applied (deps unchanged): the baseline
-	// Report was inherited with a baseline pointer and no re-analysis ran.
+	// Inherited is true when the fast path applied (deps unchanged): the baseline's
+	// rows were inherited with a baseline pointer, and only the advisories in
+	// AssessedAdvisories were analyzed.
 	Inherited bool
 	// ChangedPackages names the SBOM packages that differ from the baseline. Empty on
 	// the fast path.
 	ChangedPackages []string
+	// AssessedAdvisories names the fast path's work-set advisories the baseline holds no
+	// row for, which it assessed rather than leave rowless, each id once even when two
+	// sources share it. Empty on the slow path, and
+	// on a fast path with a row for every advisory.
+	AssessedAdvisories []string
 }
 
 // RunPRInherit decides between the fast path and re-analysis and returns the PR's Report.
 //
 // Fast path (Inherited): the PR SBOM equals the baseline SBOM → emit a Report that
-// inherits the baseline's findings, carrying a Baseline pointer, with no S1–S6 run.
+// inherits the baseline's findings, carrying a Baseline pointer. S1–S6 runs only for a
+// work-set advisory the baseline holds no row for, which would otherwise have none.
 // Slow path: at least one package changed → re-run S1–S6 for the advisories whose
 // package changed and merge those findings over the inherited baseline findings.
 //
@@ -303,8 +311,22 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 	changed := changedPackages(baseline.SBOM, req.PRSBOM)
 
 	if len(changed) == 0 {
-		rep := inheritBaseline(baseline, req, state)
-		return &PRInheritResult{Report: rep, Inherited: true}, nil
+		// Nothing changed, so every baseline row stands; but an advisory new to the work set has
+		// no row to inherit, and the Report's cursor covers it all the same.
+		unrowed := unrowedAdvisories(baseline, req.Advisories)
+		fresh, notes, cause := assessUnrowed(ctx, req, unrowed)
+		rep, err := inheritBaseline(baseline, req, state, fresh, notes, cause)
+		if err != nil {
+			return nil, err
+		}
+		res := &PRInheritResult{Report: rep, Inherited: true}
+		for _, adv := range unrowed {
+			// unrowed holds one entry per (id, source), so two sources sharing an id would name it twice.
+			if !slices.Contains(res.AssessedAdvisories, adv.ID) {
+				res.AssessedAdvisories = append(res.AssessedAdvisories, adv.ID)
+			}
+		}
+		return res, nil
 	}
 
 	rep, err := reanalyzeSlice(ctx, baseline, req, state, changed)

@@ -174,8 +174,13 @@ func joinSortedUnique(names []string) string {
 
 // inheritBaseline produces the PR-inherit fast-path Report: it re-emits the baseline's
 // findings/SBOM verbatim for the PR head's subject, carrying a Baseline pointer back
-// to the baseline it inherited (so a reader knows the verdicts were not re-derived).
-func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *statestore.State) *report.Report {
+// to the baseline it inherited (so a reader knows the inherited rows were not re-derived).
+// fresh, notes and cause are assessUnrowed's rows, limits and stop for the advisories the
+// baseline holds no row for; those rows were derived on this run, and a fresh row stands in
+// for the baseline's scan_cut_short row for its advisory, if any. The fresh rows are
+// validated, as the slow path's are; the inherited rows are re-emitted as the baseline held
+// them, so a stored row that today's Validate would reject does not fail the run.
+func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *statestore.State, fresh []report.AdvisoryFinding, notes []report.PartialityNote, cause string) (*report.Report, error) {
 	b := report.NewBuilder(report.Subject{
 		Repo:           req.Subject.Repo,
 		Revision:       req.Subject.Revision,
@@ -187,14 +192,23 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// SBOM would silently flatten to packages-only, and the next PR diff against it
 	// would see every relationship as newly-absent.
 	b.SetRelationships(baseline.SBOM.Relationships)
-	// The head's inventory limits apply to the inherited rows as to fresh ones: a package the head
-	// could not inventory may be installed where the baseline's analysis never looked.
-	rows := make([]report.AdvisoryFinding, 0, len(baseline.Advisories))
+	// A baseline row a fresh row stands in for (a scan_cut_short row unrowedAdvisories skipped) is
+	// dropped. The head's inventory limits apply to the inherited rows as to fresh ones: a package
+	// the head could not inventory may be installed where the baseline's analysis never looked.
+	freshKeys, freshIDs := findingKeys(fresh)
+	rows := make([]report.AdvisoryFinding, 0, len(baseline.Advisories)+len(fresh))
 	for i := range baseline.Advisories {
-		f := withInventoryLimits(baseline.Advisories[i], req.DiffLimits)
-		rows = append(rows, f)
+		f := baseline.Advisories[i]
+		if _, ok := freshKeys[f.Advisory.ID+"\x00"+f.Advisory.Source]; ok || supersededByFresh(f, freshIDs) {
+			continue
+		}
+		rows = append(rows, withInventoryLimits(f, req.DiffLimits))
+	}
+	rows = append(rows, fresh...)
+	for _, f := range rows {
 		b.AddFinding(f)
 	}
+	b.AddPartiality(notes...)
 	// Disclose, on the inherited fast path, what the head-SBOM resolution could not
 	// resolve — so a diff that inherited because a lane's inventory was unavailable is
 	// distinguishable in the Report from one that inherited because nothing changed
@@ -207,11 +221,11 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// disclosed HERE, on the inherited path, as a quiet inherent_limit (C6). Declaring
 	// it is the honest state; claiming the checkbox without it is the failure.
 	b.AddPartiality(buildContextNotComparedNote())
-	// The inherited verdicts were not re-derived, so the baseline's coverage limits
+	// The inherited rows' verdicts were not re-derived, so the baseline's coverage limits
 	// are still exactly the limits of what this Report asserts. Dropping them here
 	// would make an inherited partial scan render clean on the PR surface.
 	b.AddPartiality(withoutCutShortCount(baseline.Partiality)...)
-	if note, ok := recountCutShort(rows, baseline.Partiality, ""); ok {
+	if note, ok := recountCutShort(rows, baseline.Partiality, cause); ok {
 		b.AddPartiality(note)
 	}
 	// THIS run's work-set limits too. Inheriting findings does not inherit the reason the
@@ -228,7 +242,102 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	b.WithBaseline(baselinePointer(baseline, state))
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	rep := b.Build()
-	return &rep
+	if err := validateRows(rep, freshKeys); err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
+// findingKeys returns the rows' (id, source) merge keys and their ids, the shapes
+// supersededByFresh and its callers look a row up by.
+func findingKeys(rows []report.AdvisoryFinding) (keys, ids map[string]struct{}) {
+	keys = make(map[string]struct{}, len(rows))
+	ids = make(map[string]struct{}, len(rows))
+	for _, f := range rows {
+		keys[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
+		ids[f.Advisory.ID] = struct{}{}
+	}
+	return keys, ids
+}
+
+// validateRows runs Validate over the rows of rep whose merge key is in keys, as built (ranked)
+// and alone: no other row, nor the SBOM, which on the fast path is the baseline's. A Report
+// with none of them is not validated.
+func validateRows(rep report.Report, keys map[string]struct{}) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	only := report.Report{SchemaVersion: rep.SchemaVersion}
+	for _, f := range rep.Advisories {
+		if _, ok := keys[f.Advisory.ID+"\x00"+f.Advisory.Source]; ok {
+			only.Advisories = append(only.Advisories, f)
+		}
+	}
+	return only.Validate()
+}
+
+// unrowedAdvisories returns the work-set advisories the baseline holds no row for, each once,
+// in work-set order. A row is looked up as reanalyzeSlice looks it up: by (id, source) and, for
+// a migrated v1 row with no source, by id. A scan_cut_short row is no row: it says nothing, so
+// its advisory is assessed like one the baseline never held, or it would stay cut short on
+// every later run.
+func unrowedAdvisories(baseline *report.Report, advisories []assessment.VulnRef) []assessment.VulnRef {
+	rows := make(map[string]struct{}, len(baseline.Advisories))
+	for _, f := range baseline.Advisories {
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			continue
+		}
+		rows[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
+	}
+	var out []assessment.VulnRef
+	for _, adv := range advisories {
+		_, ok := rows[adv.ID+"\x00"+adv.Source]
+		if !ok {
+			_, ok = rows[adv.ID+"\x00"]
+		}
+		if ok {
+			continue
+		}
+		rows[adv.ID+"\x00"+adv.Source] = struct{}{}
+		out = append(out, adv)
+	}
+	return out
+}
+
+// assessUnrowed runs S1–S6 for the fast path's unrowed advisories, building each row as
+// reanalyzeSlice builds a fresh one: against the PR head's SBOM and its Go module list. The
+// baseline's would not do, though the fast path found no package changed: changedPackages
+// does not compare a replace directive, the main module or the build-list source, and each
+// of those changes the module list a row is checked against. A failed assessment gets an
+// undetermined row and a note naming it, so no advisory comes back without a row. The
+// assessments run under req.Analysis, as the slow path's do: an advisory the scan stopped
+// before assessing gets a scan_cut_short row, and cause is that stop (ownStop), "" when the
+// pass cut none.
+func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []assessment.VulnRef) (findings []report.AdvisoryFinding, notes []report.PartialityNote, cause string) {
+	analysis := analysisOr(req.Analysis, ctx)
+	cut := 0
+	for _, adv := range advisories {
+		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		if stopped {
+			findings = append(findings, cutShortFinding(adv))
+			cut++
+			continue
+		}
+		if err != nil {
+			findings = append(findings, assessFailureFinding(adv, err))
+			notes = append(notes, assessFailureNote(adv, err))
+			continue
+		}
+		notes = append(notes, partialityNotes(st, assessmentID)...)
+		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
+		if note, ok := limitNoteFor(f); ok {
+			notes = append(notes, note)
+		}
+		findings = append(findings, f)
+	}
+	return findings, notes, ownStop(analysis, cut)
 }
 
 // reanalyzeSlice re-runs S1–S6 for the advisories whose package changed, then merges

@@ -324,11 +324,9 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 	if !ok {
 		return nil
 	}
-	// A workspace that cannot be resolved fails codebase_inventory for every advisory admitted, so
-	// the go.mod alone decides admission here.
 	var goWork pipeline.GoWorkspace
 	if root.PURLType == "golang" {
-		goWork, _ = pipeline.ResolveGoWorkspace(ctx, dir, acq.buildDir, acq.goWork)
+		goWork = goWorkspace(ctx, acq, dir)
 	}
 	return func(k pipeline.PackageKey) bool {
 		if k.Ecosystem != "" && k.Ecosystem != root.PURLType {
@@ -342,6 +340,17 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 		}
 		return ok
 	}
+}
+
+// goWorkspace resolves the go.work the build of the Go module at dir runs under, as
+// codebase_inventory resolves it. One that cannot be resolved fails codebase_inventory for every
+// advisory admitted, so the module's go.mod alone decides admission: it reads as no workspace.
+func goWorkspace(ctx context.Context, acq *acquired, dir string) pipeline.GoWorkspace {
+	ws, err := pipeline.ResolveGoWorkspace(ctx, dir, acq.buildDir, acq.goWork)
+	if err != nil {
+		return pipeline.GoWorkspace{}
+	}
+	return ws
 }
 
 // manifestDir is the directory the work set reads the project's own manifest from. For Go that is
@@ -588,8 +597,8 @@ func aliasIndex() map[string]string {
 // only ever return advisories about packages the existing work set already named, which is precisely
 // the set we are trying to grow beyond. Widening needs an inventory built from the manifest instead.
 //
-// Go is read here from go.mod (the Go analyzer plugin declares resolve_versions Unsupported — Go
-// dependency versions are resolved in-pipeline from go.mod). Every other language reuses its
+// Go is read here from go.mod, or under a go.work from the workspace's build list (the Go analyzer
+// plugin declares resolve_versions Unsupported — Go dependency versions are resolved in-pipeline). Every other language reuses its
 // plugin's existing whole-manifest parse: ResolveDependencyVersions already parses every
 // manifest/lockfile under the build dir into DependencyVersionResult.All and only then selects the
 // requested coordinate, so an EMPTY coordinate returns the full inventory with no plugin change.
@@ -613,8 +622,8 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 	}
 
 	if acq.language == checkout.LangGo {
-		pkgs, notes := goDependencyInventory(manifestDir(acq))
-		return pkgs, nil, notes
+		dir := manifestDir(acq)
+		return goDependencyInventory(ctx, dir, goWorkspace(ctx, acq, dir))
 	}
 
 	// No analyzer plugin means no manifest parser for this language. That is an absent inventory,
@@ -753,14 +762,34 @@ func versionlessPURL(purlType, name string) string {
 // (the net/http, path/filepath and net/netip backport pairs) are the clearest advisories we hold
 // real facts for that no repository's go.mod will ever name, so without this the widening cannot
 // reach them.
-func goDependencyInventory(buildDir string) ([]report.Package, []report.PartialityNote) {
+//
+// Under a go.work (ws) no go.mod states what the build holds, so the build list decides instead
+// (pipeline.GoWorkspaceModules): each module at the version the build selects, and unresolved, so
+// admitted by name but never queried by version, every module the workspace uses or replaces, and
+// every module when the go command cannot compute the list. The toolchain is go.work's.
+func goDependencyInventory(ctx context.Context, buildDir string, ws pipeline.GoWorkspace) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
+	if ws.File != "" {
+		if pinned, unpinned, err := pipeline.GoWorkspaceModules(ctx, buildDir, ws); err == nil {
+			for name, version := range pinned {
+				resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: name, Version: version})
+			}
+			if v := toolchainVersion(ws.Directives()); v != "" {
+				resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: v})
+			}
+			for _, name := range unpinned {
+				unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: name})
+			}
+			sortPackages(resolved)
+			return resolved, unresolved, nil
+		}
+	}
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
-		return nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
+		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil {
-		return nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
+		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 	}
 
 	seen := make(map[report.Package]struct{}, len(mf.Require)+1)
@@ -783,31 +812,36 @@ func goDependencyInventory(buildDir string) ([]report.Package, []report.Partiali
 		}
 		add(r.Mod.Path, r.Mod.Version)
 	}
-	if v := toolchainVersion(mf); v != "" {
+	var goLine, toolchain string
+	if mf.Go != nil {
+		goLine = mf.Go.Version
+	}
+	if mf.Toolchain != nil {
+		toolchain = mf.Toolchain.Name
+	}
+	if v := toolchainVersion(goLine, toolchain); v != "" {
 		add(goStdlibPackage, v)
 	}
 
-	var notes []report.PartialityNote
 	if len(pkgs) == 0 {
 		notes = append(notes, report.PartialityNote{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo})
 	}
 	sortPackages(pkgs)
-	return pkgs, notes
+	return pkgs, nil, notes
 }
 
-// toolchainVersion returns the Go toolchain version go.mod pins, in the form OSV's Go ecosystem
+// toolchainVersion returns the Go toolchain version a go.mod or go.work's go and toolchain lines pin,
+// in the form OSV's Go ecosystem
 // expects for the "stdlib" package: a bare semver, NO "go" prefix.
 //
 // The prefix is not cosmetic. OSV cannot parse "go1.21.0" as a version and answers the query with
 // every stdlib advisory it has ever recorded (142 at the time of writing) instead of the 68 that
 // actually affect that release — an unfiltered firehose that reads exactly like a real answer.
 // Measured against api.osv.dev, 2026-07-29.
-func toolchainVersion(mf *modfile.File) string {
-	var raw string
-	if mf.Toolchain != nil && mf.Toolchain.Name != "" {
-		raw = mf.Toolchain.Name
-	} else if mf.Go != nil {
-		raw = mf.Go.Version
+func toolchainVersion(goLine, toolchain string) string {
+	raw := toolchain
+	if raw == "" {
+		raw = goLine
 	}
 	raw = strings.TrimPrefix(raw, "go")
 	if raw == "" {

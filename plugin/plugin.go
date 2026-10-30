@@ -674,7 +674,8 @@ const (
 
 // ResolveInventoryRequest carries the buildable module to resolve the whole dependency graph for.
 type ResolveInventoryRequest struct {
-	BuildDir string `json:"build_dir"` // checked-out module/workspace root
+	BuildDir string `json:"build_dir"`         // checked-out module/workspace root
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 
 	// TargetEnv is the §4.6 target-environment override the resolver evaluates environment-conditional
 	// dependencies against (onyx-q6). It rides on the REQUEST, not on BuildDir: the override is Assay
@@ -708,6 +709,9 @@ type DependencyInventory struct {
 	// MainModule is the path of the module the build list was resolved for (Go), which is part of
 	// the build but not one of Nodes; set with BuildList.
 	MainModule string `json:"main_module,omitempty"`
+	// WorkspaceModules are the other modules of the go.work the build list was resolved under (Go),
+	// sorted: main modules like MainModule, part of the build but not among Nodes; set with BuildList.
+	WorkspaceModules []string `json:"workspace_modules,omitempty"`
 }
 
 // BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected

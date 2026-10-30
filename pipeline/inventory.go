@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
@@ -56,7 +58,17 @@ func ResolveCodebaseInventory(ctx context.Context, codebase assessment.CodebaseR
 		return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonNoPlugin)}, language, buildDir, nil
 	}
 
-	inv, err := cfg.Plugin.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
+	// A Go module's graph is resolved under the go.work its build runs under, as codebase_inventory
+	// resolves it. One that cannot be established is not guessed at: the inventory is not resolved.
+	req := plugin.ResolveInventoryRequest{BuildDir: buildDir}
+	if fi, err := os.Stat(filepath.Join(buildDir, "go.mod")); language == checkout.LangGo && err == nil && !fi.IsDir() {
+		ws, err := ResolveGoWorkspace(ctx, buildDir, buildDir, cfg.SubjectGoWork)
+		if err != nil {
+			return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonToolFailure)}, language, buildDir, nil
+		}
+		req.GoWork = ws.File
+	}
+	inv, err := cfg.Plugin.ResolveInventory(ctx, req)
 	if err != nil {
 		return plugin.DependencyInventory{}, language, buildDir, err
 	}

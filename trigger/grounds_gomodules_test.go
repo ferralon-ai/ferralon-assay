@@ -95,6 +95,8 @@ func TestGoModulesOf(t *testing.T) {
 		{"a scan-wide limit", buildList, limit(""), nil},
 		{"no build-list source (go.mod alone, or a report written before it was recorded)", report.SBOM{Packages: pkgs}, nil, nil},
 		{"a build list with no main module", report.SBOM{GoBuildList: plugin.BuildListGoModGraph, Packages: pkgs}, nil, nil},
+		{"a workspace's other main modules", report.SBOM{GoBuildList: plugin.BuildListGoModGraph, GoMainModule: "example.com/app", GoWorkspaceModules: []string{"example.com/lib"}, Packages: pkgs}, nil,
+			goModules{"example.com/app": true, "example.com/lib": true, "golang.org/x/net": true, "example.com/a": true, "example.com/fork": true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -116,9 +118,10 @@ func TestGoModulesOf(t *testing.T) {
 // keeps blocking.
 func TestGoModulesOf_FromInventory(t *testing.T) {
 	inv := plugin.DependencyInventory{
-		Partiality: plugin.Complete(),
-		BuildList:  plugin.BuildListGoModGraph,
-		MainModule: "example.com/app",
+		Partiality:       plugin.Complete(),
+		BuildList:        plugin.BuildListGoModGraph,
+		MainModule:       "example.com/app",
+		WorkspaceModules: []string{"example.com/lib"},
 		Nodes: []plugin.DependencyNode{
 			{ID: "a", PURL: "pkg:golang/example.com/a@v1.1.0", Version: "v1.1.0", Partiality: plugin.Complete(), Replace: "example.com/fork"},
 			{ID: "net", PURL: "pkg:golang/golang.org/x/net@v0.15.0", Version: "v0.15.0", Partiality: plugin.Complete()},
@@ -126,7 +129,7 @@ func TestGoModulesOf_FromInventory(t *testing.T) {
 	}
 	sbom, notes := sbomFromInventory(inv, "Go")
 	mods := goModulesOf(sbom, notes)
-	for _, m := range []string{"example.com/app", "example.com/a", "example.com/fork", "golang.org/x/net"} {
+	for _, m := range []string{"example.com/app", "example.com/lib", "example.com/a", "example.com/fork", "golang.org/x/net"} {
 		if !mods[m] {
 			t.Errorf("goModulesOf = %v, missing %s", mods, m)
 		}

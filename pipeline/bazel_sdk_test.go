@@ -29,14 +29,44 @@ func TestResolveBazelSDK(t *testing.T) {
 		{"from_file in the module root's own workspace", map[string]string{"svc/MODULE.bazel": `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
 `}, bazelSDKFromGoMod},
-		{"from_file with a name, @@ label, io_bazel_rules_go, nogo, a comment", map[string]string{"MODULE.bazel": `# go_sdk.download(version = "1.21.13")
-sdk = use_extension("@io_bazel_rules_go//go:extensions.bzl", "go_sdk", dev_dependency = True)
+		{"from_file with a name, @@ label, io_bazel_rules_go, nogo, use_repo, go_toolchains", map[string]string{"MODULE.bazel": `sdk = use_extension("@io_bazel_rules_go//go:extensions.bzl", "go_sdk")
 sdk.from_file(name = "go_sdk", go_mod = "@@//svc:go.mod")  # pinned to go.mod
 sdk.nogo(nogo = "//:nogo")
 use_repo(sdk, "go_toolchains")
+register_toolchains("@go_toolchains//:all")
+`}, bazelSDKFromGoMod},
+		{"the binding's name inside a string", map[string]string{"MODULE.bazel": `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.from_file(name = "go_sdk", go_mod = "//svc:go.mod")
+`}, bazelSDKFromGoMod},
+		{"a commented-out download", map[string]string{"MODULE.bazel": fromFileModule + `# go_sdk.download(version = "1.21.13")
 `}, bazelSDKFromGoMod},
 		{"an empty WORKSPACE beside it", map[string]string{"MODULE.bazel": fromFileModule, "WORKSPACE": "# bzlmod only\n"}, bazelSDKFromGoMod},
+		{"a .bazelrc with other flags and a missing try-import", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `# CI
+build --jobs=8
+try-import %workspace%/user.bazelrc
+`}, bazelSDKFromGoMod},
 
+		{"a dev_dependency binding", map[string]string{"MODULE.bazel": `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk", dev_dependency = True)
+go_sdk.from_file(go_mod = "//svc:go.mod")
+`}, bazelSDKUnbound},
+		{"an isolated binding", map[string]string{"MODULE.bazel": `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk", isolate = True)
+go_sdk.from_file(go_mod = "//svc:go.mod")
+use_repo(go_sdk, "go_toolchains")
+`}, bazelSDKUnbound},
+		{"an alias carrying a second from_file", map[string]string{"MODULE.bazel": fromFileModule + `pinned = go_sdk
+pinned.from_file(name = "pinned_sdk", go_mod = "//tools:go.mod")
+`}, bazelSDKUnbound},
+		{"a tag this cannot read", map[string]string{"MODULE.bazel": fromFileModule + `go_sdk.wrap(root_file = Label("@local_go//:ROOT"))
+`}, bazelSDKUnbound},
+		{"another register_toolchains", map[string]string{"MODULE.bazel": fromFileModule + `register_toolchains("//toolchains:all")
+`}, bazelSDKUnbound},
+		{"a .bazelrc selecting an sdk_version", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `build --@rules_go//go/toolchain:sdk_version=1.26.7
+`}, bazelSDKUnbound},
+		{"a .bazelrc importing extra_toolchains", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `import %workspace%/tools/ci.bazelrc
+`, "tools/ci.bazelrc": `build:ci --extra_toolchains=//toolchains:go
+`}, bazelSDKUnbound},
+		{"a .bazelrc importing a file outside the workspace", map[string]string{"MODULE.bazel": fromFileModule, ".bazelrc": `try-import /etc/ci.bazelrc
+`}, bazelSDKUnbound},
 		{"go_sdk.download", map[string]string{"MODULE.bazel": `go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.download(version = "1.21.13")
 `}, bazelSDKUnbound},
@@ -100,6 +130,9 @@ go_sdk.from_file(go_mod = "//:go.mod")
 				t.Fatal(err)
 			}
 			for path, content := range tc.files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(checkoutRoot, path)), 0o755); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.WriteFile(filepath.Join(checkoutRoot, path), []byte(content), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -112,7 +145,8 @@ go_sdk.from_file(go_mod = "//:go.mod")
 }
 
 // TestResolveToolchainFact_Bazel: inside a Bazel workspace the directives floor the SDK only through
-// from_file, and then as rules_go reads them (the toolchain line, else the go line), not by maximum.
+// from_file, and then at the lower of what rules_go reads (the toolchain line, else the go line) and
+// the binding go line a go command in the same repository enforces.
 func TestResolveToolchainFact_Bazel(t *testing.T) {
 	tests := []struct {
 		name string
@@ -141,9 +175,9 @@ func TestResolveToolchainFact_Bazel(t *testing.T) {
 			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			name: "from_file floors at the toolchain line when there is one",
+			name: "from_file floors at the go line below the toolchain line",
 			in:   toolchainInputs{goDirective: "1.22.0", toolchainDirective: "go1.22.4", bazel: bazelSDKFromGoMod},
-			want: ToolchainFact{Version: "go1.22.4", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			name: "from_file takes a toolchain line below the go line, not the maximum",
@@ -151,9 +185,19 @@ func TestResolveToolchainFact_Bazel(t *testing.T) {
 			want: ToolchainFact{Version: "go1.22.4", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
 		},
 		{
-			name: "from_file reads a two-part go line",
+			name: "from_file with a two-part go line takes no floor",
 			in:   toolchainInputs{goDirective: "1.22", bazel: bazelSDKFromGoMod},
-			want: ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
+		{
+			name: "from_file with a go line before 1.21 takes no floor",
+			in:   toolchainInputs{goDirective: "1.20.14", bazel: bazelSDKFromGoMod},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
+		{
+			name: "from_file with a toolchain line it cannot order takes no floor",
+			in:   toolchainInputs{goDirective: "1.22.0", toolchainDirective: "default", bazel: bazelSDKFromGoMod},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
 			name: "from_file with no directive resolves nothing",

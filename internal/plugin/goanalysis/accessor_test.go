@@ -118,9 +118,10 @@ func checkAccess(t *testing.T, calls map[string]accessorCall, cases []struct{ fn
 // request read or bind only on gin's *Context, identified by the import path of the
 // package declaring it, never by a method or type name alone. A Context declared under
 // another path, in a package also named gin, reads and binds nothing; nor does a
-// method with an accessor's or a binder's name on another gin type (Engine here). And
-// FullPath, which returns the registered route template, reads no request data even
-// on gin's own Context.
+// method with an accessor's or a binder's name on another gin type (Engine here), nor
+// a call on gin's Context that is handed the tainted value as an argument rather than
+// made on it as the receiver. And FullPath, which returns the registered route
+// template, reads no request data even on gin's own Context.
 func TestContextAccess_NeedsGinsContext(t *testing.T) {
 	const ctxSrc = `package gin
 type Context struct{}
@@ -148,7 +149,8 @@ func otherParam(c *other.Context) string    { return c.Param("id") }
 func otherQuery(c *other.Context) string    { return c.Query("q") }
 func otherBind(c *other.Context) error      { var l login; return c.ShouldBind(&l) }
 func engineParam(c *gin.Engine) string      { return c.Param("id") }
-func engineBind(c *gin.Engine) error        { var l login; return c.ShouldBind(&l) }`)
+func engineBind(c *gin.Engine) error        { var l login; return c.ShouldBind(&l) }
+func ctxArgBind(d *gin.Context, c any) error { return d.ShouldBind(c) }`)
 	checkAccess(t, calls, []struct{ fn, want string }{
 		{"ginParam", "read"},
 		{"ginQuery", "read"},
@@ -159,6 +161,7 @@ func engineBind(c *gin.Engine) error        { var l login; return c.ShouldBind(&
 		{"otherBind", ""},
 		{"engineParam", ""},
 		{"engineBind", ""},
+		{"ctxArgBind", ""},
 	})
 }
 

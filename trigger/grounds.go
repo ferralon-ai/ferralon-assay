@@ -402,6 +402,13 @@ var purlTypeFor = map[string]string{
 	"NuGet": "nuget",
 }
 
+// PackageName returns a package URL's type and its package name as advisory matching compares
+// them (purlKey), or false when it does not parse.
+func PackageName(purl string) (typ, name string, ok bool) {
+	key, ok := purlKey(purl)
+	return key.typ, key.name, ok
+}
+
 // purlKey parses a package URL into its pkgKey, ignoring version, qualifiers and subpath.
 func purlKey(purl string) (pkgKey, bool) {
 	rest, ok := strings.CutPrefix(purl, "pkg:")

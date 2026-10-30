@@ -95,6 +95,13 @@ type DependencyFetchRun struct {
 	// cut short nor failed. Each carries the aliases its advisory record names, so a caller can
 	// match an advisory a different run knew by another ID.
 	Assessed []report.Advisory
+	// Packages names, per advisory ID in Assessed, every package its completed assessments
+	// concern, as package URLs: the package each finding names and every package the advisory
+	// record names. "" stands for a package the run cannot name: a finding package with neither a
+	// package URL nor an npm name, an affected_packages[] element with no package URL, or the
+	// packages a record with no affected_packages[] set may affect beyond the one it names. Set
+	// only for a cve-watch earnest run.
+	Packages map[string][]string
 }
 
 // RunBaseline runs the full S1–S6 pipeline for every advisory in the request, builds
@@ -501,18 +508,18 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	if req.HoldCursor {
 		cursor = state.Cursor
 	}
-	rep, assessed, err := earnestRun(ctx, state, req, osvResult, newIDs, retry, cursor)
+	rep, run, err := earnestRun(ctx, state, req, osvResult, newIDs, retry, cursor)
 	if err != nil {
 		return nil, err
 	}
 	if req.Disclose != nil {
 		req.Disclose(rep)
 	}
-	held := rep.Provenance.AdvisoryCursor == state.Cursor
+	run.Held = rep.Provenance.AdvisoryCursor == state.Cursor
 	state.SBOM = rep.SBOM
 	state.Cursor = rep.Provenance.AdvisoryCursor
 	if req.DependencyFetch != nil {
-		state.DepFetch = req.DependencyFetch(state.DepFetch, DependencyFetchRun{Held: held, Assessed: assessed})
+		state.DepFetch = req.DependencyFetch(state.DepFetch, run)
 	}
 	if state.Report, err = withNotFetched(rep, state.DepFetch); err != nil {
 		return nil, err

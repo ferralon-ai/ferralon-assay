@@ -782,6 +782,14 @@ type IntelProvenance struct {
 	SignalsDigest string `json:"signals_digest,omitempty"`
 }
 
+// BuiltinTestAdvisoriesOnly reports whether the pass evaluated only the scanner's built-in test
+// advisories: the work set was the compiled-in language set, with no corpus policy and no OSV query
+// adding to it. Such a run is not a vulnerability scan, and every surface that headlines a Report
+// says so. False on a nil block and on an unrecorded work set (a library run), which claim nothing.
+func (p *IntelProvenance) BuiltinTestAdvisoriesOnly() bool {
+	return p != nil && p.WorkSetSource == WorkSetBuiltinLanguageSet
+}
+
 // CorpusSigner names the keyless signer a corpus release's signature verified against. Both fields
 // are always set on a non-nil value.
 type CorpusSigner struct {

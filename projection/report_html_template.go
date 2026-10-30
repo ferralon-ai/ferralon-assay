@@ -106,6 +106,8 @@ const reportHTMLSource = `<!DOCTYPE html>
   .badge.notassessed { color: var(--notassessed); border-color: color-mix(in srgb, var(--notassessed) 45%, transparent); background: color-mix(in srgb, var(--notassessed) 12%, transparent); }
   .limits-lede { color: var(--muted); font-size: 12.5px; line-height: 1.6; margin: 0 0 14px; }
   .limits-lede strong { color: var(--text); }
+  .builtin-only.card { margin-top: 20px; border-color: color-mix(in srgb, var(--notassessed) 55%, var(--border)); }
+  .builtin-only h2 { color: var(--text); }
   .limit-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 14px; }
   .limit-list > li { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
   .limit-why { display: block; margin-top: 7px; font-size: 13px; line-height: 1.55; }
@@ -127,6 +129,12 @@ const reportHTMLSource = `<!DOCTYPE html>
     <span class="tag">scan report</span>
   </header>
   <p class="sub">Neutral, deterministic dependency advisory scan. Verdicts are reachability candidates and grounded refutations &mdash; never proofs of exploitability.</p>
+  {{- if .BuiltinOnly}}
+  <section class="card builtin-only" id="builtin-only">
+    <h2>This is not a vulnerability scan</h2>
+    <p class="limits-lede">This run evaluated only {{if eq .BuiltinCount 0}}a small set of test advisories{{else if eq .BuiltinCount 1}}1 test advisory{{else}}{{.BuiltinCount}} test advisories{{end}} built into the scanner, there to show it working end to end. They say nothing about which known vulnerabilities affect this repository. The Assay Action scans against the public advisory corpus by default; this happens when <code>builtin-test-advisories-only</code> is set, or when a corpus is given without a policy.</p>
+  </section>
+  {{- end}}
 
   <div class="grid">
     <section class="card">

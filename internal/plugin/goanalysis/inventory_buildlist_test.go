@@ -212,8 +212,8 @@ func TestResolveInventory_UnderWorkspace_GoWorkReplace(t *testing.T) {
 	}
 }
 
-// A workspace whose member go.mod cannot be read leaves the inventory unresolved, never the module's
-// own graph; a relative go.work is refused.
+// A workspace whose member go.mod cannot be read, or that does not use the build's module, leaves the
+// inventory unresolved, never the module's own graph; a relative go.work is refused.
 func TestResolveInventory_UnderWorkspace_Unreadable(t *testing.T) {
 	root := t.TempDir()
 	writeDir(t, root, map[string]string{
@@ -224,6 +224,15 @@ func TestResolveInventory_UnderWorkspace_Unreadable(t *testing.T) {
 	inv := resolveUnder(t, filepath.Join(root, "a"), filepath.Join(root, "go.work"))
 	if inv.Partiality.Complete || !invHasReason(inv.Partiality, plugin.PartialReasonToolFailure) || len(inv.Nodes) != 0 || inv.BuildList != "" {
 		t.Errorf("inventory = %+v; want tool_failure, no nodes and no build list", inv)
+	}
+	writeDir(t, root, map[string]string{
+		"b/go.mod":  "module example.test/b\n\ngo 1.21\n",
+		"c/go.mod":  "module example.test/c\n\ngo 1.21\n",
+		"c/main.go": "package main\n\nfunc main() {}\n",
+	})
+	inv = resolveUnder(t, filepath.Join(root, "c"), filepath.Join(root, "go.work"))
+	if inv.Partiality.Complete || !invHasReason(inv.Partiality, plugin.PartialReasonToolFailure) || len(inv.Nodes) != 0 || inv.BuildList != "" {
+		t.Errorf("module outside the workspace: inventory = %+v; want tool_failure, no nodes and no build list", inv)
 	}
 	if _, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: filepath.Join(root, "a"), GoWork: "go.work"}); err == nil {
 		t.Error("a relative go.work was accepted")

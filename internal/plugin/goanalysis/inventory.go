@@ -89,7 +89,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 	workspace := false
 	if file := goWork(ctx); file != "off" {
 		w, err := readGoWorkspace(file)
-		if err != nil {
+		// A build module the workspace does not use is not that workspace's build; its graph would
+		// name another build's module list.
+		if err != nil || mainPath != "" && !w.mains[mainPath] {
 			return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonToolFailure)}, nil
 		}
 		work, workspace = w, true

@@ -28,9 +28,10 @@ import (
 // surface under root goes unread, whether a script surface may install a package no manifest
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
 // surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
-// read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
-// is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
-// or a script surface names one (pipConfigNamedRE).
+// read here records, which a caller withholds as it would every pin: pip after an allowed
+// self-upgrade (pipSelfUpgrade), and every seeded distribution once a script surface names a
+// Python interpreter or installer (interpreterNamedRE). No self-upgrade is allowed when root
+// holds a pip config file (pipConfigInTree) or a script surface names one (pipConfigNamedRE).
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
@@ -62,9 +63,10 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed := false
+	configNamed, interpreted := false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
+		interpreted = interpreted || interpreterNamedRE.MatchString(src)
 	}
 	veto := scriptsurface.New(root, read, spec)
 	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
@@ -75,6 +77,14 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	scriptWithheld = veto.Withheld()
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
+	}
+	if interpreted {
+		if tooling == nil {
+			tooling = map[string]bool{}
+		}
+		for _, n := range seededDistributions {
+			tooling[n] = true
+		}
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
 }

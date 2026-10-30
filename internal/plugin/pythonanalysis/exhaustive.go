@@ -43,8 +43,13 @@ package pythonanalysis
 // Build-time requirements ([build-system].requires, setup_requires) are declarations, found on
 // the advisory path like any other, but not part of coverage: build-isolation environments are
 // not runtime installs, and no lockfile records them. A package the build backend's own
-// dependency closure brings into that environment, an interpreter-seeded pip, and a
-// Dockerfile RUN pip install are outside what Exhaustive covers.
+// dependency closure brings into that environment, and a Dockerfile RUN pip install, are
+// outside what Exhaustive covers.
+//
+// pip, setuptools and wheel are never Exhaustive once a script surface names a Python
+// interpreter, base image or installer, or creates a venv (interpreterNamedRE): the
+// interpreter, image or venv seeds them at versions no lockfile records. With no script
+// surface naming one, an interpreter the build gets elsewhere is not observed.
 
 import (
 	"os"

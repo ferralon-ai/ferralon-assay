@@ -780,7 +780,6 @@ func (j *keyJudge) callbackParam(d int) bool {
 	return false
 }
 
-// occurrences returns the positions of name in clean other than as a member.
 // bracketsOf returns the bracket index of clean, the text gs was built from.
 func (gs *globalScope) bracketsOf(clean []rune) *bracketIndex {
 	if gs.brackets == nil {
@@ -789,6 +788,7 @@ func (gs *globalScope) bracketsOf(clean []rune) *bracketIndex {
 	return gs.brackets
 }
 
+// occurrences returns the positions of name in clean other than as a member.
 func (gs *globalScope) occurrences(clean []rune, name string) []int {
 	if gs.occ == nil {
 		gs.occ = map[string][]int{}

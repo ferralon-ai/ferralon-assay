@@ -310,9 +310,8 @@ func builtinOnlyBody(n int) string {
 		set = fmt.Sprintf("%d test advisories", n)
 	}
 	return "This run evaluated only " + set + " built into the scanner, there to show it working end to end. " +
-		"They say nothing about which known vulnerabilities affect this repository. " +
-		"The Assay Action scans against the public advisory corpus by default; this happens when " +
-		"`builtin-test-advisories-only` is set, or when a corpus is given without a policy."
+		"They say nothing about which known vulnerabilities affect this repository: " +
+		"no advisory corpus policy defined this run's work set."
 }
 
 // partialHeadlineTail qualifies a headline whose counts a disclosed coverage limit

@@ -9,6 +9,10 @@ import (
 
 const builtinOnlyLead = "**This is not a vulnerability scan.**"
 
+// builtinOnlyCause is the notice's stated cause. The engine renders it for CLI, library and Action
+// runs alike, so it states the fact and names no Action input.
+const builtinOnlyCause = "no advisory corpus policy defined this run"
+
 // TestBothSurfaces_BuiltinOnly_HeadlineSaysNotAScan: a run that evaluated only the built-in test
 // advisories opens, above the verdict headline, by saying it is not a vulnerability scan and how many
 // test advisories it evaluated. Every other work set, and an unrecorded one, renders no notice.
@@ -64,6 +68,9 @@ func TestBothSurfaces_BuiltinOnly_HeadlineSaysNotAScan(t *testing.T) {
 				if lead < 0 || !strings.Contains(s, tc.want) {
 					t.Errorf("%s: missing the built-in-only notice %q\n---\n%s", surface, tc.want, s)
 					continue
+				}
+				if !strings.Contains(s, builtinOnlyCause) || strings.Contains(s, "builtin-test-advisories-only") {
+					t.Errorf("%s: the notice must state %q and name no Action input\n---\n%s", surface, builtinOnlyCause, s)
 				}
 				if verdict := strings.Index(s, "**Partial coverage"); verdict < lead {
 					t.Errorf("%s: the notice must precede the verdict headline\n---\n%s", surface, s)

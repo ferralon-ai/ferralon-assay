@@ -132,7 +132,7 @@ const reportHTMLSource = `<!DOCTYPE html>
   {{- if .BuiltinOnly}}
   <section class="card builtin-only" id="builtin-only">
     <h2>This is not a vulnerability scan</h2>
-    <p class="limits-lede">This run evaluated only {{if eq .BuiltinCount 0}}a small set of test advisories{{else if eq .BuiltinCount 1}}1 test advisory{{else}}{{.BuiltinCount}} test advisories{{end}} built into the scanner, there to show it working end to end. They say nothing about which known vulnerabilities affect this repository. The Assay Action scans against the public advisory corpus by default; this happens when <code>builtin-test-advisories-only</code> is set, or when a corpus is given without a policy.</p>
+    <p class="limits-lede">This run evaluated only {{if eq .BuiltinCount 0}}a small set of test advisories{{else if eq .BuiltinCount 1}}1 test advisory{{else}}{{.BuiltinCount}} test advisories{{end}} built into the scanner, there to show it working end to end. They say nothing about which known vulnerabilities affect this repository: no advisory corpus policy defined this run's work set.</p>
   </section>
   {{- end}}
 

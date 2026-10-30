@@ -39,6 +39,10 @@ func TestReportHTML_BuiltinOnly_Banner(t *testing.T) {
 			if !has || !strings.Contains(html, "This is not a vulnerability scan") || !strings.Contains(html, tc.want) {
 				t.Errorf("banner missing %q", tc.want)
 			}
+			// The engine renders this for every caller, so it states the cause and names no Action input.
+			if !strings.Contains(html, "no advisory corpus policy defined this run") || strings.Contains(html, "builtin-test-advisories-only") {
+				t.Errorf("banner must state that no corpus policy defined the work set, and name no Action input")
+			}
 		})
 	}
 }

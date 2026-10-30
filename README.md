@@ -295,7 +295,8 @@ or a sha256 mismatch. Verified is not fresh: the check proves the file is the on
 release names, not that its values are recent, so a stale signals file still loads, with a warning
 in the scan log. The Action passes the signals only to a scanner release that carries the
 `-advisory-signals` flag; an older release scans without EPSS/KEV priority and the job log warns,
-so raise `scanner-version` if you see that. On the git route, with `advisory-corpus-repo` and no `advisory-corpus-policy`, no
+so raise `scanner-version` if you see that.
+On the git route, with `advisory-corpus-repo` and no `advisory-corpus-policy`, no
 signals are fetched, so findings carry no EPSS/KEV priority; to get priority, set
 `advisory-corpus-policy` (the release route). A corpus directory handed to `advisory-corpus` is
 ranked with its own root `signals.json`, when it has one
@@ -394,7 +395,8 @@ release's `bundles.json`, its signature, the policy bundle and `signals.json.gz`
 `raw.githubusercontent.com`, downloads cosign from the `sigstore/cosign` GitHub release, and reaches
 the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus signature. A corpus read
 through the git fetch clones from `github.com` instead. `builtin-test-advisories-only: true` removes
-the corpus, cosign and Sigstore requests and nothing else. A JS scan also fetches each lock-pinned package tarball by name and version from the
+the corpus, cosign and Sigstore requests and nothing else.
+A JS scan also fetches each lock-pinned package tarball by name and version from the
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token

@@ -19,11 +19,15 @@ import (
 // demote a listed advisory's refuting verdict, and they send a listed advisory back to assessment.
 // Neither treats an unlisted advisory as anything.
 
-// Every write applies the list, whichever lane runs: a listed advisory is never stored with a
-// refuting verdict. Only a run that records its dependency acquisition (DependencyFetchUpdate set,
-// a JS scan) changes the record; a scan of another language sharing the state ref carries it
-// unchanged, so it never clears or shrinks the list, and its own row for an advisory the list names
-// stays withheld until a JS run reads the code and clears it. That over-withholds on purpose.
+// Every scan write applies the list, whichever lane runs, and so does its re-merge after a lost
+// CAS: a scan never stores a listed advisory with a refuting verdict. A write outside the trigger
+// (the selfcleanup counter) re-merges without the projection, so after a lost CAS it can store a
+// stale list entry beside a refuting verdict; that verdict was written by a scan, so it was reached
+// with a full read or is a dependency-code-off verdict, and the next JS cve-watch retries it. Only
+// a run that records its dependency acquisition (DependencyFetchUpdate set, a JS scan) changes the
+// record; a scan of another language sharing the state ref carries it unchanged, so it never clears
+// or shrinks the list, and its own row for an advisory the list names stays withheld until a JS run
+// reads the code and clears it. That over-withholds on purpose.
 
 // listedNotFetched reports whether f's advisory is on reassess, by its ID or one of its aliases.
 func listedNotFetched(f report.AdvisoryFinding, reassess []string) bool {

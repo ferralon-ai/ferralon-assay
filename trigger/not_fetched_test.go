@@ -445,54 +445,57 @@ func (s *racingStore) Write(ctx context.Context, next *statestore.State) (*state
 // TestLostCASWithholdsWhatTheMergeLists: a run that leaves an advisory on the reassess list loses
 // its CAS to a later fallback baseline that refuted the same advisory. The merge keeps the
 // baseline's later not_exploitable and unions the run's list, which names the advisory; every kind
-// of state write withholds the merged state again before it is written and published.
+// of state write withholds the merged state again before it is written and published, a run that
+// records no dependency acquisition included.
 func TestLostCASWithholdsWhatTheMergeLists(t *testing.T) {
 	listed := func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior }
 	osv := func() *fakeOSV {
 		return &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
 	}
-	cveWatch := func(t *testing.T, store statestore.StateStore) *report.Report {
-		res, err := RunCVEWatch(context.Background(), store, osv(), CVEWatchRequest{
-			Subject:         Subject{Repo: "r", ResolvedCommit: "sha"},
-			AssessOptions:   wiringOptions(t, plugin.Complete()),
-			DependencyFetch: listed,
-		})
-		if err != nil {
-			t.Fatalf("RunCVEWatch: %v", err)
-		}
-		return res.Report
-	}
-	for _, tc := range []struct {
-		name string
-		// rowless seeds a report with no row for the advisory, so nothing is retried.
-		rowless bool
-		run     func(t *testing.T, store statestore.StateStore) *report.Report // the published report, nil for none
-	}{
-		{name: "cve-watch earnest", run: cveWatch},
-		{name: "cve-watch heartbeat", rowless: true, run: func(t *testing.T, store statestore.StateStore) *report.Report {
+	cveWatch := func(wantHeartbeat bool) func(*testing.T, statestore.StateStore, DependencyFetchUpdate) *report.Report {
+		return func(t *testing.T, store statestore.StateStore, hook DependencyFetchUpdate) *report.Report {
 			res, err := RunCVEWatch(context.Background(), store, osv(), CVEWatchRequest{
-				Subject: Subject{Repo: "r", ResolvedCommit: "sha"}, AssessOptions: wiringOptions(t, plugin.Complete()), DependencyFetch: listed,
+				Subject:         Subject{Repo: "r", ResolvedCommit: "sha"},
+				AssessOptions:   wiringOptions(t, plugin.Complete()),
+				DependencyFetch: hook,
 			})
 			if err != nil {
 				t.Fatalf("RunCVEWatch: %v", err)
 			}
-			if !res.Heartbeat {
-				t.Fatal("not a heartbeat")
+			if res.Heartbeat != wantHeartbeat {
+				t.Fatalf("heartbeat = %v, want %v; the fixture did not set up the case", res.Heartbeat, wantHeartbeat)
 			}
-			return nil
-		}},
-		{name: "baseline", run: func(t *testing.T, store statestore.StateStore) *report.Report {
-			rep, err := RunBaseline(context.Background(), store, BaselineRequest{
-				Subject:         Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
-				Advisories:      []assessment.VulnRef{wiringAdvisory},
-				AssessOptions:   wiringOptions(t, plugin.Complete()),
-				DependencyFetch: listed,
-			})
-			if err != nil {
-				t.Fatalf("RunBaseline: %v", err)
-			}
-			return rep
-		}},
+			return res.Report
+		}
+	}
+	baselineRun := func(t *testing.T, store statestore.StateStore, hook DependencyFetchUpdate) *report.Report {
+		rep, err := RunBaseline(context.Background(), store, BaselineRequest{
+			Subject:         Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+			Advisories:      []assessment.VulnRef{wiringAdvisory},
+			AssessOptions:   wiringOptions(t, plugin.Complete()),
+			DependencyFetch: hook,
+		})
+		if err != nil {
+			t.Fatalf("RunBaseline: %v", err)
+		}
+		return rep
+	}
+	for _, tc := range []struct {
+		name string
+		// rowless seeds a report with no row for the advisory, so nothing is retried; fresh leaves
+		// the advisory off the stored cursor, so OSV reports it as new.
+		rowless, fresh bool
+		hook           DependencyFetchUpdate
+		run            func(*testing.T, statestore.StateStore, DependencyFetchUpdate) *report.Report // the published report, nil for none
+	}{
+		{name: "cve-watch earnest", hook: listed, run: cveWatch(false)},
+		{name: "cve-watch heartbeat", rowless: true, hook: listed, run: cveWatch(true)},
+		{name: "baseline", hook: listed, run: baselineRun},
+		// A run that records no dependency acquisition retries nothing, so its earnest run is one
+		// that sees the listed advisory as new.
+		{name: "cve-watch earnest, no dependency acquisition", fresh: true, run: cveWatch(false)},
+		{name: "cve-watch heartbeat, no dependency acquisition", rowless: true, run: cveWatch(true)},
+		{name: "baseline, no dependency acquisition", run: baselineRun},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seed, baseline := groundedBaseline()
@@ -500,6 +503,9 @@ func TestLostCASWithholdsWhatTheMergeLists(t *testing.T) {
 			if tc.rowless {
 				empty := report.NewBuilder(baseline.Subject).AddPackages(baseline.SBOM.Packages...).WithProvenance(baseline.Provenance).Build()
 				st.Report = &empty
+			}
+			if tc.fresh {
+				st.Cursor = ""
 			}
 			st.DepFetch = &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}
 			inner := statestore.NewMemStore()
@@ -514,7 +520,7 @@ func TestLostCASWithholdsWhatTheMergeLists(t *testing.T) {
 				w.DepFetch = nil
 				return &w
 			}}
-			published := tc.run(t, store)
+			published := tc.run(t, store, tc.hook)
 			stored, err := inner.Read(context.Background())
 			if err != nil {
 				t.Fatalf("read: %v", err)

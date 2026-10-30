@@ -42,6 +42,9 @@ func TestStageTimer(t *testing.T) {
 			for i := 0; i < tt.runs; i++ {
 				_ = orch.Run(ctx, newRunCase(t, cases).ID)
 			}
+			if len(ran) == 0 {
+				t.Fatal("no stage ran")
+			}
 			var names []string
 			var runs []int
 			for _, st := range timer.Stages() {

@@ -719,7 +719,7 @@ type Provenance struct {
 
 // RunTimings is the wall time of one scan pass: end to end, and per pipeline stage summed over
 // every advisory the pass assessed. The gap between WallSeconds and the stage sum is the work done
-// outside the per-advisory pipeline (acquisition, inventory, work-set resolution).
+// outside the per-advisory pipeline (acquisition, work-set resolution, publication).
 type RunTimings struct {
 	// WallSeconds is the elapsed time from the start of the run mode to the publication of this
 	// Report.

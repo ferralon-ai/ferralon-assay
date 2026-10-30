@@ -105,6 +105,10 @@ func TestResolveVersions_ToolConfig(t *testing.T) {
 			"Copy-Item -Recurse ci/poetrycfg (Join-Path $HOME .config pypoetry)\npoetry install", false},
 		{"config directory on Windows, GetFolderPath", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
 			"Copy-Item -Recurse ci/poetrycfg (Join-Path ([Environment]::GetFolderPath('ApplicationData')) pypoetry)\npoetry install", false},
+		{"macOS config directory, Join-Path", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
+			"Copy-Item -Recurse ci/poetrycfg (Join-Path $HOME 'Library/Application Support' pypoetry)\npoetry install", false},
+		{"site config directory, Join-Path", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
+			"Copy-Item -Recurse ci/poetrycfg (Join-Path /etc/xdg pypoetry)\npoetry install", false},
 		{"HOME moved", "poetry", "", nil, "FROM python:3.12\nENV HOME /cfg\nWORKDIR /app\nCOPY . .\nRUN poetry install\n", false},
 		{"platformdirs' Windows override", "poetry", "", nil, "export WIN_PD_OVERRIDE_ROAMING_APPDATA=C:\\cfg\npoetry install", false},
 

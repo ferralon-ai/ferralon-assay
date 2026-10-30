@@ -19,9 +19,9 @@ var (
 	depWorkPerRune int64 = 64
 	depWorkFloor   int64 = 1 << 24
 	// depFileParseBackstop bounds one file's parse in wall time, for a shape the estimate does
-	// not model. It sits far above any parse the estimate admits, so hitting it is a tool
-	// failure, not a property of the input: the package is left unread and the run carries
-	// tool_failure, scoped and run-wide, as when the read budget runs out.
+	// not model. It sits far above any real parse measured, so whether it fires depends on host
+	// load: the package is left unread and the run carries tool_failure, scoped and run-wide,
+	// as when the read budget runs out, never a code that reads as a property of the input.
 	depFileParseBackstop = 2 * time.Minute
 	// depRunSourceCap bounds the source bytes one run parses across every dependency package.
 	// A package read past it is left unparsed with a scoped tool_failure.

@@ -128,9 +128,9 @@ func blockingParser(t *testing.T, limit time.Duration) {
 }
 
 // TestDepGuards_FileParseBackstop (F1): a parse the estimate lets through but that never finishes
-// is abandoned at depFileParseBackstop. Hitting the backstop is a tool failure, not a property of
-// the file: the package is left unread with tool_failure, scoped and run-wide, and never
-// unsupported_phase1, which only the estimate's refusal records.
+// is abandoned at depFileParseBackstop. Whether the backstop fires depends on host load, so the
+// package is left unread with tool_failure, scoped and run-wide, and never unsupported_phase1,
+// which only the estimate's refusal records.
 func TestDepGuards_FileParseBackstop(t *testing.T) {
 	blockingParser(t, 20*time.Second)
 	prev := depFileParseBackstop

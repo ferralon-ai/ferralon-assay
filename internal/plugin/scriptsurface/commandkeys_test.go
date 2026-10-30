@@ -71,6 +71,7 @@ func TestVeto_CommandKeys(t *testing.T) {
 		{"JSON parameter . on its own line", tree(map[string]string{"vercel.json": `{"outputDirectory": ".\n./env.sh"}`}), true},
 		{"command key in an item under a parameter", tree(map[string]string{".travis.yml": "jobs:\n  include:\n    - install: .\n"}), true},
 		{"action input list item .", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          args:\n            - .\n")}), false},
+		{"netlify publish before a sibling key", tree(map[string]string{"netlify.toml": "[build]\npublish = \".\"\ncommand = \"make\"\n"}), false},
 		{"netlify publish before a table", tree(map[string]string{"netlify.toml": "[build]\n  publish = \".\"\n[context.production]\n  command = \"make\"\n"}), false},
 		{"action input names an installer", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          args: inst add x\n")}), true},
 		{"action input sources a file", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          script: . ./env.sh\n")}), true},
@@ -103,6 +104,7 @@ func TestVeto_CommandKeys(t *testing.T) {
 		{"JSON exec form . under a command key", tree(map[string]string{"vercel.json": `{"installCommand": ["."]}`}), true},
 		{"JSON objects in an array under a command key", tree(map[string]string{".devcontainer/devcontainer.json": `{"postCreateCommand": [{"a": "."}]}`}), true},
 		{"TOML line before any key", tree(map[string]string{"netlify.toml": ".\n"}), true},
+		{"bare item under no key", tree(map[string]string{".travis.yml": "- .\n"}), true},
 		{"bare line under no key", tree(map[string]string{".travis.yml": ".\n"}), true},
 
 		// Surfaces with no command keys listed run every value.

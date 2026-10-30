@@ -134,7 +134,7 @@ func (p listedPackage) purl() string {
 // lists the build's packages under the same env the failed load ran with, and runs govulncheck over
 // the roots it keeps.
 func partialGovulncheck(ctx context.Context, buildDir string, env []string, failure error) ([]byte, error) {
-	return partialRunRecord(buildDir, loadPackageErrors(failure), func() ([]listedPackage, error) {
+	return partialRunRecord(buildDir, failurePackageErrors(failure), func() ([]listedPackage, error) {
 		return listBuildPackages(ctx, buildDir, env)
 	}, func(patterns []string) ([]byte, error) {
 		return govulncheckStream(ctx, buildDir, env, patterns)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ import (
 func TestGovulncheckOrPartial(t *testing.T) {
 	const buildDir = "/src"
 	env := []string{"GOWORK=off"}
-	cause := errors.New("loading packages: olm/olm.h file not found")
+	cause := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
 	partialStream := []byte(`{"config":{}}` + "\n")
 	record, err := partialRunRecord(buildDir,
 		[]packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}},
@@ -298,7 +299,7 @@ func TestReconciledResult_PartialRunWithholdsRefutation(t *testing.T) {
 	for _, partial := range []bool{false, true} {
 		cache := t.TempDir()
 		if partial {
-			seed(t, cache, govulncheckFailureKind, govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: "exit status 1", Stderr: "could not import C"})
+			seed(t, cache, govulncheckFailureKind, govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: "exit status 1", Stderr: "could not import C", PackageErrors: []recordedPackageError{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
 			seed(t, cache, govulncheckPartialKind, partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"example.com/m/c"}, Excluded: []string{"example.com/m/cmd/a"}, Stream: stream})
 		} else {
 			seed(t, cache, "govulncheck", stream)

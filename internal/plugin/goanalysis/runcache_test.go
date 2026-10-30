@@ -401,7 +401,7 @@ func TestGovulncheckCachedSettlesFailure(t *testing.T) {
 	const buildDir = "/src"
 	env := []string{"GOWORK=off"}
 	key := append([]string{buildDir}, env...)
-	cause := fmt.Errorf("govulncheck: %w", errors.New("loading packages: olm/olm.h file not found"))
+	cause := fmt.Errorf("govulncheck: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
 	tests := []struct {
 		name       string
 		cacheDir   bool
@@ -480,7 +480,7 @@ func TestGovulncheckCachedSettlesFailure(t *testing.T) {
 
 // TestGovulncheckErrorMessage pins the failure message every caller sees, fresh or replayed.
 func TestGovulncheckErrorMessage(t *testing.T) {
-	cause := errors.New("govulncheck: loading packages: boom")
+	cause := fmt.Errorf("govulncheck: loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/src/a.go:1:1", Msg: "boom"}}})
 	want := fmt.Errorf("govulncheck failed (%q): %w: %s", "/src", cause, "err text").Error()
 	fresh := &govulncheckError{buildDir: "/src", cause: cause, stderr: "err text"}
 	if got := fresh.Error(); got != want {
@@ -615,7 +615,7 @@ func TestGovulncheckFailureEntryIsolation(t *testing.T) {
 	env := []string{"GOWORK=off"}
 	key := append([]string{buildDir}, env...)
 	const stream = `{"config":{"protocol_version":"v1.0.0"}}` + "\n"
-	record := &govulncheckError{buildDir: buildDir, cause: errors.New("loading packages: x"), stderr: "", settled: true}
+	record := &govulncheckError{buildDir: buildDir, cause: fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/src/a.go:1:1", Msg: "x"}}}), stderr: "", settled: true}
 
 	t.Run("failure not read as a stream", func(t *testing.T) {
 		ctx := WithRunCacheDir(context.Background(), t.TempDir())
@@ -632,6 +632,8 @@ func TestGovulncheckFailureEntryIsolation(t *testing.T) {
 		{"stream", stream},
 		{"record without the marker", `{"cause":"loading packages: x","stderr":""}`},
 		{"truncated record", `{"marker":"` + govulncheckFailureMarker},
+		{"record under the earlier marker", `{"marker":"govulncheck-settled-failure/v1","cause":"loading packages: x","stderr":""}`},
+		{"record without package errors", `{"marker":"` + govulncheckFailureMarker + `","cause":"loading packages: x","stderr":""}`},
 	} {
 		t.Run(tc.name+" at the failure entry not read as a failure", func(t *testing.T) {
 			dir := t.TempDir()

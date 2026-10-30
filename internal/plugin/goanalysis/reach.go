@@ -926,6 +926,7 @@ type govulncheckError struct {
 	cause    error
 	stderr   string
 	settled  bool
+	perrs    []packages.Error // a replay's package errors, which its cause no longer carries
 }
 
 func (e *govulncheckError) Error() string {
@@ -940,30 +941,46 @@ func (e *govulncheckError) Unwrap() error { return e.cause }
 const govulncheckFailureKind = "govulncheck-failure"
 
 // govulncheckFailureMarker identifies a settled failure record; an entry without it is no record.
-const govulncheckFailureMarker = "govulncheck-settled-failure/v1"
+// A record under an earlier marker carries no package errors, so a replay of it could not rebuild
+// the partial run; it is no record either, and the next run settles the failure afresh.
+const govulncheckFailureMarker = "govulncheck-settled-failure/v2"
 
 type govulncheckFailureRecord struct {
-	Marker string `json:"marker"`
-	Cause  string `json:"cause"`
-	Stderr string `json:"stderr"`
+	Marker        string                 `json:"marker"`
+	Cause         string                 `json:"cause"`
+	Stderr        string                 `json:"stderr"`
+	PackageErrors []recordedPackageError `json:"package_errors"`
 }
 
-// recordGovulncheckFailure stores a settled failure for key. A record that cannot be written only
-// costs the next run its replay.
+// recordedPackageError is what a partial run reads of a package error (unloadablePackages).
+type recordedPackageError struct {
+	Pos string `json:"pos"`
+	Msg string `json:"msg"`
+}
+
+// recordGovulncheckFailure stores a settled failure for key with the package errors that bound its
+// partial run. A failure without them is not stored, since its replay could bound no partial run. A
+// record that cannot be written only costs the next run its replay.
 func recordGovulncheckFailure(ctx context.Context, key []string, failed *govulncheckError) {
 	dir := RunCacheDir(ctx)
-	if dir == "" {
+	perrs := failurePackageErrors(failed)
+	if dir == "" || len(perrs) == 0 {
 		return
 	}
-	b, err := json.Marshal(govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: failed.cause.Error(), Stderr: failed.stderr})
+	rec := govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: failed.cause.Error(), Stderr: failed.stderr}
+	for _, pe := range perrs {
+		rec.PackageErrors = append(rec.PackageErrors, recordedPackageError{Pos: pe.Pos, Msg: pe.Msg})
+	}
+	b, err := json.Marshal(rec)
 	if err != nil {
 		return
 	}
 	writeRunCacheEntry(dir, govulncheckFailureKind, runCachePath(dir, govulncheckFailureKind, key), b)
 }
 
-// replayGovulncheckFailure returns the settled failure stored for key, carrying the message of the
-// run that settled it, or nil when none is stored.
+// replayGovulncheckFailure returns the settled failure stored for key, carrying the message and the
+// package errors of the run that settled it, or nil when none is stored. A record that carries no
+// package errors is none.
 func replayGovulncheckFailure(ctx context.Context, buildDir string, key []string) error {
 	dir := RunCacheDir(ctx)
 	if dir == "" {
@@ -974,10 +991,27 @@ func replayGovulncheckFailure(ctx context.Context, buildDir string, key []string
 		return nil
 	}
 	var rec govulncheckFailureRecord
-	if json.Unmarshal(b, &rec) != nil || rec.Marker != govulncheckFailureMarker {
+	if json.Unmarshal(b, &rec) != nil || rec.Marker != govulncheckFailureMarker || len(rec.PackageErrors) == 0 {
 		return nil
 	}
-	return &govulncheckError{buildDir: buildDir, cause: errors.New(rec.Cause), stderr: rec.Stderr, settled: true}
+	failed := &govulncheckError{buildDir: buildDir, cause: errors.New(rec.Cause), stderr: rec.Stderr, settled: true}
+	for _, pe := range rec.PackageErrors {
+		failed.perrs = append(failed.perrs, packages.Error{Pos: pe.Pos, Msg: pe.Msg})
+	}
+	return failed
+}
+
+// failurePackageErrors returns the package errors of a govulncheck failure: those its load reported,
+// or, for a replayed failure, those its record kept.
+func failurePackageErrors(err error) []packages.Error {
+	if perrs := loadPackageErrors(err); len(perrs) > 0 {
+		return perrs
+	}
+	var failed *govulncheckError
+	if errors.As(err, &failed) {
+		return failed.perrs
+	}
+	return nil
 }
 
 // govulncheckStream runs govulncheck over patterns in buildDir under env and returns its -json

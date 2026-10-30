@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,36 @@ import (
 // given. Callers that stage or probe for an analyzer binary use it rather than spelling the name.
 func BinaryName(language string) string {
 	return brand.PluginPrefix + language
+}
+
+// NotInstalledError is a constructor's error when no analyzer binary for its language is on PATH:
+// the plugin is not installed, which is a fact about this host and not a fault in the scan. A
+// caller can tell it apart from every other construction failure with errors.As and report the
+// language as not analyzed instead of failing the run.
+type NotInstalledError struct {
+	Language string // the plugin's Language()
+	Binary   string // BinaryName(Language), the executable that was looked for
+	Err      error  // exec.LookPath's error
+}
+
+func (e *NotInstalledError) Error() string {
+	return fmt.Sprintf("plugin: discover %s: %v", e.Binary, e.Err)
+}
+
+func (e *NotInstalledError) Unwrap() error { return e.Err }
+
+// discoverBinary resolves BinaryName(language) on PATH for a constructor given no explicit path. No
+// executable of that name is a *NotInstalledError; any other lookup failure is returned as it is.
+func discoverBinary(language string) (string, error) {
+	name := BinaryName(language)
+	bin, err := exec.LookPath(name)
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", &NotInstalledError{Language: language, Binary: name, Err: err}
+	}
+	if err != nil {
+		return "", fmt.Errorf("plugin: discover %s: %w", name, err)
+	}
+	return bin, nil
 }
 
 // runSubprocessCall is the ONE shared choke point every language plugin's run funnels through,

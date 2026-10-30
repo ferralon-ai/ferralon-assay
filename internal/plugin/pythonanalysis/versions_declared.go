@@ -94,9 +94,10 @@ type pyprojectDoc struct {
 			} `toml:"group"`
 		} `toml:"poetry"`
 		UV struct {
-			DevDependencies      []any `toml:"dev-dependencies"`
-			Sources              any   `toml:"sources"`
-			OverrideDependencies any   `toml:"override-dependencies"`
+			DevDependencies        []any `toml:"dev-dependencies"`
+			Sources                any   `toml:"sources"`
+			OverrideDependencies   any   `toml:"override-dependencies"`
+			ConstraintDependencies any   `toml:"constraint-dependencies"`
 		} `toml:"uv"`
 		PDM struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
@@ -179,8 +180,9 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 			origins[i].directRef = true
 		}
 	}
-	overridden, overridesOK := uvOverrideNames(doc.Tool.UV.OverrideDependencies)
-	readable = readable && overridesOK
+	overridden, overridesOK := uvResolverNames(doc.Tool.UV.OverrideDependencies)
+	_, constraintsOK := uvResolverNames(doc.Tool.UV.ConstraintDependencies)
+	readable = readable && overridesOK && constraintsOK
 	for i, d := range deps {
 		if overridden[normalizePyCoordinate(d.Coordinate)] && !origins[i].directRef {
 			deps[i] = pyResolved(d.Coordinate, "", false, d.Source)
@@ -189,12 +191,14 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	return deps, origins, readable
 }
 
-// uvOverrideNames returns the normalized names [tool.uv] override-dependencies names. uv
-// installs an overridden name at what the override admits in place of every declared
-// specifier, while any other installer honours the declaration, so neither pins the installed
-// version alone: a declaration of the name resolves only through a lock pin both admit
-// (uvOverrideEntries holds the override's side). ok is false when the value is not a list of well-formed requirement strings.
-func uvOverrideNames(v any) (map[string]bool, bool) {
+// uvResolverNames returns the normalized names a [tool.uv] override-dependencies or
+// constraint-dependencies list names. uv installs an overridden name at what the override admits
+// in place of every declared specifier, while any other installer honours the declaration, so
+// neither pins the installed version alone: a declaration of the name resolves only through a
+// lock pin both admit (uvOverrideEntries holds the override's side). A constraint only narrows
+// the declarations, so its names mark nothing here; it is read for its shape alone. ok is false
+// when the value is not a list of well-formed requirement strings.
+func uvResolverNames(v any) (map[string]bool, bool) {
 	if v == nil {
 		return nil, true
 	}
@@ -218,14 +222,17 @@ func uvOverrideNames(v any) (map[string]bool, bool) {
 }
 
 // uvOverrideEntries returns every [tool.uv] override-dependencies entry for want among the
-// pyproject.toml manifests, each with the uv.lock beside it as its resolution. uv reads overrides
-// from the workspace root and applies them to every member, so an override anywhere in the
-// build constrains every declaration of the name. A pyproject that does not decode, or whose
-// overrides do not read, is already read as a failure.
-func uvOverrideEntries(manifests []string, want string) ([]plugin.ResolvedDependency, []manifestOrigin) {
+// pyproject.toml manifests, each with the uv.lock beside it as its resolution, and the
+// constraint-dependencies entries for want as origins alone. A lock written before an entry was
+// added still pins what the declarations alone admitted, which uv re-locks past on a plain sync.
+// uv reads both lists only from the workspace root and applies them to every member; reading
+// them from every pyproject is deliberately wider, so a standalone project's own entries count
+// too. A pyproject that does not decode, or whose lists do not read, is already read as a failure.
+func uvOverrideEntries(manifests []string, want string) ([]plugin.ResolvedDependency, []manifestOrigin, []manifestOrigin) {
 	var (
-		deps    []plugin.ResolvedDependency
-		origins []manifestOrigin
+		deps        []plugin.ResolvedDependency
+		origins     []manifestOrigin
+		constraints []manifestOrigin
 	)
 	for _, m := range manifests {
 		if filepath.Base(m) != "pyproject.toml" {
@@ -239,19 +246,26 @@ func uvOverrideEntries(manifests []string, want string) ([]plugin.ResolvedDepend
 		if toml.Unmarshal(data, &doc) != nil {
 			continue
 		}
-		entries, _ := doc.Tool.UV.OverrideDependencies.([]any)
-		for _, e := range entries {
-			s, _ := e.(string)
-			d, o, keep, ok := pep508Entry(s, filepath.Dir(m))
-			if !keep || !ok || normalizePyCoordinate(d.Coordinate) != want {
-				continue
+		read := func(v any, add func(plugin.ResolvedDependency, manifestOrigin)) {
+			entries, _ := v.([]any)
+			for _, e := range entries {
+				s, _ := e.(string)
+				d, o, keep, ok := pep508Entry(s, filepath.Dir(m))
+				if keep && ok && normalizePyCoordinate(d.Coordinate) == want {
+					o.lockedBy = []string{"uv.lock"}
+					add(d, o)
+				}
 			}
-			o.lockedBy = []string{"uv.lock"}
+		}
+		read(doc.Tool.UV.OverrideDependencies, func(d plugin.ResolvedDependency, o manifestOrigin) {
 			deps = append(deps, d)
 			origins = append(origins, o)
-		}
+		})
+		read(doc.Tool.UV.ConstraintDependencies, func(_ plugin.ResolvedDependency, o manifestOrigin) {
+			constraints = append(constraints, o)
+		})
 	}
-	return deps, origins
+	return deps, origins, constraints
 }
 
 // uvSourceNames returns the normalized names a [tool.uv.sources] table redirects. uv installs

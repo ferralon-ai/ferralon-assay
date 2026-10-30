@@ -1489,6 +1489,7 @@ func TestResolveVersions_UVOverrides(t *testing.T) {
 		return "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"" + spec + "\"]\n" + extra
 	}
 	ov := func(specs string) string { return "[tool.uv]\noverride-dependencies = " + specs + "\n" }
+	cs := func(specs string) string { return "[tool.uv]\nconstraint-dependencies = " + specs + "\n" }
 	lock := func(version string) string {
 		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
 			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"" + version + "\"\n" +
@@ -1529,6 +1530,23 @@ func TestResolveVersions_UVOverrides(t *testing.T) {
 			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.9.0")}, "2.9.0", true},
 		// Guard: an override for another name leaves pyjwt alone.
 		{"override for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["requests==2.0.0"]`))}, "2.8.0", false},
+		// A constraint narrows the declarations, so a lock written before it was added pins what
+		// they alone admitted, and a plain uv sync re-locks past it.
+		{"lock predates constraint range", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt>=2.9"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lock predates constraint pin", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lock predates constraint on a locked-only name", map[string]string{
+			"pyproject.toml": pp("requests>=2", cs(`["pyjwt>=2.9"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"constraint direct reference", map[string]string{
+			"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt @ git+https://github.com/example/pyjwt@abc"]`))}, "", false},
+		{"constraint not a list", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`"pyjwt<3"`))}, "", false},
+		{"constraint entry not a string", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`[3]`))}, "", false},
+		// Guards: a constraint is no override, so a pin it admits still stands, and a lock pin
+		// inside both the declaration and the constraint is a complete set.
+		{"lockless constraint admits the pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt<3"]`))}, "2.8.0", false},
+		{"lock inside declaration and constraint", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt>=2.8"]`)), "uv.lock": lock("2.8.0")}, "2.8.0", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1542,6 +1560,42 @@ func TestResolveVersions_UVOverrides(t *testing.T) {
 			complete := res.MatchesComplete && !slices.ContainsFunc(res.Matches, func(d plugin.ResolvedDependency) bool { return !d.Resolved })
 			if complete != tc.wantComplete {
 				t.Fatalf("complete resolved set = %v (Matches %+v, MatchesComplete %v), want %v", complete, res.Matches, res.MatchesComplete, tc.wantComplete)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_UVResolverStaleLockExhaustive: a uv.lock whose pin falls outside an
+// override or constraint predates it, and a plain uv sync re-locks to a version whose
+// dependencies (or the override's extras) the stale lock never recorded. It proves no name
+// absent. A lock that agrees with every entry, and a constraint on a name nothing installs,
+// keep Exhaustive.
+func TestResolveVersions_UVResolverStaleLockExhaustive(t *testing.T) {
+	lock := func(version string) string {
+		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"" + version + "\"\n" +
+			"source = { registry = \"https://pypi.org/simple\" }\n"
+	}
+	for _, tc := range []struct {
+		name, uv, version string
+		want              bool
+	}{
+		{"no override or constraint", "", "2.8.0", true},
+		{"lock predates override", "override-dependencies = [\"pyjwt>=2.9\"]", "2.8.0", false},
+		{"lock predates constraint", "constraint-dependencies = [\"pyjwt>=2.9\"]", "2.8.0", false},
+		{"override extra the lock lacks", "override-dependencies = [\"pyjwt[crypto]>=2.8\"]", "2.8.0", false},
+		{"lock satisfies override", "override-dependencies = [\"pyjwt>=2.8\"]", "2.8.0", true},
+		{"lock satisfies constraint", "constraint-dependencies = [\"pyjwt>=2.8\"]", "2.8.0", true},
+		{"constraint on a name nothing installs", "constraint-dependencies = [\"urllib3<2\"]", "2.8.0", true},
+		{"override not a list", "override-dependencies = \"pyjwt>=2.8\"", "2.8.0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{
+				"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n[tool.uv]\n" + tc.uv + "\n",
+				"uv.lock":        lock(tc.version),
+			})
+			if r := resolveVersion(t, root, "cryptography"); r.Found || r.Exhaustive != tc.want {
+				t.Fatalf("cryptography: Found=%v Exhaustive=%v, want absent with Exhaustive %v (partiality %+v)", r.Found, r.Exhaustive, tc.want, r.Partiality)
 			}
 		})
 	}

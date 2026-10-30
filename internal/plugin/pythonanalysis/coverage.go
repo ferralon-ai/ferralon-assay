@@ -25,6 +25,7 @@ type pyDecl struct {
 	Extras    []string // normalized extra names
 	Marked    bool     // carries an environment marker (applies to some environments only)
 	Direct    bool     // a direct reference (path, VCS, URL) the lock resolves under its name
+	Resolver  bool     // a uv override or constraint: it bounds the name only when something requires it
 }
 
 // pyDecls is what manifestDecls read from one manifest.
@@ -169,7 +170,9 @@ type pyprojectAll struct {
 	DependencyGroups map[string]any `toml:"dependency-groups"`
 	Tool             struct {
 		UV struct {
-			DevDependencies []string `toml:"dev-dependencies"`
+			DevDependencies        []string `toml:"dev-dependencies"`
+			OverrideDependencies   []string `toml:"override-dependencies"`
+			ConstraintDependencies []string `toml:"constraint-dependencies"`
 		} `toml:"uv"`
 		Poetry struct {
 			Dependencies    map[string]any `toml:"dependencies"`
@@ -240,6 +243,16 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	}
 	if !add(all.Tool.UV.DevDependencies) {
 		return out, false
+	}
+	// A uv.lock written before an override or constraint was added pins what the declarations
+	// alone admitted. A plain uv sync re-locks past it, and a version or extras change moves the
+	// set of names the lock records.
+	n := len(out.reqs)
+	if !add(all.Tool.UV.OverrideDependencies) || !add(all.Tool.UV.ConstraintDependencies) {
+		return out, false
+	}
+	for i := n; i < len(out.reqs); i++ {
+		out.reqs[i].Resolver = true
 	}
 	for _, g := range slices.Sorted(maps.Keys(all.Tool.PDM.DevDependencies)) {
 		if !add(all.Tool.PDM.DevDependencies[g]) {
@@ -585,14 +598,15 @@ func leadingProjectName(req string) string {
 	return normalizePyCoordinate(req[:i])
 }
 
-// coversDecl reports whether the lock, on its own, holds d: its name is locked; unless it is a
+// coversDecl reports whether the lock, on its own, holds d: its name is locked (a uv override or
+// constraint the lock does not name bounds nothing it installs); unless it is a
 // direct reference, some locked version satisfies its specifier, and every locked version does
 // when the declaration applies to every environment (no marker); and each extra it asks for is
 // one the lock records for that name, with every package the extra pulls in locked too.
 func (l *pyLock) coversDecl(d pyDecl) bool {
 	versions, ok := l.versions[d.Name]
 	if !ok {
-		return false
+		return d.Resolver
 	}
 	if !d.Direct && d.Specifier != "" {
 		some, every := false, true

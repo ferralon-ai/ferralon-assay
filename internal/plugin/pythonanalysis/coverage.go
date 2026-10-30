@@ -186,6 +186,24 @@ type pyprojectAll struct {
 	} `toml:"tool"`
 }
 
+// stringArray returns v as the array of strings a TOML dependency list must be; nil is an
+// empty list.
+func stringArray(v any) ([]string, bool) {
+	entries, isList := v.([]any)
+	if v != nil && !isList {
+		return nil, false
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		s, isStr := e.(string)
+		if !isStr {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
+}
+
 func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	var pp pyprojectDeps
 	var all pyprojectAll

@@ -272,6 +272,8 @@ func TestResolveVersions_ExhaustiveHatchInstallsPast(t *testing.T) {
 		{"env workspace", "workspace = { members = [\"libs/*\"] }\n", false},
 		{"top-level sources", "[tool.hatch.sources]\njinja2 = { path = \"../jinja2\" }\n", false},
 		{"custom collector", "[tool.hatch.env.collectors.custom]\n", false},
+		{"script override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.scripts]]\nkey = \"setup\"\nvalue = \"pip install pyjwt\"\n", false},
+		{"env-var override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.env-vars]]\nkey = \"PIP_INDEX_URL\"\nvalue = \"https://mirror.example/simple\"\n", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

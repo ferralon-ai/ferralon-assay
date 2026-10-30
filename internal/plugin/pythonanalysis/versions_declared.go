@@ -150,24 +150,6 @@ func (h hatchConfig) installsPast() bool {
 	return false
 }
 
-// stringArray returns v as the array of strings a TOML dependency list must be; nil is an
-// empty list.
-func stringArray(v any) ([]string, bool) {
-	entries, isList := v.([]any)
-	if v != nil && !isList {
-		return nil, false
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		s, isStr := e.(string)
-		if !isStr {
-			return nil, false
-		}
-		out = append(out, s)
-	}
-	return out, true
-}
-
 // parsePyprojectVersions reads pyproject.toml's [project] dependencies and
 // optional-dependencies, each entry with the specifier a same-directory lock's pin must
 // satisfy to cover it, dynamic dependencies from the requirement files a dynamic-metadata
@@ -271,9 +253,17 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	addAny := func(v any, lockedBy []string) {
-		entries, isList := stringArray(v)
-		ok = ok && isList
-		for _, s := range entries {
+		entries, isList := v.([]any)
+		if v != nil && !isList {
+			ok = false
+			return
+		}
+		for _, e := range entries {
+			s, isStr := e.(string)
+			if !isStr {
+				ok = false
+				return
+			}
 			addPEP508(s, lockedBy)
 		}
 	}

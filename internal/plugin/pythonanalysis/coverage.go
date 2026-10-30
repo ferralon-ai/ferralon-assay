@@ -35,6 +35,7 @@ type pyDecls struct {
 	nested   []string // the -r includes among them: pip installs what they list with the file
 	hashed   bool     // a requirement line carries --hash, or an option line is --require-hashes
 	hashOff  bool     // an option line is --no-require-hashes
+	indexed  bool     // an option line names an index or a find-links location
 }
 
 // manifestDecls returns every requirement the non-lock manifest at path declares in a role that
@@ -137,6 +138,8 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 					out.hashed = true
 				case len(f) >= len("--no-r") && strings.HasPrefix("--no-require-hashes", f):
 					out.hashOff = true
+				case indexOption(f):
+					out.indexed = true
 				}
 			}
 			continue
@@ -162,6 +165,22 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 		})
 	}
 	return out, true
+}
+
+// indexOption reports whether an option-line field is -i/--index-url, --extra-index-url or
+// -f/--find-links, short options with their value attached and unambiguous long prefixes
+// included.
+func indexOption(f string) bool {
+	if k, ok := strings.CutPrefix(f, "--"); ok {
+		k, _, _ = strings.Cut(k, "=")
+		for _, long := range []string{"index-url", "extra-index-url", "find-links"} {
+			if k != "" && strings.HasPrefix(long, k) {
+				return true
+			}
+		}
+		return false
+	}
+	return strings.HasPrefix(f, "-i") || strings.HasPrefix(f, "-f")
 }
 
 // pyprojectAll is every pyproject.toml table that declares something to install.
@@ -454,7 +473,30 @@ type pyLock struct {
 	versions map[string][]string            // normalized name → every locked version ("" when none)
 	extras   map[string]map[string][]string // name → extra → normalized names it pulls in
 	members  map[string]bool                // local projects the lock resolves, by slash path relative to dir
+	// releases holds, for a uv.lock whose edges are the index's dependency metadata (closable),
+	// the edges of every registry release it locks: name → version → the union over entries.
+	releases map[string]map[string]*pyRelease
+	closable bool
+	// requiresPython is a uv.lock's requires-python: uv drops every edge whose marker cannot
+	// hold under it.
+	requiresPython string
 }
+
+// pyRelease is what a lock records a release requires: its base edges and each extra's.
+type pyRelease struct {
+	deps   []pyEdge
+	extras map[string][]pyEdge
+}
+
+// pyEdge is one dependency edge, to a normalized name and the extras it asks of it.
+type pyEdge struct {
+	name   string
+	extras []string
+}
+
+// uvManifestKeys are the uv.lock [manifest] keys that leave every edge as the index's metadata
+// records it. overrides, excludes and dependency-metadata rewrite edges.
+var uvManifestKeys = map[string]bool{"members": true, "requirements": true, "constraints": true, "dependency-groups": true}
 
 // readPyLock decodes a uv.lock, poetry.lock or pdm.lock. ok is false when it does not decode.
 func readPyLock(path string) (*pyLock, bool) {
@@ -468,6 +510,7 @@ func readPyLock(path string) (*pyLock, bool) {
 		versions: map[string][]string{},
 		extras:   map[string]map[string][]string{},
 		members:  map[string]bool{},
+		releases: map[string]map[string]*pyRelease{},
 	}
 	addExtra := func(name, extra string, deps []string) {
 		if l.extras[name] == nil {
@@ -482,22 +525,49 @@ func readPyLock(path string) (*pyLock, bool) {
 	}
 	switch filepath.Base(path) {
 	case "uv.lock":
+		type uvEdge struct {
+			Name  string   `toml:"name"`
+			Extra []string `toml:"extra"`
+		}
 		var lock struct {
-			Package []struct {
-				Name    string `toml:"name"`
-				Version string `toml:"version"`
-				Source  struct {
+			SupportedMarkers  []string       `toml:"supported-markers"`
+			RequiredMarkers   []string       `toml:"required-markers"`
+			ResolutionMarkers []string       `toml:"resolution-markers"`
+			RequiresPython    string         `toml:"requires-python"`
+			Manifest          map[string]any `toml:"manifest"`
+			Package           []struct {
+				Name              string   `toml:"name"`
+				Version           string   `toml:"version"`
+				ResolutionMarkers []string `toml:"resolution-markers"`
+				Source            struct {
+					Registry  string `toml:"registry"`
 					Editable  string `toml:"editable"`
 					Virtual   string `toml:"virtual"`
 					Directory string `toml:"directory"`
 				} `toml:"source"`
-				OptionalDependencies map[string][]struct {
-					Name string `toml:"name"`
-				} `toml:"optional-dependencies"`
+				Dependencies         []uvEdge            `toml:"dependencies"`
+				OptionalDependencies map[string][]uvEdge `toml:"optional-dependencies"`
 			} `toml:"package"`
 		}
 		if toml.Unmarshal(data, &lock) != nil {
 			return nil, false
+		}
+		// A fork (resolution-markers) drops each entry's edges that cannot hold inside it.
+		l.closable = len(lock.SupportedMarkers) == 0 && len(lock.RequiredMarkers) == 0 && len(lock.ResolutionMarkers) == 0
+		l.requiresPython = lock.RequiresPython
+		for k := range lock.Manifest {
+			l.closable = l.closable && uvManifestKeys[k]
+		}
+		edges := func(deps []uvEdge) []pyEdge {
+			var out []pyEdge
+			for _, d := range deps {
+				e := pyEdge{name: normalizePyCoordinate(d.Name)}
+				for _, x := range d.Extra {
+					e.extras = append(e.extras, normalizePyCoordinate(x))
+				}
+				out = append(out, e)
+			}
+			return out
 		}
 		for _, p := range lock.Package {
 			n := normalizePyCoordinate(p.Name)
@@ -508,6 +578,22 @@ func readPyLock(path string) (*pyLock, bool) {
 					names = append(names, normalizePyCoordinate(d.Name))
 				}
 				addExtra(n, x, names)
+			}
+			l.closable = l.closable && len(p.ResolutionMarkers) == 0
+			if p.Source.Registry != "" {
+				if l.releases[n] == nil {
+					l.releases[n] = map[string]*pyRelease{}
+				}
+				rel := l.releases[n][p.Version]
+				if rel == nil {
+					rel = &pyRelease{extras: map[string][]pyEdge{}}
+					l.releases[n][p.Version] = rel
+				}
+				rel.deps = append(rel.deps, edges(p.Dependencies)...)
+				for x, deps := range p.OptionalDependencies {
+					x = normalizePyCoordinate(x)
+					rel.extras[x] = append(rel.extras[x], edges(deps)...)
+				}
 			}
 			member(p.Source.Editable)
 			member(p.Source.Virtual)
@@ -680,6 +766,7 @@ type reqInstalls struct {
 	memo     map[string]bool
 	visiting map[string]bool
 	hashOff  *bool // memoized hashesDisabled
+	indexCfg *bool // memoized pipConfigNamesIndex
 }
 
 // newReqInstalls reads every requirements file among manifests and every file they -r, and
@@ -780,6 +867,26 @@ func (r *reqInstalls) hashesDisabled() bool {
 
 var noRequireHashesRE = regexp.MustCompile(`(?i)no[-_]require[-_]hashes`)
 
+// minorClauseRE matches a requires-python clause whose bound falls between minor releases, or
+// a bare .python-version "X.Y" pin.
+var minorClauseRE = regexp.MustCompile(`^(?:(?:>=|<)\s*\d+(?:\.\d+)?|~=\s*\d+\.\d+|(?:==|!=)\s*\d+\.\d+\.\*|\d+\.\d+)$`)
+
+// minorBounded reports whether every clause of a requires-python spec bounds whole minor
+// releases. An empty spec is the build that declares none: assumedInterpreter, which does.
+func minorBounded(spec string) bool {
+	if strings.TrimSpace(spec) == "" {
+		return true
+	}
+	for _, c := range strings.Split(spec, ",") {
+		if !minorClauseRE.MatchString(strings.TrimSpace(c)) {
+			return false
+		}
+	}
+	return true
+}
+
+var pipIndexConfigRE = regexp.MustCompile(`(?i)index[-_]url|find[-_]links`)
+
 // pipConfigDisablesHashes walks root (all but its own .git) for a pip.conf or pip.ini that
 // names no-require-hashes, whatever value it gives it. A walk or read error counts as naming it.
 func pipConfigDisablesHashes(root string) bool {
@@ -860,4 +967,162 @@ func (r *reqInstalls) narrowed(f string) bool {
 		paths++
 	}
 	return paths > 0
+}
+
+// closed reports whether every governing lock proves f's install set (f and every file it -r's,
+// at any depth) closed: pip has no name to fetch that the set does not pin. Every requirement
+// line is an "==" pin (specifierPin) that is not a direct reference; every governing lock is a
+// closable uv.lock; and in each, every pinned release, with the extras its line asks for, has a
+// registry entry whose every edge, marker or not, lands on a name the set pins with no marker,
+// recursively through the extras an edge asks for. A marked pin installs only where its marker
+// holds, so it pins its own release but no edge into it. The set, every -c constraints file
+// it names, and every in-tree pip config must name no index or find-links location: another
+// source can serve the same release with other metadata than the lock recorded. A file a file
+// directive names installs with its project, whose own dependencies pip resolves past the
+// file. This does not depend on hash-checking mode, so hashesDisabled does not touch it.
+//
+// uv drops an edge whose marker cannot hold under the lock's requires-python, so that range
+// must admit every interpreter the lane reads the build as running (buildInterpreter).
+func (r *reqInstalls) closed(f string, locks []*pyLock) bool {
+	f = filepath.Clean(f)
+	if r.directed[f] || len(locks) == 0 || r.pipConfigNamesIndex() {
+		return false
+	}
+	type pin struct {
+		name, spec string
+		extras     []string
+	}
+	var pins []pin
+	unmarked := map[string][]string{} // name → the specs its unmarked pins give
+	type step struct {
+		f        string
+		installs bool
+	}
+	seen := map[step]bool{}
+	// walk reads f, which installs what it lists unless it is a -c constraints file: pip
+	// applies a constraints file's options too, so it may not name an index either.
+	var walk func(f string, installs bool) bool
+	walk = func(f string, installs bool) bool {
+		if seen[step{f, installs}] {
+			return true
+		}
+		seen[step{f, installs}] = true
+		d := r.decls[f]
+		if !installs {
+			d = nil
+			if data, err := readRegular(f); err == nil {
+				if c, ok := requirementsDecls(f, data, pyDecls{}); ok {
+					d = &c
+				}
+			}
+		}
+		if d == nil || d.indexed {
+			return false
+		}
+		for _, inc := range d.includes {
+			if !walk(inc, installs && slices.Contains(d.nested, inc)) {
+				return false
+			}
+		}
+		if !installs {
+			return true
+		}
+		for _, q := range d.reqs {
+			if _, ok := specifierPin(q.Specifier); !ok || q.Direct || strings.Contains(q.Specifier, ",") {
+				return false
+			}
+			pins = append(pins, pin{q.Name, q.Specifier, q.Extras})
+			if !q.Marked {
+				unmarked[q.Name] = append(unmarked[q.Name], q.Specifier)
+			}
+		}
+		return true
+	}
+	if !walk(f, true) {
+		return false
+	}
+	build := buildInterpreter(r.root)
+	buildSpec, _ := declaredPython(r.root)
+	for _, l := range locks {
+		if !l.closable || !admitsAll(l.requiresPython, buildSpec, build) {
+			return false
+		}
+		done := map[[3]string]bool{}
+		var visit func(name, spec, extra string) bool
+		visit = func(name, spec, extra string) bool {
+			key := [3]string{name, spec, extra}
+			if done[key] {
+				return true
+			}
+			done[key] = true
+			found := false
+			for v, rel := range l.releases[name] {
+				if !satisfiesAll(v, spec) {
+					continue
+				}
+				edges, ok := rel.deps, true
+				if extra != "" {
+					edges, ok = rel.extras[extra]
+				}
+				if !ok {
+					return false
+				}
+				found = true
+				for _, e := range edges {
+					specs := unmarked[e.name]
+					if len(specs) == 0 {
+						return false
+					}
+					for _, to := range specs {
+						for _, x := range append([]string{""}, e.extras...) {
+							if !visit(e.name, to, x) {
+								return false
+							}
+						}
+					}
+				}
+			}
+			return found
+		}
+		for _, p := range pins {
+			for _, x := range append([]string{""}, p.extras...) {
+				if !visit(p.name, p.spec, x) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// pipConfigNamesIndex reports whether a pip.conf or pip.ini under root names an index or
+// find-links location (pipConfigMatches). pip configuration outside the tree is assumed not to.
+func (r *reqInstalls) pipConfigNamesIndex() bool {
+	if r.indexCfg == nil {
+		v := pipConfigMatches(r.root, pipIndexConfigRE.Match)
+		r.indexCfg = &v
+	}
+	return *r.indexCfg
+}
+
+// admitsAll reports whether the requires-python spec admits every release in build, which
+// buildSpec declares. An absent or unreadable spec admits nothing. The ranges are compared by
+// minor release, so unless both specs bound only whole minor releases, spec must be buildSpec
+// itself: uv drops an edge marked below a lock's ">=3.10.5" or ">3.10" that pip on 3.10.0
+// installs.
+func admitsAll(spec, buildSpec string, build interpreterRange) bool {
+	if strings.Join(strings.Fields(spec), "") != strings.Join(strings.Fields(buildSpec), "") &&
+		(!minorBounded(spec) || !minorBounded(buildSpec)) {
+		return false
+	}
+	r, ok := parseInterpreterRange(spec)
+	if !ok {
+		return false
+	}
+	for _, rel := range slices.Concat(build.releases, build.probes) {
+		if !slices.Contains(r.releases, rel) && !slices.Contains(r.probes, rel) {
+			return false
+		}
+	}
+	return true
 }

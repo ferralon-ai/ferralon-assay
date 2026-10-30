@@ -542,6 +542,8 @@ func (v *Veto) dockerfile(file, src string) string {
 					return why
 				}
 			}
+		case instr == "ENV" || instr == "ARG":
+			v.mention(strings.Fields(rest)) // a later command may reach a path through the value
 		case dockerPlain[instr]:
 		default: // ONBUILD, HEALTHCHECK and anything unknown run elsewhere or not at all
 			if hasTok {

@@ -998,8 +998,11 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // A scoped limit (plugin.ScopedReason) joins the run-wide reasons only when it counts for this
 // advisory's package (scopedLimitCounts).
 //
-// The reason is analysis_did_not_run, except when the only did-not-run limit is the analyzer
-// declaring it does not know the advisory: that is the more precise statement of the same fact.
+// The reason is analysis_did_not_run, except in two cases that state the fact more precisely. When
+// the only did-not-run limit is the analyzer declaring it does not know the advisory, the reason is
+// advisory_unknown_to_analyzer. When every did-not-run limit is one an analyzer declares only after
+// its search ran and came back empty (refutationWithheldReasons), the reason is
+// refutation_withheld: the steps ran, and the search did not cover all the code the build may run.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
@@ -1010,8 +1013,23 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 		return "", false
 	case !slices.ContainsFunc(reasons, func(r string) bool { return r != plugin.PartialReasonAdvisoryUnknownToAnalyzer }):
 		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	case !slices.ContainsFunc(reasons, func(r string) bool { return !refutationWithheldReasons[r] }):
+		return report.ReasonRefutationWithheld, true
 	}
 	return report.ReasonAnalysisDidNotRun, true
+}
+
+// refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
+// refutation its completed search would have supported: each leaves that search intact and says code
+// it did not cover may contradict it. A limit can also be declared when its coverage check cannot run
+// (excluded_files when `go mod graph` fails), still in place of a refutation. cgo:env_unresolved is
+// not listed: it means `go env` failed, which puts the search's own build configuration in doubt, so
+// it keeps analysis_did_not_run.
+var refutationWithheldReasons = map[string]bool{
+	plugin.PartialReasonExcludedFiles:     true,
+	plugin.PartialReasonUnsearchedMethods: true,
+	plugin.PartialReasonLibraryEscape:     true,
+	plugin.PartialReasonReflectiveCall:    true,
 }
 
 // emptyGraphUncalledComplete reports whether the call graph is empty and the analyzer declined to
@@ -1190,7 +1208,7 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // owes one. Keeping it beside the row's construction is what stops the two from drifting: every
 // run mode adds the finding and then asks this, so a surface can never show a row with no limit
 // or a limit with no row.
-// An analysis_did_not_run or advisory_unknown_to_analyzer row owes NO note of its own. That row stands on limits partialityNotes
+// An analysis_did_not_run, advisory_unknown_to_analyzer or refutation_withheld row owes NO note of its own. That row stands on limits partialityNotes
 // already publishes at scan scope, each named precisely (unsupported_phase1, no_manifest, …) and
 // each scoped to the ecosystem the run actually detected. Synthesizing a second note here would
 // disclose one fact twice and scope the copy to Go.
@@ -1201,7 +1219,8 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	switch {
 	case f.Verdict != report.VerdictUndetermined,
 		f.UndeterminedReason == report.ReasonAnalysisDidNotRun,
-		f.UndeterminedReason == report.ReasonAdvisoryUnknownToAnalyzer:
+		f.UndeterminedReason == report.ReasonAdvisoryUnknownToAnalyzer,
+		f.UndeterminedReason == report.ReasonRefutationWithheld:
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {

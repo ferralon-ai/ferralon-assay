@@ -537,7 +537,7 @@ func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaq
 	return sortedDedup(roots), opaque
 }
 
-// stringLoaderArg says what a string loader's first argument may be.
+// stringLoaderArg says what a string loader's name argument may be.
 type stringLoaderArg int
 
 const (
@@ -570,21 +570,38 @@ var stringLoaderMethods = map[string]bool{
 	"config_from_object": true,
 }
 
+// loaderKeywords are the parameter names string loaders give the argument that names the
+// module: uvicorn's app, werkzeug's and django's import_name and dotted_path, Flask's and
+// Celery's obj.
+var loaderKeywords = map[string]bool{"app": true, "import_name": true, "dotted_path": true, "obj": true}
+
 // stringLoaderImports scans one file's cleaned source for calls to stringLoaders and
-// stringLoaderMethods. It returns the module names literal arguments import (a dotted name
-// may end in an attribute, so its parent module is named too) and whether a computed
-// argument may name a module the scanner cannot see. bindings resolve the head of each
-// dotted call to the module the file imported it from.
+// stringLoaderMethods. It returns the module names literal arguments import and whether a
+// loader may import a module the scanner cannot name: a computed argument, or a loader
+// used as a value (map(import_string, paths)), whose calls it cannot see. bindings resolve
+// the head of each dotted call to the module the file imported it from.
 func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots []string, opaque bool) {
+	r := []rune(clean)
+	n := len(r)
+	spans, stars := importStatements(r)
 	targets := map[string][]string{}
 	for _, b := range bindings {
 		if b.target != "" && !slices.Contains(targets[b.local], b.target) {
 			targets[b.local] = append(targets[b.local], b.target)
 		}
 	}
-	r := []rune(clean)
-	n := len(r)
+	for name := range stringLoaders {
+		if mod, leaf, _ := cutLast(name, "."); stars[mod] {
+			targets[leaf] = append(targets[leaf], name)
+		}
+	}
+	si := 0
 	for i := 0; i < n; {
+		if si < len(spans) && i >= spans[si][0] {
+			i = max(i, spans[si][1])
+			si++
+			continue
+		}
 		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
 			i++
 			continue
@@ -602,29 +619,25 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			}
 			break
 		}
-		open := skipAllSpace(r, end)
-		if open >= n || r[open] != '(' || precededByDef(r, i) {
-			i = end
-			continue
-		}
 		kind, ok := stringLoaderKind(segs, qualified, targets)
-		if !ok {
+		if !ok || precededByDef(r, i) || assignedTo(r, end) {
 			i = end
 			continue
 		}
-		arg, named := loaderArgStart(r, open+1)
-		name, lit := literalArg(r, arg, lits)
-		lit = lit && named
-		switch {
-		case lit:
-			roots = append(roots, loaderNameRoots(name)...)
-		case named && conditionalLiteral(r, arg, lits) != "":
-			// "pkg.mod:app" if reload else app: the literal branch is a root; the other is
-			// an object for a name-or-object loader, and any name for a name-only one.
-			roots = append(roots, loaderNameRoots(conditionalLiteral(r, arg, lits))...)
-			opaque = opaque || kind == loaderNameOnly
-		case kind == loaderNameOnly || named && provablyString(r, arg, lits):
+		open := skipAllSpace(r, end)
+		if open >= n || r[open] != '(' {
 			opaque = true
+			i = end
+			continue
+		}
+		arg, known := loaderNameArg(r, open)
+		switch {
+		case !known:
+			opaque = opaque || kind == loaderNameOnly
+		case arg[0] < arg[1]:
+			c := classifyLoaderArg(r, arg[0], arg[1], lits)
+			roots = append(roots, c.roots...)
+			opaque = opaque || c.computed || c.other && kind == loaderNameOnly
 		}
 		i = end
 	}
@@ -657,46 +670,149 @@ func stringLoaderKind(segs []string, qualified bool, targets map[string][]string
 	return 0, false
 }
 
-// loaderKeywords are the parameter names string loaders give the argument that names the
-// module: uvicorn's app, werkzeug's and django's import_name and dotted_path, Flask's and
-// Celery's obj.
-var loaderKeywords = map[string]bool{"app": true, "import_name": true, "dotted_path": true, "obj": true}
-
-// loaderArgStart returns where a loader call's name argument starts, given the index just
-// past its '('. A leading loaderKeywords keyword is skipped; named is false when the first
-// argument is some other keyword or an unpacking, so where the name is cannot be told.
-func loaderArgStart(r []rune, i int) (start int, named bool) {
-	i = skipAllSpace(r, i)
-	if i < len(r) && r[i] == '*' {
-		return i, false
+// loaderNameArg returns the span of a loader call's name argument, given the index of its
+// '(': a loaderKeywords keyword argument anywhere, else the first positional one. The span
+// is empty when the call passes neither; known is false when an unpacking (*args, **kw)
+// may pass it.
+func loaderNameArg(r []rune, open int) (arg [2]int, known bool) {
+	var positional [2]int
+	found, unpacked := false, false
+	for _, sp := range callArgSpans(r, open) {
+		s := skipAllSpace(r, sp[0])
+		switch {
+		case s >= sp[1]:
+		case r[s] == '*':
+			unpacked = true
+		case isIdentStartRune(r[s]) && assignedTo(r, wordEnd(r, s)):
+			if w, end := readWordRunes(r, s); loaderKeywords[w] {
+				return [2]int{skipAllSpace(r, end) + 1, sp[1]}, true
+			}
+		case !found && !unpacked:
+			positional, found = [2]int{s, sp[1]}, true
+		}
 	}
-	if i >= len(r) || !isIdentStartRune(r[i]) {
-		return i, true
-	}
-	w, end := readWordRunes(r, i)
-	eq := skipAllSpace(r, end)
-	if eq >= len(r) || r[eq] != '=' || eq+1 < len(r) && r[eq+1] == '=' {
-		return i, true
-	}
-	return eq + 1, loaderKeywords[w]
+	return positional, found || !unpacked
 }
 
-// conditionalLiteral returns the literal a call argument starting at r[i] opens with when
-// the argument is a conditional expression on it ("pkg.mod:app" if reload else app), else "".
-func conditionalLiteral(r []rune, i int, lits map[int]strLiteral) string {
-	i = skipAllSpace(r, i)
-	for j := i; j < len(r) && j-i < 2 && strings.ContainsRune("rRbBuU", r[j]); j++ {
-		i = j + 1
+// wordEnd returns the index just past the identifier starting at r[i].
+func wordEnd(r []rune, i int) int {
+	_, end := readWordRunes(r, i)
+	return end
+}
+
+// callArgSpans splits the arguments of the call whose '(' is at r[open] at its top-level
+// commas, up to the matching ')' (or the end of the source).
+func callArgSpans(r []rune, open int) [][2]int {
+	var spans [][2]int
+	depth, start := 0, open+1
+	for j := open + 1; j < len(r); j++ {
+		switch r[j] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return append(spans, [2]int{start, j})
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				spans = append(spans, [2]int{start, j})
+				start = j + 1
+			}
+		}
+	}
+	return append(spans, [2]int{start, len(r)})
+}
+
+// loaderArgClass is what a loader's name argument may evaluate to.
+type loaderArgClass struct {
+	roots    []string // modules its literal names import
+	computed bool     // it may be a string the scanner cannot read
+	other    bool     // it may be any value: a name, a call, an object
+}
+
+// classifyLoaderArg classifies the argument expression r[s:e]. Each branch of a conditional
+// ("pkg.asgi:app" if prod else app) is classified on its own; a parenthesised expression
+// is classified by its contents.
+func classifyLoaderArg(r []rune, s, e int, lits map[int]strLiteral) loaderArgClass {
+	s = skipAllSpace(r, s)
+	for e > s && unicode.IsSpace(r[e-1]) {
+		e--
+	}
+	if s < e && r[s] == '(' && closingBracket(r, s) == e-1 {
+		return classifyLoaderArg(r, s+1, e-1, lits)
+	}
+	if s >= e {
+		return loaderArgClass{other: true}
+	}
+	if ifAt, elseAt, ok := conditionalSplit(r, s, e); ok {
+		a := classifyLoaderArg(r, s, ifAt, lits)
+		b := classifyLoaderArg(r, elseAt+len("else"), e, lits)
+		return loaderArgClass{roots: append(a.roots, b.roots...), computed: a.computed || b.computed, other: a.other || b.other}
+	}
+	if body, ok := wholeLiteral(r, s, e, lits); ok {
+		return loaderArgClass{roots: loaderNameRoots(body)}
+	}
+	if provablyString(r, s, lits) {
+		return loaderArgClass{computed: true}
+	}
+	return loaderArgClass{other: true}
+}
+
+// closingBracket returns the index of the bracket closing the one at r[i], or -1.
+func closingBracket(r []rune, i int) int {
+	depth := 0
+	for j := i; j < len(r); j++ {
+		switch r[j] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// conditionalSplit finds the top-level if and else keywords of a conditional expression
+// in r[s:e].
+func conditionalSplit(r []rune, s, e int) (ifAt, elseAt int, ok bool) {
+	ifAt = -1
+	depth := 0
+	for j := s; j < e; j++ {
+		switch c := r[j]; {
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case depth == 0 && isIdentStartRune(c) && (j == s || !isIdentPart(r[j-1])):
+			w, end := readWordRunes(r, j)
+			switch {
+			case w == "if" && ifAt < 0:
+				ifAt = j
+			case w == "else" && ifAt >= 0:
+				return ifAt, j, true
+			}
+			j = end - 1
+		}
+	}
+	return 0, 0, false
+}
+
+// wholeLiteral returns the value of r[s:e] when it is one plain string literal
+// (optionally r/b/u-prefixed).
+func wholeLiteral(r []rune, s, e int, lits map[int]strLiteral) (string, bool) {
+	i := s
+	for i < e && i-s < 2 && strings.ContainsRune("rRbBuU", r[i]) {
+		i++
 	}
 	lit, ok := lits[i]
-	if !ok || lit.body == "" {
-		return ""
+	if !ok || skipAllSpace(r, lit.end) < e {
+		return "", false
 	}
-	k := skipAllSpace(r, lit.end)
-	if w, end := readWordRunes(r, k); w != "if" || end >= len(r) || isIdentPart(r[end]) {
-		return ""
-	}
-	return lit.body
+	return lit.body, true
 }
 
 // provablyString reports whether the call argument starting at r[i] is a string even
@@ -741,6 +857,9 @@ func provablyString(r []rune, i int, lits map[int]strLiteral) bool {
 // parent ("pkg.mod.Class").
 func loaderNameRoots(name string) []string {
 	if mod, _, ok := strings.Cut(name, ":"); ok {
+		if mod == "" {
+			return nil
+		}
 		return []string{mod}
 	}
 	if k := strings.LastIndexByte(name, '.'); k > 0 {
@@ -750,6 +869,14 @@ func loaderNameRoots(name string) []string {
 		return nil
 	}
 	return []string{name}
+}
+
+// cutLast slices s around the last instance of sep.
+func cutLast(s, sep string) (before, after string, found bool) {
+	if k := strings.LastIndex(s, sep); k >= 0 {
+		return s[:k], s[k+len(sep):], true
+	}
+	return s, "", false
 }
 
 // lookupKind classifies a name moduleLookups watches.

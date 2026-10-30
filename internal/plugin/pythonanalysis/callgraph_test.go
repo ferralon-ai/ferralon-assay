@@ -794,9 +794,9 @@ func TestCallGraph_ModuleLevelCallsGetModuleInitCaller(t *testing.T) {
 	}
 }
 
-// TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
-// program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
-// reason.
+// TestCallGraph_StringLoaders: a loader that imports the module a string names records a
+// literal name as a load root, and a name the scanner cannot read adds the dynamic_import
+// reason; a loader is matched by the dotted name the file's imports resolve it to.
 func TestCallGraph_StringLoaders(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -816,6 +816,19 @@ func TestCallGraph_StringLoaders(t *testing.T) {
 		{"uvicorn.run from getenv", "import os\nimport uvicorn\nuvicorn.run(os.getenv('APP', 'acme.asgi:app'))\n", nil, true},
 		{"uvicorn.run literal or app object", "import uvicorn\n\ndef serve(app, reload):\n    uvicorn.run('acme.asgi:app' if reload else app)\n", []string{"acme.asgi"}, false},
 		{"import_string literal or computed", "from werkzeug.utils import import_string\n\ndef view(name, default):\n    return import_string('acme.views' if default else name)\n", []string{"acme", "acme.views"}, true},
+		{"literal in the else branch", "import uvicorn\n\ndef serve(app, reload):\n    uvicorn.run(app if not reload else 'acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"two literal branches", "import uvicorn\n\ndef serve(prod):\n    uvicorn.run('acme.asgi:app' if prod else 'acme.dev:app')\n", []string{"acme.asgi", "acme.dev"}, false},
+		{"literal or environment branch", "import os\nimport uvicorn\n\ndef serve(dev):\n    uvicorn.run('acme.asgi:app' if dev else os.environ['APP'])\n", []string{"acme.asgi"}, true},
+		{"parenthesised conditional", "import uvicorn\n\ndef serve(app, reload):\n    uvicorn.run(('acme.asgi:app' if reload else app), port=8000)\n", []string{"acme.asgi"}, false},
+		{"name-only conditional of literals", "from werkzeug.utils import import_string\n\ndef view(a):\n    return import_string('acme.a' if a else 'acme.b')\n", []string{"acme", "acme.a", "acme.b"}, false},
+		{"app keyword after another", "import uvicorn\nuvicorn.run(\n    host='0.0.0.0',\n    app='acme.asgi:app',\n)\n", []string{"acme.asgi"}, false},
+		{"app keyword from the environment", "import os\nimport uvicorn\nuvicorn.run(host='0.0.0.0', app=os.environ['APP'])\n", nil, true},
+		{"import_string keyword after another", "from werkzeug.utils import import_string\nimport_string(silent=True, import_name='acme.views')\n", []string{"acme", "acme.views"}, false},
+		{"empty module name", "import uvicorn\nuvicorn.run(':app')\n", nil, false},
+		{"star import", "from uvicorn import *\nrun('acme.asgi:app')\n", []string{"acme.asgi"}, false},
+		{"import_string as a value", "from werkzeug.utils import import_string\nfrom django.conf import settings\nBACKENDS = list(map(import_string, settings.BACKENDS))\n", nil, true},
+		{"import_string bound to another name", "from django.utils.module_loading import import_string\nload = import_string\n", nil, true},
+		{"import_string in a parenthesised import", "from werkzeug.utils import (\n    cached_property,\n    import_string,\n)\nview = import_string('acme.views')\n", []string{"acme", "acme.views"}, false},
 		{"uvicorn.run app object", "import uvicorn\nfrom acme.asgi import app\nuvicorn.run(app, host='0.0.0.0')\n", nil, false},
 		{"flask from_object literal", "from flask import Flask\napp = Flask(__name__)\napp.config.from_object('acme.settings.Prod')\n", []string{"acme.settings", "acme.settings.Prod"}, false},
 		{"flask from_object on a call", "def make():\n    create_app().config.from_object('acme.settings')\n", []string{"acme", "acme.settings"}, false},
@@ -847,6 +860,9 @@ func TestCallGraph_StringLoaders(t *testing.T) {
 	}
 }
 
+// TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
+// program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
+// reason.
 func TestCallGraph_DynamicImports(t *testing.T) {
 	cases := []struct {
 		name      string

@@ -343,7 +343,8 @@ func TestResolveVersions_Ensurepip(t *testing.T) {
 	}{
 		{"python -m ensurepip", map[string]string{"install.sh": "python -m ensurepip\n"}, true},
 		{"--upgrade", map[string]string{"install.sh": "python3 -m ensurepip --upgrade\n"}, true},
-		{"every reviewed flag", map[string]string{"install.sh": "python3.11 -m ensurepip -U --default-pip --altinstall --user -v --verbose\n"}, true},
+		{"every reviewed flag", map[string]string{"install.sh": "python3.11 -m ensurepip -U --default-pip --user -v --verbose\n"}, true},
+		{"--altinstall", map[string]string{"install.sh": "python3.11 -m ensurepip --upgrade --altinstall\n"}, true},
 		{"Dockerfile", map[string]string{"Dockerfile": "FROM python:3.11\nRUN python -m ensurepip --upgrade\n"}, true},
 
 		{"--root", map[string]string{"install.sh": "python -m ensurepip --root /opt/py\n"}, false},
@@ -405,13 +406,29 @@ func TestResolveVersions_MypyInstallTypes(t *testing.T) {
 		{"mypy.ini install_types", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\nnon_interactive = True\n", "install.sh": "mypy .\n"}, false},
 		{"setup.cfg install_types", map[string]string{"setup.cfg": "[mypy]\ninstall_types = True\n", "install.sh": "mypy .\n"}, false},
 		{"pyproject [tool.mypy]", map[string]string{"pyproject.toml": "[tool.mypy]\ninstall_types = true\n", "install.sh": "mypy .\n"}, false},
-		{"config under another name", map[string]string{"config/types.cfg": "[mypy]\ninstall_types = True\n", "install.sh": "mypy --config-file config/types.cfg .\n"}, false},
+		{"--config-file to a .cfg", map[string]string{"config/types.cfg": "[mypy]\ninstall_types = True\n", "install.sh": "mypy --config-file config/types.cfg .\n"}, false},
 		{"config, dmypy", map[string]string{".mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "dmypy run -- .\n"}, false},
+		{"abbreviated --install", map[string]string{"install.sh": "mypy --install --non-interactive .\n"}, false},
+		{"abbreviated --install-type", map[string]string{"install.sh": "mypy --install-type --non-interactive .\n"}, false},
+		{"abbreviated --ins", map[string]string{"install.sh": "mypy --ins --non-interactive .\n"}, false},
+		{"config, -mmypy", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "python -mmypy .\n"}, false},
+		{"config, -Immypy", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "python3 -Immypy .\n"}, false},
+		{"config, colon delimiter", map[string]string{"mypy.ini": "[mypy]\ninstall_types: yes\n", "install.sh": "mypy .\n"}, false},
+		{"config, value on the next line", map[string]string{"mypy.ini": "[mypy]\ninstall_types =\n    1\n", "install.sh": "mypy .\n"}, false},
+		{"user config copied from the tree", map[string]string{"docker/.config/mypy/config": "[mypy]\ninstall_types = True\n", "Dockerfile": "FROM python:3.12\nCOPY docker/.config /root/.config\nRUN mypy .\n"}, false},
+		{"--config-file to a .conf", map[string]string{"ci/typecheck.conf": "[mypy]\ninstall_types = True\n", "install.sh": "mypy --config-file ci/typecheck.conf .\n"}, false},
+		{".conf in the tree", map[string]string{"ci/typecheck.conf": "[mypy]\ninstall_types = True\n", "install.sh": "MYPYRC=1 mypy .\n"}, false},
+		{"renamed config copied to ~/.mypy.ini", map[string]string{"docker/typecheck-rc": "[mypy]\ninstall_types = True\n", "Dockerfile": "FROM python:3.12\nCOPY docker/typecheck-rc /root/.mypy.ini\nRUN mypy .\n"}, false},
+		{"--config-file outside the tree", map[string]string{"install.sh": "mypy --config-file /etc/ci/typecheck .\n"}, false},
+		{"config named in one surface, mypy run in another", map[string]string{"Dockerfile": "FROM python:3.12\nCOPY docker/rc /root/.config/mypy/config\n", "Makefile": "lint:\n\tmypy src\n"}, false},
 
 		// Guards.
 		{"plain mypy", map[string]string{"install.sh": "mypy --strict .\n"}, true},
 		{"mypy config without install_types", map[string]string{"mypy.ini": "[mypy]\nstrict = True\n", "install.sh": "mypy .\n"}, true},
 		{"install_types config, no mypy run", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "pytest\n"}, true},
+		{"install_types off", map[string]string{"mypy.ini": "[mypy]\ninstall_types = False\n", "install.sh": "mypy .\n"}, true},
+		{"--no-install-types", map[string]string{".github/workflows/mypy.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: mypy --no-install-types .\n"}, true},
+		{"--config-file, no mypy run", map[string]string{"install.sh": "yamllint --config-file ci/yamllint.yml .\npytest\n"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

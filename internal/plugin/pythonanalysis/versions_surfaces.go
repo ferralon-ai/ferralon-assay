@@ -29,7 +29,7 @@ import (
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
 // surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
 // read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
-// is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
+// is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigCheck)
 // or a script surface names one (pipConfigNamedRE).
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
@@ -58,13 +58,16 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
 	installs = pipInstalls{}
-	if !pipConfigInTree(root) {
+	configs := treeFilesMatch(root, pipConfigCheck(func([]byte) bool { return true }), mypyInstallTypesCheck)
+	if !configs[0] {
 		tooling = map[string]bool{}
 	}
-	spec := newScriptSpec(installs, tooling, mypyInstallTypesInTree(root))
-	configNamed := false
+	spec := newScriptSpec(installs, tooling, configs[1])
+	configNamed, mypyConfigNamed, mypyNamed := false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
+		mypyConfigNamed = mypyConfigNamed || mypyConfigNamedRE.MatchString(src)
+		mypyNamed = mypyNamed || mypyNamedRE.MatchString(src)
 	}
 	veto := scriptsurface.New(root, read, spec)
 	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
@@ -72,7 +75,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 			unread = true
 		}
 	}
-	scriptWithheld = veto.Withheld()
+	scriptWithheld = veto.Withheld() || mypyConfigNamed && mypyNamed
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}

@@ -54,7 +54,7 @@ import (
 // extra index or find-links location may serve a different one, so a flag naming one is not
 // in selfUpgradeFlags and the command withholds every pin. pip reads every install option
 // from its config files as well, and a build can COPY a pip.conf or pip.ini from the tree to
-// where pip reads one, so a tree that holds either allows no self-upgrade (pipConfigInTree).
+// where pip reads one, so a tree that holds either allows no self-upgrade (pipConfigCheck).
 // pip reads a config where it lands, not by the name it had in the tree, and a build can also
 // fetch or mount one, so a script surface that names a pip config path, PIP_CONFIG_FILE or
 // pip config allows none either (pipConfigNamedRE). A config the base image already holds is
@@ -68,10 +68,12 @@ import (
 //	python -m ensurepip [flags]            the flags only from ensurepipFlags
 //
 // mypy --install-types runs pip on the stub packages mypy finds missing, which can pull in
-// runtime dependencies, so --install-types is a token wherever it appears. A mypy config can
-// set install_types as well, so a tree with a config-like file that names it makes mypy and
-// dmypy tokens (mypyInstallTypesInTree). A config the build fetches, or points --config-file
-// at outside the tree, is not observed.
+// runtime dependencies, so --install-types, or any abbreviation of it mypy's parser accepts,
+// is a token wherever it appears. A mypy config can set install_types as well, so a tree with
+// a config-like file that turns it on makes mypy and dmypy tokens (mypyInstallTypesCheck).
+// mypy reads a config where it lands, not by the name it had in the tree, so a script surface
+// that names a mypy config path or --config-file, beside one that names mypy, withholds every
+// pin (mypyConfigNamedRE). A config the build fetches or the base image holds is not observed.
 
 // newScriptSpec is the Python lane's part of the rule, recording into installs every pip
 // install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
@@ -79,12 +81,8 @@ import (
 // no self-upgrade.
 // With mypyInstalls, mypy and dmypy are tokens too.
 func newScriptSpec(installs pipInstalls, tooling map[string]bool, mypyInstalls bool) scriptsurface.Spec {
-	token := laneToken
-	if mypyInstalls {
-		token = func(word string) bool { return word == "mypy" || word == "dmypy" || laneToken(word) }
-	}
 	return scriptsurface.Spec{
-		Token: token,
+		Token: func(word string) bool { return laneToken(word, mypyInstalls) },
 		Env:   laneEnvRE,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
 			return installs.allowed(words, b, tooling)
@@ -112,27 +110,43 @@ var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
-// install_requires), ensurepip, mypy's --install-types, any word starting pip or conda, and an
-// interpreter option that runs one
-// as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
-// file not read here defines, or installs into the environments it makes (poe, invoke and its
-// inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
-// candidate whenever a session installs.
-func laneToken(word string) bool {
+// install_requires), ensurepip, mypy's --install-types or an abbreviation of it, mypy and
+// dmypy when mypy is set, any word starting pip or conda, and an interpreter option that runs
+// one as a module with its name attached (-mpip, -Impip); or a task runner that runs commands
+// a file not read here defines, or installs into the environments it makes (poe, invoke and
+// its inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a candidate
+// whenever a session installs.
+func laneToken(word string, mypy bool) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
-		"hatch", "flit", "setup.py", "ensurepip", "--install-types", "poe", "invoke", "inv", "tox":
+		"hatch", "flit", "setup.py", "ensurepip", "poe", "invoke", "inv", "tox":
+		return true
+	case "mypy", "dmypy":
+		return mypy
+	}
+	if len(word) >= len(installTypesMin) && strings.HasPrefix(installTypesFlag, word) {
 		return true
 	}
-	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
+	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1], mypy) {
 		return true
 	}
 	return strings.HasPrefix(word, "pip") || strings.HasPrefix(word, "conda")
 }
 
+// mypy's parser accepts any prefix of a long flag that names one flag alone, and
+// --install-types is the only one starting installTypesMin.
+const installTypesFlag, installTypesMin = "--install-types", "--ins"
+
+// mypyConfigNamedRE matches, in a script surface's text, a mypy config path mypy reads
+// outside the tree (~/.mypy.ini, ~/.config/mypy/config) or --config-file.
+var mypyConfigNamedRE = regexp.MustCompile(`(?i)--config-file|\.mypy\.ini|mypy/config`)
+
+// mypyNamedRE matches mypy or dmypy as a word.
+var mypyNamedRE = regexp.MustCompile(`\bd?mypy\b`)
+
 // attachedModuleRE matches a cluster of interpreter short options ending in -m with the
-// module name attached, which CPython reads as -m <name>.
-var attachedModuleRE = regexp.MustCompile(`^-[A-Za-z]*m(.+)$`)
+// module name attached, which CPython reads as -m <name>: the first m ends the cluster.
+var attachedModuleRE = regexp.MustCompile(`^-[A-Za-ln-z]*m(.+)$`)
 
 var (
 	pipHeadRE    = regexp.MustCompile(`^pip(?:\d+(?:\.\d+)?)?$`)

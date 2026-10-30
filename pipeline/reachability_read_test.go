@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"slices"
@@ -261,7 +262,7 @@ func TestFirstPartyReachPathsLeavesGraphUnchanged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ing := plugin.IngressResult{Ingresses: []plugin.Ingress{{Kind: "http", Symbol: sym("h")}}}
 			before := mustMarshal(t, tc.cg)
-			paths := firstPartyReachPaths(tc.cg, ing, tc.sink)
+			paths := firstPartyReachPaths(plugin.NewCallGraphView(tc.cg), ing, tc.sink)
 			for i := range paths {
 				for j := range paths[i].Trace {
 					paths[i].Trace[j].SCIP = "mutated"
@@ -272,5 +273,67 @@ func TestFirstPartyReachPathsLeavesGraphUnchanged(t *testing.T) {
 				t.Errorf("call graph changed:\n%s\nwant\n%s", after, before)
 			}
 		})
+	}
+}
+
+type payloadGraphPlugin struct {
+	plugin.StubPlugin
+	cg plugin.CallGraphResult
+}
+
+func (p payloadGraphPlugin) CallGraph(context.Context, plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+	return p.cg, nil
+}
+
+// TestReachabilityPayloadBytes pins that the reachability artifact's payload is byte for byte what
+// json.Marshal makes of the struct it stands for, whether the call graph view holds the memo's
+// encoding or encodes the graph itself.
+func TestReachabilityPayloadBytes(t *testing.T) {
+	sym := func(s string) plugin.Symbol {
+		return plugin.Symbol{Kind: plugin.SymbolKindFunction, Package: "example.com/<p>", Name: s, DisplayName: "p." + s + " & \u2028é", SCIP: "scip:p#" + s}
+	}
+	graphs := map[string]plugin.CallGraphResult{
+		"empty":        {},
+		"empty slices": {Edges: []plugin.CallEdge{}, Roots: []plugin.Symbol{}},
+		"populated": {
+			Partiality: plugin.Partiality{Reasons: []string{plugin.PartialReasonReflection}, Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonReflection, Targets: []string{"pkg:golang/<y>"}}}},
+			Algorithm:  "vta",
+			Edges:      []plugin.CallEdge{{Caller: sym("a"), Callee: sym("b")}},
+			Roots:      []plugin.Symbol{sym("a")},
+			Unresolved: []plugin.UnresolvedCall{{}},
+			Escaped:    []plugin.Symbol{sym("b")},
+		},
+	}
+	reaches := map[string]plugin.ReachabilityResult{
+		"none":  {},
+		"paths": {Partiality: plugin.Complete(), Paths: []plugin.ReachPath{{Sink: sym("b"), Ingress: sym("a"), Trace: []plugin.Symbol{sym("a"), sym("b")}}}},
+	}
+	scans := []ToolchainScan{{}, {Requested: "go1.22.1", Actual: "go1.22.1", Subject: true}}
+	for gname, cg := range graphs {
+		memo, err := plugin.SharedCallGraph(context.Background(), plugin.Memoize(payloadGraphPlugin{cg: cg}), plugin.CallGraphRequest{BuildDir: "/src"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		views := map[string]plugin.CallGraphView{"memoized": memo, "wrapped": plugin.NewCallGraphView(cg)}
+		for vname, v := range views {
+			for rname, reach := range reaches {
+				for _, ts := range scans {
+					t.Run(gname+"/"+vname+"/"+rname, func(t *testing.T) {
+						want := mustMarshal(t, struct {
+							Reachability  plugin.ReachabilityResult `json:"reachability"`
+							CallGraph     plugin.CallGraphResult    `json:"call_graph"`
+							ToolchainScan ToolchainScan             `json:"toolchain_scan"`
+						}{reach, cg, ts})
+						got, err := reachabilityPayload(reach, v, ts)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if string(got) != want {
+							t.Errorf("payload:\n%s\nwant\n%s", got, want)
+						}
+					})
+				}
+			}
+		}
 	}
 }

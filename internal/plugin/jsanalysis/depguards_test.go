@@ -377,7 +377,7 @@ func TestDepGuards_ReadPackageNoEntry(t *testing.T) {
 }
 
 // TestDepGuards_FrontendEntries (N3): a stock Create React App's src loads a package's module
-// entry beside its main; a program that is not one does not.
+// entry beside its main, and so may any program a bundler builds: both are linked either way.
 func TestDepGuards_FrontendEntries(t *testing.T) {
 	p := guardPkg(map[string]string{
 		"package.json": `{"name":"dep","version":"1.0.0","main":"cjs.js","module":"esm.js"}`,
@@ -393,8 +393,8 @@ func TestDepGuards_FrontendEntries(t *testing.T) {
 		t.Errorf("a CRA module must load both the module and main entries; edges %+v", cg.Edges)
 	}
 	node := newDepFixture(t, map[string]string{"src/index.js": src}, p)
-	if cg := withDeps(t, node.dir, node.memStore()); loadsDepModule(cg, "esm") || !loadsDepModule(cg, "cjs") {
-		t.Errorf("a non-frontend module loads main only; edges %+v", cg.Edges)
+	if cg := withDeps(t, node.dir, node.memStore()); !loadsDepModule(cg, "esm") || !loadsDepModule(cg, "cjs") {
+		t.Errorf("a module a bundler may build must load both the module and main entries; edges %+v", cg.Edges)
 	}
 }
 

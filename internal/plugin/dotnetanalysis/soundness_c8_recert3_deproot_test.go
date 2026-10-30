@@ -7,6 +7,7 @@ package dotnetanalysis
 // cost it carries. Test-only, hermetic peb PEs, nothing executed.
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -49,36 +50,42 @@ func TestC8_Recert3_DepMangledFinalizer_FalseNE(t *testing.T) {
 	}
 }
 
-// PRECISION FLOOR (hypothesis 3, concrete) — rooting EVERY dep finalizer degrades an UNRELATED
-// dep sink to undetermined whenever a dep finalizer's frontier touches out-of-set code. A
-// realistic C# destructor compiles to Finalize() that calls base.Finalize() (System.Object::
-// Finalize, out-of-set) in a finally — a frontier hazard. Reach(dep-finalizer, sink) then
-// returns Undetermined for EVERY sink, so a dep sink the finalizer never reaches still clears
-// off the confident-safe. This is SOUND (over-degrade, never a false NE), but it shows the
-// deposited CleanNE control's INERT empty-body finalizer is unrepresentative of real deps:
-// confident dep-sink NE is unreachable for any dep whose finalizer touches the framework
-// boundary (near-universal). Documented as a precision limit, not a defect.
-func TestC8_Recert3_DepRealisticFinalizer_PrecisionFloor(t *testing.T) {
+// REALISTIC FINALIZER (hypothesis 3, concrete) — a C# destructor compiles to Finalize() that
+// calls base.Finalize() (System.Object::Finalize) in a finally. Rooting every dep finalizer is
+// sound; whether an unrelated dep sink survives it depends on the framework model. On a
+// .NET Core target, System.Object::Finalize is a shared-framework leaf with no re-entry into
+// application code here, so the unrelated sink is searched. On a target the model does not
+// cover, the base call leaves the loaded set and degrades every sink to undetermined.
+func TestC8_Recert3_DepRealisticFinalizer(t *testing.T) {
 	db := scaffold()
 	dObj := cTypeDefOrRef(xTypeRef, db.extTypeRef("System", "Object"))
 	db.addType(0, "<Module>", "", 0, nil)
 	db.addType(0, "Sink", "D", dObj, []mspec{{name: "boom", flags: 0x40, sig: sigInstVoid, il: body()}})
 	objFinalize := db.memberRef(db.extTypeRef("System", "Object"), "Finalize", sigInstVoid)
 	// Res: an IDisposable-style type whose finalizer does NOT reach boom but DOES call the
-	// out-of-set base System.Object::Finalize — the shape every real C# destructor emits.
+	// base System.Object::Finalize — the shape every real C# destructor emits.
 	db.addType(0, "Res", "D", dObj, []mspec{
 		{name: ".ctor", flags: 0x1806, sig: sigInstVoid, il: body()},
 		{name: "Finalize", flags: 0x01C4, sig: sigInstVoid, il: body(ilCallvirt(objFinalize))},
 	})
+	dep := db.bytesNamed("Dep")
 
-	res := runReachSet(t, appEmptyMain(t), db.bytesNamed("Dep"), depSinkSCIP)
-	if res.Partiality.Complete {
-		t.Fatalf("expected undetermined: a dep finalizer calling out-of-set base.Finalize is a frontier hazard that degrades the dep sink, got Complete")
-	}
-	if !hasILReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
-		t.Fatalf("precision floor: want reachability_undetermined from the dep finalizer's frontier hazard, got %v", res.Partiality.Reasons)
-	}
-	if len(res.Paths) != 0 {
-		t.Fatalf("frontier-hazard undetermined must emit NO path (the finalizer does not reach the sink), got %d", len(res.Paths))
-	}
+	t.Run("net8.0: framework leaf, sink searched", func(t *testing.T) {
+		res := runReachSet(t, appEmptyMain(t), dep, depSinkSCIP)
+		if !slices.Contains(res.Searched, depSinkSCIP) || len(res.Paths) != 0 {
+			t.Fatalf("Searched=%v paths=%d partiality=%+v, want the unrelated sink searched", res.Searched, len(res.Paths), res.Partiality)
+		}
+	})
+	t.Run("netstandard2.0: no framework model, undetermined", func(t *testing.T) {
+		res := runReachSetAssets(t, appEmptyMain(t), dep, depAssetsJSONFor("netstandard2.0", "Dep/1.0.0"), depSinkSCIP)
+		if res.Partiality.Complete || slices.Contains(res.Searched, depSinkSCIP) {
+			t.Fatalf("expected undetermined: base.Finalize leaves the loaded set, got Searched=%v partiality=%+v", res.Searched, res.Partiality)
+		}
+		if !hasILReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
+			t.Fatalf("want reachability_undetermined from the finalizer's frontier hazard, got %v", res.Partiality.Reasons)
+		}
+		if len(res.Paths) != 0 {
+			t.Fatalf("frontier-hazard undetermined must emit NO path, got %d", len(res.Paths))
+		}
+	})
 }

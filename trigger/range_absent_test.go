@@ -231,7 +231,7 @@ func TestFinding_RangeAbsentNotExploitableUnchanged(t *testing.T) {
 	if f.Verdict != report.VerdictNotExploitable || f.UndeterminedReason != "" {
 		t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
 	}
-	if f.Evidence.Basis != verdict.BasisSymbolAbsent {
-		t.Errorf("basis = %q, want %q", f.Evidence.Basis, verdict.BasisSymbolAbsent)
+	if f.Evidence.Basis != verdict.BasisSymbolUnreachable {
+		t.Errorf("basis = %q, want %q", f.Evidence.Basis, verdict.BasisSymbolUnreachable)
 	}
 }

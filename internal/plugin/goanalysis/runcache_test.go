@@ -221,8 +221,11 @@ func TestRunCacheKeys(t *testing.T) {
 
 	t.Run("call graph", func(t *testing.T) {
 		ctx := WithRunCacheDir(context.Background(), t.TempDir())
-		seed := plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}}
-		if _, err := runCached(ctx, "callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+		seed := reconcileGraph{
+			CallGraph:    plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}},
+			ReflectReach: map[string][]string{"example.com/m": {"F"}},
+		}
+		if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
 			return json.Marshal(seed)
 		}); err != nil {
 			t.Fatal(err)
@@ -238,6 +241,34 @@ func TestRunCacheKeys(t *testing.T) {
 		t.Setenv("ASSAY_RUN_CACHE_KEY_PROBE", "1")
 		if _, err := reconcileCallGraph(ctx, buildDir, load); err == nil || loads != 1 {
 			t.Fatalf("changed environment: err %v after %d loads, want a fresh load", err, loads)
+		}
+	})
+
+	// An unknown reflect reach is cached as unknown, and a known empty one as known.
+	t.Run("reflect reach", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			reach   map[string][]string
+			unknown bool
+		}{
+			{"unknown", nil, true},
+			{"known and empty", map[string][]string{}, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ctx := WithRunCacheDir(context.Background(), t.TempDir())
+				if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+					return json.Marshal(reconcileGraph{ReflectReach: tc.reach})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				got, err := reconcileCallGraph(ctx, buildDir, func() (*LoadResult, error) { return nil, errors.New("tree loaded") })
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (got.ReflectReach == nil) != tc.unknown || len(got.ReflectReach) != 0 {
+					t.Errorf("ReflectReach read back = %#v, want unknown = %v", got.ReflectReach, tc.unknown)
+				}
+			})
 		}
 	})
 }

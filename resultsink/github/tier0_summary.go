@@ -245,7 +245,7 @@ func renderSummary(r report.Report) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headline(c, hasCoverageGap(r)))
+	b.WriteString(headline(c, headlineTail(r)))
 	b.WriteString("\n\n")
 
 	// Disclosed BEFORE the counts, because it qualifies them: the counts of a scan
@@ -294,6 +294,24 @@ func renderSummary(r report.Report) string {
 // limit is a boundary on what was assessed, not a defect found.
 const partialHeadlineTail = "This run is not a complete assessment of the codebase."
 
+// cutShortHeadlineTail replaces partialHeadlineTail when the scan stopped before it finished, so a
+// reader who stops at the headline learns the cause and that the remedy is below.
+const cutShortHeadlineTail = "The scan was cut short before every advisory was assessed; see below for how to give it more time."
+
+// headlineTail is the qualifier the headline carries: none when the report discloses no step that
+// did not run, the cut-short tail when the scan stopped early, and partialHeadlineTail otherwise.
+func headlineTail(r report.Report) string {
+	if !hasCoverageGap(r) {
+		return ""
+	}
+	for _, n := range r.Partiality {
+		if n.Reason == report.ReasonScanCutShort {
+			return cutShortHeadlineTail
+		}
+	}
+	return partialHeadlineTail
+}
+
 // headline is the one-line verdict statement at the top of the summary. It is the one
 // line a skimming reader is guaranteed to read, so when the scan disclosed a coverage
 // limit the headline says so itself: "no reachable candidates" / "no advisory
@@ -303,14 +321,17 @@ const partialHeadlineTail = "This run is not a complete assessment of the codeba
 // carry that distinction to a reader who stops there.
 //
 // Disclosure only: the counts are rendered verbatim in both forms, no verdict is
-// consulted or changed, and with nothing to disclose (partial == false) every string
+// consulted or changed, and with nothing to disclose (tail == "") every string
 // is byte-identical to what a scan with no partiality has always emitted.
 //
 // An `undetermined` count qualifies the headline on its own, without waiting for a
 // partiality note: an unassessed advisory IS the incompleteness, and a run whose only
 // non-refutation is a row rather than a note must not read as complete.
-func headline(c counts, partial bool) string {
-	partial = partial || c.undetermined > 0
+func headline(c counts, tail string) string {
+	if tail == "" && c.undetermined > 0 {
+		tail = partialHeadlineTail
+	}
+	partial := tail != ""
 	switch {
 	case c.maliciousPresent > 0:
 		// The decisive OSS "affected" leads the headline: a known-malicious package is present.
@@ -319,20 +340,20 @@ func headline(c counts, partial bool) string {
 		h := fmt.Sprintf("**%d known-malicious package(s) present** — remove or replace. (%d reachable candidate(s), %d not exploitable, %d disqualified%s.)",
 			c.maliciousPresent, c.candidate, c.notExploitable, c.disqualified, notAssessedTail(c))
 		if partial {
-			h += " " + partialHeadlineTail
+			h += " " + tail
 		}
 		return h
 	case c.candidate > 0:
 		h := fmt.Sprintf("**%d reachable candidate(s)** found — review below. (%d not exploitable, %d disqualified%s.)",
 			c.candidate, c.notExploitable, c.disqualified, notAssessedTail(c))
 		if partial {
-			h += " " + partialHeadlineTail
+			h += " " + tail
 		}
 		return h
 	case c.groundedSafe() > 0:
 		if partial {
 			return fmt.Sprintf("**Partial coverage — no reachable candidates in what was assessed.** %d advisory finding(s) are grounded-safe (%d not exploitable, %d disqualified%s). %s",
-				c.groundedSafe(), c.notExploitable, c.disqualified, notAssessedTail(c), partialHeadlineTail)
+				c.groundedSafe(), c.notExploitable, c.disqualified, notAssessedTail(c), tail)
 		}
 		return fmt.Sprintf("**No reachable candidates.** %d advisory finding(s) are grounded-safe (%d not exploitable, %d disqualified).",
 			c.groundedSafe(), c.notExploitable, c.disqualified)
@@ -341,10 +362,10 @@ func headline(c counts, partial bool) string {
 		// This case exists so the line cannot fall through to "no advisory findings", which
 		// would be the silent clean scan with extra steps.
 		return fmt.Sprintf("**No verdict was established for any of the %d advisor%s evaluated.** %s",
-			c.undetermined, plural(c.undetermined, "y", "ies"), partialHeadlineTail)
+			c.undetermined, plural(c.undetermined, "y", "ies"), tail)
 	default:
 		if partial {
-			return "**Partial coverage — no advisory findings in what was assessed.** " + partialHeadlineTail
+			return "**Partial coverage — no advisory findings in what was assessed.** " + tail
 		}
 		return "**No advisory findings.**"
 	}
@@ -434,6 +455,11 @@ func partialityLine(n report.PartialityNote) string {
 		return fmt.Sprintf("Installed %s versions could not be pinned: no lockfile or pinned-version manifest was found. Advisories for those dependencies were kept in scope rather than ruled out on version, so this run is not a complete dependency assessment.", scope)
 	case plugin.PartialReasonNoPlugin:
 		return fmt.Sprintf("No analyzer is available for this codebase's language, so its %s set was not analyzed. The advisories below were not ruled out — they were not assessed.", scope)
+	case report.ReasonScanCutShort:
+		if n.Detail != "" {
+			return fmt.Sprintf("The scan was cut short before it finished (`%s`). Every advisory it did not assess has no verdict and is counted as not assessed.", mdCell(n.Detail))
+		}
+		return "The scan was cut short before it finished, so one or more advisories have no verdict and are counted as not assessed."
 	case plugin.PartialReasonToolFailure:
 		// Names the step and the advisory. The advisory's row is undetermined, so it is
 		// counted as not assessed.

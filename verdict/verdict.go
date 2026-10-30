@@ -104,6 +104,11 @@ const (
 	// BasisSymbolAbsent: the vulnerable symbol is provably absent from the built artifact
 	// (disqualification_discovery / absence-elision, RFC 0006).
 	BasisSymbolAbsent NonExploitableBasis = "vulnerable_symbol_absent"
+	// BasisSymbolUnreachable: the vulnerable symbol is present in the built artifact, and no
+	// path from any entry point reaches it (application reachability, RFC 0006). It is a
+	// weaker claim than BasisSymbolAbsent: the code is there, and a new entry point could
+	// reach it.
+	BasisSymbolUnreachable NonExploitableBasis = "vulnerable_symbol_unreachable"
 	// BasisStaticRefutation: a HELD static PoNE refutation (absence_elision /
 	// reachability_refutation / constructive_containment) over a declared-COMPLETE
 	// analysis (RFC 0010) — the report fired but the static hold refuted exploitability.
@@ -194,9 +199,9 @@ type PoE struct {
 	// (with both trace refs) when Strength==proven && Direction==not_exploitable.
 	PatchValidation *PatchValidationRef `json:"patch_validation,omitempty"`
 	// NonExploitableBasis records the grounded refutation behind a `reasoned not_exploitable`
-	// verdict (a disqualification: version-not-affected or symbol-absent; or a held static
-	// refutation: BasisStaticRefutation), distinguishing it from a bare skeleton/no-signal
-	// lean (BasisNone). Empty for every other verdict class — including a `proven` PoNE
+	// verdict (a disqualification: version-not-affected or symbol-absent; a reachability
+	// refutation: BasisSymbolUnreachable; or a held static refutation: BasisStaticRefutation),
+	// distinguishing it from a bare skeleton/no-signal lean (BasisNone). Empty for every other verdict class — including a `proven` PoNE
 	// (which is backed by PatchValidation) and a bare reasoned lean. This is a grounded
 	// REASONED claim, never a proof: it cannot and must not raise Strength. BasisNone here
 	// is the load-bearing "nothing was established" signal downstream projections key on.

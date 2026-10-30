@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -109,4 +111,66 @@ func runtimeOf(res plugin.BuildManifestResult) plugin.RuntimeSpec {
 func resolverOf(res plugin.BuildManifestResult) plugin.ResolverSpec {
 	rs, _ := res.PrimaryResolver()
 	return rs
+}
+
+// TestBuildManifest_ResolvedBuildToolchain covers when the manifest carries the toolchain the build's
+// environment resolves: only when the go.mod directives do not bound it from below — no `toolchain`
+// line and a `go` line below 1.21 or absent — and then exactly what the load records as the build's
+// (buildToolchain), or empty when the go command cannot establish it.
+func TestBuildManifest_ResolvedBuildToolchain(t *testing.T) {
+	var noGoWork []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GOWORK=") && !strings.HasPrefix(kv, "GOTOOLCHAIN=") {
+			noGoWork = append(noGoWork, kv)
+		}
+	}
+	// GOTOOLCHAIN=local keeps the probe on the installed go command: no download, a known answer.
+	localEnv := append(slices.Clip(noGoWork), "GOTOOLCHAIN=local")
+	// A pinned release the go command cannot fetch makes `go env GOVERSION` fail, offline.
+	unfetchableEnv := append(slices.Clip(noGoWork), "GOTOOLCHAIN=go1.999.0", "GOPROXY=off")
+
+	tests := []struct {
+		name         string
+		gomod        string
+		env          []string
+		wantResolved bool
+	}{
+		{"go 1.17 alone is advisory: probed", "module example.com/m\n\ngo 1.17\n", localEnv, true},
+		{"go 1.20 alone is advisory: probed", "module example.com/m\n\ngo 1.20\n", localEnv, true},
+		{"no go line is advisory: probed", "module example.com/m\n", localEnv, true},
+		{"go 1.21 two-part is advisory: probed", "module example.com/m\n\ngo 1.21\n", localEnv, true},
+		{"go 1.21.0 binds: not probed", "module example.com/m\n\ngo 1.21.0\n", localEnv, false},
+		{"go 1.22.3 binds: not probed", "module example.com/m\n\ngo 1.22.3\n", localEnv, false},
+		{"go 1.20.0 three-part below 1.21 is advisory: probed", "module example.com/m\n\ngo 1.20.0\n", localEnv, true},
+		{"go 2.0.0 binds: not probed", "module example.com/m\n\ngo 2.0.0\n", localEnv, false},
+		{"a toolchain line binds a pre-1.21 go line: not probed", "module example.com/m\n\ngo 1.17\n\ntoolchain go1.21.3\n", localEnv, false},
+		{"the build's toolchain cannot be established: empty", "module example.com/m\n\ngo 1.17\n", unfetchableEnv, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(tc.gomod), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithBuildEnviron(context.Background(), tc.env)
+			res, err := BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("BuildManifest: %v", err)
+			}
+			got := runtimeOf(res).Resolved
+			if !tc.wantResolved {
+				if got != "" {
+					t.Errorf("Runtime.Resolved = %q, want empty", got)
+				}
+				return
+			}
+			want := buildToolchain(ctx, dir)
+			if want == "" {
+				t.Fatal("the installed go command established no toolchain; the test needs one")
+			}
+			if got != want {
+				t.Errorf("Runtime.Resolved = %q, want %q (the build's toolchain as the load establishes it)", got, want)
+			}
+		})
+	}
 }

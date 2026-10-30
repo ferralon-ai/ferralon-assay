@@ -156,29 +156,35 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		want     string // Unread reason, "" when read
 		detail   string
 		wantReqs int
+		fallback string // Fallback kind, "" when the result does not fall back
 	}{
 		{name: "fetch verifies and reads", mode: DependencyCodeFetch, served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
-		{name: "fetch sri mismatch", mode: DependencyCodeFetch, served: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1},
+		{name: "fetch sri mismatch", mode: DependencyCodeFetch, served: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1, fallback: UnreadIntegrityMismatch},
 		{name: "no lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "", want: UnreadNoIntegrity},
 		{name: "malformed lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "sha512:short", want: UnreadMalformedIntegrity},
 		{name: "fetch verifies a sha1-only lock entry", mode: DependencyCodeFetch, served: tarball, digest: sri1(tarball), wantRead: 1, wantReqs: 1},
-		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "NPM_TOKEN"`},
-		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed},
-		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1},
-		{name: "empty per-host token refuses before any request", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential"},
-		{name: "top-level auth refuses before any request", mode: DependencyCodeFetch, npmrc: "_auth=Zm9vOmJhcg==", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential"},
+		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "NPM_TOKEN"`, fallback: UnreadNPMRCMalformed},
+		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, fallback: UnreadNPMRCMalformed},
+		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
+		{name: "empty per-host token refuses before any request", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
+		{name: "top-level auth refuses before any request", mode: DependencyCodeFetch, npmrc: "_auth=Zm9vOmJhcg==", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
 		{name: "public registry reads with an optional token unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
-		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1},
-		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1},
-		{name: "401 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1},
-		{name: "403 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1},
-		{name: "401 with no auth configured", mode: DependencyCodeFetch, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1},
-		{name: "transport failure", mode: DependencyCodeFetch, registry: "down.test", served: tarball, digest: sri512(tarball), want: UnreadFetchFailed},
-		{name: "stage deadline passes", mode: DependencyCodeFetch, timeout: time.Nanosecond, served: tarball, digest: sri512(tarball), want: UnreadCancelled},
+		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "401 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "403 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "throttled on every attempt", mode: DependencyCodeFetch, status: http.StatusTooManyRequests, digest: sri512(tarball), want: UnreadUnavailable, detail: "rate-limited", wantReqs: 3, fallback: UnreadUnavailable},
+		{name: "server error on every attempt", mode: DependencyCodeFetch, status: http.StatusServiceUnavailable, digest: sri512(tarball), want: UnreadUnavailable, detail: "server-error", wantReqs: 3, fallback: UnreadUnavailable},
+		{name: "401 with no auth configured", mode: DependencyCodeFetch, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "403 with no auth configured", mode: DependencyCodeFetch, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "transport failure", mode: DependencyCodeFetch, registry: "down.test", served: tarball, digest: sri512(tarball), want: UnreadFetchFailed, fallback: UnreadFetchFailed},
+		{name: "stage deadline passes", mode: DependencyCodeFetch, timeout: time.Nanosecond, served: tarball, digest: sri512(tarball), want: UnreadCancelled, fallback: UnreadCancelled},
 		{name: "offline empty cache", mode: DependencyCodeOffline, served: tarball, digest: sri512(tarball), want: UnreadNotCached},
 		{name: "offline seeded cache", mode: DependencyCodeOffline, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "offline tampered cache", mode: DependencyCodeOffline, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
-		{name: "fetch over tampered cache entry", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
+		{name: "fetch over tampered cache entry refetches it once", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
+		{name: "tampered cache entry and a registry serving bad bytes", mode: DependencyCodeFetch, served: other, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1, fallback: UnreadIntegrityMismatch},
+		{name: "tampered cache entry and a registry that does not serve it", mode: DependencyCodeFetch, seed: other, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -197,8 +203,9 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 				seedCache(t, cache, tt.digest, tt.seed)
 			}
 			d := &dependencyAcquirer{
-				cfg:   DependencyAcquisition{Mode: tt.mode, CacheDir: cache, LookupEnv: envMap(tt.env), Timeout: tt.timeout, Client: regs.client},
-				byDir: map[string]*acquiredBuild{},
+				cfg:        DependencyAcquisition{Mode: tt.mode, CacheDir: cache, LookupEnv: envMap(tt.env), Timeout: tt.timeout, Client: regs.client},
+				byDir:      map[string]*acquiredBuild{},
+				retrySleep: noSleep,
 			}
 			res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode(qs, tt.digest)}})
 			if res.Read != tt.wantRead {
@@ -216,6 +223,16 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 			}
 			if strings.Contains(detail, acqSecret) {
 				t.Fatal("unread detail carries the token")
+			}
+			gotFallback := ""
+			if res.Fallback != nil {
+				gotFallback = res.Fallback.Kind
+				if strings.Contains(res.Fallback.Detail, acqSecret) || !strings.HasPrefix(res.Fallback.Detail, qs) {
+					t.Fatalf("fallback detail = %q, want it to name %s and no token", res.Fallback.Detail, qs)
+				}
+			}
+			if gotFallback != tt.fallback {
+				t.Fatalf("fallback = %q, want %q", gotFallback, tt.fallback)
 			}
 			seen := regs.seen("registry.test")
 			if n := len(seen); n != tt.wantReqs {
@@ -247,6 +264,10 @@ func TestClassifyAcquireErrorAfterDeadline(t *testing.T) {
 		{name: "malformed pin", err: artifactcache.ErrMalformedRef, want: UnreadMalformedIntegrity},
 		{name: "not served", err: artifactcache.ErrDeclaredAbsent, want: UnreadCancelled},
 		{name: "transport", err: context.DeadlineExceeded, want: UnreadCancelled},
+		{name: "registry answered 503", err: &artifactcache.FetchReason{Code: artifactcache.FetchServerError, Status: http.StatusServiceUnavailable}, want: UnreadUnavailable},
+		{name: "registry timed out before the deadline", err: &artifactcache.FetchReason{Code: artifactcache.FetchTimeout}, want: UnreadUnavailable},
+		{name: "registry dropped the connection before the deadline", err: &artifactcache.FetchReason{Code: artifactcache.FetchConnectionReset}, want: UnreadUnavailable},
+		{name: "unreachable", err: &artifactcache.FetchReason{Code: artifactcache.FetchConnectFailure}, want: UnreadCancelled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -256,6 +277,34 @@ func TestClassifyAcquireErrorAfterDeadline(t *testing.T) {
 		})
 	}
 }
+
+// A registry that was unavailable or unreachable is named as such, never as not serving the
+// package; only an answer that the package is not there reads as not_served.
+func TestClassifyAcquireErrorRegistryConditions(t *testing.T) {
+	tests := []struct {
+		name, want, detail string
+		err                error
+	}{
+		{name: "429", err: &artifactcache.FetchReason{Code: artifactcache.FetchRateLimited, Status: http.StatusTooManyRequests}, want: UnreadUnavailable, detail: artifactcache.FetchRateLimited},
+		{name: "500", err: &artifactcache.FetchReason{Code: artifactcache.FetchServerError, Status: http.StatusInternalServerError}, want: UnreadUnavailable, detail: artifactcache.FetchServerError},
+		{name: "timeout", err: &artifactcache.FetchReason{Code: artifactcache.FetchTimeout}, want: UnreadUnavailable, detail: artifactcache.FetchTimeout},
+		{name: "connection reset", err: &artifactcache.FetchReason{Code: artifactcache.FetchConnectionReset}, want: UnreadUnavailable, detail: artifactcache.FetchConnectionReset},
+		{name: "dns", err: &artifactcache.FetchReason{Code: artifactcache.FetchDNSFailure}, want: UnreadUnreachable, detail: artifactcache.FetchDNSFailure},
+		{name: "connect", err: fmt.Errorf("fetch: %w", &artifactcache.FetchReason{Code: artifactcache.FetchConnectFailure}), want: UnreadUnreachable, detail: artifactcache.FetchConnectFailure},
+		{name: "404", err: artifactcache.ErrDeclaredAbsent, want: UnreadNotServed},
+		{name: "other", err: errors.New("disk full"), want: UnreadFetchFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := classifyAcquireError(context.Background(), "pkg:npm/qs@6.5.2", tt.err)
+			if u.Reason != tt.want || u.Detail != tt.detail {
+				t.Fatalf("classified %s %q, want %s %q", u.Reason, u.Detail, tt.want, tt.detail)
+			}
+		})
+	}
+}
+
+func noSleep(context.Context, time.Duration) error { return nil }
 
 // slowInventoryPlugin's inventory outlasts any deadline; failingInventoryPlugin's fails at once.
 type slowInventoryPlugin struct{ inventoryPlugin }
@@ -515,13 +564,19 @@ func TestDependencyAcquisitionStageOptIn(t *testing.T) {
 	}
 }
 
-// The JS lane is handed the dependency cache only for a case dependency_acquisition ran for.
+// The JS lane is handed the dependency cache only for a case dependency_acquisition ran for and
+// did not fall back on.
 func TestDependencyCacheForRequiresTheStage(t *testing.T) {
 	cache := t.TempDir()
 	acq := &dependencyAcquirer{cfg: DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: cache}}
+	split := &dependencyAcquirer{cfg: DependencyAcquisition{Mode: DependencyCodeOffline, CacheDir: cache, UncredentialedDir: t.TempDir()}}
 	ran := &assessment.Assessment{ID: "ran"}
 	store := artifact.NewMemStore()
 	if _, err := PutArtifact(store, ran, "dependency_acquisition", TypeDependencyAcquisition, "", DependencyAcquisitionResult{}); err != nil {
+		t.Fatal(err)
+	}
+	fell := &assessment.Assessment{ID: "fell"}
+	if _, err := PutArtifact(store, fell, "dependency_acquisition", TypeDependencyAcquisition, "", DependencyAcquisitionResult{Fallback: &DependencyCodeCause{Kind: UnreadFetchFailed}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -533,9 +588,259 @@ func TestDependencyCacheForRequiresTheStage(t *testing.T) {
 		{"no acquirer", nil, "ran", ""},
 		{"stage did not run", acq, "other", ""},
 		{"stage ran", acq, "ran", cache},
+		{"stage fell back", acq, "fell", ""},
+		{"split cache reads CacheDir", split, "ran", cache},
+		{"split cache fell back", split, "fell", ""},
 	} {
 		if got := tc.acq.cacheFor(store, tc.caseID); got != tc.want {
 			t.Errorf("%s: cacheFor = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// persistedFiles returns every regular file under root, relative to it.
+func persistedFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(root, func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.Type().IsRegular() {
+			rel, _ := filepath.Rel(root, p)
+			files = append(files, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func entryRel(t *testing.T, digest string) string {
+	t.Helper()
+	p, err := artifactcache.CanonicalPath("", digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.ToSlash(p)
+}
+
+// A split cache physically keeps a tarball from a registry with an auth entry out of the
+// persisted directory, whichever way it arrives, while the lane still reads every package.
+func TestDependencyAcquisitionSplitCache(t *testing.T) {
+	pubBytes, privBytes := []byte("public tarball"), []byte("credentialed tarball")
+	bad := []byte("not the pinned bytes")
+	pub, priv := "pkg:npm/qs@6.5.2", "pkg:npm/%40priv/lib@1.0.0"
+	pubDigest, privDigest := sri512(pubBytes), sri512(privBytes)
+
+	type seed struct {
+		inPersisted bool // else the read directory
+		digest      string
+		bytes       []byte
+	}
+	tests := []struct {
+		name          string
+		mode          DependencyCodeMode
+		split         bool
+		token         bool // NODE_AUTH_TOKEN is set; else the .npmrc reference is unset
+		seeds         []seed
+		wantRead      int
+		wantUnread    map[string]string // purl -> reason
+		wantPersisted []string          // purls whose bytes the persisted directory holds
+		wantPubReqs   int
+		wantPrivReqs  int
+	}{
+		{name: "public repo: mixed registries persist only the public tarball", mode: DependencyCodeFetch, split: true, token: true,
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "private repo: one directory persists everything", mode: DependencyCodeFetch, token: true,
+			wantRead: 2, wantPersisted: []string{pub, priv}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "credentialed tarball restored into the persisted directory is removed and fetched apart", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{true, privDigest, privBytes}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "credentialed refetch after an integrity failure stays out of the persisted directory", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{false, privDigest, bad}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "public refetch after an integrity failure replaces the persisted copy", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{true, pubDigest, bad}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 1, wantPrivReqs: 1},
+		{name: "public tarball already persisted is read without a request", mode: DependencyCodeFetch, split: true, token: true,
+			seeds:    []seed{{true, pubDigest, pubBytes}},
+			wantRead: 2, wantPersisted: []string{pub}, wantPubReqs: 0, wantPrivReqs: 1},
+		{name: "offline split reads the persisted public tarball and never a credentialed one", mode: DependencyCodeOffline, split: true, token: true,
+			seeds:    []seed{{true, pubDigest, pubBytes}, {true, privDigest, privBytes}},
+			wantRead: 1, wantUnread: map[string]string{priv: UnreadNotCached}, wantPersisted: []string{pub}},
+		{name: "offline split with an empty cache reads nothing", mode: DependencyCodeOffline, split: true, token: true,
+			wantUnread: map[string]string{pub: UnreadNotCached, priv: UnreadNotCached}},
+		{name: "offline split with an unreadable npm configuration reads nothing", mode: DependencyCodeOffline, split: true,
+			seeds:      []seed{{true, pubDigest, pubBytes}},
+			wantUnread: map[string]string{pub: UnreadNPMRCMalformed, priv: UnreadNPMRCMalformed}, wantPersisted: []string{pub}},
+		{name: "offline one directory reads a seeded credentialed tarball", mode: DependencyCodeOffline,
+			seeds:    []seed{{true, pubDigest, pubBytes}, {true, privDigest, privBytes}},
+			wantRead: 2, wantPersisted: []string{pub, priv}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regs := newFakeRegistries()
+			regs.serve(t, "registry.test", pubBytes)
+			regs.serve(t, "npm.priv.test", privBytes)
+			build, persisted, readDir := t.TempDir(), t.TempDir(), t.TempDir()
+			npmrc := strings.Join([]string{
+				"registry=https://registry.test/",
+				"@priv:registry=https://npm.priv.test/",
+				"//npm.priv.test/:_authToken=${NODE_AUTH_TOKEN}",
+			}, "\n")
+			if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range tt.seeds {
+				root := readDir
+				if s.inPersisted {
+					root = persisted
+				}
+				seedCache(t, root, s.digest, s.bytes)
+			}
+			env := map[string]string{}
+			if tt.token {
+				env["NODE_AUTH_TOKEN"] = acqSecret
+			}
+			// With a split the persisted directory is UncredentialedDir; without one it is the
+			// one directory, CacheDir.
+			cfg := DependencyAcquisition{Mode: tt.mode, CacheDir: persisted, LookupEnv: envMap(env), Client: regs.client}
+			if tt.split {
+				cfg.CacheDir, cfg.UncredentialedDir = readDir, persisted
+			}
+			d := &dependencyAcquirer{cfg: cfg, byDir: map[string]*acquiredBuild{}}
+			res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{
+				npmNode(pub, pubDigest), npmNode(priv, privDigest),
+			}})
+
+			if res.Read != tt.wantRead {
+				t.Fatalf("Read = %d, want %d (unread %+v)", res.Read, tt.wantRead, res.Unread)
+			}
+			gotUnread := map[string]string{}
+			for _, u := range res.Unread {
+				gotUnread[u.PURL] = u.Reason
+			}
+			if len(gotUnread) != len(tt.wantUnread) {
+				t.Fatalf("unread = %v, want %v", gotUnread, tt.wantUnread)
+			}
+			for p, r := range tt.wantUnread {
+				if gotUnread[p] != r {
+					t.Fatalf("unread = %v, want %v", gotUnread, tt.wantUnread)
+				}
+			}
+			if res.Fallback != nil {
+				t.Fatalf("fallback = %+v, want none", res.Fallback)
+			}
+
+			// The persisted directory's physical contents: each wanted entry with its pinned
+			// bytes, at most its acquisition record beside it, and nothing else at all.
+			want := map[string][]byte{}
+			for _, p := range tt.wantPersisted {
+				switch p {
+				case pub:
+					want[entryRel(t, pubDigest)] = pubBytes
+				case priv:
+					want[entryRel(t, privDigest)] = privBytes
+				}
+			}
+			allowed := map[string]bool{}
+			for f := range want {
+				allowed[f], allowed[f+".record.json"] = true, true
+			}
+			files := persistedFiles(t, persisted)
+			for _, f := range files {
+				if !allowed[f] {
+					t.Fatalf("persisted directory holds unexpected file %s (all: %v)", f, files)
+				}
+				b, err := os.ReadFile(filepath.Join(persisted, f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if exp, ok := want[f]; ok {
+					if string(b) != string(exp) {
+						t.Fatalf("persisted %s holds %q, want the pinned bytes", f, b)
+					}
+					delete(want, f)
+				}
+				if tt.split && (string(b) == string(privBytes) || strings.Contains(string(b), "npm.priv.test")) {
+					t.Fatalf("persisted %s carries the credentialed tarball or its source", f)
+				}
+			}
+			if len(want) != 0 {
+				t.Fatalf("persisted directory lacks %v (all: %v)", want, files)
+			}
+
+			if n := len(regs.seen("registry.test")); n != tt.wantPubReqs {
+				t.Fatalf("public registry requests = %d, want %d", n, tt.wantPubReqs)
+			}
+			for _, a := range regs.seen("registry.test") {
+				if a != "" {
+					t.Fatalf("public registry saw Authorization %q", a)
+				}
+			}
+			privSeen := regs.seen("npm.priv.test")
+			if len(privSeen) != tt.wantPrivReqs {
+				t.Fatalf("credentialed registry requests = %d, want %d", len(privSeen), tt.wantPrivReqs)
+			}
+			for _, a := range privSeen {
+				if a != "Bearer "+acqSecret {
+					t.Fatalf("credentialed registry saw %q, want its token", a)
+				}
+			}
+		})
+	}
+}
+
+// A tarball bound for UncredentialedDir is fetched without presenting a credential even when its
+// registry redirects onto a host that holds one; without the split the redirect carries it.
+func TestDependencyAcquisitionSplitFetchesUncredentialedAnonymously(t *testing.T) {
+	tarball := []byte("redirected public tarball")
+	for _, tc := range []struct {
+		name     string
+		split    bool
+		wantAuth string
+	}{
+		{"split", true, ""},
+		{"one directory", false, "Bearer " + acqSecret},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			regs := newFakeRegistries()
+			regs.serve(t, "npm.priv.test", tarball)
+			redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				http.Redirect(w, req, "https://npm.priv.test/redirected.tgz", http.StatusFound)
+			}))
+			t.Cleanup(redirect.Close)
+			u, err := url.Parse(redirect.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			regs.backends["registry.test"] = u.Host
+
+			build := t.TempDir()
+			npmrc := strings.Join([]string{
+				"registry=https://registry.test/",
+				"@priv:registry=https://npm.priv.test/",
+				"//npm.priv.test/:_authToken=${NODE_AUTH_TOKEN}",
+			}, "\n")
+			if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := DependencyAcquisition{Mode: DependencyCodeFetch, CacheDir: t.TempDir(), Client: regs.client,
+				LookupEnv: envMap(map[string]string{"NODE_AUTH_TOKEN": acqSecret})}
+			if tc.split {
+				cfg.UncredentialedDir = t.TempDir()
+			}
+			d := &dependencyAcquirer{cfg: cfg, byDir: map[string]*acquiredBuild{}}
+			res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{npmNode("pkg:npm/qs@6.5.2", sri512(tarball))}})
+			if res.Read != 1 {
+				t.Fatalf("Read = %d, unread %+v", res.Read, res.Unread)
+			}
+			if got := regs.seen("npm.priv.test"); len(got) != 1 || got[0] != tc.wantAuth {
+				t.Fatalf("redirect target saw %q, want %q", got, tc.wantAuth)
+			}
+		})
 	}
 }

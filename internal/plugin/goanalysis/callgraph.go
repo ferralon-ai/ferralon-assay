@@ -48,7 +48,13 @@ func loadSSA(ctx context.Context, buildDir string) (*ssaProgram, *LoadResult, er
 }
 
 func buildSSA(res *LoadResult) (*ssaProgram, error) {
-	prog, pkgs := ssautil.Packages(res.Packages, ssa.InstantiateGenerics)
+	return buildSSAWith(res, ssautil.Packages)
+}
+
+// buildSSAWith builds res's SSA program with create, which decides whose function bodies it holds
+// (ssautil.Packages: the loaded packages'; ssautil.AllPackages: their dependencies' too).
+func buildSSAWith(res *LoadResult, create func([]*packages.Package, ssa.BuilderMode) (*ssa.Program, []*ssa.Package)) (*ssaProgram, error) {
+	prog, pkgs := create(res.Packages, ssa.InstantiateGenerics)
 	if prog == nil {
 		return nil, fmt.Errorf("ssa: failed to create program from loaded packages")
 	}
@@ -97,7 +103,9 @@ func funcTypePackage(fn *ssa.Function) *types.Package {
 // requested algorithm ("vta" default | "cha" | "rta"), emitting caller->callee
 // edges and root entry points by SCIP id. A load/SSA-build failure is a hard
 // error (inv.4); unresolved interface dispatch, reflection, or cgo degrade the
-// declared Partiality rather than truncating the graph.
+// declared Partiality rather than truncating the graph. The calls reflection
+// makes are not declared run-wide here: Reachability bounds them per advisory
+// (withholdForReflectReach).
 func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
 	algo := req.Algorithm
 	if algo == "" {
@@ -111,11 +119,12 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
-	return callGraphOf(res, algo)
+	return callGraphDeclaring(res, algo, declaredRunWide)
 }
 
-// callGraphOf builds the call graph of an already-loaded program; algo is "vta", "cha" or "rta".
-func callGraphOf(res *LoadResult, algo string) (plugin.CallGraphResult, error) {
+// callGraphDeclaring builds the call graph of an already-loaded program, declaring only the run-time
+// calls' reasons that declare keeps; algo is "vta", "cha" or "rta".
+func callGraphDeclaring(res *LoadResult, algo string, declare func(reason string) bool) (plugin.CallGraphResult, error) {
 	sp, err := buildSSA(res)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
@@ -134,7 +143,9 @@ func callGraphOf(res *LoadResult, algo string) (plugin.CallGraphResult, error) {
 	roots := sp.collectRoots()
 	part := sp.partiality(res)
 	for _, r := range runTime {
-		part = withReason(part, r)
+		if declare(r) {
+			part = withReason(part, r)
+		}
 	}
 
 	return plugin.CallGraphResult{
@@ -239,7 +250,7 @@ func (s *ssaProgram) partiality(load *LoadResult) plugin.Partiality {
 	}
 
 	scoped := slices.Clone(load.Partiality.Scoped)
-	if reasons[plugin.PartialReasonCgo] && load.cgo != nil {
+	if reasons[plugin.PartialReasonCgo] && load.cgoBounded {
 		delete(reasons, plugin.PartialReasonCgo)
 		for _, r := range load.cgo {
 			if !slices.ContainsFunc(scoped, func(s plugin.ScopedReason) bool {

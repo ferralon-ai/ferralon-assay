@@ -10,11 +10,14 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
@@ -64,6 +67,17 @@ func (p Policy) backendFor(purl string) (RegistryBackend, RegistryConfig, error)
 	return b, p.Registries[eco], nil
 }
 
+// Credentialed reports whether purl's registry has an auth entry in this policy: the same
+// RegistryConfig the fetch consults before it presents a credential, so a caller deciding where
+// the bytes may be kept never re-derives which registries are authenticated.
+func (p Policy) Credentialed(purl string) (bool, error) {
+	_, reg, err := p.backendFor(purl)
+	if err != nil {
+		return false, err
+	}
+	return reg.AuthConfigured, nil
+}
+
 // AcquisitionRecord is the provenance emitted on a verified publish (design §8; PLAN-402
 // reads it). It is emitted ONLY on success, so a record never describes a refused or
 // integrity-failed artifact. It carries NO credential and NO userinfo in Source.
@@ -85,6 +99,7 @@ type Acquirer struct {
 	root   string
 	client *http.Client // transport only; CheckRedirect is installed per-Acquire
 	now    func() time.Time
+	sleep  func(context.Context, time.Duration) error
 
 	hits   atomic.Int64
 	misses atomic.Int64
@@ -98,7 +113,14 @@ func NewAcquirer(root string, client *http.Client) *Acquirer {
 	if client == nil {
 		client = &http.Client{}
 	}
-	return &Acquirer{root: root, client: client, now: time.Now}
+	return &Acquirer{root: root, client: client, now: time.Now, sleep: sleepCtx}
+}
+
+// SetRetrySleep replaces how Acquire waits between attempts at a transient failure; the
+// default waits on a timer and stops when ctx ends. Tests use it to keep time out of the
+// retry path.
+func (a *Acquirer) SetRetrySleep(sleep func(context.Context, time.Duration) error) {
+	a.sleep = sleep
 }
 
 // Hits and Misses expose the cache-hit instrumentation (design §4.7 / PLAN-400 input).
@@ -150,7 +172,72 @@ func (a *Acquirer) Acquire(ctx context.Context, ref artifactcache.Ref, policy Po
 		return AcquisitionRecord{}, err // ErrPolicyRefused, no fetch, no credential attached
 	}
 
-	// 5. FETCH — plain GET; credential attached ONLY for the bound allowlisted host.
+	// 5. FETCH, retrying a transient registry failure within retryWait's bounds.
+	var prev error
+	for attempt := 1; ; attempt++ {
+		rec, err := a.fetch(ctx, ref, policy, u, host, creds, algo, raw, canonical, path)
+		if err == nil {
+			return rec, nil
+		}
+		// A retry the caller's deadline cut short adds nothing to what the registry already
+		// said: the earlier failure is the evidence. A first attempt cut short has none.
+		if prev != nil && ctx.Err() != nil && !artifactcache.IsPartiality(err) {
+			return AcquisitionRecord{}, prev
+		}
+		wait, ok := a.retryWait(ctx, err, attempt)
+		if !ok || a.sleep(ctx, wait) != nil {
+			return AcquisitionRecord{}, err
+		}
+		prev = err
+	}
+}
+
+// Retry bounds for a transient registry failure (ErrRegistryUnavailable).
+const (
+	// maxFetchAttempts caps the requests one Acquire sends.
+	maxFetchAttempts = 3
+	// retryBackoff is the first wait when the registry names none; it doubles per attempt.
+	retryBackoff = time.Second
+	// maxRetryWait caps one wait. A Retry-After longer than this is not waited for.
+	maxRetryWait = 30 * time.Second
+)
+
+// retryWait returns how long to wait before attempt+1, or false when err is not transient,
+// attempt was the last, the wait exceeds maxRetryWait, or it would end at or past ctx's
+// deadline: a retry never extends the caller's deadline.
+func (a *Acquirer) retryWait(ctx context.Context, err error, attempt int) (time.Duration, bool) {
+	var fr *artifactcache.FetchReason
+	if attempt >= maxFetchAttempts || ctx.Err() != nil || !errors.As(err, &fr) || !errors.Is(fr, artifactcache.ErrRegistryUnavailable) {
+		return 0, false
+	}
+	wait := retryBackoff << (attempt - 1)
+	if fr.RetryAfter > 0 {
+		wait = fr.RetryAfter
+	}
+	if wait > maxRetryWait {
+		return 0, false
+	}
+	if dl, ok := ctx.Deadline(); ok && !a.now().Add(wait).Before(dl) {
+		return 0, false
+	}
+	return wait, true
+}
+
+// sleepCtx waits d, or returns ctx's error if it ends first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// fetch sends one GET for the checked target u and publishes the verified bytes, or returns
+// one typed outcome. The credential is attached ONLY for the bound allowlisted host.
+func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Policy, u *url.URL, host string, creds RegistryCredentials, algo string, raw []byte, canonical, path string) (AcquisitionRecord, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return AcquisitionRecord{}, err
@@ -171,33 +258,128 @@ func (a *Acquirer) Acquire(ctx context.Context, ref artifactcache.Ref, policy Po
 		if errors.As(err, &pr) {
 			return AcquisitionRecord{}, pr
 		}
-		return AcquisitionRecord{}, err
+		return AcquisitionRecord{}, transportFailure(ctx, ref.PURL, host, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// A registry with configured auth that refuses the request is not evidence the
-		// artifact is absent: either the run had no credential to present, or the one it
-		// presented was refused.
-		if reg.AuthConfigured && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		// A registry that refuses the request is not evidence the artifact is absent: either
+		// the run had no credential to present (no auth entry, or one whose token is unset),
+		// or the one it presented was refused. Only the registry's own refusal says that: a
+		// host a redirect reached was never sent the registry's credential, and a storage host
+		// commonly refuses a key it does not hold, so its 401/403 reads as not served.
+		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && answeredBy(resp, host) {
 			code := artifactcache.PolicyMissingCredential
 			if presented {
 				code = artifactcache.PolicyCredentialRejected
 			}
 			return AcquisitionRecord{}, &artifactcache.PolicyReason{PURL: ref.PURL, Host: host, Code: code}
 		}
+		// A throttle, timeout or server error says nothing about whether the artifact exists.
+		if code := unavailableStatus(resp.StatusCode); code != "" {
+			return AcquisitionRecord{}, &artifactcache.FetchReason{PURL: ref.PURL, Host: host, Code: code, Status: resp.StatusCode, RetryAfter: retryAfter(resp.Header.Get("Retry-After"), a.now())}
+		}
 		// Not found / not served: nothing acquired — honest ErrDeclaredAbsent, never an
-		// empty success. (A 401 on a registry that requires auth is pre-empted by the
-		// missing-credential refusal in checkTarget.)
+		// empty success.
 		return AcquisitionRecord{}, artifactcache.ErrDeclaredAbsent
 	}
 
 	// 6. VERIFY (streaming) → 8. ATOMIC PUBLISH. Verified bytes reach the final path only via
 	// os.Rename after the hash matches; nothing is readable at <path> until then.
+	body := &bodyReader{ReadCloser: resp.Body}
+	resp.Body = body
 	rec, err := a.verifyAndPublish(resp, ref, algo, raw, canonical, path)
 	if err != nil {
+		if body.err != nil {
+			return AcquisitionRecord{}, transportFailure(ctx, ref.PURL, host, body.err)
+		}
 		return AcquisitionRecord{}, err
 	}
 	return rec, nil
+}
+
+// answeredBy reports whether resp came from host itself rather than from a host a redirect
+// reached.
+func answeredBy(resp *http.Response, host string) bool {
+	if resp.Request == nil || resp.Request.URL == nil {
+		return false
+	}
+	h, err := canonicalHost(resp.Request.URL)
+	return err == nil && h == host
+}
+
+// unavailableStatus is the Fetch* code for a status that marks the registry, not the
+// artifact, as the reason nothing was served, or "".
+func unavailableStatus(status int) string {
+	switch {
+	case status == http.StatusTooManyRequests:
+		return artifactcache.FetchRateLimited
+	case status == http.StatusRequestTimeout:
+		return artifactcache.FetchTimeout
+	case status >= 500 && status <= 599:
+		return artifactcache.FetchServerError
+	}
+	return ""
+}
+
+// retryAfter parses a Retry-After header, as delay-seconds or an HTTP date, into a wait
+// from now. Absent, malformed or already past is zero.
+func retryAfter(v string, now time.Time) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		// Past the cap every value is refused alike; clamping keeps the multiply in range.
+		return time.Duration(min(secs, int64(maxRetryWait/time.Second)+1)) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil && t.After(now) {
+		return t.Sub(now)
+	}
+	return 0
+}
+
+// transportFailure classifies an error the transport returned for host. An error the
+// caller's context could itself have caused is returned unchanged, as is one that names no
+// registry condition; the rest become a FetchReason, dropping the wrapped error, whose text
+// can carry the URL.
+func transportFailure(ctx context.Context, purl, host string, err error) error {
+	if ctx.Err() != nil {
+		return err
+	}
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	var netErr net.Error
+	code := ""
+	switch {
+	case errors.As(err, &dnsErr):
+		code = artifactcache.FetchDNSFailure
+	case errors.As(err, &opErr) && opErr.Op == "dial":
+		code = artifactcache.FetchConnectFailure
+	case errors.As(err, &netErr) && netErr.Timeout():
+		code = artifactcache.FetchTimeout
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		code = artifactcache.FetchConnectionReset
+	default:
+		return err
+	}
+	return &artifactcache.FetchReason{PURL: purl, Host: host, Code: code}
+}
+
+// bodyReader records the first error reading the response body, so a failure while
+// publishing can be told apart as the registry's rather than the cache directory's.
+type bodyReader struct {
+	io.ReadCloser
+	err error
+}
+
+func (b *bodyReader) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && b.err == nil {
+		b.err = err
+	}
+	return n, err
 }
 
 // checkTarget canonicalizes and validates the initial fetch target: HTTPS-only, on the

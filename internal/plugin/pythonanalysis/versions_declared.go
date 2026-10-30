@@ -303,7 +303,8 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 
 // pep508List reads v as the array of PEP 508 strings a TOML dependency list must be, each
 // entry with the locks that may cover it; nil is an empty list. ok is false when v is not an
-// array of strings or an entry is not a well-formed requirement (pep508Entry).
+// array of strings or an entry is not a well-formed requirement (pep508Entry); the entries after
+// a bad one are still read, so their names stay declared.
 func pep508List(v any, dir string, lockedBy []string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	entries, isList := v.([]any)
 	if v != nil && !isList {
@@ -312,15 +313,18 @@ func pep508List(v any, dir string, lockedBy []string) ([]plugin.ResolvedDependen
 	var (
 		deps    []plugin.ResolvedDependency
 		origins []manifestOrigin
+		allOK   = true
 	)
 	for _, e := range entries {
 		s, isStr := e.(string)
 		if !isStr {
-			return deps, origins, false
+			allOK = false
+			continue
 		}
 		d, o, keep, ok := pep508Entry(s, dir)
 		if !ok {
-			return deps, origins, false
+			allOK = false
+			continue
 		}
 		if keep {
 			o.lockedBy = lockedBy
@@ -328,7 +332,7 @@ func pep508List(v any, dir string, lockedBy []string) ([]plugin.ResolvedDependen
 			origins = append(origins, o)
 		}
 	}
-	return deps, origins, true
+	return deps, origins, allOK
 }
 
 // hatchEnvDeps reads the dependencies and extra-dependencies of every hatch environment, from

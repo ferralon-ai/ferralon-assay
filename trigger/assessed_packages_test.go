@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
@@ -103,5 +104,71 @@ func TestRunCVEWatch_HookSeesAssessedPackages(t *testing.T) {
 	want := []string{"", "pkg:golang/golang.org/x/text", ""}
 	if p := got.Packages[wiringAdvisory.ID]; !slices.Equal(p, want) || len(got.Packages) != 1 {
 		t.Fatalf("Packages = %q, want only %s: %q", got.Packages, wiringAdvisory.ID, want)
+	}
+}
+
+// withheldGoPlugin is refutingGoPlugin with its call graph's partiality set, so the JS lane's
+// limit for an unread package, an unbounded uninspectable_package, can withhold its refutation.
+type withheldGoPlugin struct {
+	refutingGoPlugin
+	callGraph plugin.Partiality
+}
+
+func (p withheldGoPlugin) CallGraph(context.Context, plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+	return plugin.CallGraphResult{Partiality: p.callGraph, Algorithm: "vta"}, nil
+}
+
+// A cve-watch run whose analysis withheld a refutation on a package it read names that advisory
+// undetermined, so the record lists it; the next run, which reads every package, re-assesses the
+// listed advisory although OSV reports nothing new, and reaches the not_exploitable again.
+func TestRunCVEWatch_HookSeesWithheldVerdict(t *testing.T) {
+	store, _ := groundedBaseline()
+	store.state.Cursor = ""
+	osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
+	run := func(cg plugin.Partiality) (*CVEWatchResult, DependencyFetchRun) {
+		t.Helper()
+		var got *DependencyFetchRun
+		res, err := RunCVEWatch(context.Background(), store, osv, CVEWatchRequest{
+			Subject: Subject{Repo: "r", ResolvedCommit: "sha"},
+			AssessOptions: []pipeline.AssessOption{
+				pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+				pipeline.WithPlugin(withheldGoPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, callGraph: cg}),
+			},
+			DependencyFetch: func(prior *statestore.DepFetch, r DependencyFetchRun) *statestore.DepFetch {
+				got = &r
+				// The record a JS run that missed a package writes for an undetermined advisory.
+				if r.Undetermined[wiringAdvisory.ID] {
+					return &statestore.DepFetch{Reassess: []string{wiringAdvisory.ID}}
+				}
+				return &statestore.DepFetch{}
+			},
+		})
+		if err != nil {
+			t.Fatalf("RunCVEWatch: %v", err)
+		}
+		if got == nil || res.Report == nil {
+			t.Fatal("the run was not earnest")
+		}
+		return res, *got
+	}
+
+	unread := plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonUninspectablePackage, Package: "pkg:npm/%40corp/b@1.0.0"}}}
+	res, got := run(unread)
+	if v := wiringVerdict(t, res.Report); v != report.VerdictUndetermined {
+		t.Fatalf("with an unread package: verdict = %q, want undetermined", v)
+	}
+	if !got.Undetermined[wiringAdvisory.ID] || len(got.Undetermined) != 1 {
+		t.Fatalf("Undetermined = %v, want only %s", got.Undetermined, wiringAdvisory.ID)
+	}
+
+	res, got = run(plugin.Complete())
+	if !slices.Equal(res.Reassessed, []string{wiringAdvisory.ID}) {
+		t.Fatalf("Reassessed = %q, want [%s]", res.Reassessed, wiringAdvisory.ID)
+	}
+	if v := wiringVerdict(t, res.Report); v != report.VerdictNotExploitable {
+		t.Fatalf("after a full read: verdict = %q, want not_exploitable", v)
+	}
+	if len(got.Undetermined) != 0 {
+		t.Fatalf("after a full read: Undetermined = %v, want none", got.Undetermined)
 	}
 }

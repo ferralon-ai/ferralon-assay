@@ -453,7 +453,8 @@ const osvSource = "osv"
 // is reused (CVE-watch does not re-resolve dependencies — only advisories changed).
 //
 // It also returns what a DependencyFetchUpdate sees of the run, Held aside: the advisories whose
-// re-assessment completed, sorted by ID, and the packages each concerns. The cursor is held,
+// re-assessment completed, sorted by ID, the packages each concerns, and those whose fresh finding
+// is undetermined. The cursor is held,
 // the stored one written to provenance, when newCursor already is the stored one, when an
 // advisory was cut short, or when req.Hold, consulted after every re-assessment, says so.
 func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, retry []report.AdvisoryFinding, newCursor string) (*report.Report, DependencyFetchRun, error) {
@@ -475,6 +476,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	cut := 0
 	var assessed []report.Advisory
 	packages := map[string][]string{}
+	undetermined := map[string]bool{}
 	// assess assesses ref against pkg and keys the finding under key, the row it replaces.
 	assess := func(ref assessment.VulnRef, pkg *report.Package, key string) {
 		areq := assessment.Request{Vulnerability: ref, Codebase: req.Codebase}
@@ -508,6 +510,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		freshIDs[advisory.ID] = struct{}{}
 		assessed = append(assessed, advisory)
 		packages[advisory.ID] = append(packages[advisory.ID], assessedPackages(st, assessmentID, f.Package)...)
+		if f.Verdict == report.VerdictUndetermined {
+			undetermined[advisory.ID] = true
+		}
 	}
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
@@ -588,7 +593,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if err != nil {
 		return nil, DependencyFetchRun{}, err
 	}
-	return &rep, DependencyFetchRun{Assessed: sortedAdvisories(assessed), Packages: packages}, nil
+	return &rep, DependencyFetchRun{Assessed: sortedAdvisories(assessed), Packages: packages, Undetermined: undetermined}, nil
 }
 
 // assessedPackages names every package an assessment concerns, as DependencyFetchRun.Packages

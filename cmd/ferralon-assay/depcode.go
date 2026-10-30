@@ -448,12 +448,13 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 // alias, since it rebuilds every row, and a cve-watch run only entries naming one by ID, since it
 // replaces only the rows of the IDs it assessed. A cve-watch earnest run that read less than its
 // lock pins (it fell back, or a registry failed some fetches) adds the ID of each advisory it
-// assessed that concerns a package it missed (missedLocked), and removes the entries naming by ID
-// each one it assessed with every package it concerns read. An advisory concerning a package the
-// run cannot name as npm, and every advisory when the missed packages cannot be established, counts
-// as concerning one it missed. Every other refutation the run reached without some package's code
-// is the JS lane's to withhold: each unread package scopes an unbounded uninspectable_package
-// limit. A baseline that read less neither adds nor removes. An advisory whose assessment fails is
+// assessed that concerns a package it missed (missedLocked) or came out undetermined, and removes
+// the entries naming by ID each other one it assessed. An advisory concerning a package the run
+// cannot name as npm, and every advisory when the missed packages cannot be established, counts as
+// concerning one it missed. Every other refutation the run reached without some package's code is
+// the JS lane's to withhold: each unread package scopes an unbounded uninspectable_package limit,
+// so a not_exploitable on a read package comes out undetermined, and stays listed for a run that
+// reads more to reach again. A baseline that read less neither adds nor removes. An advisory whose assessment fails is
 // not among the assessed, so an assessment that fails on every run leaves its entry listed and its
 // row retried on every cve-watch run: the failure leaves the row undetermined, and nothing reached
 // with its package's code has replaced it.
@@ -510,7 +511,7 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 		missed, known := d.missedLocked()
 		var read []string
 		for _, a := range run.Assessed {
-			if known && !concernsMissed(run.Packages[a.ID], missed) {
+			if known && !run.Undetermined[a.ID] && !concernsMissed(run.Packages[a.ID], missed) {
 				read = append(read, a.ID)
 				continue
 			}

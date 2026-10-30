@@ -332,7 +332,8 @@ func TestDepCodeRunRecord(t *testing.T) {
 // A cve-watch run that read part of its lock lists only the advisories concerning a package it
 // missed, and clears an entry for an advisory it re-assessed with every package it concerns read.
 // An advisory it cannot tie to npm packages stays listed, and when the missed packages cannot be
-// established every advisory it assessed is listed.
+// established every advisory it assessed is listed. An advisory it left undetermined stays listed
+// whatever packages it concerns, so a run that reads them all reaches its verdict again.
 func TestDepCodeRunRecordScopesPartialRead(t *testing.T) {
 	const npmjs, corp = "https://registry.npmjs.org/", "https://npm.corp.example/"
 	out := func(purl, reg, outcome string) pipeline.DependencyOutcome {
@@ -394,6 +395,17 @@ func TestDepCodeRunRecordScopesPartialRead(t *testing.T) {
 			results: partial,
 			run:     watch(map[string][]string{"A": {"pkg:npm/a"}, "B": {"pkg:npm/@corp/b"}}, "A", "B"),
 			want:    []string{"B", "Z"},
+		},
+		{
+			name:    "an advisory left undetermined on a read package is listed and stays listed",
+			prior:   []string{"A", "U"},
+			results: partial,
+			run: func() trigger.DependencyFetchRun {
+				r := watch(map[string][]string{"A": {"pkg:npm/a"}, "U": {"pkg:npm/c@1.0.0"}, "V": {"pkg:npm/a"}}, "A", "U", "V")
+				r.Undetermined = map[string]bool{"U": true, "V": true}
+				return r
+			}(),
+			want: []string{"U", "V"},
 		},
 		{
 			name: "an acquisition that fell back lists everything assessed",

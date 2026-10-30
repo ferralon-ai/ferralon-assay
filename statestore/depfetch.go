@@ -28,7 +28,8 @@ type DepFetch struct {
 	// path, no credential).
 	Registries map[string]RegistryFetch `json:"registries,omitempty"`
 	// Reassess lists advisory IDs whose stored verdict was reached without the code of a package
-	// the advisory may concern, because its fetch failed. Sorted, no duplicates.
+	// the advisory may concern, because its fetch failed, or was withheld because some package's
+	// fetch failed. Sorted, no duplicates.
 	Reassess []string `json:"reassess,omitempty"`
 }
 

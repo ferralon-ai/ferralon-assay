@@ -255,8 +255,10 @@ inputs:
       the cause on the Report; the job summary names the registry and the fix when a token is
       missing or refused, or the cursor is held or stalled. A refused token fails the run. A
       cve-watch run that read less than the lockfile pins reports each disqualified or
-      not_exploitable verdict it reached as undetermined (dependency_not_fetched), and the next
-      cve-watch run assesses those advisories again; a run with 'off' stops that. The scanned branch's .npmrc chooses which registry host receives
+      not_exploitable verdict it reached on an advisory affecting a package it could not fetch, or
+      one it cannot tie to the packages it fetched, as undetermined (dependency_not_fetched), and the
+      next cve-watch run assesses those advisories again, along with any it left undetermined; a run
+      with 'off' stops that. The scanned branch's .npmrc chooses which registry host receives
       NODE_AUTH_TOKEN/NPM_TOKEN, as with npm ci; don't export them on pull-request jobs, or set
       'off'. VERSION REQUIREMENT: a scanner release that reads ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
     required: false

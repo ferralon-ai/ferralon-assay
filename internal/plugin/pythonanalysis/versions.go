@@ -31,6 +31,8 @@ import (
 // pin, or a PEP 621 "==" pin) yields Resolved=true; a range, a prefix ("==1.4.*"), or an
 // unreadable entry is an UNRESOLVED marker (Resolved=false) the predicate fails OPEN on,
 // never fabricating a not-affected. A declared range is carried as Constraint (evidence only).
+// A poetry.lock pin resolves only for a package every poetry install a script surface runs
+// on that lock puts in place (poetryInstalls.scope).
 //
 // Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go)
 // and no script surface may install a package outside them (versionSurfaces), so a coordinate
@@ -80,7 +82,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		origins []manifestOrigin
 	)
 	want := normalizePyCoordinate(req.Coordinate)
-	manifests, parseFailed, scriptWithheld, installs, tooling := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs, poetry, tooling := versionSurfaces(req.BuildDir)
 	if tooling[want] {
 		parseFailed, scriptWithheld = true, true
 	}
@@ -91,6 +93,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		if !ok {
 			parseFailed = true
 		}
+		deps = poetry.scope(m, deps)
 		all = append(all, deps...)
 		origins = append(origins, o...)
 	}

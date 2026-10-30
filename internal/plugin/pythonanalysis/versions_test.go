@@ -1480,6 +1480,19 @@ func TestResolveVersions_UVSourcesRedirectUnresolved(t *testing.T) {
 	}
 }
 
+// TestResolveVersions_UVSourcesInventoryUnresolved guards All, which the work-set inventory reads
+// directly: a sourced declaration's own pin is not a resolved version there either.
+func TestResolveVersions_UVSourcesInventoryUnresolved(t *testing.T) {
+	root := writeTree(t, map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+		"dependencies = [\"pyjwt==2.8.0\"]\n[tool.uv.sources]\npyjwt = { git = \"https://github.com/jpadilla/pyjwt\", rev = \"abc123\" }\n"})
+	res := resolveVersion(t, root, "pyjwt")
+	for _, d := range res.All {
+		if normalizePyCoordinate(d.Coordinate) == "pyjwt" && d.Resolved {
+			t.Fatalf("All holds a resolved pyjwt %q from %s, want it unresolved", d.Version, d.Source)
+		}
+	}
+}
+
 // TestResolveVersions_UVSourcesKeepExhaustive guards the other axis: a redirected source still
 // declares its name, so a uv.lock that records it keeps coverage, and Exhaustive is unchanged.
 func TestResolveVersions_UVSourcesKeepExhaustive(t *testing.T) {

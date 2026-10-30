@@ -49,6 +49,7 @@ type segment struct {
 	and        bool
 	background bool
 	end        string
+	param      bool // a data surface's value under no command key (commandKeys)
 }
 
 // dataKeys are keys whose values a build never runs as a command.
@@ -276,11 +277,15 @@ func dangling(s string) bool {
 
 // yamlLine is a line of a YAML surface as read: shell marks the text of a folded scalar,
 // already unwrapped, which is read as shell text, not as a "key: value" line; start is the
-// line, of those read, that the scalar it is part of starts on.
+// line, of those read, that the scalar it is part of starts on; cmd marks a value under a
+// command key (commandKeys), its own or an enclosing one; whole marks a line that holds a
+// key's or an item's whole value, the scalar it opens with its continuations joined on.
 type yamlLine struct {
 	text  string
 	shell bool
 	start int
+	cmd   bool
+	whole bool
 }
 
 // blockHeaderRE matches a block scalar indicator: | or >, then an indentation or chomping
@@ -291,12 +296,21 @@ var blockHeaderRE = regexp.MustCompile(`^([|>])([1-9]?[+-]?|[+-]?[1-9]?)(?:\s+#.
 // its folded lines, each a command, under a key whose value a build may run; a plain or quoted
 // scalar continued on more-indented lines becomes one line, its continuations joined with
 // spaces and a blank line starting a new command. A literal block (|) keeps one command per
-// line, and its lines are passed through unread here.
-func foldYAML(lines []string) []yamlLine {
-	var out []yamlLine
+// line, and its lines are passed through unread here. Each line is marked cmd when keys is
+// nil or its key, or a key it is nested under, is one of keys; a bare item or block line takes
+// the mark of the key it is under.
+func foldYAML(lines []string, keys map[string]bool) []yamlLine {
+	var (
+		out   []yamlLine
+		stack []yamlKey
+	)
 	for i := 0; i < len(lines); i++ {
+		cmd := keys == nil
+		if t := strings.TrimSpace(lines[i]); !cmd && t != "" && !strings.HasPrefix(t, "#") {
+			stack, cmd = nestKey(stack, lines[i], keys)
+		}
 		col, key, val, ok := yamlScalarStart(lines[i])
-		out = append(out, yamlLine{text: lines[i], start: i})
+		out = append(out, yamlLine{text: lines[i], start: i, cmd: cmd, whole: ok})
 		if !ok {
 			continue
 		}
@@ -308,7 +322,7 @@ func foldYAML(lines []string) []yamlLine {
 		switch m := blockHeaderRE.FindStringSubmatch(val); {
 		case m != nil && m[1] == "|":
 			for _, l := range lines[i+1 : end] {
-				out = append(out, yamlLine{text: l, start: i})
+				out = append(out, yamlLine{text: l, start: i, cmd: cmd})
 			}
 			i = end - 1
 		case m != nil:
@@ -325,7 +339,7 @@ func foldYAML(lines []string) []yamlLine {
 			}
 			if run {
 				for _, p := range foldedPieces(lines[i+1:end], base) {
-					out = append(out, yamlLine{text: p, shell: true, start: i})
+					out = append(out, yamlLine{text: p, shell: true, start: i, cmd: cmd})
 				}
 			}
 			i = end - 1
@@ -347,7 +361,7 @@ func foldYAML(lines []string) []yamlLine {
 			out[len(out)-1].text = strings.TrimRight(lines[i], " \t") + " " + groups[0]
 			if run {
 				for _, g := range groups[1:] {
-					out = append(out, yamlLine{text: g, shell: true, start: i})
+					out = append(out, yamlLine{text: g, shell: true, start: i, cmd: cmd})
 				}
 			}
 			i = end - 1
@@ -389,6 +403,41 @@ func yamlScalarStart(line string) (col int, key, val string, ok bool) {
 }
 
 func yamlIndent(line string) int { return len(line) - len(strings.TrimLeft(line, " ")) }
+
+// yamlKey is a key a YAML line opens, at its column, and whether a value under it is a command.
+type yamlKey struct {
+	col int
+	cmd bool
+}
+
+// nestKey places a YAML line among the keys it is nested under, by indentation, and reports
+// whether its value is a command: its own key is one of keys, or the key it is under marks one.
+// A bare item or scalar line is under the nearest key at or left of its column; with none, it
+// is a command.
+func nestKey(stack []yamlKey, line string, keys map[string]bool) ([]yamlKey, bool) {
+	col := yamlIndent(line)
+	s := line[col:]
+	key := ""
+	if rest, item := strings.CutPrefix(s, "- "); item {
+		trimmed := strings.TrimLeft(rest, " ")
+		if m := keyRE.FindStringSubmatch(trimmed); m != nil {
+			col, key = col+2+len(rest)-len(trimmed), m[1]
+		}
+	} else if m := keyRE.FindStringSubmatch(s); m != nil {
+		key = m[1]
+	}
+	if key == "" {
+		for len(stack) > 0 && stack[len(stack)-1].col > col {
+			stack = stack[:len(stack)-1]
+		}
+		return stack, len(stack) == 0 || stack[len(stack)-1].cmd
+	}
+	for len(stack) > 0 && stack[len(stack)-1].col >= col {
+		stack = stack[:len(stack)-1]
+	}
+	cmd := commandKey(keys, key) || len(stack) > 0 && stack[len(stack)-1].cmd
+	return append(stack, yamlKey{col: col, cmd: cmd}), cmd
+}
 
 // foldedPieces folds a folded block's lines: lines at the block's indentation join with
 // spaces, and a blank line or a more-indented line, which YAML keeps on its own line, ends

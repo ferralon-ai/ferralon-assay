@@ -11,6 +11,12 @@
 // and pre<name> and post<name> of any script) pass the same gate as the rest; other decodable
 // JSON surfaces gate every string value outside dataKeys.
 //
+// A data surface's runner runs only the values under its command keys (commandKeys): a
+// workflow step's run:, a GitLab script:, a compose command:. Any other value, such as an
+// action input under with:, is a parameter, which an action or tool may still pass to a shell,
+// so it passes every gate a command does but one: a parameter whose whole value is . or
+// source alone, a path or a mode, sources nothing. A surface with no command keys listed runs every value.
+//
 // The package decides no installer itself. A lane passes a Spec: the words that name its
 // installers, the variables they read, and the few command forms it allows, each binding the
 // manifest and lock it installs. A command that names a token anywhere in its words withholds
@@ -178,6 +184,99 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		return surfaceType{kindData, base}, true
 	}
 	return surfaceType{}, false
+}
+
+// commandKeys are, by data surface, the lowercased keys whose values its runner runs as
+// commands. A value under one of them, nested at any depth, is a command; any other value is
+// a parameter (segment.param). Every value of a data surface commandKeysOf finds no set for is
+// a command: a Procfile, noxfile.py, Jenkinsfile, appveyor.yml, and JSON that does not decode.
+var commandKeys = map[string]map[string]bool{
+	"workflow":   keySet("run", "command", "entrypoint"),
+	"action":     keySet("run", "entrypoint", "pre-entrypoint", "post-entrypoint", "args"),
+	"circleci":   keySet("run", "command"),
+	"drone":      keySet("commands", "command", "entrypoint"),
+	"azure":      keySet("script", "bash", "pwsh", "powershell"),
+	"buildspec":  keySet("commands", "finally"),
+	"cloudbuild": keySet("args", "entrypoint", "script"),
+	"taskfile":   keySet("cmds", "cmd", "sh", "status", "preconditions", "defer"),
+	"compose":    keySet("command", "entrypoint", "test"),
+	"gitlab":     keySet("script", "before_script", "after_script", "pre_get_sources_script", "command", "entrypoint", "run"),
+	"bitbucket":  keySet("script", "after-script"),
+	"travis": keySet("before_install", "install", "before_script", "script", "after_script", "after_success",
+		"after_failure", "before_cache", "before_deploy", "after_deploy"),
+	"gitpod":       keySet("before", "init", "command"),
+	"render":       keySet("buildcommand", "startcommand", "predeploycommand", "dockercommand", "initialdeployhook"),
+	"netlify":      keySet("command", "ignore"),
+	"nixpacks":     keySet("cmds", "cmd"),
+	"vercel":       keySet("buildcommand", "installcommand", "devcommand", "ignorecommand"),
+	"app":          keySet("scripts"),
+	"devcontainer": keySet("initializecommand", "oncreatecommand", "updatecontentcommand", "postcreatecommand", "poststartcommand", "postattachcommand"),
+	"tox":          keySet("commands", "commands_pre", "commands_post", "install_command", "list_dependencies_command"),
+}
+
+func keySet(keys ...string) map[string]bool {
+	m := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		m[k] = true
+	}
+	return m
+}
+
+// commandKeysOf returns the command keys of the data surface at path, or nil when every value
+// it holds is a command.
+func commandKeysOf(path string) map[string]bool {
+	lower := strings.ToLower(filepath.Base(path))
+	slash := "/" + strings.ToLower(filepath.ToSlash(path))
+	family := ""
+	switch {
+	case strings.HasPrefix(lower, "docker-compose"), strings.HasPrefix(lower, "compose."):
+		family = "compose"
+	case strings.Contains(slash, "/.github/workflows/"):
+		family = "workflow"
+	case strings.Contains(slash, "/.github/actions/") && (lower == "action.yml" || lower == "action.yaml"):
+		family = "action"
+	case strings.Contains(slash, "/.circleci/"):
+		family = "circleci"
+	case strings.Contains(slash, "/.woodpecker/"), lower == ".woodpecker.yml", lower == ".drone.yml":
+		family = "drone"
+	case strings.HasPrefix(lower, "azure-pipelines"):
+		family = "azure"
+	case strings.HasPrefix(lower, "buildspec"):
+		family = "buildspec"
+	case strings.HasPrefix(lower, "cloudbuild."):
+		family = "cloudbuild"
+	case strings.HasPrefix(lower, "taskfile."):
+		family = "taskfile"
+	case gitlabCI[lower]:
+		family = "gitlab"
+	case lower == "bitbucket-pipelines.yml":
+		family = "bitbucket"
+	case lower == ".travis.yml":
+		family = "travis"
+	case lower == ".gitpod.yml":
+		family = "gitpod"
+	case lower == "render.yaml":
+		family = "render"
+	case lower == "netlify.toml":
+		family = "netlify"
+	case lower == "nixpacks.toml":
+		family = "nixpacks"
+	case lower == "vercel.json":
+		family = "vercel"
+	case lower == "app.json":
+		family = "app"
+	case lower == "devcontainer.json", lower == ".devcontainer.json":
+		family = "devcontainer"
+	case lower == "tox.ini":
+		family = "tox"
+	}
+	return commandKeys[family]
+}
+
+// commandKey reports whether a value under key is a command, given a surface's command keys
+// (nil: every value is).
+func commandKey(keys map[string]bool, key string) bool {
+	return keys == nil || keys[strings.ToLower(strings.Trim(key, `"'`))]
 }
 
 // shellShebang reports whether head starts with a #! line naming a POSIX-family shell.
@@ -636,7 +735,7 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 	case strings.EqualFold(filepath.Ext(path), ".json"):
 		// A decodable JSON surface's text is its commands, so a dependency named like a
 		// trigger (eslint-plugin-react-hooks) is not one.
-		if u, ok := jsonUnits(path, src); ok {
+		if u, ok := jsonUnits(path, src, commandKeysOf(path)); ok {
 			units = u
 			why = v.host(s, kindShell, path, units)
 			break
@@ -679,15 +778,16 @@ func (v *Veto) opaque(src string) string {
 // unit is a run of shell text sharing a starting directory, or one exec-form command.
 // bad marks a command value that is neither.
 type unit struct {
-	text string
-	exec []string
-	bad  bool
+	text  string
+	exec  []string
+	bad   bool
+	param bool // a value under no command key (commandKeys)
 }
 
 // jsonUnits reads a decodable JSON surface's commands: a package.json's "scripts"
 // values, or every string value of any other outside dataKeys, an array of strings
-// being one exec-form command.
-func jsonUnits(path, src string) ([]unit, bool) {
+// being one exec-form command, and a param unless keys is nil or one of keys holds it.
+func jsonUnits(path, src string, keys map[string]bool) ([]unit, bool) {
 	var units []unit
 	if strings.EqualFold(filepath.Base(path), "package.json") {
 		var p struct {
@@ -710,11 +810,11 @@ func jsonUnits(path, src string) ([]unit, bool) {
 	if json.Unmarshal([]byte(src), &doc) != nil {
 		return nil, false
 	}
-	var walk func(any)
-	walk = func(x any) {
+	var walk func(x any, cmd bool)
+	walk = func(x any, cmd bool) {
 		switch t := x.(type) {
 		case string:
-			units = append(units, unit{text: t})
+			units = append(units, unit{text: t, param: !cmd})
 		case []any:
 			words := make([]string, 0, len(t))
 			for _, e := range t {
@@ -723,21 +823,21 @@ func jsonUnits(path, src string) ([]unit, bool) {
 				}
 			}
 			if len(words) == len(t) && len(t) > 0 {
-				units = append(units, unit{exec: words})
+				units = append(units, unit{exec: words, param: !cmd})
 				return
 			}
 			for _, e := range t {
-				walk(e)
+				walk(e, cmd)
 			}
 		case map[string]any:
 			for _, k := range sortedKeys(t) {
 				if !dataKeys[strings.ToLower(k)] {
-					walk(t[k])
+					walk(t[k], cmd || commandKey(keys, k))
 				}
 			}
 		}
 	}
-	walk(doc)
+	walk(doc, keys == nil)
 	return units, true
 }
 
@@ -757,6 +857,10 @@ var cdRE = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|popd)(?:$|[^A-Za
 func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	yaml := kind == kindData && (ext == ".yml" || ext == ".yaml")
+	var keys map[string]bool
+	if kind == kindData && ext != ".json" {
+		keys = commandKeysOf(path)
+	}
 	var base []string
 	unknown := s.base == baseNone
 	switch s.base {
@@ -777,7 +881,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			continue
 		}
 		if u.exec != nil {
-			if why := v.command(segment{words: u.exec, expands: hasExpansion(u.exec)}, carry, 0); why != "" {
+			if why := v.command(segment{words: u.exec, expands: hasExpansion(u.exec), param: u.param}, carry, 0); why != "" {
 				return why
 			}
 			continue
@@ -786,13 +890,21 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		if !joined && v.hasToken(lines[len(lines)-1]) {
 			return "install command in an unjoined continuation"
 		}
+		// A line with no key of its own, such as a continuation, takes the mark of the last
+		// line with one. A keyed line holds its key's whole value unless the next line is
+		// indented under it, as an INI value's continuation is.
 		read := make([]yamlLine, len(lines))
+		cmd := true
 		for i, l := range lines {
-			read[i] = yamlLine{text: l, start: i}
+			m := keyRE.FindStringSubmatch(strings.TrimSpace(l))
+			if m != nil {
+				cmd = commandKey(keys, m[1])
+			}
+			read[i] = yamlLine{text: l, start: i, cmd: cmd, whole: m != nil && !continued(lines, i)}
 		}
 		var shells map[int]shellUnit
 		if yaml {
-			read = foldYAML(lines)
+			read = foldYAML(lines, keys)
 			shells = v.shellUnits(path, u.text, included)
 		}
 		inUnit := map[int]*hostCursor{}
@@ -835,6 +947,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {
+				seg.param = u.param && len(lines) == 1 || lineKind == kindData && !rl.cmd && rl.whole
 				if why := v.command(seg, cur, 0); why != "" {
 					return why
 				}
@@ -852,6 +965,18 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		}
 	}
 	return ""
+}
+
+func indent(line string) int { return len(line) - len(strings.TrimLeft(line, " \t")) }
+
+// continued reports whether the next line that is not blank is indented past lines[i].
+func continued(lines []string, i int) bool {
+	for _, l := range lines[i+1:] {
+		if strings.TrimSpace(l) != "" {
+			return indent(l) > indent(lines[i])
+		}
+	}
+	return false
 }
 
 // workingDirKeys are keys that set where a CI or platform file's commands run.
@@ -937,7 +1062,12 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return ""
 	case ".", "source":
 		// The sourced file's commands run here; they are checked only when it is a surface
-		// the walk reads itself, or when it only sets PATH.
+		// the walk reads itself, or when it only sets PATH. A parameter whose whole value is the
+		// word alone (with: target: .) names a path or a mode, and sources nothing wherever it
+		// is run; a value that only starts with it may be joined to what follows.
+		if seg.param && len(words) == 1 {
+			return ""
+		}
 		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}

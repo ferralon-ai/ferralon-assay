@@ -502,9 +502,9 @@ func TestResolveVersions_PoetryInstallGroups(t *testing.T) {
 			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ngroups = [\"dev\"]\n\n" +
 			"[[package]]\nname = \"sphinx\"\nversion = \"7.4.7\"\ngroups = [\"docs\"]\n\n" +
 			"[[package]]\nname = \"colorama\"\nversion = \"0.4.6\"\ngroups = [\"main\", \"dev\"]\n"
-		legacyProject = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\njinja2 = \"3.1.4\"\n" +
-			"[tool.poetry.dev-dependencies]\npytest = \"8.3.2\"\n"
-		categoryLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ncategory = \"main\"\noptional = false\n\n" +
+		mainOnlyProject = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\njinja2 = \"3.1.4\"\n"
+		legacyProject   = mainOnlyProject + "[tool.poetry.dev-dependencies]\npytest = \"8.3.2\"\n"
+		categoryLock    = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\ncategory = \"main\"\noptional = false\n\n" +
 			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ncategory = \"dev\"\noptional = false\n"
 		bareLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\n"
 	)
@@ -525,6 +525,8 @@ func TestResolveVersions_PoetryInstallGroups(t *testing.T) {
 		{"--without drops every spelling", map[string]string{"install.sh": "poetry install --without Dev\n"}, []string{"jinja2", "colorama"}},
 		{"each surface's install must install it", map[string]string{"install.sh": "poetry install --with docs\n", "ci.sh": "poetry install --only main\n"}, []string{"jinja2", "colorama"}},
 		{"a package only an extra pulls in", map[string]string{"install.sh": "poetry install --with docs\n",
+			"poetry.lock": strings.Replace(lock, `groups = ["docs"]`, "groups = [\"docs\"]\noptional = true", 1)}, []string{"jinja2", "pytest", "colorama"}},
+		{"every same-name entry must install it", map[string]string{"install.sh": "poetry install --with docs\n",
 			"poetry.lock": lock + "\n" + "[[package]]\nname = \"sphinx\"\nversion = \"7.4.7\"\ngroups = [\"docs\"]\noptional = true\n"}, []string{"jinja2", "pytest", "colorama"}},
 		{"an empty groups list", map[string]string{"install.sh": "poetry install --with docs\n",
 			"poetry.lock": strings.Replace(lock, `groups = ["docs"]`, `groups = []`, 1)}, []string{"jinja2", "pytest", "colorama"}},
@@ -532,6 +534,8 @@ func TestResolveVersions_PoetryInstallGroups(t *testing.T) {
 			"poetry.lock": strings.Replace(lock, `groups = ["main"]`, `groups = ["main", "ghost"]`, 1)}, []string{"pytest", "sphinx", "colorama"}},
 		{"poetry 1.x category, --only main", map[string]string{"install.sh": "poetry install --only main\n", "pyproject.toml": legacyProject, "poetry.lock": categoryLock}, []string{"jinja2"}},
 		{"poetry 1.x category, --only dev", map[string]string{"install.sh": "poetry install --only dev\n", "pyproject.toml": legacyProject, "poetry.lock": categoryLock}, []string{"pytest"}},
+		{"poetry 1.x category dev with no dev group declared", map[string]string{"install.sh": "poetry install\n",
+			"pyproject.toml": mainOnlyProject, "poetry.lock": categoryLock}, []string{"jinja2"}},
 		{"poetry 1.x category, bare install", map[string]string{"install.sh": "poetry install\n", "pyproject.toml": legacyProject, "poetry.lock": categoryLock}, []string{"jinja2", "pytest"}},
 		{"no membership keys under a group flag", map[string]string{"install.sh": "poetry install --only main\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, nil},
 		{"no membership keys, every group installed", map[string]string{"install.sh": "poetry install\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, []string{"jinja2", "pytest"}},

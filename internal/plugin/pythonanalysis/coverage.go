@@ -795,6 +795,27 @@ func pipConfigInTree(root string) bool {
 // pipConfigMatches walks root (all but its own .git) for a pip.conf or pip.ini whose content
 // match accepts. A walk or read error counts as a match.
 func pipConfigMatches(root string, match func([]byte) bool) bool {
+	return treeFileMatches(root, func(name string) bool { return name == "pip.conf" || name == "pip.ini" }, match)
+}
+
+var installTypesRE = regexp.MustCompile(`(?i)install[-_]types`)
+
+// mypyInstallTypesInTree reports whether root (all but its own .git) holds a file that could be
+// a mypy config, one named .ini, .cfg or .toml or with mypy in its name, that names
+// install_types. A walk or read error counts as naming it.
+func mypyInstallTypesInTree(root string) bool {
+	return treeFileMatches(root, func(name string) bool {
+		switch filepath.Ext(name) {
+		case ".ini", ".cfg", ".toml":
+			return true
+		}
+		return strings.Contains(name, "mypy")
+	}, installTypesRE.Match)
+}
+
+// treeFileMatches walks root (all but its own .git) for a file whose lowercased name nameOK
+// accepts and whose content match accepts. A walk or read error counts as a match.
+func treeFileMatches(root string, nameOK func(string) bool, match func([]byte) bool) bool {
 	found := false
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -807,7 +828,7 @@ func pipConfigMatches(root string, match func([]byte) bool) bool {
 			}
 			return nil
 		}
-		if name := strings.ToLower(d.Name()); name != "pip.conf" && name != "pip.ini" {
+		if !nameOK(strings.ToLower(d.Name())) {
 			return nil
 		}
 		data, rerr := readRegular(path)

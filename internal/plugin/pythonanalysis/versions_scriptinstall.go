@@ -61,14 +61,30 @@ import (
 // not observed, as for hash-checking mode (pipConfigMatches).
 // A PIP_* variable falls under the lane-wide rule above. setuptools and wheel are not
 // targets: wheel requires packaging.
+//
+// ensurepip installs the pip its interpreter bundles, and before Python 3.12 setuptools too, so
+// under the same config rules it withholds those two coordinates alone (ensurepipFlags):
+//
+//	python -m ensurepip [flags]            the flags only from ensurepipFlags
+//
+// mypy --install-types runs pip on the stub packages mypy finds missing, which can pull in
+// runtime dependencies, so --install-types is a token wherever it appears. A mypy config can
+// set install_types as well, so a tree with a config-like file that names it makes mypy and
+// dmypy tokens (mypyInstallTypesInTree). A config the build fetches, or points --config-file
+// at outside the tree, is not observed.
 
 // newScriptSpec is the Python lane's part of the rule, recording into installs every pip
 // install -r it allows, and into tooling the distribution each allowed self-upgrade installs:
 // a caller that allows a self-upgrade must withhold what tooling names. A nil tooling allows
 // no self-upgrade.
-func newScriptSpec(installs pipInstalls, tooling map[string]bool) scriptsurface.Spec {
+// With mypyInstalls, mypy and dmypy are tokens too.
+func newScriptSpec(installs pipInstalls, tooling map[string]bool, mypyInstalls bool) scriptsurface.Spec {
+	token := laneToken
+	if mypyInstalls {
+		token = func(word string) bool { return word == "mypy" || word == "dmypy" || laneToken(word) }
+	}
 	return scriptsurface.Spec{
-		Token: laneToken,
+		Token: token,
 		Env:   laneEnvRE,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
 			return installs.allowed(words, b, tooling)
@@ -96,7 +112,8 @@ var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
-// install_requires), any word starting pip or conda, and an interpreter option that runs one
+// install_requires), ensurepip, mypy's --install-types, any word starting pip or conda, and an
+// interpreter option that runs one
 // as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
 // file not read here defines, or installs into the environments it makes (poe, invoke and its
 // inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
@@ -104,7 +121,7 @@ var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
-		"hatch", "flit", "setup.py", "poe", "invoke", "inv", "tox":
+		"hatch", "flit", "setup.py", "ensurepip", "--install-types", "poe", "invoke", "inv", "tox":
 		return true
 	}
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
@@ -128,6 +145,13 @@ var selfUpgradeFlags = map[string]bool{
 	"-U": true, "--upgrade": true, "-q": true, "--quiet": true, "--no-cache-dir": true,
 	"--disable-pip-version-check": true, "--user": true, "--no-warn-script-location": true,
 	"--root-user-action=ignore": true,
+}
+
+// ensurepipFlags are the flags an allowed ensurepip may carry: none changes what it installs.
+// --root is not one: this reads no install location.
+var ensurepipFlags = map[string]bool{
+	"-U": true, "--upgrade": true, "--default-pip": true, "--altinstall": true, "--user": true,
+	"-v": true, "--verbose": true,
 }
 
 // pipTargetRE matches the requirement pip, bare or with a PEP 440 version specifier.
@@ -227,6 +251,12 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 		return installs.pip(words[1:], b, tooling)
 	case pythonHeadRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && pipHeadRE.MatchString(words[2]):
 		return installs.pip(words[3:], b, tooling)
+	case pythonHeadRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "ensurepip":
+		if tooling == nil || !scriptsurface.FlagsOnly(words[3:], ensurepipFlags) {
+			return false
+		}
+		tooling["pip"], tooling["setuptools"] = true, true
+		return true
 	case len(words) < 2:
 		return false
 	case head == "uv" && words[1] == "sync":

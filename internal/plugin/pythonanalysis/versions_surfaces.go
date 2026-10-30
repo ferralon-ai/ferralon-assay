@@ -61,7 +61,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	if !pipConfigInTree(root) {
 		tooling = map[string]bool{}
 	}
-	spec := newScriptSpec(installs, tooling)
+	spec := newScriptSpec(installs, tooling, mypyInstallTypesInTree(root))
 	configNamed := false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)

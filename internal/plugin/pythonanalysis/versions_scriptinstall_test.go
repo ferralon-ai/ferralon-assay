@@ -331,3 +331,98 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 		}
 	})
 }
+
+// ensurepip installs the pip its interpreter bundles, and setuptools before Python 3.12, so the
+// allowed form withholds those two coordinates alone; any other form withholds every pin.
+func TestResolveVersions_Ensurepip(t *testing.T) {
+	const reqs = "jinja2==3.1.4\npip==24.0\nsetuptools==69.0.0\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		seeds bool // whether the line withholds pip and setuptools alone: jinja2 resolves
+	}{
+		{"python -m ensurepip", map[string]string{"install.sh": "python -m ensurepip\n"}, true},
+		{"--upgrade", map[string]string{"install.sh": "python3 -m ensurepip --upgrade\n"}, true},
+		{"every reviewed flag", map[string]string{"install.sh": "python3.11 -m ensurepip -U --default-pip --altinstall --user -v --verbose\n"}, true},
+		{"Dockerfile", map[string]string{"Dockerfile": "FROM python:3.11\nRUN python -m ensurepip --upgrade\n"}, true},
+
+		{"--root", map[string]string{"install.sh": "python -m ensurepip --root /opt/py\n"}, false},
+		{"another argument", map[string]string{"install.sh": "python -m ensurepip jinja2\n"}, false},
+		{"attached -m", map[string]string{"install.sh": "python -mensurepip\n"}, false},
+		{"pip config in the tree", map[string]string{"pip.conf": "[global]\n", "install.sh": "python -m ensurepip\n"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": reqs}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			dir := writeTree(t, files)
+			if r := resolveVersion(t, dir, "jinja2"); !r.Found || r.Match.Resolved != tt.seeds || r.Partiality.Complete != tt.seeds {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.seeds)
+			}
+			for _, c := range []string{"pip", "setuptools"} {
+				if r := resolveVersion(t, dir, c); !r.Found || r.Match.Resolved || r.Partiality.Complete || r.MatchesComplete {
+					t.Fatalf("%s = %+v, want found, unresolved and partial", c, r)
+				}
+			}
+		})
+	}
+}
+
+// Under a lock that covers the build, ensurepip leaves absence proven for every coordinate but
+// the two it installs, and declares both to the import resolver.
+func TestResolveVersions_EnsurepipExhaustive(t *testing.T) {
+	dir := writeTree(t, map[string]string{"pyproject.toml": exPyproject, "uv.lock": exUVLock,
+		"Dockerfile": "FROM python:3.11\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN python -m ensurepip --upgrade && uv sync --frozen\n"})
+	if r := resolveVersion(t, dir, "PyJWT"); r.Found || !r.Exhaustive {
+		t.Fatalf("PyJWT = found %v exhaustive %v, want absent and exhaustive", r.Found, r.Exhaustive)
+	}
+	for _, c := range []string{"pip", "setuptools"} {
+		if r := resolveVersion(t, dir, c); r.Found || r.Exhaustive {
+			t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)
+		}
+	}
+	names, complete, read := declaredDistributions(dir)
+	if !names["pip"] || !names["setuptools"] || !complete || !read {
+		t.Fatalf("declaredDistributions = %v complete %v read %v, want pip and setuptools declared, complete and read", names, complete, read)
+	}
+}
+
+// mypy --install-types runs pip on the stub packages it finds missing, as does a mypy config
+// that sets install_types, so either withholds every pin. A plain mypy run does not.
+func TestResolveVersions_MypyInstallTypes(t *testing.T) {
+	const reqs = "jinja2==3.1.4\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool // jinja2 resolved
+	}{
+		{"mypy --install-types", map[string]string{"install.sh": "mypy --install-types --non-interactive .\n"}, false},
+		{"python -m mypy", map[string]string{"Makefile": "lint:\n\tpython -m mypy --install-types --non-interactive src\n"}, false},
+		{"dmypy", map[string]string{"install.sh": "dmypy run -- --install-types --non-interactive .\n"}, false},
+		{"CI step", map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: mypy --install-types --non-interactive .\n"}, false},
+		{"mypy.ini install_types", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\nnon_interactive = True\n", "install.sh": "mypy .\n"}, false},
+		{"setup.cfg install_types", map[string]string{"setup.cfg": "[mypy]\ninstall_types = True\n", "install.sh": "mypy .\n"}, false},
+		{"pyproject [tool.mypy]", map[string]string{"pyproject.toml": "[tool.mypy]\ninstall_types = true\n", "install.sh": "mypy .\n"}, false},
+		{"config under another name", map[string]string{"config/types.cfg": "[mypy]\ninstall_types = True\n", "install.sh": "mypy --config-file config/types.cfg .\n"}, false},
+		{"config, dmypy", map[string]string{".mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "dmypy run -- .\n"}, false},
+
+		// Guards.
+		{"plain mypy", map[string]string{"install.sh": "mypy --strict .\n"}, true},
+		{"mypy config without install_types", map[string]string{"mypy.ini": "[mypy]\nstrict = True\n", "install.sh": "mypy .\n"}, true},
+		{"install_types config, no mypy run", map[string]string{"mypy.ini": "[mypy]\ninstall_types = True\n", "install.sh": "pytest\n"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": reqs}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+		})
+	}
+}

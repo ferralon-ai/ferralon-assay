@@ -78,7 +78,9 @@ type lofWorld struct {
 	pushesRead bool
 	intrinsics map[string]bool
 	// dropped holds the files proved never to compile; no package is parsed with them.
-	dropped map[string]bool
+	dropped    map[string]bool
+	linkMemo   map[string]lofLinks
+	importMemo map[string]lofDirImports
 }
 
 func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string, env []string, excluded func(constraint.Expr) bool, goroot string, deadline time.Time) *lofWorld {
@@ -87,6 +89,7 @@ func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string,
 		loaded: map[string]*packages.Package{}, modules: map[string]bool{},
 		dirs: map[string]string{}, names: map[string]string{}, pkgs: map[string]*lofPkg{},
 		pushes: map[string][][2]string{}, dropped: map[string]bool{},
+		linkMemo: map[string]lofLinks{}, importMemo: map[string]lofDirImports{},
 	}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		if p.Types != nil {
@@ -1338,4 +1341,142 @@ func lofToolchain(ctx context.Context, buildDir string, env []string, release *g
 		return "", lofGorootMismatch
 	}
 	return root, ""
+}
+
+// links returns the packages the build did not load that a file in dir can link, over every build
+// variant of every package on the way: the imports of dir's non-test Go files, unioned, followed
+// through each unloaded package's own files the same way. A loaded package is not followed: the
+// build already links its imports. std marks dir as the standard library's, whose golang.org/x
+// imports resolve to its vendored copies. What the walk cannot read or resolve fails closed.
+func (w *lofWorld) links(dir string, std bool) (map[string]bool, []string) {
+	key := dir
+	if std {
+		key = "std\x00" + dir
+	}
+	if l, ok := w.linkMemo[key]; ok {
+		return l.pkgs, l.fc
+	}
+	var fc []string
+	fail := func(item string) {
+		if !slices.Contains(fc, item) {
+			fc = append(fc, item)
+		}
+	}
+	out := map[string]bool{}
+	start, item := w.dirImports(dir, std)
+	if item != "" {
+		fail(item)
+	}
+	for frontier := start; len(frontier) > 0; {
+		var todo []string
+		for _, ip := range frontier {
+			if out[ip] || ip == "unsafe" {
+				continue
+			}
+			if _, ok := w.loaded[ip]; ok {
+				continue
+			}
+			out[ip] = true
+			todo = append(todo, ip)
+		}
+		w.resolve(todo)
+		frontier = nil
+		for _, ip := range todo {
+			d := w.dirs[ip]
+			if d == "" {
+				fail(lofUnresolvedImport)
+				continue
+			}
+			imps, item := w.dirImports(d, isStdlibPath(ip, w.modules))
+			if item != "" {
+				fail(item)
+			}
+			frontier = append(frontier, imps...)
+		}
+	}
+	w.linkMemo[key] = lofLinks{out, fc}
+	return out, fc
+}
+
+// lofLinks is one directory's links result.
+type lofLinks struct {
+	pkgs map[string]bool
+	fc   []string
+}
+
+// dirImports returns the imports of dir's non-test Go files that some described build compiles,
+// unioned over every variant, with the fail-closed item for a directory or file it cannot read or
+// parse.
+func (w *lofWorld) dirImports(dir string, std bool) ([]string, string) {
+	key := dir
+	if std {
+		key = "std\x00" + dir
+	}
+	if l, ok := w.importMemo[key]; ok {
+		return l.imports, l.fc
+	}
+	imports, item := readDirImports(dir, std, w.excluded)
+	w.importMemo[key] = lofDirImports{imports, item}
+	return imports, item
+}
+
+type lofDirImports struct {
+	imports []string
+	fc      string
+}
+
+func readDirImports(dir string, std bool, excluded func(constraint.Expr) bool) ([]string, string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, lofMissingSource
+	}
+	seen := map[string]bool{}
+	var out []string
+	item := ""
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		full := filepath.Join(dir, n)
+		src, err := os.ReadFile(full)
+		if err != nil {
+			item = lofMissingSource
+			continue
+		}
+		x, err := fileConstraint(src)
+		if err != nil {
+			item = lofParseError
+			continue
+		}
+		if excluded(x) {
+			continue
+		}
+		af, err := parser.ParseFile(token.NewFileSet(), full, src, parser.ImportsOnly)
+		if err != nil {
+			item = lofParseError
+			continue
+		}
+		if af.Name.Name == "documentation" || strings.HasSuffix(af.Name.Name, "_test") {
+			continue
+		}
+		for _, im := range af.Imports {
+			ip, err := strconv.Unquote(im.Path.Value)
+			if err != nil {
+				item = lofParseError
+				continue
+			}
+			if ip == "C" || ip == "unsafe" {
+				continue
+			}
+			if std && !isStdlibPath(ip, nil) {
+				ip = "vendor/" + ip
+			}
+			if !seen[ip] {
+				seen[ip] = true
+				out = append(out, ip)
+			}
+		}
+	}
+	return out, item
 }

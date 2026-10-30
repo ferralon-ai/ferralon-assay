@@ -281,6 +281,7 @@ func TestResolveVersions_ExhaustiveHatchInstallsPast(t *testing.T) {
 		{"env dependency not a string", "[tool.hatch.envs.lint]\ndependencies = [1]\n", false},
 		{"env dependency the lock lacks", "[tool.hatch.envs.lint]\ndependencies = [\"ruff\"]\n", false},
 		{"env extra-dependency the lock lacks", "[tool.hatch.envs.lint]\nextra-dependencies = [\"ruff\"]\n", false},
+		{"does not decode", "[tool.hatch.envs.lint\n", false},
 	}
 	for _, tt := range tests {
 		// hatch.toml holds the same keys as [tool.hatch], at the top level.

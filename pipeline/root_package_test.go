@@ -457,6 +457,70 @@ func TestGoPathOwner_ModulesOutsideTheRootGoMod(t *testing.T) {
 	}
 }
 
+// TestGoPathOwner_ModulesOutsideTheBuildDir: a go.mod elsewhere in the repository, beside or away
+// from the build directory's, is not in the build, so a path it claims is neither the root's at the
+// root's tag (it may be the other module's, at another version) nor provably absent from the
+// build (the root may serve it too): the owner is ambiguous, and every other path keeps its answer.
+func TestGoPathOwner_ModulesOutsideTheBuildDir(t *testing.T) {
+	const gomod = "module example.com/mono\n\ngo 1.22\n"
+	cases := []struct {
+		name        string
+		files       map[string]string
+		module      string
+		want        bool
+		wantVersion string
+	}{
+		{"a sibling module's package", map[string]string{
+			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
+		}, "example.com/mono/b/pkg", true, ""},
+		{"a sibling module itself", map[string]string{
+			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
+		}, "example.com/mono/b", true, ""},
+		{"a package the root serves under a sibling's path", map[string]string{
+			"a/b/pkg/pkg.go": "package pkg\n",
+			"b/go.mod":       "module example.com/mono/b\n\ngo 1.22\n",
+		}, "example.com/mono/b/pkg", true, ""},
+		{"a fixture go.mod away from the build directory", map[string]string{
+			"tools/lint/testdata/go.mod": "module example.com/mono/x\n\ngo 1.22\n",
+		}, "example.com/mono/x", true, ""},
+		{"a path no module outside claims", map[string]string{
+			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
+		}, "example.com/mono/internal", true, "v1.0.0"},
+		{"a go.mod outside declaring no module", map[string]string{
+			"tools/lint/testdata/go.mod": "go 1.22\n",
+		}, "example.com/mono/internal", true, "v1.0.0"},
+		{"a module in a directory the build directory's name prefixes", map[string]string{
+			"a/x/x.go":  "package x\n",
+			"ab/go.mod": "module example.com/mono/x\n\ngo 1.22\n",
+		}, "example.com/mono/x", true, ""},
+		{"a sibling module go.mod requires and replaces", map[string]string{
+			"a/go.mod": gomod + "\nrequire example.com/mono/b v0.0.0\n\nreplace example.com/mono/b => ../b\n",
+			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
+		}, "example.com/mono/b/pkg", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"a/go.mod": gomod}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			dir := writeTree(t, files)
+			gitTree(t, dir, "a/v1.0.0")
+			buildDir := filepath.Join(dir, "a")
+			root, ok := goRootPackage(context.Background(), buildDir)
+			if !ok || root.Version != "v1.0.0" {
+				t.Fatalf("goRootPackage = %+v, %v; want example.com/mono at v1.0.0", root, ok)
+			}
+			if v, got := root.Matches(buildDir, tc.module, "", ""); got != tc.want || v != tc.wantVersion {
+				t.Errorf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
+			}
+			if present, known := goModRequires(buildDir, tc.module); !present || !known {
+				t.Errorf("goModRequires = %v, %v; want present, known (a module outside the build never proves absence)", present, known)
+			}
+		})
+	}
+}
+
 // TestGradleRootPackage_VersionAllowlist: the version is read only when every statement that runs
 // before publishing is on the allowlist: settings holds only rootProject.name, and the root script
 // only literal group and version assignments and plain dependencies and repositories blocks.

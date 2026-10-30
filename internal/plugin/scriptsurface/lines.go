@@ -6,14 +6,9 @@ import (
 	"strings"
 )
 
-// logicalLines splits src into logical lines, joining a line that ends in an odd run of
-// backslashes to the next. joined is false when the last line still continues.
-func logicalLines(src string) (lines []string, joined bool) {
-	lines, _, joined = logicalLinesAt(src)
-	return lines, joined
-}
-
-// logicalLinesAt is logicalLines, also returning the source line, from 0, each starts on.
+// logicalLinesAt splits src into logical lines, joining a line that ends in an odd run of
+// backslashes to the next, and returns the source line, from 0, each starts on. joined is
+// false when the last line still continues.
 func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 	var cur strings.Builder
 	start := 0

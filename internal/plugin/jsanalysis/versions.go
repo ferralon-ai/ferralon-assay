@@ -95,7 +95,7 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		parsed[l] = info
 		all = append(all, info.deps...)
 	}
-	unread, scriptWithheld := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
+	unread, scriptWithheld, unrecognised := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
 	parseFailed = parseFailed || unread
 
 	part := plugin.Complete()
@@ -106,6 +106,8 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		// as "not a dependency".
 		all = declaredDependencies(req.BuildDir)
 		part = plugin.Partial(plugin.PartialReasonNoManifest)
+	case parseFailed && unrecognised != "":
+		part = plugin.Partial(plugin.PartialReasonToolFailure, plugin.PartialReasonUnrecognisedInstallSurface+":"+unrecognised)
 	case parseFailed:
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}

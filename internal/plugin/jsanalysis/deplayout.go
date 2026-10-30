@@ -83,7 +83,7 @@ func (l *depLayout) entries() []*depEntry {
 // the locks read here, leaves the whole layout incomplete: neither names the packages it changes.
 func buildDepLayout(ctx context.Context, buildDir string) *depLayout {
 	l := &depLayout{byPath: map[string]*depEntry{}}
-	if unread, _ := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) }); unread {
+	if unread, _, _ := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) }); unread {
 		l.incomplete = true
 	}
 	roots, read := discoverProjectRoots(buildDir)

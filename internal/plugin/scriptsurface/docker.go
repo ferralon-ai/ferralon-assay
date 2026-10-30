@@ -328,31 +328,36 @@ var (
 	}
 )
 
-// dockerfile applies the rule to a Dockerfile, stage by stage. CMD and ENTRYPOINT run after
-// every RUN, so they are checked against the stage as it ends.
-func (v *Veto) dockerfile(file, src string) string {
+// dockerfileAt applies the rule to a Dockerfile, stage by stage, and returns why it withholds
+// and the 1-based line of src that does (0 when it does not). CMD and ENTRYPOINT run after
+// every RUN, so they are checked against the stage as it ends. A Dockerfile's build context is
+// its own directory or the build root; an Earthfile's (earth) is its own directory only, as
+// Earthly sends no other.
+func (v *Veto) dockerfileAt(file, src string, earth bool) (string, int) {
 	ctxs := []string{filepath.Dir(file)}
-	if ctxs[0] != v.root {
+	if ctxs[0] != v.root && !earth {
 		ctxs = append(ctxs, v.root)
 	}
-	lines, joined := logicalLines(src)
+	lines, starts, joined := logicalLinesAt(src)
 	if !joined && v.hasToken(lines[len(lines)-1]) {
-		return "install command in an unjoined continuation"
+		return "install command in an unjoined continuation", starts[len(starts)-1] + 1
 	}
 	names := map[string]bool{}
 	st := &dockerStage{}
 	var deferred []segment
-	flush := func() string {
-		for _, seg := range deferred {
+	var deferredAt []int
+	flush := func() (string, int) {
+		for k, seg := range deferred {
 			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown}
 			if why := v.command(seg, cur, 0); why != "" {
-				return why
+				return why, deferredAt[k]
 			}
 		}
-		deferred = nil
-		return ""
+		deferred, deferredAt = nil, nil
+		return "", 0
 	}
 	for i := 0; i < len(lines); i++ {
+		at := starts[i] + 1
 		line := strings.TrimSpace(lines[i])
 		if line == "" || line[0] == '#' {
 			continue
@@ -367,7 +372,7 @@ func (v *Veto) dockerfile(file, src string) string {
 				}
 			}
 			if v.hasToken(body) {
-				return "install command in a heredoc"
+				return "install command in a heredoc", at
 			}
 			v.mention(strings.Fields(body))
 			st.taintAll()
@@ -376,8 +381,8 @@ func (v *Veto) dockerfile(file, src string) string {
 		hasTok := v.hasToken(rest)
 		switch {
 		case instr == "FROM":
-			if why := flush(); why != "" {
-				return why
+			if why, line := flush(); why != "" {
+				return why, line
 			}
 			st = &dockerStage{}
 			f := strings.Fields(rest)
@@ -413,7 +418,7 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 			if !ok {
 				if hasTok {
-					return "install command that does not tokenise"
+					return "install command that does not tokenise", at
 				}
 				v.mention(strings.Fields(rest))
 				if instr == "RUN" {
@@ -423,18 +428,21 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 			if instr != "RUN" {
 				deferred = append(deferred, segs...)
+				for range segs {
+					deferredAt = append(deferredAt, at)
+				}
 				continue
 			}
 			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown}
 			for _, seg := range segs {
 				if why := v.command(seg, cur, 0); why != "" {
-					return why
+					return why, at
 				}
 			}
 		case dockerPlain[instr]:
 		default: // ONBUILD, HEALTHCHECK and anything unknown run elsewhere or not at all
 			if hasTok {
-				return "install command in " + instr
+				return "install command in " + instr, at
 			}
 		}
 	}

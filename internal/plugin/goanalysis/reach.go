@@ -1170,6 +1170,9 @@ type vulnScan struct {
 	partial *partialRun
 	// admitted is the package URL of the package the request asks about.
 	admitted string
+	// osvListed reports that the stream holds the OSV entry whose id is the requested one, so
+	// imports and wholeModule list every module the advisory names.
+	osvListed bool
 }
 
 // vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols
@@ -1248,6 +1251,9 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 	for _, o := range osvs {
 		if vulnID != "" && !ids[o.ID] {
 			continue
+		}
+		if vulnID != "" && o.ID == vulnID {
+			scanned.osvListed = true
 		}
 		for _, a := range o.Affected {
 			if len(a.EcosystemSpecific.Imports) == 0 {

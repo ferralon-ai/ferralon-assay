@@ -129,6 +129,11 @@ type listedPackage struct {
 	Standard   bool
 	Imports    []string
 	Module     *listedModule // none for the standard library
+	// Error, DepsErrors and Incomplete are go list's account of a package it could not read whole:
+	// with -e it lists the package anyway, and its Imports may then miss what the source imports.
+	Error      *struct{ Err string }
+	DepsErrors []*struct{ Err string }
+	Incomplete bool
 }
 
 // purl names the module of p as modulePURL does.
@@ -286,10 +291,15 @@ func excludedRoots(graph []listedPackage, unloadable []string) (excluded, kept [
 }
 
 // heldModules returns the modules with a package in the import closure of excluded over graph,
-// sorted, or nil when that closure cannot be computed: an import graph does not list, or a package
-// that is neither in a module nor in the standard library. "C" is cgo's pseudo-package, not a Go
-// package. The imports go list leaves implicit (runtime, runtime/cgo, syscall, unsafe) are all
-// standard library, which every closure that holds a package already holds.
+// sorted, or nil when that closure cannot be computed: an import the graph does not list, a package
+// that is neither in a module nor in the standard library, or a package go list could not read
+// whole (Error, DepsErrors, Incomplete), whose listed imports may miss some. That holds for P's own
+// entries too: go list reads only import blocks and runs no cgo, so a package govulncheck could not
+// load for a cgo or type error lists clean, and one go list marks has imports nobody can vouch for.
+// A replaced module is held under its replacement's path as well, the identity govulncheck matches
+// advisories against. "C" is cgo's pseudo-package, not a Go package. The imports go list leaves
+// implicit (runtime, runtime/cgo, syscall, unsafe) are all standard library, which every closure
+// that holds a package already holds.
 func heldModules(graph []listedPackage, excluded []string) []heldModule {
 	byPath := make(map[string]listedPackage, len(graph))
 	for _, p := range graph {
@@ -307,10 +317,13 @@ func heldModules(graph []listedPackage, excluded []string) []heldModule {
 		seen[path] = true
 		p, ok := byPath[path]
 		switch {
-		case !ok:
+		case !ok, p.Error != nil, len(p.DepsErrors) > 0, p.Incomplete:
 			return nil
 		case p.Module != nil:
 			held[heldModule{Path: p.Module.Path, Main: p.Module.Main}] = true
+			if r := p.Module.Replace; r != nil {
+				held[heldModule{Path: r.Path}] = true
+			}
 		case p.Standard:
 			held[heldModule{}] = true
 		default:
@@ -333,7 +346,7 @@ func heldModules(graph []listedPackage, excluded []string) []heldModule {
 // module and the module that contains it stand or fall together. An empty module, and any module
 // when H is unknown, counts.
 func (run *partialRun) holds(module string) bool {
-	if run.Held == nil || module == "" {
+	if len(run.Held) == 0 || module == "" {
 		return true
 	}
 	if isToolchainPackage(module) {
@@ -355,8 +368,14 @@ func pathWithin(p, root string) bool {
 
 // supports reports whether the run's search covers res: neither the admitted module (the request's
 // package URL), nor any module the advisory names (scanned.imports, scanned.wholeModule), nor the
-// module res refutes may have a package in H. A package URL that names no Go module does not.
+// module res refutes may have a package in H. A package URL that names no Go module does not. The
+// advisory's modules are known only from its own OSV entry in the stream (scanned.osvListed): the
+// run fetches advisories for the modules it loaded, so one absent from the stream may name a module
+// only H holds.
 func (run *partialRun) supports(res plugin.ReachabilityResult, scanned vulnScan) bool {
+	if !scanned.osvListed {
+		return false
+	}
 	modules := []string{packageFromPURL(scanned.admitted)}
 	if r := res.Refutation; r != nil {
 		modules = append(modules, packageFromPURL(r.Package))
@@ -380,7 +399,7 @@ func (run *partialRun) loadExempt(module string) []string {
 // the govulncheck load sees them: tests excluded. It never fetches: a settled failure already
 // resolved every module offline (packagesResolveOffline).
 func listBuildPackages(ctx context.Context, buildDir string, env []string) ([]listedPackage, error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Standard,Imports,Module", "./...")
+	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Standard,Imports,Module,Error,DepsErrors,Incomplete", "./...")
 	cmd.Dir = buildDir
 	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
 	out, err := cmd.Output()

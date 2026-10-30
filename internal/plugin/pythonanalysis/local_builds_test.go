@@ -374,6 +374,8 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 			"Dockerfile": "FROM python:3.12\nWORKDIR /root\nCOPY . .\nRUN pdm sync\n"}, nil, false},
 		{"pdm, a pdm.toml in a subdirectory", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock, "ci/pdm.toml": "[build]\n",
 			"install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
+		{"pdm, a macOS config directory copied in, shell-escaped", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock, "ci/pdmcfg/x": "x",
+			"install.sh": "#!/bin/sh\ncp -r ci/pdmcfg ~/Library/Application\\ Support/pdm\npdm sync\n"}, nil, false},
 		{"pdm, platformdirs' Windows override", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
 			"install.sh": "#!/bin/sh\nexport WIN_PD_OVERRIDE_LOCAL_APPDATA=C:\\cfg\npdm sync\n"}, nil, false},
 		{"pdm, a config.toml outside a pdm directory", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock, "ci/config.toml": "x = 1\n",

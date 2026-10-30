@@ -184,7 +184,7 @@ var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xd
 // WIN_PD_OVERRIDE_*). A pdm sync reads the settings there, which can name an index or turn off
 // build isolation, so an allowed one withholds where a script names one (versionSurfaces).
 // PDM_CONFIG_FILE falls under laneEnvRE.
-var pdmConfigNamedRE = regexp.MustCompile(`(?i)pdm\.toml|pdm[\\/]config\.toml|(?:\.config|/etc/xdg|application support|appdata[\\/](?:local|roaming)|localappdata%?|programdata%?)[\\/]pdm\b|win_pd_override_|` + configHomeMoved)
+var pdmConfigNamedRE = regexp.MustCompile(`(?i)pdm\.toml|pdm[\\/]config\.toml|(?:\.config|/etc/xdg|application\\? support|appdata[\\/](?:local|roaming)|localappdata%?|programdata%?)[\\/]pdm\b|win_pd_override_|` + configHomeMoved)
 
 // configHomeMoved matches, in a script surface's text, a variable a tool's user or site config
 // location is found from being set or exported: XDG_CONFIG_HOME, XDG_CONFIG_DIRS, HOME (as

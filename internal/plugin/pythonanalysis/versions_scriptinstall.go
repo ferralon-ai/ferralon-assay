@@ -140,13 +140,16 @@ func laneToken(word string) bool {
 // shares.
 const installTypesFlag, installTypesMin = "--install-types", "--install-"
 
-// installTypesAbbrevRE matches, in a script surface's text, a word mypy's parser reads as
-// --install-types that is shorter than installTypesMin; mypyNamedRE must match the same text.
-var installTypesAbbrevRE = regexp.MustCompile(`(?:^|[^\w-])--ins(?:t(?:a(?:ll?)?)?)?(?:$|[^\w-])`)
+// installTypesAbbrevRE matches, in a script surface's text, a prefix of --install-types from
+// --ins on that mypy's parser reads as it, wherever it sits: a word laneToken does not see,
+// such as one a variable holds or the default in ${FLAGS:---install}. mypyNamedRE must match
+// the same text.
+var installTypesAbbrevRE = regexp.MustCompile(`(?:^|\W)--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?(?:$|[^\w-])`)
 
 // installTypesLineRE matches a line that is a prefix of --install-types from --ins on, as
-// mypy reads one argument per line from an @ file.
-var installTypesLineRE = regexp.MustCompile(`(?m)^--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?\r?$`)
+// mypy reads one argument per line from an @ file, split where Python's str.splitlines splits.
+var installTypesLineRE = regexp.MustCompile(`(?:^|[\n\r\v\f\x1c-\x1e\x{85}\x{2028}\x{2029}])` +
+	`--ins(?:t(?:a(?:l(?:l(?:-(?:t(?:y(?:p(?:es?)?)?)?)?)?)?)?)?)?(?:$|[\n\r\v\f\x1c-\x1e\x{85}\x{2028}\x{2029}])`)
 
 // mypyNamedRE matches mypy anywhere, dmypy and mypy.api included.
 var mypyNamedRE = regexp.MustCompile(`(?i)mypy`)

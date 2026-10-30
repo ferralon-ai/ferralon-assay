@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,10 +199,22 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // supplies the loaded program, and is asked for it only to build the graph or to withhold a
 // refutation. entry is the caller's statement of the build's library entry points.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
-	g, err := reconcileCallGraph(ctx, buildDir, load)
+	// reconcile reads the graph's edges only to corroborate a path, so a result evidenceResult derives
+	// no path for reads the summary instead. A result with a path reads the whole graph, every field
+	// of it from the one edges entry.
+	graph := reconcileCallGraph
+	if len(stacksToReachPaths(findingsToStacks(scanned.findings))) == 0 {
+		graph = reconcileSummaryGraph
+	}
+	g, err := graph(ctx, buildDir, load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
+	return resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+}
+
+// resultFromGraph is reconciledResult over the reconcile graph g.
+func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res := evidenceResult(scanned.findings, g.CallGraph, env)
 	if res.Refutation != nil {
 		loaded, err := load()
@@ -921,39 +935,135 @@ type reconcileGraph struct {
 	ReflectReach map[string][]string    `json:"reflect_reach"`
 }
 
+// reconcileSummary is the part of a reconcileGraph a result with no path reads: reconcile reads
+// edges only to corroborate a path. ID names the compute that wrote it; the reconcile marker entry
+// holds the same ID while the edges entry that compute wrote is the one in the cache.
+type reconcileSummary struct {
+	ID           string              `json:"id"`
+	Partiality   plugin.Partiality   `json:"partiality"`
+	ReflectReach map[string][]string `json:"reflect_reach"`
+}
+
+// reconcileKey is the run-cache key of every reconcile entry for buildDir. The program load reads the
+// process environment, so that is part of it.
+func reconcileKey(buildDir string) []string {
+	return append([]string{buildDir}, os.Environ()...)
+}
+
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
-// once per tree per scan through the run cache. The program load reads the process environment, so
-// that is part of the key. Reflection's calls are bounded per advisory (withholdForReflectReach), so
-// the graph does not declare them run-wide.
+// once per tree per scan through the run cache. Reflection's calls are bounded per advisory
+// (withholdForReflectReach), so the graph does not declare them run-wide. The compute that stores the
+// graph then stores its summary (reconcileSummaryGraph): the edges entry, then the marker, then the
+// summary, each through a rename and each only once the one before it is stored.
 func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
-	b, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		loaded, err := load()
-		if err != nil {
-			return nil, err
+	dir := RunCacheDir(ctx)
+	key := reconcileKey(buildDir)
+	if dir != "" {
+		if b, err := os.ReadFile(runCachePath(dir, "reconcile", key)); err == nil {
+			return decodeReconcileGraph(b)
 		}
-		cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
-		if err != nil {
-			return nil, err
-		}
-		reasons, reach, err := reflectReachOf(loaded)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range reasons {
-			if declaredRunWide(r) {
-				cg.Partiality = withReason(cg.Partiality, r)
-			}
-		}
-		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
-	})
+	}
+	b, err := computeReconcileGraph(load)
 	if err != nil {
 		return reconcileGraph{}, err
 	}
+	if dir == "" {
+		return decodeReconcileGraph(b)
+	}
+	return storeReconcileGraph(dir, key, b)
+}
+
+// storeReconcileGraph decodes the graph one compute encoded as b and stores it in the run cache in
+// dir under key: the edges entry, then its summary.
+func storeReconcileGraph(dir string, key []string, b []byte) (reconcileGraph, error) {
+	g, err := decodeReconcileGraph(b)
+	if err != nil {
+		return reconcileGraph{}, err
+	}
+	if writeRunCacheEntry(dir, "reconcile", runCachePath(dir, "reconcile", key), b) {
+		storeReconcileSummary(dir, key, g)
+	}
+	return g, nil
+}
+
+// computeReconcileGraph builds the reconcile graph from load and encodes it as the edges entry holds it.
+func computeReconcileGraph(load func() (*LoadResult, error)) ([]byte, error) {
+	loaded, err := load()
+	if err != nil {
+		return nil, err
+	}
+	cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
+	if err != nil {
+		return nil, err
+	}
+	reasons, reach, err := reflectReachOf(loaded)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range reasons {
+		if declaredRunWide(r) {
+			cg.Partiality = withReason(cg.Partiality, r)
+		}
+	}
+	return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
+}
+
+func decodeReconcileGraph(b []byte) (reconcileGraph, error) {
 	var g reconcileGraph
 	if err := json.Unmarshal(b, &g); err != nil {
 		return reconcileGraph{}, fmt.Errorf("decode cached call graph: %w", err)
 	}
 	return g, nil
+}
+
+// storeReconcileSummary stores g's summary under a fresh compute id: the marker first, then the
+// summary, so a summary the marker names was written after the edges entry of the same compute.
+func storeReconcileSummary(dir string, key []string, g reconcileGraph) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return
+	}
+	id := hex.EncodeToString(raw[:])
+	s, err := json.Marshal(reconcileSummary{ID: id, Partiality: g.CallGraph.Partiality, ReflectReach: g.ReflectReach})
+	if err != nil {
+		return
+	}
+	if writeRunCacheEntry(dir, "reconcile-marker", runCachePath(dir, "reconcile-marker", key), []byte(id)) {
+		writeRunCacheEntry(dir, "reconcile-summary", runCachePath(dir, "reconcile-summary", key), s)
+	}
+}
+
+// reconcileSummaryGraph returns the reconcile graph without its edges, for a result with no path.
+// It reads the summary when the marker names it and the edges entry is present, and otherwise falls
+// back to the whole graph.
+func reconcileSummaryGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+	if dir := RunCacheDir(ctx); dir != "" {
+		if s, ok := readReconcileSummary(dir, reconcileKey(buildDir)); ok {
+			return reconcileGraph{CallGraph: plugin.CallGraphResult{Partiality: s.Partiality}, ReflectReach: s.ReflectReach}, nil
+		}
+	}
+	return reconcileCallGraph(ctx, buildDir, load)
+}
+
+// readReconcileSummary returns the cached summary for key, and whether it can be trusted: it decodes,
+// the marker holds its id, and the edges entry is present.
+func readReconcileSummary(dir string, key []string) (reconcileSummary, bool) {
+	b, err := os.ReadFile(runCachePath(dir, "reconcile-summary", key))
+	if err != nil {
+		return reconcileSummary{}, false
+	}
+	var s reconcileSummary
+	if err := json.Unmarshal(b, &s); err != nil {
+		return reconcileSummary{}, false
+	}
+	marker, err := os.ReadFile(runCachePath(dir, "reconcile-marker", key))
+	if err != nil || s.ID == "" || string(marker) != s.ID {
+		return reconcileSummary{}, false
+	}
+	if _, err := os.Stat(runCachePath(dir, "reconcile", key)); err != nil {
+		return reconcileSummary{}, false
+	}
+	return s, true
 }
 
 // --- LOCAL structs for govulncheck's -json stream schema ---

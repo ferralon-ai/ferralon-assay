@@ -428,6 +428,8 @@ func TestComputeTaintFromCachedClosure(t *testing.T) {
 		"testdata/taintmultimod",
 		"testdata/taintreflectmod",
 		"testdata/sanitizermod",
+		"testdata/taintflowmod",
+		"testdata/taintlostmod",
 		"testdata/fixturemod",
 		"testdata/chimod",
 	} {

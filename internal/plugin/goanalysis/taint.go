@@ -21,7 +21,9 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // value flow (not call-graph path presence). Sources are the parameters of the
 // discovered ingress functions; taint propagates over SSA def-use edges
 // (assignment, phi, field/element access, extract, conversions, tainted-operand
-// binops) and inter-procedurally from actual arg to callee formal param. A
+// binops, builtins), into the object a tainted value is written to, through the
+// result of a call whose body the analysis does not hold, and inter-procedurally
+// from actual arg to callee formal param and back from a callee's return. A
 // modeled sanitizer (sanitizers.go) clears taint on its result, so a value that
 // reaches a sink only through a sanitizer is a true negative and is NOT reported.
 //
@@ -31,8 +33,10 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // degrades to Partial WITH a reason when any trigger is on the path, or when a
 // requested sink has no flow from any ingress, tainted or sanitized
 // (no_known_ingress). A sink only sanitized flows reach adds no reason and no
-// path. It NEVER renders an unknown as "safe" (inv.5). A load/SSA failure is a
-// hard error (inv.4).
+// path, and only when the analysis dropped no tainted value at an edge it cannot
+// follow: a dropped value may be an unsanitized flow to that sink, so the sink
+// keeps no_known_ingress. It NEVER renders an unknown as "safe" (inv.5). A
+// load/SSA failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
 	c, err := taintClosureOf(ctx, req.BuildDir)
 	if err != nil {
@@ -48,7 +52,8 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 type taintClosure struct {
 	// Hits maps each callee a tainted argument reaches to the ingress attributed to it.
 	Hits map[string]string `json:"hits,omitempty"`
-	// Sanitized lists each callee a sanitizer's result reaches as an argument.
+	// Sanitized lists each callee a sanitizer's result reaches as an argument; it is empty
+	// when the pass dropped a tainted value it could not follow (runTaint).
 	Sanitized []string `json:"sanitized,omitempty"`
 	// Reasons is the partiality no sink changes: the load's, with its scoped limits counted
 	// run-wide, and the triggers on the tainted flow.

@@ -81,9 +81,12 @@ func TestComputeTaint_SanitizedSinks(t *testing.T) {
 	}{
 		// The ingress's only flow to Sink is html.EscapeString's result.
 		{name: "sanitized only", dir: sanitizerOnlyDir(t), sink: "/Sink().", wantComplete: true},
-		// The sanitized value reaches Opaque only through a dependency call the
-		// analysis cannot follow: no flow is observed, so it is never inferred.
-		{name: "sanitized through an unfollowed call", dir: sanitizerOnlyDir(t), sink: "/Opaque().", wantNoIngr: true},
+		// The sanitized value reaches Opaque through strconv.Itoa, a dependency call whose
+		// result carries what it was handed.
+		{name: "sanitized through a dependency call", dir: sanitizerOnlyDir(t), sink: "/Opaque().", wantComplete: true},
+		// A raw flow reaches Sink through a recovered panic the pass does not follow: the
+		// sanitized flow it does observe is not enough.
+		{name: "sanitized beside a dropped flow", dir: "testdata/taintlostmod", sink: "/Sink().", wantNoIngr: true},
 		// Sink is reached by literals, never by ingress input.
 		{name: "no flow", dir: fixtureDir, sink: "/Sink().", wantNoIngr: true},
 	} {
@@ -104,6 +107,32 @@ func TestComputeTaint_SanitizedSinks(t *testing.T) {
 			}
 			if got := hasReason(res.Partiality.Reasons, plugin.PartialReasonNoIngress); got != c.wantNoIngr {
 				t.Errorf("no_known_ingress = %v, want %v (reasons %v)", got, c.wantNoIngr, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// TestComputeTaint_RawFlowBesideSanitized pins that a raw flow beside a sanitized one always yields
+// a taint path, whatever shape carries it: a sink is never complete with zero paths while an
+// unsanitized flow reaches it.
+func TestComputeTaint_RawFlowBesideSanitized(t *testing.T) {
+	const dir = "testdata/taintflowmod"
+	for _, c := range []struct{ name, sink string }{
+		{name: "dependency call", sink: "/Upper()."},
+		{name: "append then index", sink: "/Appended()."},
+		{name: "copy", sink: "/Copied()."},
+		{name: "field set in a callee", sink: "/Field()."},
+		{name: "concatenation", sink: "/Concat()."},
+		{name: "one branch sanitized", sink: "/Branch()."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sink := sinkSCIPIn(t, dir, c.sink)
+			res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{BuildDir: dir, Sinks: []string{sink}})
+			if err != nil {
+				t.Fatalf("ComputeTaint: %v", err)
+			}
+			if len(res.Paths) != 1 || res.Paths[0].Sink.SCIP != sink {
+				t.Errorf("want one taint path to %q; got %+v (reasons %v)", sink, res.Paths, res.Partiality.Reasons)
 			}
 		})
 	}

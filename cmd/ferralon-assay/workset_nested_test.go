@@ -14,7 +14,9 @@ import (
 
 // TestWorkSet_GoModuleBelowCheckoutRoot: the work set reads the module checkout.FindGoModuleRoot
 // picks — the root codebase_inventory analyzes — so a monorepo with no go.mod at the checkout root
-// still gets OSV widening and policy admission instead of a no_manifest note.
+// still gets OSV widening and policy admission instead of a no_manifest note. Under the root go.work
+// the inventory is the workspace build's; with an empty module cache the go command cannot compute
+// it, so the module's requires are named unversioned rather than queried at their go.mod versions.
 func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 	gomod := func(module, dep string) string {
 		return "module " + module + "\n\ngo 1.21.0\n\nrequire " + dep + " v0.30.0\n"
@@ -24,6 +26,7 @@ func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 		files      map[string]string
 		wantModule string
 		wantDep    string
+		workspace  bool
 	}{
 		{
 			name:       "single module below the root",
@@ -39,6 +42,7 @@ func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 			},
 			wantModule: "example.com/api",
 			wantDep:    "golang.org/x/crypto",
+			workspace:  true,
 		},
 		{
 			name: "two modules at one depth and no root",
@@ -61,6 +65,9 @@ func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tc.workspace {
+				t.Setenv("GOMODCACHE", t.TempDir())
+			}
 			acq := &acquired{buildDir: dir, language: checkout.LangGo, repo: "example.com/mono", advisories: goAdvisoryCorpus(false)}
 
 			osv := &fakeOSV{}
@@ -74,10 +81,17 @@ func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 			for _, p := range osv.seen {
 				queried[p.Name] = p.Version
 			}
-			if queried[tc.wantDep] != "v0.30.0" {
+			switch {
+			case tc.workspace:
+				if want := map[string]string{goStdlibPackage: "1.21.0"}; !reflect.DeepEqual(queried, want) {
+					t.Errorf("OSV queried %v, want only %v", queried, want)
+				}
+				if !reflect.DeepEqual(ws.unversioned, []string{tc.wantDep}) {
+					t.Errorf("unversioned = %v, want %s named", ws.unversioned, tc.wantDep)
+				}
+			case queried[tc.wantDep] != "v0.30.0":
 				t.Errorf("OSV queried %v, want %s@v0.30.0 from %s", queried, tc.wantDep, tc.wantModule)
-			}
-			if len(queried) != 2 { // the picked module's one require plus stdlib
+			case len(queried) != 2: // the picked module's one require plus stdlib
 				t.Errorf("OSV queried %v, want only the picked module's inventory", queried)
 			}
 

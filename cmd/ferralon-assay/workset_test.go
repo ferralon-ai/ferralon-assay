@@ -369,7 +369,7 @@ func TestGoInventory_ReadsRequiresAndStdlib(t *testing.T) {
 		t.Fatalf("write go.mod: %v", err)
 	}
 
-	pkgs, notes := goDependencyInventory(dir)
+	pkgs, _, notes := goDependencyInventory(context.Background(), dir, pipeline.GoWorkspace{})
 	if len(notes) != 0 {
 		t.Errorf("unexpected partiality for a readable go.mod: %+v", notes)
 	}
@@ -408,7 +408,7 @@ func TestToolchainVersion_StripsGoPrefix(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(tc.gomod), 0o600); err != nil {
 			t.Fatalf("write go.mod: %v", err)
 		}
-		pkgs, _ := goDependencyInventory(dir)
+		pkgs, _, _ := goDependencyInventory(context.Background(), dir, pipeline.GoWorkspace{})
 
 		var got string
 		for _, p := range pkgs {

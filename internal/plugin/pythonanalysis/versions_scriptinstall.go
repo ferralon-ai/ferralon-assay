@@ -29,7 +29,7 @@ import (
 //	pipenv install --deploy        refuses a Pipfile.lock the Pipfile has moved past
 //	pipenv sync                    installs Pipfile.lock as written
 //	uv venv [<dir>]                creates an empty environment; only -p, --python and
-//	                               --prompt may be added (--seed installs pip and setuptools)
+//	                               --prompt may be added (--seed installs pip into it)
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
 //	                               and pipenv run only where no script table can name <argv>
 //

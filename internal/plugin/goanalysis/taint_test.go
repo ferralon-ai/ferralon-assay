@@ -166,11 +166,13 @@ func TestComputeTaint_BrokenDirIsHardError(t *testing.T) {
 }
 
 // TestRunTaint_AttributesLowestIngress pins that a sink two ingresses reach is attributed to the
-// lowest ingress symbol on every run, not to whichever the ingress map yields first.
+// lowest ingress symbol on every run, not to whichever the ingress map yields first, including a sink
+// reached only through another ingress's parameters.
 func TestRunTaint_AttributesLowestIngress(t *testing.T) {
 	const dir = "testdata/taintmultimod"
 	ctx := context.Background()
 	sink := sinkSCIPIn(t, dir, "/Sink().")
+	deep := sinkSCIPIn(t, dir, "/Deep().")
 	sp, _, err := loadSSA(ctx, dir)
 	if err != nil {
 		t.Fatal(err)
@@ -180,18 +182,19 @@ func TestRunTaint_AttributesLowestIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 	ingresses := sp.resolveIngressFuncs(ing.Ingresses)
-	var alpha, zeta bool
+	var alpha, zeta, helper bool
 	for sym := range ingresses {
 		alpha = alpha || strings.Contains(sym, "AlphaHandler")
 		zeta = zeta || strings.Contains(sym, "ZetaHandler")
+		helper = helper || strings.Contains(sym, "zetaHelper")
 	}
-	if !alpha || !zeta {
-		t.Fatalf("want both handlers as resolved ingresses; got %v", ingresses)
+	if !alpha || !zeta || !helper {
+		t.Fatalf("want AlphaHandler, ZetaHandler and zetaHelper as resolved ingresses; got %v", ingresses)
 	}
 	for run := range 20 {
-		hits, _ := runTaint(sp, ingresses, map[string]bool{sink: true})
-		if len(hits) != 1 || !strings.Contains(hits[sink], "AlphaHandler") {
-			t.Fatalf("run %d: want Sink attributed to AlphaHandler; got %v", run, hits)
+		hits, _ := runTaint(sp, ingresses, map[string]bool{sink: true, deep: true})
+		if len(hits) != 2 || !strings.Contains(hits[sink], "AlphaHandler") || !strings.Contains(hits[deep], "AlphaHandler") {
+			t.Fatalf("run %d: want Sink and Deep attributed to AlphaHandler; got %v", run, hits)
 		}
 	}
 }

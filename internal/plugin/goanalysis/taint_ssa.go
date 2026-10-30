@@ -62,31 +62,31 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 
 	// Sources: every parameter of every ingress function is attacker-controllable. A sink keeps the
 	// first ingress that reaches it, so seeding in map order would attribute a sink reached by two
-	// ingresses to either one from run to run. The work list is a stack and each ingress's flow runs
-	// to completion before the one seeded under it, so seeding in reverse symbol order attributes
-	// every sink to the lowest ingress symbol that reaches it.
+	// ingresses to either one from run to run. Each ingress is seeded and drained to a fixpoint in
+	// ascending symbol order, so a lower ingress's flow claims everything it reaches, the parameters of
+	// any ingress it calls included, before a higher one is seeded: every sink is attributed to the
+	// lowest ingress symbol that reaches it.
 	syms := make([]string, 0, len(ingresses))
 	for sym := range ingresses {
 		syms = append(syms, sym)
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(syms)))
+	sort.Strings(syms)
 	for _, sym := range syms {
 		fn := ingresses[sym]
 		if fn == nil {
 			continue
 		}
 		o := taintOrigin{ingress: sym, enclFn: fn}
+		// Method ingresses also expose free vars / the receiver is generally not
+		// attacker-controlled, so only parameters are seeded.
 		for _, p := range fn.Params {
 			seed(p, o)
 		}
-		// Method ingresses also expose free vars / the receiver is generally not
-		// attacker-controlled, so only parameters are seeded.
-	}
-
-	for len(work) > 0 {
-		v := work[len(work)-1]
-		work = work[:len(work)-1]
-		ta.propagate(v, seed)
+		for len(work) > 0 {
+			v := work[len(work)-1]
+			work = work[:len(work)-1]
+			ta.propagate(v, seed)
+		}
 	}
 
 	reasons := map[string]bool{}

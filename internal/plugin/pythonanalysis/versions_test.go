@@ -1065,10 +1065,15 @@ func TestResolveVersions_PyprojectNormalizableSpellingsRead(t *testing.T) {
 			mustResolvedCompletePy(t, dir, "flask", "2.3.0")
 		})
 	}
-	dir := writeTree(t, map[string]string{
-		"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==v2.8.0\"]\n",
-	})
-	mustResolvedCompletePy(t, dir, "pyjwt", "2.8.0")
+	for name, files := range map[string]map[string]string{
+		"pyproject":          {"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==v2.8.0\"]\n"},
+		"requirements":       {"requirements.txt": "pyjwt==V2.8.0\n"},
+		"pyproject-and-reqs": {"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==v2.8.0\"]\n", "requirements.txt": "pyjwt==v2.8.0\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mustResolvedCompletePy(t, writeTree(t, files), "pyjwt", "2.8.0")
+		})
+	}
 }
 
 // [project].dependencies is read, and a dynamic field that is not a dependency list does

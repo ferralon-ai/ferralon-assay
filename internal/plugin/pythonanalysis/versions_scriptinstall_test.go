@@ -424,7 +424,7 @@ func TestResolveVersions_PDMEnvKept(t *testing.T) {
 // poetry install with a terminal flag, --no-root or a group selection installs a subset of
 // poetry.lock, so it keeps the pins and the lock's exhaustive claim; any other flag withholds.
 // --no-root skips the root's tool.poetry.build script, but not its plugins or its path
-// sources' builds.
+// sources' builds, or the indexes those builds resolve from.
 func TestResolveVersions_PoetryInstallFlags(t *testing.T) {
 	const (
 		project    = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
@@ -452,6 +452,7 @@ func TestResolveVersions_PoetryInstallFlags(t *testing.T) {
 		{"build script without --no-root", "--only main", map[string]string{"pyproject.toml": project + "[tool.poetry]\nbuild = \"build.py\"\n", "build.py": setupPy}, false},
 		{"--no-root still loads requires-plugins", "--no-root", map[string]string{"pyproject.toml": project + "[tool.poetry.requires-plugins]\npoetry-plugin-export = \">=1.8\"\n"}, false},
 		{"--no-root still loads .poetry/plugins", "--no-root", map[string]string{".poetry/plugins/p.py": "x = 1\n"}, false},
+		{"--no-root still resolves from a source in the tree", "--no-root", map[string]string{"pyproject.toml": project + "[[tool.poetry.source]]\nname = \"x\"\nurl = \"./wheels\"\n"}, false},
 		{"--no-root still builds a path source", "--no-root", map[string]string{"poetry.lock": pathLock, "lib/pyproject.toml": lib, "lib/setup.py": setupPy}, false},
 		{"--extras foo", "--extras foo", nil, false},
 		{"-E foo", "-E foo", nil, false},

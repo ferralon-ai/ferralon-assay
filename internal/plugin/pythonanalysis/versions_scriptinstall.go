@@ -2,7 +2,6 @@ package pythonanalysis
 
 import (
 	"errors"
-	"io/fs"
 	"maps"
 	"path/filepath"
 	"regexp"
@@ -29,9 +28,13 @@ import (
 //	uv sync --locked | --frozen    --locked refuses a lock pyproject.toml has moved past;
 //	                               --frozen installs the lock as written
 //	poetry install                 refuses a lock pyproject.toml has moved past
+//	poetry config <key> [<value>]  sets or unsets one of poetrySettings, with --local,
+//	                               --unset, -n and -q
 //	pdm sync                       installs the lock as written, where no pre_invoke,
 //	                               pre_install or post_install hook in tool.pdm.scripts
 //	                               runs around it
+//	pdm config <key> [<value>]     sets or deletes one of pdmSettings, with -l, -g, -d, -q
+//	                               and their long forms
 //	pipenv install --deploy        refuses a Pipfile.lock the Pipfile has moved past
 //	pipenv sync                    installs Pipfile.lock as written
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
@@ -47,9 +50,9 @@ import (
 // else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
 // (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
 // every other tool laneToken names, run wrappers whose argv names one included. A
-// PIP_*, UV_* or PDM_* variable set in any script surface withholds, since every pip, uv or pdm
-// the build runs reads it, unless laneEnvKeeps keeps it. How a surface is read, and what binds
-// a command to a file, is lane-neutral, in scriptsurface.
+// PIP_*, UV_*, PDM_* or POETRY_* variable set in any script surface withholds, since every pip,
+// uv, pdm or poetry the build runs reads it, unless laneEnvKeeps keeps it. How a surface is
+// read, and what binds a command to a file, is lane-neutral, in scriptsurface.
 //
 // One more pip form installs nothing but pip itself, so it withholds the pip coordinate alone
 // (pipSelfUpgrade):
@@ -100,15 +103,16 @@ type pipInstall struct {
 // the script surfaces run. A nil pipInstalls records nothing.
 type pipInstalls map[string][]pipInstall
 
-// laneEnvRE matches a PIP_*, UV_* or PDM_* name that is not a $, ${ or attribute reference, so is
-// being set.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV|PDM)_[A-Z0-9_]+`)
+// laneEnvRE matches a PIP_*, UV_*, PDM_* or POETRY_* name that is not a $, ${ or attribute
+// reference, so is being set.
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV|PDM|POETRY)_[A-Z0-9_]+`)
 
 // laneEnvKeeps reports whether name, which laneEnvRE matched, installs nothing a lock read here
 // does not record: PDM_CHECK_UPDATE only turns pdm's own update check off, and
-// PDM_BUILD_SCM_VERSION only sets the version pdm-backend gives the project it builds.
+// PDM_BUILD_SCM_VERSION only sets the version pdm-backend gives the project it builds, and
+// poetryEnvKeeps names the POETRY_* ones.
 func laneEnvKeeps(name string) bool {
-	return name == "PDM_CHECK_UPDATE" || name == "PDM_BUILD_SCM_VERSION"
+	return name == "PDM_CHECK_UPDATE" || name == "PDM_BUILD_SCM_VERSION" || poetryEnvKeeps[name]
 }
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
@@ -178,48 +182,10 @@ var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_fil
 // and build environment, so an allowed one withholds where a script names one (versionSurfaces).
 var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|(?:appdata|programdata)%?[\\/]uv\b|` + configHomeMoved)
 
-// pdmConfigNamedRE matches, in a script surface's text, a pdm config file or the directory pdm
-// reads its user or site config from (pdm.toml, .pdm.toml, pdm/config.toml, .config/pdm,
-// /etc/xdg/pdm, Application Support/pdm, AppData or ProgramData's pdm), or a variable that
-// moves where pdm looks (XDG_CONFIG_HOME or XDG_CONFIG_DIRS, HOME, USERPROFILE, platformdirs'
-// WIN_PD_OVERRIDE_*). A pdm sync reads the settings there, which can name an index or turn off
-// build isolation, so an allowed one withholds where a script names one (versionSurfaces).
-// PDM_CONFIG_FILE falls under laneEnvRE.
-var pdmConfigNamedRE = regexp.MustCompile(`(?i)pdm\.toml|pdm[\\/]config\.toml|(?:\.config|/etc/xdg|application\\? support|appdata[\\/](?:local|roaming)|localappdata%?|programdata%?)[\\/]pdm\b|win_pd_override_|` + configHomeMoved)
-
 // configHomeMoved matches, in a script surface's text, a variable a tool's user or site config
 // location is found from being set or exported: XDG_CONFIG_HOME, XDG_CONFIG_DIRS, HOME (as
 // HOME=, a workflow's HOME:, or a Dockerfile's ENV HOME) and USERPROFILE.
 const configHomeMoved = `xdg_config_(?:home|dirs)|\bhome\s*[=:]|\benv\s+home\s|userprofile`
-
-// lockToolConfigInTree reports whether root (all but its own .git) holds a file uv or pdm
-// reads as a user or site config once it is in place: uv's uv.toml under a uv directory, pdm's
-// config.toml under a pdm directory, or a pdm.toml or .pdm.toml anywhere. A script can put one
-// there without naming it, copying a directory onto ~/.config or /etc or moving HOME onto the
-// tree, so an allowed uv sync or pdm sync withholds where one is here (versionSurfaces). A walk
-// or read error counts as both.
-func lockToolConfigInTree(root string) (uv, pdm bool) {
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			uv, pdm = true, true
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			if d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		name, dir := strings.ToLower(d.Name()), strings.ToLower(filepath.Base(filepath.Dir(path)))
-		uv = uv || name == "uv.toml" && dir == "uv"
-		pdm = pdm || name == "pdm.toml" || name == ".pdm.toml" || name == "config.toml" && dir == "pdm"
-		return nil
-	})
-	if err != nil {
-		return true, true
-	}
-	return uv, pdm
-}
 
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}
@@ -345,8 +311,9 @@ type rootProject struct {
 			} `toml:"module"`
 		} `toml:"flit"`
 		Poetry struct {
-			Build           any `toml:"build"`
-			RequiresPlugins any `toml:"requires-plugins"`
+			Build           any              `toml:"build"`
+			RequiresPlugins any              `toml:"requires-plugins"`
+			Source          []map[string]any `toml:"source"`
 		} `toml:"poetry"`
 		Setuptools struct {
 			Cmdclass   any            `toml:"cmdclass"`
@@ -402,9 +369,9 @@ type rootProject struct {
 // (backendClean). Every local source the lock names, a uv workspace member included, must
 // build clean as well (localBuildsClean). uv lowers every build requirement, a member's
 // included, through the root's tool.uv.sources as well as the member's own, so those names
-// are the root's to every backendClean check. uv and pdm resolve build requirements from the
-// indexes the manifest names, and uv builds with the environment its tool.uv settings give,
-// built root or not (uvSettingsClean, pdmSourcesRemote).
+// are the root's to every backendClean check. uv, poetry and pdm resolve build requirements
+// from the indexes the manifest names, and uv builds with the environment its tool.uv
+// settings give, built root or not (uvSettingsClean, poetrySourcesRemote, pdmSourcesRemote).
 func rootBuildClean(tool string, b scriptsurface.Binder, buildsRoot bool) bool {
 	pyprojects := b.Nearest("pyproject.toml")
 	if pyprojects == nil {
@@ -431,18 +398,17 @@ func rootBuildClean(tool string, b scriptsurface.Binder, buildsRoot bool) bool {
 	for i, doc := range docs {
 		switch tool {
 		case "poetry":
-			if buildsRoot && doc.Tool.Poetry.Build != nil || doc.Tool.Poetry.RequiresPlugins != nil || !b.Clear("pyproject.toml", ".poetry/plugins") {
+			if buildsRoot && doc.Tool.Poetry.Build != nil || doc.Tool.Poetry.RequiresPlugins != nil || !b.Clear("pyproject.toml", ".poetry/plugins") ||
+				!poetrySourcesRemote(doc) {
 				return false
 			}
 		case "pdm":
 			// pdm installs from a pylock.toml there instead of pdm.lock when lock.format,
 			// which pdm config can set, is pylock. It resolves build requirements through
 			// tool.pdm.resolution.overrides, which may name a directory in the tree. It adds
-			// tool.pdm.options to a command's flags, and reads a pdm.toml and a legacy .pdm.toml
-			// beside the manifest, any of which may turn off build isolation.
+			// tool.pdm.options to a command's flags, which may turn off build isolation.
 			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") || !pdmSourcesRemote(doc) ||
-				doc.Tool.PDM.Resolution.Overrides != nil || len(doc.Tool.PDM.Options) > 0 ||
-				!b.Clear("pyproject.toml", "pdm.toml") || !b.Clear("pyproject.toml", ".pdm.toml") {
+				doc.Tool.PDM.Resolution.Overrides != nil || len(doc.Tool.PDM.Options) > 0 {
 				return false
 			}
 			builds := doc.Tool.PDM.Distribution == nil || *doc.Tool.PDM.Distribution
@@ -995,6 +961,10 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 	case head == "poetry" && words[1] == "install":
 		ok, buildsRoot := poetryInstallArgs(words[2:])
 		return ok && b.Nearest("pyproject.toml", "poetry.lock") != nil && rootBuildClean(head, b, buildsRoot)
+	case head == "poetry" && words[1] == "config":
+		return configSet(words[2:], poetryConfigFlags, poetrySettings)
+	case head == "pdm" && words[1] == "config":
+		return configSet(words[2:], pdmConfigFlags, pdmSettings)
 	case head == "pdm" && words[1] == "sync":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags) && pdmSyncNoHooks(b.Nearest("pyproject.toml", "pdm.lock")) && rootBuildClean(head, b, true)
 	case head == "pipenv" && words[1] == "install":

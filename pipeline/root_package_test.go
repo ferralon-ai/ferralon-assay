@@ -480,14 +480,14 @@ func TestGoPathOwner_ModulesOutsideTheBuildDir(t *testing.T) {
 			"a/b/pkg/pkg.go": "package pkg\n",
 			"b/go.mod":       "module example.com/mono/b\n\ngo 1.22\n",
 		}, "example.com/mono/b/pkg", true, ""},
-		{"a fixture go.mod away from the build directory", map[string]string{
-			"tools/lint/testdata/go.mod": "module example.com/mono/x\n\ngo 1.22\n",
+		{"a go.mod away from the build directory", map[string]string{
+			"tools/lint/fixture/go.mod": "module example.com/mono/x\n\ngo 1.22\n",
 		}, "example.com/mono/x", true, ""},
 		{"a path no module outside claims", map[string]string{
 			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
 		}, "example.com/mono/internal", true, "v1.0.0"},
 		{"a go.mod outside declaring no module", map[string]string{
-			"tools/lint/testdata/go.mod": "go 1.22\n",
+			"tools/lint/fixture/go.mod": "go 1.22\n",
 		}, "example.com/mono/internal", true, "v1.0.0"},
 		{"a module in a directory the build directory's name prefixes", map[string]string{
 			"a/x/x.go":  "package x\n",
@@ -516,6 +516,56 @@ func TestGoPathOwner_ModulesOutsideTheBuildDir(t *testing.T) {
 			}
 			if present, known := goModRequires(buildDir, tc.module); !present || !known {
 				t.Errorf("goModRequires = %v, %v; want present, known (a module outside the build never proves absence)", present, known)
+			}
+		})
+	}
+}
+
+// TestGoPathOwner_DirectoriesTheGoCommandSkips: a go.mod under testdata, or under a directory
+// whose name begins with . or _, is no module of the build, so it claims nothing, below the build
+// directory or outside it; one the build directory itself sits under is walked like any other.
+func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
+	const gomod = "module example.com/mono\n\ngo 1.22\n"
+	const claimX = "module example.com/mono/x\n\ngo 1.22\n"
+	cases := []struct {
+		name     string
+		files    map[string]string
+		buildDir string
+		module   string
+		want     goOwner
+	}{
+		{"a testdata go.mod below the build directory", map[string]string{
+			"a/go.mod": gomod, "a/x/x.go": "package x\n", "a/tools/testdata/go.mod": claimX,
+		}, "a", "example.com/mono/x", goOwnedByRoot},
+		{"a go.mod under an underscore directory below", map[string]string{
+			"a/go.mod": gomod, "a/x/x.go": "package x\n", "a/_scratch/go.mod": claimX,
+		}, "a", "example.com/mono/x", goOwnedByRoot},
+		{"a go.mod under a dot directory below", map[string]string{
+			"a/go.mod": gomod, "a/x/x.go": "package x\n", "a/.cache/go.mod": claimX,
+		}, "a", "example.com/mono/x/pkg", goOwnedByRoot},
+		{"a testdata go.mod outside the build directory", map[string]string{
+			"a/go.mod": gomod, "tools/lint/testdata/go.mod": claimX,
+		}, "a", "example.com/mono/x", goOwnedByRoot},
+		{"a nested module below the build directory", map[string]string{
+			"a/go.mod": gomod, "a/mods/x/go.mod": claimX,
+		}, "a", "example.com/mono/x", goOwnedElsewhere},
+		{"a build directory under an underscore directory", map[string]string{
+			"_examples/a/go.mod": gomod, "_examples/a/mods/x/go.mod": claimX,
+		}, "_examples/a", "example.com/mono/x", goOwnedElsewhere},
+		{"a build directory under a testdata directory", map[string]string{
+			"testdata/a/go.mod": gomod, "testdata/b/go.mod": claimX,
+		}, "testdata/a", "example.com/mono/x", goOwnerAmbiguous},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, tc.files)
+			gitTree(t, dir)
+			buildDir := filepath.Join(dir, filepath.FromSlash(tc.buildDir))
+			if got := goPathOwner(buildDir, "example.com/mono", tc.module); got != tc.want {
+				t.Fatalf("goPathOwner = %v; want %v", got, tc.want)
+			}
+			if present, known := goModRequires(buildDir, tc.module); present != (tc.want != goOwnedElsewhere) || !known {
+				t.Errorf("goModRequires = %v, %v; want %v, true", present, known, tc.want != goOwnedElsewhere)
 			}
 		})
 	}

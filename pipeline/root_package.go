@@ -176,7 +176,8 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 // goTreeModules returns the module path every go.mod below buildDir declares, whatever directory
 // it sits in, and as outside the module path every other go.mod in the git work tree holding
 // buildDir declares; ok is false when the tree cannot be walked or a go.mod below buildDir declares
-// no module.
+// no module. Like the go command, it skips testdata directories and those whose name begins with
+// . or _, unless buildDir is inside one.
 func goTreeModules(buildDir string) (below, outside []string, ok bool) {
 	own, err := filepath.EvalSymlinks(buildDir)
 	if err != nil {
@@ -191,7 +192,7 @@ func goTreeModules(buildDir string) (below, outside []string, ok bool) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if goIgnoredDir(d.Name()) && !strings.HasPrefix(own+string(filepath.Separator), p+string(filepath.Separator)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -215,10 +216,32 @@ func goTreeModules(buildDir string) (below, outside []string, ok bool) {
 	return below, outside, err == nil
 }
 
+func goIgnoredDir(name string) bool {
+	return name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
 // goWorkModules returns the module path of every module the go.work the go command would find
 // from buildDir (the nearest at or above it) uses; ok is false when that go.work does not parse or
 // a module it uses declares no module path.
 func goWorkModules(buildDir string) ([]string, bool) {
+	uses, ok := goWorkUses(buildDir)
+	if !ok {
+		return nil, false
+	}
+	var mods []string
+	for _, use := range uses {
+		m := goModFileModule(filepath.Join(use, "go.mod"))
+		if m == "" {
+			return nil, false
+		}
+		mods = append(mods, m)
+	}
+	return mods, true
+}
+
+// goWorkUses returns the directory of every module the go.work the go command would find from
+// buildDir uses; ok is false when that go.work cannot be read or does not parse.
+func goWorkUses(buildDir string) ([]string, bool) {
 	dir, err := filepath.Abs(buildDir)
 	if err != nil {
 		return nil, false
@@ -230,19 +253,15 @@ func goWorkModules(buildDir string) ([]string, bool) {
 			if err != nil {
 				return nil, false
 			}
-			var mods []string
+			var uses []string
 			for _, u := range wf.Use {
 				use := filepath.FromSlash(u.Path)
 				if !filepath.IsAbs(use) {
 					use = filepath.Join(dir, use)
 				}
-				m := goModFileModule(filepath.Join(use, "go.mod"))
-				if m == "" {
-					return nil, false
-				}
-				mods = append(mods, m)
+				uses = append(uses, use)
 			}
-			return mods, true
+			return uses, true
 		}
 		if !os.IsNotExist(err) {
 			return nil, false

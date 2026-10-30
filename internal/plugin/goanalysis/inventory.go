@@ -78,10 +78,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 
 	var graphReasons []string
 
-	// A go.work root is a multi-module workspace. The plugin entry forces GOWORK=off
-	// (correct for the analyzer's own hygiene), so only this single root is resolved;
-	// declare the rest rather than silently omit it. PLAN-004's WorkspacePlan closes
-	// this in a follow-on (A4).
+	// A go.work root is a multi-module workspace. The dependency graph below is resolved
+	// for this module alone (runModGraph), not the workspace, so declare the rest rather
+	// than silently omit it.
 	workspace := false
 	if fi, statErr := os.Stat(filepath.Join(req.BuildDir, "go.work")); statErr == nil && !fi.IsDir() {
 		workspace = true
@@ -245,8 +244,8 @@ type graphEdge struct {
 }
 
 // runModGraph invokes `go mod graph` in buildDir and parses its edge list. GOWORK
-// is forced off so the target module is resolved standalone, never against an
-// ambient workspace the analyzer process happens to run inside. This RESOLVES the
+// is off: the inventory lists this module's own dependency graph, not the
+// workspace's. This RESOLVES the
 // module graph (§3.3 permits it) and executes no target code (C4).
 func runModGraph(ctx context.Context, buildDir string) ([]graphEdge, error) {
 	cmd := exec.CommandContext(ctx, "go", "mod", "graph")

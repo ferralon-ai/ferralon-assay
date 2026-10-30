@@ -452,6 +452,15 @@ func TestDependencyHolds_UnreadableBuildList(t *testing.T) {
 	}
 }
 
+// TestSameDir_Unresolvable: a main module whose directory cannot be resolved is not buildDir's own, so
+// a path it holds is measured as a dependency's rather than resolved name-wide as first-party.
+func TestSameDir_Unresolvable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	if sameDir(missing, missing) {
+		t.Fatal("sameDir counts a directory it cannot resolve as buildDir's own module")
+	}
+}
+
 func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 	reader := map[string]string{"app/reader.go": "package main\n\ntype Reader struct{}\n\nfunc (*Reader) Verify() error { return nil }\n\nfunc Verify() bool { return true }\n"}
 	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nvar X = 1\n"}}

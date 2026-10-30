@@ -115,6 +115,7 @@ func symbolNames(symbols []string) map[string]bool {
 func modfileFlagSet(ctx context.Context, buildDir string) bool {
 	cmd := exec.CommandContext(ctx, "go", "env", "GOFLAGS")
 	cmd.Dir = buildDir
+	// GOFLAGS comes from the environment or the go env file, never a go.work, so no workspace is read.
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	out, err := cmd.Output()
 	if err != nil {
@@ -128,10 +129,11 @@ func modfileFlagSet(ctx context.Context, buildDir string) bool {
 	return false
 }
 
-// dependencyHolds reports whether a module of buildDir's build list other than the main module
+// dependencyHolds reports whether a module of buildDir's build list other than buildDir's own
 // holds import path p: the module holding it with the longest path, by its own path or its
-// replacement's, is not the main module. A vendored build, whose build list the go command does not
-// list, is read from vendor/modules.txt. A build list that cannot be read holds nothing.
+// replacement's, is not the main module holding buildDir. Under a go.work the other modules it uses
+// are main modules too, but not buildDir's. A vendored build, whose build list the go command does
+// not list, is read from vendor/modules.txt. A build list that cannot be read holds nothing.
 func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
@@ -139,6 +141,17 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	if err != nil {
 		if mods, err = vendoredModules(buildDir); err != nil {
 			return false
+		}
+	}
+	own := ""
+	if dir, err := filepath.EvalSymlinks(buildDir); err == nil {
+		for _, m := range mods {
+			if !m.Main || m.Dir == "" {
+				continue
+			}
+			if d, err := filepath.EvalSymlinks(m.Dir); err == nil && len(d) > len(own) && pathWithin(dir, d) {
+				own = d
+			}
 		}
 	}
 	held, main := 0, false
@@ -149,7 +162,7 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 		}
 		for _, path := range paths {
 			if len(path) > held && pathHolds(path, p) {
-				held, main = len(path), m.Main
+				held, main = len(path), m.Main && (own == "" || sameDir(m.Dir, own))
 			}
 		}
 	}
@@ -196,6 +209,18 @@ func vendoredModules(buildDir string) ([]listedModule, error) {
 	return mods, nil
 }
 
+// sameDir reports whether dir, once its symlinks are evaluated, is resolved; a dir that cannot be
+// evaluated is not.
+func sameDir(dir, resolved string) bool {
+	d, err := filepath.EvalSymlinks(dir)
+	return err == nil && d == resolved
+}
+
+// pathWithin reports whether dir is root or lies below it.
+func pathWithin(dir, root string) bool {
+	return strings.HasPrefix(dir+string(filepath.Separator), root+string(filepath.Separator))
+}
+
 // pathHolds reports whether module path mod holds import path p, ignoring case.
 func pathHolds(mod, p string) bool {
 	return len(p) >= len(mod) && strings.EqualFold(p[:len(mod)], mod) && (len(p) == len(mod) || p[len(mod)] == '/')
@@ -204,7 +229,7 @@ func pathHolds(mod, p string) bool {
 func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-json", "all")
 	cmd.Dir = buildDir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = analyzerEnv(ctx)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -277,6 +302,8 @@ func downloadModules(ctx context.Context, buildDir string, mods []listedModule) 
 	}
 	cmd := exec.CommandContext(ctx, "go", append([]string{"mod", "download", "-json", "-modfile=" + modfile}, args...)...)
 	cmd.Dir = buildDir
+	// The go command refuses -modfile in workspace mode, and every module is named at its version,
+	// so the download selects nothing a workspace would change.
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	// A module that fails to download is reported in its own JSON entry and makes the command
 	// exit non-zero, so the output is read whatever the exit status. A checksum mismatch stops the

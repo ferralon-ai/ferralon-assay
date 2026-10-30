@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -162,7 +161,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 			dir := writeTree(t, files)
 			// Seeded under the key Reachability asks for, so no govulncheck runs: a key mismatch
 			// would scan the tree for real, find nothing, and fail the kept case.
-			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv()...), func() ([]byte, error) {
+			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv(ctx)...), func() ([]byte, error) {
 				return []byte(stream), nil
 			}); err != nil {
 				t.Fatal(err)
@@ -225,7 +224,7 @@ func TestRunCacheKeys(t *testing.T) {
 			CallGraph:    plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}},
 			ReflectReach: map[string][]string{"example.com/m": {"F"}},
 		}
-		if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+		if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
 			return json.Marshal(seed)
 		}); err != nil {
 			t.Fatal(err)
@@ -256,7 +255,7 @@ func TestRunCacheKeys(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := WithRunCacheDir(context.Background(), t.TempDir())
-				if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+				if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
 					return json.Marshal(reconcileGraph{ReflectReach: tc.reach})
 				}); err != nil {
 					t.Fatal(err)
@@ -339,7 +338,7 @@ func TestResolveDependencySymbolsFromCachedIndex(t *testing.T) {
 			}
 		}
 	}
-	if _, err := runCached(ctx, "symbolindex", append([]string{fixtureDir}, os.Environ()...), func() ([]byte, error) {
+	if _, err := runCached(ctx, "symbolindex", append([]string{fixtureDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
 		t.Fatal("symbol index was not cached")
 		return nil, nil
 	}); err != nil {
@@ -380,7 +379,7 @@ func TestComputeTaintFromCachedIngresses(t *testing.T) {
 			}
 		}
 	}
-	if _, err := runCached(ctx, "ingresses", append([]string{taintFixtureDir}, os.Environ()...), func() ([]byte, error) {
+	if _, err := runCached(ctx, "ingresses", append([]string{taintFixtureDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
 		t.Fatal("ingresses were not cached")
 		return nil, nil
 	}); err != nil {

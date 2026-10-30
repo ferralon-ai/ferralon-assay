@@ -19,7 +19,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 
 	t.Run("no go.mod discloses no_manifest", func(t *testing.T) {
 		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), t.TempDir(), "go", "golang.org/x/text", "", "", ToolchainFact{})
+			context.Background(), t.TempDir(), GoWorkspace{}, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -34,7 +34,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	t.Run("unparseable go.mod discloses no_manifest", func(t *testing.T) {
 		dir := writeGoMod(t, "this is not a go.mod {{{\n")
 		_, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), dir, "go", "golang.org/x/text", "", "", ToolchainFact{})
+			context.Background(), dir, GoWorkspace{}, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -49,7 +49,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	t.Run("readable go.mod without the module discloses nothing", func(t *testing.T) {
 		dir := writeGoMod(t, gomod)
 		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), dir, "go", "github.com/not/required", "", "", ToolchainFact{})
+			context.Background(), dir, GoWorkspace{}, "go", "github.com/not/required", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -64,7 +64,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	t.Run("resolved module discloses nothing", func(t *testing.T) {
 		dir := writeGoMod(t, gomod)
 		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), dir, "go", "golang.org/x/text", "", "", ToolchainFact{})
+			context.Background(), dir, GoWorkspace{}, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 // "not installed" and disqualifies the advisory on a comparison that never ran.
 func TestResolveDependencyVersion_NoAnalyzerDisclosesAbsence(t *testing.T) {
 	_, flags, err := codebaseInventory{}.resolveDependencyVersion(
-		context.Background(), t.TempDir(), "java", "", "com.example:widget", "", ToolchainFact{})
+		context.Background(), t.TempDir(), GoWorkspace{}, "java", "", "com.example:widget", "", ToolchainFact{})
 	if err != nil {
 		t.Fatalf("resolveDependencyVersion: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestResolveDependencyVersion_NoAnalyzerDisclosesAbsence(t *testing.T) {
 // limit that was never attempted.
 func TestResolveDependencyVersion_GoToolchainStaysSilent(t *testing.T) {
 	_, flags, err := codebaseInventory{}.resolveDependencyVersion(
-		context.Background(), t.TempDir(), "go", "", "stdlib", "go-toolchain", ToolchainFact{})
+		context.Background(), t.TempDir(), GoWorkspace{}, "go", "", "stdlib", "go-toolchain", ToolchainFact{})
 	if err != nil {
 		t.Fatalf("resolveDependencyVersion: %v", err)
 	}

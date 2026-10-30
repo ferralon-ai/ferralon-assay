@@ -36,6 +36,9 @@ type acquired struct {
 
 	// graph is the Java or Kotlin scan's build graph; nil for every other language.
 	graph *jvmGraph
+
+	// goWork is the caller's statement of the GOWORK a Go build runs under (-subject-gowork).
+	goWork string
 }
 
 // provenance returns the Revision and ResolvedCommit to record on the Report's subject. By default

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -34,6 +33,10 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // (no_known_ingress). It NEVER renders an unknown as "safe" (inv.5). A load/SSA
 // failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.TaintResult{}, err
+	}
 	sp, res, err := loadSSA(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.TaintResult{}, err
@@ -96,8 +99,8 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 // through the run cache: they depend only on the build, while every advisory's sinks differ. The
 // program load reads the process environment, so that is part of the key.
 func taintIngresses(ctx context.Context, buildDir string) (plugin.IngressResult, error) {
-	b, err := runCached(ctx, "ingresses", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir})
+	b, err := runCached(ctx, "ingresses", append([]string{buildDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
+		ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir, GoWork: goWork(ctx)})
 		if err != nil {
 			return nil, err
 		}

@@ -161,7 +161,8 @@ func scratchModule(t *testing.T, goDirective string) string {
 // exactly. This is the environment every flag-off run and every non-exact-bound run still gets, so
 // a regression here is a silent behavior change on every scan that is green today.
 func TestReachBaseEnv_ForcesWorkspaceOffAndDoesNotPin(t *testing.T) {
-	env := reachBaseEnv()
+	ctx := context.Background()
+	env := reachBaseEnv(ctx)
 	if !slices.Contains(env, "GOWORK=off") {
 		t.Errorf("reachBaseEnv() does not force GOWORK=off; env tail=%v", env[max(0, len(env)-3):])
 	}
@@ -170,7 +171,7 @@ func TestReachBaseEnv_ForcesWorkspaceOffAndDoesNotPin(t *testing.T) {
 	}
 	// Appending must not alias os.Environ()'s backing array — two independently derived
 	// candidate environments would otherwise clobber each other's last element.
-	a, b := reachBaseEnv(), reachBaseEnv()
+	a, b := reachBaseEnv(ctx), reachBaseEnv(ctx)
 	a = append(a, "GOTOOLCHAIN=go1.1.1")
 	if slices.Contains(b, "GOTOOLCHAIN=go1.1.1") {
 		t.Error("reachBaseEnv() results share a backing array: appending to one mutated the other")
@@ -182,7 +183,7 @@ func TestReachBaseEnv_ForcesWorkspaceOffAndDoesNotPin(t *testing.T) {
 // toolchain does it report having run under?
 func TestSubjectToolchainEnv_SwitchDecision(t *testing.T) {
 	dir := scratchModule(t, "1.21")
-	base := reachBaseEnv()
+	base := reachBaseEnv(context.Background())
 
 	// The flag-off / floor / unresolved / non-Go arm. Asserted FIRST because it is the one that
 	// must not change: it is every scan that is green today.
@@ -291,10 +292,10 @@ func TestGoEnvVersion_UnknownOnFailure(t *testing.T) {
 	// filesystem or toolchain state we do not control.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if got := goEnvVersion(ctx, dir, reachBaseEnv()); got != "" {
+	if got := goEnvVersion(ctx, dir, reachBaseEnv(ctx)); got != "" {
 		t.Errorf("goEnvVersion with a cancelled context = %q, want \"\"", got)
 	}
-	if got := goEnvVersion(context.Background(), filepath.Join(dir, "no-such-dir"), reachBaseEnv()); got != "" {
+	if got := goEnvVersion(context.Background(), filepath.Join(dir, "no-such-dir"), reachBaseEnv(context.Background())); got != "" {
 		t.Errorf("goEnvVersion on a missing dir = %q, want \"\"", got)
 	}
 }

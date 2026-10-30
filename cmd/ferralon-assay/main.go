@@ -185,6 +185,7 @@ func runBaseline(args []string) error {
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}
+	acq.goWork = f.declaredGoWork()
 	defer acq.cleanup()
 
 	store, cleanup, err := baselineStore(f.sf)

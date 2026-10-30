@@ -66,6 +66,10 @@ type LoadResult struct {
 	Packages   []*packages.Package
 	Partiality plugin.Partiality
 
+	// members are the packages of the build's other workspace modules that Packages import: code the
+	// build compiles from source, as its own, though the load's patterns name only buildDir's module.
+	members []*packages.Package
+
 	// cgo bounds every cgo boundary in the build (cgoLimits) when cgoBounded; otherwise cgo stays a
 	// run-wide reason.
 	cgo        []plugin.ScopedReason
@@ -105,13 +109,11 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		Context: ctx,
 		Dir:     buildDir,
 		Tests:   false,
-		// The analyzed target is the buildDir's own module — NEVER a member of any
-		// workspace the analyzer process itself happens to run inside (e.g. an
-		// enclosing repository's go.work during development). Force GOWORK=off so the load resolves the
-		// target module standalone; an ambient go.work would otherwise make
-		// packages.Load try to resolve the target against the wrong module graph and
-		// return an empty/garbled program.
-		Env: append(os.Environ(), "GOWORK=off"),
+		// The load runs under the build's own workspace (withGoWork), NEVER one the analyzer
+		// process itself happens to run inside (e.g. an enclosing repository's go.work during
+		// development): an ambient go.work would make packages.Load resolve the target against the
+		// wrong module graph and return an empty/garbled program.
+		Env: analyzerEnv(ctx),
 	}
 	// The build loaded is the one `go build` ships from this environment: cgo is on or off as the go
 	// command resolves it here (CGO_ENABLED and CC inherited, else on when the default C compiler is
@@ -140,7 +142,17 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 
 	part := plugin.Complete()
 	var loadErrs []string
-	for _, p := range pkgs {
+	var members []*packages.Package
+	for _, p := range workspaceMembers(pkgs) {
+		// A member package with no type information is left out of the index and the SSA program;
+		// the load is partial rather than failed, since the build's own packages type-check.
+		if p.Types == nil {
+			loadErrs = append(loadErrs, fmt.Sprintf("package %q has no type info", p.PkgPath))
+			continue
+		}
+		members = append(members, p)
+	}
+	for _, p := range append(pkgs[:len(pkgs):len(pkgs)], members...) {
 		for _, e := range p.Errors {
 			loadErrs = append(loadErrs, e.Error())
 		}
@@ -176,15 +188,36 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	}
 
 	return &LoadResult{
-		Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil,
-		goVersion: goVersion,
+		Packages: pkgs, Partiality: part, members: members, cgo: cgo, cgoBounded: bounded,
+		cgoUnresolved: cgoErr != nil, goVersion: goVersion,
 	}, nil
+}
+
+// workspaceMembers returns the packages pkgs import, directly or not, from a main module other than
+// pkgs' own: under a go.work every module it uses is a main module the build compiles from source.
+// With GOWORK=off the build's module is the only main module, so there are none.
+func workspaceMembers(pkgs []*packages.Package) []*packages.Package {
+	own := map[string]bool{}
+	for _, p := range pkgs {
+		if p.Module != nil {
+			own[p.Module.Path] = true
+		}
+	}
+	var members []*packages.Package
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Module != nil && p.Module.Main && !own[p.Module.Path] {
+			members = append(members, p)
+		}
+	})
+	sort.Slice(members, func(i, j int) bool { return members[i].PkgPath < members[j].PkgPath })
+	return members
 }
 
 type buildEnvironKey struct{}
 
 // WithBuildEnviron returns ctx carrying env as the environment the build runs in: the process's own
-// environment before the analyzer changed it (it forces GOWORK=off, which the build does not).
+// environment before the analyzer changed it. Its GOWORK is the analyzer's, never read: the build's
+// is the request's (withGoWork).
 func WithBuildEnviron(ctx context.Context, env []string) context.Context {
 	return context.WithValue(ctx, buildEnvironKey{}, env)
 }
@@ -198,11 +231,11 @@ func BuildEnviron(ctx context.Context) []string {
 }
 
 // buildToolchain is the Go release the analyzer's go command resolves for buildDir under the build's
-// environment (BuildEnviron), from GOTOOLCHAIN, the go.mod go and toolchain lines and any go.work. It
-// is an ambient observation, not the release the build compiles under; see buildRelease. "" when
-// unknown.
+// environment (BuildEnviron) and workspace, from GOTOOLCHAIN, the go.mod go and toolchain lines and
+// the go.work. It is an ambient observation, not the release the build compiles under; see
+// buildRelease. "" when unknown.
 func buildToolchain(ctx context.Context, buildDir string) string {
-	return goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
+	return goEnvVersion(ctx, buildDir, buildEnv(ctx, BuildEnviron(ctx)))
 }
 
 // cgoPinned returns env with CGO_ENABLED set to the value `go env CGO_ENABLED` resolves for dir
@@ -1168,13 +1201,17 @@ func scipFromPackage(p *packages.Package, obj types.Object) string {
 // including the methods of exported named types. Partiality is Complete unless
 // the load was degraded.
 func IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.SymbolIndexResult{}, err
+	}
 	res, err := LoadProgram(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.SymbolIndexResult{}, err
 	}
 
 	var syms []plugin.Symbol
-	for _, p := range res.Packages {
+	for _, p := range append(res.Packages[:len(res.Packages):len(res.Packages)], res.members...) {
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
 			obj := scope.Lookup(name)
@@ -1275,12 +1312,17 @@ func recvDisplay(t types.Type) string {
 // resolves them against the loaded program. A no-match is an empty result, not
 // an error; a load failure is a hard error (inv.4).
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.SymbolResolutionResult{}, err
+	}
 	index, err := resolutionIndex(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
 
 	pkgFilter := packageFromPURL(req.PURL)
+	var moduleFilter string
 	var search *plugin.ModuleSearch
 	wanted := make(map[string]bool, len(req.AdvisorySymbols))
 	for _, s := range req.AdvisorySymbols {
@@ -1304,10 +1346,18 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			}
 		}
 		if !present {
+			// An advisory naming a module whose packages the index holds (a workspace member the
+			// build compiles from source) resolves in that module's packages, not across the program.
+			for _, sym := range index.Symbols {
+				if scipModule(sym.SCIP) == pkgFilter {
+					moduleFilter = pkgFilter
+					break
+				}
+			}
 			// The standard library or a dependency module holds the advisory's package: its code is
 			// not in the index, and a first-party symbol that shares a name with an advisory symbol
 			// is not the advisory's.
-			if isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
+			if moduleFilter == "" && (isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter)) {
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
 			// No loaded package is the advisory's: if no module in the build holds it either,
@@ -1323,6 +1373,9 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		if pkgFilter != "" && sym.Package != pkgFilter {
 			continue
 		}
+		if moduleFilter != "" && scipModule(sym.SCIP) != moduleFilter {
+			continue
+		}
 		if !matchesAdvisorySymbol(sym, wanted) {
 			continue
 		}
@@ -1336,8 +1389,8 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 // scan through the run cache: the index depends only on the build, while every advisory resolves
 // against it. The program load reads the process environment, so that is part of the key.
 func resolutionIndex(ctx context.Context, buildDir string) (plugin.SymbolIndexResult, error) {
-	b, err := runCached(ctx, "symbolindex", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: buildDir})
+	b, err := runCached(ctx, "symbolindex", append([]string{buildDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
+		index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: buildDir, GoWork: goWork(ctx)})
 		if err != nil {
 			return nil, err
 		}
@@ -1378,6 +1431,14 @@ func packageFromPURL(purl string) string {
 		}
 	}
 	return path
+}
+
+// scipModule returns the module a SCIP id from scipFromPackage or SCIPString names.
+func scipModule(scip string) string {
+	if f := strings.Fields(scip); len(f) > 2 {
+		return f[2]
+	}
+	return ""
 }
 
 // matchesAdvisorySymbol reports whether sym corresponds to any of the wanted

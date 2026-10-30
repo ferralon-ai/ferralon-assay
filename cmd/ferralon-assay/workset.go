@@ -324,15 +324,21 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 	if !ok {
 		return nil
 	}
+	// A workspace that cannot be resolved fails codebase_inventory for every advisory admitted, so
+	// the go.mod alone decides admission here.
+	var goWork pipeline.GoWorkspace
+	if root.PURLType == "golang" {
+		goWork, _ = pipeline.ResolveGoWorkspace(ctx, dir, acq.buildDir, acq.goWork)
+	}
 	return func(k pipeline.PackageKey) bool {
 		if k.Ecosystem != "" && k.Ecosystem != root.PURLType {
 			return false
 		}
 		var ok bool
 		if root.PURLType == "golang" {
-			_, ok = root.Matches(dir, k.Name, "", "")
+			_, ok = root.Matches(dir, goWork, k.Name, "", "")
 		} else {
-			_, ok = root.Matches(dir, "", k.Name, "")
+			_, ok = root.Matches(dir, goWork, "", k.Name, "")
 		}
 		return ok
 	}

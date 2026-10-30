@@ -165,6 +165,40 @@ func TestComputeTaint_BrokenDirIsHardError(t *testing.T) {
 	}
 }
 
+// TestRunTaint_AttributesLowestIngress pins that a sink two ingresses reach is attributed to the
+// lowest ingress symbol on every run, not to whichever the ingress map yields first, including a sink
+// reached only through another ingress's parameters.
+func TestRunTaint_AttributesLowestIngress(t *testing.T) {
+	const dir = "testdata/taintmultimod"
+	ctx := context.Background()
+	sink := sinkSCIPIn(t, dir, "/Sink().")
+	deep := sinkSCIPIn(t, dir, "/Deep().")
+	sp, _, err := loadSSA(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingresses := sp.resolveIngressFuncs(ing.Ingresses)
+	var alpha, zeta, helper bool
+	for sym := range ingresses {
+		alpha = alpha || strings.Contains(sym, "AlphaHandler")
+		zeta = zeta || strings.Contains(sym, "ZetaHandler")
+		helper = helper || strings.Contains(sym, "zetaHelper")
+	}
+	if !alpha || !zeta || !helper {
+		t.Fatalf("want AlphaHandler, ZetaHandler and zetaHelper as resolved ingresses; got %v", ingresses)
+	}
+	for run := range 20 {
+		hits, _ := runTaint(sp, ingresses, map[string]bool{sink: true, deep: true})
+		if len(hits) != 2 || !strings.Contains(hits[sink], "AlphaHandler") || !strings.Contains(hits[deep], "AlphaHandler") {
+			t.Fatalf("run %d: want Sink and Deep attributed to AlphaHandler; got %v", run, hits)
+		}
+	}
+}
+
 // sanitizerOnlyDir returns the build dir for the sanitizer proof. The taintmod
 // fixture contains BOTH a tainted and a sanitized handler reaching the same Sink,
 // which would let the tainted handler's path mask the sanitizer. The sanitizer
@@ -172,4 +206,34 @@ func TestComputeTaint_BrokenDirIsHardError(t *testing.T) {
 func sanitizerOnlyDir(t *testing.T) string {
 	t.Helper()
 	return "testdata/sanitizermod"
+}
+
+// TestResolveIngressFuncs_DeclaredMethod pins that a method handler's ingress resolves to the method
+// itself, never to its bound wrapper, which shares the method's SCIP id: seeding the wrapper would
+// report the method as a sink its own ingress reaches, on whichever runs map order picked it.
+func TestResolveIngressFuncs_DeclaredMethod(t *testing.T) {
+	const dir = "testdata/chimod"
+	ctx := context.Background()
+	sp, _, err := loadSSA(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	methods := 0
+	for run := range 20 {
+		for id, fn := range sp.resolveIngressFuncs(ing.Ingresses) {
+			if fn.Signature.Recv() != nil {
+				methods++
+			}
+			if fn.Synthetic != "" {
+				t.Fatalf("run %d: %s resolved to %s (%s)", run, id, fn, fn.Synthetic)
+			}
+		}
+	}
+	if methods == 0 {
+		t.Fatal("no method handler resolved; the fixture proves nothing")
+	}
 }

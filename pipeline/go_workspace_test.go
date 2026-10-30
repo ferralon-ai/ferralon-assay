@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -74,37 +75,56 @@ func TestResolveGoWorkspace_StopsAtTheRepository(t *testing.T) {
 	}
 }
 
-// TestModuleVersionFromBuild_Workspace: under a go.work the version is the highest any module it
-// uses requires, and is left unpinned wherever that bound is not the version the go command
-// selects: a module the workspace builds from source or replaces, and a workspace any part of
-// which predates module graph pruning (go 1.17), where a transitive requirement may select higher.
+// TestModuleVersionFromBuild_Workspace: under a go.work the version is pinned only at the one the go
+// command selects for the build, and left unpinned when it cannot say or when the module is one the
+// workspace builds from source or replaces. The highest version a go.mod there requires is never the
+// answer: a dependency's own requirements can select higher.
 func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 	const work = "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n"
 	const modA = "module example.com/mono/a\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.6\n"
 	const modB = "module example.com/mono/b\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.8\n"
+	selected := func(v string) func(context.Context, string, GoWorkspace, string) (listedModule, error) {
+		return func(_ context.Context, _ string, _ GoWorkspace, module string) (listedModule, error) {
+			return listedModule{Path: module, Version: v}, nil
+		}
+	}
+	failing := func(context.Context, string, GoWorkspace, string) (listedModule, error) {
+		return listedModule{}, errors.New("go: module lookup disabled by GOPROXY=off")
+	}
+	replacedBy := func(_ context.Context, _ string, _ GoWorkspace, module string) (listedModule, error) {
+		return listedModule{Path: module, Version: "v0.3.8", Replace: &struct{ Path, Version string }{Path: "../text"}}, nil
+	}
+	main := func(_ context.Context, _ string, _ GoWorkspace, module string) (listedModule, error) {
+		return listedModule{Path: module, Main: true}, nil
+	}
 	cases := []struct {
 		name         string
 		files        map[string]string
 		module       string
+		list         func(context.Context, string, GoWorkspace, string) (listedModule, error)
 		wantVersion  string
 		wantPinned   bool
 		wantManifest bool
 	}{
-		{"the highest require across members", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", "v0.3.8", true, true},
-		{"a module no member requires", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/never", "", true, true},
-		{"a member module", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/mono/b", "", false, true},
-		{"a module the go.work replaces", map[string]string{"go.work": work + "\nreplace golang.org/x/text => golang.org/x/text v0.3.0\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", "", false, true},
-		{"a module a member replaces", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text => ../text\n"}, "golang.org/x/text", "", false, true},
-		{"a member before go 1.17", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": "module example.com/mono/b\n\ngo 1.16\n\nrequire golang.org/x/text v0.3.8\n"}, "golang.org/x/text", "", false, true},
-		{"a member with no go directive", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": "module example.com/mono/b\n\nrequire golang.org/x/text v0.3.8\n"}, "golang.org/x/text", "", false, true},
-		{"a go.work before go 1.17", map[string]string{"go.work": "go 1.16\n\nuse (\n\t./a\n\t./b\n)\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", "", false, true},
-		{"a member with no go.mod", map[string]string{"go.work": work, "a/go.mod": modA}, "golang.org/x/text", "", false, false},
+		{"the version the go command selects", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", selected("v0.3.9"), "v0.3.9", true, true},
+		{"the go command cannot say", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", failing, "", false, true},
+		{"the go command reports a replacement", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", replacedBy, "", false, true},
+		{"the go command reports a main module", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", main, "", false, true},
+		{"the go command reports no version", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", selected(""), "", false, true},
+		{"a module no member requires", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/never", selected("v9.9.9"), "", true, true},
+		{"a member module", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/mono/b", selected("v1.0.0"), "", false, true},
+		{"a module the go.work replaces", map[string]string{"go.work": work + "\nreplace golang.org/x/text => golang.org/x/text v0.3.0\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", selected("v0.3.8"), "", false, true},
+		{"a module a member replaces", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text => ../text\n"}, "golang.org/x/text", selected("v0.3.8"), "", false, true},
+		{"a member before go 1.17 the go command cannot resolve", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": "module example.com/mono/b\n\ngo 1.16\n\nrequire golang.org/x/text v0.3.8\n"}, "golang.org/x/text", failing, "", false, true},
+		{"a member before go 1.17 the go command resolves", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": "module example.com/mono/b\n\ngo 1.16\n\nrequire golang.org/x/text v0.3.8\n"}, "golang.org/x/text", selected("v0.3.10"), "v0.3.10", true, true},
+		{"a member with no go.mod", map[string]string{"go.work": work, "a/go.mod": modA}, "golang.org/x/text", selected("v0.3.8"), "", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			stubGoList(t, tc.list)
 			tree := writeTree(t, tc.files)
 			ws := GoWorkspace{File: filepath.Join(tree, "go.work")}
-			v, pinned, read := moduleVersionFromBuild(filepath.Join(tree, "a"), ws, tc.module)
+			v, pinned, read := moduleVersionFromBuild(context.Background(), filepath.Join(tree, "a"), ws, tc.module)
 			if v != tc.wantVersion || pinned != tc.wantPinned || read != tc.wantManifest {
 				t.Fatalf("moduleVersionFromBuild = %q, %v, %v; want %q, %v, %v", v, pinned, read, tc.wantVersion, tc.wantPinned, tc.wantManifest)
 			}
@@ -112,9 +132,20 @@ func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 	}
 
 	t.Run("off reads the module's go.mod alone", func(t *testing.T) {
+		stubGoList(t, func(context.Context, string, GoWorkspace, string) (listedModule, error) {
+			t.Fatal("the go command ran for a build with no go.work")
+			return listedModule{}, nil
+		})
 		tree := writeTree(t, map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB})
-		if v, pinned, read := moduleVersionFromBuild(filepath.Join(tree, "a"), GoWorkspace{}, "golang.org/x/text"); v != "v0.3.6" || !pinned || !read {
+		if v, pinned, read := moduleVersionFromBuild(context.Background(), filepath.Join(tree, "a"), GoWorkspace{}, "golang.org/x/text"); v != "v0.3.6" || !pinned || !read {
 			t.Fatalf("moduleVersionFromBuild = %q, %v, %v; want v0.3.6, true, true", v, pinned, read)
 		}
 	})
+}
+
+func stubGoList(t *testing.T, list func(context.Context, string, GoWorkspace, string) (listedModule, error)) {
+	t.Helper()
+	orig := goListModule
+	goListModule = list
+	t.Cleanup(func() { goListModule = orig })
 }

@@ -1621,7 +1621,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		// stays open); and a go.mod that parses and simply does not require the module means the
 		// codebase genuinely does not depend on it (honest absence — no disclosure, so a true
 		// not_exploitable stays unqualified).
-		v, pinned, manifestRead := moduleVersionFromBuild(buildDir, goWork, module)
+		v, pinned, manifestRead := moduleVersionFromBuild(ctx, buildDir, goWork, module)
 		if !manifestRead {
 			return depVersions{}, []string{plugin.PartialReasonNoManifest}, nil
 		}

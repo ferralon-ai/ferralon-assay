@@ -2,14 +2,15 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"go/version"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/semver"
+	gomodule "golang.org/x/mod/module"
 )
 
 // GoWorkspace is the go.work a Go build of one module runs under: none (GOWORK=off), or one go.work
@@ -157,14 +158,15 @@ func parseGoWork(file string) (uses, replaced []string, err error) {
 }
 
 // moduleVersionFromBuild is moduleVersionFromGoMod for the build of buildDir under the workspace ws.
-// With no go.work in force it is moduleVersionFromGoMod. Under one, the version is the highest any
-// module the workspace uses requires, which is a lower bound on the version the go command selects
-// and tight only when every go.mod is pruned (go 1.17 or later) and lists every module its build
-// needs. So the version is left unpinned, as for a replaced module, when the go.work or a module it
-// uses declares an earlier go version or none, or when the module is one the workspace uses or one
-// a go.work or go.mod there replaces: none of those builds compile code a required version
-// describes. manifestRead is false when the go.work or a go.mod of a module it uses is unreadable.
-func moduleVersionFromBuild(buildDir string, ws GoWorkspace, module string) (v string, pinned, manifestRead bool) {
+// With no go.work in force it is moduleVersionFromGoMod. Under one, the go.mod files do not state the
+// selected version: the workspace runs one MVS over every module it uses, and a dependency's own
+// requirements can raise a module past the highest version any go.mod there lists. So the version is
+// pinned only at the one the go command selects (goListModule); when it cannot say, the version is
+// left unpinned. It is unpinned too, as for a replaced module, when the module is one the workspace
+// uses or one a go.work or go.mod there replaces: none of those builds compile code a required
+// version describes. A module no go.mod there requires reads as moduleVersionFromGoMod reads it.
+// manifestRead is false when the go.work or a go.mod of a module it uses is unreadable.
+func moduleVersionFromBuild(ctx context.Context, buildDir string, ws GoWorkspace, module string) (v string, pinned, manifestRead bool) {
 	if ws.File == "" {
 		return moduleVersionFromGoMod(buildDir, module)
 	}
@@ -176,8 +178,7 @@ func moduleVersionFromBuild(buildDir string, ws GoWorkspace, module string) (v s
 	if err != nil {
 		return "", false, false
 	}
-	pruned := wf.Go != nil && version.Compare("go"+wf.Go.Version, "go1.17") >= 0
-	replaced := false
+	replaced, required := false, false
 	for _, r := range wf.Replace {
 		replaced = replaced || r.Old.Path == module
 	}
@@ -191,19 +192,72 @@ func moduleVersionFromBuild(buildDir string, ws GoWorkspace, module string) (v s
 		if err != nil || mf.Module == nil {
 			return "", false, false
 		}
-		pruned = pruned && mf.Go != nil && version.Compare("go"+mf.Go.Version, "go1.17") >= 0
 		replaced = replaced || mf.Module.Mod.Path == module
 		for _, r := range mf.Replace {
 			replaced = replaced || r.Old.Path == module
 		}
 		for _, r := range mf.Require {
-			if r.Mod.Path == module && (v == "" || semver.Compare(r.Mod.Version, v) > 0) {
-				v = r.Mod.Version
-			}
+			required = required || r.Mod.Path == module
 		}
 	}
-	if replaced || !pruned {
+	switch {
+	case replaced:
+		return "", false, true
+	case !required:
+		return "", true, true
+	}
+	m, err := goListModule(ctx, buildDir, ws, module)
+	if err != nil || m.Path != module || m.Main || m.Replace != nil || m.Version == "" {
 		return "", false, true
 	}
-	return v, true, true
+	return m.Version, true, true
+}
+
+// listedModule is the part of `go list -m -json` output the version axis reads.
+type listedModule struct {
+	Path    string
+	Version string
+	Main    bool
+	Replace *struct{ Path, Version string }
+}
+
+// goListModule asks the go command which version of module the build of buildDir under ws selects.
+// It runs offline (GOPROXY=off) and read-only, so it answers from the module cache or fails; it
+// executes no code of the subject.
+var goListModule = func(ctx context.Context, buildDir string, ws GoWorkspace, module string) (listedModule, error) {
+	if err := gomodule.CheckPath(module); err != nil {
+		return listedModule{}, err
+	}
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-json", module)
+	cmd.Dir = buildDir
+	cmd.Env = append(os.Environ(), "GOWORK="+ws.GOWORK(), "GOPROXY=off", "GOFLAGS=-mod=readonly")
+	out, err := cmd.Output()
+	if err != nil {
+		return listedModule{}, err
+	}
+	var m listedModule
+	if err := json.Unmarshal(out, &m); err != nil {
+		return listedModule{}, err
+	}
+	return m, nil
+}
+
+// directives returns the go and toolchain lines of the go.work, which a workspace build runs under in
+// place of its modules' own: "" for a line it does not declare, and both "" when it cannot be read.
+func (w GoWorkspace) directives() (goLine, toolchain string) {
+	data, err := os.ReadFile(w.File)
+	if err != nil {
+		return "", ""
+	}
+	wf, err := modfile.ParseWork(w.File, data, nil)
+	if err != nil {
+		return "", ""
+	}
+	if wf.Go != nil {
+		goLine = wf.Go.Version
+	}
+	if wf.Toolchain != nil {
+		toolchain = wf.Toolchain.Name
+	}
+	return goLine, toolchain
 }

@@ -173,11 +173,23 @@ type uvPackage struct {
 }
 
 // uvSource is uv's inline-table package source. A root project carries editable or virtual
-// (its path); a resolved dependency carries registry (the index URL).
+// (its path); a resolved dependency carries registry (the index URL), or git, url, path or
+// directory when a [tool.uv.sources] entry redirects it.
 type uvSource struct {
-	Registry string `toml:"registry"`
-	Editable string `toml:"editable"`
-	Virtual  string `toml:"virtual"`
+	Registry  string `toml:"registry"`
+	Editable  string `toml:"editable"`
+	Virtual   string `toml:"virtual"`
+	Git       string `toml:"git"`
+	URL       string `toml:"url"`
+	Path      string `toml:"path"`
+	Directory string `toml:"directory"`
+}
+
+// redirected reports whether the package installs from a git checkout, a URL or a local path
+// rather than an index. Its locked version is whatever that source's metadata says, which does
+// not make it the index release of that version an advisory describes.
+func (s uvSource) redirected() bool {
+	return s.Git != "" || s.URL != "" || s.Path != "" || s.Directory != ""
 }
 
 type uvDep struct {
@@ -246,6 +258,7 @@ func parseUVLock(data []byte, env map[string]string, selection []string) ([]pyRe
 			Hashes:       uvHashes(p),
 			Selected:     true,
 			Relationship: classifyUV(name, direct, parents[name]),
+			Redirected:   p.Source.redirected(),
 		}
 		out = append(out, r)
 	}
@@ -440,11 +453,12 @@ func parseUVLockAdvisory(data []byte) ([]plugin.ResolvedDependency, bool) {
 }
 
 // pyReqsToResolved projects the selected-set pyReq records onto the advisory path's
-// ResolvedDependency, preserving each package's exact pin (or UNRESOLVED when unpinned).
+// ResolvedDependency, preserving each package's exact pin (or UNRESOLVED when unpinned or
+// redirected off its index).
 func pyReqsToResolved(reqs []pyReq) []plugin.ResolvedDependency {
 	out := make([]plugin.ResolvedDependency, 0, len(reqs))
 	for _, r := range reqs {
-		out = append(out, pyResolved(r.Name, r.Version, r.Resolved, r.Source))
+		out = append(out, pyResolved(r.Name, r.Version, r.Resolved && !r.Redirected, r.Source))
 	}
 	return out
 }

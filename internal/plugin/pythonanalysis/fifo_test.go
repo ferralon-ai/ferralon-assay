@@ -102,6 +102,14 @@ func TestReaders_FIFO(t *testing.T) {
 			},
 		},
 		{
+			name: "uvSourced pyproject.toml", fifo: "pyproject.toml",
+			check: func(t *testing.T, _, pipe string) {
+				if uvSourced([]string{pipe}, "pyjwt") {
+					t.Error("uvSourced read a pipe")
+				}
+			},
+		},
+		{
 			name: "readPyLock uv.lock", fifo: "uv.lock",
 			check: func(t *testing.T, _, pipe string) {
 				if _, ok := readPyLock(pipe); ok {

@@ -384,13 +384,13 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, p)
+		clean, lits := stripPythonLiterals(string(data))
 		if !isTestModule(module) {
-			for _, ep := range settingEntrypoints(string(data)) {
+			for _, ep := range settingEntrypoints(clean, lits) {
 				ep.dir = parentModule(module)
 				eps = append(eps, ep)
 			}
 		}
-		clean, lits := stripPythonLiterals(string(data))
 		lines := logicalLines(clean)
 
 		decls := parseDecls(lines)

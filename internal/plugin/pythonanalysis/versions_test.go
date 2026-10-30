@@ -1051,6 +1051,26 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 	}
 }
 
+// tracker#547: a "V"-prefixed version is well-formed, so it no longer leaves the whole
+// pyproject unread.
+func TestResolveVersions_PyprojectNormalizableSpellingsRead(t *testing.T) {
+	for name, spec := range map[string]string{
+		"upper": "pyjwt>=V2.0",
+		"lower": "pyjwt==v2.8.0",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"flask==2.3.0\", \"" + spec + "\"]\n",
+			})
+			mustResolvedCompletePy(t, dir, "flask", "2.3.0")
+		})
+	}
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==v2.8.0\"]\n",
+	})
+	mustResolvedCompletePy(t, dir, "pyjwt", "2.8.0")
+}
+
 // [project].dependencies is read, and a dynamic field that is not a dependency list does
 // not veto.
 func TestResolveVersions_PyprojectReadTablesDoNotVeto(t *testing.T) {

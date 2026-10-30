@@ -175,6 +175,37 @@ func (s *MemStore) View(assessmentID string, t Type, key string, decode func(pay
 	return v.value, true
 }
 
+// Seeder is a Viewer whose views can be set by a writer that already holds the decoded value, so
+// no reader decodes the payload at all.
+type Seeder interface {
+	Viewer
+	// Seed sets the view of artifact id under key to v, unless that view already exists or no
+	// artifact has that id; it reports whether it did. v must equal what the view's decode would
+	// return for the artifact's payload and, like any view, is shared by every reader and must not
+	// be modified. A view that already exists, even one whose decode is still running, is kept.
+	Seed(id, key string, v any) bool
+}
+
+// Seed implements Seeder.
+func (s *MemStore) Seed(id, key string, v any) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[id]; !ok {
+		return false
+	}
+	k := viewKey{id: id, key: key}
+	if _, found := s.views[k]; found {
+		return false
+	}
+	if s.views == nil {
+		s.views = make(map[viewKey]*view)
+	}
+	seeded := &view{value: v}
+	seeded.once.Do(func() {})
+	s.views[k] = seeded
+	return true
+}
+
 // copyArtifact returns a defensive deep copy (Payload slice copied) so callers
 // cannot mutate stored state.
 func copyArtifact(a *Artifact) *Artifact {

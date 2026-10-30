@@ -53,3 +53,46 @@ func TestResolveVersions_YarnRunsName(t *testing.T) {
 		})
 	}
 }
+
+// npx <name> with a declared dependency runs its local bin or fetches into the npx cache,
+// never the project's node_modules; every other npx form withholds.
+func TestResolveVersions_NpxRunsDependency(t *testing.T) {
+	const lock = `{"name":"app","lockfileVersion":3,"packages":{` +
+		`"":{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"},"devDependencies":{"openapi-typescript":"5.4.1","@scope/gen":"1.0.0","npm-run-all":"4.1.5"}},` +
+		`"node_modules/express":{"version":"4.19.2"},"node_modules/openapi-typescript":{"version":"5.4.1","dev":true},` +
+		`"node_modules/@scope/gen":{"version":"1.0.0","dev":true},"node_modules/npm-run-all":{"version":"4.1.5","dev":true}}}`
+	pkg := func(script string) map[string]string {
+		return map[string]string{"package-lock.json": lock, "package.json": `{"name":"app","version":"1.0.0",` +
+			`"dependencies":{"express":"4.19.2"},"devDependencies":{"openapi-typescript":"5.4.1","@scope/gen":"1.0.0","npm-run-all":"4.1.5"},` +
+			`"scripts":{"gen":` + script + `}}`}
+	}
+	tests := []struct {
+		name   string
+		script string
+		want   bool
+	}{
+		{"declared dependency with args", `"npx openapi-typescript api.yaml --output types.ts"`, true},
+		{"scoped declared dependency", `"npx @scope/gen"`, true},
+		{"undeclared name", `"npx left-pad"`, false},
+		{"version on the name", `"npx openapi-typescript@6 api.yaml"`, false},
+		{"version on a scoped name", `"npx @scope/gen@2"`, false},
+		{"--yes before the name", `"npx --yes openapi-typescript api.yaml"`, false},
+		{"-p before the name", `"npx -p left-pad openapi-typescript"`, false},
+		{"-c", `"npx -c 'openapi-typescript api.yaml'"`, false},
+		{"dependency naming a token", `"npx npm-run-all gen"`, false},
+		{"argument naming a token", `"npx openapi-typescript yarn"`, false},
+		{"bare npx", `"npx"`, false},
+		{"npm exec stays vetoed", `"npm exec openapi-typescript api.yaml"`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveJS(t, writeLockTree(t, pkg(tt.script)), "express")
+			if !r.Found {
+				t.Fatalf("express not found: %+v", r.All)
+			}
+			if r.Match.Resolved != tt.want {
+				t.Fatalf("Resolved = %v, want %v (match %+v)", r.Match.Resolved, tt.want, r.Match)
+			}
+		})
+	}
+}

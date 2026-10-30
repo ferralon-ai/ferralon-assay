@@ -28,6 +28,9 @@ import (
 //	yarn run <name>, yarn test|start
 //	yarn <name> [args]                   a name no yarn command takes, that is a script
 //	                                     (with no args) or a declared dependency's bin
+//	npx <name> [args]                    a declared dependency, with no npx flag or @version:
+//	                                     its local bin, or a fetch into the npx cache, which
+//	                                     never enters the project's node_modules
 //	concurrently "<cmd>" ...             runs each <cmd>, which passes the same gate
 //
 // with only --ignore-scripts and subset flags added (npm: --production and --omit, --include
@@ -40,8 +43,8 @@ import (
 // laneSubsetConfigs variables. concurrently may carry only concurrentlyFlags. Anything else
 // that names a package manager withholds: a package argument, another flag, a bare npm
 // install its lock does not cover, pnpm install without --frozen-lockfile (it re-locks),
-// every yarn install, --frozen-lockfile included (see laneAllowed), npm exec, npx, pnpx,
-// bunx, yarn dlx, pnpm run (pnpm installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
+// every yarn install, --frozen-lockfile included (see laneAllowed), npm exec, any other npx,
+// pnpx, bunx, yarn dlx, pnpm run (pnpm installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
 // names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
 // npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
 // read, and what binds a command to a file, is lane-neutral, in scriptsurface.
@@ -194,6 +197,8 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 		// versions yarn.lock does not record and leaves the lock byte-identical. yarn 2+
 		// --immutable is not recognised by yarn 1, which ignores it.
 		return false
+	case "npx":
+		return laneNpxRunsDependency(words, b)
 	case "pnpm":
 		return words[1] == "install" && scriptsurface.FlagsOnly(words[2:], laneFlags, "--frozen-lockfile") &&
 			b.Nearest("package.json", "pnpm-lock.yaml") != nil
@@ -253,6 +258,34 @@ func laneYarnRunsName(words []string, b scriptsurface.Binder) bool {
 			}
 			continue
 		}
+		m, ok := readPackageJSON(p)
+		if !ok || !declaresDependency(m, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// laneNpxRunsDependency reports whether words is "npx <name> [args]" with no npx flag before
+// name and no @version on it, name a declared dependency in every package.json it binds to,
+// and neither name nor an argument naming a token. npx runs that dependency's local bin, or,
+// when it is not installed, fetches it into the npx cache, which never enters the project's
+// node_modules, so changes no version a pin here resolves to.
+func laneNpxRunsDependency(words []string, b scriptsurface.Binder) bool {
+	name := words[1]
+	if name == "" || strings.HasPrefix(name, "-") || strings.LastIndex(name, "@") > 0 {
+		return false
+	}
+	for _, w := range words[1:] {
+		if laneNamesToken(w) {
+			return false
+		}
+	}
+	pkgs := b.Nearest("package.json")
+	if pkgs == nil {
+		return false
+	}
+	for _, p := range pkgs {
 		m, ok := readPackageJSON(p)
 		if !ok || !declaresDependency(m, name) {
 			return false

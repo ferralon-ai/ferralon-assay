@@ -1009,6 +1009,8 @@ func TestResolveVersions_PyprojectUnreadTablesVeto(t *testing.T) {
 		"hatch-script-abs-pip":      head + "[tool.hatch.envs.test.scripts]\nsetup = \"/usr/bin/pip install flask<2\"\n",
 		"hatch-script-venv-pip":     head + "[tool.hatch.envs.test.scripts]\nsetup = \".venv/bin/pip install flask<2\"\n",
 		"hatch-script-env-default":  head + "[tool.hatch.envs.test.scripts]\nsetup = \"{env:INSTALLER:pip} install flask<2\"\n",
+		"hatch-custom-collector":    head + "[tool.hatch.env.collectors.custom]\npath = \"hatch_plugins.py\"\n",
+		"hatch-env-var-installer":   head + "[tool.hatch.envs.test]\nenv-vars = {INSTALLER = \"pip\"}\npost-install-commands = [\"$INSTALLER install flask<2\"]\n",
 		"hatch-override-script-kv":  head + "[tool.hatch.envs.test.overrides]\nmatrix.py.scripts = [\"setup=pip install flask<2\"]\n",
 		"poetry-path":               head + "[tool.poetry.dependencies]\nflask = \"^2\"\nlib = {path = \"../lib\"}\n",
 		"poetry-file":               head + "[tool.poetry.group.dev.dependencies]\nflask = \"^2\"\nlib = {file = \"dist/lib.whl\"}\n",

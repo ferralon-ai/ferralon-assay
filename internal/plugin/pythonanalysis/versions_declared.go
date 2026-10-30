@@ -103,7 +103,10 @@ type pyprojectDoc struct {
 		} `toml:"pdm"`
 		Hatch struct {
 			Sources any `toml:"sources"`
-			Envs    map[string]struct {
+			Env     struct {
+				Collectors map[string]any `toml:"collectors"`
+			} `toml:"env"`
+			Envs map[string]struct {
 				Type              any `toml:"type"`
 				Dependencies      any `toml:"dependencies"`
 				ExtraDependencies any `toml:"extra-dependencies"`
@@ -250,6 +253,10 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	// Hatch sources and workspace members redirect a declared dependency to a local path, a
 	// git ref or a URL at install time, so the declaration no longer says what installs.
 	ok = ok && doc.Tool.Hatch.Sources == nil
+	// A collector other than the built-in default is a plugin that can rewrite any env.
+	for c := range doc.Tool.Hatch.Env.Collectors {
+		ok = ok && c == "default"
+	}
 	for _, e := range slices.Sorted(maps.Keys(doc.Tool.Hatch.Envs)) {
 		env := doc.Tool.Hatch.Envs[e]
 		addAny(env.Dependencies, nil)
@@ -353,12 +360,13 @@ func hatchCommandsInstall(v any) bool {
 }
 
 // hatchEnvVarsInstall reports whether any key or string in v, at any depth, sets a PIP_* or
-// UV_* variable (laneEnvRE): the env-vars table, or an override's KEY=VALUE strings and key
-// fields.
+// UV_* variable (laneEnvRE), or names an installer a command can reach through $VAR or
+// {env:VAR} (hatchCommandsInstall): the env-vars table, or an override's KEY=VALUE strings
+// and key fields.
 func hatchEnvVarsInstall(v any) bool {
 	switch t := v.(type) {
 	case string:
-		return laneEnvRE.MatchString(t)
+		return laneEnvRE.MatchString(t) || hatchCommandsInstall(t)
 	case []any:
 		return slices.ContainsFunc(t, hatchEnvVarsInstall)
 	case map[string]any:

@@ -25,7 +25,8 @@ import (
 //	uv sync --locked | --frozen    --locked refuses a lock pyproject.toml has moved past;
 //	                               --frozen installs the lock as written
 //	poetry install                 refuses a lock pyproject.toml has moved past
-//	pdm sync                       installs the lock as written
+//	pdm sync                       installs the lock as written, where no pre_install or
+//	                               post_install hook in tool.pdm.scripts runs around it
 //	pipenv install --deploy        refuses a Pipfile.lock the Pipfile has moved past
 //	pipenv sync                    installs Pipfile.lock as written
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
@@ -169,6 +170,38 @@ func laneRunWrapper(words []string) ([]string, bool) {
 	return nil, false
 }
 
+// pdmSyncNoHooks reports whether pyprojects, the manifests a pdm sync binds to, are there and
+// name no pre_install or post_install script, which pdm sync runs around the install. A
+// manifest this cannot decode names one.
+func pdmSyncNoHooks(pyprojects []string) bool {
+	if pyprojects == nil {
+		return false
+	}
+	for _, m := range pyprojects {
+		data, err := readRegular(m)
+		if err != nil {
+			return false
+		}
+		var doc struct {
+			Tool struct {
+				PDM struct {
+					Scripts map[string]any `toml:"scripts"`
+				} `toml:"pdm"`
+			} `toml:"tool"`
+		}
+		if _, err := toml.Decode(string(data), &doc); err != nil {
+			return false
+		}
+		if _, ok := doc.Tool.PDM.Scripts["pre_install"]; ok {
+			return false
+		}
+		if _, ok := doc.Tool.PDM.Scripts["post_install"]; ok {
+			return false
+		}
+	}
+	return true
+}
+
 // laneRunBinds reports whether a run wrapper's argv is the command it runs rather than a
 // script a manifest names: pdm run and pipenv run look a name up in pyproject.toml's
 // tool.pdm.scripts and a Pipfile's scripts table first, pdm runs that table's pre_run and
@@ -234,7 +267,7 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 	case head == "poetry" && words[1] == "install":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("pyproject.toml", "poetry.lock") != nil
 	case head == "pdm" && words[1] == "sync":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("pyproject.toml", "pdm.lock") != nil
+		return scriptsurface.FlagsOnly(words[2:], laneFlags) && pdmSyncNoHooks(b.Nearest("pyproject.toml", "pdm.lock"))
 	case head == "pipenv" && words[1] == "install":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--deploy") && b.Nearest("Pipfile", "Pipfile.lock") != nil
 	case head == "pipenv" && words[1] == "sync":

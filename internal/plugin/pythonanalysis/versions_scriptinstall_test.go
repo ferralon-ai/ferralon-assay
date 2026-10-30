@@ -331,3 +331,38 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 		}
 	})
 }
+
+// pdm sync runs the pre_install and post_install scripts of tool.pdm.scripts around the
+// install, so either withholds every pin; the task runners that read pyproject.toml task
+// tables (poe, hatch) withhold wherever they run.
+func TestResolveVersions_PyprojectTaskInstalls(t *testing.T) {
+	const (
+		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
+		lockPDM = "[metadata]\ngroups = [\"default\"]\n\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n"
+	)
+	tests := []struct {
+		name, pyproject, script string
+		want                    bool // jinja2 resolved
+	}{
+		{"pdm sync, post_install", project + "[tool.pdm.scripts]\npost_install = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, pre_install", project + "[tool.pdm.scripts]\npre_install = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, hook as a dotted key", project + "[tool.pdm]\nscripts.post_install = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, hook as a table", project + "[tool.pdm.scripts.post_install]\ncmd = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, hook in a composite", project + "[tool.pdm.scripts]\npost_install = { composite = [\"pip install jinja2==3.1.2\"] }\n", "pdm sync\n", false},
+		{"poe task", project + "[tool.poe.tasks]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\npoe setup\n", false},
+		{"hatch env script", project + "[tool.hatch.envs.default.scripts]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\nhatch run setup\n", false},
+
+		// Guards: another script name, and no scripts table.
+		{"pdm sync, another script", project + "[tool.pdm.scripts]\ntest = \"pytest\"\n", "pdm sync\n", true},
+		{"pdm sync, no scripts", project, "pdm sync\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"pyproject.toml": tt.pyproject, "pdm.lock": lockPDM, "install.sh": "#!/bin/sh\n" + tt.script})
+			r := resolveVersion(t, dir, "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+		})
+	}
+}

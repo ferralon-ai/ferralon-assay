@@ -351,6 +351,7 @@ func TestResolveVersions_SeededExhaustive(t *testing.T) {
 		{".python-version", map[string]string{".python-version": "3.12\n"}},
 		{"platform runtime", map[string]string{"runtime.txt": "python-3.12.4\n", "Procfile": "web: gunicorn app:app\n"}},
 		{"surface naming no interpreter", map[string]string{"install.sh": "echo pythonic uvicorn\n"}},
+		{"pip config in the tree", map[string]string{"pip.conf": "[global]\ntimeout = 60\n"}},
 		{"no script surface", nil},
 	}
 	for _, tt := range tests {

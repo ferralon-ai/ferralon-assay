@@ -584,7 +584,7 @@ func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult,
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), release, buildDir, env) {
+	if !ok || leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), scanned.vulnerableSymbols(module), release, buildDir, env) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 	}

@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/packages"
@@ -456,9 +457,13 @@ func goflagsTags(env []string) []string {
 // library's own included, and the files the build left out of the standard library's loaded packages
 // are left-out files too: another platform's file may call what the scan's own platform never
 // reaches. The golang.org/x packages the standard library imports resolve to its vendored copies.
-// Outside a standard-library refutation, the standard library's own files are not checked: it
-// imports no module.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
+// Outside a standard-library refutation, a standard-library file never counts: it imports no module.
+//
+// A file that may call into the module by these imports counts only when its declaration closure
+// may also reach one of the advisory's vulnerable symbols (symbols, by vulnerable package; none
+// listed stands for every function in it), against the scan's left-out engine (lofRow.counts),
+// which counts every file when it cannot be built.
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *goRelease, buildDir string, env []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
 	var graph modGraph
@@ -572,7 +577,36 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		}
 		return (own != "" && name == own) || slices.ContainsFunc(imports, mayCall)
 	}
-	leftOut := func(path string) bool { return leftOutOf(path, "", false) }
+	// counts narrows a file leftOutOf keeps to one that may reach the advisory's vulnerable symbols
+	// (lofRow.counts), against the scan's left-out engine, built on first use.
+	row := sync.OnceValue(func() *lofRow {
+		e := loadLofEngine(ctx, pkgs, release, buildDir, env)
+		vsyms := map[string][]string{}
+		for _, p := range vulnerable {
+			vsyms[p] = symbols[p]
+		}
+		r := &lofRow{e: e, stdlib: stdlib, inPkg: func(pkg string) bool { return reach.inModule(pkg, reach.loaded[pkg]) }}
+		r.inS = func(pkg, name string) bool {
+			if !r.inPkg(pkg) {
+				return false
+			}
+			if len(vulnerable) == 0 {
+				return true
+			}
+			names := vsyms[pkg]
+			return len(names) == 0 || slices.Contains(names, name)
+		}
+		for path, p := range reach.loaded {
+			if p.Types != nil && reach.inModule(path, p) {
+				r.sLoaded = true
+				break
+			}
+		}
+		return r
+	})
+	counts := func(path string, own string, std bool) bool {
+		return leftOutOf(path, own, std) && row().counts(path)
+	}
 
 	found := false
 	loadedDirs := map[string]bool{}
@@ -581,29 +615,22 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if found {
 			return false
 		}
-		if p.Module == nil {
-			if stdlib && isStdlibPath(p.PkgPath, reach.modules) {
-				own := ""
-				if reach.reachesModule(p) {
-					own = p.Name
-				}
-				found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own, true) })
-			}
-			return !found
-		}
-		if p.Module.Main && mainDir == "" {
+		if p.Module != nil && p.Module.Main && mainDir == "" {
 			mainDir = p.Module.Dir
 		}
-		for _, files := range [][]string{p.GoFiles, p.OtherFiles, p.IgnoredFiles} {
-			for _, f := range files {
-				loadedDirs[filepath.Dir(f)] = true
+		std := p.Module == nil && isStdlibPath(p.PkgPath, reach.modules)
+		if p.Module != nil {
+			for _, files := range [][]string{p.GoFiles, p.OtherFiles, p.IgnoredFiles} {
+				for _, f := range files {
+					loadedDirs[filepath.Dir(f)] = true
+				}
 			}
 		}
 		own := ""
 		if reach.reachesModule(p) {
 			own = p.Name
 		}
-		found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own, false) })
+		found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return counts(f, own, std) })
 		return !found
 	}, nil)
 	if found {
@@ -612,7 +639,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 	if mainDir == "" {
 		mainDir = buildDir
 	}
-	return firstPartyLeftOut(mainDir, loadedDirs, leftOut)
+	return firstPartyLeftOut(mainDir, loadedDirs, func(path string) bool { return counts(path, "", false) })
 }
 
 // moduleReach answers, over the load's own import graph, whether a package is or imports one of a

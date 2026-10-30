@@ -147,7 +147,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 		withheld bool
 	}{
 		{"nothing contradicts the refutation", nil, false},
-		{"a tagged file the build left out imports the module", map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport _ \"example.com/vulnmod\"\n"}, true},
+		{"a tagged file the build left out calls the module", map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

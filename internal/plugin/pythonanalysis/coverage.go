@@ -867,8 +867,23 @@ func (r *reqInstalls) hashesDisabled() bool {
 
 var noRequireHashesRE = regexp.MustCompile(`(?i)no[-_]require[-_]hashes`)
 
-// patchLevelRE matches a version that names a patch level, as in ">=3.10.5".
-var patchLevelRE = regexp.MustCompile(`\d+\.\d+\.\d+`)
+// minorClauseRE matches a requires-python clause whose bound falls between minor releases, or
+// a bare .python-version "X.Y" pin.
+var minorClauseRE = regexp.MustCompile(`^(?:(?:>=|<)\s*\d+(?:\.\d+)?|~=\s*\d+\.\d+|(?:==|!=)\s*\d+\.\d+\.\*|\d+\.\d+)$`)
+
+// minorBounded reports whether every clause of a requires-python spec bounds whole minor
+// releases. An empty spec is the build that declares none: assumedInterpreter, which does.
+func minorBounded(spec string) bool {
+	if strings.TrimSpace(spec) == "" {
+		return true
+	}
+	for _, c := range strings.Split(spec, ",") {
+		if !minorClauseRE.MatchString(strings.TrimSpace(c)) {
+			return false
+		}
+	}
+	return true
+}
 
 var pipIndexConfigRE = regexp.MustCompile(`(?i)index[-_]url|find[-_]links`)
 
@@ -1092,11 +1107,12 @@ func (r *reqInstalls) pipConfigNamesIndex() bool {
 
 // admitsAll reports whether the requires-python spec admits every release in build, which
 // buildSpec declares. An absent or unreadable spec admits nothing. The ranges are compared by
-// minor release, so a spec that bounds a patch level must be buildSpec itself: uv drops an
-// edge marked below a lock's ">=3.10.5" that pip on 3.10.0 installs.
+// minor release, so unless both specs bound only whole minor releases, spec must be buildSpec
+// itself: uv drops an edge marked below a lock's ">=3.10.5" or ">3.10" that pip on 3.10.0
+// installs.
 func admitsAll(spec, buildSpec string, build interpreterRange) bool {
 	if strings.Join(strings.Fields(spec), "") != strings.Join(strings.Fields(buildSpec), "") &&
-		(patchLevelRE.MatchString(spec) || patchLevelRE.MatchString(buildSpec)) {
+		(!minorBounded(spec) || !minorBounded(buildSpec)) {
 		return false
 	}
 	r, ok := parseInterpreterRange(spec)

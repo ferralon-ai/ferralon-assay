@@ -51,12 +51,13 @@ var poetryEnvKeeps = func() map[string]bool {
 // toolConfigNamedRE matches, in a script surface's text, a poetry or pdm config file or the
 // directory either reads its user or site config from (poetry.toml, pdm.toml and .pdm.toml,
 // pypoetry/config.toml or auth.toml, pdm/config.toml, a pypoetry or pdm directory under
-// .config, Application Support or AppData, /etc/xdg/pdm, ProgramData's pdm), or an XDG
-// variable that moves where they look. A poetry install or pdm sync reads the settings there, so an allowed one
-// withholds where a script names one (versionSurfaces). POETRY_CONFIG_DIR and PDM_CONFIG_FILE
-// fall under laneEnvRE.
+// .config, Application Support or AppData, /etc/xdg/pdm, ProgramData's pdm), or a variable
+// that moves where they look (configHomeMoved, platformdirs' WIN_PD_OVERRIDE_*). A poetry
+// install or pdm sync reads the settings there, so an allowed one withholds where a script
+// names one (versionSurfaces). POETRY_CONFIG_DIR and PDM_CONFIG_FILE fall under laneEnvRE.
 var toolConfigNamedRE = regexp.MustCompile(`(?i)poetry\.toml|pdm\.toml|pypoetry[\\/](?:config|auth)\.toml|pdm[\\/]config\.toml|` +
-	`(?:\.config|application support|appdata%?(?:[\\/](?:local|roaming))?|localappdata%?|programdata%?|/etc/xdg)[\\/](?:pypoetry|pdm)\b|xdg_config_(?:home|dirs)`)
+	`(?:\.config|application\\? support|appdata%?(?:[\\/](?:local|roaming))?|programdata%?|/etc/xdg)[\\/](?:pypoetry|pdm)\b|` +
+	`win_pd_override_|` + configHomeMoved)
 
 // toolConfigName reports which tool reads a file of this lowercased base name in directory dir
 // as its config: poetry its project poetry.toml and its user config.toml or auth.toml under

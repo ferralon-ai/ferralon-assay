@@ -79,6 +79,17 @@ func TestResolveVersions_ToolConfig(t *testing.T) {
 		{"poetry config directory on Windows", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
 			"xcopy ci\\poetrycfg %APPDATA%\\pypoetry\\ /E\npoetry install", false},
 
+		{"macOS config directory copied in", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
+			"cp -r ci/poetrycfg \"$HOME/Library/Application Support/pypoetry\"\npoetry install", false},
+		{"macOS config directory copied in, shell-escaped", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
+			"cp -r ci/poetrycfg ~/Library/Application\\ Support/pypoetry\npoetry install", false},
+		{"LOCALAPPDATA config directory copied in", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
+			"xcopy ci\\poetrycfg %LOCALAPPDATA%\\pypoetry\\ /E\npoetry install", false},
+		{"ProgramData config directory copied in", "poetry", "", map[string]string{"ci/poetrycfg/cfg": "x"},
+			"xcopy ci\\poetrycfg %PROGRAMDATA%\\pypoetry\\ /E\npoetry install", false},
+		{"HOME moved", "poetry", "", nil, "FROM python:3.12\nENV HOME /cfg\nWORKDIR /app\nCOPY . .\nRUN poetry install\n", false},
+		{"platformdirs' Windows override", "poetry", "", nil, "export WIN_PD_OVERRIDE_ROAMING_APPDATA=C:\\cfg\npoetry install", false},
+
 		// tool.poetry.source.
 		{"source over https", "poetry", source("name = \"x\"\nurl = \"https://x.test/simple\"\n"), nil, "poetry install", true},
 		{"source PyPI without a url", "poetry", source("name = \"PyPI\"\npriority = \"primary\"\n"), nil, "poetry install", true},

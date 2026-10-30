@@ -175,10 +175,16 @@ func pipSelfUpgrade(args []string) bool {
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip`)
 
 // uvConfigNamedRE matches, in a script surface's text, a uv config file or directory (uv.toml,
-// /etc/uv, /etc/xdg/uv, .config/uv), UV_CONFIG_FILE, or an XDG variable that moves where uv
-// looks for one. A uv sync reads the settings there, which can add build requirements, indexes
+// /etc/uv, /etc/xdg/uv, .config/uv, AppData or ProgramData's uv), UV_CONFIG_FILE, or a
+// variable that moves where uv looks for one (XDG_CONFIG_HOME or XDG_CONFIG_DIRS, HOME,
+// USERPROFILE). A uv sync reads the settings there, which can add build requirements, indexes
 // and build environment, so an allowed one withholds where a script names one (versionSurfaces).
-var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|xdg_config_(?:home|dirs)`)
+var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|(?:appdata|programdata)%?[\\/]uv\b|` + configHomeMoved)
+
+// configHomeMoved matches, in a script surface's text, a variable a tool's user or site config
+// location is found from being set or exported: XDG_CONFIG_HOME, XDG_CONFIG_DIRS, HOME (as
+// HOME=, a workflow's HOME:, or a Dockerfile's ENV HOME) and USERPROFILE.
+const configHomeMoved = `xdg_config_(?:home|dirs)|\bhome\s*[=:]|\benv\s+home\s|userprofile`
 
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}

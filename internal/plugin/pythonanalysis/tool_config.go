@@ -53,9 +53,9 @@ var poetryEnvKeeps = func() map[string]bool {
 // pypoetry/config.toml or auth.toml, pdm/config.toml, a pypoetry or pdm directory under
 // .config, Application Support or /etc/xdg, a quote or not closing the base, or on a line that
 // names AppData or ProgramData however the path is built), or a variable that moves where they
-// look (configHomeMoved, platformdirs' WIN_PD_OVERRIDE_*). A poetry
-// install or pdm sync reads the settings there, so an allowed one withholds where a script
-// names one (versionSurfaces). POETRY_CONFIG_DIR and PDM_CONFIG_FILE fall under laneEnvRE.
+// look (configHomeMoved, platformdirs' WIN_PD_OVERRIDE_*). A poetry install or pdm sync reads
+// the settings there, so an allowed one withholds where a script names one (versionSurfaces).
+// POETRY_CONFIG_DIR and PDM_CONFIG_FILE fall under laneEnvRE.
 var toolConfigNamedRE = regexp.MustCompile(`(?i)poetry\.toml|pdm\.toml|pypoetry[\\/](?:config|auth)\.toml|pdm[\\/]config\.toml|` +
 	`(?:\.config|application\\? support|/etc/xdg)["']?[\\/](?:pypoetry|pdm)\b|(?:appdata|programdata)[^\n]*?\b(?:pypoetry|pdm)\b|` +
 	`win_pd_override_|` + configHomeMoved)

@@ -49,7 +49,6 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
-	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -57,18 +56,6 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/trigger"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
-
-// supportedLanguages is every language the release claims. A language belongs here exactly when the
-// tarball bakes an analyzer plugin for it (scripts/build-release.sh BAKED_TARGETS) — the two lists
-// are the same claim made in two places, and this file is where the claim is tested.
-var supportedLanguages = []string{
-	checkout.LangGo,
-	checkout.LangJava,
-	checkout.LangKotlin,
-	checkout.LangJS,
-	checkout.LangPython,
-	checkout.LangDotNet,
-}
 
 // TestEverySupportedLanguageCompletesAScan is the regression lock.
 //

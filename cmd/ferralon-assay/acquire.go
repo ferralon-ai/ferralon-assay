@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -193,7 +194,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	if err != nil {
 		cleanup()
 		var missing *plugin.NotInstalledError
-		if errors.As(err, &missing) {
+		if errors.As(err, &missing) && !releaseLanguage(language) {
 			return nil, &analyzerMissingError{
 				acq:     acquired{language: language, repo: repo, analyzeRef: analyzeRef, analyzedCommit: analyzedCommit},
 				missing: missing,
@@ -217,11 +218,30 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	}, nil
 }
 
-// analyzerMissingError is acquireTarget's error for a tree whose detected language has no analyzer
-// plugin installed: the release ships none for it (C/C++ today), or it was left off PATH. Nothing can
-// be assessed, so the run publishes a Report that says so (publishAnalyzerMissing) instead of
-// failing. acq carries only what that Report needs: the language and the subject's identity and
-// provenance. The tree itself was already cleaned up.
+// supportedLanguages is every language the release claims. A language belongs here exactly when the
+// tarball bakes an analyzer plugin for it (scripts/build-release.sh BAKED_TARGETS) — the two lists
+// are the same claim made in two places, and language_support_test.go is where the claim is tested.
+var supportedLanguages = []string{
+	checkout.LangGo,
+	checkout.LangJava,
+	checkout.LangKotlin,
+	checkout.LangJS,
+	checkout.LangPython,
+	checkout.LangDotNet,
+}
+
+// releaseLanguage reports whether the release ships an analyzer for language.
+func releaseLanguage(language string) bool {
+	return slices.Contains(supportedLanguages, language)
+}
+
+// analyzerMissingError is acquireTarget's error for a tree whose detected language is outside the
+// release (C/C++ today) and has no analyzer plugin installed. Nothing can be assessed, so the run
+// publishes a Report that says so (publishAnalyzerMissing) instead of failing. A release language
+// whose analyzer is missing is an install fault, not this: acquireTarget returns the plugin error and
+// the run fails without replacing what an earlier run published. acq carries only what the Report
+// needs: the language and the subject's identity and provenance. The tree itself was already cleaned
+// up.
 type analyzerMissingError struct {
 	acq     acquired
 	missing *plugin.NotInstalledError
@@ -401,7 +421,7 @@ func advisoryCorpus(language string, includeHouseCanaries bool) []assessment.Vul
 		// identifier) and there is no C/C++ ecosystem wired, so there is nothing honest to seed here.
 		// A floor is NOT a coverage claim; fabricating one to force a completing scan is exactly the
 		// dishonesty this codebase forbids. cfamily is therefore deliberately NOT in the release
-		// supportedLanguages set (language_support_test.go), and the release ships no cfamily
+		// supportedLanguages set (tested in language_support_test.go), and the release ships no cfamily
 		// plugin. A scan of a C/C++ tree therefore never reaches a verdict: where the plugin is not
 		// installed, acquireTarget stops before the work set and the run publishes a zero-finding
 		// Report whose did_not_run note names the language and the missing plugin, then exits 0

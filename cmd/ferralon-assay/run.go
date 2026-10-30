@@ -644,12 +644,14 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 //
 // It is a HARD error, not a warning, on the precedent this CLI already sets for a degraded advisory
 // input: advisoryCorpusOption hard-fails a wholly-unusable -advisory-corpus rather than silently
-// falling back to the built-in table (decisions.md #1), and a target whose language selectPlugin does
-// not know hard-fails there. Both refuse to produce a Report the inputs cannot support. (A known
-// language whose analyzer is not installed never gets here: acquireTarget stops first and the run
-// publishes a Report that says nothing was assessed — publishAnalyzerMissing.) An empty
-// work set is the worst-consequence member of that family: the run succeeds, exits 0, and publishes
-// a findings-free Report a reader cannot distinguish from an assessed all-clear.
+// falling back to the built-in table (decisions.md #1), and a tree whose language is not recognized
+// is refused at checkout ("not a recognized source tree", checkout/vendored.go). Both refuse to
+// produce a Report the inputs cannot support. (A detected language whose analyzer is not installed
+// never gets here: acquireTarget stops first. Outside the release's languages the run publishes a
+// Report that says nothing was assessed — publishAnalyzerMissing; for a release language it fails as
+// an install fault.) An empty work set is the worst-consequence member of that family: the run
+// succeeds, exits 0, and publishes a findings-free Report a reader cannot distinguish from an
+// assessed all-clear.
 //
 // The condition is strictly THE SET IS EMPTY — never a language, never a source. An ecosystem that
 // resolves nothing today stops failing the moment anything populates its work set, with no code

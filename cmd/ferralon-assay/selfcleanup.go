@@ -89,20 +89,23 @@ func stateRefOf(store statestore.StateStore) string {
 	return statestore.DefaultRef
 }
 
+// revokeCheckLinked reports whether postScan's revoke check runs on this host: the run is linked to a
+// console with an ingest endpoint, and names its repository.
+func revokeCheckLinked() bool {
+	return resolveEndpoint(linkedToConsole(), os.Getenv(envIngestURL), bakedIngestURL) != "" && os.Getenv(envGitHubRepo) != ""
+}
+
 // postScan runs the env-gated self-cleanup revoke check after a scan published its
 // results. store is the SAME StateStore the run used (so the counter lives beside the
 // baseline). subject supplies the resolved commit when GITHUB_SHA is absent. It is
 // best-effort: it never returns an error that would fail the customer's build — a
 // problem is logged and swallowed.
 func postScan(ctx context.Context, store statestore.StateStore, subject trigger.Subject, rescan *selfcleanup.RescanPayload) {
+	if !revokeCheckLinked() {
+		return // not linked to a console (OSS / dogfood / local run, or an explicit opt-out), or no repository
+	}
 	ingestURL := resolveEndpoint(linkedToConsole(), os.Getenv(envIngestURL), bakedIngestURL)
-	if ingestURL == "" {
-		return // not linked to a console (OSS / dogfood / local run, or an explicit opt-out)
-	}
 	full := os.Getenv(envGitHubRepo) // "owner/name"
-	if full == "" {
-		return
-	}
 	// The backend signs the revoke over org=<owner>, repo=<short name> (derived from
 	// the OIDC repository claim, dispatch 03) — so the beacon binds against those short
 	// forms, while the actuator needs the full "owner/name" for gh --repo.

@@ -580,7 +580,33 @@ func (w *lofWorld) refsOf(d *lofDecl) {
 	}
 	d.done = true
 	f := d.file
-	local := func(id *ast.Ident) bool { return id.Obj != nil && f.ast.Scope.Lookup(id.Name) != id.Obj }
+	// The parser leaves a method's receiver type parameters unresolved; they are locals of the
+	// method all the same.
+	recvParams := map[string]bool{}
+	if fd, ok := d.node.(*ast.FuncDecl); ok && fd.Recv != nil && len(fd.Recv.List) > 0 {
+		t := ast.Unparen(fd.Recv.List[0].Type)
+		if st, ok := t.(*ast.StarExpr); ok {
+			t = ast.Unparen(st.X)
+		}
+		var params []ast.Expr
+		switch t := t.(type) {
+		case *ast.IndexExpr:
+			params = []ast.Expr{t.Index}
+		case *ast.IndexListExpr:
+			params = t.Indices
+		}
+		for _, x := range params {
+			if id, ok := x.(*ast.Ident); ok && id.Name != "_" {
+				recvParams[id.Name] = true
+			}
+		}
+	}
+	local := func(id *ast.Ident) bool {
+		if id.Obj == nil {
+			return recvParams[id.Name]
+		}
+		return f.ast.Scope.Lookup(id.Name) != id.Obj
+	}
 	bare := func(id *ast.Ident, soft bool) {
 		if id.Name == "_" {
 			return

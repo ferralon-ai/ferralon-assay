@@ -26,6 +26,8 @@ import (
 //	npm run|run-script <name>            runs a script and installs nothing; the script, like
 //	npm test|t|start                     every package.json script value, passes the same gate
 //	yarn run <name>, yarn test|start
+//	yarn <name> [args]                   a name no yarn command takes, that is a script
+//	                                     (with no args) or a declared dependency's bin
 //	concurrently "<cmd>" ...             runs each <cmd>, which passes the same gate
 //
 // with only --ignore-scripts and subset flags added (npm: --production and --omit, --include
@@ -183,6 +185,9 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 		case "test", "start":
 			return len(words) == 2 && b.Nearest("package.json") != nil
 		}
+		if !yarnBuiltins[words[1]] {
+			return laneYarnRunsName(words, b)
+		}
 		// No yarn install is allowed, --frozen-lockfile included: yarn 1 does not hold a
 		// workspace to its lock under that flag. When a member adds a dependency or moves a
 		// range past the locked version, or a new member appears, yarn 1.22 exits 0, installs
@@ -195,6 +200,95 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 	}
 	return false
 }
+
+// yarnBuiltins are the first words yarn 1 (1.22) and yarn 2+ (4.5, its bundled plugins
+// included) take as one of their own commands, aliases and the camelCase spellings yarn 1
+// also accepts among them. yarn runs any other first word as "yarn run <word>".
+var yarnBuiltins = map[string]bool{
+	"access": true, "add": true, "audit": true, "autoclean": true, "bin": true, "cache": true,
+	"check": true, "config": true, "constraints": true, "create": true, "dedupe": true,
+	"dlx": true, "exec": true, "explain": true, "files": true, "generate-lock-entry": true,
+	"generateLockEntry": true, "global": true, "help": true, "import": true, "info": true,
+	"init": true, "install": true, "licenses": true, "link": true, "list": true, "lockfile": true,
+	"login": true, "logout": true, "node": true, "npm": true, "outdated": true, "owner": true,
+	"pack": true, "patch": true, "patch-commit": true, "plugin": true, "policies": true,
+	"prune": true, "publish": true, "rebuild": true, "remove": true, "run": true, "search": true,
+	"set": true, "stage": true, "tag": true, "team": true, "unlink": true, "unplug": true,
+	"up": true, "upgrade": true, "upgrade-interactive": true, "upgradeInteractive": true,
+	"version": true, "versions": true, "why": true, "workspace": true, "workspaces": true,
+}
+
+// laneYarnRunsName reports whether words is "yarn <name> [args]" that yarn runs as "yarn run
+// <name> [args]", which installs nothing: name is not a yarn command (yarnBuiltins) and, in
+// every package.json it binds to, either a script, run with nothing after it since yarn
+// appends the args to the script's text, or a declared dependency, whose bin it runs. A
+// name that is neither fails in both yarns rather than installing. Neither name nor an
+// argument may name a token, so the form withholds wherever the bare command would.
+func laneYarnRunsName(words []string, b scriptsurface.Binder) bool {
+	name := words[1]
+	if name == "" || strings.HasPrefix(name, "-") {
+		return false
+	}
+	for _, w := range words[1:] {
+		if laneNamesToken(w) {
+			return false
+		}
+	}
+	pkgs := b.Nearest("package.json")
+	if pkgs == nil {
+		return false
+	}
+	for _, p := range pkgs {
+		raw, ok := readManifest(p)
+		if !ok {
+			return false
+		}
+		var scripts map[string]json.RawMessage
+		if s, has := raw["scripts"]; has && json.Unmarshal(s, &scripts) != nil {
+			return false
+		}
+		if _, script := scripts[name]; script {
+			if len(words) != 2 {
+				return false
+			}
+			continue
+		}
+		m, ok := readPackageJSON(p)
+		if !ok || !declaresDependency(m, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// declaresDependency reports whether m names dep in any of its dependency fields.
+func declaresDependency(m depManifest, dep string) bool {
+	for _, deps := range m.declared {
+		if _, ok := deps[dep]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// laneNamesToken reports whether word, or a part of one split as scriptsurface splits text
+// into words and at - or _, is a token: what makes the walk gate a bare command.
+func laneNamesToken(word string) bool {
+	for _, w := range laneWordRE.FindAllString(word, -1) {
+		if laneToken(w) {
+			return true
+		}
+		for _, p := range strings.FieldsFunc(w, func(r rune) bool { return r == '-' || r == '_' }) {
+			if laneToken(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// laneWordRE is scriptsurface's word pattern for token matching.
+var laneWordRE = regexp.MustCompile(`[A-Za-z0-9_.+-]+`)
 
 // laneRunsScript reports whether words is "<pm> run <name>" with a literal name and nothing
 // after it, bound to a package.json read here.

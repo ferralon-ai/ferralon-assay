@@ -275,6 +275,11 @@ func TestResolveVersions_ExhaustiveHatchInstallsPast(t *testing.T) {
 		{"script override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.scripts]]\nkey = \"setup\"\nvalue = \"pip install pyjwt\"\n", false},
 		{"dependency override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.custom]]\ndependencies = [\"pyjwt<2\"]\n", false},
 		{"env-var override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.env-vars]]\nkey = \"PIP_INDEX_URL\"\nvalue = \"https://mirror.example/simple\"\n", false},
+		{"env dependencies not an array", "[tool.hatch.envs.lint]\ndependencies = \"ruff\"\n", false},
+		{"env extra-dependencies not an array", "[tool.hatch.envs.lint]\nextra-dependencies = \"ruff\"\n", false},
+		{"env dependency not a string", "[tool.hatch.envs.lint]\ndependencies = [1]\n", false},
+		{"env dependency the lock lacks", "[tool.hatch.envs.lint]\ndependencies = [\"ruff\"]\n", false},
+		{"env extra-dependency the lock lacks", "[tool.hatch.envs.lint]\nextra-dependencies = [\"ruff\"]\n", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -716,9 +716,17 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				calls[fi] = append(calls[fi], declFile[callee])
 			}
 		}
-		// Framework ingress handler functions are call-graph roots (static-reachability
-		// entry points), so a reverse BFS can terminate at them even when no caller in the
-		// source invokes them.
+	}
+
+	// Framework ingress handler functions are call-graph roots (static-reachability entry
+	// points), so a reverse BFS can terminate at them even when no caller in the source
+	// invokes them. A handler in test code production never runs (productionReached) is
+	// registered by no production app, so it is no entry point.
+	reached := prog.productionReached(calls)
+	for fi, f := range prog.files {
+		if !reached[fi] {
+			continue
+		}
 		for _, in := range f.ingresses {
 			rootsSet[funcSCIP(f.module, in.enclosing, in.name, in.arity)] = true
 		}
@@ -747,7 +755,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	})
 
 	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, prog.productionReached(calls)),
+		Partiality: callGraphPartiality(prog, reached),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      sortedSymbols(rootsSet),
@@ -982,6 +990,29 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 	}
 	return reached
+}
+
+// resolvedCallFiles lists, per caller file, the files declaring the function each call site
+// with an edge resolves to: the calls argument productionReached takes, for a caller that
+// does not build the graph. callGraphOf collects the same lists as it adds the edges.
+func (prog *program) resolvedCallFiles() [][]int {
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	calls := make([][]int, len(prog.files))
+	for fi := range prog.files {
+		f := &prog.files[fi]
+		for _, cs := range f.calls {
+			edgeLeaves, _ := prog.siteLeaves(f, cs)
+			if callee, ok := resolveCallee(prog.declsNamed(edgeLeaves), cs.calleeArity); ok {
+				calls[fi] = append(calls[fi], declFile[callee])
+			}
+		}
+	}
+	return calls
 }
 
 // isTestModule reports whether a module path names test code: a test_*.py, *_test.py or

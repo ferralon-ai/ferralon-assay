@@ -28,9 +28,14 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 		return plugin.IngressResult{}, err
 	}
 
+	// A handler in test code production never runs is registered by no production app.
+	reached := prog.productionReached(prog.resolvedCallFiles())
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress
-	for _, f := range prog.files {
+	for fi, f := range prog.files {
+		if !reached[fi] {
+			continue
+		}
 		for _, in := range f.ingresses {
 			scip := funcSCIP(f.module, in.enclosing, in.name, in.arity)
 			key := in.kind + "\x00" + scip + "\x00" + in.selector

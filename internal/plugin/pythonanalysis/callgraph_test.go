@@ -906,3 +906,45 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 		})
 	}
 }
+
+// TestCallGraph_TestModuleIngresses: a framework route in test code production never runs is
+// neither a call-graph root nor an ingress; one in a test module production imports or calls
+// stays both.
+func TestCallGraph_TestModuleIngresses(t *testing.T) {
+	const route = "from flask import Flask\napp = Flask(__name__)\n\n@app.route('/x')\ndef handle():\n    return 1\n\ndef helper():\n    return 2\n"
+	cases := []struct {
+		name   string
+		module string
+		files  map[string]string
+		want   bool
+	}{
+		{"under tests", "tests/conftest", map[string]string{"app.py": "def main():\n    return 1\n", "tests/conftest.py": route}, false},
+		{"test_ file at the root", "test_app", map[string]string{"app.py": "def main():\n    return 1\n", "test_app.py": route}, false},
+		{"root conftest", "conftest", map[string]string{"conftest.py": route}, false},
+		{"imported only by tests", "tests/routes", map[string]string{"tests/routes.py": route, "tests/test_a.py": "from tests.routes import app\n"}, false},
+		{"production module", "app", map[string]string{"app.py": route, "tests/test_a.py": "from app import app\n"}, true},
+		{"imported by production", "tests/routes", map[string]string{"app.py": "from tests.routes import app\n", "tests/routes.py": route}, true},
+		{"edge from production", "tests/routes", map[string]string{"app.py": "def main():\n    return helper()\n", "tests/routes.py": route}, true},
+		{"through another test module", "tests/routes", map[string]string{"app.py": "import tests.util\n", "tests/util.py": "from tests.routes import app\n", "tests/routes.py": route}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			handle := funcSCIP(c.module, nil, "handle", 0)
+			res := mustCallGraph(t, c.files)
+			isRoot := false
+			for _, r := range res.Roots {
+				isRoot = isRoot || r.SCIP == handle
+			}
+			if isRoot != c.want {
+				t.Errorf("handle is a root = %v, want %v (roots %v)", isRoot, c.want, res.Roots)
+			}
+			ings, err := FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: writeTree(t, c.files)})
+			if err != nil {
+				t.Fatalf("FindIngresses: %v", err)
+			}
+			if _, ok := ingressFor(ings.Ingresses, handle); ok != c.want {
+				t.Errorf("handle is an ingress = %v, want %v (ingresses %v)", ok, c.want, ings.Ingresses)
+			}
+		})
+	}
+}

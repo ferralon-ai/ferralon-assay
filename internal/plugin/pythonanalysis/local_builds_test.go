@@ -346,6 +346,12 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 			"Dockerfile": "FROM python:3.12\nCOPY . /src\nWORKDIR /src/app\nRUN uv sync --locked\n"}, nil, false},
 		{"pdm, an override served from the tree", map[string]string{"pyproject.toml": project + "[tool.pdm]\ndistribution = false\n" +
 			"[tool.pdm.resolution.overrides]\npdm-backend = \"file:///${PROJECT_ROOT}/be\"\n", "pdm.lock": pdmLock, "install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
+		{"pdm, tool.pdm.options turning off build isolation", map[string]string{"pyproject.toml": pdmPy +
+			"[tool.pdm.options]\nsync = [\"--no-isolation\"]\n", "pdm.lock": pdmLock, "install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
+		{"pdm, pdm.toml beside the manifest", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
+			"pdm.toml": "build_isolation = false\n", "install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
+		{"pdm, .pdm.toml beside the manifest", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
+			".pdm.toml": "build_isolation = false\n", "install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
 		{"uv, the config directory moved by the script", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
 			"ci/settings": "native-tls = true\n", "install.sh": "#!/bin/sh\nexport XDG_CONFIG_HOME=/opt/conf\nuv sync --locked\n"}, nil, false},
 		{"uv, an index that is not a list", map[string]string{"pyproject.toml": project + uvBuild +

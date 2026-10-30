@@ -3159,6 +3159,32 @@ func govulnMatchID(store artifact.Store, caseID, primary string) string {
 
 // --- Stage 5: reachability_ingress --------------------------------------------
 
+// persistedCallGraph is the call-graph leg of the reachability artifact: the result's
+// partiality, edges and roots, which guard discovery and the proof read back, with the
+// declined sites and escaped symbols reduced to counts. Every candidate's artifact carries a
+// copy, and a Python monorepo lists a site per dynamic call. A reader decoding the leg as a
+// plugin.CallGraphResult sees no Unresolved list, which the contract reads as every
+// declared reason unattributable: more conservative than the result, never less.
+type persistedCallGraph struct {
+	Partiality      plugin.Partiality `json:"partiality"`
+	Algorithm       string            `json:"algorithm"`
+	Edges           []plugin.CallEdge `json:"edges"`
+	Roots           []plugin.Symbol   `json:"roots"`
+	UnresolvedCount int               `json:"unresolved_count,omitempty"`
+	EscapedCount    int               `json:"escaped_count,omitempty"`
+}
+
+func persistCallGraph(cg plugin.CallGraphResult) persistedCallGraph {
+	return persistedCallGraph{
+		Partiality:      cg.Partiality,
+		Algorithm:       cg.Algorithm,
+		Edges:           cg.Edges,
+		Roots:           cg.Roots,
+		UnresolvedCount: len(cg.Unresolved),
+		EscapedCount:    len(cg.Escaped),
+	}
+}
+
 type reachabilityIngress struct {
 	plugin plugin.LanguagePlugin
 	// subjectToolchain opts this stage into asking the analyzer to run under the subject's Go
@@ -3331,12 +3357,12 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	reachOut.Paths = paths
 	reachPayload := struct {
 		Reachability plugin.ReachabilityResult `json:"reachability"`
-		CallGraph    plugin.CallGraphResult    `json:"call_graph"`
+		CallGraph    persistedCallGraph        `json:"call_graph"`
 		// ToolchainScan records which Go toolchain this analysis actually ran under.
 		// It is the fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass
 		// itself off as a subject scan.
 		ToolchainScan ToolchainScan `json:"toolchain_scan"`
-	}{Reachability: reachOut, CallGraph: cg, ToolchainScan: toolchainScan}
+	}{Reachability: reachOut, CallGraph: persistCallGraph(cg), ToolchainScan: toolchainScan}
 	reachRef, err := PutArtifact(store, c, s.Name(), artifact.TypeReachability, "reachability (resolved)", reachPayload)
 	if err != nil {
 		return err

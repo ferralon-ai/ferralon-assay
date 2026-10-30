@@ -2,6 +2,8 @@ package assembly
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -36,6 +38,49 @@ type TypeRef struct {
 	IsSpec    bool     // came from a TypeSpec (generic instantiation)
 	SpecBlob  []byte   // TypeSpec signature blob when IsSpec
 	Def       *TypeRef // for a GENERICINST TypeSpec, the generic type it instantiates
+
+	qual    string // nesting-qualified name ("Ns.Outer/Inner") when the type is nested
+	rootAsm string // the assembly a nested TypeRef's scope chain ends at
+}
+
+// Qualified is the type's name qualified by namespace and, for a nested type, by its
+// enclosing types ("Ns.Outer/Inner"): the identity that tells apart two nested types of
+// the same simple name. A GENERICINST TypeSpec is qualified by its generic type.
+func (t TypeRef) Qualified() string {
+	if t.Def != nil {
+		return t.Def.Qualified()
+	}
+	if t.qual != "" {
+		return t.qual
+	}
+	return typeDisplay(t)
+}
+
+// ScopeAssembly is the resolution-scope assembly name, with a nested TypeRef's scope
+// followed through its enclosing TypeRefs to the assembly ("" for this assembly or when
+// the chain does not end at one).
+func (t TypeRef) ScopeAssembly() string {
+	if t.Def != nil {
+		return t.Def.ScopeAssembly()
+	}
+	if t.rootAsm != "" {
+		return t.rootAsm
+	}
+	return t.Scope
+}
+
+// QualifiedName is td's nesting-qualified name, as TypeRef.Qualified spells it.
+func (a *Assembly) QualifiedName(td *TypeDef) string {
+	ns, chain := a.TypePath(td)
+	return qualify(ns, chain)
+}
+
+func qualify(ns string, chain []string) string {
+	name := strings.Join(chain, "/")
+	if ns == "" {
+		return name
+	}
+	return ns + "." + name
 }
 
 // MethodDef is a method defined in this assembly. RVA points at the IL body in the
@@ -64,6 +109,8 @@ type TypeDef struct {
 	Extends    TypeRef
 	Methods    []*MethodDef
 	Interfaces []TypeRef
+
+	fieldList uint32 // first Field row; the range ends at the next type's FieldList
 }
 
 // MethodRef is a MemberRef resolved to a call target the way a call site names it:
@@ -78,6 +125,12 @@ type MethodRef struct {
 	SigBlob     []byte
 	ParentToken Token
 }
+
+// MethodSemanticsAttributes (§II.23.1.12) for a property's accessors.
+const (
+	msSetter = 0x0001
+	msGetter = 0x0002
+)
 
 // MethodImpl is one row of the MethodImpl table (§II.22.27): the .NET-unique
 // explicit-interface body→declaration map. callvirt IFoo.Bar resolves through THIS,
@@ -138,6 +191,7 @@ type Assembly struct {
 	nestTypeByTok map[Token]*TypeDef
 
 	methodsByRID map[uint32]*MethodDef
+	accessors    map[uint32]bool // MethodDef RIDs MethodSemantics binds as a property's getter or setter
 	md           *mdTables
 	pe           *peFile // retained for the IL-body RVA→bytes path (02b's ilBody seam)
 }
@@ -145,6 +199,11 @@ type Assembly struct {
 // MethodByRID resolves a MethodDef RID (e.g. the low bits of a MethodDefOrRef
 // token) to the declared method, or nil.
 func (a *Assembly) MethodByRID(rid uint32) *MethodDef { return a.methodsByRID[rid] }
+
+// PropertyAccessor reports whether the MethodSemantics table binds the MethodDef rid as a
+// property's getter or setter: the method reflection runs for that property, whatever it
+// is named.
+func (a *Assembly) PropertyAccessor(rid uint32) bool { return a.accessors[rid] }
 
 // MemberRef resolves a MemberRef RID to its MethodRef, or nil.
 func (a *Assembly) MemberRef(rid uint32) *MethodRef {
@@ -164,10 +223,20 @@ func (a *Assembly) TypeRefFor(tok Token) TypeRef {
 	rid := tok.RID()
 	switch tok.Table() {
 	case tTypeDef:
-		return TypeRef{Namespace: a.rowStr(tTypeDef, rid, 2), Name: a.rowStr(tTypeDef, rid, 1), Token: tok}
+		tr := TypeRef{Namespace: a.rowStr(tTypeDef, rid, 2), Name: a.rowStr(tTypeDef, rid, 1), Token: tok}
+		if td := a.typeDefByRID(rid); td != nil {
+			if ns, chain := a.TypePath(td); len(chain) > 1 {
+				tr.qual = qualify(ns, chain)
+			}
+		}
+		return tr
 	case tTypeRef:
 		scope := decodeCoded(ciResolutionScope, a.rowVal(tTypeRef, rid, 0))
-		return TypeRef{Scope: a.scopeName(scope), Namespace: a.rowStr(tTypeRef, rid, 2), Name: a.rowStr(tTypeRef, rid, 1), Token: tok}
+		tr := TypeRef{Scope: a.scopeName(scope), Namespace: a.rowStr(tTypeRef, rid, 2), Name: a.rowStr(tTypeRef, rid, 1), Token: tok}
+		if scope.Table() == tTypeRef {
+			tr.qual, tr.rootAsm = a.nestedTypeRefPath(tok)
+		}
+		return tr
 	case tTypeSpec:
 		tr := TypeRef{IsSpec: true, SpecBlob: a.md.blob(a.rowVal(tTypeSpec, rid, 0)), Token: tok}
 		if def, ok := a.genericDefinition(tr.SpecBlob); ok {
@@ -196,6 +265,92 @@ func (a *Assembly) genericDefinition(blob []byte) (TypeRef, bool) {
 		return TypeRef{}, false
 	}
 	return a.TypeRefFor(tok), true
+}
+
+// typeDefByRID returns the TypeDef row rid of this assembly, or nil.
+func (a *Assembly) typeDefByRID(rid uint32) *TypeDef {
+	if rid == 0 || int(rid) > len(a.Types) || a.Types[rid-1].RID != rid {
+		return nil
+	}
+	return &a.Types[rid-1]
+}
+
+// nestedTypeRefPath walks a nested TypeRef's resolution scope through its enclosing
+// TypeRefs, returning its nesting-qualified name (the outermost TypeRef carries the
+// namespace) and the assembly the chain ends at ("" when it does not end at an
+// AssemblyRef).
+func (a *Assembly) nestedTypeRefPath(tok Token) (qual, asm string) {
+	chain := []string{a.rowStr(tTypeRef, tok.RID(), 1)}
+	cur := tok
+	for range 64 { // bounds a malformed cyclic scope chain
+		scope := decodeCoded(ciResolutionScope, a.rowVal(tTypeRef, cur.RID(), 0))
+		if scope.Table() != tTypeRef || scope.IsNull() || int(scope.RID()) > len(a.md.rows[tTypeRef]) {
+			if scope.Table() == tAssemblyRef && !scope.IsNull() {
+				asm = a.rowStr(tAssemblyRef, scope.RID(), 6)
+			}
+			break
+		}
+		cur = scope
+		chain = append(chain, a.rowStr(tTypeRef, cur.RID(), 1))
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return qualify(a.rowStr(tTypeRef, cur.RID(), 2), chain), asm
+}
+
+// DefiningAssembly names the assembly that defines the type tok refers to: this
+// assembly for a TypeDef, the AssemblyRef a TypeRef's resolution scope ends at (a nested
+// TypeRef is scoped to its enclosing TypeRef, so the chain is walked to its root), and
+// the generic type's assembly for a GENERICINST TypeSpec. ok is false when the type's
+// assembly is not named by the metadata: a ModuleRef or null scope, an unresolvable
+// token, or a non-generic TypeSpec.
+func (a *Assembly) DefiningAssembly(tok Token) (string, bool) {
+	switch tok.Table() {
+	case tTypeDef:
+		return a.Name, !tok.IsNull()
+	case tTypeSpec:
+		if tr := a.TypeRefFor(tok); tr.Def != nil {
+			return a.DefiningAssembly(tr.Def.Token)
+		}
+		return "", false
+	case tTypeRef:
+		cur := tok
+		for range 64 { // bounds a malformed cyclic scope chain
+			if cur.IsNull() || int(cur.RID()) > len(a.md.rows[tTypeRef]) {
+				return "", false
+			}
+			scope := decodeCoded(ciResolutionScope, a.rowVal(tTypeRef, cur.RID(), 0))
+			switch scope.Table() {
+			case tTypeRef:
+				cur = scope
+				continue
+			case tAssemblyRef:
+				if scope.IsNull() {
+					return "", false
+				}
+				return a.rowStr(tAssemblyRef, scope.RID(), 6), true
+			case tModule:
+				return a.Name, !scope.IsNull()
+			}
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// FieldOwner returns the TypeDef declaring the Field row rid, from the TypeDef table's
+// FieldList ranges, or nil when rid is out of range or the assembly uses a FieldPtr
+// indirection table (whose ranges index the pointer table, not Field).
+func (a *Assembly) FieldOwner(rid uint32) *TypeDef {
+	if a.md == nil || rid == 0 || rid > a.md.rowCount[tField] || a.md.rowCount[tFieldPtr] > 0 {
+		return nil
+	}
+	i := sort.Search(len(a.Types), func(i int) bool { return a.Types[i].fieldList > rid })
+	if i == 0 {
+		return nil
+	}
+	return &a.Types[i-1]
 }
 
 // Read parses a managed assembly's bytes into the typed model. It never loads the
@@ -332,6 +487,7 @@ func buildModel(pe *peFile, m *mdTables) (*Assembly, error) {
 			Namespace: a.rowStr(tTypeDef, rid, 2),
 			Extends:   a.TypeRefFor(extends),
 			Methods:   owned,
+			fieldList: a.rowVal(tTypeDef, rid, 4),
 		})
 	}
 
@@ -373,6 +529,20 @@ func buildModel(pe *peFile, m *mdTables) (*Assembly, error) {
 		})
 	}
 
+	// MethodSemantics table → property getters and setters (§II.22.28).
+	for rid := uint32(1); rid <= m.rowCount[tMethodSemantics]; rid++ {
+		if a.rowVal(tMethodSemantics, rid, 0)&(msSetter|msGetter) == 0 {
+			continue
+		}
+		if decodeCoded(ciHasSemantics, a.rowVal(tMethodSemantics, rid, 2)).Table() != tProperty {
+			continue
+		}
+		if a.accessors == nil {
+			a.accessors = map[uint32]bool{}
+		}
+		a.accessors[a.rowVal(tMethodSemantics, rid, 1)] = true
+	}
+
 	// NestedClass table.
 	for rid := uint32(1); rid <= m.rowCount[tNestedClass]; rid++ {
 		a.NestedTypes = append(a.NestedTypes, NestedClass{
@@ -401,4 +571,20 @@ func buildModel(pe *peFile, m *mdTables) (*Assembly, error) {
 		return nil, fmt.Errorf("assembly: no Assembly or Module name")
 	}
 	return a, nil
+}
+
+// ReferencesNamespace reports whether any TypeRef row of the assembly names a type in the
+// namespace prefix or one nested under it ("Microsoft.AspNetCore" matches
+// "Microsoft.AspNetCore.Mvc").
+func (a *Assembly) ReferencesNamespace(prefix string) bool {
+	if a.md == nil {
+		return false
+	}
+	for rid := uint32(1); int(rid) <= len(a.md.rows[tTypeRef]); rid++ {
+		ns := a.rowStr(tTypeRef, rid, 2)
+		if ns == prefix || strings.HasPrefix(ns, prefix+".") {
+			return true
+		}
+	}
+	return false
 }

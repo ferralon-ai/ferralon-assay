@@ -73,6 +73,23 @@ func TestVulnerablePackages(t *testing.T) {
 	}
 }
 
+// TestParseFindings_WholeModule: an OSV entry that lists a module with no packages makes the whole
+// module vulnerable, even when another entry of the advisory lists some of its packages.
+func TestParseFindings_WholeModule(t *testing.T) {
+	const stream = `{"osv":{"id":"GO-2025-0001","affected":[{"package":{"name":"golang.org/x/crypto"},"ecosystem_specific":{"imports":[{"path":"golang.org/x/crypto/ssh"}]}},{"package":{"name":"golang.org/x/crypto"}},{"package":{"name":"golang.org/x/net"},"ecosystem_specific":{"imports":[{"path":"golang.org/x/net/http2"}]}}]}}
+{"osv":{"id":"GO-2025-0002","affected":[{"package":{"name":"golang.org/x/text"}}]}}
+`
+	scanned, err := parseFindings([]byte(stream), "GO-2025-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for module, want := range map[string]bool{"golang.org/x/crypto": true, "golang.org/x/net": false, "golang.org/x/text": false} {
+		if got := scanned.wholeModule[module]; got != want {
+			t.Errorf("wholeModule[%q] = %v, want %v", module, got, want)
+		}
+	}
+}
+
 func TestEvidenceResult(t *testing.T) {
 	moduleOnly := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "golang.org/x/net", Version: "v0.1.0"}}}
 	packageOnly := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "golang.org/x/net", Version: "v0.1.0", Package: "golang.org/x/net/html"}}}

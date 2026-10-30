@@ -104,7 +104,7 @@ func TestPRInherit_FastPathCarriesUndeterminedForward(t *testing.T) {
 // finding has to be harvested before the `pkg == nil` skip: a toolchain advisory carries no SBOM
 // package, so the skip would drop it and leave the claim standing.
 func TestReanalyze_FreshUndeterminedReplacesAStaleInheritedVerdict(t *testing.T) {
-	buildDir := writeGoMod(t, "module example.com/target\n\ngo 1.20\n")
+	buildDir := writeGoMod(t, "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20\n")
 	pkg := report.Package{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.6"}
 
 	// A baseline written before the fix: the unestablished safety claim, as a first-class row.

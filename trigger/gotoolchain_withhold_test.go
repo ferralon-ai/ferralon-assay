@@ -237,8 +237,8 @@ func assertNoNotAffected(t *testing.T, r *report.Report, ids ...string) {
 // The v1 predecessor asserted advisories[] was EMPTY. That the same four advisories are now present
 // and countable is the entire value of the bump: `len(advisories)` is the number evaluated again.
 func TestBaseline_UnadjudicableToolchainAdvisoriesAreUndetermined(t *testing.T) {
-	// go 1.20 ⇒ floor go1.20.0, inside the 1.20.x range of all three backports.
-	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.20\n", goToolchainCorpus)
+	// toolchain go1.20 ⇒ floor go1.20.0, inside the 1.20.x range of all three backports.
+	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20\n", goToolchainCorpus)
 
 	want := []string{"CVE-2023-39325", "CVE-2023-45283", "CVE-2024-24790", "GO-2021-0264"}
 	if len(rep.Advisories) != len(want) {
@@ -289,8 +289,8 @@ func TestBaseline_UndeterminedAdvisoriesEmitNoOpenVEXNotAffected(t *testing.T) {
 // DERIVES a not-affected. That is a stronger and honestly grounded claim than the one M2 withdraws, so
 // it is reported as a first-class disqualified finding and is NOT withheld.
 func TestBaseline_DisqualifiedToolchainAdvisoryIsReported(t *testing.T) {
-	// go 1.23 ⇒ floor go1.23.0, at or past every fix in all three backports.
-	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.23\n", goToolchainCorpus)
+	// go 1.23.0 ⇒ floor go1.23.0, at or past every fix in all three backports.
+	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.23.0\n", goToolchainCorpus)
 
 	verdicts := verdictByID(rep)
 	for _, id := range []string{"CVE-2023-39325", "CVE-2023-45283", "CVE-2024-24790"} {
@@ -308,18 +308,23 @@ func TestBaseline_DisqualifiedToolchainAdvisoryIsReported(t *testing.T) {
 
 // TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges runs GO-2021-0264 as the built-in table
 // carries it: fixed go1.16.10 and go1.17.3. A floor past both disqualifies it; a floor inside the
-// 1.17.x range leaves it undetermined.
+// 1.17.x range leaves it undetermined. A go directive below 1.21 is no floor at all — go1.16.5 may
+// have built a `go 1.17` module — so with nothing else established the toolchain is unresolved and
+// the advisory is undetermined for that reason, never disqualified off the directive.
 func TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges(t *testing.T) {
 	stdlib := []assessment.VulnRef{{ID: "GO-2021-0264", Source: "corpus"}}
 	table := pipeline.WithAdvisorySource(pipeline.NewTableSource())
 
-	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.21\n", stdlib, table)
+	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.21.0\n", stdlib, table)
 	if got := verdictByID(rep)["GO-2021-0264"]; got != report.VerdictDisqualified {
-		t.Errorf("go 1.21: GO-2021-0264 verdict = %q, want %q", got, report.VerdictDisqualified)
+		t.Errorf("go 1.21.0: GO-2021-0264 verdict = %q, want %q", got, report.VerdictDisqualified)
 	}
 
-	rep = runGoBaseline(t, "module example.com/target\n\ngo 1.17\n", stdlib, table)
+	rep = runGoBaseline(t, "module example.com/target\n\ngo 1.17\n\ntoolchain go1.17.0\n", stdlib, table)
 	assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainNotScanned)
+
+	rep = runGoBaseline(t, "module example.com/target\n\ngo 1.17\n", stdlib, table)
+	assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainUnresolved)
 }
 
 // TestBaseline_ShippedActionSurfaceDisposition pins what a real Action run now produces, because that
@@ -361,7 +366,7 @@ func TestBaseline_ShippedActionSurfaceDisposition_TrustOptedIn(t *testing.T) {
 // behavior this run produced those three disqualifications from a version that described the runner
 // image rather than the subject — an OpenVEX not_affected for a build still exposed.
 func TestBaseline_ShippedActionSurfaceDisposition_NoConfigDefault(t *testing.T) {
-	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.20\n", goToolchainCorpus,
+	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20\n", goToolchainCorpus,
 		pipeline.WithSubjectToolchain("", "go1.26.4", false))
 
 	got := undeterminedByReason(rep)[report.ReasonGoToolchainNotScanned]

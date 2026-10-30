@@ -2,6 +2,7 @@ package projection_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/projection"
@@ -48,7 +49,8 @@ func statementFor(t *testing.T, r report.Report) projection.VEXStatement {
 // "the vulnerable code is not present" is a claim nothing in the run supports.
 //
 // not_affected is still correct and stays (the status is verdict-driven, inv. 5). Only the
-// justification is withheld, which OpenVEX §3.2 permits.
+// justification is withheld. The OpenVEX spec requires a not_affected statement to carry a
+// justification or an impact_statement, so the impact_statement says no basis was recorded.
 func TestReportVEX_UnadjudicatedDisqualificationHasNoJustification(t *testing.T) {
 	s := statementFor(t, disqualReport(t, verdict.BasisNone,
 		"the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed"))
@@ -59,6 +61,9 @@ func TestReportVEX_UnadjudicatedDisqualificationHasNoJustification(t *testing.T)
 	if s.Justification != "" {
 		t.Errorf("justification = %q, want none: no axis adjudicated this advisory against the subject",
 			s.Justification)
+	}
+	if !strings.Contains(s.ImpactStatement, "no basis") {
+		t.Errorf("impact_statement = %q, want it to say no basis was recorded", s.ImpactStatement)
 	}
 }
 

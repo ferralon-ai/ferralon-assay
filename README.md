@@ -79,6 +79,19 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
+A JavaScript scan reads its dependencies' code by default: it fetches each package the lockfile
+pins and reads it only once it matches the lockfile's integrity hash. The Action keeps those
+packages in a cache keyed on your lockfiles, so an unchanged lock fetches them again only where it
+must: on a private or internal repository it caches every package; on a public repository it
+never caches a package from a registry your `.npmrc` holds an auth entry for, and fetches those on
+every run. `persist-dependency-cache` overrides this (`always`, `never`). Set `dependency-code: off`
+to skip the fetch, or `offline` to read only a cache already on the runner.
+If the fetch fails (an unreachable registry, a missing token, a timeout), the scan reports what it
+would with `off` and the Report says why, under `dependency_code` and a
+`tool_failure:dependency_code_unavailable` note. Before a pull-request job exports a registry
+token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
+receives it, and what the cache exposes.
+
 **`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
 `vX.Y.Z` scanner it was cut with, so `@v0.5` fetches the scanner of the patch it currently points at.
@@ -199,6 +212,17 @@ subject module graph against `proxy.golang.org`, and the Go analyzer's uncached 
 `vuln.go.dev` vulnerability database on every run (see [Network egress](#network-egress) and
 [docs/threat-model.md](docs/threat-model.md)). Both scale with the size of the target's module
 graph and dependency set, so timing varies by repository rather than being fixed by the tool.
+
+### Limiting scan time
+
+Set `scan-timeout` (for example `30m`; on the command line, the `-scan-timeout` flag or the
+`ASSAY_SCAN_TIMEOUT` environment variable) to bound a scan. The limit counts from the start of the
+scan. Analysis stops early enough to publish the report, and every advisory the scan did not reach is
+reported as not assessed, never as safe; the report headline says the scan was cut short. Set it
+below the job's `timeout-minutes`, leaving room for the steps that run before the scan, including the
+Action's own setup, so the scan ends itself first. With no `scan-timeout` there is no limit, but a job timeout or cancellation still
+stops analysis and gives the scan a few seconds to publish what it assessed. The Action's
+`scan-truncated` output is `true` when either happened.
 
 ## Advisory corpus
 
@@ -341,19 +365,27 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 
 ## Network egress
 
-**Your code and your credentials never leave the runner.** No run mode is offline: a default
+**Your code never leaves the runner, and a registry token leaves it only for the npm registry
+host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a default
 `baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
 `api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
 GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. A JS scan run with `-dependency-code=fetch` (off by default) also fetches each
-lock-pinned package tarball by name and version from the configured registry (the repository's
+signature. A JS scan also fetches each lock-pinned package tarball by name and version from the
+configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
-is presented only to the host it is bound to. Fetch mode trusts the repository's `.npmrc` with
-those token variables, exactly as `npm ci` does. What any of this carries is dependency metadata — module paths,
+is presented only to the host it is bound to. Fetch is the default, and the scanned branch's
+`.npmrc` chooses that host, exactly as with `npm ci`: a branch that rewrites its `.npmrc` sends any
+of those tokens the job exports to the host it names. To keep tokens out of a scan, set
+`dependency-code: off`, or don't export `NODE_AUTH_TOKEN`/`NPM_TOKEN` on pull-request jobs. On a
+private or internal repository the Action saves the fetched tarballs, private packages included, to
+the GitHub Actions cache, where any workflow run allowed to restore it can read them. On a public
+repository, where pull-request workflows from forks can restore default-branch caches, a tarball
+from a registry the `.npmrc` holds an auth entry for is never written to the cached directory;
+`persist-dependency-cache: always` caches it anyway and exposes it to them. What any of this carries is dependency metadata — module paths,
 versions, package coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 
@@ -361,8 +393,9 @@ versions, package coordinates — never source, never analysis results. The full
 
 Nothing in this repository opens pull requests against yours, and no automation here rewrites the
 `uses: ferralon-ai/ferralon-assay@…` ref on your workflow line. That ref is yours to move — or to let
-float. Open [`action.yml`](action.yml): the composite action has exactly three steps — fetch the
-scanner (verifying its checksum only if you pinned one), fetch the advisory corpus, and run the scan.
+float. Open [`action.yml`](action.yml): the composite action's steps fetch the
+scanner (verifying its checksum only if you pinned one), fetch the advisory corpus, restore the
+dependency code cache (on a private repository, by default), and run the scan.
 None of them write to a workflow file or open anything against your repository.
 
 Whether you pin the ref or track a moving one, the scanner is fetched from the release named by

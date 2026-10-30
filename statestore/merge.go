@@ -18,6 +18,13 @@ import (
 //     timestamps) keep mine, since mine is the write being retried.
 //   - SBOM / Subject / Provenance: taken from whichever Report has the later
 //     provenance timestamp (the more recent full scan describes the current tree).
+//     The one exception is Provenance.Intel.SignalsDigest: the union can carry a row
+//     the later Report's signals file never ranked, so when any merged row came from a
+//     Report that recorded a different digest (or none) than the later Report did, the
+//     digest is left empty rather than naming a file that did not rank that row. This
+//     holds for unranked rows too: a row with no Priority under a named file reads as
+//     "the file holds no usable signal for this advisory (no record, or a refused
+//     join)", which only the file that ranked it can say.
 //   - Cursor: the later Report's cursor (it advanced with the newer scan); if the
 //     winner has no Report, mine's cursor is kept.
 //   - VEXLog: append-union — base's log followed by any of mine's entries not
@@ -81,16 +88,19 @@ func mergeReports(base, mine *report.Report) *report.Report {
 
 	type key struct{ id, source string }
 	chosen := make(map[key]report.AdvisoryFinding)
+	from := make(map[key]*report.Report)
 	order := []key{}
-	add := func(f report.AdvisoryFinding, ts func(report.AdvisoryFinding) bool) {
+	add := func(f report.AdvisoryFinding, src *report.Report, ts func(report.AdvisoryFinding) bool) {
 		k := key{f.Advisory.ID, f.Advisory.Source}
 		if prev, ok := chosen[k]; ok {
 			if ts(prev) {
 				chosen[k] = f
+				from[k] = src
 			}
 			return
 		}
 		chosen[k] = f
+		from[k] = src
 		order = append(order, k)
 	}
 	// Seed with the secondary, then let the primary override on equal-or-later
@@ -100,20 +110,14 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	// is strictly later — equal overall keeps base as primary, so base's findings win
 	// ties, matching "the committed winner stands unless mine is newer".
 	for _, f := range secondary.Advisories {
-		add(f, func(report.AdvisoryFinding) bool { return false })
+		add(f, secondary, func(report.AdvisoryFinding) bool { return false })
 	}
 	primaryNewer := primary.Provenance.Timestamp.After(secondary.Provenance.Timestamp) ||
 		primary.Provenance.Timestamp.Equal(secondary.Provenance.Timestamp)
 	for _, f := range primary.Advisories {
-		add(f, func(report.AdvisoryFinding) bool { return primaryNewer })
+		add(f, primary, func(report.AdvisoryFinding) bool { return primaryNewer })
 	}
 
-	b := report.NewBuilder(primary.Subject).
-		AddPackages(primary.SBOM.Packages...).
-		WithProvenance(primary.Provenance)
-	if primary.Baseline != nil {
-		b.WithBaseline(*primary.Baseline)
-	}
 	// A source-less `undetermined` row is what report.Upgrade produces from a stored v1
 	// document's withheld-advisory list — a v1 partiality note named the id alone, so the
 	// migrated row has no source to key on. When the other side evaluated the same advisory
@@ -125,14 +129,31 @@ func mergeReports(base, mine *report.Report) *report.Report {
 			sourced[k.id] = struct{}{}
 		}
 	}
+	kept := make([]key, 0, len(order))
 	for _, k := range order {
-		f := chosen[k]
-		if k.source == "" && f.Verdict == report.VerdictUndetermined {
+		if k.source == "" && chosen[k].Verdict == report.VerdictUndetermined {
 			if _, ok := sourced[k.id]; ok {
 				continue
 			}
 		}
-		b.AddFinding(f)
+		kept = append(kept, k)
+	}
+
+	prov := primary.Provenance
+	for _, k := range kept {
+		if signalsDigestOf(from[k]) != signalsDigestOf(primary) {
+			prov.Intel = withoutSignalsDigest(prov.Intel)
+			break
+		}
+	}
+	b := report.NewBuilder(primary.Subject).
+		AddPackages(primary.SBOM.Packages...).
+		WithProvenance(prov)
+	if primary.Baseline != nil {
+		b.WithBaseline(*primary.Baseline)
+	}
+	for _, k := range kept {
+		b.AddFinding(chosen[k])
 	}
 	// Partiality is UNIONED, not taken from the primary: the merged advisory set is a
 	// union too, so a limit that bound the secondary's findings still bounds them here.
@@ -142,6 +163,30 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	b.AddPartiality(secondary.Partiality...)
 	merged := b.Build()
 	return &merged
+}
+
+// signalsDigestOf is the signals file r records having ranked its rows with; empty when it records
+// none.
+func signalsDigestOf(r *report.Report) string {
+	if r.Provenance.Intel == nil {
+		return ""
+	}
+	return r.Provenance.Intel.SignalsDigest
+}
+
+// withoutSignalsDigest returns a copy of in with SignalsDigest cleared, leaving in untouched. When
+// nothing else is left in the copy it returns nil: trigger.Run* writes a block holding the digest
+// alone, and no digest means no Intel block, as it does on a run with no signals.
+func withoutSignalsDigest(in *report.IntelProvenance) *report.IntelProvenance {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.SignalsDigest = ""
+	if out == (report.IntelProvenance{}) {
+		return nil
+	}
+	return &out
 }
 
 func laterCursor(base, mine *State) string {

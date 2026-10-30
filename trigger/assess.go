@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -63,8 +64,9 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
-//   - otherwise (no disqualification, no reach, grounds named) → VerdictNotExploitable,
-//     basis symbol-absent (the vulnerable symbol/path was not found).
+//   - otherwise (no disqualification, no reach, grounds named) → VerdictNotExploitable, on the
+//     basis the grounds name: symbol-unreachable when the code is installed and nothing reaches it
+//     (no path, or no loaded module imports its package), symbol-absent when it is not in the build.
 //
 // The OSS tool stops at reachable_candidate; it never emits exploitable/reasoned_*.
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
@@ -166,10 +168,11 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// answers it.
 		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
 		// An advisory whose package no module of the build holds rests on a search of every
-		// module's source rather than on a path or a symbol inside a package. It still needs every
-		// step to have run: a run that loads code from outside the build list (plugin_load) can
-		// hold the advisory's code with no module declaring it.
-		if !undetermined {
+		// module's source rather than on a path or a symbol inside a package, so a limit of the
+		// path search does not hold it (outsideBuildExempt). Every other step must have run: a run
+		// that loads code from outside the build list (plugin_load) can hold the advisory's code
+		// with no module declaring it.
+		if !outsideBuildBlocked(store, assessmentID, pkg) {
 			detail, unvetted, ok := outsideBuildGrounds(store, assessmentID, pkg, mods)
 			if ok {
 				f = report.AdvisoryFinding{
@@ -184,8 +187,10 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 		}
 		detail, groundsReason, grounded := "", "", false
+		var basis verdict.NonExploitableBasis
+		var assumptions []string
 		if !undetermined {
-			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
+			detail, groundsReason, basis, assumptions, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
 			if !grounded {
 				reason, undetermined = groundsReason, true
 			}
@@ -205,8 +210,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			Package:  pkg,
 			Verdict:  report.VerdictNotExploitable,
 			Evidence: report.EvidenceSummary{
-				Basis:  verdict.BasisSymbolAbsent,
-				Detail: detail,
+				Basis:       basis,
+				Detail:      detail,
+				Assumptions: assumptions,
 			},
 		}
 	}
@@ -567,6 +573,20 @@ func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRe
 		}
 	}
 	b.WithPriority(func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig, claims) })
+}
+
+// withSignals records, on the provenance p a run is about to hand its Builder, which signals file
+// ranked the run's rows: Provenance.Intel.SignalsDigest is sig's Digest, which Load and Parse set only
+// after recomputing it from the file's payload. Every run that ranks with a request's Signals passes
+// its provenance through here, so a library caller's Report names the file as the CLI's does. With no
+// signals p is returned as it came: no Intel block, no digest. Disclosure only (inv. 5): nothing that
+// decides a verdict reads it.
+func withSignals(p report.Provenance, sig *intel.Signals) report.Provenance {
+	if sig == nil || sig.Digest == "" {
+		return p
+	}
+	p.Intel = &report.IntelProvenance{SignalsDigest: sig.Digest}
+	return p
 }
 
 // reachabilityEvidence derives the structured reachability evidence for a candidate
@@ -946,7 +966,7 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 	// path was found; that absence REFUTES only if the steps which would have found one actually
 	// ran. A did-not-run limit on this assessment says they did not — the analyzer resolved no
 	// dependency version, or resolved no symbol, or had no manifest to read — so
-	// `vulnerable_symbol_absent` would be a refutation asserted on evidence that does not exist.
+	// a not_exploitable basis would be a refutation asserted on evidence that does not exist.
 	//
 	// It is derived from the basis THIS assessment recorded (report.ClassifyPartialityReason over
 	// the limits the run declared), never from the language and never from a per-language table.
@@ -981,9 +1001,29 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // The reason is analysis_did_not_run, except when the only did-not-run limit is the analyzer
 // declaring it does not know the advisory: that is the more precise statement of the same fact.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
-	if cg, ok := callGraphResult(store, assessmentID); ok && len(cg.Edges) == 0 && !cg.Partiality.Complete {
+	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
+	reasons := didNotRunReasons(store, assessmentID, pkg)
+	switch {
+	case len(reasons) == 0:
+		return "", false
+	case !slices.ContainsFunc(reasons, func(r string) bool { return r != plugin.PartialReasonAdvisoryUnknownToAnalyzer }):
+		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	}
+	return report.ReasonAnalysisDidNotRun, true
+}
+
+// emptyGraphUncalledComplete reports whether the call graph is empty and the analyzer declined to
+// call it complete: a search that did not happen (see analysisDidNotRun).
+func emptyGraphUncalledComplete(store artifact.Store, assessmentID string) bool {
+	cg, ok := callGraphResult(store, assessmentID)
+	return ok && len(cg.Edges) == 0 && !cg.Partiality.Complete
+}
+
+// didNotRunReasons returns the did-not-run limits analysisDidNotRun weighs for this assessment, in
+// the order they were declared.
+func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Package) []string {
 	reasons := footprintPartialityFlags(store, assessmentID)
 	if len(reasons) == 0 {
 		if inv, ok := inventory(store, assessmentID); ok {
@@ -1003,23 +1043,42 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	if res, err := pipeline.VulnerableSymbols(store, assessmentID); err == nil {
 		absent = len(targetConditionalAbsent(pipeline.AdvisorySymbols(store, assessmentID), pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)) > 0
 	}
-	didNotRun, unknownOnly := false, true
+	var out []string
 	for _, reason := range reasons {
 		if absent && reason == plugin.PartialReasonAdvisorySymbolUnresolved {
 			continue
 		}
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
-			didNotRun = true
-			unknownOnly = unknownOnly && reason == plugin.PartialReasonAdvisoryUnknownToAnalyzer
+			out = append(out, reason)
 		}
 	}
-	switch {
-	case !didNotRun:
-		return "", false
-	case unknownOnly:
-		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	return out
+}
+
+// outsideBuildExempt holds the did-not-run limits that cannot undermine outsideBuildGrounds. Those
+// grounds are not a search for a path: they rest on the build's module list (`go mod graph`, see
+// goModulesOf) and on reading every .go file of every listed module (the Go lane's ModuleSearch,
+// the only producer of one). A limit of the call-graph search leaves both intact. Any limit not
+// listed here, a future one included, blocks the grounds.
+var outsideBuildExempt = map[string]bool{
+	// govulncheck's silence about a module outside the graph it loads; the module search does not
+	// consult govulncheck.
+	plugin.PartialReasonAdvisoryUnknownToAnalyzer: true,
+	// A reflective call runs only code compiled into the build, which comes from a listed module.
+	plugin.PartialReasonReflectiveCall: true,
+	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
+	// every .go file whatever its build constraints.
+	plugin.PartialReasonExcludedFiles: true,
+}
+
+// outsideBuildBlocked reports whether a step outsideBuildGrounds rests on may not have run: the
+// Go toolchain axis is undetermined, the call graph is empty and not called complete, or a
+// did-not-run limit outside outsideBuildExempt was declared.
+func outsideBuildBlocked(store artifact.Store, assessmentID string, pkg *report.Package) bool {
+	if _, ok := toolchainUndetermined(store, assessmentID); ok || emptyGraphUncalledComplete(store, assessmentID) {
+		return true
 	}
-	return report.ReasonAnalysisDidNotRun, true
+	return slices.ContainsFunc(didNotRunReasons(store, assessmentID, pkg), func(r string) bool { return !outsideBuildExempt[r] })
 }
 
 // scopedLimitCounts reports whether a scoped limit counts against an advisory admitted on the given
@@ -1033,20 +1092,18 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 //     The one non-PURL value allowed is "", the first-party code.
 //   - Go names match when either path is the other or under it, so a package path inside the
 //     admitted module counts, and so does a module path holding an admitted package path.
-//   - Against the Go standard library (a toolchain subject), every Go entry and the first-party code
-//     count: code the analysis did not see can call into the standard library from anywhere in the
-//     build.
 //
-// Otherwise the first-party entry matches only when the advisory's package is the scanned project
-// itself.
+// The standard library is matched like any other package: a limit whose hidden code can call into
+// it names it among its Targets, as the Targets contract requires of every package a hidden edge
+// could reach. The first-party entry matches only when the advisory's package is the scanned
+// project itself.
 func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved, root bool) bool {
 	if len(r.Targets) == 0 || !resolved {
 		return true
 	}
-	stdlib := admitted == pkgKey{typ: "golang", name: "stdlib"}
 	for _, p := range append([]string{r.Package}, r.Targets...) {
 		if p == "" {
-			if stdlib || root {
+			if root {
 				return true
 			}
 			continue
@@ -1056,7 +1113,7 @@ func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolve
 		case !ok, key == admitted:
 			return true
 		case key.typ == "golang" && admitted.typ == "golang":
-			if stdlib || goPathWithin(key.name, admitted.name) || goPathWithin(admitted.name, key.name) {
+			if goPathWithin(key.name, admitted.name) || goPathWithin(admitted.name, key.name) {
 				return true
 			}
 		}
@@ -1079,7 +1136,7 @@ func goPathWithin(p, root string) bool {
 //   - The subject's toolchain must NOT have been scanned (M4). This is the clause that LIFTS the
 //     undetermined verdict rather than adding to it: once the analysis has actually run under an
 //     exact subject toolchain, the empty path set IS evidence about the subject, and
-//     not_exploitable/vulnerable_symbol_absent becomes the established claim it always purported
+//     not_exploitable/vulnerable_symbol_unreachable becomes the established claim it always purported
 //     to be.
 //
 // What is left is the empty path set govulncheck produced against the ANALYZER's Go rather than

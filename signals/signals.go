@@ -22,11 +22,11 @@
 // digest loads. Before loading a file you fetched, verify it against the corpus release's signed
 // bundles.json.
 //
-// THE RUN DOES NOT YET RECORD WHICH FILE IT RANKED WITH. trigger.Run* ranks findings with the
-// signals a request was fed, but does not set Report.Provenance.Intel.SignalsDigest
-// (report.IntelProvenance), the field that names that file. Until it does, set it yourself on the
-// Report the run returns, as the CLI does: allocate Provenance.Intel if it is nil, and set
-// SignalsDigest to the Digest of the *Signals you fed. Example shows it.
+// THE RUN RECORDS WHICH FILE IT RANKED WITH. trigger.Run* sets Report.Provenance.Intel.SignalsDigest
+// (report.IntelProvenance) to the Digest of the *Signals the request was fed, the value Load and
+// Parse verified; a request fed none leaves it empty. The caller sets nothing. The rest of
+// Provenance.Intel (how the work set was chosen, where the advisory facts came from) is the
+// command line's own disclosure and is not set by a library run.
 //
 // A nil *Signals is valid and holds nothing: a request given nil Signals reports no priority on
 // any finding. Signals are ranking context only; nothing that decides a verdict reads them.
@@ -147,8 +147,8 @@ type Request interface {
 	*trigger.BaselineRequest | *trigger.PRInheritRequest | *trigger.CVEWatchRequest
 }
 
-// Feed gives req the signals its run ranks findings with: s, or none for a nil s. The run does not
-// record s's Digest on its Report (see the package doc).
+// Feed gives req the signals its run ranks findings with: s, or none for a nil s. The run records
+// s's Digest on its Report as Provenance.Intel.SignalsDigest (see the package doc).
 func Feed[R Request](req R, s *Signals) {
 	switch r := any(req).(type) {
 	case *trigger.BaselineRequest:

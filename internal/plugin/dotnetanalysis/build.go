@@ -36,6 +36,11 @@ const partialReasonRIDUnknown = "reachability_undetermined:runtime_identifier_un
 // build's outputs record more than one runtime.
 const partialReasonRIDAmbiguous = "reachability_undetermined:runtime_identifier_ambiguous"
 
+// partialReasonRuntimeTargetAbsent: the build's outputs name a runtime restore wrote no
+// "<tfm>/<rid>" target for, so the packages that runtime's graph adds or re-versions are not
+// known.
+const partialReasonRuntimeTargetAbsent = "reachability_undetermined:runtime_target_absent"
+
 // partialReasonRestoreUntrusted: the restore output the IL tier loads dependencies from isn't
 // trusted for the project it sits beside (AssetsTrusted), so the dependency bytes may not be
 // the ones the next restore installs.
@@ -49,6 +54,7 @@ type firstPartyBuild struct {
 	assetsPath string             // where assets was read from
 	target     string             // the assets targets key fp binds to; "" when unbound or no assets
 	runtime    assembly.Runtime   // the runtime fp's copies were built for
+	rids       []string           // every runtime fp's copies record, sorted; none for a portable build
 	reasons    []string           // run-wide limits from the layout
 }
 
@@ -95,7 +101,11 @@ func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 	}
 	for rid := range rids {
 		b.runtime.RID = rid
+		if rid != "" {
+			b.rids = append(b.rids, rid)
+		}
 	}
+	sort.Strings(b.rids)
 	if len(rids) > 1 {
 		b.runtime = assembly.Runtime{Ambiguous: true}
 	}

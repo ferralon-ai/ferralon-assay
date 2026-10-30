@@ -116,6 +116,8 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"[dependency-groups] unlocked", map[string]string{"pyproject.toml": exPyproject + "[dependency-groups]\ndev = [\"pyjwt>=2\"]\n"}, false},
 		{"[dependency-groups] locked, with include-group", map[string]string{"pyproject.toml": exPyproject + "[dependency-groups]\ndev = [\"jinja2\", {include-group = \"base\"}]\nbase = [\"flask\"]\n"}, true},
 		{"[dependency-groups] unreadable entry", map[string]string{"pyproject.toml": exPyproject + "[dependency-groups]\ndev = [\"=bad\"]\n"}, false},
+		{"[dependency-groups] include of an unknown group", map[string]string{"pyproject.toml": exPyproject + "[dependency-groups]\ndev = [\"jinja2\", {include-group = \"base\"}]\n"}, false},
+		{"[dependency-groups] include cycle", map[string]string{"pyproject.toml": exPyproject + "[dependency-groups]\ndev = [\"jinja2\", {include-group = \"base\"}]\nbase = [\"flask\", {include-group = \"dev\"}]\n"}, false},
 		{"[tool.uv] dev-dependencies unlocked", map[string]string{"pyproject.toml": exPyproject + "[tool.uv]\ndev-dependencies = [\"pyjwt\"]\n"}, false},
 		{"[tool.poetry.dependencies] unlocked", map[string]string{"pyproject.toml": exPyproject + "[tool.poetry.dependencies]\npython = \"^3.12\"\npyjwt = \"^2\"\n"}, false},
 		{"[tool.poetry.dependencies] locked", map[string]string{"pyproject.toml": exPyproject + "[tool.poetry.dependencies]\npython = \"^3.12\"\nflask = { version = \"^3\" }\n"}, true},
@@ -175,9 +177,11 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 				files[k] = v
 			}
 			r := resolveVersion(t, writeTree(t, files), "PyJWT")
-			// An installed copy is a found match of its own (installedCopies); no other row
+			// An installed copy is a found match of its own (installedCopies), and so is an
+			// unlocked declaration in a row whose pyproject.toml names PyJWT; no other row
 			// holds PyJWT anywhere.
-			if r.Found && r.Match.Source != "site-packages" {
+			declared := strings.Contains(strings.ToLower(tt.files["pyproject.toml"]), "pyjwt")
+			if r.Found && r.Match.Source != "site-packages" && (r.Match.Source != "pyproject.toml" || r.Match.Resolved || !declared) {
 				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
 			}
 			if r.Exhaustive != tt.want {

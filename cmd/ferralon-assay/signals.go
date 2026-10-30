@@ -7,9 +7,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // defaultSignalsMaxAge is the age past which the run summary warns that the newest EPSS value in
@@ -65,6 +67,9 @@ func (f *runFlags) resolveSignals() error {
 	return nil
 }
 
+// noSignalsPriority ends signalsSummary's line for a run that loaded no signals file.
+const noSignalsPriority = "; no finding carries EPSS/KEV priority"
+
 // signalsSummary is the run summary's one line about signals, as of now: which file the findings
 // were ranked with, the date of its newest EPSS value, and how many of its EPSS values are older
 // than -advisory-signals-max-age — with a warning, never a failure, when the newest is older than
@@ -79,7 +84,7 @@ func (f *runFlags) signalsSummary(now time.Time) string {
 		if f.signalsOrigin != "" {
 			why = f.signalsOrigin
 		}
-		return "none — " + why + "; no finding carries EPSS/KEV priority"
+		return "none — " + why + noSignalsPriority
 	}
 	line := fmt.Sprintf("%s (%s, %d record(s))", f.signalsOrigin, sig.Digest, sig.Records())
 	newest, ok := sig.NewestEPSSAsOf()
@@ -100,6 +105,45 @@ func (f *runFlags) signalsSummary(now time.Time) string {
 		line += " — WARNING: stale, over half the EPSS values are older than the " + bound + " bound" + loaded
 	}
 	return line
+}
+
+// publishedSignalsSummary is signalsSummary checked against rep, the Report as published. The two
+// name the same file unless a conflicting write merged this run's rows with another run's: the
+// merged Report then names no file when a kept row came from a run that did not share this one's,
+// or the other run's file when that file ranked every kept row. Either way the line says so rather
+// than reading as "the published findings were ranked with this run's file". When this run loaded no
+// file but a published row carries a Priority, that row was ranked by another run's file — named by
+// the Report, or not when the merge cleared it — so the line drops its "no finding carries EPSS/KEV
+// priority" tail.
+func (f *runFlags) publishedSignalsSummary(rep *report.Report, now time.Time) string {
+	line := f.signalsSummary(now)
+	var loaded, published string
+	if f.resolvedSignals != nil {
+		loaded = f.resolvedSignals.Digest
+	}
+	if rep.Provenance.Intel != nil {
+		published = rep.Provenance.Intel.SignalsDigest
+	}
+	if published == loaded && (loaded != "" || !anyPriority(rep)) {
+		return line
+	}
+	if loaded == "" {
+		line = strings.TrimSuffix(line, noSignalsPriority)
+	}
+	if published == "" {
+		return line + "; merged with another run's rows on a conflicting write, so the published Report names no signals file"
+	}
+	return line + "; merged with another run's rows on a conflicting write, so the published Report names that run's signals file instead (" + published + ")"
+}
+
+// anyPriority reports whether any of rep's findings carries a Priority.
+func anyPriority(rep *report.Report) bool {
+	for i := range rep.Advisories {
+		if rep.Advisories[i].Priority != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // formatBound renders a max-age bound in whole days when it is one ("7d"), else as a duration.

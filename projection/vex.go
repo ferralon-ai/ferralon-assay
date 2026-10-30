@@ -31,10 +31,10 @@ const (
 	VEXStatusFixed              = "fixed"
 )
 
-// VEXJustification values per OpenVEX §3.2 (not_affected justifications).
+// VEXJustification values from the OpenVEX spec's "Status Justifications" labels.
 const (
 	VEXJustNotPresent        = "vulnerable_code_not_present"
-	VEXJustNotReachable      = "vulnerable_code_not_reachable"
+	VEXJustNotInExecutePath  = "vulnerable_code_not_in_execute_path"
 	VEXJustInlineMitigations = "inline_mitigations_already_exist"
 )
 
@@ -55,7 +55,9 @@ type VEXStatement struct {
 	Vulnerability VEXVulnerability `json:"vulnerability"`
 	Products      []VEXProduct     `json:"products"`
 	Status        string           `json:"status"`
-	// Justification is set only for not_affected statements (OpenVEX §3.2).
+	// Justification is set only for not_affected statements. The OpenVEX spec ("Statement
+	// Fields") requires a not_affected statement to carry a justification or an
+	// ImpactStatement.
 	Justification string `json:"justification,omitempty"`
 	// ImpactStatement is free text elaborating the status (used for reasoned leans).
 	ImpactStatement string `json:"impact_statement,omitempty"`

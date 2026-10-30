@@ -239,7 +239,8 @@ func parseYarnList(t *testing.T, native, lock []byte) (nodes, edges map[string]b
 	}
 	// descriptor "name@range" → resolved version, from the committed yarn.lock.
 	table := map[string]string{}
-	for _, b := range parseYarnClassic(lock) {
+	blocks, _ := parseYarnClassic(lock)
+	for _, b := range blocks {
 		for _, d := range b.descriptors {
 			table[d] = b.version
 		}

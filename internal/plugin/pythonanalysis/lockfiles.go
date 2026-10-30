@@ -4,8 +4,7 @@ package pythonanalysis
 // edges).
 //
 // Both formats are TOML built around a "[[package]]" array-of-tables carrying a package's
-// name, exact pinned version, dependency edges, and artifact hashes. Unlike poetry.lock —
-// which the lexical tomlString path reads only for flat scalars — E4 must read the dependency
+// name, exact pinned version, dependency edges, and artifact hashes. E4 must read the dependency
 // edges and hashes, which live in multi-line arrays and inline tables (array-of-strings for
 // pdm, array-of-inline-tables for uv). A partial hand-rolled TOML reader for those is exactly
 // the fragile reimplementation OQ2 ruled against, so parsing goes through the L0-approved
@@ -50,18 +49,22 @@ type pdmPackage struct {
 	Marker       string    `toml:"marker"` // optional package-level environment marker
 	Dependencies []string  `toml:"dependencies"`
 	Files        []pdmFile `toml:"files"`
-	// A package installed from a VCS checkout, a URL or a local path carries git, url or path
-	// (editable = true marks a path installed in place) instead of index files.
+	// A package installed from a VCS checkout, a URL or a local path carries its VCS kind
+	// (git, hg, svn, bzr), url or path (editable = true marks a path installed in place) instead
+	// of index files.
 	Git      string `toml:"git"`
+	Hg       string `toml:"hg"`
+	Svn      string `toml:"svn"`
+	Bzr      string `toml:"bzr"`
 	URL      string `toml:"url"`
 	Path     string `toml:"path"`
 	Editable bool   `toml:"editable"`
 }
 
-// redirected reports whether the package installs from a git checkout, a URL or a local path
+// redirected reports whether the package installs from a VCS checkout, a URL or a local path
 // rather than an index, so its locked version is not the index release an advisory describes.
 func (p pdmPackage) redirected() bool {
-	return p.Git != "" || p.URL != "" || p.Path != "" || p.Editable
+	return p.Git != "" || p.Hg != "" || p.Svn != "" || p.Bzr != "" || p.URL != "" || p.Path != "" || p.Editable
 }
 
 type pdmFile struct {
@@ -345,16 +348,21 @@ type poetryPackage struct {
 // another index; git, url, file and directory install whatever that ref, archive or tree holds.
 type poetrySource struct {
 	Type string `toml:"type"`
+	URL  string `toml:"url"`
 }
 
 // redirected reports whether the package installs from somewhere other than an index. An
-// unrecognized type counts, since this reader cannot tell what it serves.
+// unrecognized type counts, and so does a url with no type, since this reader cannot tell what
+// either serves.
 func (s poetrySource) redirected() bool {
 	t := strings.TrimSpace(s.Type)
-	return t != "" && t != "legacy"
+	if t == "" {
+		return s.URL != ""
+	}
+	return t != "legacy"
 }
 
-// parsePoetryLock parses a poetry.lock into the selected set for the declared environment,
+// parsePoetryLockSelected parses a poetry.lock into the selected set for the declared environment,
 // reading parent edges from each package's [package.dependencies]. A dependency's markers gate
 // its edge exactly as on pdm/uv (false → inactive, unbound → active). An optional dependency
 // (optional = true, enabled through the parent's [package.extras]) is kept as an edge when the

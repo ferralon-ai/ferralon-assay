@@ -272,7 +272,9 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 }
 
 // poetryDecls reads one [tool.poetry] dependency: a constraint string, an inline table (version,
-// extras, markers, python, optional, or a git/path/url/file source), or an array of such tables.
+// extras, markers, python, optional, a git/path/url/file source, or a named index source), or an
+// array of such tables. A named index counts as a direct reference: this reader cannot see what
+// that index serves under the name.
 func poetryDecls(name string, v any) ([]pyDecl, bool) {
 	if !validProjectName(name) {
 		return nil, false
@@ -284,7 +286,7 @@ func poetryDecls(name string, v any) ([]pyDecl, bool) {
 		return []pyDecl{{Name: n, Specifier: spec}}, ok
 	case map[string]any:
 		d := pyDecl{Name: n}
-		for _, k := range []string{"git", "path", "url", "file"} {
+		for _, k := range []string{"git", "path", "url", "file", "source"} {
 			if _, has := t[k]; has {
 				d.Direct = true
 			}

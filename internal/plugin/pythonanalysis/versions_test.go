@@ -1527,6 +1527,10 @@ func TestResolveVersions_LockSourceRedirect(t *testing.T) {
 		{"pdm editable path", pdm("path = \"./vendor/pyjwt\"\neditable = true\n"), false},
 		{"pdm editable alone", pdm("editable = true\n"), false},
 		{"pdm url", pdm("url = \"https://example.com/pyjwt-2.8.0.tar.gz\"\n"), false},
+		{"pdm hg", pdm("hg = \"https://example.com/pyjwt\"\nrevision = \"abc123\"\n"), false},
+		{"pdm svn", pdm("svn = \"https://example.com/pyjwt\"\n"), false},
+		{"pdm bzr", pdm("bzr = \"https://example.com/pyjwt\"\n"), false},
+		{"poetry source url without type", poetry("\n[package.source]\nurl = \"https://example.com/pyjwt-2.8.0.tar.gz\"\n"), false},
 		// Guards: an index entry is still the index release.
 		{"poetry pypi", poetry(""), true},
 		{"poetry legacy index", poetry("\n[package.source]\ntype = \"legacy\"\nurl = \"https://pypi.example.com/simple\"\nreference = \"internal\"\n"), true},
@@ -1615,5 +1619,24 @@ func TestResolveVersions_PoetryLockDuplicateDisagrees(t *testing.T) {
 	}
 	if len(res.Matches) != 2 {
 		t.Errorf("Matches = %+v, want both locked versions", res.Matches)
+	}
+}
+
+// TestResolveVersions_PoetryIndexSourceUnresolved: a [tool.poetry] dependency pinned to a named
+// index installs whatever that index serves under the name, so even with its legacy lock entry
+// it is no resolved version and its pins are no complete set.
+func TestResolveVersions_PoetryIndexSourceUnresolved(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\n" +
+			"python = \"^3.11\"\npyjwt = { version = \"2.8.0\", source = \"internal\" }\n",
+		"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n\n[package.source]\ntype = \"legacy\"\n" +
+			"url = \"https://pypi.example.com/simple\"\nreference = \"internal\"\n",
+	})
+	res := resolveVersion(t, root, "pyjwt")
+	if res.Match.Resolved {
+		t.Errorf("Match resolved %q, want unresolved", res.Match.Version)
+	}
+	if res.MatchesComplete {
+		t.Errorf("MatchesComplete with %+v, want not", res.Matches)
 	}
 }

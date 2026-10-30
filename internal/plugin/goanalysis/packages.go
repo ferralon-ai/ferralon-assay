@@ -66,6 +66,10 @@ type LoadResult struct {
 	Packages   []*packages.Package
 	Partiality plugin.Partiality
 
+	// members are the packages of the build's other workspace modules that Packages import: code the
+	// build compiles from source, as its own, though the load's patterns name only buildDir's module.
+	members []*packages.Package
+
 	// cgo bounds every cgo boundary in the build (cgoLimits) when cgoBounded; otherwise cgo stays a
 	// run-wide reason.
 	cgo        []plugin.ScopedReason
@@ -136,9 +140,10 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		return nil, fmt.Errorf("go/packages load %q: no packages found", buildDir)
 	}
 
+	members := workspaceMembers(pkgs)
 	part := plugin.Complete()
 	var loadErrs []string
-	for _, p := range pkgs {
+	for _, p := range append(pkgs[:len(pkgs):len(pkgs)], members...) {
 		for _, e := range p.Errors {
 			loadErrs = append(loadErrs, e.Error())
 		}
@@ -174,9 +179,29 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	}
 
 	return &LoadResult{
-		Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil,
-		goVersion: goVersion,
+		Packages: pkgs, Partiality: part, members: members, cgo: cgo, cgoBounded: bounded,
+		cgoUnresolved: cgoErr != nil, goVersion: goVersion,
 	}, nil
+}
+
+// workspaceMembers returns the packages pkgs import, directly or not, from a main module other than
+// pkgs' own: under a go.work every module it uses is a main module the build compiles from source.
+// With GOWORK=off the build's module is the only main module, so there are none.
+func workspaceMembers(pkgs []*packages.Package) []*packages.Package {
+	own := map[string]bool{}
+	for _, p := range pkgs {
+		if p.Module != nil {
+			own[p.Module.Path] = true
+		}
+	}
+	var members []*packages.Package
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Module != nil && p.Module.Main && !own[p.Module.Path] {
+			members = append(members, p)
+		}
+	})
+	sort.Slice(members, func(i, j int) bool { return members[i].PkgPath < members[j].PkgPath })
+	return members
 }
 
 type buildEnvironKey struct{}
@@ -1177,7 +1202,7 @@ func IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest) (plugin.S
 	}
 
 	var syms []plugin.Symbol
-	for _, p := range res.Packages {
+	for _, p := range append(res.Packages[:len(res.Packages):len(res.Packages)], res.members...) {
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
 			obj := scope.Lookup(name)
@@ -1288,6 +1313,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	}
 
 	pkgFilter := packageFromPURL(req.PURL)
+	var moduleFilter string
 	var search *plugin.ModuleSearch
 	wanted := make(map[string]bool, len(req.AdvisorySymbols))
 	for _, s := range req.AdvisorySymbols {
@@ -1311,10 +1337,18 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			}
 		}
 		if !present {
+			// An advisory naming a module whose packages the index holds (a workspace member the
+			// build compiles from source) resolves in that module's packages, not across the program.
+			for _, sym := range index.Symbols {
+				if scipModule(sym.SCIP) == pkgFilter {
+					moduleFilter = pkgFilter
+					break
+				}
+			}
 			// The standard library or a dependency module holds the advisory's package: its code is
 			// not in the index, and a first-party symbol that shares a name with an advisory symbol
 			// is not the advisory's.
-			if isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter) {
+			if moduleFilter == "" && (isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter)) {
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
 			// No loaded package is the advisory's: if no module in the build holds it either,
@@ -1328,6 +1362,9 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	var resolved []plugin.Symbol
 	for _, sym := range index.Symbols {
 		if pkgFilter != "" && sym.Package != pkgFilter {
+			continue
+		}
+		if moduleFilter != "" && scipModule(sym.SCIP) != moduleFilter {
 			continue
 		}
 		if !matchesAdvisorySymbol(sym, wanted) {
@@ -1385,6 +1422,14 @@ func packageFromPURL(purl string) string {
 		}
 	}
 	return path
+}
+
+// scipModule returns the module a SCIP id from scipFromPackage or SCIPString names.
+func scipModule(scip string) string {
+	if f := strings.Fields(scip); len(f) > 2 {
+		return f[2]
+	}
+	return ""
 }
 
 // matchesAdvisorySymbol reports whether sym corresponds to any of the wanted

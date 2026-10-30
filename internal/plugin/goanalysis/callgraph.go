@@ -54,14 +54,18 @@ func buildSSA(res *LoadResult) (*ssaProgram, error) {
 // buildSSAWith builds res's SSA program with create, which decides whose function bodies it holds
 // (ssautil.Packages: the loaded packages'; ssautil.AllPackages: their dependencies' too).
 func buildSSAWith(res *LoadResult, create func([]*packages.Package, ssa.BuilderMode) (*ssa.Program, []*ssa.Package)) (*ssaProgram, error) {
-	prog, pkgs := create(res.Packages, ssa.InstantiateGenerics)
+	// The workspace members' bodies are the build's own code, so they are built too; the roots and
+	// govulncheck's entries stay the loaded packages'.
+	loaded := append(res.Packages[:len(res.Packages):len(res.Packages)], res.members...)
+	prog, pkgs := create(loaded, ssa.InstantiateGenerics)
 	if prog == nil {
 		return nil, fmt.Errorf("ssa: failed to create program from loaded packages")
 	}
 	prog.Build()
+	pkgs = pkgs[:len(res.Packages)]
 
-	typePkg := make(map[*types.Package]*packages.Package, len(res.Packages))
-	for _, p := range res.Packages {
+	typePkg := make(map[*types.Package]*packages.Package, len(loaded))
+	for _, p := range loaded {
 		if p.Types != nil {
 			typePkg[p.Types] = p
 		}

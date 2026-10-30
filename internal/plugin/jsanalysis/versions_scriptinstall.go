@@ -27,7 +27,8 @@ import (
 //	npm test|t|start                     every package.json script value, passes the same gate
 //	yarn run <name>, yarn test|start
 //	yarn <name> [args]                   a name no yarn command takes, that is a script
-//	                                     (with no args) or a declared dependency's bin
+//	                                     (with no args) or a declared dependency's bin, with
+//	                                     no / or \ in it and no -- among the args
 //	npx <name> [args]                    a declared dependency, with no npx flag or @version:
 //	                                     its local bin, or a fetch into the npx cache, which
 //	                                     never enters the project's node_modules
@@ -206,7 +207,7 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 	return false
 }
 
-// yarnBuiltins are the first words yarn 1 (1.22) and yarn 2+ (4.5, its bundled plugins
+// yarnBuiltins covers the first words yarn 1 (1.22) and yarn 2+ (4.5, its bundled plugins
 // included) take as one of their own commands, aliases and the camelCase spellings yarn 1
 // also accepts among them. yarn runs any other first word as "yarn run <word>".
 var yarnBuiltins = map[string]bool{
@@ -228,14 +229,17 @@ var yarnBuiltins = map[string]bool{
 // every package.json it binds to, either a script, run with nothing after it since yarn
 // appends the args to the script's text, or a declared dependency, whose bin it runs. A
 // name that is neither fails in both yarns rather than installing. Neither name nor an
-// argument may name a token, so the form withholds wherever the bare command would.
+// argument may name a token, so the form withholds wherever the bare command would. yarn
+// 2+ takes a name with / or \ as a directory to run the remaining args in, bare yarn
+// (an install) when there are none; yarn 1 parses every argument before a -- as its own
+// options, --cwd among them, so either rebinds the command to a package.json not read here.
 func laneYarnRunsName(words []string, b scriptsurface.Binder) bool {
 	name := words[1]
-	if name == "" || strings.HasPrefix(name, "-") {
+	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, `/\`) {
 		return false
 	}
 	for _, w := range words[1:] {
-		if laneNamesToken(w) {
+		if w == "--" || laneNamesToken(w) {
 			return false
 		}
 	}

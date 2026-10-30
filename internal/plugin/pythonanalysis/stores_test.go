@@ -57,6 +57,14 @@ func TestCallGraph_ModuleObjectStores(t *testing.T) {
 		{name: "namespace package passed whole to a patcher", noInit: true, b: "import pkg.a\nimport pkg\nfrom pkg.v import vuln\n\ndef patch(p):\n    p.a.g = vuln\n\npatch(pkg)\n", listed: true},
 		{name: "store through a module re-exported under another name", b: "from pkg import mod\nfrom pkg.v import vuln\nmod.g = vuln\n", extra: map[string]string{"pkg/__init__.py": "from . import a as mod\n"}, listed: true},
 		{name: "module re-exported under another name passed whole", b: "from pkg import mod\n\ndef reg(register):\n    register(mod)\n", extra: map[string]string{"pkg/__init__.py": "from . import a as mod\n"}, listed: true},
+		{name: "store through a module a star import binds", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.mod.g = vuln\n", extra: map[string]string{"pkg/w.py": "from . import a as mod\n", "pkg/reg.py": "from .w import *\n"}, listed: true},
+		{name: "module a star import binds, passed whole", b: "from pkg import reg\n\ndef reg_all(register):\n    register(reg)\n", extra: map[string]string{"pkg/w.py": "from . import a as mod\n", "pkg/reg.py": "from .w import *\n"}, listed: true},
+		{name: "store through a module a nested star import binds", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.mod.g = vuln\n", extra: map[string]string{"pkg/w.py": "from . import a as mod\n", "pkg/x.py": "from .w import *\n", "pkg/reg.py": "from .x import *\n"}, listed: true},
+		{name: "store through a module a class body binds", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.R.mod.g = vuln\n", extra: map[string]string{"pkg/reg.py": "class R:\n    from . import a as mod\n"}, listed: true},
+		{name: "store through a module a nested class body binds", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.R.S.mod.g = vuln\n", extra: map[string]string{"pkg/reg.py": "class R:\n    class S:\n        from . import a as mod\n"}, listed: true},
+		{name: "store through a module a star-imported class body binds", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.R.mod.g = vuln\n", extra: map[string]string{"pkg/w.py": "class R:\n    from . import a as mod\n", "pkg/reg.py": "from .w import *\n"}, listed: true},
+		{name: "store through a module a global-declared import binds", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.mod.g = vuln\n", extra: map[string]string{"pkg/reg.py": "def setup():\n    global mod\n    from . import a as mod\n"}, listed: true},
+		{name: "module a global-declared import binds, passed whole", b: "from pkg import reg\n\ndef reg_all(register):\n    register(reg)\n", extra: map[string]string{"pkg/reg.py": "def setup():\n    global mod\n    from . import a as mod\n"}, listed: true},
 		{name: "qualified site through a stored namespace package attribute", noInit: true, b: "import pkg\nimport pkg.impl\npkg.a = pkg.impl\n", qualified: true, callee: "pkg.a.g", listed: true},
 		{name: "qualified site after a store", b: "from pkg import a\nfrom pkg.v import vuln\na.g = vuln\n", qualified: true, callee: "a.g", listed: true},
 		{name: "qualified site through a stored module", b: "import pkg\npkg.a = object()\n", extra: map[string]string{"pkg/__init__.py": "from . import a\n"}, qualified: true, callee: "pkg.a.g", listed: true},
@@ -71,6 +79,10 @@ func TestCallGraph_ModuleObjectStores(t *testing.T) {
 		{name: "iteration over the attribute", b: "from pkg import a\nfor x in a.g:\n    pass\n"},
 		{name: "delete of the attribute", b: "from pkg import a\ndel a.g\n"},
 		{name: "qualified site with no store", b: "from pkg import a\na.h = 1\n", qualified: true, callee: "a.g"},
+		{name: "star import of a module that binds no module", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.mod.g = vuln\n", extra: map[string]string{"pkg/w.py": "x = 1\n", "pkg/reg.py": "from .w import *\n"}},
+		{name: "store through a class that binds no module", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.R.mod.g = vuln\n", extra: map[string]string{"pkg/reg.py": "class R:\n    pass\n"}},
+		{name: "store through a class defined in a def", b: "from pkg import reg\nfrom pkg.v import vuln\nreg.R.mod.g = vuln\n", extra: map[string]string{"pkg/reg.py": "def build():\n    class R:\n        from . import a as mod\n    return R\n"}},
+		{name: "module a def imports without a global declaration, passed whole", b: "from pkg import reg\n\ndef reg_all(register):\n    register(reg)\n", extra: map[string]string{"pkg/reg.py": "def setup():\n    from . import a as mod\n"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -335,6 +335,9 @@ type fileParse struct {
 	decorated []funcDecl
 	refs      valueRefs
 	fpBinds   map[string]map[string][]string
+	// attrBinds holds the first-party paths imports bind to module attributes outside module
+	// scope, by dotted chain (scopedBinding.attr).
+	attrBinds map[string][]string
 	depBinds  map[string]map[string]bool
 	locals    map[string]map[string]bool
 	// storedNames and storedAny are what stores through a module object may rebind in the
@@ -611,14 +614,18 @@ func (prog *program) indexModules() {
 func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []string) {
 	f := &prog.files[i]
 	f.fpBinds = map[string]map[string][]string{}
-	bind := func(scope, local, path string) {
-		m := f.fpBinds[scope]
+	f.attrBinds = map[string][]string{}
+	bind := func(b scopedBinding, path string) {
+		m := f.fpBinds[b.scope]
 		if m == nil {
 			m = map[string][]string{}
-			f.fpBinds[scope] = m
+			f.fpBinds[b.scope] = m
 		}
-		if !slices.Contains(m[local], path) {
-			m[local] = append(m[local], path)
+		if !slices.Contains(m[b.local], path) {
+			m[b.local] = append(m[b.local], path)
+		}
+		if b.attr != "" && !slices.Contains(f.attrBinds[b.attr], path) {
+			f.attrBinds[b.attr] = append(f.attrBinds[b.attr], path)
 		}
 	}
 	f.depBinds = map[string]map[string]bool{}
@@ -642,11 +649,11 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 			}
 			continue
 		}
-		bind(b.scope, b.local, strings.ReplaceAll(b.target, ".", "/"))
+		bind(b, strings.ReplaceAll(b.target, ".", "/"))
 	}
 	for _, b := range rel {
 		if path, ok := relativeModule(f.module, f.isPackage, b.target); ok {
-			bind(b.scope, b.local, path)
+			bind(b, path)
 		}
 	}
 	for _, name := range f.stars {

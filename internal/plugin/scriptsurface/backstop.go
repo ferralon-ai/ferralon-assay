@@ -35,16 +35,17 @@ import (
 //     of literals given to one (["pip", "install", ...], [sys.executable, "-m", "pip", ...]).
 //
 // It does not read what no build runs as a command: binary and empty files, inertName files,
-// lockfiles, prose and rendered text (proseExts, proseNames), a Read the Docs config, files
-// over backstopMax, inside a .git directory everything but the active hooks, and any source
-// file that is not a build script.
+// lockfiles, prose and rendered text (proseExts, proseNames), a Read the Docs config, a file
+// past its buildtree.Head once it is over backstopMax, inside a .git directory everything but
+// the active hooks, and any source file that is not a build script.
 
-// backstopMax is the size past which the backstop does not read a file. A build script is far
-// smaller; what is larger is generated output or data.
+// backstopMax is the size past which the backstop reads only a file's buildtree.Head. A build
+// script is far smaller; what is larger is generated output or data.
 const backstopMax = 1 << 20
 
-// proseNames are base names, before any extension and compared case-insensitively, of the
-// prose files a repository carries beside the ones inertName knows.
+// proseNames are base names, compared case-insensitively, of the prose files a repository
+// carries beside the ones inertName knows. Only the bare name is prose: install.py, install.js
+// and install.yml are scripts and configs a build runs.
 var proseNames = map[string]bool{
 	"readme": true, "changes": true, "history": true, "news": true, "install": true,
 	"contributing": true,
@@ -109,11 +110,10 @@ func (v *Veto) backstopSkips(path string, head []byte) bool {
 	}
 	lower := strings.ToLower(filepath.Base(path))
 	ext := filepath.Ext(lower)
-	stem := strings.TrimSuffix(lower, ext)
 	switch {
 	case lower == "cmakelists.txt":
 		return false
-	case proseExts[ext], proseNames[stem], proseNames[lower]:
+	case proseExts[ext], proseNames[lower]:
 		return true
 	case ext == ".lock", lower == "go.sum":
 		return true
@@ -257,13 +257,16 @@ func (v *Veto) backstop(path string, head []byte) (string, bool) {
 	src := string(head)
 	if len(head) == buildtree.HeadSize {
 		if fi, err := os.Stat(path); err == nil && fi.Size() > backstopMax {
-			return "", false
+			if i := strings.LastIndexByte(src, '\n'); i >= 0 {
+				src = src[:i]
+			}
+		} else {
+			data, err := v.spec.ReadRegular(path)
+			if err != nil {
+				return v.unrecognised(path, 0, "file unreadable"), true
+			}
+			src = string(data)
 		}
-		data, err := v.spec.ReadRegular(path)
-		if err != nil {
-			return v.unrecognised(path, 0, "file unreadable"), true
-		}
-		src = string(data)
 	}
 	var line int
 	var why string
@@ -709,9 +712,10 @@ var launchers = map[string]bool{
 
 // installerAt reports whether words run one of the lane's installers as their program: the
 // first word past environment assignments and launchers names a token and is followed by an
-// argument; a Python interpreter runs one with -m, an attached -m or setup.py; a run of words
-// starting -m does the same (an argv after sys.executable); or a word that expands is followed
-// by an install verb.
+// argument that does not start with = or : (text that assigns to the name, inst = 1.0, or
+// keys it, inst: 1.0); a Python interpreter runs one with -m, an attached -m or setup.py; a run
+// of words starting -m does the same (an argv after sys.executable); or a word that expands is
+// followed by an install verb.
 func (v *Veto) installerAt(words []string) bool {
 	i := programAt(words)
 	if i >= len(words) {
@@ -742,7 +746,7 @@ func (v *Veto) installerAt(words []string) bool {
 	case !plainRE.MatchString(name) || !v.spec.Token(name):
 		return false
 	}
-	return rest[0] != "" && !strings.ContainsAny(rest[0][:1], "{(=:")
+	return rest[0] != "" && !strings.ContainsAny(rest[0][:1], "=:")
 }
 
 // literal is one string literal of a file: its text and the byte offsets of its quotes.

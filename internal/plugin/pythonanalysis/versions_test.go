@@ -1587,6 +1587,8 @@ func TestResolveVersions_PoetryLockDecodeFailsClosed(t *testing.T) {
 		{"name not a string", "[[package]]\nname = 1\nversion = \"2.8.0\"\n"},
 		{"package not an array of tables", "package = \"pyjwt\"\n"},
 		{"source not a table", "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = \"git\"\n"},
+		// Only the advisory decode reads files, so it alone must withhold Exhaustive here.
+		{"files not an array", "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nfiles = \"x\"\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := writeTree(t, map[string]string{"pyproject.toml": pp, "poetry.lock": tc.lock})
@@ -1599,8 +1601,10 @@ func TestResolveVersions_PoetryLockDecodeFailsClosed(t *testing.T) {
 			}
 			// Alone, so no uncovered pyproject pin withholds Exhaustive in its place.
 			lone := writeTree(t, map[string]string{"poetry.lock": tc.lock})
-			if r := resolveVersion(t, lone, "absent-package"); r.Exhaustive {
-				t.Error("absent-package Exhaustive, want not")
+			for _, c := range []string{"absent-package", "pyjwt"} {
+				if r := resolveVersion(t, lone, c); r.Exhaustive {
+					t.Errorf("%s Exhaustive, want not", c)
+				}
 			}
 		})
 	}
@@ -1638,5 +1642,22 @@ func TestResolveVersions_PoetryIndexSourceUnresolved(t *testing.T) {
 	}
 	if res.MatchesComplete {
 		t.Errorf("MatchesComplete with %+v, want not", res.Matches)
+	}
+}
+
+// TestResolveVersions_PoetryIndexSourceKeepsCoverage: an index-pinned [tool.poetry] dependency
+// is still checked against its lock for coverage, so a pin the lock contradicts leaves the
+// lock unable to vouch for an absent name.
+func TestResolveVersions_PoetryIndexSourceKeepsCoverage(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\n" +
+			"python = \"^3.11\"\npyjwt = { version = \"==2.8.0\", source = \"internal\" }\n",
+		"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.9.0\"\n\n[package.source]\ntype = \"legacy\"\n" +
+			"url = \"https://pypi.example.com/simple\"\nreference = \"internal\"\n",
+	})
+	for _, c := range []string{"flask", "pyjwt"} {
+		if r := resolveVersion(t, root, c); r.Exhaustive {
+			t.Errorf("%s Exhaustive under a stale lock, want not", c)
+		}
 	}
 }

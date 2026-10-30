@@ -86,9 +86,14 @@ must: on a private or internal repository it caches every package; on a public r
 never caches a package from a registry your `.npmrc` holds an auth entry for, and fetches those on
 every run. `persist-dependency-cache` overrides this (`always`, `never`). Set `dependency-code: off`
 to skip the fetch, or `offline` to read only a cache already on the runner.
-If the fetch fails (an unreachable registry, a missing token, a timeout), the scan reports what it
-would with `off` and the Report says why, under `dependency_code` and a
-`tool_failure:dependency_code_unavailable` note. Before a pull-request job exports a registry
+If a registry serves some packages and fails others, the scan reads what it fetched and withholds
+each package it could not. If a registry serves none (an unreachable registry, a missing token, a
+timeout), the scan reports what it would with `off` and the Report says why, under
+`dependency_code` and a `tool_failure:dependency_code_unavailable` note. A registry that refuses
+the token the scan sent fails the run: the token is expired or wrong, or a curation proxy is
+blocking a package. On `cve-watch`, a registry that has served the repository and now serves
+nothing, or answers with a transient error, holds the advisory cursor, and the run fails once that
+has lasted 3 runs and 24 hours. Before a pull-request job exports a registry
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
 receives it, and what the cache exposes.
 

@@ -78,6 +78,9 @@ func TestAcquireE2ESuccess(t *testing.T) {
 	if rec.Source == "" || containsUserinfo(rec.Source) {
 		t.Fatalf("record Source %q missing or carries userinfo", rec.Source)
 	}
+	if !rec.Fetched {
+		t.Fatal("record of a network fetch not marked Fetched")
+	}
 
 	// Metrics: first Acquire was a miss.
 	if acq.Misses() != 1 || acq.Hits() != 0 {
@@ -93,7 +96,7 @@ func TestAcquireE2ESuccess(t *testing.T) {
 	if gotPath != "" {
 		t.Fatalf("cache hit re-fetched from the server (path %q)", gotPath)
 	}
-	if rec2.PURL != ref.PURL {
+	if rec2.PURL != ref.PURL || rec2.Fetched {
 		t.Fatalf("cache-hit record wrong: %+v", rec2)
 	}
 	if acq.Hits() != 1 {

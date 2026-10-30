@@ -106,9 +106,39 @@ type DependencyAcquisitionResult struct {
 	// InventoryCancelled marks an inventory failure caused by the stage deadline or the run's
 	// context ending, so a timeout is not read as a plugin defect.
 	InventoryCancelled bool `json:"inventory_cancelled,omitempty"`
-	// Fallback is set when a fetch failed: the JS lane then reads no dependency code at all, as
-	// with dependency code off, and Fallback names why. Only DependencyCodeFetch sets it.
+	// Fallback is set when a fetch failed and the build cannot be read in part: the JS lane then
+	// reads no dependency code at all, as with dependency code off, and Fallback names why. Only
+	// DependencyCodeFetch sets it. A failure on a registry this build read other packages from
+	// does not set it (see fallbackCause): the lane reads the verified packages and withholds
+	// each unread one.
 	Fallback *DependencyCodeCause `json:"fallback,omitempty"`
+	// Outcomes lists every lock-pinned npm package, read or not, sorted by PURL. It stays in
+	// process, for a caller keeping per-registry state through Observe: it names registries,
+	// and the artifact names none.
+	Outcomes []DependencyOutcome `json:"-"`
+}
+
+// Outcomes of a package that was read, recorded on DependencyOutcome.Outcome.
+const (
+	OutcomeReadNetwork = "read_network" // fetched from the registry by this run and verified
+	OutcomeReadCache   = "read_cache"   // verified bytes already in the cache; no request was sent
+)
+
+// DependencyOutcome is one lock-pinned package's acquisition outcome.
+type DependencyOutcome struct {
+	PURL string
+	// Registry is the package's registry (acquire.RegistryID of its configured base URL) in
+	// fetch mode, as UnreadDependency.Registry; "" offline, for a package with no usable
+	// integrity, and when the npm configuration failed closed.
+	Registry string
+	// Outcome is OutcomeReadNetwork, OutcomeReadCache or the package's Unread* reason.
+	Outcome string
+	// Detail is the unread package's UnreadDependency.Detail: for UnreadPolicyRefused, the
+	// artifactcache policy code.
+	Detail string
+	// TokenEnv names the variable that left the auth value for Registry empty, so the package
+	// was fetched with no token. Set only for an unread package.
+	TokenEnv acquire.TokenEnv
 }
 
 // DependencyCodeCause is why a fetch-mode acquisition fell back to reading no dependency code.
@@ -130,11 +160,11 @@ type DependencyCodeCause struct {
 // so no package could be fetched.
 const FallbackInventoryFailed = "inventory_failed"
 
-// fetchFailed reports whether reason is a fetch that did not complete: the registry refused,
-// failed or did not serve the tarball, the bytes it served were wrong, the npm configuration
-// could not be read, or the deadline passed. A lock entry with no usable integrity is not one:
+// FetchFailed reports whether reason, an Unread* reason, is a fetch that did not complete: the
+// registry refused, failed or did not serve the tarball, the bytes it served were wrong, the npm
+// configuration could not be read, or the deadline passed. A lock entry with no usable integrity is not one:
 // nothing could have fetched it, and it stays a per-package limit.
-func fetchFailed(reason string) bool {
+func FetchFailed(reason string) bool {
 	switch reason {
 	case UnreadFetchFailed, UnreadNotServed, UnreadUnavailable, UnreadUnreachable, UnreadPolicyRefused, UnreadCancelled, UnreadIntegrityMismatch, UnreadNPMRCMalformed:
 		return true
@@ -143,7 +173,12 @@ func fetchFailed(reason string) bool {
 }
 
 // fallbackCause is why res, a fetch-mode acquisition, falls back to reading no dependency code,
-// or nil. One failed package is enough: a partial fetch is never read as dependency code.
+// or nil. A failed package forces the fallback unless its registry served this build at least one
+// verified package and did not reject a token: such a failure is partial, and the JS lane reads
+// the cache, where the unread package is a miss it withholds per package (uninspectable_package,
+// or the whole run when the package has an install script). A registry that served nothing, a
+// rejected token, an npm configuration that failed closed and an inventory that failed are never
+// partial.
 func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
 	if res.Mode != string(DependencyCodeFetch) {
 		return nil
@@ -155,8 +190,21 @@ func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
 		}
 		return &DependencyCodeCause{Kind: FallbackInventoryFailed, Detail: detail}
 	}
+	served := map[string]bool{}
+	rejected := map[string]bool{}
+	for _, o := range res.Outcomes {
+		switch {
+		case o.Outcome == OutcomeReadNetwork || o.Outcome == OutcomeReadCache:
+			served[o.Registry] = true
+		case CredentialRejected(o.Outcome, o.Detail):
+			rejected[o.Registry] = true
+		}
+	}
 	for _, u := range res.Unread {
-		if !fetchFailed(u.Reason) {
+		if !FetchFailed(u.Reason) {
+			continue
+		}
+		if u.Registry != "" && served[u.Registry] && !rejected[u.Registry] {
 			continue
 		}
 		detail := u.PURL
@@ -166,6 +214,12 @@ func fallbackCause(res DependencyAcquisitionResult) *DependencyCodeCause {
 		return &DependencyCodeCause{Kind: u.Reason, Detail: detail, Registry: u.Registry}
 	}
 	return nil
+}
+
+// CredentialRejected reports whether an unread package's reason and detail are a registry
+// refusing a token this run presented.
+func CredentialRejected(reason, detail string) bool {
+	return reason == UnreadPolicyRefused && detail == artifactcache.PolicyCredentialRejected
 }
 
 // UnreadDependency is one package acquisition left unread, with one of the Unread* reasons and,
@@ -181,6 +235,8 @@ type UnreadDependency struct {
 	// that. It stays in process, for a caller keeping per-registry state through Observe; the
 	// artifact names no registry.
 	Registry string `json:"-"`
+	// TokenEnv is DependencyOutcome.TokenEnv. It stays in process.
+	TokenEnv acquire.TokenEnv `json:"-"`
 }
 
 type dependencyAcquirer struct {
@@ -285,6 +341,7 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 	disk := artifactcache.NewDiskStore(d.cfg.CacheDir)
 
 	outcomes := make([]*UnreadDependency, len(pins))
+	fetched := make([]bool, len(pins))
 	sem := make(chan struct{}, acquireWorkers)
 	var wg sync.WaitGroup
 	for i, pin := range pins {
@@ -302,23 +359,36 @@ func (d *dependencyAcquirer) acquire(ctx context.Context, buildDir, checkoutRoot
 		go func(i int, pin npmPin) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			u := d.acquireOne(ctx, pin, npmrc, fetchers, disk)
+			u, net := d.acquireOne(ctx, pin, npmrc, fetchers, disk)
 			if u != nil && d.cfg.Mode == DependencyCodeFetch {
 				u.Registry = registryOf(npmrc, pin.purl)
+				if name, err := acquire.NPMNameOf(pin.purl); err == nil {
+					u.TokenEnv = npmrc.TokenEnvFor(name)
+				}
 			}
-			outcomes[i] = u
+			outcomes[i], fetched[i] = u, net
 		}(i, pin)
 	}
 	wg.Wait()
 
-	for _, o := range outcomes {
-		if o == nil {
-			res.Read++
+	for i, o := range outcomes {
+		if o != nil {
+			res.Unread = append(res.Unread, *o)
+			res.Outcomes = append(res.Outcomes, DependencyOutcome{PURL: o.PURL, Registry: o.Registry, Outcome: o.Reason, Detail: o.Detail, TokenEnv: o.TokenEnv})
 			continue
 		}
-		res.Unread = append(res.Unread, *o)
+		res.Read++
+		out := DependencyOutcome{PURL: pins[i].purl, Outcome: OutcomeReadCache}
+		if fetched[i] {
+			out.Outcome = OutcomeReadNetwork
+		}
+		if d.cfg.Mode == DependencyCodeFetch {
+			out.Registry = registryOf(npmrc, pins[i].purl)
+		}
+		res.Outcomes = append(res.Outcomes, out)
 	}
 	sort.Slice(res.Unread, func(i, j int) bool { return res.Unread[i].PURL < res.Unread[j].PURL })
+	sort.SliceStable(res.Outcomes, func(i, j int) bool { return res.Outcomes[i].PURL < res.Outcomes[j].PURL })
 	return res
 }
 
@@ -337,9 +407,19 @@ func (d *dependencyAcquirer) viaUncredentialed(credentialed bool) bool {
 }
 
 // acquireOne leaves pin's verified bytes in CacheDir and returns nil, or says why it could not.
-// Only reason codes leave this function: an error string can carry a URL, and nothing here may
-// echo configuration back.
-func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc acquire.NPMConfig, fetchers cacheFetchers, disk artifactcache.Store) *UnreadDependency {
+// fetched reports that the bytes it leaves were fetched from the registry by this call rather
+// than found in a cache.
+func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc acquire.NPMConfig, fetchers cacheFetchers, disk artifactcache.Store) (u *UnreadDependency, fetched bool) {
+	if u := d.acquirePin(ctx, pin, npmrc, fetchers, disk, &fetched); u != nil {
+		return u, false
+	}
+	return nil, fetched
+}
+
+// acquirePin is acquireOne; it sets *fetched on each fill to whether that fill fetched from the
+// registry, so after the last fill it describes the bytes read. Only reason codes leave this
+// function: an error string can carry a URL, and nothing here may echo configuration back.
+func (d *dependencyAcquirer) acquirePin(ctx context.Context, pin npmPin, npmrc acquire.NPMConfig, fetchers cacheFetchers, disk artifactcache.Store, fetched *bool) *UnreadDependency {
 	ref := artifactcache.Ref{PURL: pin.purl, Digest: pin.digest}
 	unread := func(reason, detail string) *UnreadDependency {
 		return &UnreadDependency{PURL: pin.purl, Reason: reason, Detail: detail}
@@ -391,9 +471,11 @@ func (d *dependencyAcquirer) acquireOne(ctx context.Context, pin npmPin, npmrc a
 			if shared {
 				fetcher = fetchers.uncredentialed
 			}
-			if _, err := fetcher.Acquire(ctx, ref, policy); err != nil {
+			rec, err := fetcher.Acquire(ctx, ref, policy)
+			if err != nil {
 				return classifyAcquireError(ctx, pin.purl, err)
 			}
+			*fetched = rec.Fetched
 		}
 		if shared {
 			readPath, _ := artifactcache.CanonicalPath(d.cfg.CacheDir, pin.digest)

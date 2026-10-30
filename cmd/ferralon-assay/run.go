@@ -580,7 +580,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
 
-		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A fetch that fails, even for one package, reads no dependency code and says so on the report. Overrides "+envDependencyCode+" (default: fetch)"),
+		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A package whose fetch fails is not read: when its registry served this build other packages the scan reads those and withholds each one it could not fetch, otherwise it reads no dependency code and says so on the report. A registry that refuses a token the scan sent (an expired or wrong token, or a curation proxy blocking a package) fails the run. On cve-watch, a registry answering a transient error, or one that has served this repository and now serves nothing, holds the advisory cursor, and the run fails once that hold has lasted "+fmt.Sprintf("%d runs and %d hours", stallRuns, int(stallAge.Hours()))+". Overrides "+envDependencyCode+" (default: fetch)"),
 		depCache:       fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
 		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
 		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
@@ -1327,14 +1327,18 @@ func runCVEWatch(args []string) error {
 
 // cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
 // claim their aliases when the report is ranked. A failed build graph holds the cursor, so the
-// advisories this run assessed without it are assessed again on the next.
+// advisories this run assessed without it are assessed again on the next; it failed before the
+// run, so HoldCursor carries it. The dependency-code policy's hold depends on fetches the
+// re-assessments make, so Hold consults it after them.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
-		Subject:       cfg.subject,
-		Codebase:      cfg.codebase,
-		AssessOptions: cfg.assessOptions,
-		Signals:       signals,
-		Advisories:    cfg.advisories,
-		HoldCursor:    runExit(cfg.graph, cfg.deps) != nil,
+		Subject:         cfg.subject,
+		Codebase:        cfg.codebase,
+		AssessOptions:   cfg.assessOptions,
+		Signals:         signals,
+		Advisories:      cfg.advisories,
+		HoldCursor:      cfg.graph.err() != nil,
+		Hold:            cfg.deps.holds,
+		DependencyFetch: cfg.deps.fetchUpdate(),
 	}
 }

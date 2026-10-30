@@ -794,6 +794,78 @@ func TestCallGraph_ModuleLevelCallsGetModuleInitCaller(t *testing.T) {
 	}
 }
 
+// TestCallGraph_TestModuleHazards: an opaque dynamic import or evaluated code in a test
+// module withholds only when production code imports that module or has an edge into it.
+func TestCallGraph_TestModuleHazards(t *testing.T) {
+	const (
+		opaque = "import importlib\n\ndef load(n):\n    return importlib.import_module(n)\n"
+		evals  = "def run_eval(s):\n    return eval(s)\n"
+		fcall  = "def show(x):\n    return f\"{g(x)}\"\n"
+		app    = "def main():\n    return 1\n"
+	)
+	cases := []struct {
+		name           string
+		files          map[string]string
+		dynamic, sites bool
+	}{
+		{"opaque import under tests", map[string]string{"app.py": app, "tests/test_a.py": opaque}, false, false},
+		{"eval under tests", map[string]string{"app.py": app, "tests/test_a.py": evals}, false, false},
+		{"f-string call under test", map[string]string{"app.py": app, "test/helpers.py": fcall}, false, false},
+		{"test_ file at the root", map[string]string{"app.py": app, "test_app.py": opaque}, false, false},
+		{"_test file", map[string]string{"app.py": app, "pkg/app_test.py": evals}, false, false},
+		{"conftest", map[string]string{"app.py": app, "conftest.py": opaque + evals}, false, false},
+		{"test module imported only by tests", map[string]string{"app.py": app, "tests/helpers.py": opaque + evals, "tests/test_a.py": "from tests.helpers import load\n"}, false, false},
+		{"test module called only by tests", map[string]string{"app.py": app, "tests/helpers.py": evals, "tests/test_a.py": "def test_x():\n    run_eval('1')\n"}, false, false},
+		{"production hazard", map[string]string{"app.py": opaque + evals, "tests/test_a.py": app}, true, true},
+		{"from-imported by production", map[string]string{"app.py": "from tests.helpers import load\n", "tests/helpers.py": opaque + evals}, true, true},
+		{"imported by production", map[string]string{"app.py": "import tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"star-imported by production", map[string]string{"app.py": "from tests.helpers import *\n", "tests/helpers.py": evals}, false, true},
+		{"package init of a production import", map[string]string{"app.py": "import tests.helpers\n", "tests/__init__.py": opaque, "tests/helpers.py": app}, true, false},
+		{"relative import by production", map[string]string{"pkg/__init__.py": "", "pkg/app.py": "from .tests import helpers\n", "pkg/tests/helpers.py": opaque}, true, false},
+		{"relative package import by production", map[string]string{"pkg/__init__.py": "", "pkg/app.py": "from . import tests\n", "pkg/tests/__init__.py": opaque}, true, false},
+		{"literal dynamic import by production", map[string]string{"app.py": "import importlib\nh = importlib.import_module('tests.helpers')\n", "tests/helpers.py": evals}, false, true},
+		{"bare name a test module answers to", map[string]string{"app.py": "import helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"through another test module", map[string]string{"app.py": "from tests import util\n", "tests/util.py": "from tests.deep import load\n", "tests/deep.py": opaque}, true, false},
+		{"edge from production", map[string]string{"app.py": "def main():\n    return run_eval('1')\n", "tests/helpers.py": evals}, false, true},
+		{"backslash before import", map[string]string{"app.py": "from tests.helpers \\\n    import load\n", "tests/helpers.py": opaque}, true, false},
+		{"backslash after import", map[string]string{"app.py": "from tests import \\\n    helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"backslash in a plain import", map[string]string{"app.py": "import \\\n    tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"parenthesis after import", map[string]string{"app.py": "from tests import(helpers)\n", "tests/helpers.py": opaque}, true, false},
+		{"tabs", map[string]string{"app.py": "from\ttests\timport\thelpers\n", "tests/helpers.py": opaque}, true, false},
+		{"__import__ keyword fromlist", map[string]string{"app.py": "h = __import__('tests', fromlist=['helpers'])\n", "tests/helpers.py": opaque}, true, false},
+		{"__import__ positional fromlist", map[string]string{"app.py": "h = __import__('tests', None, None, ['helpers'])\n", "tests/helpers.py": opaque}, true, false},
+		{"__import__ without fromlist", map[string]string{"app.py": "h = __import__('tests')\n", "tests/helpers.py": opaque}, false, false},
+		{"star import of a package", map[string]string{"app.py": "from tests import *\n", "tests/__init__.py": "__all__ = ['helpers']\n", "tests/helpers.py": opaque}, true, false},
+		{"unread import", map[string]string{"app.py": "from tests import helpers as h, 1bad\n", "tests/other.py": opaque}, true, false},
+		{"space before a dot", map[string]string{"app.py": "import tests .helpers\n", "tests/other.py": opaque}, true, false},
+		{"after a byte order mark", map[string]string{"app.py": "\ufefffrom tests import helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"after a form feed", map[string]string{"app.py": "\f\nx = 1\n\ffrom tests import helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"star import of a package below the root", map[string]string{"src/app.py": "from tests import *\n", "src/tests/__init__.py": "__all__ = ['helpers']\n", "src/tests/helpers.py": opaque}, true, false},
+		{"relative star import of a package", map[string]string{"pkg/__init__.py": "", "pkg/app.py": "from .tests import *\n", "pkg/tests/__init__.py": "__all__ = ['helpers']\n", "pkg/tests/helpers.py": opaque}, true, false},
+		{"unread from text", map[string]string{"app.py": "from tests import\n", "tests/other.py": opaque}, true, false},
+		{"unread plain import item", map[string]string{"app.py": "import tests, 1bad\n", "tests/other.py": opaque}, true, false},
+		{"continued from-import of production", map[string]string{"app.py": "from lib \\\n    import(x,\n    y,)\n", "lib.py": app, "tests/other.py": opaque}, false, false},
+		{"continued plain import of production", map[string]string{"app.py": "import \\\n\tlib as l\n", "lib.py": app, "tests/other.py": opaque}, false, false},
+		{"continued raise from", map[string]string{"app.py": "def f(e):\n    raise ValueError() \\\n        from e\n", "tests/other.py": opaque}, false, false},
+		{"after a continued block opener", map[string]string{"app.py": "if True: \\\n    import tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"after a continued semicolon", map[string]string{"app.py": "import os; \\\r\n    import tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"after a leading continuation", map[string]string{"app.py": "\\\nimport tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"spaces around a dot", map[string]string{"app.py": "import tests . helpers\n", "tests/other.py": opaque}, true, false},
+		{"edge through another test module", map[string]string{"app.py": "def main():\n    return relay('1')\n", "tests/relay.py": "def relay(s):\n    return run_eval(s)\n", "tests/helpers.py": evals}, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := mustCallGraph(t, c.files)
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != c.dynamic {
+				t.Errorf("dynamic_import = %v, want %v (reasons %v)", got, c.dynamic, res.Partiality.Reasons)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonUnlistedSites); got != c.sites {
+				t.Errorf("unlisted_sites = %v, want %v (reasons %v)", got, c.sites, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
 // TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
 // program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
 // reason.

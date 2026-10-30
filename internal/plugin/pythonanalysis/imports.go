@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -111,6 +112,72 @@ func parseRelativeImport(text string) []importBinding {
 	}
 	return out
 }
+
+// importedModules reads an import statement: every module it may load, dotted, relative
+// ones with their leading dots, and the packages a star import may load any submodule of
+// (__all__ names them). `import a.b as c` names a.b, `from a import b, *` names a and a.b
+// (b may be a submodule) and a as a package, `from .. import m` names .. and ..m. ok is
+// false when the text is not an import statement it can read, whatever the spacing,
+// parentheses or backslash continuations.
+func importedModules(text string) (modules, packages []string, ok bool) {
+	text = strings.Join(strings.Fields(strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(text)), " ")
+	if m := importRE.FindStringSubmatch(text); m != nil {
+		for _, item := range strings.Split(m[1], ",") {
+			path, alias, _ := strings.Cut(strings.TrimSpace(item), " ")
+			if !isDottedName(path) || !plainAlias(alias) {
+				return nil, nil, false
+			}
+			modules = append(modules, path)
+		}
+		return modules, nil, true
+	}
+	m := fromImportRE.FindStringSubmatch(text)
+	if m == nil || m[1] == "" && m[2] == "" {
+		return nil, nil, false
+	}
+	from := m[1] + m[2]
+	modules = append(modules, from)
+	sep := "."
+	if m[2] == "" {
+		sep = ""
+	}
+	list := strings.TrimSpace(m[3])
+	if strings.HasPrefix(list, "(") {
+		list = strings.TrimSuffix(strings.TrimPrefix(list, "("), ")")
+	}
+	for _, item := range strings.Split(list, ",") {
+		name, alias, _ := strings.Cut(strings.TrimSpace(item), " ")
+		switch {
+		case !plainAlias(alias):
+			return nil, nil, false
+		case name == "*":
+			packages = append(packages, from)
+		case name == "" && strings.TrimSpace(item) == "":
+			// a trailing comma inside parentheses
+		case isDottedName(name) && !strings.Contains(name, "."):
+			modules = append(modules, from+sep+name)
+		default:
+			return nil, nil, false
+		}
+	}
+	return modules, packages, true
+}
+
+// plainAlias reports whether what follows a name in an import list is nothing or an
+// "as" clause.
+func plainAlias(rest string) bool {
+	if rest == "" {
+		return true
+	}
+	as, name, ok := strings.Cut(rest, " ")
+	return ok && as == "as" && isDottedName(name) && !strings.Contains(name, ".")
+}
+
+// importRE and fromImportRE match an import statement with its whitespace collapsed.
+var (
+	importRE     = regexp.MustCompile(`^import\b ?(.+)$`)
+	fromImportRE = regexp.MustCompile(`^from\b ?(\.*) ?([A-Za-z_][\w.]*)? ?\bimport\b ?(.+)$`)
+)
 
 // splitImportList splits an import list ("a, b as c", "(a,\n b)") into its items.
 func splitImportList(s string) []string {
@@ -589,7 +656,7 @@ func lookupTarget(target string) string {
 	return target
 }
 
-func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque, computed bool) {
+func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values, packages []string, opaque, computed bool) {
 	r := []rune(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
@@ -662,6 +729,11 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				opaque = true
 			case kind == lookupDunder:
 				roots = append(roots, name)
+				// Past its module, an __import__ call may take a fromlist, which loads the
+				// submodules it names.
+				if args, _ := callArgs(r, skipAllSpace(r, end)); len(args) > 1 {
+					packages = append(packages, name)
+				}
 				for k := range strings.Split(name, ".") {
 					values = append(values, strings.Join(strings.Split(name, ".")[:k+1], "."))
 				}
@@ -712,7 +784,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		i = end
 	}
-	return sortedDedup(roots), sortedDedup(values), opaque, computed
+	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), opaque, computed
 }
 
 // namerAttrs are the builtins that reach a namespace's names by computed access.
@@ -777,7 +849,7 @@ func importStatements(r []rune) (spans [][2]int, stars map[string]bool) {
 		stop := statementEnd(r, end)
 		spans = append(spans, [2]int{i, stop})
 		if w == "from" {
-			fields := strings.Fields(string(r[end:stop]))
+			fields := strings.Fields(strings.NewReplacer("\\\r\n", " ", "\\\n", " ", "*", " * ").Replace(string(r[end:stop])))
 			if len(fields) >= 3 && fields[1] == "import" && strings.Trim(fields[2], "()") == "*" {
 				stars[fields[0]] = true
 			}
@@ -787,15 +859,29 @@ func importStatements(r []rune) (spans [][2]int, stars map[string]bool) {
 	return spans, stars
 }
 
-// statementStart reports whether the word at r[i] begins a statement: only spaces lie
-// between it and the start of the source, a newline, a ';', or a ':' that opens a block on
-// the same line.
+// statementStart reports whether the word at r[i] begins a statement: only spaces, tabs,
+// form feeds, a byte order mark or backslash continuations lie between it and the start of
+// the source, a newline that ends no continuation line, a ';', or a ':' that opens a block
+// on the same line.
 func statementStart(r []rune, i int) bool {
 	j := i - 1
-	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
-		j--
+	for {
+		for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\f' || r[j] == '\ufeff') {
+			j--
+		}
+		if j < 0 || r[j] != '\n' {
+			break
+		}
+		k := j - 1
+		if k >= 0 && r[k] == '\r' {
+			k--
+		}
+		if k < 0 || r[k] != '\\' {
+			return true
+		}
+		j = k - 1
 	}
-	return j < 0 || r[j] == '\n' || r[j] == ';' || r[j] == ':'
+	return j < 0 || r[j] == ';' || r[j] == ':'
 }
 
 // statementEnd is the index of the ';' or newline that ends the statement running from
@@ -813,7 +899,7 @@ func statementEnd(r []rune, i int) int {
 				return i
 			}
 		case '\n':
-			if depth <= 0 && (i == 0 || r[i-1] != '\\') {
+			if depth <= 0 && (i == 0 || r[i-1] != '\\' && (r[i-1] != '\r' || i < 2 || r[i-2] != '\\')) {
 				return i
 			}
 		}

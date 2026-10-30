@@ -103,10 +103,12 @@ const (
 // goPathOwner reports which module owns the Go import path p, given that mod is the module the
 // go.mod in buildDir declares. p is the root's when it is mod itself, or a path under it whose
 // first element is not a major-version suffix (example.com/m/v2 is a different module from
-// example.com/m) and that no other module claims: none another go.mod in the repository declares,
-// none a go.work at or above buildDir uses, and none go.mod requires or replaces. A longer module path
-// go.sum records but go.mod does not name, or a go.mod or go.work that does not parse, leaves the
-// owner ambiguous.
+// example.com/m) and that no other module claims: none another go.mod below buildDir declares, none
+// a go.work at or above buildDir uses, and none go.mod requires or replaces. A longer module path
+// go.sum records but go.mod does not name, or one a go.mod elsewhere in the repository declares,
+// leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
+// in the build, so the path may still be the root's, but it may also be the other module's at
+// another version.
 func goPathOwner(buildDir, mod, p string) goOwner {
 	if p == mod {
 		return goOwnedByRoot
@@ -125,7 +127,7 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 		}
 	}
 	claims := func(m string) bool { return len(m) > len(mod) && (p == m || strings.HasPrefix(p, m+"/")) }
-	others, ok := goTreeModules(buildDir)
+	others, outside, ok := goTreeModules(buildDir)
 	if !ok {
 		return goOwnerAmbiguous
 	}
@@ -156,6 +158,11 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 			return goOwnedElsewhere
 		}
 	}
+	for _, m := range outside {
+		if claims(m) {
+			return goOwnerAmbiguous
+		}
+	}
 	if sum, err := os.ReadFile(filepath.Join(buildDir, "go.sum")); err == nil {
 		for _, line := range strings.Split(string(sum), "\n") {
 			if f := strings.Fields(line); len(f) > 0 && claims(f[0]) {
@@ -166,20 +173,19 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 	return goOwnedByRoot
 }
 
-// goTreeModules returns the module path every go.mod other than buildDir's own declares, whatever
-// directory it sits in, across the git work tree holding buildDir (a sibling of buildDir's module
-// is as much a competing owner as a module nested inside it), or below buildDir when it is in no
-// work tree; ok is false when the tree cannot be walked or a go.mod declares no module.
-func goTreeModules(buildDir string) ([]string, bool) {
+// goTreeModules returns the module path every go.mod below buildDir declares, whatever directory
+// it sits in, and as outside the module path every other go.mod in the git work tree holding
+// buildDir declares; ok is false when the tree cannot be walked or a go.mod below buildDir declares
+// no module.
+func goTreeModules(buildDir string) (below, outside []string, ok bool) {
 	own, err := filepath.EvalSymlinks(buildDir)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	root := own
 	if top, err := gitOutput(context.Background(), own, "rev-parse", "--show-toplevel"); err == nil && top != "" {
 		root = top
 	}
-	var mods []string
 	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -194,13 +200,19 @@ func goTreeModules(buildDir string) ([]string, bool) {
 			return nil
 		}
 		m := goModFileModule(p)
+		if !strings.HasPrefix(p, own+string(filepath.Separator)) {
+			if m != "" {
+				outside = append(outside, m)
+			}
+			return nil
+		}
 		if m == "" {
 			return os.ErrInvalid
 		}
-		mods = append(mods, m)
+		below = append(below, m)
 		return nil
 	})
-	return mods, err == nil
+	return below, outside, err == nil
 }
 
 // goWorkModules returns the module path of every module the go.work the go command would find

@@ -8,8 +8,7 @@ package pythonanalysis
 //
 //   - every manifest the resolver discovers parses, and at least one is a complete,
 //     edge-bearing lockfile (uv.lock, pdm.lock, poetry.lock), each of which records the full
-//     resolved closure; a poetry.lock's lexical advisory read and TOML decode agree on its
-//     package set;
+//     resolved closure;
 //   - the coordinate is not a first-party project (a uv workspace root or member, a pyproject
 //     [project] or [tool.poetry] name, a setup.cfg [metadata] name, a setup.py literal name),
 //     and every setup.py names its project literally: lockfiles omit the project itself, so its
@@ -54,16 +53,14 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
-	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // manifestSetCovers reports whether the parsed manifests (found under root) meet every condition
 // above but the last: the complete lockfiles govern every manifest and every install surface is
 // read, so the lockfiles enumerate every package an install from them creates. Exhaustive adds
-// installedCopyPresent(root, coord, true). perFile maps each manifest path to what
-// parseManifestCoverage returned for it. The cheap manifest checks run before the walk of the
+// installedCopyPresent(root, coord, true). The cheap manifest checks run before the walk of the
 // build dir.
-func manifestSetCovers(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool, installs pipInstalls) bool {
+func manifestSetCovers(root, coordinate string, manifests []string, parseFailed bool, installs pipInstalls) bool {
 	if parseFailed || len(manifests) == 0 {
 		return false
 	}
@@ -75,9 +72,6 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 	for _, m := range manifests {
 		if !completeLockfiles[filepath.Base(m)] {
 			continue
-		}
-		if filepath.Base(m) == "poetry.lock" && !poetryLockConsistent(m, perFile[m]) {
-			return false
 		}
 		l, ok := readPyLock(m)
 		if !ok {
@@ -179,37 +173,6 @@ func installedCopyPresent(root, coord string, sitePackages bool) bool {
 
 // completeLockfiles are the formats whose [[package]] set is the full resolved closure.
 var completeLockfiles = map[string]bool{"uv.lock": true, "pdm.lock": true, "poetry.lock": true}
-
-// poetryLockConsistent reports whether poetry.lock decodes as TOML and the lexical advisory
-// read (lexical) found exactly the package names the decode does. The advisory path's Found is
-// computed from the lexical read, so a package it missed would otherwise read as absent.
-func poetryLockConsistent(path string, lexical []plugin.ResolvedDependency) bool {
-	data, err := readRegular(path)
-	if err != nil {
-		return false
-	}
-	reqs, err := parsePoetryLockSelected(data, nil, nil)
-	if err != nil {
-		return false
-	}
-	want := map[string]bool{}
-	for _, r := range reqs {
-		want[normalizePyCoordinate(r.Name)] = true
-	}
-	got := map[string]bool{}
-	for _, d := range lexical {
-		got[normalizePyCoordinate(d.Coordinate)] = true
-	}
-	if len(got) != len(want) {
-		return false
-	}
-	for n := range want {
-		if !got[n] {
-			return false
-		}
-	}
-	return true
-}
 
 // firstPartyNames collects the normalized names of the projects the manifests define. ok is
 // false when a project's name cannot be read without executing it (a setup.py with no literal

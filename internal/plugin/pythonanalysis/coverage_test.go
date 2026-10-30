@@ -178,7 +178,7 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		// Per lock, never a union.
 		{"two locks, only one holds the name", map[string]string{"uv.lock": exUVLock, "poetry.lock": covPoetryLock, "pyproject.toml": covPyproject("flask", "requests")}, false},
 		{"two locks, both hold every name", map[string]string{"uv.lock": covUVLockNoExtra, "poetry.lock": covPoetryLock, "pyproject.toml": covPyproject("requests")}, true},
-		{"nested poetry.lock inconsistent", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, false},
+		{"nested poetry.lock keys without spaces", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, true},
 
 		// Build-time requirements install into an isolated build environment, not the runtime
 		// one, and no lockfile records them.

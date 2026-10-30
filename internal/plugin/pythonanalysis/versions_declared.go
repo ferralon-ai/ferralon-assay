@@ -300,8 +300,9 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 				ok = false
 				continue
 			}
+			indexed := poetryIndexSourced(t[name])
 			for _, d := range decls {
-				if d.Direct {
+				if d.Direct || indexed {
 					deps = append(deps, pyResolved(name, "", false, "pyproject.toml"))
 					origins = append(origins, manifestOrigin{dir: dir, directRef: true})
 					continue
@@ -311,6 +312,25 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	return deps, origins, ok
+}
+
+// poetryIndexSourced reports whether a [tool.poetry] dependency value, or any element of an
+// array of them, is pinned to a named index (source = "..."). That index serves whatever it holds
+// under the name, so on the version path the declaration is a direct reference. Coverage still
+// checks it against the lock like any other pin.
+func poetryIndexSourced(v any) bool {
+	entries, isList := v.([]any)
+	if !isList {
+		entries = []any{v}
+	}
+	for _, e := range entries {
+		if m, isMap := e.(map[string]any); isMap {
+			if _, has := m["source"]; has {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // poetryInstallsLocal reports whether a [tool.poetry] dependency value, or any element of an

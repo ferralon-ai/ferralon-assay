@@ -13,6 +13,8 @@
 #                  Both are required whenever a release is read; neither has a default (Assay names no
 #                  signer of its own). Unused on the route=git exit for a ref that names no release.
 #   DEST           directory the verified bundle is written into, as DEST/<policy>.jsonl.gz
+#   CORPUS_REQUIRE_BUNDLE  (optional) "1" turns both route=git exits into failures: the run reads a
+#                  verified bundle or nothing. action.yml sets it for the default policy.
 #   PATH           must carry cosign 3.x; action.yml puts the pinned scripts/install-cosign.sh binary first
 #   CORPUS_GITHUB  (optional) base URL for releases + git, default https://github.com
 #   CORPUS_RAW     (optional) base URL for raw repository files, default https://raw.githubusercontent.com
@@ -57,7 +59,8 @@
 #   - the identity and issuer the caller supplies: the check proves "signed by the named identity",
 #     never that the named identity is the right one;
 #   - the git tree read on the route=git exits: a ref that names no release, or a policy the release
-#     ships no bundle for, is read by the Action's git fetch, which no signature covers.
+#     ships no bundle for, is read by the Action's git fetch, which no signature covers. With
+#     CORPUS_REQUIRE_BUNDLE=1 (the Action's default policy) both exits fail instead.
 # The tag -> commit lookup is unsigned too, but it only says where to read the manifest from; the
 # manifest's bytes are pinned by the signed manifest_digest.
 # A signals-only refresh updates a release in place and re-signs bundles.json (INTEL-277), so a run
@@ -126,6 +129,8 @@ case "$CORPUS_REF" in
     if [[ "$CORPUS_REF" =~ $tag_re ]]; then
       TAG="$CORPUS_REF"
     else
+      [ "${CORPUS_REQUIRE_BUNDLE:-}" != 1 ] \
+        || die "advisory-corpus-ref '$CORPUS_REF' names no corpus release, and the default policy reads only a signed release bundle. Set advisory-corpus-ref to a corpus-<12 hex> tag, main or latest, or name advisory-corpus-policy explicitly to accept the unsigned git fetch"
       echo "==> advisory-corpus-ref '$CORPUS_REF' names no corpus release; using the git corpus fetch"
       emit "route=git"
       emit "git-ref=$CORPUS_REF"
@@ -201,6 +206,8 @@ accept_signals() {
 entry="$(jq -c --arg p "$CORPUS_POLICY" '[.bundles[] | select(.policy_id == $p)]' "$WORK/bundles.json")"
 case "$(jq 'length' <<<"$entry")" in
   0)
+    [ "${CORPUS_REQUIRE_BUNDLE:-}" != 1 ] \
+      || die "$TAG publishes no bundle for policy '$CORPUS_POLICY', and the default policy reads only a signed release bundle; refusing the unsigned git fetch"
     echo "==> Policy '$CORPUS_POLICY' has no bundle in $TAG (manifest-only); using the git corpus fetch at $TAG"
     emit "route=git"
     emit "git-ref=$TAG"

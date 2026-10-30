@@ -13,6 +13,7 @@
 # Output: key=value lines appended to $GITHUB_OUTPUT (stdout when unset):
 #   repo, policy, signer-identity, signer-issuer   the resolved corpus; empty when none is fetched
 #   required                                       1 when the run requires a corpus, else 0
+#   require-bundle                                 1 when the policy is the default one, else 0
 #
 # THE DEFAULT IS THE PUBLIC CORPUS. With no corpus input set, the run reads the public
 # ferralon-ai/vulnerability-corpus under its `full` policy, signature-verified against the identity
@@ -20,11 +21,18 @@
 # an empty policy or signer input takes the same default. A different corpus repository gets no
 # default policy or signer: its owner decides what it publishes and whose signature to trust.
 #
+# A DEFAULT RUN READS ONLY A SIGNED BUNDLE. When the policy is the default one, require-bundle=1
+# tells the bundle step to fail rather than fall back to the git fetch, which no signature covers:
+# a release with no `full` bundle, or a ref that names no release, fails the run instead of
+# reading an unverified record tree. An explicitly named policy keeps the git fallback.
+#
 # The default is the Action's, never the scanner's. The scanner reads only the corpus it is handed.
 #
-# THE OPT-OUT. builtin-test-advisories-only: "true" fetches nothing and runs on the scanner's
-# built-in test advisories, for an offline or air-gapped runner. That run is not a vulnerability
-# scan, and its Report says so. Combined with any corpus input it is a contradiction, and fails.
+# THE OPT-OUT. builtin-test-advisories-only: "true" fetches no corpus and runs on the scanner's
+# built-in test advisories. That removes the corpus release, cosign and Sigstore TUF downloads; the
+# scanner download and the scan's own network reads remain (README, "Network egress"). That run is
+# not a vulnerability scan, and its Report says so. Combined with any corpus input it is a
+# contradiction, and fails.
 set -euo pipefail
 
 DEFAULT_REPO="ferralon-ai/vulnerability-corpus"
@@ -63,6 +71,7 @@ emit() {
     printf 'signer-identity=%s\n' "$3"
     printf 'signer-issuer=%s\n' "$4"
     printf 'required=%s\n' "$5"
+    printf 'require-bundle=%s\n' "$6"
   } >>"$out"
 }
 
@@ -70,15 +79,15 @@ if [[ "$builtin_only" == true ]]; then
   if [[ -n "$dir$repo$policy$identity$issuer" ]]; then
     die "builtin-test-advisories-only is 'true', but an advisory-corpus input is also set. Clear the corpus inputs to run offline, or set builtin-test-advisories-only to 'false' to read the corpus."
   fi
-  echo "==> builtin-test-advisories-only: no advisory corpus; this run evaluates the scanner's built-in test advisories only and is not a vulnerability scan" >&2
-  emit "" "" "" "" 0
+  echo "==> builtin-test-advisories-only: no advisory corpus is fetched; this run evaluates the scanner's built-in test advisories only and is not a vulnerability scan" >&2
+  emit "" "" "" "" 0 0
   exit 0
 fi
 
 # A directory the workflow checked out itself wins, and nothing is fetched.
 if [[ -n "$dir" ]]; then
   echo "==> Advisory corpus: the directory $dir" >&2
-  emit "" "" "" "" 1
+  emit "" "" "" "" 1 0
   exit 0
 fi
 
@@ -86,11 +95,15 @@ repo="${repo:-$DEFAULT_REPO}"
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$repo" != *..* ]] \
   || die "advisory-corpus-repo '$repo' is not an owner/repo."
 
+require_bundle=0
 if [[ "$repo" == "$DEFAULT_REPO" ]]; then
-  policy="${policy:-$DEFAULT_POLICY}"
+  if [[ -z "$policy" ]]; then
+    policy="$DEFAULT_POLICY"
+    require_bundle=1
+  fi
   identity="${identity:-$DEFAULT_SIGNER_IDENTITY}"
   issuer="${issuer:-$DEFAULT_SIGNER_ISSUER}"
 fi
 
 echo "==> Advisory corpus: $repo, policy '${policy:-<none>}'" >&2
-emit "$repo" "$policy" "$identity" "$issuer" 1
+emit "$repo" "$policy" "$identity" "$issuer" 1 "$require_bundle"

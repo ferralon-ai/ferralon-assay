@@ -62,7 +62,7 @@ func runResolveCorpus(t *testing.T, env map[string]string) (resolvedCorpus, bool
 func TestResolveAdvisoryCorpus(t *testing.T) {
 	publisherFull := resolvedCorpus{
 		"repo": publisherCorpus, "policy": "full",
-		"signer-identity": publisherIdentity, "signer-issuer": publisherIssuer, "required": "1",
+		"signer-identity": publisherIdentity, "signer-issuer": publisherIssuer, "required": "1", "require-bundle": "1",
 	}
 	cases := []struct {
 		name    string
@@ -83,14 +83,17 @@ func TestResolveAdvisoryCorpus(t *testing.T) {
 		{
 			name: "opt-out: built-in test advisories only, nothing required",
 			env:  map[string]string{"IN_BUILTIN_ONLY": "true"},
-			want: resolvedCorpus{"repo": "", "policy": "", "signer-identity": "", "signer-issuer": "", "required": "0"},
+			want: resolvedCorpus{
+				"repo": "", "policy": "", "signer-identity": "", "signer-issuer": "",
+				"required": "0", "require-bundle": "0",
+			},
 		},
 		{
-			name: "explicit policy on the default corpus keeps the publisher signer",
+			name: "explicit policy on the default corpus keeps the publisher signer and the git fallback",
 			env:  map[string]string{"IN_CORPUS_POLICY": "published-7d"},
 			want: resolvedCorpus{
 				"repo": publisherCorpus, "policy": "published-7d",
-				"signer-identity": publisherIdentity, "signer-issuer": publisherIssuer, "required": "1",
+				"signer-identity": publisherIdentity, "signer-issuer": publisherIssuer, "required": "1", "require-bundle": "0",
 			},
 		},
 		{
@@ -104,12 +107,16 @@ func TestResolveAdvisoryCorpus(t *testing.T) {
 			want: resolvedCorpus{
 				"repo": publisherCorpus, "policy": "full",
 				"signer-identity": "someone@example.com", "signer-issuer": "https://issuer.example", "required": "1",
+				"require-bundle": "1",
 			},
 		},
 		{
 			name: "a third-party corpus takes no default policy or signer",
 			env:  map[string]string{"IN_CORPUS_REPO": "acme/corpus"},
-			want: resolvedCorpus{"repo": "acme/corpus", "policy": "", "signer-identity": "", "signer-issuer": "", "required": "1"},
+			want: resolvedCorpus{
+				"repo": "acme/corpus", "policy": "", "signer-identity": "", "signer-issuer": "",
+				"required": "1", "require-bundle": "0",
+			},
 		},
 		{
 			name: "a third-party corpus with its own policy and signer",
@@ -120,12 +127,16 @@ func TestResolveAdvisoryCorpus(t *testing.T) {
 			want: resolvedCorpus{
 				"repo": "acme/corpus", "policy": "full",
 				"signer-identity": "acme@example.com", "signer-issuer": "https://issuer.example", "required": "1",
+				"require-bundle": "0",
 			},
 		},
 		{
 			name: "a checked-out directory fetches nothing and is required",
 			env:  map[string]string{"IN_CORPUS_DIR": "/work/corpus", "IN_CORPUS_POLICY": "full"},
-			want: resolvedCorpus{"repo": "", "policy": "", "signer-identity": "", "signer-issuer": "", "required": "1"},
+			want: resolvedCorpus{
+				"repo": "", "policy": "", "signer-identity": "", "signer-issuer": "",
+				"required": "1", "require-bundle": "0",
+			},
 		},
 		{
 			name:    "opt-out with a corpus input is a contradiction",
@@ -203,6 +214,7 @@ func TestActionReadsResolvedCorpus(t *testing.T) {
 		{"corpus-bundle", "CORPUS_POLICY", "${{ steps.corpus.outputs.policy }}"},
 		{"corpus-bundle", "CORPUS_SIGNER_IDENTITY", "${{ steps.corpus.outputs.signer-identity }}"},
 		{"corpus-bundle", "CORPUS_SIGNER_ISSUER", "${{ steps.corpus.outputs.signer-issuer }}"},
+		{"corpus-bundle", "CORPUS_REQUIRE_BUNDLE", "${{ steps.corpus.outputs.require-bundle }}"},
 		{"Fetch the advisory corpus (unauthenticated, shallow + sparse)", "if", "steps.corpus.outputs.repo != '' && steps.corpus-bundle.outputs.route != 'bundle'"},
 		{"Fetch the advisory corpus (unauthenticated, shallow + sparse)", "CORPUS_REPO", "${{ steps.corpus.outputs.repo }}"},
 		{"Fetch the advisory corpus (unauthenticated, shallow + sparse)", "CORPUS_POLICY", "${{ steps.corpus.outputs.policy }}"},

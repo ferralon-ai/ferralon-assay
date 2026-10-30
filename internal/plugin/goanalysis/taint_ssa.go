@@ -4,8 +4,6 @@ import (
 	"sort"
 
 	"golang.org/x/tools/go/ssa"
-
-	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // taintAnalysis is a variable-level, inter-procedural value-flow taint engine
@@ -17,7 +15,7 @@ import (
 // only ever non-Partial on a fully-resolved, clean flow (inv.5).
 type taintAnalysis struct {
 	sp    *ssaProgram
-	sinks map[string]bool // sink SCIP id -> wanted
+	sinks map[string]bool // sink SCIP id -> wanted; nil wants every callee
 
 	tainted map[ssa.Value]bool // values reached by taint
 	// origin records, for a tainted value, the source ingress SCIP id and the
@@ -36,9 +34,10 @@ type taintOrigin struct {
 }
 
 // runTaint seeds sources from ingress functions and propagates taint to a
-// fixpoint, returning the discovered source->sink paths and the path-scoped
-// partiality. ingresses maps an ingress SCIP id to its SSA function.
-func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[string]bool) ([]plugin.ReachPath, map[string]bool) {
+// fixpoint, returning each sink reached mapped to its attributed ingress, and the
+// path-scoped partiality. ingresses maps an ingress SCIP id to its SSA function;
+// a nil sinks records every static callee a tainted argument reaches.
+func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[string]bool) (map[string]string, map[string]bool) {
 	ta := &taintAnalysis{
 		sp:      sp,
 		sinks:   sinks,
@@ -95,21 +94,7 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		classifyFuncPartiality(fn, reasons)
 	}
 
-	var paths []plugin.ReachPath
-	for sink, ingress := range ta.hits {
-		paths = append(paths, plugin.ReachPath{
-			Sink:    sym(sink),
-			Ingress: sym(ingress),
-			Trace:   []plugin.Symbol{sym(ingress), sym(sink)},
-		})
-	}
-	sort.Slice(paths, func(i, j int) bool {
-		if paths[i].Sink.SCIP != paths[j].Sink.SCIP {
-			return paths[i].Sink.SCIP < paths[j].Sink.SCIP
-		}
-		return paths[i].Ingress.SCIP < paths[j].Ingress.SCIP
-	})
-	return paths, reasons
+	return ta.hits, reasons
 }
 
 // propagate pushes taint from a tainted value v to the values its referrers
@@ -185,7 +170,7 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	// a finding. The sink identity is the callee's SCIP id.
 	if callee != nil {
 		sym := ta.sp.scipFunc(callee)
-		if ta.sinks[sym] && argContains(common.Args, v) {
+		if (ta.sinks == nil || ta.sinks[sym]) && argContains(common.Args, v) {
 			if _, seen := ta.hits[sym]; !seen {
 				ta.hits[sym] = o.ingress
 			}

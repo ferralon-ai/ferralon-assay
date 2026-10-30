@@ -189,9 +189,9 @@ func TestRunTaint_AttributesLowestIngress(t *testing.T) {
 		t.Fatalf("want both handlers as resolved ingresses; got %v", ingresses)
 	}
 	for run := range 20 {
-		paths, _ := runTaint(sp, ingresses, map[string]bool{sink: true})
-		if len(paths) != 1 || !strings.Contains(paths[0].Ingress.SCIP, "AlphaHandler") {
-			t.Fatalf("run %d: want Sink attributed to AlphaHandler; got %+v", run, paths)
+		hits, _ := runTaint(sp, ingresses, map[string]bool{sink: true})
+		if len(hits) != 1 || !strings.Contains(hits[sink], "AlphaHandler") {
+			t.Fatalf("run %d: want Sink attributed to AlphaHandler; got %v", run, hits)
 		}
 	}
 }

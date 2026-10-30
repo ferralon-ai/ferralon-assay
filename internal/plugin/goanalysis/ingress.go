@@ -24,7 +24,11 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 	if err != nil {
 		return plugin.IngressResult{}, err
 	}
+	return ingressesOf(sp, res), nil
+}
 
+// ingressesOf is FindIngresses over a program already loaded and built.
+func ingressesOf(sp *ssaProgram, res *LoadResult) plugin.IngressResult {
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress
 	add := func(in plugin.Ingress) {
@@ -78,7 +82,7 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 		return ingresses[i].Selector < ingresses[j].Selector
 	})
 
-	return plugin.IngressResult{Partiality: plugin.Complete(), Ingresses: ingresses}, nil
+	return plugin.IngressResult{Partiality: plugin.Complete(), Ingresses: ingresses}
 }
 
 // isHTTPHandlerSig reports whether sig is the net/http handler shape

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	"golang.org/x/tools/go/ssa"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -414,43 +417,128 @@ func TestResolveDependencySymbolsFromCachedIndex(t *testing.T) {
 	}
 }
 
-// TestComputeTaintFromCachedIngresses pins that every advisory's taint run from the cached
-// ingresses gets exactly what it gets from a fresh ingress search, and that the search runs once.
-func TestComputeTaintFromCachedIngresses(t *testing.T) {
-	sinks := [][]string{
-		{sinkSCIPIn(t, taintFixtureDir, "/Sink().")},
-		{"scip-go gomod example.com/absent . example.com/absent/Nowhere()."},
-	}
-	taint := func(ctx context.Context, s []string) string {
-		t.Helper()
-		res, err := ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: taintFixtureDir, Sinks: s})
-		if err != nil {
-			t.Fatalf("%v: %v", s, err)
-		}
-		b, err := json.Marshal(res)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(b)
-	}
-
-	want := make([]string, len(sinks))
-	for i, s := range sinks {
-		want[i] = taint(context.Background(), s)
-	}
-
-	ctx := WithRunCacheDir(context.Background(), t.TempDir())
-	for round := range 2 {
-		for i, s := range sinks {
-			if got := taint(ctx, s); got != want[i] {
-				t.Errorf("round %d, sinks %v: cached taint = %s, want %s", round, s, got, want[i])
+// TestComputeTaintFromCachedClosure pins that every advisory's taint result filtered from the cached
+// closure equals a taint pass run for that advisory's sinks alone: the same paths, each attributed
+// to the same ingress, and the same partiality. It checks every sink the closure reaches on its own
+// and in sets with sinks no flow reaches, empty and repeated, read uncached, computed into the
+// cache, and read back from it.
+func TestComputeTaintFromCachedClosure(t *testing.T) {
+	for _, dir := range []string{
+		"testdata/taintmod",
+		"testdata/taintmultimod",
+		"testdata/taintreflectmod",
+		"testdata/sanitizermod",
+		"testdata/fixturemod",
+		"testdata/chimod",
+	} {
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			ctx := context.Background()
+			sp, res, err := loadSSA(ctx, dir)
+			if err != nil {
+				t.Fatal(err)
 			}
+			ingresses := sp.resolveIngressFuncs(ingressesOf(sp, res).Ingresses)
+			reached, _ := runTaint(sp, ingresses, nil)
+			if len(reached) == 0 {
+				t.Fatal("no callee reached; the fixture proves nothing")
+			}
+			const absent = "scip-go gomod example.com/absent . example.com/absent/Nowhere()."
+			all := slices.Sorted(maps.Keys(reached))
+			sinkSets := [][]string{nil, {}, {""}, {absent}, all, append([]string{absent, "", all[0]}, all...)}
+			for _, s := range all {
+				sinkSets = append(sinkSets, []string{s})
+			}
+
+			cached := WithRunCacheDir(ctx, t.TempDir())
+			for _, sinks := range sinkSets {
+				want := taintForSinksAlone(sp, res, ingresses, sinks)
+				for _, c := range []struct {
+					name string
+					ctx  context.Context
+				}{{"uncached", ctx}, {"cached", cached}, {"cached again", cached}} {
+					got, err := ComputeTaint(c.ctx, plugin.ComputeTaintRequest{BuildDir: dir, Sinks: sinks})
+					if err != nil {
+						t.Fatalf("%s, sinks %q: %v", c.name, sinks, err)
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Errorf("%s, sinks %q:\n got %+v\nwant %+v", c.name, sinks, got, want)
+					}
+				}
+			}
+			if _, err := runCached(cached, "taint", loadCacheKey(dir), func() ([]byte, error) {
+				t.Fatal("taint closure was not cached")
+				return nil, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// taintForSinksAlone is the taint result of a pass that records hits at sinks only, folded as one
+// advisory's result: the reference the cached closure's filter must equal.
+func taintForSinksAlone(sp *ssaProgram, res *LoadResult, ingresses map[string]*ssa.Function, sinks []string) plugin.TaintResult {
+	want := map[string]bool{}
+	for _, s := range sinks {
+		if s != "" {
+			want[s] = true
 		}
 	}
-	if _, err := runCached(ctx, "ingresses", loadCacheKey(taintFixtureDir), func() ([]byte, error) {
-		t.Fatal("ingresses were not cached")
-		return nil, nil
-	}); err != nil {
+	hits, pathReasons := runTaint(sp, ingresses, want)
+	reasons := map[string]bool{}
+	for _, r := range res.Partiality.Reasons {
+		reasons[r] = true
+	}
+	for _, r := range res.Partiality.Scoped {
+		reasons[r.Reason] = true
+	}
+	for r := range pathReasons {
+		reasons[r] = true
+	}
+	var paths []plugin.ReachPath
+	for _, s := range slices.Sorted(maps.Keys(hits)) {
+		paths = append(paths, plugin.ReachPath{
+			Sink:    sym(s),
+			Ingress: sym(hits[s]),
+			Trace:   []plugin.Symbol{sym(hits[s]), sym(s)},
+		})
+	}
+	for s := range want {
+		if _, ok := hits[s]; !ok {
+			reasons[plugin.PartialReasonNoIngress] = true
+		}
+	}
+	part := plugin.Complete()
+	if len(reasons) > 0 {
+		part = plugin.Partial(sortedKeys(reasons)...)
+	}
+	return plugin.TaintResult{Partiality: part, Paths: paths, PrecisionNote: taintPrecisionNote}
+}
+
+// TestComputeTaintFirstCallsRace pins that advisories whose first taint calls race each get the
+// whole closure's answer, whichever of them computes it.
+func TestComputeTaintFirstCallsRace(t *testing.T) {
+	sinks := []string{sinkSCIPIn(t, taintFixtureDir, "/Sink().")}
+	want, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{BuildDir: taintFixtureDir, Sinks: sinks})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(want.Paths) == 0 {
+		t.Fatal("no taint path; the race proves nothing")
+	}
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	var wg sync.WaitGroup
+	got := make([]plugin.TaintResult, 4)
+	errs := make([]error, len(got))
+	for i := range got {
+		wg.Go(func() {
+			got[i], errs[i] = ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: taintFixtureDir, Sinks: sinks})
+		})
+	}
+	wg.Wait()
+	for i := range got {
+		if errs[i] != nil || !reflect.DeepEqual(got[i], want) {
+			t.Errorf("call %d: got %+v, %v, want %+v", i, got[i], errs[i], want)
+		}
 	}
 }

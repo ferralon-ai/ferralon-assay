@@ -86,9 +86,21 @@ must: on a private or internal repository it caches every package; on a public r
 never caches a package from a registry your `.npmrc` holds an auth entry for, and fetches those on
 every run. `persist-dependency-cache` overrides this (`always`, `never`). Set `dependency-code: off`
 to skip the fetch, or `offline` to read only a cache already on the runner.
-If the fetch fails (an unreachable registry, a missing token, a timeout), the scan reports what it
-would with `off` and the Report says why, under `dependency_code` and a
-`tool_failure:dependency_code_unavailable` note. Before a pull-request job exports a registry
+If a registry serves some packages and fails others, the scan reads what it fetched and withholds
+each package it could not. If a registry serves none (an unreachable registry, a missing token, a
+timeout), the scan reports what it would with `off` and the Report says why, under
+`dependency_code` and a `tool_failure:dependency_code_unavailable` note. A registry that refuses
+the token the scan sent fails the run: the token is expired or wrong, or a curation proxy is
+blocking a package. On `cve-watch`, a registry that has served the repository and now serves
+nothing, or answers with a transient error, holds the advisory cursor, and the run fails once that
+has lasted 3 runs and 24 hours. A `cve-watch` run that read less dependency code than the
+lockfile pins does not keep a disqualified or not-exploitable verdict it reached: the advisory
+shows as undetermined with reason `dependency_not_fetched`, and the next `cve-watch` run assesses
+it again, even when OSV reports nothing new; while its registry still serves nothing, that run
+counts toward the 3-run limit too. A run with `dependency-code: off` stops the reassessment: its
+verdicts are the ones a scan without dependency code reaches. The job summary names the registry
+and the fix when a token is missing or refused, or the cursor is held or stalled; the Report and
+the pull-request comment never name a registry host. Before a pull-request job exports a registry
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
 receives it, and what the cache exposes.
 

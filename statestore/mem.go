@@ -62,8 +62,14 @@ func (s *MemStore) Write(ctx context.Context, next *State) (*State, error) {
 
 	committed := *next
 	if s.written && next.CommitSHA != s.state.CommitSHA {
-		committed = *Merge(s.state, next)
+		merged, err := mergeForRetry(s.state, next)
+		if err != nil {
+			return nil, err
+		}
+		committed = *merged
 	}
+	// The hook belongs to this write; a later Read must not hand it to another writer.
+	committed.Remerge = nil
 	s.writes++
 	committed.CommitSHA = fmt.Sprintf("mem-%d", s.writes)
 	s.state = &committed

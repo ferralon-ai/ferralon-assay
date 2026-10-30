@@ -67,6 +67,37 @@ type BaselineRequest struct {
 	// advisories not yet assessed get scan_cut_short rows and the run still writes its Report
 	// under ctx. Nil means ctx.
 	Analysis context.Context
+	// DependencyFetch, when set, computes the dependency-fetch record the run writes from the
+	// stored one, after every assessment and before the write. Nil carries the stored record.
+	DependencyFetch DependencyFetchUpdate
+	// Disclose, when set, records on the run's Report what the caller observed of the run that the
+	// pipeline does not report itself, after every assessment and before the write. See Disclosure.
+	Disclose Disclosure
+}
+
+// Disclosure records on a writing run's Report a disclosure only the caller can make: the dependency
+// code the run read, which the caller observed through its acquisition hook. It runs before the
+// state write so the stored report.json carries it, and with it every later run that publishes the
+// stored rows: a cve-watch earnest run carries the stored partiality into its Report, and a
+// pr-inherit run publishes the stored Report. It may add partiality and set disclosure fields; it
+// must not change a verdict.
+type Disclosure func(rep *report.Report)
+
+// DependencyFetchUpdate computes the dependency-fetch record a writing run leaves in state from
+// the stored record (nil when there is none) and what the run did. It must not modify prior.
+type DependencyFetchUpdate func(prior *statestore.DepFetch, run DependencyFetchRun) *statestore.DepFetch
+
+// DependencyFetchRun is what a writing run did, as a DependencyFetchUpdate sees it.
+type DependencyFetchRun struct {
+	// Baseline is set for a baseline run and clear for a cve-watch earnest run.
+	Baseline bool
+	// Held reports that a cve-watch earnest run kept the stored cursor. Always false for a
+	// baseline, which has no cursor to hold.
+	Held bool
+	// Assessed lists the advisories whose assessment this run completed, sorted by ID: neither
+	// cut short nor failed. Each carries the aliases its advisory record names, so a caller can
+	// match an advisory a different run knew by another ID.
+	Assessed []report.Advisory
 }
 
 // RunBaseline runs the full S1–S6 pipeline for every advisory in the request, builds
@@ -82,7 +113,7 @@ type BaselineRequest struct {
 // A baseline stopped before its dependency inventory resolved keeps the stored SBOM: replacing it
 // with an empty one would leave CVE-watch nothing to query until the next baseline finishes.
 func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineRequest) (*report.Report, error) {
-	rep, err := baselineReport(ctx, req, func() (report.SBOM, error) {
+	rep, assessed, err := baselineReport(ctx, req, func() (report.SBOM, error) {
 		prior, err := readForUpdate(ctx, store)
 		if err != nil {
 			return report.SBOM{}, err
@@ -92,6 +123,9 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 	if err != nil {
 		return nil, err
 	}
+	if req.Disclose != nil {
+		req.Disclose(rep)
+	}
 
 	next, err := readForUpdate(ctx, store)
 	if err != nil {
@@ -100,6 +134,15 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 	next.Report = rep
 	next.SBOM = rep.SBOM
 	next.Cursor = req.Cursor
+	if req.DependencyFetch != nil {
+		next.DepFetch = req.DependencyFetch(next.DepFetch, DependencyFetchRun{Baseline: true, Assessed: assessed})
+	}
+	// A baseline that read all the dependency code cleared what it assessed from the list; what is
+	// left was not assessed with it, so this Report does not refute it either.
+	if next.Report, err = withNotFetched(next.Report, next.DepFetch); err != nil {
+		return nil, err
+	}
+	next.Remerge = remergeNotFetched()
 
 	committed, err := store.Write(ctx, next)
 	if err != nil {
@@ -111,12 +154,14 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 // buildBaselineReport runs S1–S6 per advisory and assembles the Report. It does not
 // touch the StateStore — the offline pipeline test exercises it directly.
 func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Report, error) {
-	return baselineReport(ctx, req, nil)
+	rep, _, err := baselineReport(ctx, req, nil)
+	return rep, err
 }
 
 // baselineReport is buildBaselineReport with priorSBOM, which reads the stored SBOM a baseline
-// stopped before its inventory resolved carries forward. Nil carries nothing forward.
-func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, error) {
+// stopped before its inventory resolved carries forward. Nil carries nothing forward. It also
+// returns the advisories whose assessment completed, sorted by ID.
+func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, []report.Advisory, error) {
 	analyzer := req.AnalyzerVersion
 	if analyzer == "" {
 		analyzer = AnalyzerVersion
@@ -148,13 +193,13 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	analysis := analysisOr(req.Analysis, ctx)
 	inv, invLanguage, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
 	if err != nil {
-		return nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
+		return nil, nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
 	sbom, invNotes := sbomFromInventory(inv, ecosystemFor(invLanguage))
 	if inventoryCutShort(invNotes) && priorSBOM != nil {
 		prior, err := priorSBOM()
 		if err != nil {
-			return nil, fmt.Errorf("trigger: read the stored SBOM: %w", err)
+			return nil, nil, fmt.Errorf("trigger: read the stored SBOM: %w", err)
 		}
 		if len(prior.Packages) > 0 {
 			sbom = prior
@@ -167,6 +212,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	mods := goModulesOf(sbom, invNotes)
 
 	cut := 0
+	var assessed []report.Advisory
 	for _, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
@@ -198,6 +244,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 			b.AddPartiality(note)
 		}
 		b.AddPartiality(partialityNotes(st, assessmentID)...)
+		assessed = append(assessed, advisory)
 	}
 	if cut > 0 {
 		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))
@@ -213,9 +260,9 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 
 	rep, err := b.BuildValidated()
 	if err != nil {
-		return nil, fmt.Errorf("trigger: build baseline report: %w", err)
+		return nil, nil, fmt.Errorf("trigger: build baseline report: %w", err)
 	}
-	return &rep, nil
+	return &rep, sortedAdvisories(assessed), nil
 }
 
 // PRInheritRequest configures a PR-adjacent run. It diffs the PR's resolved SBOM
@@ -340,10 +387,22 @@ type CVEWatchRequest struct {
 	// again next run. Set it when this run's analysis inputs could not be had (a failed build
 	// graph): the Report is still written, but the advisories it could not assess stay new.
 	HoldCursor bool
+	// Hold, when set, is consulted on an earnest run after the re-assessments and before the
+	// state write, with the stored dependency-fetch record (nil when there is none); true holds
+	// the cursor as HoldCursor does. It is for a condition the re-assessments themselves
+	// discover, which a value fixed before the run cannot see.
+	Hold func(stored *statestore.DepFetch) bool
 	// Analysis bounds the earnest re-assessments. When it is done, the advisories not yet assessed
 	// get scan_cut_short rows, the stored cursor is held so they stay new, and the run still
 	// writes its Report under ctx. Nil means ctx.
 	Analysis context.Context
+	// DependencyFetch, when set, computes the dependency-fetch record an earnest run writes from
+	// the stored one, after the hold is decided and before the write. A heartbeat never calls it
+	// and carries the stored record. Nil carries the stored record.
+	DependencyFetch DependencyFetchUpdate
+	// Disclose, when set, records the caller's disclosure on an earnest run's Report before the
+	// write (Disclosure). A heartbeat writes the stored Report unchanged and never calls it.
+	Disclose Disclosure
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -355,6 +414,10 @@ type CVEWatchResult struct {
 	// NewAdvisories are the advisory IDs OSV.dev reported that were NOT in the stored
 	// cursor — the forcing function for an earnest run. Empty on a heartbeat.
 	NewAdvisories []string
+	// Reassessed are the advisory IDs the earnest run assessed again although they were not new:
+	// their stored verdict was reached without the dependency code it rests on (notFetchedRetry).
+	// An earnest run with no new advisory runs for these alone. Empty on a heartbeat.
+	Reassessed []string
 	// Report is the re-analyzed Report on an earnest run; nil on a heartbeat.
 	Report *report.Report
 	// Truncated is true when the Report left in state discloses a scan cut short: the earnest
@@ -372,10 +435,13 @@ type CVEWatchResult struct {
 //  1. Query OSV.dev querybatch over the stored SBOM (this package's only network
 //     egress; see the Rung 0 package doc for the tool's others).
 //  2. Diff the returned advisory IDs against the stored cursor.
-//  3. No new IDs → heartbeat: write only the cursor (set to the full current ID set);
-//     report/sbom/vex blobs are reused (zero new objects). Returns Heartbeat=true.
-//  4. New IDs overlap the SBOM → earnest run: re-analyze S1–S6 scoped to the newly-
-//     relevant advisories, build a Report, write it with the bumped cursor.
+//  3. No new IDs and nothing to assess again → heartbeat: write only the cursor (set to the
+//     full current ID set); report/sbom/vex blobs are reused (zero new objects). Returns
+//     Heartbeat=true.
+//  4. Otherwise → earnest run: re-analyze S1–S6 scoped to the newly-relevant advisories and
+//     those assessed earlier without their dependency code (notFetchedRetry), build a Report,
+//     withhold every refuting verdict the dependency-fetch record still lists
+//     (withNotFetched), and write it with the bumped cursor.
 //
 // The cursor is the canonical sorted advisory-ID set; "new" means present in the OSV
 // result but absent from the stored cursor.
@@ -408,8 +474,18 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		}
 	}
 
-	if len(newIDs) == 0 {
+	// A run that records no dependency acquisition retries nothing, a row withheld as
+	// dependency_not_fetched included. It cannot clear the list, so a listed row it re-assessed
+	// would be withheld again; and a marked row whose record was lost would get back a verdict
+	// reached without reading the dependency code it was withheld for.
+	var retry []report.AdvisoryFinding
+	if req.DependencyFetch != nil {
+		retry = notFetchedRetry(state.Report, state.DepFetch, newIDs)
+	}
+
+	if len(newIDs) == 0 && len(retry) == 0 {
 		state.Cursor = newCursor
+		state.Remerge = remergeNotFetched()
 		committed, err := store.Write(ctx, state)
 		if err != nil {
 			return nil, fmt.Errorf("trigger: cve-watch heartbeat: %w", err)
@@ -428,19 +504,30 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	if req.HoldCursor {
 		cursor = state.Cursor
 	}
-	rep, err := earnestRun(ctx, state, req, osvResult, newIDs, cursor)
+	rep, assessed, err := earnestRun(ctx, state, req, osvResult, newIDs, retry, cursor)
 	if err != nil {
 		return nil, err
 	}
-	state.Report = rep
+	if req.Disclose != nil {
+		req.Disclose(rep)
+	}
+	held := rep.Provenance.AdvisoryCursor == state.Cursor
 	state.SBOM = rep.SBOM
 	state.Cursor = rep.Provenance.AdvisoryCursor
+	if req.DependencyFetch != nil {
+		state.DepFetch = req.DependencyFetch(state.DepFetch, DependencyFetchRun{Held: held, Assessed: assessed})
+	}
+	if state.Report, err = withNotFetched(rep, state.DepFetch); err != nil {
+		return nil, err
+	}
+	state.Remerge = remergeNotFetched()
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)
 	}
 	return &CVEWatchResult{
 		NewAdvisories: newIDs,
+		Reassessed:    retriedIDs(retry),
 		Report:        committed.Report,
 		Cursor:        committed.Cursor,
 		Truncated:     hasCutShort(committed.Report.Partiality),

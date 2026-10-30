@@ -252,7 +252,11 @@ inputs:
       leaves the choice to the scanner release's own default. Fetched packages land under the
       runner's temp directory, which is emptied after the job; persist-dependency-cache decides
       which of them persist between runs. If the fetch fails, the scan reports what it would with 'off' and names
-      the cause on the Report. The scanned branch's .npmrc chooses which registry host receives
+      the cause on the Report; the job summary names the registry and the fix when a token is
+      missing or refused, or the cursor is held or stalled. A refused token fails the run. A
+      cve-watch run that read less than the lockfile pins reports each disqualified or
+      not_exploitable verdict it reached as undetermined (dependency_not_fetched), and the next
+      cve-watch run assesses those advisories again; a run with 'off' stops that. The scanned branch's .npmrc chooses which registry host receives
       NODE_AUTH_TOKEN/NPM_TOKEN, as with npm ci; don't export them on pull-request jobs, or set
       'off'. VERSION REQUIREMENT: a scanner release that reads ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
     required: false

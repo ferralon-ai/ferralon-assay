@@ -987,6 +987,12 @@ const (
 	// the row says nothing about the codebase. As a scan-level note it names the cause, how many
 	// advisories were not assessed, and how to give the scan more time.
 	ReasonScanCutShort = "scan_cut_short"
+	// ReasonDependencyNotFetched: the advisory was last assessed on a run that read less of the
+	// dependency code its lock pins (the fetch fell back, or a registry failed some packages),
+	// and no run that read it has assessed the advisory since. The verdict that run reached rests
+	// on code it did not read, so it is not kept. As a scan-level note, scoped to the package
+	// ecosystem, it says that rows were withheld for this reason.
+	ReasonDependencyNotFetched = "dependency_not_fetched"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is
@@ -1048,6 +1054,12 @@ type Report struct {
 	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
 }
 
+// SetAdvisories replaces the findings of a built Report, ordered as Build orders them.
+func (r *Report) SetAdvisories(adv []AdvisoryFinding) {
+	r.Advisories = append([]AdvisoryFinding(nil), adv...)
+	sortFindings(r.Advisories)
+}
+
 // AddPartiality records notes on a built Report, classified, de-duplicated and sorted as
 // Builder.AddPartiality and Build would have them.
 func (r *Report) AddPartiality(notes ...PartialityNote) {
@@ -1068,9 +1080,15 @@ const (
 )
 
 // PartialReasonDependencyCodeUnavailable is the scan-level reason a JS scan carries when a fetch
-// failed and it read no dependency code. It is plugin.PartialReasonToolFailure narrowed the way
+// failed and it read no dependency code. A scan whose registry served some packages and failed
+// others reads what it fetched and does not carry it; each package it could not fetch is withheld
+// on its own. It is plugin.PartialReasonToolFailure narrowed the way
 // the JVM lane narrows it to build_graph_absent: the step that did not run is the dependency
 // code read, whatever stopped it (the registry, a credential, the deadline).
+//
+// The note is stored with the Report, and a cve-watch earnest run carries it into its own Report
+// with the rest of the stored partiality: it re-assesses only some rows, so the rest are still the
+// verdicts the run that fell back reached. Only a baseline, which rebuilds every row, drops it.
 const PartialReasonDependencyCodeUnavailable = plugin.PartialReasonToolFailure + ":dependency_code_unavailable"
 
 // DependencyCode is the provenance of the dependency code a JS scan read.

@@ -334,6 +334,9 @@ func reportHTMLLimitLabel(reason string) string {
 	case report.ReasonScanCutShort:
 		return "The scan was cut short before every advisory was assessed, so no verdict is reported for " +
 			"the advisories it did not finish."
+	case report.ReasonDependencyNotFetched:
+		return "Some advisories were last assessed on a run that did not read all the dependency code the " +
+			"lockfile pins, so the verdicts that run reached are withheld and no verdict is reported for them."
 	default:
 		return reason
 	}

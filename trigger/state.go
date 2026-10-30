@@ -443,11 +443,21 @@ func canonicalKey(ecosystem, name string) string {
 	return ecosystem + "\x00" + name
 }
 
-// earnestRun is the CVE-watch overlap path: re-run S1–S6 for the newly-relevant
-// advisories OSV.dev flagged, merge the fresh findings over the prior Report's
+// osvSource is the advisory source a cve-watch run assesses OSV's newly-relevant advisories under.
+const osvSource = "osv"
+
+// earnestRun is the CVE-watch overlap path: re-run S1–S6 for the advisories in newIDs (the
+// newly-relevant ones OSV.dev flagged) and for the stored rows in retry (those RunCVEWatch assesses
+// again, each under its own source and package), merge the fresh findings over the prior Report's
 // findings, and build a Report stamped with the new cursor. The prior Report's SBOM
 // is reused (CVE-watch does not re-resolve dependencies — only advisories changed).
-func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, newCursor string) (*report.Report, error) {
+//
+// It also returns what a DependencyFetchUpdate sees of the run, Held aside: the advisories whose
+// re-assessment completed, sorted by ID, the packages each concerns, and the IDs with a fresh
+// finding that is undetermined, cut short or failed included. The cursor is held,
+// the stored one written to provenance, when newCursor already is the stored one, when an
+// advisory was cut short, or when req.Hold, consulted after every re-assessment, says so.
+func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, retry []report.AdvisoryFinding, newCursor string) (*report.Report, DependencyFetchRun, error) {
 	prior := state.Report
 
 	newSet := make(map[string]struct{}, len(newIDs))
@@ -464,33 +474,32 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	analysis := analysisOr(req.Analysis, ctx)
 	cut := 0
-	for _, a := range osvResult.Advisories {
-		if _, ok := newSet[a.ID]; !ok {
-			continue
-		}
-		areq := assessment.Request{
-			Vulnerability: assessment.VulnRef{ID: a.ID, Source: "osv"},
-			Codebase:      req.Codebase,
-		}
-		workSet = append(workSet, areq.Vulnerability)
+	var assessed []report.Advisory
+	packages := map[string][]string{}
+	undetermined := map[string]bool{}
+	// assess assesses ref against pkg and keys the finding under key, the row it replaces.
+	assess := func(ref assessment.VulnRef, pkg *report.Package, key string) {
+		areq := assessment.Request{Vulnerability: ref, Codebase: req.Codebase}
+		workSet = append(workSet, ref)
 		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
 		if stopped {
-			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = cutShortFinding(areq.Vulnerability)
-			freshIDs[a.ID] = struct{}{}
+			reFindings[key] = cutShortFinding(ref)
+			freshIDs[ref.ID] = struct{}{}
+			undetermined[ref.ID] = true
 			cut++
-			continue
+			return
 		}
 		if err != nil {
-			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
-			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = assessFailureFinding(areq.Vulnerability, err)
-			freshIDs[a.ID] = struct{}{}
-			continue
+			notes = append(notes, assessFailureNote(ref, err))
+			reFindings[key] = assessFailureFinding(ref, err)
+			freshIDs[ref.ID] = struct{}{}
+			undetermined[ref.ID] = true
+			return
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
-		pkg := a.Package
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather
@@ -499,8 +508,27 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			f.Package = tcPkg
 			notes = append(notes, note)
 		}
-		reFindings[advisory.ID+"\x00"+advisory.Source] = f
+		reFindings[key] = f
 		freshIDs[advisory.ID] = struct{}{}
+		assessed = append(assessed, advisory)
+		packages[advisory.ID] = append(packages[advisory.ID], assessedPackages(st, assessmentID, f.Package)...)
+		if f.Verdict == report.VerdictUndetermined {
+			undetermined[advisory.ID] = true
+		}
+	}
+	for _, a := range osvResult.Advisories {
+		if _, ok := newSet[a.ID]; !ok {
+			continue
+		}
+		pkg := a.Package
+		assess(assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, a.ID+"\x00"+osvSource)
+	}
+	for _, f := range retry {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if _, ok := reFindings[key]; ok {
+			continue
+		}
+		assess(assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key)
 	}
 
 	b := report.NewBuilder(report.Subject{
@@ -535,7 +563,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		b.AddFinding(f)
 	}
 	// CVE-watch re-resolves no dependencies, so the prior pass's limits still bound
-	// every inherited finding; the fresh notes cover the newly-relevant advisories.
+	// every inherited finding; the fresh notes cover the newly-relevant advisories. That holds
+	// for a stored tool_failure:dependency_code_unavailable too, even when this run read all the
+	// dependency code: the note covers every row the run that fell back reached, and this run
+	// replaces only the rows it assessed. Only a baseline, which rebuilds every row, drops it.
 	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
@@ -543,8 +574,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
-	if cut > 0 {
-		// The advisories this pass did not assess must stay new, so the next run assesses them.
+	if cut > 0 || (req.Hold != nil && req.Hold(state.DepFetch)) {
+		// The advisories this pass did not assess, or assessed without inputs it needed, must
+		// stay new, so the next run assesses them.
 		newCursor = state.Cursor
 	}
 
@@ -561,9 +593,41 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 
 	rep, err := b.BuildValidated()
 	if err != nil {
-		return nil, err
+		return nil, DependencyFetchRun{}, err
 	}
-	return &rep, nil
+	return &rep, DependencyFetchRun{Assessed: sortedAdvisories(assessed), Packages: packages, Undetermined: undetermined}, nil
+}
+
+// assessedPackages names every package an assessment concerns, as DependencyFetchRun.Packages
+// spells them: the finding's package (pkg, nil when it names none) and every package the
+// normalized advisory names.
+func assessedPackages(store artifact.Store, assessmentID string, pkg *report.Package) []string {
+	var purls []string
+	if pkg != nil {
+		switch {
+		case pkg.PURL != "":
+			purls = append(purls, pkg.PURL)
+		case pkg.Ecosystem == "npm" && pkg.Name != "":
+			purls = append(purls, "pkg:npm/"+pkg.Name)
+		default:
+			purls = append(purls, "")
+		}
+	}
+	purls = append(purls, pipeline.AdvisoryPackagePURLs(store, assessmentID)...)
+	if !pipeline.AdvisoryListsAffectedPackages(store, assessmentID) {
+		purls = append(purls, "")
+	}
+	return purls
+}
+
+// sortedAdvisories is advs sorted by ID, keeping the first of each ID; nil when empty.
+func sortedAdvisories(advs []report.Advisory) []report.Advisory {
+	if len(advs) == 0 {
+		return nil
+	}
+	out := slices.Clone(advs)
+	slices.SortStableFunc(out, func(a, b report.Advisory) int { return strings.Compare(a.ID, b.ID) })
+	return slices.CompactFunc(out, func(a, b report.Advisory) bool { return a.ID == b.ID })
 }
 
 // supersededByFresh reports whether an inherited finding must yield to this pass's fresh

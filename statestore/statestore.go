@@ -37,6 +37,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -67,7 +69,38 @@ const (
 	// a repo that never sees a signed revoke produces no revoke blob — preserving the
 	// zero-new-objects heartbeat guarantee.
 	fileRevoke = "revoke"
+	// fileDepFetch holds the dependency-fetch record (DepFetch, JSON). It is omitted
+	// from the tree while the record is empty, for the same zero-new-objects reason as
+	// fileRevoke.
+	fileDepFetch = "depfetch.json"
 )
+
+// modelled reports whether name is a state file this version reads and writes. Every
+// other entry in a state tree belongs to a different (typically newer) writer, and a
+// write carries it through unchanged rather than dropping it. A modelled file is never
+// carried: its presence in the next tree is decided by its State field alone, so a
+// field cleared on purpose (a revoke counter reset to 0) still drops the file.
+func modelled(name string) bool {
+	switch name {
+	case fileReport, fileSBOM, fileCursor, fileVEXLog, fileRevoke, fileDepFetch:
+		return true
+	}
+	return false
+}
+
+// errParentGone reports that a write's parent commit (the CAS token) no longer
+// exists: the ref was deleted and the commit pruned. A CAS against it cannot succeed,
+// so tryWrite reports it as ErrConflict and Write's re-read takes the re-create path.
+var errParentGone = errors.New("statestore: parent commit not found")
+
+// decodeRevoke parses the revoke counter file.
+func decodeRevoke(b []byte) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0, fmt.Errorf("statestore: decode %s: %w", fileRevoke, err)
+	}
+	return n, nil
+}
 
 // ErrNotFound is returned by Read when the state ref does not yet exist (a fresh
 // repository with no baseline run). Callers treat it as "no prior state".
@@ -139,6 +172,17 @@ type State struct {
 	// fires when it reaches the confirmation threshold (N=2). Zero for a state that has
 	// never seen a revoke (the file is then absent from the tree).
 	RevokeCount int
+	// DepFetch is the dependency-fetch record (depfetch.json). nil when the tree has
+	// none, or has one that describes a report.json other than the one beside it.
+	DepFetch *DepFetch
+	// Remerge, when set, is applied to the State a store builds by merging this one onto a
+	// concurrent winner after a lost CAS, before that State is written. A writer that derives
+	// part of its State from the rest (a projection over the Report and DepFetch) sets it so the
+	// derivation is redone over the merged values rather than lost to the union. It is never
+	// persisted, and it is carried onto the merged State so every retry applies it. Every
+	// StateStore implementation must apply it on each merge-retry (mergeForRetry does), and
+	// must clear it on the State it returns from Write.
+	Remerge func(*State) error
 	// CommitSHA is the commit the State was read from — the CAS expected-old token.
 	// Empty for a freshly constructed State (signals create-if-absent to Write).
 	CommitSHA string

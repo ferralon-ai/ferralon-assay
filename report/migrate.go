@@ -123,6 +123,8 @@ func UndeterminedDetail(reason string) string {
 		return "a path reaches this advisory's vulnerable code, but the advisory records no affected version range that can be checked against the installed version, so no verdict was established for it"
 	case ReasonScanCutShort:
 		return "the scan stopped before this advisory was assessed, so no verdict was established"
+	case ReasonDependencyNotFetched:
+		return "the run that last assessed this advisory did not read all the dependency code its lockfile pins, so the verdict it reached is not kept and no verdict was established; a run that reads that code assesses the advisory again"
 	case ReasonUnspecifiedLimit:
 		return "no verdict was established for this advisory, and the stored report this row was migrated from did not record which limit prevented it"
 	default:

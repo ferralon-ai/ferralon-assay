@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -621,6 +622,18 @@ func TestLimitNoteFor_GroundsReasonsScopeToPackageEcosystem(t *testing.T) {
 		if !ok || note.Reason != reason || note.Ecosystem != "PyPI" {
 			t.Errorf("%s: note = %+v, ok=%v; want reason %q scoped to PyPI", reason, note, ok, reason)
 		}
+	}
+}
+
+// TestLimitNoteFor_DependencyNotFetchedIsNotAGoToolchainNote: an npm advisory withheld for want of
+// dependency code owes a note about npm's dependency code, never the Go toolchain's.
+func TestLimitNoteFor_DependencyNotFetchedIsNotAGoToolchainNote(t *testing.T) {
+	note, ok := limitNoteFor(report.AdvisoryFinding{
+		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonDependencyNotFetched,
+		Package: &report.Package{Ecosystem: "npm", Name: "left-pad", Version: "1.3.0"},
+	})
+	if !ok || !reflect.DeepEqual(note, report.PartialityNote{Reason: report.ReasonDependencyNotFetched, Ecosystem: "npm"}) {
+		t.Fatalf("note = %+v, ok=%v; want dependency_not_fetched scoped to npm", note, ok)
 	}
 }
 

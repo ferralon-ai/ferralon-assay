@@ -230,6 +230,12 @@ type fileParse struct {
 	opaque      bool
 	imports     []string
 	importPaths []string
+	// packages are the dotted packages a star import or an __import__ with a fromlist may
+	// load submodules of; packagePaths their slash paths. importsUnread records an import
+	// statement importedModules could not read.
+	packages      []string
+	packagePaths  []string
+	importsUnread bool
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -362,7 +368,7 @@ func loadProgram(buildDir string) (*program, error) {
 		scan := parseCallsAndIngresses(lines)
 		scan.refs.scanFStrings(clean, lits)
 		roots, opaque := dynamicImports(clean, lits)
-		lookupRoots, lookups, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
+		lookupRoots, lookups, lookupPackages, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
 		roots = sortedDedup(append(roots, lookupRoots...))
 		opaque = opaque || lookupOpaque
 
@@ -391,9 +397,13 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.decorated[i].module = module
 		}
 		spans, stars := importStatements([]rune(clean))
-		var imports []string
+		var imports, packages []string
+		importsUnread := false
 		for _, sp := range spans {
-			imports = append(imports, importedModules(string([]rune(clean)[sp[0]:sp[1]]))...)
+			mods, pkgs, ok := importedModules(string([]rune(clean)[sp[0]:sp[1]]))
+			imports = append(imports, mods...)
+			packages = append(packages, pkgs...)
+			importsUnread = importsUnread || !ok
 		}
 		if len(stars) > 0 {
 			// A star import may bind any decorator's name.
@@ -403,25 +413,27 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.wrapped[i].module = module
 		}
 		prog.files = append(prog.files, fileParse{
-			module:    module,
-			isPackage: strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__",
-			calls:     scan.calls,
-			ingresses: scan.ingresses,
-			bindings:  indexBindings(scan.bindings),
-			loadRoots: roots,
-			decls:     fds,
-			topNames:  topNames,
-			decorated: scan.decorated,
-			wrapped:   scan.wrapped,
-			stars:     slices.Sorted(maps.Keys(stars)),
-			refs:      scan.refs,
-			locals:    scan.locals,
-			plain:     scan.plain,
-			binders:   scan.binders,
-			defs:      scan.defs,
-			computed:  scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
-			opaque:    opaque,
-			imports:   imports,
+			module:        module,
+			isPackage:     strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__",
+			calls:         scan.calls,
+			ingresses:     scan.ingresses,
+			bindings:      indexBindings(scan.bindings),
+			loadRoots:     roots,
+			decls:         fds,
+			topNames:      topNames,
+			decorated:     scan.decorated,
+			wrapped:       scan.wrapped,
+			stars:         slices.Sorted(maps.Keys(stars)),
+			refs:          scan.refs,
+			locals:        scan.locals,
+			plain:         scan.plain,
+			binders:       scan.binders,
+			defs:          scan.defs,
+			computed:      scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
+			opaque:        opaque,
+			imports:       imports,
+			packages:      append(packages, lookupPackages...),
+			importsUnread: importsUnread,
 		})
 		rawBindings = append(rawBindings, scan.bindings)
 		relBindings = append(relBindings, scan.relBindings)
@@ -486,6 +498,13 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 			imported(strings.ReplaceAll(name, ".", "/"))
 		} else if path, ok := relativeModule(f.module, f.isPackage, name); ok {
 			imported(path)
+		}
+	}
+	for _, name := range f.packages {
+		if !strings.HasPrefix(name, ".") {
+			f.packagePaths = append(f.packagePaths, strings.ReplaceAll(name, ".", "/"))
+		} else if path, ok := relativeModule(f.module, f.isPackage, name); ok {
+			f.packagePaths = append(f.packagePaths, path)
 		}
 	}
 	f.fpBinds = map[string]map[string][]string{}
@@ -880,6 +899,10 @@ func sortedSymbols(set map[string]bool) []plugin.Symbol {
 // only on a class member or a dunder, which all escape. The list is incomplete, and
 // unlisted_sites is set, when a source file was not read, a construct was skipped, code is
 // evaluated from a string, or an f-string substitution holds a call.
+//
+// A dynamic import, evaluated code or an f-string call counts only in a file production
+// code may run (reached, from productionReached); an unread file or a skipped construct
+// counts wherever it is.
 func callGraphPartiality(prog *program, reached []bool) plugin.Partiality {
 	reasons := []string{plugin.PartialReasonDynamicDispatch}
 	opaque := false
@@ -916,7 +939,9 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 // productionReached reports, per file, whether production code may run it: every file
 // outside test code (isTestModule), and every file a reached file imports (importPaths,
 // matched like any import path through byModule) or has an edge into (calls, per caller
-// file). Test code runs in production only that way: no escape names a test function, so
+// file). A star import or an __import__ fromlist may load any submodule of its package
+// (packagePaths), so it reaches every file under that package, and a file with an import
+// statement importedModules could not read reaches every file. Test code runs in production only that way: no escape names a test function, so
 // a test module only one test module imports or calls stays unreached, and its dynamic
 // imports and evaluated code withhold nothing.
 func (prog *program) productionReached(calls [][]int) []bool {
@@ -936,8 +961,16 @@ func (prog *program) productionReached(calls [][]int) []bool {
 	for len(work) > 0 {
 		i := work[len(work)-1]
 		work = work[:len(work)-1]
-		for _, path := range prog.files[i].importPaths {
+		f := prog.files[i]
+		for _, path := range f.importPaths {
 			for _, j := range prog.byModule[path] {
+				reach(j)
+			}
+		}
+		for j, g := range prog.files {
+			if f.importsUnread || slices.ContainsFunc(f.packagePaths, func(p string) bool {
+				return strings.Contains("/"+g.module+"/", "/"+p+"/")
+			}) {
 				reach(j)
 			}
 		}

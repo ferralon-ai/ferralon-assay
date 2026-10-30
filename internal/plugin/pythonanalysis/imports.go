@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -112,43 +113,59 @@ func parseRelativeImport(text string) []importBinding {
 	return out
 }
 
-// importedModules is every module an import statement may load, dotted, relative ones
-// with their leading dots: `import a.b as c` names a.b, `from a import b, *` names a and
-// a.b (b may be a submodule), `from .. import m` names .. and ..m.
-func importedModules(text string) []string {
-	kw, rest := firstWord(text)
-	var out []string
-	switch kw {
-	case "import":
-		for _, item := range splitImportList(rest) {
-			if path, _ := splitAlias(item); isDottedName(path) {
-				out = append(out, path)
+// importedModules reads an import statement: every module it may load, dotted, relative
+// ones with their leading dots, and the packages a star import may load any submodule of
+// (__all__ names them). `import a.b as c` names a.b, `from a import b, *` names a and a.b
+// (b may be a submodule) and a as a package, `from .. import m` names .. and ..m. ok is
+// false when the text is not an import statement it can read, whatever the spacing,
+// parentheses or backslash continuations.
+func importedModules(text string) (modules, packages []string, ok bool) {
+	text = strings.Join(strings.Fields(strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(text)), " ")
+	if m := importRE.FindStringSubmatch(text); m != nil {
+		for _, item := range strings.Split(m[1], ",") {
+			path, _, _ := strings.Cut(strings.TrimSpace(item), " ")
+			if !isDottedName(path) {
+				return nil, nil, false
 			}
+			modules = append(modules, path)
 		}
-	case "from":
-		rest = strings.TrimSpace(rest)
-		i := strings.Index(rest, " import ")
-		if i < 0 {
-			return nil
-		}
-		from := strings.TrimSpace(rest[:i])
-		dots := len(from) - len(strings.TrimLeft(from, "."))
-		if mod := from[dots:]; mod != "" && !isDottedName(mod) || mod == "" && dots == 0 {
-			return nil
-		}
-		out = append(out, from)
-		sep := "."
-		if dots == len(from) {
-			sep = ""
-		}
-		for _, item := range splitImportList(rest[i+len(" import "):]) {
-			if name, _ := splitAlias(item); isDottedName(name) && !strings.Contains(name, ".") {
-				out = append(out, from+sep+name)
-			}
+		return modules, nil, true
+	}
+	m := fromImportRE.FindStringSubmatch(text)
+	if m == nil || m[1] == "" && m[2] == "" {
+		return nil, nil, false
+	}
+	from := m[1] + m[2]
+	modules = append(modules, from)
+	sep := "."
+	if m[2] == "" {
+		sep = ""
+	}
+	list := strings.TrimSpace(m[3])
+	if strings.HasPrefix(list, "(") {
+		list = strings.TrimSuffix(strings.TrimPrefix(list, "("), ")")
+	}
+	for _, item := range strings.Split(list, ",") {
+		name, _, _ := strings.Cut(strings.TrimSpace(item), " ")
+		switch {
+		case name == "*":
+			packages = append(packages, from)
+		case name == "" && strings.TrimSpace(item) == "":
+			// a trailing comma inside parentheses
+		case isDottedName(name) && !strings.Contains(name, "."):
+			modules = append(modules, from+sep+name)
+		default:
+			return nil, nil, false
 		}
 	}
-	return out
+	return modules, packages, true
 }
+
+// importRE and fromImportRE match an import statement with its whitespace collapsed.
+var (
+	importRE     = regexp.MustCompile(`^import\b ?(.+)$`)
+	fromImportRE = regexp.MustCompile(`^from\b ?(\.*) ?([A-Za-z_][\w.]*)? ?\bimport\b ?(.+)$`)
+)
 
 // splitImportList splits an import list ("a, b as c", "(a,\n b)") into its items.
 func splitImportList(s string) []string {
@@ -627,7 +644,7 @@ func lookupTarget(target string) string {
 	return target
 }
 
-func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque, computed bool) {
+func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values, packages []string, opaque, computed bool) {
 	r := []rune(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
@@ -700,6 +717,11 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				opaque = true
 			case kind == lookupDunder:
 				roots = append(roots, name)
+				// Past its module, an __import__ call may take a fromlist, which loads the
+				// submodules it names.
+				if args, _ := callArgs(r, skipAllSpace(r, end)); len(args) > 1 {
+					packages = append(packages, name)
+				}
 				for k := range strings.Split(name, ".") {
 					values = append(values, strings.Join(strings.Split(name, ".")[:k+1], "."))
 				}
@@ -750,7 +772,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		i = end
 	}
-	return sortedDedup(roots), sortedDedup(values), opaque, computed
+	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), opaque, computed
 }
 
 // namerAttrs are the builtins that reach a namespace's names by computed access.

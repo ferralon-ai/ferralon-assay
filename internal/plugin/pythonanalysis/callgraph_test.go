@@ -794,9 +794,6 @@ func TestCallGraph_ModuleLevelCallsGetModuleInitCaller(t *testing.T) {
 	}
 }
 
-// TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
-// program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
-// reason.
 // TestCallGraph_TestModuleHazards: an opaque dynamic import or evaluated code in a test
 // module withholds only when production code imports that module or has an edge into it.
 func TestCallGraph_TestModuleHazards(t *testing.T) {
@@ -830,6 +827,16 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"bare name a test module answers to", map[string]string{"app.py": "import helpers\n", "tests/helpers.py": opaque}, true, false},
 		{"through another test module", map[string]string{"app.py": "from tests import util\n", "tests/util.py": "from tests.deep import load\n", "tests/deep.py": opaque}, true, false},
 		{"edge from production", map[string]string{"app.py": "def main():\n    return run_eval('1')\n", "tests/helpers.py": evals}, false, true},
+		{"backslash before import", map[string]string{"app.py": "from tests.helpers \\\n    import load\n", "tests/helpers.py": opaque}, true, false},
+		{"backslash after import", map[string]string{"app.py": "from tests import \\\n    helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"backslash in a plain import", map[string]string{"app.py": "import \\\n    tests.helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"parenthesis after import", map[string]string{"app.py": "from tests import(helpers)\n", "tests/helpers.py": opaque}, true, false},
+		{"tabs", map[string]string{"app.py": "from\ttests\timport\thelpers\n", "tests/helpers.py": opaque}, true, false},
+		{"__import__ keyword fromlist", map[string]string{"app.py": "h = __import__('tests', fromlist=['helpers'])\n", "tests/helpers.py": opaque}, true, false},
+		{"__import__ positional fromlist", map[string]string{"app.py": "h = __import__('tests', None, None, ['helpers'])\n", "tests/helpers.py": opaque}, true, false},
+		{"__import__ without fromlist", map[string]string{"app.py": "h = __import__('tests')\n", "tests/helpers.py": opaque}, false, false},
+		{"star import of a package", map[string]string{"app.py": "from tests import *\n", "tests/__init__.py": "__all__ = ['helpers']\n", "tests/helpers.py": opaque}, true, false},
+		{"unread import", map[string]string{"app.py": "from tests import helpers as h, 1bad\n", "tests/other.py": opaque}, true, false},
 		{"edge through another test module", map[string]string{"app.py": "def main():\n    return relay('1')\n", "tests/relay.py": "def relay(s):\n    return run_eval(s)\n", "tests/helpers.py": evals}, false, true},
 	}
 	for _, c := range cases {
@@ -845,6 +852,9 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 	}
 }
 
+// TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
+// program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
+// reason.
 func TestCallGraph_DynamicImports(t *testing.T) {
 	cases := []struct {
 		name      string

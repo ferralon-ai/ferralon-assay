@@ -857,6 +857,8 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"dynamic import in an f-string", map[string]string{"app.py": "import importlib\n\ndef run(n):\n    return f\"{importlib.import_module(n)}\"\n"}, true, true},
 		{"__import__ in an f-string", map[string]string{"app.py": "def run(n):\n    return f\"{__import__(n)}\"\n"}, true, true},
 		{"plain call in an f-string", map[string]string{"app.py": "def run(s):\n    return f\"{len(s)}\"\n"}, false, true},
+		{"loader in an f-string", map[string]string{"app.py": "import runpy\n\ndef run(p):\n    return f\"{runpy.run_path(p)}\"\n"}, true, true},
+		{"method named eval", map[string]string{"app.py": "def run(m):\n    m.eval()\n"}, false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

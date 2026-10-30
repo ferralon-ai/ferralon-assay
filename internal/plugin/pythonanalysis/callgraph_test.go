@@ -840,6 +840,7 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"space before a dot", map[string]string{"app.py": "import tests .helpers\n", "tests/other.py": opaque}, true, false},
 		{"after a byte order mark", map[string]string{"app.py": "\ufefffrom tests import helpers\n", "tests/helpers.py": opaque}, true, false},
 		{"after a form feed", map[string]string{"app.py": "\f\nx = 1\n\ffrom tests import helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"star import of a package below the root", map[string]string{"src/app.py": "from tests import *\n", "src/tests/__init__.py": "__all__ = ['helpers']\n", "src/tests/helpers.py": opaque}, true, false},
 		{"relative star import of a package", map[string]string{"pkg/__init__.py": "", "pkg/app.py": "from .tests import *\n", "pkg/tests/__init__.py": "__all__ = ['helpers']\n", "pkg/tests/helpers.py": opaque}, true, false},
 		{"unread from text", map[string]string{"app.py": "from tests import\n", "tests/other.py": opaque}, true, false},
 		{"unread plain import item", map[string]string{"app.py": "import tests, 1bad\n", "tests/other.py": opaque}, true, false},

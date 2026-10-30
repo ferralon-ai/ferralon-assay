@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -102,8 +103,13 @@ type pyprojectDoc struct {
 		} `toml:"pdm"`
 		Hatch struct {
 			Envs map[string]struct {
+				Type              any `toml:"type"`
 				Dependencies      any `toml:"dependencies"`
 				ExtraDependencies any `toml:"extra-dependencies"`
+				PreInstall        any `toml:"pre-install-commands"`
+				PostInstall       any `toml:"post-install-commands"`
+				Scripts           any `toml:"scripts"`
+				EnvVars           any `toml:"env-vars"`
 				Overrides         any `toml:"overrides"`
 			} `toml:"envs"`
 		} `toml:"hatch"`
@@ -196,7 +202,7 @@ func pyprojectDynamicDeps(doc pyprojectDoc) bool {
 // groupLocks); hatch has no lock, so nothing covers its environments. ok is false when an
 // entry is not a well-formed requirement, a group is malformed (dependencyGroupSpecs), a
 // poetry constraint does not translate, a poetry entry installs a local path or file, or a
-// hatch environment's overrides set dependencies (hatchOverridesDeps).
+// hatch environment can install past its dependency lists (hatchEnvInstalls).
 func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var (
 		deps    []plugin.ResolvedDependency
@@ -241,7 +247,7 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		env := doc.Tool.Hatch.Envs[e]
 		addAny(env.Dependencies, nil)
 		addAny(env.ExtraDependencies, nil)
-		ok = ok && !hatchOverridesDeps(env.Overrides)
+		ok = ok && !hatchEnvInstalls(env.Type, env.Overrides, env.EnvVars, env.PreInstall, env.PostInstall, env.Scripts)
 	}
 
 	p := doc.Tool.Poetry
@@ -276,14 +282,82 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	return deps, origins, ok
 }
 
-// hatchOverridesDeps reports whether a hatch environment's overrides table sets dependencies
-// or extra-dependencies anywhere in it: matrix and environment-variable overrides add
-// requirements this reader does not evaluate.
-func hatchOverridesDeps(v any) bool {
-	t, _ := v.(map[string]any)
-	for k, sub := range t {
-		if k == "dependencies" || k == "extra-dependencies" || hatchOverridesDeps(sub) {
-			return true
+// hatchEnvInstalls reports whether a hatch environment can install what its dependency lists
+// do not say: its type is not the built-in "virtual" (a plugin installs by its own keys), its
+// overrides are not a table or set dependencies, extra-dependencies, commands, scripts or
+// env-vars that do (matrix and other overrides add values this reader does not evaluate), a
+// pre- or post-install command or a script names an installer (hatchCommandsInstall), or an
+// env-var sets a PIP_* or UV_* variable, which every pip or uv the environment runs reads.
+func hatchEnvInstalls(typ, overrides, envVars any, commands ...any) bool {
+	if t, isStr := typ.(string); typ != nil && (!isStr || t != "virtual") {
+		return true
+	}
+	if _, isMap := overrides.(map[string]any); overrides != nil && !isMap {
+		return true
+	}
+	return hatchOverridesInstall(overrides) || hatchEnvVarsInstall(envVars) ||
+		slices.ContainsFunc(commands, hatchCommandsInstall)
+}
+
+// hatchOverridesInstall reports whether an overrides value sets dependencies or
+// extra-dependencies anywhere in it, or sets commands, scripts or env-vars that install.
+func hatchOverridesInstall(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, sub := range t {
+			switch k {
+			case "dependencies", "extra-dependencies":
+				return true
+			case "pre-install-commands", "post-install-commands", "scripts":
+				if hatchCommandsInstall(sub) {
+					return true
+				}
+			case "env-vars":
+				if hatchEnvVarsInstall(sub) {
+					return true
+				}
+			}
+			if hatchOverridesInstall(sub) {
+				return true
+			}
+		}
+	case []any:
+		return slices.ContainsFunc(t, hatchOverridesInstall)
+	}
+	return false
+}
+
+// hatchCommandsInstall reports whether any string in v, at any depth, has a word laneToken
+// names. Words split at whitespace and shell punctuation, so a quoted or chained installer
+// counts.
+func hatchCommandsInstall(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return slices.ContainsFunc(strings.FieldsFunc(t, func(r rune) bool {
+			return unicode.IsSpace(r) || strings.ContainsRune("\"'`;&|()<>{}", r)
+		}), laneToken)
+	case []any:
+		return slices.ContainsFunc(t, hatchCommandsInstall)
+	case map[string]any:
+		return slices.ContainsFunc(slices.Collect(maps.Values(t)), hatchCommandsInstall)
+	}
+	return false
+}
+
+// hatchEnvVarsInstall reports whether any key or string in v, at any depth, sets a PIP_* or
+// UV_* variable (laneEnvRE): the env-vars table, or an override's KEY=VALUE strings and key
+// fields.
+func hatchEnvVarsInstall(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return laneEnvRE.MatchString(t)
+	case []any:
+		return slices.ContainsFunc(t, hatchEnvVarsInstall)
+	case map[string]any:
+		for k, sub := range t {
+			if laneEnvRE.MatchString(k) || hatchEnvVarsInstall(sub) {
+				return true
+			}
 		}
 	}
 	return false

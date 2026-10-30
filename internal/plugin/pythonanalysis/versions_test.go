@@ -987,6 +987,17 @@ func TestResolveVersions_PyprojectUnreadTablesVeto(t *testing.T) {
 		"hatch-dep-local-file":      head + "[tool.hatch.envs.default]\ndependencies = [\"lib @ file:///opt/lib\"]\n",
 		"hatch-matrix-override":     head + "[tool.hatch.envs.test]\ndependencies = [\"pytest\"]\n\n[[tool.hatch.envs.test.matrix]]\nflask = [\"1\", \"2\"]\n\n[tool.hatch.envs.test.overrides]\nmatrix.flask.dependencies = [{value = \"flask<2\", if = [\"1\"]}]\n",
 		"hatch-env-override":        head + "[tool.hatch.envs.test.overrides]\nenv.CI.extra-dependencies = [\"flask<2\"]\n",
+		"hatch-post-install-pip":    head + "[tool.hatch.envs.default]\npost-install-commands = [\"pip install 'flask<2'\"]\n",
+		"hatch-pre-install-chained": head + "[tool.hatch.envs.default]\npre-install-commands = [\"echo hi && python -m pip install flask<2\"]\n",
+		"hatch-script-string":       head + "[tool.hatch.envs.default.scripts]\nsetup = \"uv pip install 'flask<2'\"\n",
+		"hatch-script-array":        head + "[tool.hatch.envs.default.scripts]\nsetup = [\"ruff check\", \"sh -c \\\"pip install flask<2\\\"\"]\n",
+		"hatch-env-vars-pip":        head + "[tool.hatch.envs.default.env-vars]\nPIP_INDEX_URL = \"https://mirror.example/simple\"\n",
+		"hatch-plugin-type":         head + "[tool.hatch.envs.default]\ntype = \"conda\"\n",
+		"hatch-type-not-string":     head + "[tool.hatch.envs.default]\ntype = 1\n",
+		"hatch-overrides-not-table": head + "[tool.hatch.envs.default]\noverrides = \"x\"\n",
+		"hatch-override-script":     head + "[tool.hatch.envs.test.overrides]\nplatform.linux.scripts = [{key = \"setup\", value = \"pip install flask<2\"}]\n",
+		"hatch-override-post-cmd":   head + "[tool.hatch.envs.test.overrides]\nenv.CI.post-install-commands = [\"pip install flask<2\"]\n",
+		"hatch-override-env-var":    head + "[tool.hatch.envs.test.overrides]\nmatrix.py.env-vars = [\"UV_INDEX_URL=https://mirror.example/simple\"]\n",
 		"poetry-path":               head + "[tool.poetry.dependencies]\nflask = \"^2\"\nlib = {path = \"../lib\"}\n",
 		"poetry-file":               head + "[tool.poetry.group.dev.dependencies]\nflask = \"^2\"\nlib = {file = \"dist/lib.whl\"}\n",
 		"poetry-path-in-array":      head + "[tool.poetry.dependencies]\nflask = [{version = \"^2\", python = \"<3.12\"}, {path = \"../flask\", python = \">=3.12\"}]\n",
@@ -1029,6 +1040,9 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"hatch-exact-pin":        {"pyproject.toml": head + "[tool.hatch.envs.default]\ndependencies = [\"flask==2.3.0\"]\n\n[tool.hatch.envs.lint]\nextra-dependencies = [\"flask==2.3.0\"]\n"},
 		// Overrides that set no dependencies (here the matrix's interpreters) do not veto.
 		"hatch-override-no-deps": {"pyproject.toml": head + "[tool.hatch.envs.test]\ndependencies = [\"flask==2.3.0\"]\n\n[[tool.hatch.envs.test.matrix]]\npython = [\"3.11\", \"3.12\"]\n\n[tool.hatch.envs.test.overrides]\nmatrix.python.platforms = [\"linux\"]\n"},
+		// Commands, scripts and env-vars that name no installer, and the built-in type, do not
+		// veto.
+		"hatch-quiet-env": {"pyproject.toml": head + "[tool.hatch.envs.default]\ntype = \"virtual\"\ndependencies = [\"flask==2.3.0\"]\ninstaller = \"uv\"\npost-install-commands = [\"pre-commit install\"]\n\n[tool.hatch.envs.default.scripts]\ntest = \"pytest {args}\"\ncov = [\"coverage run -m pytest\", \"coverage report\"]\n\n[tool.hatch.envs.default.env-vars]\nPYTHONWARNINGS = \"error\"\n\n[tool.hatch.envs.default.overrides]\nenv.CI.scripts = [{key = \"test\", value = \"pytest -x\"}]\n"},
 	}
 	for name, files := range covered {
 		t.Run(name, func(t *testing.T) {

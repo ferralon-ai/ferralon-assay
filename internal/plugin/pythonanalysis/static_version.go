@@ -28,11 +28,22 @@ type moduleProbe struct {
 
 // versionRead is the module a backend reads a dynamic version or description from without
 // importing it: the files it may be, the name whose assignment holds the version ("" when
-// only the description is read), and whether the module's docstring is read too.
+// only the description is read), whether the module's docstring is read too, and whether the
+// backend may read the module as text in the locale's encoding, as setuptools before 64.0.1
+// does, so only ASCII is read the same everywhere.
 type versionRead struct {
 	files     []string
 	attr      string
 	docstring bool
+	ascii     bool
+}
+
+// static reports whether src holds what vr reads as plain string literals.
+func (vr *versionRead) static(src []byte) bool {
+	if vr.ascii && bytes.ContainsFunc(src, func(r rune) bool { return r >= utf8.RuneSelf }) {
+		return false
+	}
+	return staticAssigned(src, vr.attr, vr.docstring)
 }
 
 // versionModule returns the module a manifest's setuptools or flit_core backend reads its
@@ -40,8 +51,11 @@ type versionRead struct {
 // resolves to a single place.
 //
 // setuptools reads tool.setuptools.dynamic version = {attr = "pkg.mod.NAME"} from pkg/mod.py,
-// else pkg/mod/__init__.py, under the directory tool.setuptools.package-dir maps the longest
-// leading part of the module name to, else its "" entry. With no "" entry, no other entry, and
+// else pkg/mod/__init__.py, under the directory tool.setuptools.package-dir maps pkg to, else
+// its "" entry. setuptools 70 maps the longest leading part of the module name and earlier
+// releases its first name only, joining the last segment of that entry's directory to the
+// name as a module path, so an entry for a dotted leading part, or one whose directory does
+// not end in a plain name, withholds. With no "" entry, no other entry, and
 // neither packages nor py-modules listed, setuptools discovers the layout: src when that
 // directory is there, else the manifest's own, so the module must be in one of them and
 // nothing of its name in the other. A packages.find table, which can add package-dir entries,
@@ -95,13 +109,18 @@ func setuptoolsVersionModule(doc rootProject, pr moduleProbe) (*versionRead, boo
 	default:
 		return nil, false
 	}
-	start := ""
-	for i := len(mod); i > 0 && start == ""; i-- {
-		if d, ok := dirs[strings.Join(mod[:i], ".")]; ok {
-			start = path.Join(append([]string{d}, mod[i:]...)...)
+	for k := range dirs {
+		if strings.Contains(k, ".") && strings.HasPrefix(desc, k+".") {
+			return nil, false
 		}
 	}
-	if start == "" {
+	start := ""
+	if d, ok := dirs[mod[0]]; ok {
+		if last := d[strings.LastIndex(d, "/")+1:]; last == "" || strings.Contains(last, ".") {
+			return nil, false
+		}
+		start = path.Join(append([]string{d}, mod[1:]...)...)
+	} else {
 		_, rooted := dirs[""]
 		start = path.Join(append([]string{dirs[""]}, mod...)...)
 		if !rooted && len(dirs) == 0 && st.Packages == nil && st.PyModules == nil && !pr.clear("src") {
@@ -118,7 +137,7 @@ func setuptoolsVersionModule(doc rootProject, pr moduleProbe) (*versionRead, boo
 	if files == nil {
 		return nil, false
 	}
-	return &versionRead{files: files, attr: attr}, true
+	return &versionRead{files: files, attr: attr, ascii: true}, true
 }
 
 func flitVersionModule(doc rootProject, pr moduleProbe) (*versionRead, bool) {
@@ -200,7 +219,7 @@ func versionStatic(doc rootProject, backend string, b scriptsurface.Binder, dir 
 	}
 	for _, f := range vr.files {
 		data, err := readRegular(f)
-		if err != nil || !staticAssigned(data, vr.attr, vr.docstring) {
+		if err != nil || !vr.static(data) {
 			return false
 		}
 	}
@@ -243,7 +262,7 @@ func versionModules(manifest string) []string {
 	var out []string
 	for _, f := range vr.files {
 		src, err := readRegular(f)
-		if err != nil || !staticAssigned(src, vr.attr, vr.docstring) {
+		if err != nil || !vr.static(src) {
 			continue
 		}
 		head, _ := buildtree.Head(f)
@@ -262,7 +281,8 @@ var codingCookie = regexp.MustCompile(`^[ \t]*#.*?coding[:=][ \t]*([-\w.]+)`)
 // concatenation, holding text. Both take the first top-level assignment to the name, so a
 // value bound inside a block is not read. With docstring, the module must open with a string
 // holding text, which flit reads for a description. A module that is not UTF-8 as Python reads
-// it, or whose lines Python splits other than at \n, is not read.
+// it, whose lines Python splits other than at \n, or with non-ASCII outside its literals and
+// comments, where Python folds look-alike identifiers together, is not read.
 func staticAssigned(src []byte, attr string, docstring bool) bool {
 	src = bytes.TrimPrefix(src, []byte("\xEF\xBB\xBF"))
 	if !utf8.Valid(src) || bytes.ContainsAny(src, "\f\x00") || bytes.Contains(bytes.ReplaceAll(src, []byte("\r\n"), nil), []byte("\r")) {
@@ -277,6 +297,9 @@ func staticAssigned(src []byte, attr string, docstring bool) bool {
 		}
 	}
 	clean, lits := stripPythonLiterals(text)
+	if strings.ContainsFunc(clean, func(r rune) bool { return r >= utf8.RuneSelf }) {
+		return false
+	}
 	r := []rune(clean)
 	src32 := []rune(text)
 	plain, first, opened := 0, true, !docstring

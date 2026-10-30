@@ -68,9 +68,24 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 			"lib/lib/__init__.py": docVer}), nil, true},
 		{"flit, version from a module under src named by tool.flit.module", tree(map[string]string{"lib/pyproject.toml": dynVer + flitBE +
 			"[tool.flit.module]\nname = \"core\"\n", "lib/src/core.py": literal}), nil, true},
+		{"flit, a module opening with a BOM", tree(map[string]string{"lib/pyproject.toml": dynVer + flitBE,
+			"lib/lib/__init__.py": "\xEF\xBB\xBF" + literal}), nil, true},
 		{"flit, a project name with a dash", tree(map[string]string{"lib/pyproject.toml": "[project]\nname = \"my-lib\"\ndynamic = [\"version\"]\n" + flitBE,
 			"lib/my_lib/__init__.py": literal}), nil, true},
 
+		{"setuptools, a module opening with a BOM", tree(map[string]string{"lib/pyproject.toml": setupLib,
+			"lib/lib/__init__.py": "\xEF\xBB\xBF" + literal}), nil, false},
+		{"setuptools, non-ASCII in a comment", tree(map[string]string{"lib/pyproject.toml": setupLib,
+			"lib/lib/__init__.py": "# café\n" + literal}), nil, false},
+		{"setuptools, a package-dir entry for a dotted part", tree(map[string]string{"lib/pyproject.toml": dynVer + setupBE +
+			"[tool.setuptools.dynamic]\nversion = { attr = \"lib.sub.V\" }\n[tool.setuptools.package-dir]\n\"lib.sub\" = \"alt\"\n",
+			"lib/alt.py": "V = \"1.0\"\n", "lib/lib/__init__.py": "", "lib/lib/sub.py": "V = get()\n"}), nil, false},
+		{"setuptools, a package-dir entry ending in .", tree(map[string]string{"lib/pyproject.toml": setupLib +
+			"[tool.setuptools.package-dir]\nlib = \".\"\n", "lib/__init__.py": literal}), nil, false},
+		{"setuptools, a package-dir entry ending in /", tree(map[string]string{"lib/pyproject.toml": setupLib +
+			"[tool.setuptools.package-dir]\nlib = \"code/\"\n", "lib/code/__init__.py": literal}), nil, false},
+		{"setuptools, the module file not one this reads", tree(map[string]string{"lib/pyproject.toml": setupLib,
+			"lib/lib.py/x": "\n", "lib/lib/__init__.py": literal}), nil, false},
 		{"setuptools, version from a call", tree(map[string]string{"lib/pyproject.toml": setupLib,
 			"lib/lib/__init__.py": "from ._v import get\n__version__ = get()\n"}), nil, false},
 		{"setuptools, version from an f-string", tree(map[string]string{"lib/pyproject.toml": setupLib,
@@ -118,6 +133,9 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 			"lib/lib/__init__.py": literal}), nil, false},
 		{"setuptools, the module also installed by pip -r", with(tree(map[string]string{"lib/pyproject.toml": setupLib,
 			"lib/lib/__init__.py": "# jinja2==3.1.2\n" + literal}), "install.sh", uvSync+"pip install -r lib/lib/__init__.py\n"), nil, false},
+		{"setuptools, the module copied to a requirements file", with(tree(map[string]string{"lib/pyproject.toml": setupLib,
+			"lib/lib/__init__.py": "# jinja2==3.1.2\n" + literal}), "Dockerfile",
+			"FROM python:3.12\nWORKDIR /app\nCOPY . .\nCOPY lib/lib/__init__.py /reqs.txt\nRUN uv sync --locked && pip install -r /reqs.txt\n"), nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -145,6 +163,7 @@ func TestStaticAssigned(t *testing.T) {
 		{"named inside strings elsewhere", "__version__ = \"1.0\"\n__all__ = [\"__version__\"]\n", "__version__", false, true},
 		{"a longer name sharing the prefix", "__version_tuple__ = get()\n__version__ = \"1.0\"\n", "__version__", false, true},
 		{"BOM and CRLF", "\xEF\xBB\xBF__version__ = \"1.0\"\r\n", "__version__", false, true},
+		{"non-ASCII in a literal and a comment", "\"\"\"Café.\"\"\"\n__version__ = \"1.0\"  # é\n", "__version__", true, true},
 		{"utf-8 cookie", "# coding: utf-8\n__version__ = \"1.0\"\n", "__version__", false, true},
 		{"docstring only", "\"\"\"The module.\"\"\"\n", "", true, true},
 		{"docstring then version", "'''Doc.\n\nMore.'''\n__version__ = \"1.0\"\n", "__version__", true, true},
@@ -171,6 +190,9 @@ func TestStaticAssigned(t *testing.T) {
 		{"invalid UTF-8", "__version__ = \"1.0\xff\"\n", "__version__", false, false},
 		{"form feed", "\f__version__ = \"1.0\"\n", "__version__", false, false},
 		{"lone CR", "x = 1\r__version__ = \"1.0\"\n", "__version__", false, false},
+		{"lone CR hiding a line in a block", "if 1:\n    x = 1\r__version__ = f()\n__version__ = \"1.0\"\n", "__version__", false, false},
+		{"an escape after text", "__version__ = \"1\\x2e0\"\n", "__version__", false, false},
+		{"a look-alike name before", "__\uff56ersion__ = \"\"\n__version__ = \"1.0\"\n", "__version__", false, false},
 		{"docstring missing", "__version__ = \"1.0\"\n", "__version__", true, false},
 		{"docstring after code", "import os\n\"\"\"Doc.\"\"\"\n", "", true, false},
 		{"docstring an f-string", "f\"\"\"Doc {x}.\"\"\"\n", "", true, false},

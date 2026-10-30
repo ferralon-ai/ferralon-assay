@@ -46,7 +46,7 @@ import (
 // install its lock does not cover, pnpm install without --frozen-lockfile (it re-locks),
 // every yarn install, --frozen-lockfile included (see laneAllowed), npm exec, any other npx,
 // pnpx, bunx, yarn dlx, pnpm run (pnpm installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
-// names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
+// names. An npm_config_* or yarn_* variable (any case) set in any script surface withholds, since every
 // npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
 // read, and what binds a command to a file, is lane-neutral, in scriptsurface.
 
@@ -71,7 +71,14 @@ func scriptSpec(root string, locks map[string]lockInfo) scriptsurface.Spec {
 // NPM_FLAGS/PNPM_FLAGS/BUN_FLAGS (which Netlify passes to its own install) name that is not a $,
 // ${ or attribute reference, so is being set. pnpm 11 reads PNPM_CONFIG_* in either case and an
 // explicit value survives CI, so it can move the store or the layout.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:p?npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS)`)
+//
+// yarn 1 and yarn 2+ both lowercase every variable name before they look for the yarn_ prefix, so
+// yarn_npm_registry_server and YARN_npmRegistryServer set yarn's registry on any runner. A yarn_
+// name in any other case is common outside the environment (a step id: yarn_cache, a cache path),
+// so it matches only where it is assigned: followed, past an optional quote or ], by = or :
+// (NAME=, an env map key, $env:NAME =, os.environ["NAME"] =), by a quote and a comma
+// (SetEnvironmentVariable("NAME", ...)), or after a Dockerfile ENV or ARG.
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:p?npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS|(?i:yarn_)[A-Za-z0-9_]+(?:["']?\]?[ \t]*[=:]|["'][ \t]*,)|(?i:ENV|ARG)[ \t]+(?i:yarn_)[A-Za-z0-9_]+)`)
 
 // laneSubsetConfigs are the npm configs that only choose which of the packages a lock
 // records get installed (devDependencies, optionalDependencies, peers), never what a package

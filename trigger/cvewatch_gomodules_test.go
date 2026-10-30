@@ -101,6 +101,35 @@ func TestCVEWatch_GoModuleListFromStoredState(t *testing.T) {
 	if got := res.Report.SBOM.GoBuildList; got != plugin.BuildListGoModGraph {
 		t.Errorf("re-assessed SBOM GoBuildList = %q, want it kept for the next watch", got)
 	}
+
+	// A PR report says what its SBOM is too: an inherited one the baseline's build list, a
+	// re-analyzed one the PR head's.
+	head := store.state.Report.SBOM
+	head.GoWorkspaceModules = nil
+	pr := PRInheritRequest{
+		Subject:       Subject{Repo: "example.com/app", Revision: "pr", ResolvedCommit: "pr-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "example.com/app", Revision: "pr"},
+		PRSBOM:        head,
+		AssessOptions: opts,
+	}
+	inherited, err := RunPRInherit(ctx, store, pr)
+	if err != nil {
+		t.Fatalf("RunPRInherit (inherit): %v", err)
+	}
+	if !inherited.Inherited || !reflect.DeepEqual(inherited.Report.SBOM.GoWorkspaceModules, []string{"example.com/a"}) {
+		t.Errorf("inherited = %v with workspace modules %v, want the baseline's [example.com/a]",
+			inherited.Inherited, inherited.Report.SBOM.GoWorkspaceModules)
+	}
+	head.Packages = []report.Package{{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.16.0", PURL: "pkg:golang/golang.org/x/net@v0.16.0", Direct: true}}
+	pr.PRSBOM = head
+	reanalyzed, err := RunPRInherit(ctx, store, pr)
+	if err != nil {
+		t.Fatalf("RunPRInherit (re-analyze): %v", err)
+	}
+	if got := reanalyzed.Report.SBOM; reanalyzed.Inherited || got.GoBuildList != plugin.BuildListGoModGraph || len(got.GoWorkspaceModules) != 0 {
+		t.Errorf("re-analyzed = %v with Go fields %q %v, want the PR head's build list and no workspace modules",
+			reanalyzed.Inherited, got.GoBuildList, got.GoWorkspaceModules)
+	}
 }
 
 func assertNotExploitable(t *testing.T, rep *report.Report, id string) report.AdvisoryFinding {

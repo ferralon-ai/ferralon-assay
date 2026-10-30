@@ -15,6 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 )
@@ -30,7 +31,7 @@ type moduleProbe struct {
 // importing it: the files it may be, the name whose assignment holds the version ("" when
 // only the description is read), whether the module's docstring is read too, and whether the
 // backend may read the module as text in the locale's encoding, as setuptools before 65.4.1
-// does, so only ASCII is read the same everywhere.
+// does (setuptoolsReadsBytes), so only ASCII is read the same everywhere.
 type versionRead struct {
 	files     []string
 	attr      string
@@ -137,7 +138,46 @@ func setuptoolsVersionModule(doc rootProject, pr moduleProbe) (*versionRead, boo
 	if files == nil {
 		return nil, false
 	}
-	return &versionRead{files: files, attr: attr, ascii: true}, true
+	return &versionRead{files: files, attr: attr, ascii: !setuptoolsReadsBytes(doc)}, true
+}
+
+// setuptoolsBytes is the first setuptools release that reads a module for a dynamic attr as
+// bytes, decoded as Python decodes source, rather than as text in the locale's encoding.
+var setuptoolsBytes, _ = pep440.Parse("65.4.1")
+
+// setuptoolsReadsBytes reports whether build-system.requires holds setuptools to
+// setuptoolsBytes or later: a setuptools requirement, with no marker or direct reference, one
+// of whose clauses sets a floor (>=, >, ==, ~=, ===) at that release or past it. The build's
+// own environment installs it from that requirement, and no-build-isolation, which would use
+// another, withholds elsewhere.
+func setuptoolsReadsBytes(doc rootProject) bool {
+	if doc.BuildSystem == nil {
+		return false
+	}
+	reqs, _ := doc.BuildSystem.Requires.([]any)
+	for _, r := range reqs {
+		s, _ := r.(string)
+		req, ok := parsePEP508(s)
+		if !ok || req.URL != "" || req.Marker != "" || normalizePyCoordinate(req.Name) != "setuptools" || req.Specifier == "" {
+			continue
+		}
+		for _, clause := range strings.Split(req.Specifier, ",") {
+			for _, op := range []string{"===", "~=", "==", ">=", ">"} {
+				ver, ok := strings.CutPrefix(clause, op)
+				if !ok {
+					continue
+				}
+				if op == "==" {
+					ver = strings.TrimSuffix(ver, ".*")
+				}
+				if v, ok := pep440.Parse(ver); ok && pep440.Compare(v, setuptoolsBytes) >= 0 {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
 }
 
 func flitVersionModule(doc rootProject, pr moduleProbe) (*versionRead, bool) {

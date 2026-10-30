@@ -4,6 +4,8 @@ import (
 	"maps"
 	"path/filepath"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 // setuptools and flit_core read a dynamic version (and flit a dynamic description) from the
@@ -23,6 +25,8 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 		dynVer   = "[project]\nname = \"lib\"\ndynamic = [\"version\"]\n"
 		dynBoth  = "[project]\nname = \"lib\"\ndynamic = [\"version\", \"description\"]\n"
 		setupLib = dynVer + setupBE + attrVer
+		// setuptools before 65.4.1 reads the module as text in the locale's encoding.
+		setupOld = dynVer + "[build-system]\nrequires = [\"setuptools>=61\"]\nbuild-backend = \"setuptools.build_meta\"\n" + attrVer
 	)
 	lock := func(dir string) string {
 		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n\n" +
@@ -38,7 +42,7 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 		"sdk/pyproject.toml": "[project]\nname = \"ab-sdk\"\ndynamic = [\"version\"]\n" + setupBE +
 			"[tool.setuptools]\npackage-dir = { \"\" = \"../src\" }\npackages = [\"ab_sdk\"]\n" +
 			"[tool.setuptools.dynamic]\nversion = { attr = \"ab_sdk.SDK_VERSION\" }\n",
-		"src/ab_sdk/__init__.py": "\"\"\"SDK.\"\"\"\n\nfrom .client import Client\n\nSDK_VERSION = \"0.6.0\"\n\n__all__ = [\"SDK_VERSION\", \"Client\"]\n"}
+		"src/ab_sdk/__init__.py": "\"\"\"插件 SDK。\"\"\"\n\nfrom .client import Client\n\nSDK_VERSION = \"0.6.0\"\n\n__all__ = [\"SDK_VERSION\", \"Client\"]\n"}
 	with := func(files map[string]string, k, v string) map[string]string {
 		out := maps.Clone(files)
 		out[k] = v
@@ -70,12 +74,16 @@ func TestResolveVersions_StaticVersion(t *testing.T) {
 			"[tool.flit.module]\nname = \"core\"\n", "lib/src/core.py": literal}), nil, true},
 		{"flit, a module opening with a BOM", tree(map[string]string{"lib/pyproject.toml": dynVer + flitBE,
 			"lib/lib/__init__.py": "\xEF\xBB\xBF" + literal}), nil, true},
+		{"setuptools 65.4.1 or later, a module opening with a BOM", tree(map[string]string{"lib/pyproject.toml": setupLib,
+			"lib/lib/__init__.py": "\xEF\xBB\xBF" + literal}), nil, true},
+		{"setuptools 65.4.1 or later, non-ASCII in a comment", tree(map[string]string{"lib/pyproject.toml": setupLib,
+			"lib/lib/__init__.py": "# café\n" + literal}), nil, true},
 		{"flit, a project name with a dash", tree(map[string]string{"lib/pyproject.toml": "[project]\nname = \"my-lib\"\ndynamic = [\"version\"]\n" + flitBE,
 			"lib/my_lib/__init__.py": literal}), nil, true},
 
-		{"setuptools, a module opening with a BOM", tree(map[string]string{"lib/pyproject.toml": setupLib,
+		{"setuptools, a module opening with a BOM", tree(map[string]string{"lib/pyproject.toml": setupOld,
 			"lib/lib/__init__.py": "\xEF\xBB\xBF" + literal}), nil, false},
-		{"setuptools, non-ASCII in a comment", tree(map[string]string{"lib/pyproject.toml": setupLib,
+		{"setuptools, non-ASCII in a comment", tree(map[string]string{"lib/pyproject.toml": setupOld,
 			"lib/lib/__init__.py": "# café\n" + literal}), nil, false},
 		{"setuptools, a package-dir entry for a dotted part", tree(map[string]string{"lib/pyproject.toml": dynVer + setupBE +
 			"[tool.setuptools.dynamic]\nversion = { attr = \"lib.sub.V\" }\n[tool.setuptools.package-dir]\n\"lib.sub\" = \"alt\"\n",
@@ -216,5 +224,45 @@ func TestLeadingUpOnly(t *testing.T) {
 		if got := leadingUpOnly(s); got != want {
 			t.Errorf("leadingUpOnly(%q) = %v, want %v", s, got, want)
 		}
+	}
+}
+
+func TestSetuptoolsReadsBytes(t *testing.T) {
+	tests := []struct {
+		name, requires string
+		want           bool
+	}{
+		{"a floor at 65.4.1", `["setuptools>=65.4.1"]`, true},
+		{"a floor past it", `["wheel", "setuptools >= 77.0"]`, true},
+		{"a compatible release", `["setuptools~=70.0"]`, true},
+		{"an exact pin", `["setuptools==68.2.2"]`, true},
+		{"a prefix pin", `["setuptools==70.*"]`, true},
+		{"strictly past it", `["setuptools>65.4.1"]`, true},
+		{"one floored clause of several", `["setuptools<80,>=69"]`, true},
+		{"a floor before it", `["setuptools>=61"]`, false},
+		{"its pre-release", `["setuptools>=65.4.1rc1"]`, false},
+		{"a prefix pin before it", `["setuptools==65.*"]`, false},
+		{"strictly past 65.4.0", `["setuptools>65.4.0"]`, false},
+		{"only a ceiling", `["setuptools<80"]`, false},
+		{"no specifier", `["setuptools"]`, false},
+		{"behind a marker", `["setuptools>=77; python_version >= '3.9'"]`, false},
+		{"a direct reference", `["setuptools @ https://x.test/setuptools-77.0.tar.gz"]`, false},
+		{"another project", `["setuptools-scm>=8"]`, false},
+		{"no requires", ``, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var doc rootProject
+			src := "[build-system]\n"
+			if tt.requires != "" {
+				src += "requires = " + tt.requires + "\n"
+			}
+			if _, err := toml.Decode(src, &doc); err != nil {
+				t.Fatal(err)
+			}
+			if got := setuptoolsReadsBytes(doc); got != tt.want {
+				t.Fatalf("setuptoolsReadsBytes(%s) = %v, want %v", tt.requires, got, tt.want)
+			}
+		})
 	}
 }

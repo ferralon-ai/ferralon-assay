@@ -489,6 +489,14 @@ func TestGoPathOwner_ModulesOutsideTheBuildDir(t *testing.T) {
 		{"a go.mod outside declaring no module", map[string]string{
 			"tools/lint/testdata/go.mod": "go 1.22\n",
 		}, "example.com/mono/internal", true, "v1.0.0"},
+		{"a module in a directory the build directory's name prefixes", map[string]string{
+			"a/x/x.go":  "package x\n",
+			"ab/go.mod": "module example.com/mono/x\n\ngo 1.22\n",
+		}, "example.com/mono/x", true, ""},
+		{"a sibling module go.mod requires and replaces", map[string]string{
+			"a/go.mod": gomod + "\nrequire example.com/mono/b v0.0.0\n\nreplace example.com/mono/b => ../b\n",
+			"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n",
+		}, "example.com/mono/b/pkg", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

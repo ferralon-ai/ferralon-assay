@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"maps"
 	"path/filepath"
 	"testing"
 )
@@ -257,6 +258,18 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 	lib := uvLock("[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\nsource = { directory = \"lib\" }\n\n")
 	evil := uvLock("[[package]]\nname = \"evil\"\nversion = \"0.1.0\"\nsource = { editable = \"evil\" }\n\n")
 	member := "[project]\nname = \"lib\"\nversion = \"1\"\n"
+	nested := uvLock("[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\nsource = { directory = \"libs/lib\" }\n\n")
+	underWorkspace := map[string]string{"pyproject.toml": project, "uv.lock": nested, "libs/lib/pyproject.toml": member + helper,
+		"libs/pyproject.toml": "[project]\nname = \"libs\"\nversion = \"1\"\n[tool.uv.workspace]\nmembers = [\"lib\"]\n" +
+			"[tool.uv.sources]\nhelper = { path = \"../helper\" }\n", "helper/setup.py": setupPy}
+	with := func(files map[string]string, k, v string) map[string]string {
+		out := maps.Clone(files)
+		out[k] = v
+		return out
+	}
+	pdmSource := func(url string) string {
+		return project + "[tool.pdm]\ndistribution = false\n[[tool.pdm.source]]\nname = \"x\"\nurl = \"" + url + "\"\n"
+	}
 	tests := []struct {
 		name  string
 		files map[string]string
@@ -301,12 +314,47 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 		{"poetry, manifest mounted over the one copied", map[string]string{"pyproject.toml": project, "poetry.lock": jinjaPy,
 			"ci/pyproject.toml": project + "[tool.poetry]\nbuild = \"build.py\"\n",
 			"Dockerfile":        "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN --mount=type=bind,source=ci/pyproject.toml,target=/app/pyproject.toml poetry install\n"}, nil, false},
+		{"uv, a source under a workspace root between it and the manifest", with(underWorkspace, "install.sh", uvSync), nil, false},
+		{"uv, a source under a workspace root copied into the image", with(underWorkspace, "Dockerfile",
+			"FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN uv sync --locked\n"), nil, false},
+		{"uv, extra-build-dependencies in a root uv does not build", map[string]string{"pyproject.toml": project +
+			"[tool.uv.extra-build-dependencies]\nlib = [\"helper\"]\n", "uv.lock": lib, "install.sh": uvSync, "lib/pyproject.toml": member + uvBuild}, nil, false},
+		{"uv, extra-build-dependencies in a virtual root", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv]\npackage = false\n[tool.uv.extra-build-dependencies]\nlib = [\"helper\"]\n", "uv.lock": lib, "install.sh": uvSync,
+			"lib/pyproject.toml": member + uvBuild}, nil, false},
+		{"uv, find-links into the tree", map[string]string{"pyproject.toml": project + uvBuild + "[tool.uv]\nfind-links = [\"wheels\"]\n",
+			"uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, an index served from the tree", map[string]string{"pyproject.toml": project + uvBuild +
+			"[[tool.uv.index]]\nname = \"local\"\nurl = \"./idx\"\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, extra-build-variables", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv.extra-build-variables]\napp = { PYTHONPATH = \"hack\" }\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, an override as a direct reference", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv]\noverride-dependencies = [\"uv_build @ file:///app/hack\"]\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
+		{"uv, member find-links into the tree", map[string]string{"pyproject.toml": project, "uv.lock": lib, "install.sh": uvSync,
+			"lib/pyproject.toml": member + uvBuild + "[tool.uv]\nfind-links = [\"../wheels\"]\n"}, nil, false},
+		{"pdm, a source served from the tree", map[string]string{"pyproject.toml": pdmSource("file:///app/wheels"), "pdm.lock": pdmLock,
+			"install.sh": "#!/bin/sh\npdm sync\n"}, nil, false},
+		{"uv, uv.toml above the manifest", map[string]string{"app/pyproject.toml": project + uvBuild, "app/uv.lock": uvLock(""),
+			"uv.toml": "native-tls = true\n", "install.sh": "#!/bin/sh\ncd app\nuv sync --locked\n"}, nil, false},
+		{"uv, a uv config copied into the image under another name", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
+			"ci/settings": "native-tls = true\n", "Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY . .\nCOPY ci/settings /etc/uv/uv.toml\nRUN uv sync --locked\n"},
+			nil, false},
+		{"uv, the config directory moved by the script", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""),
+			"ci/settings": "native-tls = true\n", "install.sh": "#!/bin/sh\nexport XDG_CONFIG_HOME=/opt/conf\nuv sync --locked\n"}, nil, false},
 
 		{"uv, build requirements from the index beside unrelated sources", map[string]string{"pyproject.toml": project + helper +
 			"[tool.uv.sources]\nother = { path = \"other\" }\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, true},
 		{"uv, uv.toml that holds no build requirements, which the walk does not read", map[string]string{"pyproject.toml": project + uvBuild,
 			"uv.toml": "native-tls = true\n", "uv.lock": uvLock(""), "install.sh": uvSync}, nil, false},
 		{"pdm, pylock format with none written", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
+			"install.sh": "#!/bin/sh\npdm sync\n"}, nil, true},
+		{"uv, a source under a directory that declares no workspace", with(with(underWorkspace, "install.sh", uvSync),
+			"libs/pyproject.toml", "[project]\nname = \"libs\"\nversion = \"1\"\n"), nil, true},
+		{"uv, indexes over https and settings that leave the build alone", map[string]string{"pyproject.toml": project + uvBuild +
+			"[tool.uv]\nindex-url = \"https://pypi.example/simple\"\nfind-links = [\"https://pypi.example/wheels\"]\n" +
+			"constraint-dependencies = [\"markupsafe<3\"]\nnative-tls = true\n[[tool.uv.index]]\nname = \"x\"\nurl = \"https://idx.example/simple\"\n",
+			"uv.lock": uvLock(""), "install.sh": uvSync}, nil, true},
+		{"pdm, a source over https", map[string]string{"pyproject.toml": pdmSource("https://pypi.example/simple"), "pdm.lock": pdmLock,
 			"install.sh": "#!/bin/sh\npdm sync\n"}, nil, true},
 		{"uv, a symlink off the path the build runs in", map[string]string{"app/pyproject.toml": project + uvBuild, "app/uv.lock": uvLock(""),
 			"install.sh": "#!/bin/sh\ncd app\nuv sync --locked\n", "ws/x.txt": "x\n"}, map[string]string{"docs": "ws"}, true},

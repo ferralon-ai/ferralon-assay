@@ -30,7 +30,8 @@ import (
 // surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
 // read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
 // is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
-// or a script surface names one (pipConfigNamedRE).
+// or a script surface names one (pipConfigNamedRE). A script surface that names a uv config
+// (uvConfigNamedRE) withholds when an allowed uv sync runs.
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
@@ -62,9 +63,18 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed := false
+	configNamed, uvConfigNamed, uvSynced := false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
+		uvConfigNamed = uvConfigNamed || uvConfigNamedRE.MatchString(src)
+	}
+	allowed := spec.Allowed
+	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
+		ok := allowed(words, b)
+		if head, _ := scriptsurface.CommandName(words[0]); ok && head == "uv" {
+			uvSynced = true
+		}
+		return ok
 	}
 	veto := scriptsurface.New(root, read, spec)
 	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
@@ -75,6 +85,9 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	scriptWithheld = veto.Withheld()
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
+	}
+	if uvConfigNamed && uvSynced {
+		scriptWithheld = true
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
 }
@@ -127,7 +140,7 @@ func pySurfaceName(path string) (string, bool) {
 	case isManifest(lower):
 		return "manifest name", true
 	case strings.HasPrefix(lower, "pipfile"), lower == "pixi.toml", strings.HasPrefix(lower, "pylock.") && ext == ".toml",
-		lower == "tox.ini", lower == "noxfile.py":
+		lower == "tox.ini", lower == "noxfile.py", lower == "uv.toml":
 		return "install surface name", true
 	case isCondaEnvName(lower), strings.HasPrefix(lower, "conda-lock") && (ext == ".yml" || ext == ".yaml"):
 		return "conda name", true

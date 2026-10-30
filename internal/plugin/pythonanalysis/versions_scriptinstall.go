@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"errors"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -168,6 +169,12 @@ func pipSelfUpgrade(args []string) bool {
 // config subcommand.
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip`)
 
+// uvConfigNamedRE matches, in a script surface's text, a uv config file or directory (uv.toml,
+// /etc/uv, /etc/xdg/uv, .config/uv), UV_CONFIG_FILE, or an XDG variable that moves where uv
+// looks for one. A uv sync reads the settings there, which can add build requirements, indexes
+// and build environment, so an allowed one withholds where a script names one (versionSurfaces).
+var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|xdg_config_(?:home|dirs)`)
+
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}
 
@@ -260,14 +267,14 @@ type rootProject struct {
 				Source        any `toml:"source"`
 				VersionFormat any `toml:"version_format"`
 			} `toml:"version"`
-			Workspace any `toml:"workspace"`
+			Workspace any              `toml:"workspace"`
+			Source    []map[string]any `toml:"source"`
 		} `toml:"pdm"`
 		Hatch map[string]any `toml:"hatch"`
 		UV    struct {
-			Package    *bool          `toml:"package"`
-			Workspace  any            `toml:"workspace"`
-			Sources    map[string]any `toml:"sources"`
-			ExtraBuild any            `toml:"extra-build-dependencies"`
+			Package   *bool          `toml:"package"`
+			Workspace any            `toml:"workspace"`
+			Sources   map[string]any `toml:"sources"`
 		} `toml:"uv"`
 	} `toml:"tool"`
 }
@@ -289,13 +296,16 @@ type rootProject struct {
 // (backendClean). Every local source the lock names, a uv workspace member included, must
 // build clean as well (localBuildsClean). uv lowers every build requirement, a member's
 // included, through the root's tool.uv.sources as well as the member's own, so those names
-// are the root's to every backendClean check.
+// are the root's to every backendClean check. uv and pdm resolve build requirements from the
+// indexes the manifest names, and uv builds with the environment its tool.uv settings give,
+// built root or not (uvSettingsClean, pdmSourcesRemote).
 func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 	pyprojects := b.Nearest("pyproject.toml")
 	if pyprojects == nil {
 		return false
 	}
 	var docs []rootProject
+	var datas [][]byte
 	sources := map[string]bool{}
 	for _, m := range pyprojects {
 		data, err := readRegular(m)
@@ -310,8 +320,9 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 			sources[normalizePyCoordinate(k)] = true
 		}
 		docs = append(docs, doc)
+		datas = append(datas, data)
 	}
-	for _, doc := range docs {
+	for i, doc := range docs {
 		switch tool {
 		case "poetry":
 			if doc.Tool.Poetry.Build != nil || doc.Tool.Poetry.RequiresPlugins != nil || !b.Clear("pyproject.toml", ".poetry/plugins") {
@@ -320,7 +331,7 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 		case "pdm":
 			// pdm installs from a pylock.toml there instead of pdm.lock when lock.format,
 			// which pdm config can set, is pylock.
-			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") {
+			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") || !pdmSourcesRemote(doc) {
 				return false
 			}
 			builds := doc.Tool.PDM.Distribution == nil || *doc.Tool.PDM.Distribution
@@ -331,9 +342,7 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 				return false
 			}
 		case "uv":
-			// A uv.toml beside the manifest can add build requirements
-			// (extra-build-dependencies); the walk reads none, so any there withholds.
-			if !b.Clear("pyproject.toml", "uv.toml") || uvBuilds(doc) && !backendClean(doc, b, "", sources) {
+			if !uvSettingsClean(datas[i], sources) || uvBuilds(doc) && !backendClean(doc, b, "", sources) {
 				return false
 			}
 		default:
@@ -341,6 +350,92 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 		}
 	}
 	return localBuildsClean(tool, b, sources)
+}
+
+// uvSettings are the tool.uv keys that leave uv's build of a project as the build-system table
+// and tool.uv.sources describe it: what uv resolves and locks, how it lays out the project and
+// its environment, and how it talks to the network. Anything else (extra-build-dependencies,
+// extra-build-variables, no-build-isolation, config-settings, cache-dir, an interpreter
+// mirror, or a key added after this list) may change what a build installs or runs.
+var uvSettings = map[string]bool{
+	"package": true, "workspace": true, "sources": true, "managed": true, "dev-dependencies": true,
+	"default-groups": true, "conflicts": true, "environments": true, "required-environments": true,
+	"required-version": true, "cache-keys": true, "exclude-dependencies": true, "exclude-newer": true,
+	"exclude-newer-package": true, "index-strategy": true, "resolution": true, "prerelease": true,
+	"fork-strategy": true, "no-build": true, "no-build-package": true, "no-binary": true,
+	"no-binary-package": true, "no-sources": true, "compile-bytecode": true, "link-mode": true,
+	"keyring-provider": true, "allow-insecure-host": true, "native-tls": true, "offline": true,
+	"python-preference": true, "python-downloads": true, "build-backend": true, "pip": true,
+	"publish-url": true, "check-url": true, "trusted-publishing": true,
+}
+
+// uvSettingsClean reports whether a manifest's tool.uv table holds only uvSettings, indexes and
+// find-links locations served over http(s), not from the tree, and override or constraint
+// dependencies that pass reqsClean. uv resolves build requirements through those indexes and
+// applies those overrides and constraints, and nothing in uv.lock pins them. A uv.toml, which
+// uv reads in place of this table, is an install surface of its own (pySurfaceName).
+func uvSettingsClean(data []byte, sources map[string]bool) bool {
+	var doc struct {
+		Tool struct {
+			UV map[string]any `toml:"uv"`
+		} `toml:"tool"`
+	}
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		return false
+	}
+	for k, v := range doc.Tool.UV {
+		switch k {
+		case "index":
+			ts, ok := v.([]map[string]any)
+			if !ok {
+				return false
+			}
+			for _, t := range ts {
+				if !remoteURLs(t["url"]) {
+					return false
+				}
+			}
+		case "index-url", "extra-index-url", "find-links":
+			if !remoteURLs(v) {
+				return false
+			}
+		case "override-dependencies", "constraint-dependencies":
+			if !reqsClean(v, sources) {
+				return false
+			}
+		default:
+			if !uvSettings[k] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// remoteURLs reports whether v is an http(s) URL or a list of them.
+func remoteURLs(v any) bool {
+	vs, ok := v.([]any)
+	if !ok {
+		vs = []any{v}
+	}
+	for _, u := range vs {
+		s, ok := u.(string)
+		if !ok || !strings.HasPrefix(s, "https://") && !strings.HasPrefix(s, "http://") {
+			return false
+		}
+	}
+	return true
+}
+
+// pdmSourcesRemote reports whether every tool.pdm.source the manifest names, which pdm resolves
+// build requirements from, is served over http(s), not from the tree.
+func pdmSourcesRemote(doc rootProject) bool {
+	for _, src := range doc.Tool.PDM.Source {
+		if !remoteURLs(src["url"]) {
+			return false
+		}
+	}
+	return true
 }
 
 // uvBuilds reports whether uv builds the project a manifest declares: when tool.uv.package is
@@ -529,6 +624,9 @@ func localBuildClean(tool string, src localSource, b scriptsurface.Binder, sourc
 	if p == "." {
 		return tool == "uv"
 	}
+	if tool == "uv" && !uvWorkspaceFree(p, b) {
+		return false
+	}
 	m := b.Beside("pyproject.toml", p+"/pyproject.toml")
 	if m == nil {
 		return false
@@ -542,11 +640,46 @@ func localBuildClean(tool string, src localSource, b scriptsurface.Binder, sourc
 		if _, err := toml.Decode(string(data), &doc); err != nil {
 			return false
 		}
+		if tool == "uv" && !uvSettingsClean(data, sources) {
+			return false
+		}
 		if src.virtual && !uvBuilds(doc) {
 			continue
 		}
 		if !backendClean(doc, b, p, sources) {
 			return false
+		}
+	}
+	return true
+}
+
+// uvWorkspaceFree reports whether no pyproject.toml between a uv local source at p and the
+// manifest's directory declares a uv workspace. uv lowers a path source's build requirements
+// through the tool.uv.sources of the workspace it finds walking up from the source, and the
+// directories at and above the manifest's hold none (standalone).
+func uvWorkspaceFree(p string, b scriptsurface.Binder) bool {
+	parts := strings.Split(p, "/")
+	for i := 1; i < len(parts); i++ {
+		if parts[i-1] == ".." {
+			continue
+		}
+		f := strings.Join(parts[:i], "/") + "/pyproject.toml"
+		if b.Clear("pyproject.toml", f) {
+			continue
+		}
+		m := b.Beside("pyproject.toml", f)
+		if m == nil {
+			return false
+		}
+		for _, h := range m {
+			data, err := readRegular(h)
+			if err != nil {
+				return false
+			}
+			var doc rootProject
+			if _, err := toml.Decode(string(data), &doc); err != nil || doc.Tool.UV.Workspace != nil {
+				return false
+			}
 		}
 	}
 	return true
@@ -605,20 +738,27 @@ func backendClean(doc rootProject, b scriptsurface.Binder, dir string, sources m
 }
 
 // buildRequiresClean reports whether every build-system requirement is a name the index
-// serves: not a direct reference (name @ url), which may name a directory or archive in the
-// tree, and no name tool.uv.sources maps, the manifest's own or the root's (sources), which uv
-// lowers its build requirements through. tool.uv.extra-build-dependencies adds requirements
-// this does not lower, so any fails.
+// serves (reqsClean), checked against the manifest's own tool.uv.sources as well as the
+// root's (sources): uv lowers its build requirements through both.
 func buildRequiresClean(doc rootProject, sources map[string]bool) bool {
-	if doc.Tool.UV.ExtraBuild != nil {
-		return false
+	bs := doc.BuildSystem
+	if bs == nil || bs.Requires == nil {
+		return true
 	}
-	var reqs []any
-	if bs := doc.BuildSystem; bs != nil && bs.Requires != nil {
-		var ok bool
-		if reqs, ok = bs.Requires.([]any); !ok {
-			return false
-		}
+	all := maps.Clone(sources)
+	for k := range doc.Tool.UV.Sources {
+		all[normalizePyCoordinate(k)] = true
+	}
+	return reqsClean(bs.Requires, all)
+}
+
+// reqsClean reports whether v is a list of requirements each naming a project the index
+// serves: not a direct reference (name @ url), which may name a directory or archive in the
+// tree, and no name sources holds, which tool.uv.sources maps.
+func reqsClean(v any, sources map[string]bool) bool {
+	reqs, ok := v.([]any)
+	if !ok {
+		return false
 	}
 	for _, r := range reqs {
 		s, ok := r.(string)
@@ -628,11 +768,6 @@ func buildRequiresClean(doc rootProject, sources map[string]bool) bool {
 		name := normalizePyCoordinate(reqName.FindString(strings.TrimSpace(s)))
 		if name == "" || sources[name] {
 			return false
-		}
-		for k := range doc.Tool.UV.Sources {
-			if normalizePyCoordinate(k) == name {
-				return false
-			}
 		}
 	}
 	return true

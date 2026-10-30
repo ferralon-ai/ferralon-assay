@@ -91,10 +91,11 @@ type pipInstall struct {
 // the script surfaces run. A nil pipInstalls records nothing.
 type pipInstalls map[string][]pipInstall
 
-// laneEnvRE matches a PIP_* or UV_* name that is not a $, ${ or attribute reference, so is
-// being set. pip lowercases what follows PIP_ before it looks the option up, so PIP_index_url
-// sets --index-url too; uv reads only the exact upper-case name.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP_[A-Za-z0-9_]+|UV_[A-Z0-9_]+)`)
+// laneEnvRE matches a PIP_* or UV_* name, in any case, that is not a $, ${ or attribute
+// reference, so is being set. pip lowercases what follows PIP_ before it looks the option up,
+// so PIP_index_url sets --index-url too, and a Windows runner reads every variable name in any
+// case, so uv_index_url there is UV_INDEX_URL.
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?i:PIP|UV)_[A-Za-z0-9_]+`)
 
 // laneEnvKept are the PIP_* and UV_* names whose option changes only output, prompts, caching,
 // timing, bytecode, how a file is copied into the environment, or whether the run fails: none
@@ -120,13 +121,10 @@ var laneEnvKept = map[string]bool{
 	"UV_NO_INSTALLER_METADATA": true, "UV_PYTHON_DOWNLOADS": true,
 }
 
-// laneEnvKeeps reports whether name, which laneEnvRE matched, is one of laneEnvKept, reading
-// what follows PIP_ in any case as pip does.
+// laneEnvKeeps reports whether name, which laneEnvRE matched, is one of laneEnvKept in any
+// case, as laneEnvRE reads it.
 func laneEnvKeeps(name string) bool {
-	if rest, ok := strings.CutPrefix(name, "PIP_"); ok {
-		name = "PIP_" + strings.ToUpper(rest)
-	}
-	return laneEnvKept[name]
+	return laneEnvKept[strings.ToUpper(name)]
 }
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,

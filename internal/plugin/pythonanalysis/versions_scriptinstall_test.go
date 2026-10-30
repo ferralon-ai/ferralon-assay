@@ -149,7 +149,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 
 // A PIP_* or UV_* variable whose option changes nothing the build installs, or where, is kept:
 // it resolves beside an allowed install. Every other name still withholds, beside a kept one or
-// not, and a kept name is matched exactly, with pip's case-folding of what follows PIP_.
+// not, and a kept name is matched exactly but in any case, as pip and a Windows runner read it.
 func TestResolveVersions_LaneEnvKept(t *testing.T) {
 	const (
 		reqs   = "jinja2==3.1.4\n"
@@ -199,7 +199,13 @@ func TestResolveVersions_LaneEnvKept(t *testing.T) {
 		row{"kept name exported in a script", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_NO_INPUT=1\npip install -r requirements.txt\n"}, true},
 		row{"PIP_ suffix in lower case kept", pip("PIP_no_cache_dir=1"), true},
 		row{"PIP_ suffix in lower case withholds", pip("PIP_index_url=https://pkgs.example.com/simple"), false},
-		row{"UV_ name in lower case is not uv's", uv("UV_no_cache=1"), true},
+		row{"UV_ suffix in lower case kept", uv("UV_no_cache=1"), true},
+		row{"pip_ name in lower case on Windows withholds", map[string]string{"requirements.txt": reqs,
+			".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: windows-latest\n    env:\n      pip_index_url: https://pkgs.example.com/simple\n    steps:\n      - run: pip install -r requirements.txt\n"}, false},
+		row{"uv_ name in lower case on Windows withholds", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
+			".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: windows-latest\n    env:\n      uv_index_url: https://pkgs.example.com/simple\n    steps:\n      - run: uv sync --locked\n"}, false},
+		row{"uv_ kept name in lower case on Windows", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
+			".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: windows-latest\n    env:\n      uv_no_progress: \"1\"\n    steps:\n      - run: uv sync --locked\n"}, true},
 		row{"kept pip name beside one that is not", pip("PIP_NO_CACHE_DIR=1 PIP_EXTRA_INDEX_URL=https://pkgs.example.com/simple"), false},
 		row{"kept uv name beside one that is not", uv("UV_COMPILE_BYTECODE=1 UV_INDEX_URL=https://pkgs.example.com/simple"), false},
 		row{"kept name in one surface, unkept in another", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_NO_INPUT=1\npip install -r requirements.txt\n",

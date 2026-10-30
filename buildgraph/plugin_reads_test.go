@@ -30,6 +30,7 @@ var buildFileReaders = map[string]string{
 	"internal/plugin/javaanalysis/launchentry.go":   "launch entry: the main class a POM or Gradle script names",
 	"internal/plugin/javaanalysis/launchoptions.go": "launch options: JVM flags in .mvn/maven.config and the exec plugin's POM configuration",
 	"internal/plugin/kotlinanalysis/launchentry.go": "launch entry: the main class a POM or Gradle script names",
+	"internal/plugin/kotlinanalysis/launchboot.go":  "launch entry: the plugins a Gradle settings or build script applies, for the Spring Boot plugin's main",
 	"internal/plugin/kotlinanalysis/modules.go":     "module discovery: the settings and build files that say where a module's sources are",
 }
 

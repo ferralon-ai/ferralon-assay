@@ -33,7 +33,8 @@ import (
 //   - a manifest the project ships or built (src/main/resources/META-INF/MANIFEST.MF, the
 //     class output's META-INF/MANIFEST.MF, a JAR under target/ or build/libs/): Main-Class
 //     naming a first-party class, or Spring Boot's JarLauncher/WarLauncher with a Start-Class;
-//   - with none of the above, the main spring-boot-maven-plugin finds itself (bootMain).
+//   - with none of the above, the main spring-boot-maven-plugin finds itself (bootMain,
+//     BootMainClass).
 //
 // Withheld, each with its reason: no named entry and no main the Boot plugin finds
 // (launch_entry_unnamed); a named entry that is not a first-party main, a dependency launcher such as Vert.x's (Main-Class outside the
@@ -196,35 +197,44 @@ func declaresMain(c *classfile.Class) bool {
 
 const springBootApplication = "Lorg/springframework/boot/autoconfigure/SpringBootApplication;"
 
-// bootMain is the main spring-boot-maven-plugin finds when the build names none. The plugin
-// (MainClassFinder) takes every class in the project's class output with a public static
-// main(String[]), keeps those annotated @SpringBootApplication directly when there are any, and
-// fails the build unless one is left. The main is licensed only when:
-//   - the project applies the plugin, and nothing in the build can name a main for it instead
-//     (bootBlocked);
-//   - every main candidate sits in one class output directory, the one the finder reads;
-//   - the same single class is left whether a candidate is the plugin's public static main or
-//     any concrete main(String[]), so the licence does not rest on the access flags alone.
+// bootMain is the main spring-boot-maven-plugin finds when the build names none
+// (BootMainClass), licensed only when the project applies the plugin and nothing in the build can
+// name a main for it instead (bootBlocked).
 //
-// The Gradle plugin's equivalent is not read: org.springframework.boot is outside the Gradle
-// SAFE set, so the inventory withholds such a build before the launch entry matters.
+// This lane reads the Maven plugin only. A Gradle build applying org.springframework.boot with no
+// main named keeps launch_entry_unnamed here; the Kotlin lane reads the Gradle plugin.
 func (r *entryReader) bootMain(fp *firstPartyBytecode) (string, bool) {
 	if !r.bootPlugin || r.bootBlocked {
 		return "", false
 	}
-	strict := bootCandidates(fp.classes, isBootMain)
-	broad := bootCandidates(fp.classes, declaresMain)
+	return BootMainClass(fp.classes, fp.roots)
+}
+
+// BootMainClass is the main Spring Boot's MainClassFinder picks from classes, the first-party
+// classes read from the class output directories roots. The finder (spring-boot-loader-tools
+// MainClassFinder.findSingleMainClass, used by both the Maven plugin and the Gradle plugin's
+// resolveMainClassName) takes every class in a class output directory with a public static
+// main(String[]), keeps those annotated @SpringBootApplication directly when there are any, and
+// fails the build unless one is left. The main is returned only when:
+//   - every main candidate sits in one of roots, the one directory the finder reads;
+//   - the same single class is left whether a candidate is the finder's public static main or
+//     any concrete main(String[]), so the answer does not rest on the access flags alone.
+//
+// The name is binary, '/'-separated.
+func BootMainClass(classes []classfile.Class, roots []string) (string, bool) {
+	strict := bootCandidates(classes, isBootMain)
+	broad := bootCandidates(classes, declaresMain)
 	if len(broad) != 1 || !slices.Equal(strict, broad) {
 		return "", false
 	}
 	var all []string
-	for i := range fp.classes {
-		if declaresMain(&fp.classes[i]) || isBootMain(&fp.classes[i]) {
-			all = append(all, fp.classes[i].Name)
+	for i := range classes {
+		if declaresMain(&classes[i]) || isBootMain(&classes[i]) {
+			all = append(all, classes[i].Name)
 		}
 	}
 	dirs := 0
-	for _, root := range fp.roots {
+	for _, root := range roots {
 		for _, n := range all {
 			if info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(n)+".class")); err == nil && info.Mode().IsRegular() {
 				dirs++
@@ -236,6 +246,25 @@ func (r *entryReader) bootMain(fp *firstPartyBytecode) (string, bool) {
 		return "", false
 	}
 	return strict[0], true
+}
+
+// MavenBootPlugin reads the POM at path and the parents it inherits from (from the Maven cache
+// buildDir's build uses): plugin is whether one applies spring-boot-maven-plugin; blocked is
+// whether the build can hand that plugin a main BootMainClass does not see (bootMaven), or the
+// POM cannot be read; cliProperty is whether the checkout's launch-option scan sets start-class or
+// spring-boot.run.main-class, which override the plugin's main, found or configured.
+func MavenBootPlugin(buildDir, path string) (plugin, blocked, cliProperty bool) {
+	pom, ok := parseMavenPOM(path)
+	if !ok {
+		return false, true, false
+	}
+	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir)}
+	chain, files, complete := r.pomChain(pom, path)
+	r.bootMaven(chain, files, complete)
+	if !r.bootPlugin {
+		return false, r.bootBlocked, false
+	}
+	return true, r.bootBlocked, checkoutDefines(buildDir, map[string]bool{"start-class": true, "spring-boot.run.main-class": true})
 }
 
 // isBootMain reports whether c declares the main MainClassFinder looks for.

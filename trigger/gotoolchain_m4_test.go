@@ -5,7 +5,7 @@
 //
 // The table below is the honesty boundary, stated as one matrix over
 // (flag, bound, fetch-outcome). One arm — and exactly one — emits `not_exploitable` with basis
-// `vulnerable_symbol_absent`: the arm where the subject's toolchain was actually scanned. Every other
+// `vulnerable_symbol_unreachable`: the arm where the subject's toolchain was actually scanned. Every other
 // arm, including "the flag is on and the fact is exact but the toolchain could not be run", stays
 // `undetermined` and disclosed. An arm that emitted a safety claim without a subject scan would be
 // the original defect wearing the fix's clothes.
@@ -93,7 +93,7 @@ const (
 
 func TestGoToolchainM4_UndeterminedLiftMatrix(t *testing.T) {
 	const (
-		goFloor       = "module example.com/target\n\ngo 1.20\n"
+		goFloor       = "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20\n"
 		goNoDirective = "module example.com/target\n"
 	)
 
@@ -243,12 +243,12 @@ func TestGoToolchainM4_UndeterminedLiftMatrix(t *testing.T) {
 	}
 }
 
-// TestGoToolchainM4_SymbolAbsentBasisRequiresASubjectScan is the inv.5 assertion stated directly,
-// independent of the matrix's bookkeeping: for a stdlib advisory, the ONLY way basis
-// `vulnerable_symbol_absent` can reach a report is a run in which the subject's toolchain was
+// TestGoToolchainM4_BasisRequiresASubjectScan is the inv.5 assertion stated directly,
+// independent of the matrix's bookkeeping: for a stdlib advisory, the ONLY way any basis
+// (in practice `vulnerable_symbol_unreachable`) can reach a report is a run in which the subject's toolchain was
 // actually scanned. It is written as a sweep over the same states so that a future arm which starts
-// emitting the basis cannot slip through by not being in the matrix.
-func TestGoToolchainM4_SymbolAbsentBasisRequiresASubjectScan(t *testing.T) {
+// emitting a basis cannot slip through by not being in the matrix.
+func TestGoToolchainM4_BasisRequiresASubjectScan(t *testing.T) {
 	states := []struct {
 		name string
 		// flagOn is the release gate; declared is tier 1 (exact, never trust-gated); observed +
@@ -272,7 +272,7 @@ func TestGoToolchainM4_SymbolAbsentBasisRequiresASubjectScan(t *testing.T) {
 		{name: "flag on, exact, fallback", flagOn: true, declared: declaredToolchain, honored: false},
 		{name: "flag on, exact, honored", flagOn: true, declared: declaredToolchain, honored: true, subjectScanned: true},
 		// Ruling 7's shipped default, swept for the basis directly: an observation nobody vouched for
-		// cannot put vulnerable_symbol_absent on the wire.
+		// cannot put a basis on the wire.
 		{name: "flag on, observation untrusted", flagOn: true, observed: dogfoodObservedToolchain, honored: true},
 		{name: "flag on, observation trusted, honored", flagOn: true, observed: dogfoodObservedToolchain, trustObserved: true, honored: true, subjectScanned: true},
 	}
@@ -293,13 +293,13 @@ func TestGoToolchainM4_SymbolAbsentBasisRequiresASubjectScan(t *testing.T) {
 
 			var sawBasis bool
 			for _, f := range rep.Advisories {
-				if f.Evidence.Basis == verdict.BasisSymbolAbsent {
+				if f.Verdict == report.VerdictNotExploitable && f.Evidence.Basis != verdict.BasisNone {
 					sawBasis = true
 				}
 			}
 			if sawBasis != s.subjectScanned {
-				t.Errorf("basis %q present = %t, want %t: this basis is a claim about the SUBJECT's toolchain and may only be emitted when that toolchain was scanned",
-					verdict.BasisSymbolAbsent, sawBasis, s.subjectScanned)
+				t.Errorf("not_exploitable basis present = %t, want %t: a refutation is a claim about the SUBJECT's toolchain and may only be emitted when that toolchain was scanned",
+					sawBasis, s.subjectScanned)
 			}
 		})
 	}
@@ -423,7 +423,7 @@ func TestGoToolchainM4_ScanToolchainRecordIsHonest(t *testing.T) {
 // `toolchain go1.24.0`. Pre-guard, that resolved EXACT: M4 would have asked the analyzer to run under
 // go1.20.5, the analyzer would have honored it, ToolchainScan would have matched request against
 // actual and reported Subject:true, and the undetermined verdict would have lifted — emitting
-// `not_exploitable` / `vulnerable_symbol_absent` (and OpenVEX `not_affected`) off a call graph over a
+// `not_exploitable` / `vulnerable_symbol_unreachable` (and OpenVEX `not_affected`) off a call graph over a
 // stdlib the subject provably does not build with. `GOTOOLCHAIN=auto` only switches UP, so go1.20.5 is
 // the bootstrap, not the build.
 //

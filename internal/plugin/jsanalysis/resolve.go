@@ -105,6 +105,9 @@ type resolver struct {
 	// packageOnly keeps every bare specifier a package resolution even when dependency code is
 	// read, so boundary nodes are still traced through it.
 	packageOnly bool
+	// anyResolver selects, for a bare specifier of a read package, every module Node or a
+	// bundler may load for it (loadCandidates), not only Node's.
+	anyResolver bool
 }
 
 // resolver constructs the resolver at PLAN-162's injection point, wiring in the exposed
@@ -916,10 +919,17 @@ func (rs *resolver) dirMain(dir string) (string, bool) {
 		}
 		if ip := installPathOf(dir + "/x"); ip != "" {
 			p := d.pkgs[ip]
-			if p == nil || p.files[strings.TrimPrefix(dir, ip+"/")+"/package.json"] {
+			if p == nil {
 				return "", false
 			}
-			return "", true
+			sub := strings.TrimPrefix(dir, ip+"/")
+			if !p.files[sub+"/package.json"] {
+				return "", true
+			}
+			if m := p.nested[sub]; m != nil {
+				return m.main, true
+			}
+			return "", false
 		}
 	}
 	if underNodeModules(dir) {
@@ -1043,6 +1053,13 @@ type pkgManifest struct {
 	// browser may load in place of main: the module field, a string browser field, and every
 	// path an object browser field maps to.
 	frontEntries []string
+	// module and browserMain are the module field and a string browser field; browserMap is
+	// every relative path an object browser field maps to, and browserBare reports one that
+	// maps a path to another package.
+	module      string
+	browserMain string
+	browserMap  []string
+	browserBare bool
 }
 
 type rawPkg struct {
@@ -1061,7 +1078,7 @@ func parsePkgManifest(data []byte) *pkgManifest {
 	if err := json.Unmarshal(data, &rp); err != nil {
 		return nil
 	}
-	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main}
+	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main, module: rp.Module}
 	if rp.Module != "" {
 		m.frontEntries = append(m.frontEntries, rp.Module)
 	}
@@ -1070,10 +1087,16 @@ func parsePkgManifest(data []byte) *pkgManifest {
 		var byPath map[string]any
 		if json.Unmarshal(rp.Browser, &one) == nil && one != "" {
 			m.frontEntries = append(m.frontEntries, one)
+			m.browserMain = one
 		} else if json.Unmarshal(rp.Browser, &byPath) == nil {
 			for _, k := range slices.Sorted(maps.Keys(byPath)) {
-				if t, ok := byPath[k].(string); ok && isRelativeTarget(t) {
+				t, ok := byPath[k].(string)
+				switch {
+				case ok && isRelativeTarget(t):
 					m.frontEntries = append(m.frontEntries, t)
+					m.browserMap = append(m.browserMap, t)
+				case ok:
+					m.browserBare = true
 				}
 			}
 		}

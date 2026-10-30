@@ -1,0 +1,27 @@
+{
+  "policy": "published-24h",
+  "targets": [
+    { "repo": "ferralon-demo/demo-go-svc", "language": "go", "include_house_canaries": true },
+    { "repo": "ferralon-demo/gitea-cve-2024-45337", "language": "go" },
+    { "repo": "ferralon-demo/grafana-cve-2024-9264-duckdb-rce", "language": "go" },
+    { "repo": "ferralon-demo/nucleon", "language": "go" },
+    { "repo": "ferralon-demo/demo-java-svc", "language": "java" },
+    { "repo": "ferralon-demo/nextjs-ghsa-5vj8-module-rce", "language": "js" },
+    { "repo": "ferralon-demo/airflow-experimental-api-rce", "language": "python", "include_house_canaries": true },
+    { "repo": "ferralon-demo/label-studio-url-import-ssrf", "language": "python", "ref": "baseline" },
+    { "repo": "ferralon-demo/mindsdb-vectordb-eval-rce", "language": "python", "ref": "baseline" },
+    { "repo": "ferralon-demo/ms-swift-yaml-load-rce", "language": "python", "ref": "baseline" },
+    { "repo": "ferralon-demo/pyload-js2py-rce", "language": "python", "ref": "baseline" },
+    { "repo": "ferralon-demo/whoogle-search-ssrf-path-traversal", "language": "python", "ref": "baseline" }
+  ],
+  "excluded": [
+    {
+      "repo": "ferralon-demo/gogs-symlink-chain",
+      "reason": "no Go build file: the repository holds Dockerfiles that build Gogs and a Python driver, so a scan would not exercise the Go analyzer"
+    },
+    {
+      "repo": "ferralon-demo/log4shell-chain",
+      "reason": "no pom.xml or Gradle build at the root: its only Java builds are the reproducer drivers under reproducer/case*/driver/, and a scan of the root fails resolving the build graph"
+    }
+  ]
+}

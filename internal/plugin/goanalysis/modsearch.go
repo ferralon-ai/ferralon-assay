@@ -204,7 +204,7 @@ func pathHolds(mod, p string) bool {
 func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-json", "all")
 	cmd.Dir = buildDir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = analyzerEnv(ctx)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

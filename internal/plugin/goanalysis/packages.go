@@ -105,13 +105,11 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		Context: ctx,
 		Dir:     buildDir,
 		Tests:   false,
-		// The analyzed target is the buildDir's own module — NEVER a member of any
-		// workspace the analyzer process itself happens to run inside (e.g. an
-		// enclosing repository's go.work during development). Force GOWORK=off so the load resolves the
-		// target module standalone; an ambient go.work would otherwise make
-		// packages.Load try to resolve the target against the wrong module graph and
-		// return an empty/garbled program.
-		Env: append(os.Environ(), "GOWORK=off"),
+		// The load runs under the build's own workspace (withGoWork), NEVER one the analyzer
+		// process itself happens to run inside (e.g. an enclosing repository's go.work during
+		// development): an ambient go.work would make packages.Load resolve the target against the
+		// wrong module graph and return an empty/garbled program.
+		Env: analyzerEnv(ctx),
 	}
 	// The build loaded is the one `go build` ships from this environment: cgo is on or off as the go
 	// command resolves it here (CGO_ENABLED and CC inherited, else on when the default C compiler is
@@ -184,7 +182,8 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 type buildEnvironKey struct{}
 
 // WithBuildEnviron returns ctx carrying env as the environment the build runs in: the process's own
-// environment before the analyzer changed it (it forces GOWORK=off, which the build does not).
+// environment before the analyzer changed it. Its GOWORK is the analyzer's, never read: the build's
+// is the request's (withGoWork).
 func WithBuildEnviron(ctx context.Context, env []string) context.Context {
 	return context.WithValue(ctx, buildEnvironKey{}, env)
 }
@@ -198,11 +197,11 @@ func BuildEnviron(ctx context.Context) []string {
 }
 
 // buildToolchain is the Go release the analyzer's go command resolves for buildDir under the build's
-// environment (BuildEnviron), from GOTOOLCHAIN, the go.mod go and toolchain lines and any go.work. It
-// is an ambient observation, not the release the build compiles under; see buildRelease. "" when
-// unknown.
+// environment (BuildEnviron) and workspace, from GOTOOLCHAIN, the go.mod go and toolchain lines and
+// the go.work. It is an ambient observation, not the release the build compiles under; see
+// buildRelease. "" when unknown.
 func buildToolchain(ctx context.Context, buildDir string) string {
-	return goEnvVersion(ctx, buildDir, BuildEnviron(ctx))
+	return goEnvVersion(ctx, buildDir, buildEnv(ctx, BuildEnviron(ctx)))
 }
 
 // cgoPinned returns env with CGO_ENABLED set to the value `go env CGO_ENABLED` resolves for dir
@@ -1168,6 +1167,10 @@ func scipFromPackage(p *packages.Package, obj types.Object) string {
 // including the methods of exported named types. Partiality is Complete unless
 // the load was degraded.
 func IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.SymbolIndexResult{}, err
+	}
 	res, err := LoadProgram(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.SymbolIndexResult{}, err
@@ -1275,6 +1278,10 @@ func recvDisplay(t types.Type) string {
 // resolves them against the loaded program. A no-match is an empty result, not
 // an error; a load failure is a hard error (inv.4).
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.SymbolResolutionResult{}, err
+	}
 	index, err := resolutionIndex(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
@@ -1336,8 +1343,8 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 // scan through the run cache: the index depends only on the build, while every advisory resolves
 // against it. The program load reads the process environment, so that is part of the key.
 func resolutionIndex(ctx context.Context, buildDir string) (plugin.SymbolIndexResult, error) {
-	b, err := runCached(ctx, "symbolindex", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: buildDir})
+	b, err := runCached(ctx, "symbolindex", append([]string{buildDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
+		index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: buildDir, GoWork: goWork(ctx)})
 		if err != nil {
 			return nil, err
 		}

@@ -20,6 +20,10 @@ import (
 // simply not an ingress (absence is declared at the reachability layer, not
 // fabricated here). A load/SSA-build failure is a hard error (inv.4).
 func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.IngressResult{}, err
+	}
 	sp, res, err := loadSSA(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err

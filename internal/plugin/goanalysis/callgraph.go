@@ -107,6 +107,10 @@ func funcTypePackage(fn *ssa.Function) *types.Package {
 // makes are not declared run-wide here: Reachability bounds them per advisory
 // (withholdForReflectReach).
 func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.CallGraphResult{}, err
+	}
 	algo := req.Algorithm
 	if algo == "" {
 		algo = "vta"

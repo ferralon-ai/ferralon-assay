@@ -34,6 +34,10 @@ import (
 // (inv.4); a malformed go.mod surfaces as Partial (tool_failure), never a silent
 // empty result.
 func BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.BuildManifestResult{}, err
+	}
 	if fi, err := os.Stat(req.BuildDir); err != nil || !fi.IsDir() {
 		return plugin.BuildManifestResult{}, err
 	}

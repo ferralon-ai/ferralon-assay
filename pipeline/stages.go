@@ -1852,7 +1852,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 
 	module, goVersion, buildCommand, toolchainDirective, buildToolchain := "", "", "", "", ""
 	if s.plugin != nil && buildDir != "" && s.plugin.Language() == language {
-		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir})
+		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir, GoWork: goWork.File})
 		if err != nil {
 			return err
 		}
@@ -3154,9 +3154,14 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 		if err != nil {
 			return err
 		}
+		goWork, err := InventoryGoWorkspace(store, c.ID)
+		if err != nil {
+			return err
+		}
 		purl, advisorySymbols := advisoryPURLAndSymbols(store, c.ID)
 		req := plugin.ResolveSymbolsRequest{
 			BuildDir:        buildDir,
+			GoWork:          goWork.File,
 			VulnID:          c.Request.Vulnerability.ID,
 			PURL:            purl,
 			AdvisorySymbols: advisorySymbols,
@@ -3355,13 +3360,17 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// reachable path AND bypassing the inv.5 fail-open. Resolve the GO- match id from the
 	// normalized-advisory artifact's aliases.
 	vulnID := govulnMatchID(store, c.ID, c.Request.Vulnerability.ID)
-
-	depCache := s.deps.cacheFor(store, c.ID)
-	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, DependencyCache: depCache})
+	goWork, err := InventoryGoWorkspace(store, c.ID)
 	if err != nil {
 		return err
 	}
-	ingresses, err := s.plugin.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir})
+
+	depCache := s.deps.cacheFor(store, c.ID)
+	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache})
+	if err != nil {
+		return err
+	}
+	ingresses, err := s.plugin.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir, GoWork: goWork.File})
 	if err != nil {
 		return err
 	}
@@ -3376,6 +3385,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
 		BuildDir:           buildDir,
+		GoWork:             goWork.File,
 		VulnID:             vulnID,
 		Symbols:            sinks,
 		GoToolchain:        requestedToolchain,
@@ -3451,7 +3461,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}, DependencyCache: depCache})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: []string{sink}, DependencyCache: depCache})
 		if err != nil {
 			return err
 		}

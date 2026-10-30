@@ -604,7 +604,8 @@ func reachabilityEvidence(store artifact.Store, assessmentID string) (report.Rea
 
 // reachabilityEvidenceOn is reachabilityEvidence over an already selected path p (ok false
 // when no artifact records one), so the caller can read the reachable_path label from the
-// same path.
+// same path. With a path recorded, the entry point is an ingress on that path or none; the
+// ingress map's lone-ingress fallback (entryPointFor) applies only when no path is recorded.
 func reachabilityEvidenceOn(store artifact.Store, assessmentID string, p plugin.ReachPath, ok bool) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
 	ingresses := ingressMap(store, assessmentID)
 	var frames []report.CallFrame
@@ -622,9 +623,12 @@ func reachabilityEvidenceOn(store artifact.Store, assessmentID string, p plugin.
 	// stays a candidate (inv. 5): the strong grade is evidence strength, not a proof.
 	entry := attackerIngressInTrace(frames, ingresses)
 	grade := report.GradeControlFlowOnly
-	if entry != nil {
+	switch {
+	case entry != nil:
 		grade = report.GradeAttackerTainted
-	} else {
+	case ok:
+		entry = reachingEntryPoint(ingressSym, ingresses)
+	default:
 		entry = entryPointFor(ingressSym, ingresses)
 	}
 	return grade, entry, frames
@@ -738,23 +742,32 @@ func framesOf(trace []plugin.Symbol) []report.CallFrame {
 	return frames
 }
 
+// reachingEntryPoint is the EntryPoint for THIS advisory's reaching ingress: the ingress
+// map entry (for kind + selector) whose symbol is the resolved path's ingress symbol, or nil
+// when the symbol is empty or not in the map.
+func reachingEntryPoint(ingressSym string, ingresses []plugin.Ingress) *report.EntryPoint {
+	if ingressSym == "" {
+		return nil
+	}
+	for _, in := range ingresses {
+		if in.Symbol.SCIP == ingressSym {
+			return entryPointOf(in)
+		}
+	}
+	return nil
+}
+
 // entryPointFor resolves the EntryPoint for a candidate from THIS advisory's reaching
-// ingress: it matches the resolved path's ingress symbol against the ingress map (for
-// kind + selector). When the path carries no reaching ingress it falls back ONLY to an
-// unambiguous single ingress; it never positionally picks among several, which would
-// borrow an entry point belonging to a different advisory's sink — the mis-attribution
-// inv. 5 forbids (evidence must be advisory-specific). Returns nil (honest unknown
-// entry point) rather than fabricate one. The attacker_tainted path in
-// reachabilityEvidence resolves the entry from the trace directly, so this fallback runs
-// only for a control_flow_only candidate.
+// ingress (reachingEntryPoint). Without one it falls back ONLY to an unambiguous single
+// ingress; it never positionally picks among several, which would borrow an entry point
+// belonging to a different advisory's sink — the mis-attribution inv. 5 forbids (evidence
+// must be advisory-specific). Returns nil (honest unknown entry point) rather than
+// fabricate one. reachabilityEvidenceOn calls it only when no path is recorded, since the
+// fallback ingress is not on any trace.
 func entryPointFor(ingressSym string, ingresses []plugin.Ingress) *report.EntryPoint {
 	// 1. The advisory-specific reaching ingress (ReachPath.Ingress for the resolved sink).
-	if ingressSym != "" {
-		for _, in := range ingresses {
-			if in.Symbol.SCIP == ingressSym {
-				return entryPointOf(in)
-			}
-		}
+	if entry := reachingEntryPoint(ingressSym, ingresses); entry != nil {
+		return entry
 	}
 	// 2. No reaching ingress recorded: fall back only when the ingress is UNAMBIGUOUS —
 	//    a single attacker-controllable ingress, or a single ingress overall (the stub /

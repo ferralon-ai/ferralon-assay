@@ -442,7 +442,7 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 	}
 	for _, trigger := range []string{
 		"getattr(obj, name)", "globals()[name]", "vars(obj)", "locals()", "obj.__dict__",
-		"eval(src)", "exec(src)", "__import__(name)", "operator.attrgetter(name)",
+		"eval(src)", "exec(src)", "builtins.eval(src)", "builtins.exec(src)", "__import__(name)", "operator.attrgetter(name)",
 		"operator.methodcaller(name)", "inspect.getmembers(obj)", "sys.modules[name]",
 		"importlib.import_module(name)",
 	} {

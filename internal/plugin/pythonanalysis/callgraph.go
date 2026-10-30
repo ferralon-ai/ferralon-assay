@@ -378,7 +378,7 @@ func loadProgram(buildDir string) (*program, error) {
 		roots, opaque := dynamicImports(clean, lits)
 		lookupRoots, lookups, lookupPackages, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
 		roots = sortedDedup(append(roots, lookupRoots...))
-		opaque = opaque || lookupOpaque
+		opaque = opaque || lookupOpaque || scan.refs.hiddenImport
 
 		var fds []funcDecl
 		topNames := map[string]bool{}

@@ -852,6 +852,11 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"after a leading continuation", map[string]string{"app.py": "\\\nimport tests.helpers\n", "tests/helpers.py": opaque}, true, false},
 		{"spaces around a dot", map[string]string{"app.py": "import tests . helpers\n", "tests/other.py": opaque}, true, false},
 		{"edge through another test module", map[string]string{"app.py": "def main():\n    return relay('1')\n", "tests/relay.py": "def relay(s):\n    return run_eval(s)\n", "tests/helpers.py": evals}, false, true},
+		{"qualified builtins.exec in production", map[string]string{"app.py": "import builtins\n\ndef run(s):\n    builtins.exec(s)\n"}, false, true},
+		{"qualified builtins.eval in production", map[string]string{"app.py": "import builtins\n\ndef run(s):\n    return builtins.eval(s)\n"}, false, true},
+		{"dynamic import in an f-string", map[string]string{"app.py": "import importlib\n\ndef run(n):\n    return f\"{importlib.import_module(n)}\"\n"}, true, true},
+		{"__import__ in an f-string", map[string]string{"app.py": "def run(n):\n    return f\"{__import__(n)}\"\n"}, true, true},
+		{"plain call in an f-string", map[string]string{"app.py": "def run(s):\n    return f\"{len(s)}\"\n"}, false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -981,6 +986,10 @@ func TestFindIngresses_HiddenRouteDynamicImport(t *testing.T) {
 		{"hidden route and production exec", map[string]string{"app.py": "def run(src):\n    exec(src)\n", "tests/routes.py": route}, true},
 		{"hidden route and production eval", map[string]string{"app.py": "def run(src):\n    return eval(src)\n", "tests/routes.py": route}, true},
 		{"exec in unreached test code", map[string]string{"app.py": "def main():\n    return 1\n", "tests/load.py": "def run(src):\n    exec(src)\n", "tests/routes.py": route}, false},
+		{"hidden route and production builtins.exec", map[string]string{"app.py": "import builtins\n\ndef run(src):\n    builtins.exec(src)\n", "tests/routes.py": route}, true},
+		{"hidden route and production f-string dynamic import", map[string]string{"app.py": "import importlib\n\ndef run(n):\n    return f\"{importlib.import_module(n)}\"\n", "tests/routes.py": route}, true},
+		{"hidden route and production getattr", map[string]string{"app.py": "def run(o, n):\n    return getattr(o, n)\n", "tests/routes.py": route}, false},
+		{"hidden route and production f-string call", map[string]string{"app.py": "def run(s):\n    return f\"{len(s)}\"\n", "tests/routes.py": route}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

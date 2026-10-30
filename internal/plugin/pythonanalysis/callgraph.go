@@ -351,7 +351,7 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, p)
-		clean, lits := stripPythonLiterals(string(data))
+		clean, lits := stripPythonLiterals(string(loneCRToLF(data)))
 		lines := logicalLines(clean)
 
 		decls := parseDecls(lines)

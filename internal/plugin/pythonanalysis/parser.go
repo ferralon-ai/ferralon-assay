@@ -1,6 +1,8 @@
 package pythonanalysis
 
 import (
+	"bytes"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -210,16 +212,32 @@ func logicalLines(clean string) []logicalLine {
 			curIndent = indentWidth(trimmedRight)
 			open = true
 		}
+		text, cont := strings.CutSuffix(strings.TrimRight(trimmedRight, " \t"), "\\")
 		cur.WriteByte(' ')
-		cur.WriteString(strings.TrimSpace(trimmedRight))
+		cur.WriteString(strings.TrimSpace(text))
 
 		bracketDepth += bracketDelta(trimmedRight)
-		cont := strings.HasSuffix(strings.TrimRight(trimmedRight, " \t"), "\\")
 		if bracketDepth <= 0 && !cont {
 			flush()
 		}
 	}
 	flush()
+	return out
+}
+
+// loneCRToLF turns each lone "\r" in a Python source into "\n": CPython reads it as a
+// line break, and the line-oriented scans split on "\n" only. A "\r\n" is left as it is, so
+// every byte and rune index into the source is unchanged.
+func loneCRToLF(data []byte) []byte {
+	if bytes.IndexByte(data, '\r') < 0 {
+		return data
+	}
+	out := slices.Clone(data)
+	for i, b := range out {
+		if b == '\r' && (i+1 == len(out) || out[i+1] != '\n') {
+			out[i] = '\n'
+		}
+	}
 	return out
 }
 

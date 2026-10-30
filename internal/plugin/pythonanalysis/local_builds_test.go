@@ -378,6 +378,8 @@ func TestResolveVersions_BuildInputs(t *testing.T) {
 			"install.sh": "#!/bin/sh\ncp -r ci/pdmcfg ~/Library/Application\\ Support/pdm\npdm sync\n"}, nil, false},
 		{"pdm, platformdirs' Windows override", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
 			"install.sh": "#!/bin/sh\nexport WIN_PD_OVERRIDE_LOCAL_APPDATA=C:\\cfg\npdm sync\n"}, nil, false},
+		{"pdm, USERPROFILE moved", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock,
+			"install.sh": "#!/bin/sh\nexport USERPROFILE=/cfg\npdm sync\n"}, nil, false},
 		{"pdm, a config.toml outside a pdm directory", map[string]string{"pyproject.toml": pdmPy, "pdm.lock": pdmLock, "ci/config.toml": "x = 1\n",
 			"install.sh": "#!/bin/sh\npdm sync\n"}, nil, true},
 		{"uv, a config directory copied onto ~/.config", map[string]string{"pyproject.toml": project + uvBuild, "uv.lock": uvLock(""), "ci/xdg/uv/uv.toml": "native-tls = true\n",

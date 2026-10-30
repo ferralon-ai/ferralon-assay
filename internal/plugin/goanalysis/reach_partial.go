@@ -14,7 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
+	"syscall"
 
 	"golang.org/x/tools/go/packages"
 
@@ -132,13 +132,11 @@ func partialRunRefused(err error) bool {
 	return errors.As(err, &refusal)
 }
 
-// partialRunsMade holds, by run cache path, the partial runs this process made, so one whose run
-// cache write failed still answers the later advisories of the scan this process serves as it
-// answered the first.
-var partialRunsMade sync.Map
+// errPartialRetriesSpent is the reason a replay gives when no retry slot is left to it.
+var errPartialRetriesSpent = errors.New("the scan's partial run retries are spent")
 
-// firstPartialRun returns the partial run for a failure the caller has just settled: one stored or
-// made earlier, else one it makes now. A refusal stored earlier is not retried.
+// firstPartialRun returns the partial run for a failure the caller has just settled: one stored
+// earlier, else one it makes now. A refusal stored earlier is not retried.
 func firstPartialRun(ctx context.Context, key []string, failure error, partial func(failure error) ([]byte, error)) (*partialRun, error) {
 	run, refused := knownPartialRun(ctx, key)
 	switch {
@@ -150,28 +148,29 @@ func firstPartialRun(ctx context.Context, key []string, failure error, partial f
 	return makePartialRun(ctx, key, failure, partial)
 }
 
-// retryPartialRun returns the partial run for a replayed failure: one stored or made earlier, else
-// one it makes from the failure's recorded package errors, when a retry slot is left. It returns
-// neither run nor error when it makes no attempt.
+// retryPartialRun returns the partial run for a replayed failure: one stored earlier, else one it
+// makes from the failure's recorded package errors, when a retry slot is left; with none left it
+// returns errPartialRetriesSpent. It returns neither run nor error when the failure records no
+// package errors.
 func retryPartialRun(ctx context.Context, key []string, failure error, partial func(failure error) ([]byte, error)) (*partialRun, error) {
 	if run, refused := knownPartialRun(ctx, key); run != nil || refused {
 		return run, nil
 	}
-	if len(failurePackageErrors(failure)) == 0 || !claimPartialRetry(ctx, key) {
+	if len(failurePackageErrors(failure)) == 0 {
 		return nil, nil
+	}
+	if !claimPartialRetry(ctx, key) {
+		return nil, errPartialRetriesSpent
 	}
 	return makePartialRun(ctx, key, failure, partial)
 }
 
-// knownPartialRun returns the partial run this process made or the run cache holds for key, or
-// whether the run cache holds a refusal of it.
+// knownPartialRun returns the partial run the run cache holds for key, or whether the run cache
+// holds a refusal of it.
 func knownPartialRun(ctx context.Context, key []string) (*partialRun, bool) {
 	dir := RunCacheDir(ctx)
 	if dir == "" {
 		return nil, false
-	}
-	if run, ok := partialRunsMade.Load(runCachePath(dir, govulncheckPartialKind, key)); ok {
-		return run.(*partialRun), false
 	}
 	if run := storedPartialRun(ctx, key); run != nil {
 		return run, false
@@ -180,8 +179,8 @@ func knownPartialRun(ctx context.Context, key []string) (*partialRun, bool) {
 	return nil, err == nil && string(b) == govulncheckPartialRefusedMarker
 }
 
-// makePartialRun runs partial for failure and keeps the outcome: a run in the run cache and in this
-// process, a refusal in the run cache. A failure that may be transient is kept nowhere.
+// makePartialRun runs partial for failure and keeps the outcome: a run or a refusal in the run
+// cache. A failure that may be transient is kept nowhere.
 func makePartialRun(ctx context.Context, key []string, failure error, partial func(failure error) ([]byte, error)) (*partialRun, error) {
 	dir := RunCacheDir(ctx)
 	b, err := partial(failure)
@@ -196,9 +195,7 @@ func makePartialRun(ctx context.Context, key []string, failure error, partial fu
 	}
 	switch {
 	case run != nil:
-		path := runCachePath(dir, govulncheckPartialKind, key)
-		partialRunsMade.Store(path, run)
-		writeRunCacheEntry(dir, govulncheckPartialKind, path, b)
+		writeRunCacheEntry(dir, govulncheckPartialKind, runCachePath(dir, govulncheckPartialKind, key), b)
 	case partialRunRefused(err):
 		writeRunCacheEntry(dir, govulncheckPartialRefusedKind, runCachePath(dir, govulncheckPartialRefusedKind, key), []byte(govulncheckPartialRefusedMarker))
 	}
@@ -254,7 +251,8 @@ type listedPackage struct {
 	Dir        string
 	DepOnly    bool
 	Imports    []string
-	Module     *listedModule // none for the standard library
+	Module     *listedModule         // none for the standard library
+	Error      *struct{ Err string } // set when go list could not load the package
 }
 
 // purl names the module of p as modulePURL does.
@@ -297,7 +295,7 @@ func partialRunRecord(buildDir string, perrs []packages.Error, list func() ([]li
 	}
 	unloadable, err := unloadablePackages(buildDir, perrs, graph)
 	if err != nil {
-		return nil, &partialRunRefusal{err}
+		return nil, err
 	}
 	excluded, kept := excludedRoots(graph, unloadable)
 	if len(kept) == 0 {
@@ -330,14 +328,20 @@ var posFile = regexp.MustCompile(`^(.+?):\d+(?::\d+)?$`)
 // unloadablePackages returns the import paths of the packages perrs name, sorted. An error names
 // its package by the directory of its position (relative to buildDir when not absolute), or, with
 // none (a failed cgo or compile step), by the "# importpath" line the go command heads its output
-// with. An error that names no package of graph fails, since what it hides is then unknown.
+// with. An error that names no package of graph is a partialRunRefusal, since what it hides is then
+// unknown. A directory that cannot be resolved for a reason of the machine is a plain error: the
+// same call may succeed later.
 func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedPackage) ([]string, error) {
 	byDir := map[string][]string{}
 	listed := map[string]bool{}
 	for _, p := range graph {
 		listed[p.ImportPath] = true
 		if p.Dir != "" {
-			byDir[realDir(p.Dir)] = append(byDir[realDir(p.Dir)], p.ImportPath)
+			dir, err := realDir(p.Dir)
+			if err != nil {
+				return nil, err
+			}
+			byDir[dir] = append(byDir[dir], p.ImportPath)
 		}
 	}
 	var out []string
@@ -348,7 +352,11 @@ func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedP
 			if !filepath.IsAbs(file) {
 				file = filepath.Join(buildDir, file)
 			}
-			named = byDir[realDir(filepath.Dir(file))]
+			dir, err := realDir(filepath.Dir(file))
+			if err != nil {
+				return nil, err
+			}
+			named = byDir[dir]
 		} else if pe.Pos == "" {
 			if head, ok := strings.CutPrefix(strings.SplitN(pe.Msg, "\n", 2)[0], "# "); ok {
 				if path, _, _ := strings.Cut(head, " "); listed[path] {
@@ -357,7 +365,7 @@ func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedP
 			}
 		}
 		if len(named) == 0 {
-			return nil, fmt.Errorf("package error names no listed package: %s", pe.Error())
+			return nil, &partialRunRefusal{fmt.Errorf("package error names no listed package: %s", pe.Error())}
 		}
 		out = append(out, named...)
 	}
@@ -366,12 +374,18 @@ func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedP
 }
 
 // realDir is dir with symbolic links resolved, so that two spellings of one directory (macOS's /var
-// and /private/var) compare equal; dir cleaned when it cannot be resolved.
-func realDir(dir string) string {
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		return real
+// and /private/var) compare equal. A directory that does not exist, or has a file where a directory
+// should be, is cleaned: that is how it is, and stays. Any other failure to resolve it is the
+// machine's, and is returned.
+func realDir(dir string) (string, error) {
+	real, err := filepath.EvalSymlinks(dir)
+	switch {
+	case err == nil:
+		return real, nil
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		return filepath.Clean(dir), nil
 	}
-	return filepath.Clean(dir)
+	return "", fmt.Errorf("resolve %q: %w", dir, err)
 }
 
 // excludedRoots splits the roots of ./... (the packages graph lists that are not DepOnly) into those
@@ -419,19 +433,35 @@ func excludedRoots(graph []listedPackage, unloadable []string) (excluded, kept [
 // the govulncheck load sees them: tests excluded. It never fetches: a settled failure already
 // resolved every module offline (packagesResolveOffline).
 func listBuildPackages(ctx context.Context, buildDir string, env []string) ([]listedPackage, error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Imports,Module", "./...")
+	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Imports,Module,Error", "./...")
 	cmd.Dir = buildDir
 	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("go list for a partial govulncheck run (%q): %w", buildDir, err)
 	}
+	return decodeListedPackages(out)
+}
+
+// decodeListedPackages decodes the packages `go list -e -json` reported. go list exits 0 when a
+// package fails to load and reports why in its Error, so a package whose Error names a fault of the
+// machine (transientLoadFaults) fails the listing with a plain error: what that package imports is
+// then unknown, and the same listing may succeed later.
+func decodeListedPackages(out []byte) ([]listedPackage, error) {
 	var graph []listedPackage
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for dec.More() {
 		var p listedPackage
 		if err := dec.Decode(&p); err != nil {
 			return nil, fmt.Errorf("decode go list output: %w", err)
+		}
+		if p.Error != nil {
+			msg := strings.ToLower(p.Error.Err)
+			for _, transient := range transientLoadFaults {
+				if strings.Contains(msg, transient) {
+					return nil, fmt.Errorf("go list could not load %s: %s", p.ImportPath, p.Error.Err)
+				}
+			}
 		}
 		graph = append(graph, p)
 	}

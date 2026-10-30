@@ -115,7 +115,7 @@ func TestGovulncheckOrPartial(t *testing.T) {
 // TestPartialRunRetry pins what later advisories of a scan do when the first one's partial run
 // failed: a transient failure is retried from the recorded package errors until the bound is spent,
 // a refusal is never retried, a failure record from before package errors were recorded settles
-// nothing, and a partial run the run cache could not keep answers every advisory alike.
+// nothing, and a partial run the run cache could not keep is made again by each advisory within the bound.
 func TestPartialRunRetry(t *testing.T) {
 	const buildDir = "/src"
 	env := []string{"GOWORK=off"}
@@ -140,10 +140,10 @@ func TestPartialRunRetry(t *testing.T) {
 		partials     []string // outcome of each partial run in turn, the last repeating: "ok", "transient", "refused"
 		oldRecord    bool     // the run cache holds a failure record from before package errors were recorded
 		blockWrite   bool     // the run cache cannot keep the partial run
-		newProcessAt int      // the call from which advisories run in another process; 0 for none
 		wantStreams  int
 		wantPartials int
 		wantRun      []bool // per call; the last repeats
+		wantSpent    bool   // the failures after the bound says the retries are spent
 	}{
 		{name: "a transient fault is retried by the next advisory", partials: []string{"transient", "ok"},
 			wantStreams: 1, wantPartials: 2, wantRun: []bool{false, true}},
@@ -152,13 +152,11 @@ func TestPartialRunRetry(t *testing.T) {
 		{name: "a refusal after a transient fault stops the retries", partials: []string{"transient", "refused"},
 			wantStreams: 1, wantPartials: 2, wantRun: []bool{false}},
 		{name: "a sustained transient fault stops at the bound", partials: []string{"transient"},
-			wantStreams: 1, wantPartials: 1 + maxPartialRunRetries, wantRun: []bool{false}},
+			wantStreams: 1, wantPartials: 1 + maxPartialRunRetries, wantRun: []bool{false}, wantSpent: true},
 		{name: "a failure record from before package errors were recorded is run again", partials: []string{"ok"}, oldRecord: true,
 			wantStreams: 1, wantPartials: 1, wantRun: []bool{true}},
-		{name: "a partial run the cache could not keep answers every advisory of the process", partials: []string{"ok"}, blockWrite: true,
-			wantStreams: 1, wantPartials: 1, wantRun: []bool{true}},
-		{name: "a partial run the cache could not keep is made again by another process", partials: []string{"ok"}, blockWrite: true, newProcessAt: 3,
-			wantStreams: 1, wantPartials: 2, wantRun: []bool{true}},
+		{name: "a partial run the cache could not keep is made again by each advisory within the bound", partials: []string{"ok"}, blockWrite: true,
+			wantStreams: 1, wantPartials: 1 + maxPartialRunRetries, wantRun: []bool{true, true, true, false}, wantSpent: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -195,9 +193,6 @@ func TestPartialRunRetry(t *testing.T) {
 				return record, nil
 			}
 			for i := range calls {
-				if tt.newProcessAt > 0 && i == tt.newProcessAt {
-					partialRunsMade.Clear()
-				}
 				out, run, err := govulncheckOrPartial(ctx, buildDir, env, true, stream, partial)
 				if want := tt.wantRun[min(i, len(tt.wantRun)-1)]; want {
 					if err != nil || run == nil || string(out) != "{}\n" {
@@ -211,6 +206,9 @@ func TestPartialRunRetry(t *testing.T) {
 					if !strings.Contains(err.Error(), "no partial govulncheck run") {
 						t.Errorf("call %d: %v does not say why no partial run was made", i, err)
 					}
+					if spent := strings.Contains(err.Error(), errPartialRetriesSpent.Error()); spent != (tt.wantSpent && i > maxPartialRunRetries) {
+						t.Errorf("call %d: retries spent = %v in %v", i, spent, err)
+					}
 				}
 			}
 			if streams != tt.wantStreams || partials != tt.wantPartials {
@@ -221,7 +219,6 @@ func TestPartialRunRetry(t *testing.T) {
 			}
 		})
 	}
-	partialRunsMade.Clear()
 }
 
 // TestPartialRunRecord pins how the partial run is bounded: P is the packages the load errors name,
@@ -315,6 +312,72 @@ func TestPartialRunRecord(t *testing.T) {
 			}
 			if tc.wantModules != nil && !maps.Equal(run.Modules, tc.wantModules) {
 				t.Errorf("modules %v, want %v", run.Modules, tc.wantModules)
+			}
+		})
+	}
+}
+
+// TestPartialRunRecordMachineFaults pins that a fault of the machine met while bounding the partial
+// run is a plain error, which a later advisory retries, never a refusal that is stored for good.
+func TestPartialRunRecordMachineFaults(t *testing.T) {
+	loop := filepath.Join(t.TempDir(), "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	perrs := []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}
+	graph := func(dir string) []listedPackage {
+		return []listedPackage{{ImportPath: "example.com/m/a", Imports: []string{"example.com/c"}}, {ImportPath: "example.com/c", Dir: dir, DepOnly: true}}
+	}
+	tests := []struct {
+		name  string
+		perrs []packages.Error
+		graph []listedPackage
+	}{
+		{name: "a package directory that cannot be resolved", perrs: perrs, graph: graph(loop)},
+		{name: "an error position whose directory cannot be resolved", perrs: []packages.Error{{Pos: filepath.Join(loop, "c.go") + ":3:8", Msg: "x"}}, graph: graph("/mod/c")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := partialRunRecord("/src", tt.perrs, func() ([]listedPackage, error) { return tt.graph, nil }, func([]string) ([]byte, error) {
+				t.Error("govulncheck ran for a partial run that could not be bounded")
+				return nil, nil
+			})
+			if err == nil || partialRunRefused(err) {
+				t.Errorf("got %v, want a plain error", err)
+			}
+		})
+	}
+}
+
+// TestDecodeListedPackages pins that go list's per-package faults (it exits 0 for them) fail the
+// listing when they are the machine's, and are otherwise left to the errors that name the package.
+func TestDecodeListedPackages(t *testing.T) {
+	tests := []struct {
+		name    string
+		out     string
+		wantErr string
+		want    []string
+	}{
+		{name: "packages", out: `{"ImportPath":"a","Dir":"/a"}` + "\n" + `{"ImportPath":"b","DepOnly":true}`, want: []string{"a", "b"}},
+		{name: "a package that fails for good", out: `{"ImportPath":"a"}` + "\n" + `{"ImportPath":"b","Error":{"Err":"cannot find package"}}`, want: []string{"a", "b"}},
+		{name: "a package that fails on a machine fault", out: `{"ImportPath":"a"}` + "\n" + `{"ImportPath":"b","Error":{"Err":"open /b: Too many open files"}}`, wantErr: "go list could not load b"},
+		{name: "output that does not decode", out: `{"ImportPath":`, wantErr: "decode go list output"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			graph, err := decodeListedPackages([]byte(tt.out))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) || partialRunRefused(err) {
+					t.Errorf("got %v, want a plain error containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			var got []string
+			for _, p := range graph {
+				got = append(got, p.ImportPath)
+			}
+			if err != nil || !slices.Equal(got, tt.want) {
+				t.Errorf("got %v, %v; want %v", got, err, tt.want)
 			}
 		})
 	}

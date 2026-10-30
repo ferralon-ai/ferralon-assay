@@ -449,7 +449,9 @@ func TestGoPathOwner_ModulesOutsideTheRootGoMod(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := filepath.Join(writeTree(t, tc.files), filepath.FromSlash(tc.buildDir))
+			tree := writeTree(t, tc.files)
+			gitTree(t, tree)
+			dir := filepath.Join(tree, filepath.FromSlash(tc.buildDir))
 			if v, got := root.Matches(dir, tc.module, "", ""); got != tc.want || v != tc.wantVersion {
 				t.Fatalf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
 			}
@@ -641,11 +643,35 @@ func TestGoModRequires_WorkspaceMembers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			buildDir := filepath.Join(writeTree(t, tc.files), "a")
+			tree := writeTree(t, tc.files)
+			gitTree(t, tree)
+			buildDir := filepath.Join(tree, "a")
 			if present, known := goModRequires(buildDir, tc.module); present != tc.wantPresent || known != tc.wantKnown {
 				t.Fatalf("goModRequires = %v, %v; want %v, %v", present, known, tc.wantPresent, tc.wantKnown)
 			}
 		})
+	}
+}
+
+// TestGoWorkUses_StopsAtTheRepository: a go.work above the git work tree holding the build
+// directory is a developer's, so the build does not run under it and its members are not the
+// build's, and outside a work tree only a go.work in the build directory itself counts.
+func TestGoWorkUses_StopsAtTheRepository(t *testing.T) {
+	outer := writeTree(t, map[string]string{
+		"go.work":       "go 1.22\n\nuse (\n\t./repo/a\n\t./lib\n)\n",
+		"lib/go.mod":    "module example.com/lib\n\ngo 1.22\n",
+		"repo/a/go.mod": "module example.com/mono\n\ngo 1.22\n",
+	})
+	plain := filepath.Join(outer, "repo", "a")
+	if uses, _, ok := goWorkUses(plain); !ok || len(uses) != 0 {
+		t.Fatalf("outside a work tree: goWorkUses = %v, %v; want none, true", uses, ok)
+	}
+	gitTree(t, filepath.Join(outer, "repo"))
+	if uses, _, ok := goWorkUses(plain); !ok || len(uses) != 0 {
+		t.Fatalf("above the work tree: goWorkUses = %v, %v; want none, true", uses, ok)
+	}
+	if present, known := goModRequires(plain, "example.com/lib"); present || !known {
+		t.Fatalf("goModRequires = %v, %v; want false, true", present, known)
 	}
 }
 

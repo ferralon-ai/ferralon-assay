@@ -272,11 +272,16 @@ func goWorkRequires(buildDir string) ([]string, bool) {
 
 // goWorkUses returns the directory of every module the go.work the go command would find from
 // buildDir uses, and the module path of everything it replaces; ok is false when that go.work
-// cannot be read or does not parse.
+// cannot be read or does not parse. The search stops at the git work tree holding buildDir, or at
+// buildDir itself outside one: a go.work above the repository is a developer's, not the build's.
 func goWorkUses(buildDir string) (uses, replaced []string, ok bool) {
-	dir, err := filepath.Abs(buildDir)
+	dir, err := filepath.EvalSymlinks(buildDir)
 	if err != nil {
 		return nil, nil, false
+	}
+	top := dir
+	if t, err := gitOutput(context.Background(), dir, "rev-parse", "--show-toplevel"); err == nil && t != "" {
+		top = t
 	}
 	for {
 		data, err := os.ReadFile(filepath.Join(dir, "go.work"))
@@ -301,7 +306,7 @@ func goWorkUses(buildDir string) (uses, replaced []string, ok bool) {
 			return nil, nil, false
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
+		if dir == top || parent == dir {
 			return nil, nil, true
 		}
 		dir = parent

@@ -92,3 +92,24 @@ func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkSet_GoNestedModuleRootQuery: the project's own module is queried at the version its
+// prefixed tag names, which is read from the module FindGoModuleRoot picks, not the checkout root.
+func TestWorkSet_GoNestedModuleRootQuery(t *testing.T) {
+	dir := t.TempDir()
+	writeT(t, filepath.Join(dir, "services", "api", "go.mod"), "module example.com/api\n\ngo 1.21.0\n")
+	gitT(t, dir, "init", "-q")
+	gitT(t, dir, "add", "-A")
+	gitT(t, dir, "commit", "-q", "-m", "init")
+	gitT(t, dir, "tag", "services/api/v1.2.3")
+
+	acq := &acquired{buildDir: dir, language: checkout.LangGo, repo: "example.com/mono", advisories: goAdvisoryCorpus(false)}
+	osv := &fakeOSV{}
+	resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+	for _, p := range osv.seen {
+		if p.Root && p.Name == "example.com/api" && p.Version == "v1.2.3" && p.Ecosystem == ecosystemGo {
+			return
+		}
+	}
+	t.Fatalf("root module not queried at its tag; seen %+v", osv.seen)
+}

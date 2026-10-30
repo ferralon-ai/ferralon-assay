@@ -366,15 +366,23 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 
 ## Network egress
 
-**Your code never leaves the runner, and a registry token leaves it only for the npm registry
-host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a default
+**Your code never leaves the runner. The scanner presents a registry token only to the npm registry
+host your scanned branch's `.npmrc` binds it to, and a Java or Kotlin build tool it runs uses the
+credentials your build configures.** No run mode is offline: a default
 `baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
-`api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
-GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. A JS scan also fetches each lock-pinned package tarball by name and version from the
+`api.osv.dev`. The Action downloads the scanner release from `github.com`. A run with
+`advisory-corpus-repo` set clones the corpus repository from `github.com`. With
+`advisory-corpus-policy` set and the ref naming a corpus release, a bundle replaces the clone: the
+run downloads the release's assets from `github.com` (served from
+`release-assets.githubusercontent.com`) and the policy manifest from `raw.githubusercontent.com`,
+downloads cosign from the `sigstore/cosign` GitHub release, and needs the Sigstore TUF CDN,
+`tuf-repo-cdn.sigstore.dev`, to verify the corpus signature. None of the corpus requests presents a
+token or carries anything about your code. A Java or Kotlin scan runs the repository's own Maven or
+Gradle with the job's environment, and the build tool contacts whatever repositories the build
+configures. A JS scan also fetches each lock-pinned package tarball by name and version from the
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token

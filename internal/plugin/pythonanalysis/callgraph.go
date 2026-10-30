@@ -28,9 +28,6 @@ type program struct {
 	// dists maps an imported top-level module to the distribution providing it, so a call
 	// through an import binding names a dependency boundary node.
 	dists distResolver
-	// dynamicImportOpaque records a dynamic import whose module the scanner cannot name
-	// (non-literal argument, entry-point group, package walk): run-wide, fails closed.
-	dynamicImportOpaque bool
 	// importUnattributed records that a manifest could not be read in full and an import
 	// resolves to no distribution, so the name that would attribute it may be in the unread
 	// part and the boundary nodes behind it are missing.
@@ -196,7 +193,11 @@ func (d funcDecl) scip() string {
 // values, the slash paths its first-party import bindings name (by scope, then local name),
 // the names its defs bind locally, and the first-party modules a literal dynamic import or
 // sys.modules lookup hands over whole. computed records computed-name access, which makes
-// every function in the file escape.
+// every function in the file escape. opaque records a dynamic import whose module the
+// scanner cannot name (non-literal argument, entry-point group, package walk), and
+// importPaths every slash path, and each package above it, that the file's imports, star
+// imports, literal dynamic imports and sys.modules lookups name, first-party or not;
+// imports holds the dotted modules the file's import statements name (importedModules).
 type fileParse struct {
 	module    string
 	isPackage bool
@@ -224,8 +225,11 @@ type fileParse struct {
 	// wrapped lists the defs under a decorator that may replace them with other code.
 	wrapped []funcDecl
 	// stars are the modules the file star-imports; starPaths the first-party ones' paths.
-	stars     []string
-	starPaths []string
+	stars       []string
+	starPaths   []string
+	opaque      bool
+	imports     []string
+	importPaths []string
 }
 
 // aliasBound returns the first-party import paths a name stands for at a site in the given
@@ -361,9 +365,6 @@ func loadProgram(buildDir string) (*program, error) {
 		lookupRoots, lookups, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
 		roots = sortedDedup(append(roots, lookupRoots...))
 		opaque = opaque || lookupOpaque
-		if opaque {
-			prog.dynamicImportOpaque = true
-		}
 
 		var fds []funcDecl
 		topNames := map[string]bool{}
@@ -389,7 +390,11 @@ func loadProgram(buildDir string) (*program, error) {
 		for i := range scan.decorated {
 			scan.decorated[i].module = module
 		}
-		_, stars := importStatements([]rune(clean))
+		spans, stars := importStatements([]rune(clean))
+		var imports []string
+		for _, sp := range spans {
+			imports = append(imports, importedModules(string([]rune(clean)[sp[0]:sp[1]]))...)
+		}
 		if len(stars) > 0 {
 			// A star import may bind any decorator's name.
 			scan.wrapped = slices.Clone(scan.decorated)
@@ -415,6 +420,8 @@ func loadProgram(buildDir string) (*program, error) {
 			binders:   scan.binders,
 			defs:      scan.defs,
 			computed:  scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
+			opaque:    opaque,
+			imports:   imports,
 		})
 		rawBindings = append(rawBindings, scan.bindings)
 		relBindings = append(relBindings, scan.relBindings)
@@ -468,6 +475,19 @@ func (prog *program) indexModules() {
 // distribution.
 func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []string) {
 	f := &prog.files[i]
+	imported := func(path string) {
+		segs := strings.Split(path, "/")
+		for k := 1; k <= len(segs); k++ {
+			f.importPaths = append(f.importPaths, strings.Join(segs[:k], "/"))
+		}
+	}
+	for _, name := range slices.Concat(f.imports, modRefs) {
+		if !strings.HasPrefix(name, ".") {
+			imported(strings.ReplaceAll(name, ".", "/"))
+		} else if path, ok := relativeModule(f.module, f.isPackage, name); ok {
+			imported(path)
+		}
+	}
 	f.fpBinds = map[string]map[string][]string{}
 	bind := func(scope, local, path string) {
 		m := f.fpBinds[scope]
@@ -624,6 +644,14 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			wrapped[fd.scip()] = true
 		}
 	}
+	// calls holds, per caller file, the files declaring a function one of its edges ends at.
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	calls := make([][]int, len(prog.files))
 
 	for fi := range prog.files {
 		f := &prog.files[fi]
@@ -666,6 +694,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			}
 			if ok {
 				addEdge(caller, callee)
+				calls[fi] = append(calls[fi], declFile[callee])
 			}
 		}
 		// Framework ingress handler functions are call-graph roots (static-reachability
@@ -699,7 +728,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	})
 
 	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog),
+		Partiality: callGraphPartiality(prog, prog.productionReached(calls)),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      sortedSymbols(rootsSet),
@@ -851,32 +880,72 @@ func sortedSymbols(set map[string]bool) []plugin.Symbol {
 // only on a class member or a dunder, which all escape. The list is incomplete, and
 // unlisted_sites is set, when a source file was not read, a construct was skipped, code is
 // evaluated from a string, or an f-string substitution holds a call.
-func callGraphPartiality(prog *program) plugin.Partiality {
+func callGraphPartiality(prog *program, reached []bool) plugin.Partiality {
 	reasons := []string{plugin.PartialReasonDynamicDispatch}
-	reasons = append(reasons, dynamicImportReasons(prog.dynamicImportOpaque)...)
+	opaque := false
+	for i, f := range prog.files {
+		opaque = opaque || reached[i] && f.opaque
+	}
+	reasons = append(reasons, dynamicImportReasons(opaque)...)
 	if prog.readFailed || prog.importUnattributed {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
 	if prog.skipped {
 		reasons = append(reasons, plugin.PartialReasonUnsupported)
 	}
-	if prog.sitesUnlisted() {
+	if prog.sitesUnlisted(reached) {
 		reasons = append(reasons, plugin.PartialReasonUnlistedSites)
 	}
 	return plugin.Partial(reasons...)
 }
 
-// sitesUnlisted reports whether some declined call site is missing from Unresolved.
-func (prog *program) sitesUnlisted() bool {
+// sitesUnlisted reports whether some declined call site in a reached file is missing from
+// Unresolved.
+func (prog *program) sitesUnlisted(reached []bool) bool {
 	if prog.sourceUnread || prog.skipped {
 		return true
 	}
-	for _, f := range prog.files {
-		if f.refs.evaluated || f.refs.hidden {
+	for i, f := range prog.files {
+		if reached[i] && (f.refs.evaluated || f.refs.hidden) {
 			return true
 		}
 	}
 	return false
+}
+
+// productionReached reports, per file, whether production code may run it: every file
+// outside test code (isTestModule), and every file a reached file imports (importPaths,
+// matched like any import path through byModule) or has an edge into (calls, per caller
+// file). Test code runs in production only that way: no escape names a test function, so
+// a test module only one test module imports or calls stays unreached, and its dynamic
+// imports and evaluated code withhold nothing.
+func (prog *program) productionReached(calls [][]int) []bool {
+	reached := make([]bool, len(prog.files))
+	var work []int
+	reach := func(i int) {
+		if !reached[i] {
+			reached[i] = true
+			work = append(work, i)
+		}
+	}
+	for i, f := range prog.files {
+		if !isTestModule(f.module) {
+			reach(i)
+		}
+	}
+	for len(work) > 0 {
+		i := work[len(work)-1]
+		work = work[:len(work)-1]
+		for _, path := range prog.files[i].importPaths {
+			for _, j := range prog.byModule[path] {
+				reach(j)
+			}
+		}
+		for _, j := range calls[i] {
+			reach(j)
+		}
+	}
+	return reached
 }
 
 // isTestModule reports whether a module path names test code: a test_*.py, *_test.py or

@@ -112,6 +112,44 @@ func parseRelativeImport(text string) []importBinding {
 	return out
 }
 
+// importedModules is every module an import statement may load, dotted, relative ones
+// with their leading dots: `import a.b as c` names a.b, `from a import b, *` names a and
+// a.b (b may be a submodule), `from .. import m` names .. and ..m.
+func importedModules(text string) []string {
+	kw, rest := firstWord(text)
+	var out []string
+	switch kw {
+	case "import":
+		for _, item := range splitImportList(rest) {
+			if path, _ := splitAlias(item); isDottedName(path) {
+				out = append(out, path)
+			}
+		}
+	case "from":
+		rest = strings.TrimSpace(rest)
+		i := strings.Index(rest, " import ")
+		if i < 0 {
+			return nil
+		}
+		from := strings.TrimSpace(rest[:i])
+		dots := len(from) - len(strings.TrimLeft(from, "."))
+		if mod := from[dots:]; mod != "" && !isDottedName(mod) || mod == "" && dots == 0 {
+			return nil
+		}
+		out = append(out, from)
+		sep := "."
+		if dots == len(from) {
+			sep = ""
+		}
+		for _, item := range splitImportList(rest[i+len(" import "):]) {
+			if name, _ := splitAlias(item); isDottedName(name) && !strings.Contains(name, ".") {
+				out = append(out, from+sep+name)
+			}
+		}
+	}
+	return out
+}
+
 // splitImportList splits an import list ("a, b as c", "(a,\n b)") into its items.
 func splitImportList(s string) []string {
 	s = strings.TrimSpace(s)

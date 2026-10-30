@@ -57,6 +57,8 @@ const (
 	envOSVWorkSet       = brand.EnvPrefix + "_OSV_WORK_SET"
 	envSubjectGoVersion = brand.EnvPrefix + "_SUBJECT_GO_VERSION"
 	envCIGoVersion      = brand.EnvPrefix + "_CI_GO_VERSION"
+	// envSubjectGoWork is the env channel for -subject-gowork.
+	envSubjectGoWork = brand.EnvPrefix + "_SUBJECT_GOWORK"
 	// envSubjectJavaVersion is the env channel for -subject-java-version.
 	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
 	// envSubjectMavenProfiles is the env channel for -subject-maven-profiles.
@@ -483,6 +485,7 @@ type runFlags struct {
 	houseCanaries    *bool
 	osvWorkSet       *bool
 	subjectGo        *string
+	subjectGoWork    *string
 	subjectJava      *string
 	subjectMvnProf   *string
 	libEntrypoints   *string
@@ -565,7 +568,9 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
-		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
+		// subjectGoWork is the GOWORK the build runs under; a caller statement, never the scanner's own.
+		subjectGoWork: fs.String("subject-gowork", "", "the GOWORK the SCANNED repository's Go build runs under: off, or the path of its go.work relative to the repository root. A go.work that does not exist, does not parse or does not use the scanned module withholds every verdict. Overrides "+envSubjectGoWork+" (default: the go.work the go command finds from the module, searched no higher than the repository; one that does not use the module is not the build's)"),
+		subjectGo:     fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
 
 		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JDK the SCANNED repository's program runs on, which must be the major version its build runs on (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target). Leave it unstated when the program runs on another JDK than the build. A toolchain the build graph records on another major version withholds the JDK's own method table from bytecode reachability. With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
@@ -949,6 +954,14 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 	return pipeline.WithSubjectToolchain(declared, observed, trust)
 }
 
+// declaredGoWork is -subject-gowork, then envSubjectGoWork. The scanner's own GOWORK is never read.
+func (f *runFlags) declaredGoWork() string {
+	if v := strings.TrimSpace(*f.subjectGoWork); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(envSubjectGoWork))
+}
+
 // subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.
 func (f *runFlags) subjectJavaVersion() string {
 	if v := strings.TrimSpace(*f.subjectJava); v != "" {
@@ -987,7 +1000,7 @@ func (f *runFlags) libraryEntrypointsOption() (pipeline.AssessOption, error) {
 // corpus. The subject Go toolchain and its reachability gate
 // stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1016,7 +1029,7 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 // corpus, the subject Go toolchain, and the subject-toolchain
 // reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1102,6 +1115,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 	if err != nil {
 		return nil, err
 	}
+	acq.goWork = f.declaredGoWork()
 
 	store, err := f.sf.resolve()
 	if err != nil {

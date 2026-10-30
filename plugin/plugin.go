@@ -439,6 +439,11 @@ type ReachabilityRequest struct {
 	// here. A plugin that cannot honor the request must fall back and say so via
 	// ReachabilityResult.ScanToolchain rather than failing the scan.
 	GoToolchain string `json:"go_toolchain,omitempty"`
+	// GoToolchainFloor is a release no go command that builds the subject is below, normalized
+	// "go1.22.0": the go.mod `go` line when it binds. Unlike GoToolchain it names no release to run
+	// under; a lane reads it only to rule out files whose goN.M build tags exclude them from every
+	// build at or above it. Empty means no floor is known.
+	GoToolchainFloor string `json:"go_toolchain_floor,omitempty"`
 	// Package is the PURL of the package the advisory was admitted on, pinned to the version the
 	// inventory resolved ("pkg:npm/lodash@4.17.20"). A lane that can prove that package's code never
 	// loads answers with a RefutationPackageNotLoaded ReachabilityResult.Refutation. Package is

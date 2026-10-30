@@ -390,3 +390,86 @@ func keysOf(m map[string]json.RawMessage) []string {
 	}
 	return out
 }
+
+// TestCodebaseInventory_GoFloorReachesRequest: the real stage records the binding go line from a real
+// go.mod, and the reachability stage reads it back as the request's floor, whatever the flag.
+func TestCodebaseInventory_GoFloorReachesRequest(t *testing.T) {
+	cases := []struct {
+		name   string
+		goMod  string
+		marker string
+		want   string
+	}{
+		{"toolchain line over a two-part go line", "module example.com/target\n\ngo 1.21\n\ntoolchain go1.22.0\n", "", "go1.21.0"},
+		{"three-part go line", "module example.com/target\n\ngo 1.22.0\n", "", "go1.22.0"},
+		{"two-part go line alone", "module example.com/target\n\ngo 1.22\n", "", ""},
+		{"go line before 1.21", "module example.com/target\n\ngo 1.17\n", "", ""},
+		{"three-part go line in a Bazel workspace", "module example.com/target\n\ngo 1.22.0\n", "MODULE.bazel", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buildDir := writeGoModFixture(t, tc.goMod)
+			if tc.marker != "" {
+				if err := os.WriteFile(filepath.Join(buildDir, tc.marker), nil, 0o644); err != nil {
+					t.Fatalf("write %s: %v", tc.marker, err)
+				}
+			}
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "case-go-floor", Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "CVE-TEST-NO-SUCH-ADVISORY", Source: "corpus"},
+				Codebase: assessment.CodebaseRef{
+					Repo:        "example.com/target",
+					Revision:    "v1",
+					Acquisition: assessment.Acquisition{Mode: "git"},
+				},
+			}}
+			stage := codebaseInventory{checkout: dirCheckout{dir: buildDir, lang: "go"}, plugin: goManifestPlugin{}}
+			if err := stage.Run(context.Background(), c, store); err != nil {
+				t.Fatalf("codebase_inventory.Run: %v", err)
+			}
+			for _, flag := range []bool{false, true} {
+				if got := (reachabilityIngress{subjectToolchain: flag}).toolchainFloor(store, c.ID); got != tc.want {
+					t.Errorf("flag %v: toolchainFloor = %q, want %q", flag, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestBazelWorkspaceAbove: a marker in the module root or any directory up to the checkout root
+// counts; one above the checkout root does not.
+func TestBazelWorkspaceAbove(t *testing.T) {
+	cases := []struct {
+		name   string
+		marker string // directory, relative to the temp root, holding the marker
+		file   string
+		want   bool
+	}{
+		{"none", "", "", false},
+		{"MODULE.bazel in the module root", "checkout/svc", "MODULE.bazel", true},
+		{"WORKSPACE at the checkout root", "checkout", "WORKSPACE", true},
+		{"WORKSPACE.bazel at the checkout root", "checkout", "WORKSPACE.bazel", true},
+		{"marker above the checkout root", ".", "MODULE.bazel", false},
+		{"marker in a sibling", "checkout/other", "WORKSPACE", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			checkoutRoot := filepath.Join(root, "checkout")
+			moduleRoot := filepath.Join(checkoutRoot, "svc")
+			for _, d := range []string{moduleRoot, filepath.Join(checkoutRoot, "other")} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.file != "" {
+				if err := os.WriteFile(filepath.Join(root, tc.marker, tc.file), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := bazelWorkspaceAbove(moduleRoot, checkoutRoot); got != tc.want {
+				t.Errorf("bazelWorkspaceAbove = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

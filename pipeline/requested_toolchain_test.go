@@ -41,3 +41,15 @@ func TestRequestedToolchain(t *testing.T) {
 		})
 	}
 }
+
+// TestToolchainFloor: the floor is read off the inventory artifact, and is absent without one.
+func TestToolchainFloor(t *testing.T) {
+	store := artifact.NewMemStore()
+	if got := (reachabilityIngress{}).toolchainFloor(store, "case-floor-none"); got != "" {
+		t.Fatalf("no inventory: toolchainFloor = %q, want empty", got)
+	}
+	putJSON(t, store, "case-floor", artifact.TypeInventory, map[string]any{"go_floor": "go1.22.0"})
+	if got := (reachabilityIngress{}).toolchainFloor(store, "case-floor"); got != "go1.22.0" {
+		t.Fatalf("toolchainFloor = %q, want go1.22.0", got)
+	}
+}

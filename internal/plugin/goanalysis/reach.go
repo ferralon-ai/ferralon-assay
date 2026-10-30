@@ -176,7 +176,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
 	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
 	load := sync.OnceValues(func() (*LoadResult, error) {
-		return loadForBuild(ctx, req.BuildDir, req.GoToolchain)
+		return loadForBuild(ctx, req.BuildDir, req.GoToolchain, req.GoToolchainFloor)
 	})
 	var entry plugin.LibraryEntrypoints
 	if req.LibraryEntrypoints != nil {
@@ -270,10 +270,10 @@ func searchedReflectMayReach(reach map[string][]string, scanned vulnScan) bool {
 }
 
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
-// govulncheck never searched, or a library's callers may contradict it. release is the Go release the
-// build compiles under, or nil when the load is not established to have run under it. entry is the
+// govulncheck never searched, or a library's callers may contradict it. release bounds the Go release
+// the build compiles under (LoadResult.buildRelease), or is nil when nothing does. entry is the
 // build's resolved library entry points.
-func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
+func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
 	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, buildDir, env)
 	res = withholdForUnsearchedMethods(res, scanned, pkgs)
 	return withholdForLibraryEscape(res, scanned, pkgs, entry)
@@ -578,7 +578,7 @@ func isMain(p *packages.Package) bool {
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
 // packages in the refuted module (countingPackages) was never traced, so the refutation holds only
 // for builds that leave it out. The result then declares excluded_files instead.
-func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
+func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
@@ -777,11 +777,12 @@ func goEnvVersion(ctx context.Context, buildDir string, env []string) string {
 }
 
 // loadForBuild loads dir for reconciling its findings. toolchain, when set, is the subject's own
-// Go toolchain and so the build's.
-func loadForBuild(ctx context.Context, dir, toolchain string) (*LoadResult, error) {
+// Go toolchain and so the build's; floor, when set, is a release no build of the subject is below.
+func loadForBuild(ctx context.Context, dir, toolchain, floor string) (*LoadResult, error) {
 	loaded, err := LoadProgram(ctx, dir)
-	if err == nil && toolchain != "" {
+	if err == nil {
 		loaded.buildGoVersion = toolchain
+		loaded.buildGoFloor = floor
 	}
 	return loaded, err
 }

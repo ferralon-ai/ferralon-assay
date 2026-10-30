@@ -184,6 +184,50 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 	}
 }
 
+// TestReachabilityCarriesFloorToLoad pins that the request's GoToolchainFloor reaches the load that
+// judges left-out files: a !go1.22 file that imports the refuted module is ruled out under a go1.22.0
+// floor and withholds the refutation without one.
+func TestReachabilityCarriesFloorToLoad(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "local")
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"old.go":              "//go:build !go1.22\n\npackage main\n\nimport _ \"example.com/vulnmod\"\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	})
+	if r, ok := parseGoRelease(goEnvVersion(context.Background(), dir, reachBaseEnv())); !ok || r.major != 1 || r.minor < 23 {
+		t.Skipf("loader Go %v builds !go1.22 files", r)
+	}
+	const stream = `{"osv":{"id":"GO-2099-0001"}}
+{"finding":{"osv":"GO-2099-0001","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}
+`
+	for _, tc := range []struct {
+		floor    string
+		withheld bool
+	}{
+		{"go1.22.0", false},
+		{"go1.21.0", true},
+		{"", true},
+	} {
+		t.Run("floor "+tc.floor, func(t *testing.T) {
+			ctx := WithRunCacheDir(context.Background(), t.TempDir())
+			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv()...), func() ([]byte, error) {
+				return []byte(stream), nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-2099-0001", GoToolchainFloor: tc.floor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("withheld = %v, want %v (partiality %+v)", withheld, tc.withheld, res.Partiality)
+			}
+		})
+	}
+}
+
 // TestRunCacheKeys pins what each per-tree result is keyed on, so one environment's answer never
 // serves another: the govulncheck stream on the child's exact environment, toolchain included, and
 // the call graph on the process environment the program load reads. Every entry is seeded for a

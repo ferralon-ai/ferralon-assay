@@ -441,3 +441,32 @@ func TestToolchainFactVersionEmptyIffUnresolved(t *testing.T) {
 		}
 	}
 }
+
+// TestGoLineFloor: only a binding go line is a floor every build of the subject respects; a toolchain
+// line that outranks it is not, since GOTOOLCHAIN=local ignores the toolchain line.
+func TestGoLineFloor(t *testing.T) {
+	cases := []struct {
+		name string
+		in   toolchainInputs
+		want string
+	}{
+		{"three-part go line at 1.21", toolchainInputs{goDirective: "1.21.0"}, "go1.21.0"},
+		{"three-part go line above 1.21", toolchainInputs{goDirective: "1.22.3"}, "go1.22.3"},
+		{"two-part go line, no toolchain line", toolchainInputs{goDirective: "1.22"}, ""},
+		{"three-part go line below 1.21", toolchainInputs{goDirective: "1.20.1"}, ""},
+		{"two-part go line bound by a toolchain line", toolchainInputs{goDirective: "1.21", toolchainDirective: "go1.22.0"}, "go1.21.0"},
+		{"toolchain line above the go line does not raise it", toolchainInputs{goDirective: "1.22.0", toolchainDirective: "go1.23.4"}, "go1.22.0"},
+		{"toolchain line below the go line", toolchainInputs{goDirective: "1.23.0", toolchainDirective: "go1.21.0"}, "go1.23.0"},
+		{"toolchain line, no go line", toolchainInputs{toolchainDirective: "go1.22.0"}, ""},
+		{"prerelease go line", toolchainInputs{goDirective: "1.22rc1", toolchainDirective: "go1.22rc1"}, ""},
+		{"exact claims do not move it", toolchainInputs{goDirective: "1.22.0", subjectDeclared: "go1.24.1", ciObserved: "go1.25.0", trustCIObserved: true}, "go1.22.0"},
+		{"nothing", toolchainInputs{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := goLineFloor(tc.in); got != tc.want {
+				t.Errorf("goLineFloor(%+v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

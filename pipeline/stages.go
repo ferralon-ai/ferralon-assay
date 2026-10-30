@@ -1849,15 +1849,20 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// the RUNNER's Go as the subject's — the same category error the fact exists to close. Other
 	// ecosystems' runtime versions (e.g. a node engine range) live in RuntimeSpec{Name:"node"}, not here.
 	toolchain := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
+	goFloor := ""
 	if language == "go" {
-		toolchain = resolveToolchainFact(toolchainInputs{
+		in := toolchainInputs{
 			subjectDeclared:    s.subjectGoVersion,
 			ciObserved:         s.ciGoVersion,
 			trustCIObserved:    s.trustCIGoVersion,
 			buildResolved:      buildToolchain,
 			toolchainDirective: toolchainDirective,
 			goDirective:        goVersion,
-		})
+		}
+		toolchain = resolveToolchainFact(in)
+		if !bazelWorkspaceAbove(buildDir, checkoutRoot) {
+			goFloor = goLineFloor(in)
+		}
 	}
 
 	src := s.src
@@ -1993,6 +1998,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// stayed dark. Read back by Toolchain() (the version axis, and the scan-level disclosure
 		// trigger/assess.go emits for a toolchain advisory it could not adjudicate).
 		Toolchain ToolchainFact `json:"toolchain"`
+		// GoFloor is the go.mod `go` line when it binds (goLineFloor): no build of the subject runs a
+		// Go below it. Read back by toolchainFloor for the reachability request.
+		GoFloor string `json:"go_floor,omitempty"`
 		// SelectedModule/SelectedCoordinate name the v3 affected_packages[] element select-by-target
 		// picked (the package the target depends on). They are the join key extractSelectedPackage
 		// uses to read the selected element off the normalized-advisory artifact. Both empty ⇒ scalar
@@ -2022,6 +2030,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		BuildCommand:       buildCommand,
 		PartialityFlags:    partialityFlags,
 		Toolchain:          toolchain,
+		GoFloor:            goFloor,
 		SelectedModule:     selectedModule,
 		SelectedCoordinate: selectedCoordinate,
 		Root:               isRoot,
@@ -2039,6 +2048,29 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 // empty version and pinned true means go.mod does not require the module, a real fact about the
 // codebase. pinned false means the module is required but replaced by a local directory or by
 // another module, so the build compiles code no upstream version describes.
+// bazelWorkspaceAbove reports whether a Bazel workspace marker sits in moduleRoot or a directory
+// above it, up to checkoutRoot. Bazel (rules_go) takes its Go SDK from the workspace, not from
+// go.mod, so the go line is no floor on the release a Bazel build compiles with.
+func bazelWorkspaceAbove(moduleRoot, checkoutRoot string) bool {
+	if moduleRoot == "" {
+		return false
+	}
+	dir := filepath.Clean(moduleRoot)
+	stop := filepath.Clean(checkoutRoot)
+	for {
+		for _, marker := range []string{"MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"} {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				return true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if dir == stop || parent == dir || checkoutRoot == "" {
+			return false
+		}
+		dir = parent
+	}
+}
+
 func moduleVersionFromGoMod(buildDir, module string) (version string, pinned, manifestRead bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
@@ -3247,6 +3279,23 @@ func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID str
 	return fact.Version
 }
 
+// toolchainFloor returns the subject's binding go line (goLineFloor) as codebase_inventory recorded
+// it, or "" when it recorded none. It only ever narrows the files the analyzer reads as compiled, so
+// unlike requestedToolchain it needs neither the flag nor an exact fact.
+func (s reachabilityIngress) toolchainFloor(store artifact.Store, caseID string) string {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return ""
+	}
+	var inv struct {
+		GoFloor string `json:"go_floor"`
+	}
+	if json.Unmarshal(arts[0].Payload, &inv) != nil {
+		return ""
+	}
+	return inv.GoFloor
+}
+
 // entrypointsFor is the run's library-entrypoints statement with its paths based at the checkout
 // root, which for a nested module lies above the build directory. A record with no checkout root
 // leaves Base empty, so the lane reads the paths from the build directory.
@@ -3299,6 +3348,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		VulnID:             vulnID,
 		Symbols:            sinks,
 		GoToolchain:        requestedToolchain,
+		GoToolchainFloor:   s.toolchainFloor(store, c.ID),
 		Package:            admittedPackagePURL(store, c.ID),
 		DependencyCache:    depCache,
 		LibraryEntrypoints: entrypoints,

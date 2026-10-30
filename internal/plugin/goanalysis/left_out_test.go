@@ -471,7 +471,7 @@ func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			load := func() (*LoadResult, error) { return loadForBuild(context.Background(), dir, tc.toolchain) }
+			load := func() (*LoadResult, error) { return loadForBuild(context.Background(), dir, tc.toolchain, "") }
 			res, err := reconciledResult(context.Background(), scanned, dir, append(os.Environ(), "GOWORK=off"), load, plugin.LibraryEntrypoints{})
 			if err != nil {
 				t.Fatal(err)
@@ -486,26 +486,138 @@ func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
 	}
 }
 
-// TestLoadResult_BuildRelease: the load's release counts as the build's only when both are known and
-// name the same minor.
+// TestLoadResult_BuildRelease: the load's release counts as the build's exactly only when both are
+// known and name the same minor; otherwise the subject's floor, when known, bounds it from below.
 func TestLoadResult_BuildRelease(t *testing.T) {
 	cases := []struct {
-		loaded, build string
-		want          *goRelease
+		loaded, build, floor string
+		want                 *releaseBound
 	}{
-		{"go1.25.3", "go1.25.3", &goRelease{1, 25, 3}},
-		{"go1.25.3", "go1.25.0", &goRelease{1, 25, 3}},
-		{"go1.25.3", "go1.24.9", nil},
-		{"go1.25.3", "go2.25.3", nil},
-		{"", "go1.25.3", nil},
-		{"go1.25.3", "", nil},
-		{"go1.25.3", "devel go1.25-abc123", nil},
+		{"go1.25.3", "go1.25.3", "", &releaseBound{goRelease{1, 25, 3}, true}},
+		{"go1.25.3", "go1.25.0", "", &releaseBound{goRelease{1, 25, 3}, true}},
+		{"go1.25.3", "go1.24.9", "", nil},
+		{"go1.25.3", "go2.25.3", "", nil},
+		{"", "go1.25.3", "", nil},
+		{"go1.25.3", "", "", nil},
+		{"go1.25.3", "devel go1.25-abc123", "", nil},
+		{"go1.25.3", "go1.25.3", "go1.22.0", &releaseBound{goRelease{1, 25, 3}, true}},
+		{"go1.25.3", "", "go1.22.0", &releaseBound{goRelease{1, 22, 0}, false}},
+		{"go1.25.3", "go1.24.9", "go1.22.0", &releaseBound{goRelease{1, 22, 0}, false}},
+		{"", "", "go1.22.0", &releaseBound{goRelease{1, 22, 0}, false}},
+		{"go1.25.3", "", "go1.22rc1", nil},
+		{"go1.25.3", "", "1.22.0", nil},
 	}
 	for _, tc := range cases {
-		got := (&LoadResult{goVersion: tc.loaded, buildGoVersion: tc.build}).buildRelease()
+		got := (&LoadResult{goVersion: tc.loaded, buildGoVersion: tc.build, buildGoFloor: tc.floor}).buildRelease()
 		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
-			t.Errorf("buildRelease(%q, %q) = %v, want %v", tc.loaded, tc.build, got, tc.want)
+			t.Errorf("buildRelease(%q, %q, floor %q) = %v, want %v", tc.loaded, tc.build, tc.floor, got, tc.want)
 		}
+	}
+}
+
+// TestReleaseBoundExcludes: under a floor a constraint is excluded only when the release alone
+// excludes it at every release minor from the floor up; under an exact release it is
+// releaseExcluded at that release.
+func TestReleaseBoundExcludes(t *testing.T) {
+	floor := func(major, minor int) releaseBound { return releaseBound{release: goRelease{major, minor, 0}} }
+	exact := releaseBound{release: goRelease{1, 22, 3}, exact: true}
+	cases := []struct {
+		name  string
+		bound releaseBound
+		expr  string
+		want  bool
+	}{
+		{"floor 1.22, !go1.22", floor(1, 22), "!go1.22", true},
+		{"floor 1.22, !go1.23: go1.22 selects it", floor(1, 22), "!go1.23", false},
+		{"floor 1.22, go1.22", floor(1, 22), "go1.22", false},
+		{"floor 1.22, go1.23: later releases select it", floor(1, 22), "go1.23", false},
+		{"floor 1.22, go1.21 && !go1.24: go1.22 selects it", floor(1, 22), "go1.21 && !go1.24", false},
+		{"floor 1.22, go1.23 && !go1.24: only go1.23 selects it", floor(1, 22), "go1.23 && !go1.24", false},
+		{"floor 1.24, go1.21 && !go1.24", floor(1, 24), "go1.21 && !go1.24", true},
+		{"floor 1.25, go1.21 && !go1.24", floor(1, 25), "go1.21 && !go1.24", true},
+		{"floor 1.24, go1.21 && !go1.25: go1.24 selects it", floor(1, 24), "go1.21 && !go1.25", false},
+		{"floor 1.22, !go1.21 || !go1.23: go1.22 selects it", floor(1, 22), "!go1.21 || !go1.23", false},
+		{"floor 1.23, !go1.21 || !go1.23", floor(1, 23), "!go1.21 || !go1.23", true},
+		{"floor 1.22, only lower minors: !go1.18", floor(1, 22), "!go1.18", true},
+		{"floor 1.22, only lower minors: go1.18 && !go1.20", floor(1, 22), "go1.18 && !go1.20", true},
+		{"floor 1.22, only lower minors: go1.18", floor(1, 22), "go1.18", false},
+		{"floor 1.22, linux && !go1.22", floor(1, 22), "linux && !go1.22", true},
+		{"floor 1.22, linux || !go1.22: linux selects it", floor(1, 22), "linux || !go1.22", false},
+		{"floor 1.22, linux && !go1.23", floor(1, 22), "linux && !go1.23", false},
+		{"floor 1.22, unsatisfiable", floor(1, 22), "go1.1 && !go1.1", false},
+		{"floor 1.22, no release tag", floor(1, 22), "plan9", false},
+		{"floor 1.22, more tags than maxFreeTags", floor(1, 22), "!go1.22 && a && b && c && d && e && f && g && h && i && j && k && l && m && n && o && p", false},
+		{"floor 1.22, go1.05 is no release tag", floor(1, 22), "!go1.05", false},
+		{"floor with major 2", floor(2, 30), "!go1.22", false},
+		{"floor with major 0", floor(0, 22), "!go1.22", false},
+		{"exact 1.22, !go1.22", exact, "!go1.22", true},
+		{"exact 1.22, !go1.23", exact, "!go1.23", false},
+		{"exact 1.22, go1.23", exact, "go1.23", true},
+		{"exact 1.22, go1.21 && !go1.24", exact, "go1.21 && !go1.24", false},
+		{"exact 1.22, linux && go1.23", exact, "linux && go1.23", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			x, err := constraint.Parse("//go:build " + tc.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := tc.bound.excludes(x); got != tc.want {
+				t.Errorf("%+v.excludes(%q) = %v, want %v", tc.bound, tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReconciledResult_FloorExcludes: a build whose go.mod binds it to go1.22 or later never compiles
+// a !go1.22 file, so that file does not withhold a refutation even when the subject's exact
+// toolchain is unknown; a file some release at or above the floor compiles still does.
+func TestReconciledResult_FloorExcludes(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "local")
+	base := map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.21\n\ntoolchain go1.22.0\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.21\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	}
+	caller := func(constraint string) map[string]string {
+		return map[string]string{"old.go": "//go:build " + constraint + "\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n"}
+	}
+	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
+	cases := []struct {
+		name       string
+		constraint string
+		floor      string
+		withheld   bool
+	}{
+		{"floor go1.22.0, !go1.22 file", "!go1.22", "go1.22.0", false},
+		{"floor go1.22.0, !go1.23 file", "!go1.23", "go1.22.0", true},
+		{"floor go1.21.0, !go1.22 file", "!go1.22", "go1.21.0", true},
+		{"no floor, !go1.22 file", "!go1.22", "", true},
+		{"floor go1.22.0, linux && !go1.22 file", "linux && !go1.22", "go1.22.0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, merge(base, caller(tc.constraint)))
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r, ok := parseGoRelease(load.goVersion); !ok || r.major != 1 || r.minor < 23 {
+				t.Skipf("loaded under %q, which builds the file", load.goVersion)
+			}
+			load.buildGoFloor = tc.floor
+			res, err := reconciledResult(context.Background(), scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
+			}
+			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
+			}
+		})
 	}
 }
 
@@ -537,7 +649,7 @@ func TestLoadForBuild_SubjectToolchain(t *testing.T) {
 		"go.mod":  "module example.com/m\n\ngo 1.22\n",
 		"main.go": "package main\n\nfunc main() {}\n",
 	})
-	load, err := loadForBuild(context.Background(), dir, "")
+	load, err := loadForBuild(context.Background(), dir, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +665,7 @@ func TestLoadForBuild_SubjectToolchain(t *testing.T) {
 		{r.toolchain(), true},
 		{fmt.Sprintf("go%d.%d", r.major, r.minor+1), false},
 	} {
-		load, err := loadForBuild(context.Background(), dir, tc.toolchain)
+		load, err := loadForBuild(context.Background(), dir, tc.toolchain, "")
 		if err != nil {
 			t.Fatal(err)
 		}

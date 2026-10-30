@@ -56,10 +56,22 @@ func TestVeto_CommandKeys(t *testing.T) {
 		{"JSON exec form . under a parameter", tree(map[string]string{"vercel.json": `{"outputDirectory": ["."]}`}), false},
 		{"GitLab variable .", tree(map[string]string{".gitlab-ci.yml": "variables:\n  DIR: .\nbuild:\n  script:\n    - make\n"}), false},
 		{"bitbucket step name .", tree(map[string]string{"bitbucket-pipelines.yml": "pipelines:\n  default:\n    - step:\n        name: .\n        script:\n          - make\n"}), false},
-		{"tox continuation under a parameter", tree(map[string]string{"tox.ini": "[testenv]\nsetenv =\n    .\ncommands = pytest\n"}), false},
 
 		// An action may run its inputs, and an env value may reach a shell, so the install
 		// gates still apply to them.
+		{"action input . on its own line", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          script:\n            .\n            ./env.sh\n")}), true},
+		{"action input source on its own line", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          args:\n            source\n            ./env.sh\n")}), true},
+		{"compose build arg . on its own line", tree(map[string]string{"compose.yaml": "services:\n  app:\n    build:\n      args:\n        X:\n          .\n          ./env.sh\n"}), true},
+		{"action input . continued", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          script: .\n            ./env.sh\n")}), true},
+		{"action input list item . continued", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          args:\n            - .\n              ./env.sh\n")}), true},
+		{"action input literal block of .", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          script: |\n            .\n            ./env.sh\n")}), true},
+		{"tox parameter . continued", tree(map[string]string{"tox.ini": "[testenv]\nsetenv = .\n    ./env.sh\n"}), true},
+		{"tox parameter . continued by a tab", tree(map[string]string{"tox.ini": "[testenv]\nsetenv = .\n\t./env.sh\n"}), true},
+		{"tox parameter continuation .", tree(map[string]string{"tox.ini": "[testenv]\nsetenv =\n    .\n"}), true},
+		{"JSON parameter . on its own line", tree(map[string]string{"vercel.json": `{"outputDirectory": ".\n./env.sh"}`}), true},
+		{"command key in an item under a parameter", tree(map[string]string{".travis.yml": "jobs:\n  include:\n    - install: .\n"}), true},
+		{"action input list item .", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          args:\n            - .\n")}), false},
+		{"netlify publish before a table", tree(map[string]string{"netlify.toml": "[build]\n  publish = \".\"\n[context.production]\n  command = \"make\"\n"}), false},
 		{"action input names an installer", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          args: inst add x\n")}), true},
 		{"action input sources a file", tree(map[string]string{wf: steps("- uses: org/a@v1\n        with:\n          script: . ./env.sh\n")}), true},
 		{"env value names an installer", tree(map[string]string{wf: steps("- run: make\n        env:\n          CMD: inst add x\n")}), true},

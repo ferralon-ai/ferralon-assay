@@ -278,12 +278,14 @@ func dangling(s string) bool {
 // yamlLine is a line of a YAML surface as read: shell marks the text of a folded scalar,
 // already unwrapped, which is read as shell text, not as a "key: value" line; start is the
 // line, of those read, that the scalar it is part of starts on; cmd marks a value under a
-// command key (commandKeys), its own or an enclosing one.
+// command key (commandKeys), its own or an enclosing one; whole marks a line that holds a
+// key's or an item's whole value, the scalar it opens with its continuations joined on.
 type yamlLine struct {
 	text  string
 	shell bool
 	start int
 	cmd   bool
+	whole bool
 }
 
 // blockHeaderRE matches a block scalar indicator: | or >, then an indentation or chomping
@@ -308,7 +310,7 @@ func foldYAML(lines []string, keys map[string]bool) []yamlLine {
 			stack, cmd = nestKey(stack, lines[i], keys)
 		}
 		col, key, val, ok := yamlScalarStart(lines[i])
-		out = append(out, yamlLine{text: lines[i], start: i, cmd: cmd})
+		out = append(out, yamlLine{text: lines[i], start: i, cmd: cmd, whole: ok})
 		if !ok {
 			continue
 		}

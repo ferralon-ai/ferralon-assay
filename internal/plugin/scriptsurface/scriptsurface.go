@@ -14,8 +14,8 @@
 // A data surface's runner runs only the values under its command keys (commandKeys): a
 // workflow step's run:, a GitLab script:, a compose command:. Any other value, such as an
 // action input under with:, is a parameter, which an action or tool may still pass to a shell,
-// so it passes every gate a command does but one: a parameter that is . or source alone, a
-// path or a mode, sources nothing. A surface with no command keys listed runs every value.
+// so it passes every gate a command does but one: a parameter whose whole value is . or
+// source alone, a path or a mode, sources nothing. A surface with no command keys listed runs every value.
 //
 // The package decides no installer itself. A lane passes a Spec: the words that name its
 // installers, the variables they read, and the few command forms it allows, each binding the
@@ -891,14 +891,16 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			return "install command in an unjoined continuation"
 		}
 		// A line with no key of its own, such as a continuation, takes the mark of the last
-		// line with one.
+		// line with one. A keyed line holds its key's whole value unless the next line is
+		// indented under it, as an INI value's continuation is.
 		read := make([]yamlLine, len(lines))
 		cmd := true
 		for i, l := range lines {
-			if m := keyRE.FindStringSubmatch(strings.TrimSpace(l)); m != nil {
+			m := keyRE.FindStringSubmatch(strings.TrimSpace(l))
+			if m != nil {
 				cmd = commandKey(keys, m[1])
 			}
-			read[i] = yamlLine{text: l, start: i, cmd: cmd}
+			read[i] = yamlLine{text: l, start: i, cmd: cmd, whole: m != nil && !continued(lines, i)}
 		}
 		var shells map[int]shellUnit
 		if yaml {
@@ -945,7 +947,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {
-				seg.param = u.param || lineKind == kindData && !rl.cmd
+				seg.param = u.param && len(lines) == 1 || lineKind == kindData && !rl.cmd && rl.whole
 				if why := v.command(seg, cur, 0); why != "" {
 					return why
 				}
@@ -963,6 +965,18 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		}
 	}
 	return ""
+}
+
+func indent(line string) int { return len(line) - len(strings.TrimLeft(line, " \t")) }
+
+// continued reports whether the next line that is not blank is indented past lines[i].
+func continued(lines []string, i int) bool {
+	for _, l := range lines[i+1:] {
+		if strings.TrimSpace(l) != "" {
+			return indent(l) > indent(lines[i])
+		}
+	}
+	return false
 }
 
 // workingDirKeys are keys that set where a CI or platform file's commands run.
@@ -1048,8 +1062,9 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return ""
 	case ".", "source":
 		// The sourced file's commands run here; they are checked only when it is a surface
-		// the walk reads itself, or when it only sets PATH. A parameter that is the word alone
-		// (with: target: .) names a path or a mode, and sources nothing wherever it is run.
+		// the walk reads itself, or when it only sets PATH. A parameter whose whole value is the
+		// word alone (with: target: .) names a path or a mode, and sources nothing wherever it
+		// is run; a value that only starts with it may be joined to what follows.
 		if seg.param && len(words) == 1 {
 			return ""
 		}

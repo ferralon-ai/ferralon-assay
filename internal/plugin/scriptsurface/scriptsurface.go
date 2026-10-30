@@ -465,7 +465,18 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
-// mention records the base names of a command's arguments, a redirect's or an option's
+// bindRoot binds the first element of a relative path, which any path a command names
+// through it mentions.
+func (v *Veto) bindRoot(p string) {
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
+		if part != "" && part != "." {
+			v.bind(part)
+			return
+		}
+	}
+}
+
+// mention records every element of a command's arguments, a redirect's or an option's
 // target included.
 func (v *Veto) mention(args []string) {
 	for _, w := range args {
@@ -474,8 +485,10 @@ func (v *Veto) mention(args []string) {
 			w = trimShell(w[i+1:])
 		}
 		for _, a := range braces(filepath.ToSlash(w), 0) {
-			if b := strings.ToLower(path.Base(a)); b != "" && b != "." && b != "/" {
-				v.mentioned[b] = true
+			for _, b := range strings.Split(strings.ToLower(a), "/") {
+				if b != "" && b != "." {
+					v.mentioned[b] = true
+				}
 			}
 		}
 	}
@@ -916,6 +929,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	switch words[0] {
 	case "cd", "pushd", "popd":
 		mark.made = made // the venv's key was taken where it was made
+		// What runs after it names paths from where it went.
+		v.mention(words[1:])
 		if seg.expands {
 			cur.cd(nil)
 		} else {
@@ -947,7 +962,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words[1:])
+		v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
 		cur.other()
 		return ""
 	}

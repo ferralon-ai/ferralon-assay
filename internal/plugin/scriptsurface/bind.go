@@ -24,6 +24,11 @@ type Binder interface {
 	// as a surface on its own. With locks given, each of them that is there in dir must be a
 	// regular file read here, reached through no symlink. nil when any is not.
 	Prefixed(dir, name string, locks ...string) []string
+	// Clear reports whether nothing is at p, a relative path with no .. part, beside each
+	// file Nearest(name) returns: nothing in the build tree there and, under a Dockerfile,
+	// nothing copied or mounted there. It binds p's first element, so a command that names a
+	// path through it withholds. false when Nearest(name) is nil or p may be there.
+	Clear(name, p string) bool
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -219,6 +224,33 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 	return found
 }
 
+func (c *hostCursor) Clear(name, p string) bool {
+	hits := c.Nearest(name)
+	if hits == nil || !plainRel(p) {
+		return false
+	}
+	for _, h := range hits {
+		if there, known := c.v.lstat(filepath.Dir(h), p); there || !known {
+			return false
+		}
+	}
+	c.v.bindRoot(p)
+	return true
+}
+
+// plainRel reports whether p is a relative path with no .., shell expansion or glob.
+func plainRel(p string) bool {
+	if p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$`*?[{~") {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
 	if c.unknown || len(c.dirs) == 0 || dir == "" || filepath.IsAbs(dir) || strings.ContainsAny(dir, "$`*?[{~") {
 		return nil
@@ -287,6 +319,26 @@ func (v *Veto) stat(p string) (regular, there, known bool) {
 		return false, false, v.spec.Absent(err)
 	}
 	return fi.Mode().IsRegular(), true, true
+}
+
+// lstat reports whether rel may be there under root: true when rel or a symlink on the way
+// to it is, so a link, dangling or not, counts as there.
+func (v *Veto) lstat(root, rel string) (there, known bool) {
+	p := root
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		p = filepath.Join(p, part)
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return false, v.spec.Absent(err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return true, true
+		}
+	}
+	return true, true
 }
 
 // glob lists what a COPY source pattern matches. ok is false when the pattern has a

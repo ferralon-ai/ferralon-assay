@@ -837,6 +837,15 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"__import__ without fromlist", map[string]string{"app.py": "h = __import__('tests')\n", "tests/helpers.py": opaque}, false, false},
 		{"star import of a package", map[string]string{"app.py": "from tests import *\n", "tests/__init__.py": "__all__ = ['helpers']\n", "tests/helpers.py": opaque}, true, false},
 		{"unread import", map[string]string{"app.py": "from tests import helpers as h, 1bad\n", "tests/other.py": opaque}, true, false},
+		{"space before a dot", map[string]string{"app.py": "import tests .helpers\n", "tests/other.py": opaque}, true, false},
+		{"after a byte order mark", map[string]string{"app.py": "\ufefffrom tests import helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"after a form feed", map[string]string{"app.py": "\f\nx = 1\n\ffrom tests import helpers\n", "tests/helpers.py": opaque}, true, false},
+		{"relative star import of a package", map[string]string{"pkg/__init__.py": "", "pkg/app.py": "from .tests import *\n", "pkg/tests/__init__.py": "__all__ = ['helpers']\n", "pkg/tests/helpers.py": opaque}, true, false},
+		{"unread from text", map[string]string{"app.py": "from tests import\n", "tests/other.py": opaque}, true, false},
+		{"unread plain import item", map[string]string{"app.py": "import tests, 1bad\n", "tests/other.py": opaque}, true, false},
+		{"continued from-import of production", map[string]string{"app.py": "from lib \\\n    import(x,\n    y,)\n", "lib.py": app, "tests/other.py": opaque}, false, false},
+		{"continued plain import of production", map[string]string{"app.py": "import \\\n\tlib as l\n", "lib.py": app, "tests/other.py": opaque}, false, false},
+		{"continued raise from", map[string]string{"app.py": "def f(e):\n    raise ValueError() \\\n        from e\n", "tests/other.py": opaque}, false, false},
 		{"edge through another test module", map[string]string{"app.py": "def main():\n    return relay('1')\n", "tests/relay.py": "def relay(s):\n    return run_eval(s)\n", "tests/helpers.py": evals}, false, true},
 	}
 	for _, c := range cases {

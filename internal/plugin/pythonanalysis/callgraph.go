@@ -941,9 +941,10 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 // matched like any import path through byModule) or has an edge into (calls, per caller
 // file). A star import or an __import__ fromlist may load any submodule of its package
 // (packagePaths), so it reaches every file under that package, and a file with an import
-// statement importedModules could not read reaches every file. Test code runs in production only that way: no escape names a test function, so
-// a test module only one test module imports or calls stays unreached, and its dynamic
-// imports and evaluated code withhold nothing.
+// statement importedModules could not read reaches every file. Test code runs in
+// production only that way: no escape names a test function, so a test module only test
+// modules import or call stays unreached, and its dynamic imports and evaluated code
+// withhold nothing.
 func (prog *program) productionReached(calls [][]int) []bool {
 	reached := make([]bool, len(prog.files))
 	var work []int
@@ -967,11 +968,13 @@ func (prog *program) productionReached(calls [][]int) []bool {
 				reach(j)
 			}
 		}
-		for j, g := range prog.files {
-			if f.importsUnread || slices.ContainsFunc(f.packagePaths, func(p string) bool {
-				return strings.Contains("/"+g.module+"/", "/"+p+"/")
-			}) {
-				reach(j)
+		if f.importsUnread || len(f.packagePaths) > 0 {
+			for j, g := range prog.files {
+				if f.importsUnread || slices.ContainsFunc(f.packagePaths, func(p string) bool {
+					return strings.Contains("/"+g.module+"/", "/"+p+"/")
+				}) {
+					reach(j)
+				}
 			}
 		}
 		for _, j := range calls[i] {

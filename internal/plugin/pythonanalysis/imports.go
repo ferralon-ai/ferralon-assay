@@ -123,8 +123,8 @@ func importedModules(text string) (modules, packages []string, ok bool) {
 	text = strings.Join(strings.Fields(strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(text)), " ")
 	if m := importRE.FindStringSubmatch(text); m != nil {
 		for _, item := range strings.Split(m[1], ",") {
-			path, _, _ := strings.Cut(strings.TrimSpace(item), " ")
-			if !isDottedName(path) {
+			path, alias, _ := strings.Cut(strings.TrimSpace(item), " ")
+			if !isDottedName(path) || !plainAlias(alias) {
 				return nil, nil, false
 			}
 			modules = append(modules, path)
@@ -146,8 +146,10 @@ func importedModules(text string) (modules, packages []string, ok bool) {
 		list = strings.TrimSuffix(strings.TrimPrefix(list, "("), ")")
 	}
 	for _, item := range strings.Split(list, ",") {
-		name, _, _ := strings.Cut(strings.TrimSpace(item), " ")
+		name, alias, _ := strings.Cut(strings.TrimSpace(item), " ")
 		switch {
+		case !plainAlias(alias):
+			return nil, nil, false
 		case name == "*":
 			packages = append(packages, from)
 		case name == "" && strings.TrimSpace(item) == "":
@@ -159,6 +161,16 @@ func importedModules(text string) (modules, packages []string, ok bool) {
 		}
 	}
 	return modules, packages, true
+}
+
+// plainAlias reports whether what follows a name in an import list is nothing or an
+// "as" clause.
+func plainAlias(rest string) bool {
+	if rest == "" {
+		return true
+	}
+	as, name, ok := strings.Cut(rest, " ")
+	return ok && as == "as" && isDottedName(name) && !strings.Contains(name, ".")
 }
 
 // importRE and fromImportRE match an import statement with its whitespace collapsed.
@@ -847,15 +859,22 @@ func importStatements(r []rune) (spans [][2]int, stars map[string]bool) {
 	return spans, stars
 }
 
-// statementStart reports whether the word at r[i] begins a statement: only spaces lie
-// between it and the start of the source, a newline, a ';', or a ':' that opens a block on
-// the same line.
+// statementStart reports whether the word at r[i] begins a statement: only spaces, tabs,
+// form feeds or a byte order mark lie between it and the start of the source, a newline
+// that ends no continuation line, a ';', or a ':' that opens a block on the same line.
 func statementStart(r []rune, i int) bool {
 	j := i - 1
-	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\f' || r[j] == '\ufeff') {
 		j--
 	}
-	return j < 0 || r[j] == '\n' || r[j] == ';' || r[j] == ':'
+	if j >= 0 && r[j] == '\n' {
+		k := j - 1
+		if k >= 0 && r[k] == '\r' {
+			k--
+		}
+		return k < 0 || r[k] != '\\'
+	}
+	return j < 0 || r[j] == ';' || r[j] == ':'
 }
 
 // statementEnd is the index of the ';' or newline that ends the statement running from

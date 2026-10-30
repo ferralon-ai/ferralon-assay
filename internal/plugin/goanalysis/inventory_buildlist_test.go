@@ -212,6 +212,27 @@ func TestResolveInventory_UnderWorkspace_GoWorkReplace(t *testing.T) {
 	}
 }
 
+// Under the workspace the graph is read offline, as the host reads the workspace build list: a module
+// missing from the cache is not fetched, even where the environment's proxy could serve it.
+func TestResolveInventory_UnderWorkspace_Offline(t *testing.T) {
+	newFileProxy(t, []proxyModule{{"example.test/x", "v1.0.0", "module example.test/x\n\ngo 1.21\n"}})
+	root := t.TempDir()
+	writeDir(t, root, map[string]string{
+		"go.work":   "go 1.21\n\nuse ./a\n",
+		"a/go.mod":  "module example.test/a\n\ngo 1.21\n\nrequire example.test/x v1.0.0\n",
+		"a/main.go": "package main\n\nimport _ \"example.test/x\"\n\nfunc main() {}\n",
+	})
+	a := filepath.Join(root, "a")
+
+	ws := resolveUnder(t, a, filepath.Join(root, "go.work"))
+	if ws.Partiality.Complete || !invHasReason(ws.Partiality, plugin.PartialReasonToolFailure) || len(ws.Nodes) != 0 || ws.BuildList != "" {
+		t.Errorf("workspace inventory = %+v; want tool_failure, no nodes and no build list", ws)
+	}
+	if got, want := nodePURLs(resolveUnder(t, a, "off")), []string{"pkg:golang/example.test/x@v1.0.0"}; !slices.Equal(got, want) {
+		t.Errorf("off nodes = %q, want %q", got, want)
+	}
+}
+
 // A workspace whose member go.mod cannot be read, or that does not use the build's module, leaves the
 // inventory unresolved, never the module's own graph; a relative go.work is refused.
 func TestResolveInventory_UnderWorkspace_Unreadable(t *testing.T) {

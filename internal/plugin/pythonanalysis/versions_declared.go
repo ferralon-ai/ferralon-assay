@@ -105,8 +105,8 @@ type pyprojectDoc struct {
 	} `toml:"tool"`
 }
 
-// hatchConfig is pyproject.toml's [tool.hatch], as version resolution and the coverage
-// check both read it.
+// hatchConfig is pyproject.toml's [tool.hatch], or a hatch.toml (the same keys at the top
+// level), as version resolution and the coverage check both read it.
 type hatchConfig struct {
 	Sources any `toml:"sources"`
 	Env     struct {
@@ -253,19 +253,8 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	addAny := func(v any, lockedBy []string) {
-		entries, isList := v.([]any)
-		if v != nil && !isList {
-			ok = false
-			return
-		}
-		for _, e := range entries {
-			s, isStr := e.(string)
-			if !isStr {
-				ok = false
-				return
-			}
-			addPEP508(s, lockedBy)
-		}
+		d, o, listOK := pep508List(v, dir, lockedBy)
+		deps, origins, ok = append(deps, d...), append(origins, o...), ok && listOK
 	}
 
 	groupSpecs, groupsOK := dependencyGroupSpecs(doc.DependencyGroups)
@@ -277,12 +266,8 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {
 		addAny(doc.Tool.PDM.DevDependencies[g], []string{"pdm.lock"})
 	}
-	ok = ok && !doc.Tool.Hatch.installsPast()
-	for _, e := range slices.Sorted(maps.Keys(doc.Tool.Hatch.Envs)) {
-		env := doc.Tool.Hatch.Envs[e]
-		addAny(env.Dependencies, nil)
-		addAny(env.ExtraDependencies, nil)
-	}
+	hd, ho, hatchOK := hatchEnvDeps(doc.Tool.Hatch, dir)
+	deps, origins, ok = append(deps, hd...), append(origins, ho...), ok && hatchOK
 
 	p := doc.Tool.Poetry
 	tables := []map[string]any{p.Dependencies, p.DevDependencies}
@@ -311,6 +296,56 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 				}
 				addPEP508(name+d.Specifier, []string{"poetry.lock"})
 			}
+		}
+	}
+	return deps, origins, ok
+}
+
+// pep508List reads v as the array of PEP 508 strings a TOML dependency list must be, each
+// entry with the locks that may cover it; nil is an empty list. ok is false when v is not an
+// array of strings or an entry is not a well-formed requirement (pep508Entry).
+func pep508List(v any, dir string, lockedBy []string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	entries, isList := v.([]any)
+	if v != nil && !isList {
+		return nil, nil, false
+	}
+	var (
+		deps    []plugin.ResolvedDependency
+		origins []manifestOrigin
+	)
+	for _, e := range entries {
+		s, isStr := e.(string)
+		if !isStr {
+			return deps, origins, false
+		}
+		d, o, keep, ok := pep508Entry(s, dir)
+		if !ok {
+			return deps, origins, false
+		}
+		if keep {
+			o.lockedBy = lockedBy
+			deps = append(deps, d)
+			origins = append(origins, o)
+		}
+	}
+	return deps, origins, true
+}
+
+// hatchEnvDeps reads the dependencies and extra-dependencies of every hatch environment, from
+// pyproject.toml's [tool.hatch] or from hatch.toml. Hatch has no lock, so nothing covers them.
+// ok is false when a list is not an array of well-formed requirements, or hatch can install
+// past the lists (installsPast).
+func hatchEnvDeps(h hatchConfig, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	var (
+		deps    []plugin.ResolvedDependency
+		origins []manifestOrigin
+		ok      = !h.installsPast()
+	)
+	for _, e := range slices.Sorted(maps.Keys(h.Envs)) {
+		env := h.Envs[e]
+		for _, v := range []any{env.Dependencies, env.ExtraDependencies} {
+			d, o, listOK := pep508List(v, dir, nil)
+			deps, origins, ok = append(deps, d...), append(origins, o...), ok && listOK
 		}
 	}
 	return deps, origins, ok

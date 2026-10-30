@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -282,16 +283,21 @@ func TestResolveVersions_ExhaustiveHatchInstallsPast(t *testing.T) {
 		{"env extra-dependency the lock lacks", "[tool.hatch.envs.lint]\nextra-dependencies = [\"ruff\"]\n", false},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := writeTree(t, map[string]string{"uv.lock": exUVLock, "pyproject.toml": exPyproject + env + tt.extra})
-			r := resolveVersion(t, root, "PyJWT")
-			if r.Found {
-				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
-			}
-			if r.Exhaustive != tt.want {
-				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
-			}
-		})
+		// hatch.toml holds the same keys as [tool.hatch], at the top level.
+		for file, files := range map[string]map[string]string{
+			"pyproject.toml": {"uv.lock": exUVLock, "pyproject.toml": exPyproject + env + tt.extra},
+			"hatch.toml":     {"uv.lock": exUVLock, "pyproject.toml": exPyproject, "hatch.toml": strings.ReplaceAll(env+tt.extra, "tool.hatch.", "")},
+		} {
+			t.Run(file+"/"+tt.name, func(t *testing.T) {
+				r := resolveVersion(t, writeTree(t, files), "PyJWT")
+				if r.Found {
+					t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+				}
+				if r.Exhaustive != tt.want {
+					t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+				}
+			})
+		}
 	}
 }
 

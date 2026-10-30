@@ -303,12 +303,12 @@ func walkManifests(root string, match func(string) bool) (out []string, read boo
 
 // isManifest reports whether name is a recognized Python dependency manifest: the lockfiles,
 // the declared-specifier build definitions (pyproject.toml, setup.cfg, setup.py,
-// hatch_build.py), and the requirements*.txt family (requirements.txt, requirements-dev.txt,
+// hatch_build.py), hatch.toml, and the requirements*.txt family (requirements.txt, requirements-dev.txt,
 // ...), so split requirement files still resolve.
 func isManifest(name string) bool {
 	switch name {
 	case "poetry.lock", "Pipfile.lock", "pyproject.toml", "pdm.lock", "uv.lock",
-		"setup.cfg", "setup.py", "hatch_build.py":
+		"setup.cfg", "setup.py", "hatch_build.py", "hatch.toml":
 		return true
 	}
 	return isRequirementsName(name)
@@ -366,6 +366,13 @@ func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, [
 		// mentions dependencies still takes the parse-failure path.
 		deps, ok = parseHatchBuild(data)
 		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok && !bytes.Contains(data, []byte("dependencies"))
+	case "hatch.toml":
+		// hatch reads its environments from here as well as from pyproject.toml's [tool.hatch].
+		var h hatchConfig
+		if toml.Unmarshal(data, &h) != nil {
+			return nil, nil, false
+		}
+		return hatchEnvDeps(h, dir)
 	default: // requirements*.txt
 		deps, ok = parseRequirementLines(data, dir)
 		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
@@ -1154,6 +1161,10 @@ func parseManifestCoverage(path string) ([]plugin.ResolvedDependency, bool) {
 		return append(deps, buildRequires(path, data)...), ok
 	case "hatch_build.py":
 		return parseHatchBuild(data)
+	case "hatch.toml":
+		// No declaration of its own here: manifestDecls reads its environments.
+		var h hatchConfig
+		return nil, toml.Unmarshal(data, &h) == nil
 	}
 	return parseRequirementsCoverage(data)
 }

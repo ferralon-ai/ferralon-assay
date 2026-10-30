@@ -14,6 +14,17 @@ func TestDeclaredManifests_LoneCRLineBreaks(t *testing.T) {
 		t.Errorf("setup.py: specs=%q complete=%v, want both requirements read in full", specs, complete)
 	}
 
+	splat := "from setuptools import setup\rextra = {}  # options\rsetup(name='svc', install_requires=['six==1.16.0'], **extra)\r"
+	if _, complete := scanSetupPy(splat); complete {
+		t.Error("setup.py: a ** splat after a comment must leave the read incomplete")
+	}
+
+	build := "from setuptools import setup\rsetup(\r    setup_requires=[  # build\r        'wheel==0.42.0',\r    ],\r)\r"
+	specs, complete = scanSetupPyKeys(build, setupPyBuildKeys)
+	if !complete || !slices.Equal(specs, []string{"wheel==0.42.0"}) {
+		t.Errorf("setup.py build keys: specs=%q complete=%v, want wheel read in full", specs, complete)
+	}
+
 	hatch := "# hook\rfrom hatchling.builders.hooks.plugin.interface import BuildHookInterface\rclass H(BuildHookInterface):\r    deps = ['pyjwt==2.8.0']\r"
 	deps, _ := parseHatchBuild([]byte(hatch))
 	if len(deps) != 1 || deps[0].Coordinate != "pyjwt" {

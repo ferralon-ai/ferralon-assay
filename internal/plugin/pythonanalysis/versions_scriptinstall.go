@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"errors"
+	"io/fs"
 	"maps"
 	"path/filepath"
 	"regexp"
@@ -170,10 +171,54 @@ func pipSelfUpgrade(args []string) bool {
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip`)
 
 // uvConfigNamedRE matches, in a script surface's text, a uv config file or directory (uv.toml,
-// /etc/uv, /etc/xdg/uv, .config/uv), UV_CONFIG_FILE, or an XDG variable that moves where uv
-// looks for one. A uv sync reads the settings there, which can add build requirements, indexes
+// /etc/uv, /etc/xdg/uv, .config/uv, AppData or ProgramData's uv), UV_CONFIG_FILE, or a
+// variable that moves where uv looks for one (XDG_CONFIG_HOME or XDG_CONFIG_DIRS, HOME,
+// USERPROFILE). A uv sync reads the settings there, which can add build requirements, indexes
 // and build environment, so an allowed one withholds where a script names one (versionSurfaces).
-var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|xdg_config_(?:home|dirs)`)
+var uvConfigNamedRE = regexp.MustCompile(`(?i)uv\.toml|uv_config_file|/etc/(?:xdg/)?uv\b|\.config/uv\b|(?:appdata|programdata)%?[\\/]uv\b|` + configHomeMoved)
+
+// pdmConfigNamedRE matches, in a script surface's text, a pdm config file or the directory pdm
+// reads its user or site config from (pdm.toml, .pdm.toml, pdm/config.toml, .config/pdm,
+// /etc/xdg/pdm, Application Support/pdm, AppData or ProgramData's pdm), or a variable that
+// moves where pdm looks (XDG_CONFIG_HOME or XDG_CONFIG_DIRS, HOME, USERPROFILE, platformdirs'
+// WIN_PD_OVERRIDE_*). A pdm sync reads the settings there, which can name an index or turn off
+// build isolation, so an allowed one withholds where a script names one (versionSurfaces).
+// PDM_CONFIG_FILE falls under laneEnvRE.
+var pdmConfigNamedRE = regexp.MustCompile(`(?i)pdm\.toml|pdm[\\/]config\.toml|(?:\.config|/etc/xdg|application\\? support|appdata[\\/](?:local|roaming)|localappdata%?|programdata%?)[\\/]pdm\b|win_pd_override_|` + configHomeMoved)
+
+// configHomeMoved matches, in a script surface's text, a variable a tool's user or site config
+// location is found from being set or exported: XDG_CONFIG_HOME, XDG_CONFIG_DIRS, HOME (as
+// HOME=, a workflow's HOME:, or a Dockerfile's ENV HOME) and USERPROFILE.
+const configHomeMoved = `xdg_config_(?:home|dirs)|\bhome\s*[=:]|\benv\s+home\s|userprofile`
+
+// lockToolConfigInTree reports whether root (all but its own .git) holds a file uv or pdm
+// reads as a user or site config once it is in place: uv's uv.toml under a uv directory, pdm's
+// config.toml under a pdm directory, or a pdm.toml or .pdm.toml anywhere. A script can put one
+// there without naming it, copying a directory onto ~/.config or /etc or moving HOME onto the
+// tree, so an allowed uv sync or pdm sync withholds where one is here (versionSurfaces). A walk
+// or read error counts as both.
+func lockToolConfigInTree(root string) (uv, pdm bool) {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			uv, pdm = true, true
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name, dir := strings.ToLower(d.Name()), strings.ToLower(filepath.Base(filepath.Dir(path)))
+		uv = uv || name == "uv.toml" && dir == "uv"
+		pdm = pdm || name == "pdm.toml" || name == ".pdm.toml" || name == "config.toml" && dir == "pdm"
+		return nil
+	})
+	if err != nil {
+		return true, true
+	}
+	return uv, pdm
+}
 
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}
@@ -245,16 +290,26 @@ type rootProject struct {
 		BackendPath any    `toml:"backend-path"`
 	} `toml:"build-system"`
 	Project *struct {
+		Name    any      `toml:"name"`
 		Dynamic []string `toml:"dynamic"`
 	} `toml:"project"`
 	Tool struct {
+		Flit struct {
+			Module struct {
+				Name any `toml:"name"`
+			} `toml:"module"`
+		} `toml:"flit"`
 		Poetry struct {
 			Build           any `toml:"build"`
 			RequiresPlugins any `toml:"requires-plugins"`
 		} `toml:"poetry"`
 		Setuptools struct {
-			Cmdclass any            `toml:"cmdclass"`
-			Dynamic  map[string]any `toml:"dynamic"`
+			Cmdclass   any            `toml:"cmdclass"`
+			Dynamic    map[string]any `toml:"dynamic"`
+			PackageDir any            `toml:"package-dir"`
+			Packages   any            `toml:"packages"`
+			PyModules  any            `toml:"py-modules"`
+			ExtModules any            `toml:"ext-modules"`
 		} `toml:"setuptools"`
 		PDM struct {
 			PackageType  *string `toml:"package-type"`
@@ -272,6 +327,7 @@ type rootProject struct {
 			Resolution struct {
 				Overrides any `toml:"overrides"`
 			} `toml:"resolution"`
+			Options map[string]any `toml:"options"`
 		} `toml:"pdm"`
 		Hatch map[string]any `toml:"hatch"`
 		UV    struct {
@@ -334,9 +390,12 @@ func rootBuildClean(tool string, b scriptsurface.Binder) bool {
 		case "pdm":
 			// pdm installs from a pylock.toml there instead of pdm.lock when lock.format,
 			// which pdm config can set, is pylock. It resolves build requirements through
-			// tool.pdm.resolution.overrides, which may name a directory in the tree.
+			// tool.pdm.resolution.overrides, which may name a directory in the tree. It adds
+			// tool.pdm.options to a command's flags, and reads a pdm.toml and a legacy .pdm.toml
+			// beside the manifest, any of which may turn off build isolation.
 			if !b.Clear("pyproject.toml", ".pdm-plugins") || !b.Clear("pyproject.toml", "pylock.toml") || !pdmSourcesRemote(doc) ||
-				doc.Tool.PDM.Resolution.Overrides != nil {
+				doc.Tool.PDM.Resolution.Overrides != nil || len(doc.Tool.PDM.Options) > 0 ||
+				!b.Clear("pyproject.toml", "pdm.toml") || !b.Clear("pyproject.toml", ".pdm.toml") {
 				return false
 			}
 			builds := doc.Tool.PDM.Distribution == nil || *doc.Tool.PDM.Distribution
@@ -707,15 +766,16 @@ func uvWorkspaceFree(p string, b scriptsurface.Binder) bool {
 // backendClean reports whether the PEP 517 backend a manifest names runs no code from the
 // tree when it builds the project: setuptools (also the backend when none is named) with no
 // setup.py or setup.cfg beside the manifest, either of which can name command classes in the
-// tree, no tool.setuptools.cmdclass, and no tool.setuptools.dynamic attr, which setuptools
-// imports when it cannot read the value statically; pdm-backend with no pdm_build.py, no
+// tree, no tool.setuptools.cmdclass, and no tool.setuptools.dynamic attr but a version one
+// read here as a string literal (versionStatic), since setuptools imports the module when it
+// cannot read the value statically; pdm-backend with no pdm_build.py, no
 // custom-hook or run-setuptools, and a version source of file or scm with no version_format,
 // since a call source or a version_format calls a function in the tree; hatchling with no
 // hooks table anywhere in tool.hatch, a version source of regex or none (the code source runs
 // a file), and no hatch_build.py or hatch.toml, which hatchling merges into tool.hatch;
-// poetry-core with no tool.poetry.build; flit_core with a project table whose dynamic names
-// neither version nor description, which flit imports the module for when it cannot read them
-// statically; or uv_build. A backend-path, which loads the backend itself from the tree, or
+// poetry-core with no tool.poetry.build; flit_core with a project table whose dynamic version
+// and description, if named, are read here from the module (versionStatic), which flit imports
+// when it cannot read them statically; or uv_build. A backend-path, which loads the backend itself from the tree, or
 // any other backend fails, as does a build requirement that may be built from the tree
 // (buildRequiresClean).
 func backendClean(doc rootProject, b scriptsurface.Binder, dir string, sources map[string]bool) bool {
@@ -737,7 +797,7 @@ func backendClean(doc rootProject, b scriptsurface.Binder, dir string, sources m
 	}
 	switch backend {
 	case "", "setuptools.build_meta", "setuptools.build_meta:__legacy__":
-		return doc.Tool.Setuptools.Cmdclass == nil && !hasKey(doc.Tool.Setuptools.Dynamic, "attr") &&
+		return doc.Tool.Setuptools.Cmdclass == nil && versionStatic(doc, backend, b, dir) &&
 			clear("setup.py") && clear("setup.cfg")
 	case "pdm.backend":
 		v := doc.Tool.PDM.Version
@@ -749,7 +809,7 @@ func backendClean(doc rootProject, b scriptsurface.Binder, dir string, sources m
 	case "poetry.core.masonry.api":
 		return doc.Tool.Poetry.Build == nil
 	case "flit_core.buildapi":
-		return doc.Project != nil && !slices.Contains(doc.Project.Dynamic, "version") && !slices.Contains(doc.Project.Dynamic, "description")
+		return doc.Project != nil && versionStatic(doc, backend, b, dir)
 	case "uv_build":
 		return true
 	}
@@ -935,11 +995,11 @@ func (installs pipInstalls) pip(args []string, b scriptsurface.Binder, tooling m
 		default:
 			return false
 		}
-		if name := filepath.Base(p); isManifest(name) && !isRequirementsName(name) {
-			return false // a lock or build definition is not a requirements file
+		if name := filepath.Base(p); isManifest(name) && !isRequirementsName(name) || strings.EqualFold(filepath.Ext(name), ".py") {
+			return false // a lock, build definition or module is not a requirements file
 		}
 		hosts := b.Hosts(p)
-		if hosts == nil {
+		if hosts == nil || slices.ContainsFunc(hosts, func(h string) bool { return strings.EqualFold(filepath.Ext(h), ".py") }) {
 			return false
 		}
 		files = append(files, hosts...)

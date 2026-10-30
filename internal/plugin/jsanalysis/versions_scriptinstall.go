@@ -26,6 +26,12 @@ import (
 //	npm run|run-script <name>            runs a script and installs nothing; the script, like
 //	npm test|t|start                     every package.json script value, passes the same gate
 //	yarn run <name>, yarn test|start
+//	yarn <name> [args]                   a name no yarn command takes, that is a script
+//	                                     (with no args) or a declared dependency's bin, with
+//	                                     no / or \ in it and no -- among the args
+//	npx <name> [args]                    a declared dependency, with no npx flag or @version:
+//	                                     its local bin, or a fetch into the npx cache, which
+//	                                     never enters the project's node_modules
 //	concurrently "<cmd>" ...             runs each <cmd>, which passes the same gate
 //
 // with only --ignore-scripts and subset flags added (npm: --production and --omit, --include
@@ -38,8 +44,8 @@ import (
 // laneSubsetConfigs variables. concurrently may carry only concurrentlyFlags. Anything else
 // that names a package manager withholds: a package argument, another flag, a bare npm
 // install its lock does not cover, pnpm install without --frozen-lockfile (it re-locks),
-// every yarn install, --frozen-lockfile included (see laneAllowed), npm exec, npx, pnpx,
-// bunx, yarn dlx, pnpm run (pnpm installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
+// every yarn install, --frozen-lockfile included (see laneAllowed), npm exec, any other npx,
+// pnpx, bunx, yarn dlx, pnpm run (pnpm installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
 // names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
 // npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
 // read, and what binds a command to a file, is lane-neutral, in scriptsurface.
@@ -183,18 +189,143 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 		case "test", "start":
 			return len(words) == 2 && b.Nearest("package.json") != nil
 		}
+		if !yarnBuiltins[words[1]] {
+			return laneYarnRunsName(words, b)
+		}
 		// No yarn install is allowed, --frozen-lockfile included: yarn 1 does not hold a
 		// workspace to its lock under that flag. When a member adds a dependency or moves a
 		// range past the locked version, or a new member appears, yarn 1.22 exits 0, installs
 		// versions yarn.lock does not record and leaves the lock byte-identical. yarn 2+
 		// --immutable is not recognised by yarn 1, which ignores it.
 		return false
+	case "npx":
+		return laneNpxRunsDependency(words, b)
 	case "pnpm":
 		return words[1] == "install" && scriptsurface.FlagsOnly(words[2:], laneFlags, "--frozen-lockfile") &&
 			b.Nearest("package.json", "pnpm-lock.yaml") != nil
 	}
 	return false
 }
+
+// yarnBuiltins covers the first words yarn 1 (1.22) and yarn 2+ (4.5, its bundled plugins
+// included) take as one of their own commands, aliases and the camelCase spellings yarn 1
+// also accepts among them. yarn runs any other first word as "yarn run <word>".
+var yarnBuiltins = map[string]bool{
+	"access": true, "add": true, "audit": true, "autoclean": true, "bin": true, "cache": true,
+	"check": true, "config": true, "constraints": true, "create": true, "dedupe": true,
+	"dlx": true, "exec": true, "explain": true, "files": true, "generate-lock-entry": true,
+	"generateLockEntry": true, "global": true, "help": true, "import": true, "info": true,
+	"init": true, "install": true, "licenses": true, "link": true, "list": true, "lockfile": true,
+	"login": true, "logout": true, "node": true, "npm": true, "outdated": true, "owner": true,
+	"pack": true, "patch": true, "patch-commit": true, "plugin": true, "policies": true,
+	"prune": true, "publish": true, "rebuild": true, "remove": true, "run": true, "search": true,
+	"set": true, "stage": true, "tag": true, "team": true, "unlink": true, "unplug": true,
+	"up": true, "upgrade": true, "upgrade-interactive": true, "upgradeInteractive": true,
+	"version": true, "versions": true, "why": true, "workspace": true, "workspaces": true,
+}
+
+// laneYarnRunsName reports whether words is "yarn <name> [args]" that yarn runs as "yarn run
+// <name> [args]", which installs nothing: name is not a yarn command (yarnBuiltins) and, in
+// every package.json it binds to, either a script, run with nothing after it since yarn
+// appends the args to the script's text, or a declared dependency, whose bin it runs. A
+// name that is neither fails in both yarns rather than installing. Neither name nor an
+// argument may name a token, so the form withholds wherever the bare command would. yarn
+// 2+ takes a name with / or \ as a directory to run the remaining args in, bare yarn
+// (an install) when there are none; yarn 1 parses every argument before a -- as its own
+// options, --cwd among them, so either rebinds the command to a package.json not read here.
+func laneYarnRunsName(words []string, b scriptsurface.Binder) bool {
+	name := words[1]
+	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	for _, w := range words[1:] {
+		if w == "--" || laneNamesToken(w) {
+			return false
+		}
+	}
+	pkgs := b.Nearest("package.json")
+	if pkgs == nil {
+		return false
+	}
+	for _, p := range pkgs {
+		raw, ok := readManifest(p)
+		if !ok {
+			return false
+		}
+		var scripts map[string]json.RawMessage
+		if s, has := raw["scripts"]; has && json.Unmarshal(s, &scripts) != nil {
+			return false
+		}
+		if _, script := scripts[name]; script {
+			if len(words) != 2 {
+				return false
+			}
+			continue
+		}
+		m, ok := readPackageJSON(p)
+		if !ok || !declaresDependency(m, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// laneNpxRunsDependency reports whether words is "npx <name> [args]" with no npx flag before
+// name and no @version on it, name a declared dependency in every package.json it binds to,
+// and neither name nor an argument naming a token. npx runs that dependency's local bin, or,
+// when it is not installed, fetches it into the npx cache, which never enters the project's
+// node_modules, so changes no version a pin here resolves to.
+func laneNpxRunsDependency(words []string, b scriptsurface.Binder) bool {
+	name := words[1]
+	if name == "" || strings.HasPrefix(name, "-") || strings.LastIndex(name, "@") > 0 {
+		return false
+	}
+	for _, w := range words[1:] {
+		if laneNamesToken(w) {
+			return false
+		}
+	}
+	pkgs := b.Nearest("package.json")
+	if pkgs == nil {
+		return false
+	}
+	for _, p := range pkgs {
+		m, ok := readPackageJSON(p)
+		if !ok || !declaresDependency(m, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// declaresDependency reports whether m names dep in any of its dependency fields.
+func declaresDependency(m depManifest, dep string) bool {
+	for _, deps := range m.declared {
+		if _, ok := deps[dep]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// laneNamesToken reports whether word, or a part of one split as scriptsurface splits text
+// into words and at - or _, is a token: what makes the walk gate a bare command.
+func laneNamesToken(word string) bool {
+	for _, w := range laneWordRE.FindAllString(word, -1) {
+		if laneToken(w) {
+			return true
+		}
+		for _, p := range strings.FieldsFunc(w, func(r rune) bool { return r == '-' || r == '_' }) {
+			if laneToken(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// laneWordRE is scriptsurface's word pattern for token matching.
+var laneWordRE = regexp.MustCompile(`[A-Za-z0-9_.+-]+`)
 
 // laneRunsScript reports whether words is "<pm> run <name>" with a literal name and nothing
 // after it, bound to a package.json read here.

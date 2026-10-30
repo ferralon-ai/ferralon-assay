@@ -113,7 +113,7 @@ Ferralon.
 | | |
 |---|---|
 | **What turns it on** | Setting `link-to-console: true` in the workflow. It is the *only* switch — no other input or default enables any part of this. |
-| **What it does when on** | After each run, the scan beacons your results to the ingest endpoint baked into the pinned scanner release (no Ferralon hostname appears in your workflow file). When the run analyzed the repository's canonical ref (the `analyze.ref` set in `.github/ferralon.yml`, else the default branch), it also pushes a `tegron.report.v3` verdict layer to a run-snapshot endpoint, under the workflow's own GitHub Actions OIDC token (`id-token: write`, audience `ferralon-ingest`); that push is fail-open — a rejected or unreachable endpoint only warns, it never fails the job. PR runs and runs of any other ref stay stateless and never file a run; a repository with no `analyze.ref` pushes on exactly the default-branch runs, as before. If a cryptographically-signed HTTP-410 install-revoke (the backing Ferralon App was uninstalled) is confirmed on two consecutive runs, the scan removes its own footprint: it deletes the workflow file (direct push, or a removal PR if it cannot push), and deletes the default state ref `refs/assay/state` — never a custom `state-ref` you configured. If git or API writes are refused, it degrades to disabling itself and opening a one-step manual Issue instead. As the release documents the flow, the removal fires only on a signature that verifies against the revoke key baked into the release and is bound to *this* repository, never on a transient outage — the signature check itself runs inside the pinned binary and is not verifiable from this repository's source. |
+| **What it does when on** | After each run, the scan beacons your results to the ingest endpoint baked into the pinned scanner release (no Ferralon hostname appears in your workflow file). When the run analyzed the repository's canonical ref (the `analyze.ref` set in `.github/ferralon.yml`, else the default branch), it also pushes a `tegron.report.v3` verdict layer to a run-snapshot endpoint, under the workflow's own GitHub Actions OIDC token (`id-token: write`, audience `ferralon-ingest`); that push is fail-open — a rejected or unreachable endpoint only warns, it never fails the job. PR runs and runs of any other ref stay stateless and never file a run; a repository with no `analyze.ref` pushes on exactly the default-branch runs, as before. If a cryptographically-signed HTTP-410 install-revoke (the backing Ferralon App was uninstalled) is confirmed on two consecutive runs, the scan removes its own footprint: it deletes the workflow file (direct push, or a removal PR if it cannot push), and deletes the default state ref `refs/assay/state` — never a custom `state-ref` you configured. If git or API writes are refused, it degrades to disabling itself and opening a one-step manual Issue instead. The removal fires only on a signature that verifies against the revoke key baked into the release and is bound to *this* repository, never on a transient outage. The check is in this repository's source ([`internal/selfcleanup`](internal/selfcleanup/revoke.go)): an Ed25519 signature over the organization, repository, nonce and issue time, verified against the trusted key and its key id, then matched against the repository the run posted for. The public key, its key id and the endpoints are not in the source: the release build bakes them into the binary. |
 | **What data leaves** | Your scan results (the `Report`) and, for a run of the canonical ref, the run-snapshot verdict layer — sent to the ingest/run-snapshot endpoints baked into the pinned release. Your code and credentials never leave the runner regardless of this switch. |
 | **How to keep it permanently off** | Leave `link-to-console` unset, or delete the line entirely. Deleting it disables the link outright; it never silently re-enables. |
 
@@ -304,13 +304,14 @@ declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 
 ## Scope
 
-Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
-onto vulnerable symbols, builds a call graph, and computes reachability, then reports what it found.
+Assay is a source-available reachability engine, published under the Business Source License 1.1
+(see [License](#license)): it resolves dependency versions, maps advisories onto vulnerable symbols,
+builds a call graph, and computes reachability, then reports what it found.
 What each of the six languages resolves today is laid out in
 [Language support](docs/language-support.md).
 
-It stops at reachability — there is no execution of the target codebase, no exploit synthesis, and no
-live confirmation step, and it neither generates nor validates patches. It produces the evidence those
+It stops at reachability — it does not run the target program or synthesize an exploit, it has no live
+confirmation step, and it neither generates nor validates patches. It produces the evidence those
 steps build on.
 
 A scan will never emit a findings-free `Report` from a work set that resolved to nothing: that halts
@@ -335,8 +336,8 @@ boundary; all of them resolve dependency versions and disqualify advisories your
 provably outside. [Language
 support](docs/language-support.md) has the per-language specifics.
 
-**Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not execute the
-scanned codebase or synthesize an exploit; a `reachable_candidate`
+**Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not run the
+scanned program or synthesize an exploit; a `reachable_candidate`
 verdict is a candidate, never a proof of exploitability. It is pre-1.0 — see
 [API stability](#api-stability) before depending on it as a Go library.
 
@@ -365,15 +366,23 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 
 ## Network egress
 
-**Your code never leaves the runner, and a registry token leaves it only for the npm registry
-host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a default
+**Your code never leaves the runner. The scanner presents a registry token only to the npm registry
+host your scanned branch's `.npmrc` binds it to, and a Java or Kotlin build tool it runs uses the
+credentials your build configures.** No run mode is offline: a default
 `baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
-`api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
-GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
-signature. A JS scan also fetches each lock-pinned package tarball by name and version from the
+`api.osv.dev`. The Action downloads the scanner release from `github.com`. A run with
+`advisory-corpus-repo` set clones the corpus repository from `github.com`. With
+`advisory-corpus-policy` set and the ref naming a corpus release, a bundle replaces the clone: the
+run downloads the release's assets from `github.com` (served from
+`release-assets.githubusercontent.com`) and the policy manifest from `raw.githubusercontent.com`,
+downloads cosign from the `sigstore/cosign` GitHub release, and needs the Sigstore TUF CDN,
+`tuf-repo-cdn.sigstore.dev`, to verify the corpus signature. None of the corpus requests presents a
+token or carries anything about your code. A Java or Kotlin scan runs the repository's own Maven or
+Gradle with the job's environment, and the build tool contacts whatever repositories the build
+configures. A JS scan also fetches each lock-pinned package tarball by name and version from the
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token

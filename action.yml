@@ -3,8 +3,9 @@
 # Runs the free, deterministic Ferralon Assay scan against the calling repository. For each advisory
 # in scope it resolves the subject's dependency versions, maps the advisory onto vulnerable symbols,
 # builds a call graph, and reports whether that code is reachable from a framework entry point. The
-# scan runs entirely in your runner: it never executes code from the scanned repository and never
-# runs a model.
+# scan runs entirely in your runner and never runs a model. For a Java or Kotlin repository it runs the
+# project's own Maven or Gradle to resolve the dependency graph, which executes the build's scripts and
+# plugins; the rest of the scan reads the repository without running it.
 #
 # WHAT IT NEEDS
 #   - The repository already checked out (run actions/checkout before this action).
@@ -650,7 +651,7 @@ runs:
         # Sparse BEFORE any checkout, so excluded paths are never materialized. Non-cone
         # (gitignore-style) patterns: records are filed as <YYYY>/<MM>/<ID>.json plus
         # unknown/<ID>.json and are resolved through the root manifest. LICENSE and NOTICE carry the
-        # corpus's CC-BY attribution terms and travel with the data they cover.
+        # corpus's license, the Business Source License 1.1, and travel with the data they cover.
         sparse=(
           '/manifest.json'
           '/LICENSE'

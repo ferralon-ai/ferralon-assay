@@ -53,6 +53,7 @@ func TestVeto_CommandKeys(t *testing.T) {
 		{"netlify publish", tree(map[string]string{"netlify.toml": "[build]\n  command = \"make\"\n  publish = \".\"\n"}), false},
 		{"vercel outputDirectory", tree(map[string]string{"vercel.json": `{"buildCommand": "make", "outputDirectory": "."}`}), false},
 		{"devcontainer build context", tree(map[string]string{".devcontainer/devcontainer.json": `{"build": {"context": "."}}`}), false},
+		{"JSON exec form . under a parameter", tree(map[string]string{"vercel.json": `{"outputDirectory": ["."]}`}), false},
 		{"GitLab variable .", tree(map[string]string{".gitlab-ci.yml": "variables:\n  DIR: .\nbuild:\n  script:\n    - make\n"}), false},
 		{"bitbucket step name .", tree(map[string]string{"bitbucket-pipelines.yml": "pipelines:\n  default:\n    - step:\n        name: .\n        script:\n          - make\n"}), false},
 		{"tox continuation under a parameter", tree(map[string]string{"tox.ini": "[testenv]\nsetenv =\n    .\ncommands = pytest\n"}), false},
@@ -84,6 +85,12 @@ func TestVeto_CommandKeys(t *testing.T) {
 		{"tox continuation under commands", tree(map[string]string{"tox.ini": "[testenv]\ncommands =\n    .\n"}), true},
 		{"quoted command key", tree(map[string]string{"compose.yaml": "services:\n  app:\n    \"command\": .\n"}), true},
 		{"upper-case command key", tree(map[string]string{"vercel.json": `{"BUILDCOMMAND": "."}`}), true},
+		{"compose command list at the key's column", tree(map[string]string{"compose.yaml": "services:\n  app:\n    command:\n    - .\n"}), true},
+		{"compose command literal block", tree(map[string]string{"compose.yaml": "services:\n  app:\n    command: |\n      .\n"}), true},
+		{"compose map under command", tree(map[string]string{"compose.yaml": "services:\n  app:\n    command:\n      a: .\n"}), true},
+		{"JSON exec form . under a command key", tree(map[string]string{"vercel.json": `{"installCommand": ["."]}`}), true},
+		{"JSON objects in an array under a command key", tree(map[string]string{".devcontainer/devcontainer.json": `{"postCreateCommand": [{"a": "."}]}`}), true},
+		{"TOML line before any key", tree(map[string]string{"netlify.toml": ".\n"}), true},
 		{"bare line under no key", tree(map[string]string{".travis.yml": ".\n"}), true},
 
 		// Surfaces with no command keys listed run every value.

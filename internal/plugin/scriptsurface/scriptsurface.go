@@ -1050,7 +1050,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		// The sourced file's commands run here; they are checked only when it is a surface
 		// the walk reads itself, or when it only sets PATH. A parameter that is the word alone
 		// (with: target: .) names a path or a mode, and sources nothing wherever it is run.
-		if seg.param && len(words) == 1 && !seg.expands {
+		if seg.param && len(words) == 1 {
 			return ""
 		}
 		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {

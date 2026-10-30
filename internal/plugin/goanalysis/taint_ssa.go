@@ -186,6 +186,13 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	// formal parameter. A sanitizer call clears taint — its result is not seeded,
 	// and we do not forward into its body for sink purposes.
 	if callee == nil || callee.Blocks == nil {
+		// A dependency's body is not built, so a request accessor called on a tainted
+		// router context is modeled instead: its result is the request data it reads.
+		if isRequestAccessor(callee) && len(common.Args) > 0 && common.Args[0] == v {
+			if val, ok := in.(ssa.Value); ok {
+				seed(val, o)
+			}
+		}
 		return
 	}
 	if isSanitizer(callee) {
@@ -221,4 +228,20 @@ func argContains(args []ssa.Value, v ssa.Value) bool {
 		}
 	}
 	return false
+}
+
+// ginContextAccessors are the *gin.Context methods that return attacker-controlled
+// request data. A gin handler's *gin.Context parameter is seeded like every ingress
+// parameter, and its Request field carries taint through the ordinary field and load
+// edges; these accessors are the reads that go through a method instead.
+var ginContextAccessors = map[string]bool{"Param": true, "Query": true, "PostForm": true}
+
+// isRequestAccessor reports whether fn is one of ginContextAccessors, identified by
+// the import path of the package declaring its *Context receiver.
+func isRequestAccessor(fn *ssa.Function) bool {
+	if fn == nil || !ginContextAccessors[fn.Name()] {
+		return false
+	}
+	recv := fn.Signature.Recv()
+	return recv != nil && isPointerToNamed(recv.Type(), "github.com/gin-gonic/gin", "Context")
 }

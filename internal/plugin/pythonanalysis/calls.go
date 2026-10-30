@@ -91,6 +91,10 @@ type scopedBinding struct {
 	// guarded marks a binding inside an if/elif/else or try/except/else/finally block of
 	// its scope (or on such a header line): an alternative, not a rebinding every path runs.
 	guarded bool
+	// global marks a def's import of a name the def declares global: it binds the module
+	// attribute. classBody marks an import in a class body: a class attribute, reachable
+	// wherever the class or an instance goes.
+	global, classBody bool
 }
 
 // scopeKey identifies a def's body as a binding scope within one file.
@@ -357,12 +361,14 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		switch kw {
 		case "import", "from":
 			var imported []string
+			o := owner()
+			classBody := o != nil && o.className != ""
 			for _, ib := range parseImportStatement(st) {
-				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded})
+				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody})
 				imported = append(imported, ib.local)
 			}
 			for _, ib := range parseRelativeImport(st) {
-				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded})
+				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody})
 				imported = append(imported, ib.local)
 			}
 			carry(bindScope, "", imported)

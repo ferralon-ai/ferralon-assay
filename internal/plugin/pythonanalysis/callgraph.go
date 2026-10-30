@@ -50,9 +50,11 @@ type program struct {
 	// dirStores holds the names a store through a module object binds in a package with no
 	// __init__ file (markModuleStores), keyed like named.
 	dirStores map[string]map[string]bool
-	// leafMemo caches aliasLeaves by import path, reboundMemo aliasRebound.
+	// leafMemo caches aliasLeaves by import path, reboundMemo aliasRebound, attrMemo
+	// attrTargets.
 	leafMemo    map[string][]string
 	reboundMemo map[string]bool
+	attrMemo    map[attrKey][]string
 }
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
@@ -335,8 +337,11 @@ type fileParse struct {
 	decorated []funcDecl
 	refs      valueRefs
 	fpBinds   map[string]map[string][]string
-	depBinds  map[string]map[string]bool
-	locals    map[string]map[string]bool
+	// globalBinds holds the first-party paths defs' imports bind to module attributes they
+	// declare global, by name.
+	globalBinds map[string][]string
+	depBinds    map[string]map[string]bool
+	locals      map[string]map[string]bool
 	// storedNames and storedAny are what stores through a module object may rebind in the
 	// file's namespace (markModuleStores): those names, or any name.
 	storedNames map[string]bool
@@ -469,7 +474,7 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
 	}
 
-	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}, reboundMemo: map[string]bool{}}
+	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}, reboundMemo: map[string]bool{}, attrMemo: map[attrKey][]string{}}
 	var rawBindings [][]scopedBinding
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
@@ -611,14 +616,23 @@ func (prog *program) indexModules() {
 func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []string) {
 	f := &prog.files[i]
 	f.fpBinds = map[string]map[string][]string{}
-	bind := func(scope, local, path string) {
-		m := f.fpBinds[scope]
+	f.globalBinds = map[string][]string{}
+	bind := func(b scopedBinding, path string) {
+		m := f.fpBinds[b.scope]
 		if m == nil {
 			m = map[string][]string{}
-			f.fpBinds[scope] = m
+			f.fpBinds[b.scope] = m
 		}
-		if !slices.Contains(m[local], path) {
-			m[local] = append(m[local], path)
+		if !slices.Contains(m[b.local], path) {
+			m[b.local] = append(m[b.local], path)
+		}
+		if b.global && !slices.Contains(f.globalBinds[b.local], path) {
+			f.globalBinds[b.local] = append(f.globalBinds[b.local], path)
+		}
+		// A class attribute leaves through the class, its subclasses and instances, as a
+		// module assigned to one does ("class R: mod = a"): the module is a value.
+		if b.classBody {
+			f.modValues = append(f.modValues, path)
 		}
 	}
 	f.depBinds = map[string]map[string]bool{}
@@ -642,11 +656,11 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 			}
 			continue
 		}
-		bind(b.scope, b.local, strings.ReplaceAll(b.target, ".", "/"))
+		bind(b, strings.ReplaceAll(b.target, ".", "/"))
 	}
 	for _, b := range rel {
 		if path, ok := relativeModule(f.module, f.isPackage, b.target); ok {
-			bind(b.scope, b.local, path)
+			bind(b, path)
 		}
 	}
 	for _, name := range f.stars {

@@ -105,9 +105,9 @@ func extractManifestMembership(store artifact.Store, caseID string) (manifestMem
 // intakeManifestMembership supplies intakeDisqualify's coordinate and manifest-membership inputs.
 // A Go module keeps its go.mod oracle unchanged; otherwise the recorded plugin membership fact is
 // used, and with none recorded the coordinate is empty so the guard cannot fire.
-func intakeManifestMembership(store artifact.Store, caseID, buildDir, advModule string) (coordinate string, present, known bool) {
+func intakeManifestMembership(store artifact.Store, caseID, buildDir string, ws GoWorkspace, advModule string) (coordinate string, present, known bool) {
 	if advModule != "" {
-		present, known = goModRequires(buildDir, advModule)
+		present, known = goModRequires(buildDir, ws, advModule)
 		return advModule, present, known
 	}
 	m, ok := extractManifestMembership(store, caseID)

@@ -394,7 +394,7 @@ func TestRootPackage_Matches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if v, got := tc.root.Matches(dir, tc.module, tc.coordinate, tc.url); got != tc.want || v != tc.wantVersion {
+			if v, got := tc.root.Matches(dir, workspaceFor(t, dir), tc.module, tc.coordinate, tc.url); got != tc.want || v != tc.wantVersion {
 				t.Fatalf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
 			}
 		})
@@ -452,7 +452,7 @@ func TestGoPathOwner_ModulesOutsideTheRootGoMod(t *testing.T) {
 			tree := writeTree(t, tc.files)
 			gitTree(t, tree)
 			dir := filepath.Join(tree, filepath.FromSlash(tc.buildDir))
-			if v, got := root.Matches(dir, tc.module, "", ""); got != tc.want || v != tc.wantVersion {
+			if v, got := root.Matches(dir, workspaceFor(t, dir), tc.module, "", ""); got != tc.want || v != tc.wantVersion {
 				t.Fatalf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
 			}
 		})
@@ -513,10 +513,10 @@ func TestGoPathOwner_ModulesOutsideTheBuildDir(t *testing.T) {
 			if !ok || root.Version != "v1.0.0" {
 				t.Fatalf("goRootPackage = %+v, %v; want example.com/mono at v1.0.0", root, ok)
 			}
-			if v, got := root.Matches(buildDir, tc.module, "", ""); got != tc.want || v != tc.wantVersion {
+			if v, got := root.Matches(buildDir, workspaceFor(t, buildDir), tc.module, "", ""); got != tc.want || v != tc.wantVersion {
 				t.Errorf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
 			}
-			if present, known := goModRequires(buildDir, tc.module); !present || !known {
+			if present, known := goModRequires(buildDir, workspaceFor(t, buildDir), tc.module); !present || !known {
 				t.Errorf("goModRequires = %v, %v; want present, known (a module outside the build never proves absence)", present, known)
 			}
 		})
@@ -590,10 +590,10 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 			dir := writeTree(t, tc.files)
 			gitTree(t, dir)
 			buildDir := filepath.Join(dir, filepath.FromSlash(tc.buildDir))
-			if got := goPathOwner(buildDir, "example.com/mono", tc.module); got != tc.want {
+			if got := goPathOwner(buildDir, workspaceFor(t, buildDir), "example.com/mono", tc.module); got != tc.want {
 				t.Fatalf("goPathOwner = %v; want %v", got, tc.want)
 			}
-			if present, known := goModRequires(buildDir, tc.module); present != (tc.want != goOwnedElsewhere) || !known {
+			if present, known := goModRequires(buildDir, workspaceFor(t, buildDir), tc.module); present != (tc.want != goOwnedElsewhere) || !known {
 				t.Errorf("goModRequires = %v, %v; want %v, true", present, known, tc.want != goOwnedElsewhere)
 			}
 		})
@@ -646,33 +646,28 @@ func TestGoModRequires_WorkspaceMembers(t *testing.T) {
 			tree := writeTree(t, tc.files)
 			gitTree(t, tree)
 			buildDir := filepath.Join(tree, "a")
-			if present, known := goModRequires(buildDir, tc.module); present != tc.wantPresent || known != tc.wantKnown {
+			if present, known := goModRequires(buildDir, workspaceFor(t, buildDir), tc.module); present != tc.wantPresent || known != tc.wantKnown {
 				t.Fatalf("goModRequires = %v, %v; want %v, %v", present, known, tc.wantPresent, tc.wantKnown)
 			}
 		})
 	}
 }
 
-// TestGoWorkUses_StopsAtTheRepository: a go.work above the git work tree holding the build
-// directory is a developer's, so the build does not run under it and its members are not the
-// build's, and outside a work tree only a go.work in the build directory itself counts.
-func TestGoWorkUses_StopsAtTheRepository(t *testing.T) {
-	outer := writeTree(t, map[string]string{
-		"go.work":       "go 1.22\n\nuse (\n\t./repo/a\n\t./lib\n)\n",
-		"lib/go.mod":    "module example.com/lib\n\ngo 1.22\n",
-		"repo/a/go.mod": "module example.com/mono\n\ngo 1.22\n",
-	})
-	plain := filepath.Join(outer, "repo", "a")
-	if uses, _, ok := goWorkUses(plain); !ok || len(uses) != 0 {
-		t.Fatalf("outside a work tree: goWorkUses = %v, %v; want none, true", uses, ok)
+// workspaceFor is the workspace codebase_inventory resolves for dir with nothing declared. For a
+// go.work that cannot be resolved, where the inventory withholds every verdict, it is the go.work the
+// search found, so the readers' own fail-safe on a go.work they cannot read is still exercised.
+func workspaceFor(t *testing.T, dir string) GoWorkspace {
+	t.Helper()
+	ws, err := ResolveGoWorkspace(context.Background(), dir, dir, "")
+	if err == nil {
+		return ws
 	}
-	gitTree(t, filepath.Join(outer, "repo"))
-	if uses, _, ok := goWorkUses(plain); !ok || len(uses) != 0 {
-		t.Fatalf("above the work tree: goWorkUses = %v, %v; want none, true", uses, ok)
+	own, _ := filepath.EvalSymlinks(dir)
+	file, found, ferr := findGoWork(context.Background(), own, dir)
+	if ferr != nil || !found {
+		t.Fatalf("ResolveGoWorkspace: %v, and no go.work found", err)
 	}
-	if present, known := goModRequires(plain, "example.com/lib"); present || !known {
-		t.Fatalf("goModRequires = %v, %v; want false, true", present, known)
-	}
+	return GoWorkspace{File: file}
 }
 
 // TestGradleRootPackage_VersionAllowlist: the version is read only when every statement that runs

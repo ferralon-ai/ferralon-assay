@@ -18,6 +18,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -48,6 +49,9 @@ type AssessConfig struct {
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
+	// SubjectGoWork is the caller's statement of the GOWORK the subject's Go build runs under. See
+	// WithSubjectGoWork.
+	SubjectGoWork string
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
 	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
 	// WithSubjectToolchainReachability.
@@ -127,6 +131,15 @@ func WithSubjectToolchain(declared, observed string, trustObserved bool) AssessO
 	}
 }
 
+// WithSubjectGoWork states the GOWORK the subject's Go build runs under: "off", or the path of its
+// go.work, relative to the checkout root unless absolute. Unstated, the build runs under the go.work
+// the go command finds from the module, searched no higher than its repository. Never pass the
+// scanner's own GOWORK: it describes the analysis environment, not the subject. A stated go.work
+// that does not exist, does not parse or does not use the module withholds every verdict.
+func WithSubjectGoWork(declared string) AssessOption {
+	return func(c *AssessConfig) { c.SubjectGoWork = declared }
+}
+
 // WithSubjectToolchainReachability opts the Go reachability analysis into running under the
 // SUBJECT's Go toolchain instead of the analyzer's, when — and only when — the subject's toolchain
 // resolved to an EXACT bound. It is OFF by default and ships that way for one release
@@ -171,7 +184,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork},
 		maliciousPresence{},
 		disqualificationDiscovery{},
 	}
@@ -197,7 +210,7 @@ func SBOMStages(opts ...AssessOption) []Stage {
 	}
 	return []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork},
 	}
 }
 
@@ -1554,6 +1567,10 @@ type codebaseInventory struct {
 	subjectGoVersion string
 	ciGoVersion      string
 	trustCIGoVersion bool
+	// subjectGoWork is the caller's statement of the GOWORK the subject's build runs under: "off", a
+	// go.work path relative to the checkout root, or "" to take the go.work the go command finds.
+	// See ResolveGoWorkspace.
+	subjectGoWork string
 }
 
 func (codebaseInventory) Name() string              { return "codebase_inventory" }
@@ -1584,7 +1601,7 @@ func (codebaseInventory) Status() assessment.Status { return assessment.StatusIn
 // U7 comparator had no reachable input and the axis was dark for exactly the advisory class whose
 // verdict depends on the toolchain. There is no "separate comparator path off the
 // AdvisoryTable" — the AdvisoryTable supplies the affected RANGE, never a version.
-func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir, language, module, coordinate, scheme string, toolchain ToolchainFact) (dep depVersions, partiality []string, err error) {
+func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir string, goWork GoWorkspace, language, module, coordinate, scheme string, toolchain ToolchainFact) (dep depVersions, partiality []string, err error) {
 	if scheme == "go-toolchain" {
 		switch toolchain.Bound {
 		case ToolchainBoundExact, ToolchainBoundMinimum:
@@ -1604,7 +1621,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		// stays open); and a go.mod that parses and simply does not require the module means the
 		// codebase genuinely does not depend on it (honest absence — no disclosure, so a true
 		// not_exploitable stays unqualified).
-		v, pinned, manifestRead := moduleVersionFromGoMod(buildDir, module)
+		v, pinned, manifestRead := moduleVersionFromBuild(buildDir, goWork, module)
 		if !manifestRead {
 			return depVersions{}, []string{plugin.PartialReasonNoManifest}, nil
 		}
@@ -1821,6 +1838,18 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		}
 	}
 
+	// The go.work the build runs under, resolved once here and recorded for every later reader, so the
+	// analyzer loads the same workspace ownership, presence and the version axis read. A workspace
+	// that cannot be established fails the stage: no fact about the build may rest on a guess at it.
+	var goWork GoWorkspace
+	if language == checkout.LangGo && buildDir != "" {
+		ws, err := ResolveGoWorkspace(ctx, buildDir, checkoutRoot, s.subjectGoWork)
+		if err != nil {
+			return fmt.Errorf("resolve the build's go.work: %w", err)
+		}
+		goWork = ws
+	}
+
 	module, goVersion, buildCommand, toolchainDirective, buildToolchain := "", "", "", "", ""
 	if s.plugin != nil && buildDir != "" && s.plugin.Language() == language {
 		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir})
@@ -1886,12 +1915,12 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	if buildDir != "" {
 		root, hasRoot := ReadRootPackage(ctx, buildDir, language)
 		resolve := func(module, coordinate, purl, scheme string) (depVersions, []string, bool, error) {
-			if v, ok := root.Matches(buildDir, module, coordinate, purl); hasRoot && ok {
+			if v, ok := root.Matches(buildDir, goWork, module, coordinate, purl); hasRoot && ok {
 				dep := singleVersion(v)
 				dep.Found = true
 				return dep, nil, true, nil
 			}
-			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
+			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, goWork, language, module, coordinate, scheme, toolchain)
 			return dep, flags, false, err
 		}
 		presenceSelected := false
@@ -1966,7 +1995,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// a nested Go module (TEG-062) reassigns BuildDir to the module root. Equal to BuildDir for
 		// every non-Go and non-nested-Go tree. Read back by InventoryCheckoutRoot (F39, TEG-064).
 		CheckoutRoot string `json:"checkout_root,omitempty"`
-		Language     string `json:"language,omitempty"`
+		// GoWork is the go.work the Go build runs under, read back by InventoryGoWorkspace.
+		GoWork   GoWorkspace `json:"go_work"`
+		Language string      `json:"language,omitempty"`
 		// WorkspacePlan is the full enumeration of detected projects (one today; PLAN-400 makes it
 		// hold true monorepos). It is PERSISTED but not yet read by any downstream stage — the scalar
 		// build_dir/language above remain the primary-project projection S3–S6 consume. Landing the
@@ -2010,6 +2041,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Revision:           c.Request.Codebase.Revision,
 		BuildDir:           buildDir,
 		CheckoutRoot:       checkoutRoot,
+		GoWork:             goWork,
 		Language:           language,
 		WorkspacePlan:      plan,
 		ResolvedVersion:    resolved.Version,
@@ -2082,6 +2114,22 @@ func InventoryBuildDir(store artifact.Store, caseID string) (string, error) {
 		return "", err
 	}
 	return inv.BuildDir, nil
+}
+
+// InventoryGoWorkspace returns the go.work codebase_inventory resolved for the Go build; the zero
+// workspace (GOWORK=off) when none was recorded.
+func InventoryGoWorkspace(store artifact.Store, caseID string) (GoWorkspace, error) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return GoWorkspace{}, err
+	}
+	var inv struct {
+		GoWork GoWorkspace `json:"go_work"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
+		return GoWorkspace{}, err
+	}
+	return inv.GoWork, nil
 }
 
 // InventoryCheckoutRoot returns the checkout root recorded by codebase_inventory — the directory
@@ -2448,7 +2496,7 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 // unparseable go.mod or go.work — forces the caller to fail OPEN, because absence is only PROVABLE
 // against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
 // manifest_membership.go.
-func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
+func goModRequires(buildDir string, ws GoWorkspace, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
 	}
@@ -2463,7 +2511,7 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	var root string
 	if mf.Module != nil {
 		root = mf.Module.Mod.Path
-		if goPathOwner(buildDir, root, module) != goOwnedElsewhere {
+		if goPathOwner(buildDir, ws, root, module) != goOwnedElsewhere {
 			return true, true
 		}
 	}
@@ -2478,7 +2526,7 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if declares(mf) {
 		return true, true
 	}
-	uses, _, ok := goWorkUses(buildDir)
+	uses, _, ok := ws.uses()
 	if !ok {
 		return false, false
 	}
@@ -3038,8 +3086,12 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	if err != nil {
 		return err
 	}
+	goWork, err := InventoryGoWorkspace(store, c.ID)
+	if err != nil {
+		return err
+	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
-	coordinate, manifestHas, manifestKnown := intakeManifestMembership(store, c.ID, buildDir, advModule)
+	coordinate, manifestHas, manifestKnown := intakeManifestMembership(store, c.ID, buildDir, goWork, advModule)
 	if disq, reason := intakeDisqualify(
 		extractAdvisoryEcosystem(store, c.ID),
 		extractCodebaseEcosystem(store, c.ID),

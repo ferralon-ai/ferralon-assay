@@ -145,6 +145,23 @@ var dataNames = map[string]string{
 	"package.json": baseDir, "tox.ini": baseDir, "noxfile.py": baseDir,
 }
 
+// dockerfileNamed reports whether a lowercased base name is a Dockerfile's: Dockerfile or
+// Containerfile, alone or joined to another word by ".", "-" or "_" on either side
+// (Dockerfile.prod, Dockerfile-prod, Dockerfile_api, api.Dockerfile, api-Dockerfile).
+func dockerfileNamed(lower string) bool {
+	for _, n := range []string{"dockerfile", "containerfile"} {
+		if lower == n {
+			return true
+		}
+		for _, sep := range []string{".", "-", "_"} {
+			if strings.HasPrefix(lower, n+sep) || strings.HasSuffix(lower, sep+n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // surfaceOf reports whether the file at path, with its buildtree.Head, is one whose
 // lines a build runs as commands.
 func surfaceOf(path string, head []byte) (surfaceType, bool) {
@@ -153,8 +170,7 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 	ext := filepath.Ext(lower)
 	yaml := ext == ".yml" || ext == ".yaml"
 	switch {
-	case lower == "dockerfile", lower == "containerfile", strings.HasPrefix(lower, "dockerfile."),
-		strings.HasPrefix(lower, "containerfile."), ext == ".dockerfile", ext == ".containerfile":
+	case dockerfileNamed(lower):
 		return surfaceType{kindDockerfile, baseNone}, true
 	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", ext == ".make", lower == "justfile", lower == ".justfile":
 		return surfaceType{kindMakefile, baseDir}, true

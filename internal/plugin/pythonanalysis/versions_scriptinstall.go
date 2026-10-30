@@ -42,8 +42,8 @@ import (
 // (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
 // every other tool laneToken names, run wrappers whose argv names one included. A
 // PIP_*, UV_* or PDM_* variable set in any script surface withholds, since every pip, uv or pdm
-// the build runs reads it, unless laneEnvKeeps keeps it. How a surface is read, and what binds a command to a file, is lane-neutral,
-// in scriptsurface.
+// the build runs reads it, unless laneEnvKeeps keeps it. How a surface is read, and what binds
+// a command to a file, is lane-neutral, in scriptsurface.
 //
 // One more pip form installs nothing but pip itself, so it withholds the pip coordinate alone
 // (pipSelfUpgrade):

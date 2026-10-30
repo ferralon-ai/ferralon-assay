@@ -374,6 +374,10 @@ func TestResolveVersions_PyprojectTaskInstalls(t *testing.T) {
 func TestResolveVersions_PDMSyncUnbound(t *testing.T) {
 	tests := map[string]map[string]string{
 		"no pyproject.toml": {"requirements.txt": "jinja2==3.1.4\n", "install.sh": "#!/bin/sh\npdm sync\n"},
+		"pyproject.toml that doesn't decode": {
+			"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[tool.pdm.scripts\npost_install = \"pip install jinja2==3.1.2\"\n",
+			"pdm.lock": "[metadata]\ngroups = [\"default\"]\n", "install.sh": "#!/bin/sh\npdm sync\n",
+		},
 		"PDM_PROJECT in a Dockerfile": {
 			"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n",
 			"pdm.lock":   "[metadata]\ngroups = [\"default\"]\n",

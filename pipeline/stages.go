@@ -2447,6 +2447,10 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 // whether the manifest was readable at all. manifestKnown=false — no build dir, or an absent /
 // unparseable go.mod — forces the caller to fail OPEN, because absence is only PROVABLE against a
 // manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
+//
+// A module this go.mod does not declare is unknown, not absent, when a module nested below
+// buildDir and outside its module graph exists (checkout.NestedGoModules): that module's go.mod
+// may require it, and buildDir/go.mod is then not the whole manifest.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
@@ -2466,6 +2470,9 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 		if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
 			return true, true
 		}
+	}
+	if len(checkout.NestedGoModules(buildDir, 1)) > 0 {
+		return false, false
 	}
 	return false, true
 }

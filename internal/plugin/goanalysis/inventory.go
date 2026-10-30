@@ -13,6 +13,7 @@ import (
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -43,6 +44,8 @@ import (
 // zero-node inventory. Collapsing them would make a whole-graph resolver less honest
 // than the single-coordinate moduleVersionFromGoMod it augments, and would make a
 // later CVE-watch read "we could not resolve this" as "this dependency is absent".
+// A go.mod that requires nothing is Complete only when no module nested below it holds
+// requirements this graph cannot see (nestedModuleLimits).
 func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
 	if fi, err := os.Stat(req.BuildDir); err != nil || !fi.IsDir() {
 		// No buildable directory: a hard error (inv.4), never a silent empty graph.
@@ -88,13 +91,21 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		graphReasons = append(graphReasons, plugin.PartialReasonUnsupported)
 	}
 
+	// A module nested below this root and outside its module graph is resolved on its own, so
+	// this root's graph never sees what it requires. Name every such module: a stub root that requires
+	// nothing above modules that do must not read as a codebase with no dependencies.
+	nested := nestedModuleLimits(req.BuildDir)
+	if len(nested) > 0 {
+		graphReasons = append(graphReasons, PartialReasonNestedModule)
+	}
+
 	// --- native module graph: the selected build list + parent edges ---
 	edges, err := runModGraph(ctx, req.BuildDir)
 	if err != nil {
 		// Graph resolution failed (e.g. an unavailable transitive go.mod on a cold
 		// cache with the proxy off): surface it, do not fabricate an empty graph.
 		graphReasons = append(graphReasons, plugin.PartialReasonToolFailure)
-		return plugin.DependencyInventory{Partiality: partiality(graphReasons)}, nil
+		return plugin.DependencyInventory{Partiality: withScoped(partiality(graphReasons), nested)}, nil
 	}
 
 	// direct set: modfile require markers ARE the native Indirect oracle, offline.
@@ -202,7 +213,7 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 	})
 
 	inv := plugin.DependencyInventory{
-		Partiality: partiality(graphReasons),
+		Partiality: withScoped(partiality(graphReasons), nested),
 		Nodes:      nodes,
 		Edges:      depEdges,
 	}
@@ -210,6 +221,34 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		inv.BuildList, inv.MainModule = plugin.BuildListGoModGraph, mainPath
 	}
 	return inv, nil
+}
+
+// PartialReasonNestedModule is the inventory limit for a go.mod below the build root that the build
+// root's module graph does not include, so neither are its requirements. It is a
+// did-not-run limit, so no not-affected verdict of the ecosystem rests on this inventory.
+const PartialReasonNestedModule = plugin.PartialReasonUnsupported + ":nested_module"
+
+// nestedModuleLimits returns one PartialReasonNestedModule limit per module nested below buildDir
+// and outside its module graph (checkout.NestedGoModules), each naming the module's directory relative to
+// buildDir. Its Targets are empty: what a module the inventory never read requires is unbounded.
+func nestedModuleLimits(buildDir string) []plugin.ScopedReason {
+	dirs := checkout.NestedGoModules(buildDir, 0)
+	if len(dirs) == 0 {
+		return nil
+	}
+	limits := make([]plugin.ScopedReason, 0, len(dirs))
+	for _, d := range dirs {
+		limits = append(limits, plugin.ScopedReason{Reason: PartialReasonNestedModule, Path: d})
+	}
+	return limits
+}
+
+// withScoped attaches the nested-module limits to an inventory Partiality.
+func withScoped(p plugin.Partiality, scoped []plugin.ScopedReason) plugin.Partiality {
+	if len(scoped) > 0 {
+		p.Scoped = scoped
+	}
+	return p
 }
 
 // applyReplace rewrites a node to its replace target — the redirect `go mod graph`

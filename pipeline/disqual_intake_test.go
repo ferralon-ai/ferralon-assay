@@ -201,6 +201,86 @@ func TestIntakeRun_ModuleAbsentFromGoMod_NoManifestEntry(t *testing.T) {
 	}
 }
 
+// writeGoTree writes files (relative path -> contents) into a fresh temp dir and returns it.
+func writeGoTree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for rel, body := range files {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+const (
+	stubRootGoMod     = "module example.com/stub\n\ngo 1.21\n"
+	nestedCryptoGoMod = "module example.com/stub/receiver/a\n\ngo 1.21\n\nrequire golang.org/x/crypto v0.1.0\n"
+)
+
+// TestGoModRequires: absence is proven only against the whole manifest. A module nested below the
+// build root (outside its go.work) may require what the root go.mod does not, so the root's silence
+// is unknown, never absent.
+func TestGoModRequires(t *testing.T) {
+	cases := []struct {
+		name               string
+		files              map[string]string
+		module             string
+		wantPresent, known bool
+	}{
+		{"required by the root", map[string]string{"go.mod": goModWithText}, "golang.org/x/text", true, true},
+		{"absent from a lone root", map[string]string{"go.mod": goModWithText}, "golang.org/x/crypto", false, true},
+		{"no go.mod", map[string]string{"main.go": "package main\n"}, "golang.org/x/crypto", false, false},
+		{"stub root, nested module requires it", map[string]string{
+			"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod,
+		}, "golang.org/x/crypto", false, false},
+		{"stub root, nested module requires something else", map[string]string{
+			"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod,
+		}, "example.com/never-required", false, false},
+		{"root requires it, nested module present", map[string]string{
+			"go.mod": goModWithText, "receiver/a/go.mod": nestedCryptoGoMod,
+		}, "golang.org/x/text", true, true},
+		{"nested module under testdata is not source", map[string]string{
+			"go.mod": stubRootGoMod, "testdata/a/go.mod": nestedCryptoGoMod,
+		}, "golang.org/x/crypto", false, true},
+		{"nested module a go.work lists", map[string]string{
+			"go.mod": stubRootGoMod, "go.work": "go 1.21\n\nuse ./receiver/a\n", "receiver/a/go.mod": nestedCryptoGoMod,
+		}, "golang.org/x/crypto", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			present, known := goModRequires(writeGoTree(t, tc.files), tc.module)
+			if present != tc.wantPresent || known != tc.known {
+				t.Fatalf("goModRequires = (present %v, known %v), want (%v, %v)", present, known, tc.wantPresent, tc.known)
+			}
+		})
+	}
+}
+
+// A stub root go.mod that requires nothing, above a nested module that requires the advisory's
+// module, cannot disqualify the advisory: the root's silence is not the manifest's.
+func TestIntakeRun_StubRootNestedModule_CannotDisqualify(t *testing.T) {
+	store := artifact.NewMemStore()
+	caseID := "case-stub-root"
+	buildDir := writeGoTree(t, map[string]string{"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod})
+	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
+		"vuln_id": "CVE-2024-45337",
+		"module":  "golang.org/x/crypto",
+		"purl":    "pkg:golang/golang.org/x/crypto",
+	})
+	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
+		"language": "go", "build_dir": buildDir,
+	})
+	res := runDisqual(t, store, caseID)
+	if res.Disqualified {
+		t.Fatalf("stub root above a nested module requiring the advisory's module must not disqualify, got %+v", res)
+	}
+}
+
 // Guard 2 PROCEED: the advisory's module IS in the resolved manifest → the guard does not fire;
 // the run falls through to the version axis (no range here → insufficient).
 func TestIntakeRun_ModulePresentInGoMod_Proceeds(t *testing.T) {

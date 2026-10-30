@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -165,11 +166,23 @@ func restsOnInventory(f report.AdvisoryFinding) bool {
 // no_language_plugin / any partial) names the limit. A partial that carries no reason still emits a
 // note (unspecified_limit) rather than nothing: silence here is the shrunken-CVE-watch failure §4.1
 // exists to prevent.
+//
+// A reason the inventory also scoped (a Go module nested below the build root, one limit per module)
+// stays one note, whose Path names every scoped location, comma-separated, in the inventory's order.
 func inventoryPartialityNotes(p plugin.Partiality, ecosystem string) []report.PartialityNote {
 	if p.Complete {
 		return nil
 	}
-	reasons := p.Reasons
+	reasons := append([]string(nil), p.Reasons...)
+	paths := map[string][]string{}
+	for _, sr := range p.Scoped {
+		if !slices.Contains(reasons, sr.Reason) {
+			reasons = append(reasons, sr.Reason)
+		}
+		if sr.Path != "" {
+			paths[sr.Reason] = append(paths[sr.Reason], sr.Path)
+		}
+	}
 	if len(reasons) == 0 {
 		reasons = []string{report.ReasonUnspecifiedLimit}
 	}
@@ -179,6 +192,7 @@ func inventoryPartialityNotes(p plugin.Partiality, ecosystem string) []report.Pa
 			Reason:    r,
 			Ecosystem: ecosystem,
 			Detail:    inventoryLimitDetail,
+			Path:      strings.Join(paths[r], ", "),
 		})
 	}
 	return notes

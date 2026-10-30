@@ -1,10 +1,12 @@
 package trigger
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -723,6 +725,7 @@ func TestWithInventoryLimits_Disqualified(t *testing.T) {
 		return f
 	}
 	ambiguous := inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "npm")
+	nestedGo := inventoryPartialityNotes(withNestedModules(plugin.Partial(goanalysis.PartialReasonNestedModule), "receiver/a"), "Go")
 	cases := []struct {
 		name    string
 		f       report.AdvisoryFinding
@@ -748,6 +751,7 @@ func TestWithInventoryLimits_Disqualified(t *testing.T) {
 		{"absent from the manifest, no package, inherent limit", noPkg(disq(pipeline.ReasonNoManifestEntry)),
 			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
 		{"symbol axis, no package", noPkg(disq(pipeline.ReasonSymbolAbsent)), ambiguous, false},
+		{"absent from the manifest, no package, nested Go module", noPkg(disq(pipeline.ReasonNoManifestEntry)), nestedGo, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -760,6 +764,45 @@ func TestWithInventoryLimits_Disqualified(t *testing.T) {
 			}
 			if got.Verdict != report.VerdictUndetermined || got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" {
 				t.Fatalf("got %s/%q basis %q, want undetermined/%s with no basis", got.Verdict, got.UndeterminedReason, got.Evidence.Basis, report.ReasonAnalysisDidNotRun)
+			}
+		})
+	}
+}
+
+// withNestedModules scopes p's nested-module limit to each named module directory, as the Go
+// inventory does.
+func withNestedModules(p plugin.Partiality, dirs ...string) plugin.Partiality {
+	for _, d := range dirs {
+		p.Scoped = append(p.Scoped, plugin.ScopedReason{Reason: goanalysis.PartialReasonNestedModule, Path: d})
+	}
+	return p
+}
+
+// TestInventoryPartialityNotes: one note per reason; a reason the inventory scoped names every
+// scoped location on that one note, and a scoped reason missing from Reasons is still declared.
+func TestInventoryPartialityNotes(t *testing.T) {
+	nested := goanalysis.PartialReasonNestedModule
+	note := func(reason, path string) report.PartialityNote {
+		return report.PartialityNote{Reason: reason, Ecosystem: "Go", Detail: inventoryLimitDetail, Path: path}
+	}
+	scopedOnly := plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: nested, Path: "a"}}}
+	cases := []struct {
+		name string
+		p    plugin.Partiality
+		want []report.PartialityNote
+	}{
+		{"complete", plugin.Complete(), nil},
+		{"partial with no reason", plugin.Partiality{}, []report.PartialityNote{note(report.ReasonUnspecifiedLimit, "")}},
+		{"unscoped reason", plugin.Partial(plugin.PartialReasonToolFailure), []report.PartialityNote{note(plugin.PartialReasonToolFailure, "")}},
+		{"nested modules named on one note",
+			withNestedModules(plugin.Partial(plugin.PartialReasonToolFailure, nested), "exporter/b", "receiver/a"),
+			[]report.PartialityNote{note(plugin.PartialReasonToolFailure, ""), note(nested, "exporter/b, receiver/a")}},
+		{"scoped reason missing from Reasons", scopedOnly, []report.PartialityNote{note(nested, "a")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := inventoryPartialityNotes(tc.p, "Go"); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("notes = %+v, want %+v", got, tc.want)
 			}
 		})
 	}

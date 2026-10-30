@@ -361,6 +361,33 @@ func TestResolveInventory_HonestAbsence_C3(t *testing.T) {
 	}
 }
 
+// TestResolveInventory_StubRootNestedModules: a root go.mod that requires nothing, above modules
+// that require their own dependencies, is not a Complete zero-node inventory. It declares a
+// did-not-run limit and names every nested module the root's graph never read.
+func TestResolveInventory_StubRootNestedModules(t *testing.T) {
+	root := t.TempDir()
+	writeDir(t, root, map[string]string{
+		"go.mod":            "module example.test/stub\n\ngo 1.21\n",
+		"receiver/a/go.mod": "module example.test/stub/receiver/a\n\ngo 1.21\n\nrequire golang.org/x/crypto v0.1.0\n",
+		"exporter/b/go.mod": "module example.test/stub/exporter/b\n\ngo 1.21\n",
+		"testdata/t/go.mod": "module example.test/fixture\n\ngo 1.21\n",
+	})
+	inv := resolve(t, root)
+	if inv.Partiality.Complete || !contains(inv.Partiality.Reasons, PartialReasonNestedModule) {
+		t.Fatalf("partiality = %+v, want partial with %s", inv.Partiality, PartialReasonNestedModule)
+	}
+	var named []string
+	for _, sr := range inv.Partiality.Scoped {
+		if sr.Reason != PartialReasonNestedModule || len(sr.Targets) != 0 {
+			t.Fatalf("scoped limit %+v, want %s with unbounded targets", sr, PartialReasonNestedModule)
+		}
+		named = append(named, sr.Path)
+	}
+	if want := []string{"exporter/b", "receiver/a"}; strings.Join(named, ",") != strings.Join(want, ",") {
+		t.Fatalf("named nested modules %q, want %q", named, want)
+	}
+}
+
 // -------- C6: determinism across runs --------
 
 // TestResolveInventory_Deterministic_C6 encodes a resolved inventory many times

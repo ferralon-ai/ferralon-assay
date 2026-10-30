@@ -858,13 +858,17 @@ func typePosition(r []rune, i int) bool {
 			}
 			return q < 0 || r[q] == '\n' || r[q] == ';'
 		}
-		return r[open] == '(' && isDefParams(r, open)
+		// A parameter follows '(', ',' or '*'; a lambda's parameters do not open a def's.
+		for q >= 0 && unicode.IsSpace(r[q]) {
+			q--
+		}
+		return r[open] == '(' && isDefParams(r, open) && q >= 0 && strings.ContainsRune("(,*", r[q])
 	}
 	for open >= 0 {
 		w, before := wordBefore(r, open)
 		switch {
 		case r[open] == '[':
-			return w != "" || before >= 0 && r[before] == ']'
+			return w != "" && !pyCallKeywords[w] || w == "" && before >= 0 && r[before] == ']'
 		case r[open] != '(':
 			return false
 		case w == "isinstance" || w == "issubclass" || w == "cast":

@@ -1,7 +1,8 @@
 package pipeline
 
 // ToolchainCandidates are the raw sources of the subject's Go toolchain, in the spellings their
-// origins produce. They are the inputs codebase_inventory resolves its toolchain fact from.
+// origins produce. Every caller resolving the fact, codebase_inventory included, supplies them
+// here, so an input added to the resolution is one every caller sees.
 type ToolchainCandidates struct {
 	// SubjectDeclared and CIObserved are WithSubjectToolchain's declared and observed values, and
 	// TrustCIObserved its trustObserved.
@@ -16,9 +17,9 @@ type ToolchainCandidates struct {
 	GoDirective        string
 }
 
-// ResolveToolchain resolves the candidates to the subject's Go toolchain fact by the same rules
-// codebase_inventory applies, so a caller outside the pipeline reads the same fact the version axis
-// will.
+// ResolveToolchain resolves the candidates to the subject's Go toolchain fact: the fact
+// codebase_inventory hands the version axis, and the one a caller outside the pipeline reads to
+// agree with it.
 func ResolveToolchain(c ToolchainCandidates) ToolchainFact {
 	return resolveToolchainFact(toolchainInputs{
 		subjectDeclared:    c.SubjectDeclared,

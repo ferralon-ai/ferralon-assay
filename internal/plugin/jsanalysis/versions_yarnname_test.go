@@ -28,7 +28,7 @@ func TestResolveVersions_YarnRunsName(t *testing.T) {
 		{"flag before the name", pkg(`"format":"yarn --silent prettier --write ."`), false},
 		{"flag spelled as a script name", pkg(`"--silent":"echo hi","x":"yarn --silent"`), false},
 		{"script name with a slash", pkg(`"lint/js":"echo hi","x":"yarn lint/js"`), false},
-		{"script name with a backslash", pkg(`"lint\\js":"echo hi","x":"yarn lint\\js"`), false},
+		{"script name with a backslash", pkg(`"lint\\js":"echo hi","x":"yarn 'lint\\js'"`), false},
 		{"double dash among the args", pkg(`"format":"yarn prettier --cwd ../b -- --write ."`), false},
 		{"bare yarn", pkg(`"setup":"yarn"`), false},
 		{"yarn install", pkg(`"setup":"yarn install"`), false},

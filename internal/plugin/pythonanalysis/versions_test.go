@@ -1377,3 +1377,85 @@ func TestResolveVersions_ReadDeclarationsVetoUnpinned(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveVersions_UVSourcesRedirectUnresolved pins tracker#620: a [tool.uv.sources] entry
+// installs its package from a git ref, URL, local path, workspace member or named index whatever
+// the declared specifier or a lock's version says, so the coordinate is unresolved. A uv.lock
+// package with a git, URL, path or directory source reads as unresolved too, which catches a
+// workspace root's sources redirecting a member's dependency.
+func TestResolveVersions_UVSourcesRedirectUnresolved(t *testing.T) {
+	pp := func(spec, extra string) string {
+		return "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"" + spec + "\"]\n" + extra
+	}
+	lock := func(src string) string {
+		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = " + src + "\n"
+	}
+	const (
+		gitSrc    = "[tool.uv.sources]\npyjwt = { git = \"https://github.com/example/pyjwt\", rev = \"abc\" }\n"
+		gitLocked = `{ git = "https://github.com/example/pyjwt?rev=abc#abcdef" }`
+		pypi      = `{ registry = "https://pypi.org/simple" }`
+	)
+	cases := []struct {
+		name         string
+		files        map[string]string
+		wantResolved bool
+	}{
+		{"lockless git pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", gitSrc)}, false},
+		{"lockless named index pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\npyjwt = { index = \"internal\" }\n")}, false},
+		{"lockless marker-split sources", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[[tool.uv.sources.pyjwt]]\npath = \"vendor/pyjwt\"\nmarker = \"sys_platform == 'linux'\"\n")}, false},
+		{"sources key normalizes", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\nPyJWT = { path = \"vendor/pyjwt\" }\n")}, false},
+		{"redirected dependency group pin", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+			"[dependency-groups]\ndev = [\"pyjwt==2.8.0\"]\n" + gitSrc}, false},
+		{"sources not a table", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", "[tool.uv]\nsources = \"pyjwt\"\n")}, false},
+		{"lock git pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", gitSrc), "uv.lock": lock(gitLocked)}, false},
+		{"lock git range", map[string]string{"pyproject.toml": pp("pyjwt>=2", gitSrc), "uv.lock": lock(gitLocked)}, false},
+		{"lock directory only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(`{ directory = "vendor/pyjwt" }`)}, false},
+		{"lock path only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(`{ path = "vendor/pyjwt-2.8.0.tar.gz" }`)}, false},
+		{"lock url only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(`{ url = "https://example.com/pyjwt-2.8.0.tar.gz" }`)}, false},
+		{"lock git only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(gitLocked)}, false},
+		{"workspace root redirects member", map[string]string{
+			"pyproject.toml":            "[project]\nname = \"root\"\nversion = \"0.1.0\"\n[tool.uv.workspace]\nmembers = [\"packages/*\"]\n" + gitSrc,
+			"uv.lock":                   lock(gitLocked),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
+		// Guards: a source for another name, or a sibling workspace member, leaves pyjwt alone.
+		{"lockless sources for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\nrequests = { git = \"https://github.com/example/requests\" }\n")}, true},
+		{"workspace sibling source", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\napp-lib = { workspace = true }\n")}, true},
+		{"lock registry range", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(pypi)}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, tc.files), "PyJWT")
+			if !res.Found {
+				t.Fatalf("pyjwt not found: %+v", res)
+			}
+			if res.Match.Resolved != tc.wantResolved {
+				t.Fatalf("Match.Resolved = %v (version %q), want %v", res.Match.Resolved, res.Match.Version, tc.wantResolved)
+			}
+			if tc.wantResolved && res.Match.Version != "2.8.0" {
+				t.Fatalf("Match.Version = %q, want 2.8.0", res.Match.Version)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_UVSourcesKeepExhaustive guards the other axis: a redirected source still
+// declares its name, so a uv.lock that records it keeps coverage, and Exhaustive is unchanged.
+func TestResolveVersions_UVSourcesKeepExhaustive(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n" +
+			"[tool.uv.sources]\npyjwt = { git = \"https://github.com/example/pyjwt\", rev = \"abc\" }\n",
+		"uv.lock": "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n" +
+			"source = { git = \"https://github.com/example/pyjwt?rev=abc#abcdef\" }\n",
+	})
+	if res := resolveVersion(t, root, "requests"); res.Found || !res.Exhaustive {
+		t.Fatalf("requests: Found=%v Exhaustive=%v, want absent and exhaustive", res.Found, res.Exhaustive)
+	}
+}

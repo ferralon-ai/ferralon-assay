@@ -74,7 +74,7 @@ func isCondaToolPackage(spec string) bool {
 
 // pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
-// dependency tables, and the uv and pdm dev-dependencies.
+// dependency tables, the uv and pdm dev-dependencies, and the names [tool.uv.sources] redirects.
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -95,6 +95,7 @@ type pyprojectDoc struct {
 		} `toml:"poetry"`
 		UV struct {
 			DevDependencies []any `toml:"dev-dependencies"`
+			Sources         any   `toml:"sources"`
 		} `toml:"uv"`
 		PDM struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
@@ -108,8 +109,9 @@ type pyprojectDoc struct {
 // table names, and [build-system].requires, which no lock covers. The bool is false when the
 // file does not decode, when an entry installs a local path other than the project itself or
 // ends in a backslash (setuptoolsJoins),
-// when dynamic dependencies name no file this reader can read, or when a dependency group or
-// tool dependency table holds an entry it cannot read (pyprojectToolDeps).
+// when dynamic dependencies name no file this reader can read, when a dependency group or
+// tool dependency table holds an entry it cannot read (pyprojectToolDeps), or when
+// [tool.uv.sources] is not a table. An entry [tool.uv.sources] names is a direct reference.
 func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -166,7 +168,34 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 			origins = append(origins, o)
 		}
 	}
+	redirected, sourcesOK := uvSourceNames(doc.Tool.UV.Sources)
+	readable = readable && sourcesOK
+	for i, d := range deps {
+		if redirected[normalizePyCoordinate(d.Coordinate)] {
+			deps[i] = pyResolved(d.Coordinate, "", false, d.Source)
+			origins[i].directRef = true
+		}
+	}
 	return deps, origins, readable
+}
+
+// uvSourceNames returns the normalized names a [tool.uv.sources] table redirects. uv installs
+// each from its source (a git ref, a URL, a local path, a workspace member or a named index)
+// whatever the declaration's specifier says, so its entries read as direct references: never
+// resolved here, and never covered by a lock. ok is false when the table is not a table.
+func uvSourceNames(sources any) (map[string]bool, bool) {
+	if sources == nil {
+		return nil, true
+	}
+	t, isMap := sources.(map[string]any)
+	if !isMap {
+		return nil, false
+	}
+	names := make(map[string]bool, len(t))
+	for name := range t {
+		names[normalizePyCoordinate(name)] = true
+	}
+	return names, true
 }
 
 // pyprojectDynamicDeps reports whether [project].dynamic lists dependencies or

@@ -616,13 +616,13 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 		name, lit := literalArg(r, arg, lits)
 		lit = lit && named
 		switch {
-		case lit && name != "":
-			mod, _, colon := strings.Cut(name, ":")
-			roots = append(roots, mod)
-			if parent, _, dotted := cutLast(mod, "."); !colon && dotted {
-				roots = append(roots, parent)
-			}
 		case lit:
+			roots = append(roots, loaderNameRoots(name)...)
+		case named && conditionalLiteral(r, arg, lits) != "":
+			// "pkg.mod:app" if reload else app: the literal branch is a root; the other is
+			// an object for a name-or-object loader, and any name for a name-only one.
+			roots = append(roots, loaderNameRoots(conditionalLiteral(r, arg, lits))...)
+			opaque = opaque || kind == loaderNameOnly
 		case kind == loaderNameOnly || named && provablyString(r, arg, lits):
 			opaque = true
 		}
@@ -681,6 +681,24 @@ func loaderArgStart(r []rune, i int) (start int, named bool) {
 	return eq + 1, loaderKeywords[w]
 }
 
+// conditionalLiteral returns the literal a call argument starting at r[i] opens with when
+// the argument is a conditional expression on it ("pkg.mod:app" if reload else app), else "".
+func conditionalLiteral(r []rune, i int, lits map[int]strLiteral) string {
+	i = skipAllSpace(r, i)
+	for j := i; j < len(r) && j-i < 2 && strings.ContainsRune("rRbBuU", r[j]); j++ {
+		i = j + 1
+	}
+	lit, ok := lits[i]
+	if !ok || lit.body == "" {
+		return ""
+	}
+	k := skipAllSpace(r, lit.end)
+	if w, end := readWordRunes(r, k); w != "if" || end >= len(r) || isIdentPart(r[end]) {
+		return ""
+	}
+	return lit.body
+}
+
 // provablyString reports whether the call argument starting at r[i] is a string even
 // though it is not a plain literal: it opens with a string literal (an f-string, a
 // concatenation, a %-format, a .format call) or reads the environment (os.environ[...],
@@ -718,12 +736,20 @@ func provablyString(r []rune, i int, lits map[int]strLiteral) bool {
 	return false
 }
 
-// cutLast slices s around the last instance of sep.
-func cutLast(s, sep string) (before, after string, found bool) {
-	if k := strings.LastIndex(s, sep); k >= 0 {
-		return s[:k], s[k+len(sep):], true
+// loaderNameRoots returns the modules a loader's dotted name may import: the part before a
+// ':' ("pkg.mod:attr"), or else the name and, since its last part may be an attribute, its
+// parent ("pkg.mod.Class").
+func loaderNameRoots(name string) []string {
+	if mod, _, ok := strings.Cut(name, ":"); ok {
+		return []string{mod}
 	}
-	return s, "", false
+	if k := strings.LastIndexByte(name, '.'); k > 0 {
+		return []string{name, name[:k]}
+	}
+	if name == "" {
+		return nil
+	}
+	return []string{name}
 }
 
 // lookupKind classifies a name moduleLookups watches.

@@ -814,6 +814,8 @@ func TestCallGraph_StringLoaders(t *testing.T) {
 		{"uvicorn.run f-string", "import uvicorn\n\ndef serve(m):\n    uvicorn.run(f'{m}:app')\n", nil, true},
 		{"uvicorn.run from the environment", "import os\nimport uvicorn\nuvicorn.run(os.environ['APP'])\n", nil, true},
 		{"uvicorn.run from getenv", "import os\nimport uvicorn\nuvicorn.run(os.getenv('APP', 'acme.asgi:app'))\n", nil, true},
+		{"uvicorn.run literal or app object", "import uvicorn\n\ndef serve(app, reload):\n    uvicorn.run('acme.asgi:app' if reload else app)\n", []string{"acme.asgi"}, false},
+		{"import_string literal or computed", "from werkzeug.utils import import_string\n\ndef view(name, default):\n    return import_string('acme.views' if default else name)\n", []string{"acme", "acme.views"}, true},
 		{"uvicorn.run app object", "import uvicorn\nfrom acme.asgi import app\nuvicorn.run(app, host='0.0.0.0')\n", nil, false},
 		{"flask from_object literal", "from flask import Flask\napp = Flask(__name__)\napp.config.from_object('acme.settings.Prod')\n", []string{"acme.settings", "acme.settings.Prod"}, false},
 		{"flask from_object on a call", "def make():\n    create_app().config.from_object('acme.settings')\n", []string{"acme", "acme.settings"}, false},

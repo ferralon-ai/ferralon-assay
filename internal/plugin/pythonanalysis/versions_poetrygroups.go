@@ -54,11 +54,16 @@ func (p poetryInstalls) record(sel poetrySelection, b scriptsurface.Binder) bool
 // install of it is known to install left unresolved. A package resolves only when every
 // recorded install of the lock installs it under every pyproject.toml that install may read:
 // separate surfaces build separate environments, and each must hold the pinned version. A
-// lock no recorded install names, and every other manifest, is returned as it is.
+// poetry.lock no recorded install names is read as a bare poetry install from its own
+// directory would install it: the lock's default selection. Every other manifest is returned
+// as it is.
 func (p poetryInstalls) scope(path string, deps []plugin.ResolvedDependency) []plugin.ResolvedDependency {
 	runs := p[filepath.Clean(path)]
 	if len(runs) == 0 {
-		return deps
+		if filepath.Base(path) != "poetry.lock" {
+			return deps
+		}
+		runs = []poetryInstall{{pyprojects: []string{filepath.Join(filepath.Dir(path), "pyproject.toml")}}}
 	}
 	installed := poetryLockInstalled(path, runs)
 	out := slices.Clone(deps)

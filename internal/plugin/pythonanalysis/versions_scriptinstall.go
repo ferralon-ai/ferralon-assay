@@ -245,16 +245,26 @@ type rootProject struct {
 		BackendPath any    `toml:"backend-path"`
 	} `toml:"build-system"`
 	Project *struct {
+		Name    any      `toml:"name"`
 		Dynamic []string `toml:"dynamic"`
 	} `toml:"project"`
 	Tool struct {
+		Flit struct {
+			Module struct {
+				Name any `toml:"name"`
+			} `toml:"module"`
+		} `toml:"flit"`
 		Poetry struct {
 			Build           any `toml:"build"`
 			RequiresPlugins any `toml:"requires-plugins"`
 		} `toml:"poetry"`
 		Setuptools struct {
-			Cmdclass any            `toml:"cmdclass"`
-			Dynamic  map[string]any `toml:"dynamic"`
+			Cmdclass   any            `toml:"cmdclass"`
+			Dynamic    map[string]any `toml:"dynamic"`
+			PackageDir any            `toml:"package-dir"`
+			Packages   any            `toml:"packages"`
+			PyModules  any            `toml:"py-modules"`
+			ExtModules any            `toml:"ext-modules"`
 		} `toml:"setuptools"`
 		PDM struct {
 			PackageType  *string `toml:"package-type"`
@@ -707,15 +717,16 @@ func uvWorkspaceFree(p string, b scriptsurface.Binder) bool {
 // backendClean reports whether the PEP 517 backend a manifest names runs no code from the
 // tree when it builds the project: setuptools (also the backend when none is named) with no
 // setup.py or setup.cfg beside the manifest, either of which can name command classes in the
-// tree, no tool.setuptools.cmdclass, and no tool.setuptools.dynamic attr, which setuptools
-// imports when it cannot read the value statically; pdm-backend with no pdm_build.py, no
+// tree, no tool.setuptools.cmdclass, and no tool.setuptools.dynamic attr but a version one
+// read here as a string literal (versionStatic), since setuptools imports the module when it
+// cannot read the value statically; pdm-backend with no pdm_build.py, no
 // custom-hook or run-setuptools, and a version source of file or scm with no version_format,
 // since a call source or a version_format calls a function in the tree; hatchling with no
 // hooks table anywhere in tool.hatch, a version source of regex or none (the code source runs
 // a file), and no hatch_build.py or hatch.toml, which hatchling merges into tool.hatch;
-// poetry-core with no tool.poetry.build; flit_core with a project table whose dynamic names
-// neither version nor description, which flit imports the module for when it cannot read them
-// statically; or uv_build. A backend-path, which loads the backend itself from the tree, or
+// poetry-core with no tool.poetry.build; flit_core with a project table whose dynamic version
+// and description, if named, are read here from the module (versionStatic), which flit imports
+// when it cannot read them statically; or uv_build. A backend-path, which loads the backend itself from the tree, or
 // any other backend fails, as does a build requirement that may be built from the tree
 // (buildRequiresClean).
 func backendClean(doc rootProject, b scriptsurface.Binder, dir string, sources map[string]bool) bool {
@@ -737,7 +748,7 @@ func backendClean(doc rootProject, b scriptsurface.Binder, dir string, sources m
 	}
 	switch backend {
 	case "", "setuptools.build_meta", "setuptools.build_meta:__legacy__":
-		return doc.Tool.Setuptools.Cmdclass == nil && !hasKey(doc.Tool.Setuptools.Dynamic, "attr") &&
+		return doc.Tool.Setuptools.Cmdclass == nil && versionStatic(doc, backend, b, dir) &&
 			clear("setup.py") && clear("setup.cfg")
 	case "pdm.backend":
 		v := doc.Tool.PDM.Version
@@ -749,7 +760,7 @@ func backendClean(doc rootProject, b scriptsurface.Binder, dir string, sources m
 	case "poetry.core.masonry.api":
 		return doc.Tool.Poetry.Build == nil
 	case "flit_core.buildapi":
-		return doc.Project != nil && !slices.Contains(doc.Project.Dynamic, "version") && !slices.Contains(doc.Project.Dynamic, "description")
+		return doc.Project != nil && versionStatic(doc, backend, b, dir)
 	case "uv_build":
 		return true
 	}
@@ -935,8 +946,8 @@ func (installs pipInstalls) pip(args []string, b scriptsurface.Binder, tooling m
 		default:
 			return false
 		}
-		if name := filepath.Base(p); isManifest(name) && !isRequirementsName(name) {
-			return false // a lock or build definition is not a requirements file
+		if name := filepath.Base(p); isManifest(name) && !isRequirementsName(name) || strings.EqualFold(filepath.Ext(name), ".py") {
+			return false // a lock, build definition or module is not a requirements file
 		}
 		hosts := b.Hosts(p)
 		if hosts == nil {

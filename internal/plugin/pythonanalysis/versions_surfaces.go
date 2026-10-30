@@ -40,7 +40,9 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		discovered[m] = true
 	}
 	// A requirement file a pyproject.toml or setup.cfg names in a file directive is read by
-	// that manifest's reader; when the manifest cannot read it, the manifest fails instead.
+	// that manifest's reader; when the manifest cannot read it, the manifest fails instead. A
+	// module a pyproject.toml's backend reads a dynamic version from is read here when it
+	// holds it as a string literal (versionModules).
 	via := map[string]bool{}
 	for _, m := range manifests {
 		if base := filepath.Base(m); base != "pyproject.toml" && base != "setup.cfg" {
@@ -48,6 +50,11 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 		if decls, ok := manifestDecls(m); ok {
 			for _, f := range decls.files {
+				via[filepath.Clean(f)] = true
+			}
+		}
+		if filepath.Base(m) == "pyproject.toml" {
+			for _, f := range versionModules(m) {
 				via[filepath.Clean(f)] = true
 			}
 		}

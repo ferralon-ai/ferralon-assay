@@ -272,6 +272,8 @@ func TestLaneEnvRE(t *testing.T) {
 		{"os.environ[\"yarn_registry\"] = \"https://mirror.example\"", true},
 		{"ENV yarn_registry https://mirror.example", true},
 		{"ARG Yarn_Registry", true},
+		{"- name: yarn_npm_registry_server", true},
+		{"  - name: \"yarn_registry\"", true},
 		{"id: yarn_cache", false},
 		{"path: ~/yarn_cache", false},
 		{"key: yarn_cache-${{ hashFiles('yarn.lock') }}", false},

@@ -77,8 +77,9 @@ func scriptSpec(root string, locks map[string]lockInfo) scriptsurface.Spec {
 // name in any other case is common outside the environment (a step id: yarn_cache, a cache path),
 // so it matches only where it is assigned: followed, past an optional quote or ], by = or :
 // (NAME=, an env map key, $env:NAME =, os.environ["NAME"] =), by a quote and a comma
-// (SetEnvironmentVariable("NAME", ...)), or after a Dockerfile ENV or ARG.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:p?npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS|(?i:yarn_)[A-Za-z0-9_]+(?:["']?\]?[ \t]*[=:]|["'][ \t]*,)|(?i:ENV|ARG)[ \t]+(?i:yarn_)[A-Za-z0-9_]+)`)
+// (SetEnvironmentVariable("NAME", ...)), after a Dockerfile ENV or ARG, or as the value of a name:
+// key (an Azure variables list or a Kubernetes env list).
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:p?npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS|(?i:yarn_)[A-Za-z0-9_]+(?:["']?\]?[ \t]*[=:]|["'][ \t]*,)|(?i:ENV|ARG)[ \t]+(?i:yarn_)[A-Za-z0-9_]+|(?i:name)[ \t]*:[ \t]*["']?(?i:yarn_)[A-Za-z0-9_]+)`)
 
 // laneSubsetConfigs are the npm configs that only choose which of the packages a lock
 // records get installed (devDependencies, optionalDependencies, peers), never what a package

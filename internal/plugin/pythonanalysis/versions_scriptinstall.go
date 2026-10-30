@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"errors"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -25,7 +26,9 @@ import (
 //	uv sync --locked | --frozen    --locked refuses a lock pyproject.toml has moved past;
 //	                               --frozen installs the lock as written
 //	poetry install                 refuses a lock pyproject.toml has moved past
-//	pdm sync                       installs the lock as written
+//	pdm sync                       installs the lock as written, where no pre_invoke,
+//	                               pre_install or post_install hook in tool.pdm.scripts
+//	                               runs around it
 //	pipenv install --deploy        refuses a Pipfile.lock the Pipfile has moved past
 //	pipenv sync                    installs Pipfile.lock as written
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
@@ -38,9 +41,9 @@ import (
 // else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
 // (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
 // every other tool laneToken names, run wrappers whose argv names one included. A
-// PIP_* or UV_* variable set in any script surface withholds, since every pip or uv the build
-// runs reads it. How a surface is read, and what binds a command to a file, is lane-neutral,
-// in scriptsurface.
+// PIP_*, UV_* or PDM_* variable set in any script surface withholds, since every pip, uv or pdm
+// the build runs reads it, unless laneEnvKeeps keeps it. How a surface is read, and what binds
+// a command to a file, is lane-neutral, in scriptsurface.
 //
 // One more pip form installs nothing but pip itself, so it withholds the pip coordinate alone
 // (pipSelfUpgrade):
@@ -68,8 +71,9 @@ import (
 // no self-upgrade.
 func newScriptSpec(installs pipInstalls, tooling map[string]bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
-		Token: laneToken,
-		Env:   laneEnvRE,
+		Token:    laneToken,
+		Env:      laneEnvRE,
+		EnvKeeps: laneEnvKeeps,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
 			return installs.allowed(words, b, tooling)
 		},
@@ -90,21 +94,28 @@ type pipInstall struct {
 // the script surfaces run. A nil pipInstalls records nothing.
 type pipInstalls map[string][]pipInstall
 
-// laneEnvRE matches a PIP_* or UV_* name that is not a $, ${ or attribute reference, so is
+// laneEnvRE matches a PIP_*, UV_* or PDM_* name that is not a $, ${ or attribute reference, so is
 // being set.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`)
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV|PDM)_[A-Z0-9_]+`)
+
+// laneEnvKeeps reports whether name, which laneEnvRE matched, installs nothing a lock read here
+// does not record: PDM_CHECK_UPDATE only turns pdm's own update check off, and
+// PDM_BUILD_SCM_VERSION only sets the version pdm-backend gives the project it builds.
+func laneEnvKeeps(name string) bool {
+	return name == "PDM_CHECK_UPDATE" || name == "PDM_BUILD_SCM_VERSION"
+}
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
 // install_requires), any word starting pip or conda, and an interpreter option that runs one
 // as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
-// file not read here defines, or installs into the environments it makes (poe, invoke and its
-// inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
+// file not read here defines, or installs into the environments it makes (poe and its module
+// poethepoet, invoke and its inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
 // candidate whenever a session installs.
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
-		"hatch", "flit", "setup.py", "poe", "invoke", "inv", "tox":
+		"hatch", "flit", "setup.py", "poe", "poethepoet", "invoke", "inv", "tox":
 		return true
 	}
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
@@ -169,6 +180,53 @@ func laneRunWrapper(words []string) ([]string, bool) {
 	return nil, false
 }
 
+// pdmSyncNoHooks reports whether pyprojects, the manifests a pdm sync binds to, are there and
+// name no pre_invoke, pre_install or post_install script, which pdm sync runs around the
+// install. A manifest this cannot decode names one.
+func pdmSyncNoHooks(pyprojects []string) bool {
+	if len(pyprojects) == 0 {
+		return false
+	}
+	for _, m := range pyprojects {
+		data, err := readRegular(m)
+		if err != nil {
+			return false
+		}
+		scripts, err := pdmScripts(data)
+		if err != nil {
+			return false
+		}
+		for _, hook := range []string{"pre_invoke", "pre_install", "post_install"} {
+			if _, ok := scripts[hook]; ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// pdmScripts decodes a pyproject.toml's tool.pdm.scripts table, failing when it is there but
+// not a table.
+func pdmScripts(data []byte) (map[string]any, error) {
+	var doc struct {
+		Tool struct {
+			PDM struct {
+				Scripts any `toml:"scripts"`
+			} `toml:"pdm"`
+		} `toml:"tool"`
+	}
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		return nil, err
+	}
+	switch scripts := doc.Tool.PDM.Scripts.(type) {
+	case nil:
+		return nil, nil
+	case map[string]any:
+		return scripts, nil
+	}
+	return nil, errors.New("tool.pdm.scripts is not a table")
+}
+
 // laneRunBinds reports whether a run wrapper's argv is the command it runs rather than a
 // script a manifest names: pdm run and pipenv run look a name up in pyproject.toml's
 // tool.pdm.scripts and a Pipfile's scripts table first, pdm runs that table's pre_run and
@@ -180,17 +238,7 @@ func laneRunBinds(words []string, b scriptsurface.Binder) bool {
 	switch head, _ := scriptsurface.CommandName(words[0]); head {
 	case "pdm":
 		name = "pyproject.toml"
-		scripts = func(data []byte) (map[string]any, error) {
-			var doc struct {
-				Tool struct {
-					PDM struct {
-						Scripts map[string]any `toml:"scripts"`
-					} `toml:"pdm"`
-				} `toml:"tool"`
-			}
-			_, err := toml.Decode(string(data), &doc)
-			return doc.Tool.PDM.Scripts, err
-		}
+		scripts = pdmScripts
 	case "pipenv":
 		name = "Pipfile"
 		scripts = func(data []byte) (map[string]any, error) {
@@ -234,7 +282,7 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, tool
 	case head == "poetry" && words[1] == "install":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("pyproject.toml", "poetry.lock") != nil
 	case head == "pdm" && words[1] == "sync":
-		return scriptsurface.FlagsOnly(words[2:], laneFlags) && b.Nearest("pyproject.toml", "pdm.lock") != nil
+		return scriptsurface.FlagsOnly(words[2:], laneFlags) && pdmSyncNoHooks(b.Nearest("pyproject.toml", "pdm.lock"))
 	case head == "pipenv" && words[1] == "install":
 		return scriptsurface.FlagsOnly(words[2:], laneFlags, "--deploy") && b.Nearest("Pipfile", "Pipfile.lock") != nil
 	case head == "pipenv" && words[1] == "sync":

@@ -331,3 +331,92 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 		}
 	})
 }
+
+// pdm sync runs the pre_install and post_install scripts of tool.pdm.scripts around the
+// install, so either withholds every pin; the task runners that read pyproject.toml task
+// tables (poe, hatch) withhold wherever they run.
+func TestResolveVersions_PyprojectTaskInstalls(t *testing.T) {
+	const (
+		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
+		lockPDM = "[metadata]\ngroups = [\"default\"]\n\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n"
+	)
+	tests := []struct {
+		name, pyproject, script string
+		want                    bool // jinja2 resolved
+	}{
+		{"pdm sync, post_install", project + "[tool.pdm.scripts]\npost_install = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, pre_install", project + "[tool.pdm.scripts]\npre_install = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, hook as a dotted key", project + "[tool.pdm]\nscripts.post_install = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, hook as a table", project + "[tool.pdm.scripts.post_install]\ncmd = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, hook in a composite", project + "[tool.pdm.scripts]\npost_install = { composite = [\"pip install jinja2==3.1.2\"] }\n", "pdm sync\n", false},
+		{"pdm sync, pre_invoke", project + "[tool.pdm.scripts]\npre_invoke = \"pip install jinja2==3.1.2\"\n", "pdm sync\n", false},
+		{"pdm sync, scripts not a table", project + "[tool.pdm]\nscripts = [\"pip install jinja2==3.1.2\"]\n", "pdm sync\n", false},
+		{"pdm sync, PDM_PROJECT exported", project, "export PDM_PROJECT=/app/sub\npdm sync\n", false},
+		{"poe task", project + "[tool.poe.tasks]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\npoe setup\n", false},
+		{"poe task through python -m", project + "[tool.poe.tasks]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\npython -m poethepoet setup\n", false},
+		{"hatch env script", project + "[tool.hatch.envs.default.scripts]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm sync\nhatch run setup\n", false},
+
+		// Guards: another script name, and no scripts table.
+		{"pdm sync, another script", project + "[tool.pdm.scripts]\ntest = \"pytest\"\n", "pdm sync\n", true},
+		{"pdm sync, no scripts", project, "pdm sync\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"pyproject.toml": tt.pyproject, "pdm.lock": lockPDM, "install.sh": "#!/bin/sh\n" + tt.script})
+			r := resolveVersion(t, dir, "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveVersions_PDMSyncUnbound(t *testing.T) {
+	tests := map[string]map[string]string{
+		"no pyproject.toml": {"requirements.txt": "jinja2==3.1.4\n", "install.sh": "#!/bin/sh\npdm sync\n"},
+		"pyproject.toml that doesn't decode": {
+			"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[tool.pdm.scripts\npost_install = \"pip install jinja2==3.1.2\"\n",
+			"pdm.lock": "[metadata]\ngroups = [\"default\"]\n", "install.sh": "#!/bin/sh\npdm sync\n",
+		},
+		"PDM_PROJECT in a Dockerfile": {
+			"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n",
+			"pdm.lock":   "[metadata]\ngroups = [\"default\"]\n",
+			"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY . .\nENV PDM_PROJECT=/app/sub\nRUN pdm sync\n",
+		},
+	}
+	for name, files := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved || r.Partiality.Complete {
+				t.Fatalf("jinja2 = %+v partiality %+v, want unresolved and incomplete", r.Match, r.Partiality)
+			}
+		})
+	}
+}
+
+func TestResolveVersions_PDMEnvKept(t *testing.T) {
+	base := map[string]string{
+		"requirements.txt": "jinja2==3.1.4\n", "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n",
+		"pdm.lock": "[metadata]\ngroups = [\"default\"]\n",
+	}
+	tests := []struct {
+		name, file, src string
+		want            bool // jinja2 resolved
+	}{
+		{"PDM_CHECK_UPDATE", "Dockerfile", "FROM python:3.12\nWORKDIR /app\nCOPY . .\nENV PDM_CHECK_UPDATE=false\nRUN pdm sync\n", true},
+		{"PDM_BUILD_SCM_VERSION", ".github/workflows/ci.yml", "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    env:\n      PDM_BUILD_SCM_VERSION: 1.0.0\n    steps:\n      - run: pdm sync\n", true},
+		{"PDM_CHECK_UPDATE beside another PDM_ name", "Dockerfile", "FROM python:3.12\nWORKDIR /app\nCOPY . .\nENV PDM_CHECK_UPDATE=false PDM_LOCKFILE=other.lock\nRUN pdm sync\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{tt.file: tt.src}
+			for k, v := range base {
+				files[k] = v
+			}
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved != tt.want || r.Partiality.Complete != tt.want {
+				t.Fatalf("jinja2 = %+v partiality %+v, want resolved and complete %v", r.Match, r.Partiality, tt.want)
+			}
+		})
+	}
+}

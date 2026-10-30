@@ -174,7 +174,7 @@ func (p *program) aliasLeaves(path string) []string {
 }
 
 // aliasRebound reports whether a module that aliasLeaves follows an import path through may
-// bind the leaf some other way than the import it follows, so the name may hold something
+// bind the leaf some other way than the import or star import it follows, so the name may hold something
 // else when another module imports it (markModuleStores must have run).
 func (p *program) aliasRebound(path string) bool {
 	if r, ok := p.reboundMemo[path]; ok {
@@ -194,6 +194,11 @@ func (p *program) aliasRebound(path string) bool {
 		for _, i := range p.byModule[mod] {
 			for _, next := range p.files[i].fpBinds[""][leaf] {
 				if walk(next) {
+					return true
+				}
+			}
+			for _, star := range p.files[i].starPaths {
+				if walk(star + "/" + leaf) {
 					return true
 				}
 			}
@@ -254,7 +259,7 @@ func (p *program) starMayBind(path, name string) bool {
 
 // siteRebound reports whether a site's edge follows an import through a module that may
 // bind the name another way (aliasRebound): the name it calls, for a bare call, or the
-// chain's head and the attribute the chain reads through it.
+// chain's head, each module the chain reads through it, and the attribute it calls.
 func (p *program) siteRebound(f *fileParse, cs callSite) bool {
 	if cs.calleeName == "" || cs.inner {
 		return false
@@ -277,6 +282,11 @@ func (p *program) siteRebound(f *fileParse, cs callSite) bool {
 		}
 		if len(cs.calleeChain) > 1 && p.named[path+mid] && p.aliasRebound(path+mid+"/"+cs.calleeName) {
 			return true
+		}
+		for k := 2; k < len(cs.calleeChain); k++ {
+			if pre := path + "/" + strings.Join(cs.calleeChain[1:k], "/"); p.named[pre] && p.aliasRebound(pre) {
+				return true
+			}
 		}
 	}
 	return false

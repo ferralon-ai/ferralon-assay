@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -74,7 +75,8 @@ func isCondaToolPackage(spec string) bool {
 
 // pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
-// dependency tables, and the uv and pdm dev-dependencies.
+// dependency tables, the uv and pdm dev-dependencies, and the hatch environments'
+// dependencies.
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -99,6 +101,25 @@ type pyprojectDoc struct {
 		PDM struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
 		} `toml:"pdm"`
+		Hatch struct {
+			Sources any `toml:"sources"`
+			Env     struct {
+				Collectors map[string]any `toml:"collectors"`
+			} `toml:"env"`
+			Envs map[string]struct {
+				Type              any `toml:"type"`
+				Dependencies      any `toml:"dependencies"`
+				ExtraDependencies any `toml:"extra-dependencies"`
+				PreInstall        any `toml:"pre-install-commands"`
+				PostInstall       any `toml:"post-install-commands"`
+				Scripts           any `toml:"scripts"`
+				ExtraScripts      any `toml:"extra-scripts"`
+				EnvVars           any `toml:"env-vars"`
+				Sources           any `toml:"sources"`
+				Workspace         any `toml:"workspace"`
+				Overrides         any `toml:"overrides"`
+			} `toml:"envs"`
+		} `toml:"hatch"`
 	} `toml:"tool"`
 }
 
@@ -181,12 +202,14 @@ func pyprojectDynamicDeps(doc pyprojectDoc) bool {
 }
 
 // pyprojectToolDeps reads the pyproject tables that declare installs outside [project]: PEP 735
-// [dependency-groups], [tool.uv] dev-dependencies and [tool.pdm] dev-dependencies as PEP 508
-// strings, and the [tool.poetry] dependencies, dev-dependencies and group tables as poetry
-// constraints. Each declaration is covered only by its own tool's lock in the same directory
-// (PEP 735 groups by groupLocks). ok is false when an entry is not a well-formed
-// requirement, a group is malformed (dependencyGroupSpecs), a poetry constraint does not
-// translate, or a poetry entry installs a local path or file.
+// [dependency-groups], [tool.uv] dev-dependencies, [tool.pdm] dev-dependencies and each
+// [tool.hatch.envs] environment's dependencies and extra-dependencies as PEP 508 strings, and
+// the [tool.poetry] dependencies, dev-dependencies and group tables as poetry constraints. Each
+// declaration is covered only by its own tool's lock in the same directory (PEP 735 groups by
+// groupLocks); hatch has no lock, so nothing covers its environments. ok is false when an
+// entry is not a well-formed requirement, a group is malformed (dependencyGroupSpecs), a
+// poetry constraint does not translate, a poetry entry installs a local path or file, or a
+// hatch environment can install past its dependency lists (hatchEnvInstalls).
 func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var (
 		deps    []plugin.ResolvedDependency
@@ -227,6 +250,20 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {
 		addAny(doc.Tool.PDM.DevDependencies[g], []string{"pdm.lock"})
 	}
+	// Hatch sources and workspace members redirect a declared dependency to a local path, a
+	// git ref or a URL at install time, so the declaration no longer says what installs.
+	ok = ok && doc.Tool.Hatch.Sources == nil
+	// A collector other than the built-in default is a plugin that can rewrite any env.
+	for c := range doc.Tool.Hatch.Env.Collectors {
+		ok = ok && c == "default"
+	}
+	for _, e := range slices.Sorted(maps.Keys(doc.Tool.Hatch.Envs)) {
+		env := doc.Tool.Hatch.Envs[e]
+		addAny(env.Dependencies, nil)
+		addAny(env.ExtraDependencies, nil)
+		ok = ok && env.Sources == nil && env.Workspace == nil &&
+			!hatchEnvInstalls(env.Type, env.Overrides, env.EnvVars, env.PreInstall, env.PostInstall, env.Scripts, env.ExtraScripts)
+	}
 
 	p := doc.Tool.Poetry
 	tables := []map[string]any{p.Dependencies, p.DevDependencies}
@@ -258,6 +295,94 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	return deps, origins, ok
+}
+
+// hatchEnvInstalls reports whether a hatch environment can install what its dependency lists
+// do not say: its type is not the built-in "virtual" (a plugin installs by its own keys), its
+// overrides are not a table or set dependencies, extra-dependencies, commands, scripts or
+// env-vars that do (matrix and other overrides add values this reader does not evaluate), a
+// pre- or post-install command or a script names an installer (hatchCommandsInstall), or an
+// env-var sets a PIP_* or UV_* variable, which every pip or uv the environment runs reads.
+func hatchEnvInstalls(typ, overrides, envVars any, commands ...any) bool {
+	if t, isStr := typ.(string); typ != nil && (!isStr || t != "virtual") {
+		return true
+	}
+	if _, isMap := overrides.(map[string]any); overrides != nil && !isMap {
+		return true
+	}
+	return hatchOverridesInstall(overrides) || hatchEnvVarsInstall(envVars) ||
+		slices.ContainsFunc(commands, hatchCommandsInstall)
+}
+
+// hatchOverridesInstall reports whether an overrides value sets dependencies,
+// extra-dependencies, sources, workspace or type anywhere in it, or sets commands, scripts or
+// env-vars that install. A set- prefix overwrites the option rather than appending to it, and
+// counts the same.
+func hatchOverridesInstall(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, sub := range t {
+			switch strings.TrimPrefix(k, "set-") {
+			case "dependencies", "extra-dependencies", "sources", "workspace", "type":
+				return true
+			case "pre-install-commands", "post-install-commands", "scripts", "extra-scripts":
+				if hatchCommandsInstall(sub) {
+					return true
+				}
+			case "env-vars":
+				if hatchEnvVarsInstall(sub) {
+					return true
+				}
+			}
+			if hatchOverridesInstall(sub) {
+				return true
+			}
+		}
+	case []any:
+		return slices.ContainsFunc(t, hatchOverridesInstall)
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchOverridesInstall(m) })
+	}
+	return false
+}
+
+// hatchCommandsInstall reports whether any string in v, at any depth, has a word laneToken
+// names, split the way the build-script veto splits a command (scriptsurface.NamesToken), so
+// a quoted, chained, path-qualified or {env:...}-defaulted installer counts.
+func hatchCommandsInstall(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return scriptsurface.NamesToken(t, laneToken, nil)
+	case []any:
+		return slices.ContainsFunc(t, hatchCommandsInstall)
+	case map[string]any:
+		return slices.ContainsFunc(slices.Collect(maps.Values(t)), hatchCommandsInstall)
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchCommandsInstall(m) })
+	}
+	return false
+}
+
+// hatchEnvVarsInstall reports whether any key or string in v, at any depth, sets a PIP_* or
+// UV_* variable (laneEnvRE), or names an installer a command can reach through $VAR or
+// {env:VAR} (hatchCommandsInstall): the env-vars table, or an override's KEY=VALUE strings
+// and key fields.
+func hatchEnvVarsInstall(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return laneEnvRE.MatchString(t) || hatchCommandsInstall(t)
+	case []any:
+		return slices.ContainsFunc(t, hatchEnvVarsInstall)
+	case map[string]any:
+		for k, sub := range t {
+			if laneEnvRE.MatchString(k) || hatchEnvVarsInstall(sub) {
+				return true
+			}
+		}
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchEnvVarsInstall(m) })
+	}
+	return false
 }
 
 // poetryInstallsLocal reports whether a [tool.poetry] dependency value, or any element of an

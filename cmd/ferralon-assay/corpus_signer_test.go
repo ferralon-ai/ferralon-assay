@@ -55,7 +55,7 @@ func TestIntelProvenance_CorpusSigner(t *testing.T) {
 				t.Fatalf("advisoryCorpusOption err = %v", err)
 			}
 
-			got := f.intelProvenance(floorWorkSet(nil))
+			got := f.intelProvenance(builtinWorkSet(nil))
 			switch {
 			case tc.want == nil && got.CorpusSigner != nil:
 				t.Errorf("CorpusSigner = %+v, want nil", *got.CorpusSigner)

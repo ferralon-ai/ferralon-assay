@@ -312,7 +312,7 @@ func TestPolicyWorkSet_NonEnumerableCorpusFallsBack(t *testing.T) {
 
 			got := selectWorkSet(context.Background(), acq, corpus, chain, "full", tc.osvEnabled, &countingOSV{fakeOSV: fakeOSV{ids: osvIDs}})
 
-			want := floorWorkSet(acq.advisories)
+			want := builtinWorkSet(acq.advisories)
 			if tc.osvEnabled {
 				want = resolveWorkSet(context.Background(), acq, &fakeOSV{ids: osvIDs}, chain)
 			}
@@ -435,7 +435,7 @@ func TestSelectWorkSet_NoCorpusIsUnchanged(t *testing.T) {
 	osvIDs := []string{"CVE-2023-39325", "GHSA-nope-nope-nope"}
 
 	acq := goFixture(t, fixtureGoMod)
-	if got, want := selectWorkSet(context.Background(), acq, nil, table, "", false, &fakeOSV{ids: osvIDs}), floorWorkSet(acq.advisories); !reflect.DeepEqual(got, want) {
+	if got, want := selectWorkSet(context.Background(), acq, nil, table, "", false, &fakeOSV{ids: osvIDs}), builtinWorkSet(acq.advisories); !reflect.DeepEqual(got, want) {
 		t.Errorf("no corpus, OSV off: got %+v, want the floor %+v", got, want)
 	}
 	got := selectWorkSet(context.Background(), acq, nil, table, "", true, &fakeOSV{ids: osvIDs})
@@ -488,7 +488,7 @@ func TestSelectWorkSet_CorpusWithoutPolicyIsUnchanged(t *testing.T) {
 			if err != nil {
 				t.Fatalf("scanWorkSet: %v", err)
 			}
-			if !reflect.DeepEqual(ws, floorWorkSet(acq.advisories)) {
+			if !reflect.DeepEqual(ws, builtinWorkSet(acq.advisories)) {
 				t.Errorf("no declared policy, OSV off: got %+v, want the floor", ws)
 			}
 			if p := f.intelProvenance(ws); p.CorpusPolicy != "" {
@@ -538,7 +538,7 @@ func TestAdvisoryCorpusPolicy_Precedence(t *testing.T) {
 			if f.resolvedPolicy != tc.want {
 				t.Errorf("resolved policy = %q, want %q", f.resolvedPolicy, tc.want)
 			}
-			if p := f.intelProvenance(floorWorkSet(nil)); p.CorpusPolicy != tc.want {
+			if p := f.intelProvenance(builtinWorkSet(nil)); p.CorpusPolicy != tc.want {
 				t.Errorf("Report CorpusPolicy = %q, want %q", p.CorpusPolicy, tc.want)
 			}
 		})

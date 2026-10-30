@@ -166,7 +166,7 @@ func TestAdvisoryCorpusOption_DirectoryOrBundle(t *testing.T) {
 				t.Errorf("resolvedSource cannot resolve %s; the work-set widener would admit against a different source than the pass reads", tc.hitID)
 			}
 
-			got := f.intelProvenance(floorWorkSet(nil))
+			got := f.intelProvenance(builtinWorkSet(nil))
 			if got.FactSource != report.FactSourceCorpusThenBuiltinTable {
 				t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceCorpusThenBuiltinTable)
 			}

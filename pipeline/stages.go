@@ -1121,8 +1121,8 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 
 	// --- real public dependency advisories for Maven / npm / PyPI / NuGet ----------------------
 	//
-	// Twelve real, currently-published advisories, three per non-Go ecosystem. They are the DEFAULT
-	// advisory floor for Java, JS, Python and .NET, exactly as the real Go advisories above are for
+	// Twelve real, currently-published advisories, three per non-Go ecosystem. They are the built-in
+	// test advisories for Java, JS, Python and .NET, exactly as the real Go advisories above are for
 	// Go, and they are what makes a default scan of those repositories complete.
 	//
 	// Until 2026-08-05 the only Maven/npm/PyPI/NuGet entries in this table were the FERRALON-* house

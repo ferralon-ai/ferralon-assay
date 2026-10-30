@@ -151,7 +151,7 @@ func signalsFixtureReport(t *testing.T) []byte {
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
-	stampIntel(rep, f.intelProvenance(floorWorkSet(advisories)))
+	stampIntel(rep, f.intelProvenance(builtinWorkSet(advisories)))
 	rep.Provenance.Timestamp = time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
 	out, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {

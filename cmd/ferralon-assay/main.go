@@ -202,9 +202,9 @@ func runBaseline(args []string) error {
 		return err
 	}
 
-	// Widen the compiled-in language floor with the advisories OSV.dev reports against this
+	// Widen the built-in test advisories with the advisories OSV.dev reports against this
 	// repository's real dependencies. Resolved AFTER advisoryCorpusOption, which decides the fact
-	// source the widener admits against. Never fails: an unreachable OSV degrades to the floor and
+	// source the widener admits against. Never fails: an unreachable OSV degrades to the built-in set and
 	// says so on the Report (workset.go).
 	ws, err := f.scanWorkSet(analysis, acq)
 	if err != nil {

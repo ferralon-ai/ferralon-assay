@@ -118,7 +118,7 @@ func TestAdvisoryCorpus_UnconfiguredRunStillWorks(t *testing.T) {
 	if opt != nil {
 		t.Fatal("expected nil option (built-in table default) when nothing is configured")
 	}
-	if got := f.intelProvenance(floorWorkSet(make([]assessment.VulnRef, 16))); got.FactSource != report.FactSourceBuiltinTable {
+	if got := f.intelProvenance(builtinWorkSet(make([]assessment.VulnRef, 16))); got.FactSource != report.FactSourceBuiltinTable {
 		t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceBuiltinTable)
 	}
 }
@@ -147,7 +147,7 @@ func TestAdvisoryCorpus_IntelProvenanceRecorded(t *testing.T) {
 	if _, err := f.advisoryCorpusOption(); err != nil {
 		t.Fatalf("advisoryCorpusOption err = %v", err)
 	}
-	got := f.intelProvenance(floorWorkSet(make([]assessment.VulnRef, 16)))
+	got := f.intelProvenance(builtinWorkSet(make([]assessment.VulnRef, 16)))
 
 	if got.FactSource != report.FactSourceCorpusThenBuiltinTable {
 		t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceCorpusThenBuiltinTable)

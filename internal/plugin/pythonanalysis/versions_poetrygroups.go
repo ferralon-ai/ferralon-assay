@@ -55,8 +55,8 @@ func (p poetryInstalls) record(sel poetrySelection, b scriptsurface.Binder) bool
 // recorded install of the lock installs it under every pyproject.toml that install may read:
 // separate surfaces build separate environments, and each must hold the pinned version. A
 // poetry.lock no recorded install names is read as a bare poetry install from its own
-// directory installs it, the lock's default selection. Every other manifest is returned as it
-// is.
+// directory would install it: the lock's default selection. Every other manifest is returned
+// as it is.
 func (p poetryInstalls) scope(path string, deps []plugin.ResolvedDependency) []plugin.ResolvedDependency {
 	runs := p[filepath.Clean(path)]
 	if len(runs) == 0 {

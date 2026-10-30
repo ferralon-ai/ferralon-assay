@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -93,10 +92,9 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 }
 
 // taintIngresses returns the ingresses ComputeTaint propagates from, found once per tree per scan
-// through the run cache: they depend only on the build, while every advisory's sinks differ. The
-// program load reads the process environment, so that is part of the key.
+// through the run cache: they depend only on the build, while every advisory's sinks differ.
 func taintIngresses(ctx context.Context, buildDir string) (plugin.IngressResult, error) {
-	b, err := runCached(ctx, "ingresses", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+	b, err := runCached(ctx, "ingresses", loadCacheKey(buildDir), func() ([]byte, error) {
 		ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir})
 		if err != nil {
 			return nil, err

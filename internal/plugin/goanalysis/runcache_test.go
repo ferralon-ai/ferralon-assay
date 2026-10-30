@@ -273,6 +273,73 @@ func TestRunCacheKeys(t *testing.T) {
 	})
 }
 
+// TestLoadCacheKey pins that a result derived from the program load is shared only while every input
+// to the load stays the same: the process environment, the go command's environment file, whose
+// GOFLAGS can set build tags with no variable changing, and the analyzer binary.
+func TestLoadCacheKey(t *testing.T) {
+	buildDir := filepath.Join(t.TempDir(), "absent")
+	goenv := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(goenv, []byte("GOFLAGS=-tags=alpha\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goenv)
+
+	tests := []struct {
+		name    string
+		change  func(t *testing.T)
+		wantHit bool
+	}{
+		{name: "nothing changed", change: func(*testing.T) {}, wantHit: true},
+		{name: "environment", change: func(t *testing.T) { t.Setenv("ASSAY_RUN_CACHE_KEY_PROBE", "1") }},
+		{name: "go env file", change: func(t *testing.T) {
+			if err := os.WriteFile(goenv, []byte("GOFLAGS=-tags=beta\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "go env file removed", change: func(t *testing.T) {
+			if err := os.Remove(goenv); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "analyzer", change: func(t *testing.T) {
+			prev := analyzerIdentity
+			analyzerIdentity = func() string { return "analyzer:other" }
+			t.Cleanup(func() { analyzerIdentity = prev })
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(goenv, []byte("GOFLAGS=-tags=alpha\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithRunCacheDir(context.Background(), t.TempDir())
+			if _, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+				return []byte("seeded"), nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tt.change(t)
+			got, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+				return []byte("computed"), nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hit := string(got) == "seeded"; hit != tt.wantHit {
+				t.Errorf("served from the seed = %v, want %v", hit, tt.wantHit)
+			}
+		})
+	}
+
+	// An environment file that cannot be read shares nothing, not even with itself.
+	t.Run("go env file unreadable", func(t *testing.T) {
+		t.Setenv("GOENV", t.TempDir())
+		if a, b := loadCacheKey(buildDir), loadCacheKey(buildDir); slices.Equal(a, b) {
+			t.Errorf("two keys over an unreadable go env file are equal: %v", a)
+		}
+	})
+}
+
 // TestRunCachedReadersSeeWholeEntries pins that a concurrent reader of an entry being written gets
 // the whole entry or a miss, never a prefix: a govulncheck stream cut after a package-level finding
 // parses cleanly and would refute a module the dropped lines show is called.
@@ -380,7 +447,7 @@ func TestComputeTaintFromCachedIngresses(t *testing.T) {
 			}
 		}
 	}
-	if _, err := runCached(ctx, "ingresses", append([]string{taintFixtureDir}, os.Environ()...), func() ([]byte, error) {
+	if _, err := runCached(ctx, "ingresses", loadCacheKey(taintFixtureDir), func() ([]byte, error) {
 		t.Fatal("ingresses were not cached")
 		return nil, nil
 	}); err != nil {

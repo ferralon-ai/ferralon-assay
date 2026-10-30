@@ -633,6 +633,7 @@ func TestGovulncheckFailureEntryIsolation(t *testing.T) {
 		{"record without the marker", `{"cause":"loading packages: x","stderr":""}`},
 		{"truncated record", `{"marker":"` + govulncheckFailureMarker},
 		{"record under the earlier marker", `{"marker":"govulncheck-settled-failure/v1","cause":"loading packages: x","stderr":""}`},
+		{"record under the earlier marker with package errors", `{"marker":"govulncheck-settled-failure/v1","cause":"loading packages: x","stderr":"","package_errors":[{"pos":"/src/a.go:1:1","msg":"x"}]}`},
 		{"record without package errors", `{"marker":"` + govulncheckFailureMarker + `","cause":"loading packages: x","stderr":""}`},
 	} {
 		t.Run(tc.name+" at the failure entry not read as a failure", func(t *testing.T) {

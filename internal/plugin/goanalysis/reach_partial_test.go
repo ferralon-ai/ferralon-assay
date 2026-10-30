@@ -137,7 +137,7 @@ func TestPartialRunRetry(t *testing.T) {
 	const calls = 6
 	tests := []struct {
 		name         string
-		partials     []string // outcome of each partial run in turn, the last repeating: "ok", "transient", "refused"
+		partials     []string // outcome of each partial run in turn, the last repeating: "ok", "garbled", "transient", "refused"
 		oldRecord    bool     // the run cache holds a failure record from before package errors were recorded
 		blockWrite   bool     // the run cache cannot keep the partial run
 		wantStreams  int
@@ -153,6 +153,8 @@ func TestPartialRunRetry(t *testing.T) {
 			wantStreams: 1, wantPartials: 2, wantRun: []bool{false}},
 		{name: "a sustained transient fault stops at the bound", partials: []string{"transient"},
 			wantStreams: 1, wantPartials: 1 + maxPartialRunRetries, wantRun: []bool{false}, wantSpent: true},
+		{name: "a partial run record that does not decode is a refusal", partials: []string{"garbled"},
+			wantStreams: 1, wantPartials: 1, wantRun: []bool{false}},
 		{name: "a failure record from before package errors were recorded is run again", partials: []string{"ok"}, oldRecord: true,
 			wantStreams: 1, wantPartials: 1, wantRun: []bool{true}},
 		{name: "a partial run the cache could not keep is made again by each advisory within the bound", partials: []string{"ok"}, blockWrite: true,
@@ -187,6 +189,8 @@ func TestPartialRunRetry(t *testing.T) {
 				switch outcome {
 				case "transient":
 					return nil, errors.New("fetching vulnerabilities: dial tcp: i/o timeout")
+				case "garbled":
+					return []byte("not a partial run"), nil
 				case "refused":
 					return nil, &partialRunRefusal{errors.New("every root imports the package")}
 				}

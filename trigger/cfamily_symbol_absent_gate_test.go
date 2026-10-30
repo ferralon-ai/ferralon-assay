@@ -253,9 +253,9 @@ func TestCFamilyBaseline_NamedUnreachedSymbolIsUndetermined(t *testing.T) {
 // cgx_sink_unreached is scoped to the advisory whose sink it is. One scan carries a C advisory
 // whose sink is resolved and unreached, a second C advisory whose sink resolves and is not flagged,
 // and a Go module advisory. No row here can refute: the fake emits no positive grounds. So the
-// witness is the reason, not the verdict. Both C rows are held by a did_not_run
-// (analysis_did_not_run): the first by its own cgx_sink_unreached, the second by its unresolved
-// version (sole_source_unproven). The Go row lands on vulnerable_symbol_unresolved, which a
+// witness is the reason, not the verdict. The first C row is held by its own cgx_sink_unreached
+// (analysis_did_not_run), the second by its unresolved version (sole_source_unproven, so
+// package_version_unresolved). The Go row lands on vulnerable_symbol_unresolved, which a
 // did_not_run on its own ops would outrank, so it is the row that fails if the code ever leaks out
 // of the C advisory's own ops into a run-wide declaration. The second C advisory shares the first's
 // package, so its verdict cannot see a leak keyed on that package; its own assessment's footprint
@@ -266,7 +266,7 @@ func TestCFamilyBaseline_SinkUnreachedScopedToItsAdvisory(t *testing.T) {
 	src := cfamilyAdvisories{symbols: []string{sink}}
 	rep := runCFamilyBaseline(t, lane, src, cfamilyAdvisoryID, cfamilySecondAdvisoryID, goAdvisoryID)
 	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
-	assertUndetermined(t, rep, cfamilySecondAdvisoryID, report.ReasonAnalysisDidNotRun)
+	assertUndetermined(t, rep, cfamilySecondAdvisoryID, report.ReasonPackageVersionUnresolved)
 	assertUndetermined(t, rep, goAdvisoryID, report.ReasonVulnerableSymbolUnresolved)
 
 	opts := cfamilyAssessOptions(t, lane, src, map[string]string{"conanfile.txt": "[requires]\nzlib/1.2.11\n"})

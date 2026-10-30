@@ -27,8 +27,8 @@ type DepFetch struct {
 	// Registries is keyed by registry identity (acquire.RegistryID: scheme, host, port and
 	// path, no credential).
 	Registries map[string]RegistryFetch `json:"registries,omitempty"`
-	// Reassess lists advisory IDs whose stored verdict was reached reading no dependency code
-	// because the fetch failed. Sorted, no duplicates.
+	// Reassess lists advisory IDs whose stored verdict was reached without the code of a package
+	// the advisory may concern, because its fetch failed. Sorted, no duplicates.
 	Reassess []string `json:"reassess,omitempty"`
 }
 

@@ -443,14 +443,20 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 // held, a registry holdsRegistry holds counts one more held run, stamping first_held_at at now on
 // the first, and otherwise reading anything from the registry resets its count. A held count of
 // stallRuns or more with first_held_at stallAge or more before now stalls the run, which err then
-// fails. A baseline never touches the held count. A cve-watch earnest run that read less than its
-// lock pins (it fell back, or a registry failed some fetches) adds the IDs of the advisories it
-// assessed to reassess, and a run of either kind that read all of it removes them: a baseline every
-// entry naming one by ID or alias, since it rebuilds every row, and a cve-watch run only entries
-// naming one by ID, since it replaces only the rows of the IDs it assessed. An advisory whose
-// assessment fails is not among the assessed, so an assessment that fails on every run leaves its
-// entry listed and its row retried on every cve-watch run: the failure leaves the row undetermined,
-// and nothing reached with all the dependency code has replaced it.
+// fails. A baseline never touches the held count. A run of either kind that read all its lock pins
+// removes from reassess the advisories it assessed: a baseline every entry naming one by ID or
+// alias, since it rebuilds every row, and a cve-watch run only entries naming one by ID, since it
+// replaces only the rows of the IDs it assessed. A cve-watch earnest run that read less than its
+// lock pins (it fell back, or a registry failed some fetches) adds the ID of each advisory it
+// assessed that concerns a package it missed (missedLocked), and removes the entries naming by ID
+// each one it assessed with every package it concerns read. An advisory concerning a package the
+// run cannot name as npm, and every advisory when the missed packages cannot be established, counts
+// as concerning one it missed. Every other refutation the run reached without some package's code
+// is the JS lane's to withhold: each unread package scopes an unbounded uninspectable_package
+// limit. A baseline that read less neither adds nor removes. An advisory whose assessment fails is
+// not among the assessed, so an assessment that fails on every run leaves its entry listed and its
+// row retried on every cve-watch run: the failure leaves the row undetermined, and nothing reached
+// with its package's code has replaced it.
 //
 // A lost CAS can leave the count higher than the runs that held since the registry last served:
 // Merge keeps the larger held_runs and the earliest first_held_at, so a reset written by a
@@ -501,9 +507,16 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 	}
 	switch incomplete := d.incompleteLocked(); {
 	case incomplete && !run.Baseline:
+		missed, known := d.missedLocked()
+		var read []string
 		for _, a := range run.Assessed {
+			if known && !concernsMissed(run.Packages[a.ID], missed) {
+				read = append(read, a.ID)
+				continue
+			}
 			next.Reassess = append(next.Reassess, a.ID)
 		}
+		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool { return slices.Contains(read, id) })
 	case !incomplete:
 		next.Reassess = slices.DeleteFunc(next.Reassess, func(id string) bool {
 			if run.Baseline {
@@ -513,6 +526,54 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 		})
 	}
 	return next
+}
+
+// missedLocked returns the npm names of the packages whose code the run's fetches did not read, or
+// false when that set cannot be established: an acquisition fell back, a failed fetch names no npm
+// package, or no fetch failed.
+func (d *depCodeRun) missedLocked() (map[string]bool, bool) {
+	if d.fell != nil {
+		return nil, false
+	}
+	missed := map[string]bool{}
+	for _, o := range d.outcomes {
+		if !pipeline.FetchFailed(o.Outcome) {
+			continue
+		}
+		name, ok := npmName(o.PURL)
+		if !ok {
+			return nil, false
+		}
+		missed[name] = true
+	}
+	return missed, len(missed) > 0
+}
+
+// concernsMissed reports whether an advisory concerning purls (DependencyFetchRun.Packages) may
+// concern a package in missed: it names one, names a package that is not an npm package URL, or
+// names none.
+func concernsMissed(purls []string, missed map[string]bool) bool {
+	if len(purls) == 0 {
+		return true
+	}
+	for _, p := range purls {
+		name, ok := npmName(p)
+		if !ok || missed[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// npmName returns an npm package URL's package name, scope included and version dropped, folded to
+// lower case, or false when purl is not an npm package URL. The same name spelled in two cases
+// matches, so the fold only widens what counts as missed.
+func npmName(purl string) (string, bool) {
+	typ, name, ok := trigger.PackageName(purl)
+	if !ok || typ != "npm" {
+		return "", false
+	}
+	return strings.ToLower(name), true
 }
 
 // namesAny reports whether id is the ID or an alias of one of advs.

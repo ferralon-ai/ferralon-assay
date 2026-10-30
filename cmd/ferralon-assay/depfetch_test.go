@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -329,6 +330,163 @@ func TestDepCodeRunRecord(t *testing.T) {
 }
 
 // A nil run (not JS) records nothing: its hook is nil and the stored record is carried.
+// A cve-watch run that read part of its lock lists only the advisories concerning a package it
+// missed, and clears an entry for an advisory it re-assessed with every package it concerns read.
+// An advisory it cannot tie to npm packages stays listed, and when the missed packages cannot be
+// established every advisory it assessed is listed.
+func TestDepCodeRunRecordScopesPartialRead(t *testing.T) {
+	const npmjs, corp = "https://registry.npmjs.org/", "https://npm.corp.example/"
+	out := func(purl, reg, outcome string) pipeline.DependencyOutcome {
+		return pipeline.DependencyOutcome{PURL: purl, Registry: reg, Outcome: outcome}
+	}
+	partial := []pipeline.DependencyAcquisitionResult{{Outcomes: []pipeline.DependencyOutcome{
+		out("pkg:npm/a@1.0.0", npmjs, pipeline.OutcomeReadNetwork),
+		out("pkg:npm/@corp/b@1.0.0", corp, pipeline.UnreadPolicyRefused),
+		out("pkg:npm/c@1.0.0", npmjs, pipeline.OutcomeReadCache),
+	}}}
+	watch := func(pkgs map[string][]string, ids ...string) trigger.DependencyFetchRun {
+		run := trigger.DependencyFetchRun{Packages: pkgs}
+		for _, id := range ids {
+			run.Assessed = append(run.Assessed, report.Advisory{ID: id})
+		}
+		return run
+	}
+	for _, tc := range []struct {
+		name    string
+		prior   []string
+		results []pipeline.DependencyAcquisitionResult
+		run     trigger.DependencyFetchRun
+		want    []string
+	}{
+		{
+			name:    "one package refused lists only the advisories concerning it",
+			results: partial,
+			run: watch(map[string][]string{
+				"A": {"pkg:npm/a@1.0.0"},
+				"B": {"pkg:npm/%40corp/b@2.0.0"},
+				"C": {"pkg:npm/c", "pkg:npm/@corp/b"},
+				"D": {"pkg:npm/c@1.0.0", "pkg:npm/a"},
+			}, "A", "B", "C", "D"),
+			want: []string{"B", "C"},
+		},
+		{
+			name: "a package refused under another case is the one missed",
+			results: []pipeline.DependencyAcquisitionResult{{Outcomes: []pipeline.DependencyOutcome{
+				out("pkg:npm/a@1.0.0", npmjs, pipeline.OutcomeReadNetwork), out("pkg:npm/Legacy@1.0.0", npmjs, pipeline.UnreadUnavailable),
+			}}},
+			run:  watch(map[string][]string{"A": {"pkg:npm/a"}, "L": {"pkg:npm/legacy"}}, "A", "L"),
+			want: []string{"L"},
+		},
+		{
+			name:    "an advisory it cannot tie to npm packages stays listed",
+			results: partial,
+			run: watch(map[string][]string{
+				"A": {"pkg:npm/a"},
+				"F": {"pkg:npm/a", ""},
+				"G": {"pkg:maven/g/a@1"},
+				"H": {"pkg:npm/c", "not-a-purl"},
+				"I": {},
+			}, "A", "E", "F", "G", "H", "I"),
+			want: []string{"E", "F", "G", "H", "I"},
+		},
+		{
+			name:    "an advisory re-assessed with its packages read clears, and one still missed stays",
+			prior:   []string{"A", "B", "Z"},
+			results: partial,
+			run:     watch(map[string][]string{"A": {"pkg:npm/a"}, "B": {"pkg:npm/@corp/b"}}, "A", "B"),
+			want:    []string{"B", "Z"},
+		},
+		{
+			name: "an acquisition that fell back lists everything assessed",
+			results: []pipeline.DependencyAcquisitionResult{
+				{Fallback: &pipeline.DependencyCodeCause{Kind: pipeline.UnreadNotServed}},
+				partial[0],
+			},
+			prior: []string{"A"},
+			run:   watch(map[string][]string{"A": {"pkg:npm/a"}, "B": {"pkg:npm/@corp/b"}}, "A", "B"),
+			want:  []string{"A", "B"},
+		},
+		{
+			name: "a failed fetch naming no npm package lists everything assessed",
+			results: []pipeline.DependencyAcquisitionResult{{Outcomes: []pipeline.DependencyOutcome{
+				out("pkg:npm/a@1.0.0", npmjs, pipeline.OutcomeReadNetwork), out("", corp, pipeline.UnreadPolicyRefused),
+			}}},
+			prior: []string{"A"},
+			run:   watch(map[string][]string{"A": {"pkg:npm/a"}, "B": {"pkg:npm/@corp/b"}}, "A", "B"),
+			want:  []string{"A", "B"},
+		},
+		{
+			name: "a failed fetch naming a package of another type lists everything assessed",
+			results: []pipeline.DependencyAcquisitionResult{{Outcomes: []pipeline.DependencyOutcome{
+				out("pkg:npm/a@1.0.0", npmjs, pipeline.OutcomeReadNetwork), out("pkg:pypi/b@1.0.0", corp, pipeline.UnreadUnavailable),
+			}}},
+			run:  watch(map[string][]string{"A": {"pkg:npm/a"}}, "A"),
+			want: []string{"A"},
+		},
+		{
+			name:    "a baseline that read part of its lock neither adds nor clears",
+			prior:   []string{"A"},
+			results: partial,
+			run: func() trigger.DependencyFetchRun {
+				r := watch(map[string][]string{"A": {"pkg:npm/a"}, "B": {"pkg:npm/@corp/b"}}, "A", "B")
+				r.Baseline = true
+				return r
+			}(),
+			want: []string{"A"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &depCodeRun{source: report.DependencyCodeSourceFetch}
+			for _, r := range tc.results {
+				run.observe(r)
+			}
+			var prior *statestore.DepFetch
+			if tc.prior != nil {
+				prior = &statestore.DepFetch{Reassess: slices.Clone(tc.prior)}
+			}
+			got := run.record(prior, tc.run, time.Now())
+			var listed []string
+			if got != nil {
+				listed = slices.Compact(slices.Sorted(slices.Values(got.Reassess)))
+			}
+			if !slices.Equal(listed, tc.want) {
+				t.Fatalf("reassess = %q, want %q", listed, tc.want)
+			}
+		})
+	}
+}
+
+// The missed packages are established only from a failed fetch naming an npm package; a run
+// whose fetches recorded no failure has no missed set to scope by.
+func TestDepCodeRunMissedLocked(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		outcomes []pipeline.DependencyOutcome
+		want     map[string]bool
+		known    bool
+	}{
+		{name: "no outcome"},
+		{name: "every fetch read", outcomes: []pipeline.DependencyOutcome{{PURL: "pkg:npm/a@1", Outcome: pipeline.OutcomeReadNetwork}}},
+		{
+			name: "a scoped package refused, a version dropped and the case folded",
+			outcomes: []pipeline.DependencyOutcome{
+				{PURL: "pkg:npm/a@1", Outcome: pipeline.OutcomeReadNetwork},
+				{PURL: "pkg:npm/%40Corp/B@1", Outcome: pipeline.UnreadPolicyRefused},
+				{PURL: "pkg:npm/c@1", Outcome: pipeline.UnreadNoIntegrity},
+			},
+			want: map[string]bool{"@corp/b": true}, known: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &depCodeRun{outcomes: tc.outcomes}
+			got, known := run.missedLocked()
+			if known != tc.known || !reflect.DeepEqual(got, tc.want) && tc.known {
+				t.Fatalf("missedLocked = %v, %v; want %v, %v", got, known, tc.want, tc.known)
+			}
+		})
+	}
+}
+
 func TestDepCodeRunFetchUpdateNilForNonJS(t *testing.T) {
 	var run *depCodeRun
 	if run.fetchUpdate() != nil {

@@ -597,8 +597,8 @@ func aliasIndex() map[string]string {
 // only ever return advisories about packages the existing work set already named, which is precisely
 // the set we are trying to grow beyond. Widening needs an inventory built from the manifest instead.
 //
-// Go is read here from go.mod (the Go analyzer plugin declares resolve_versions Unsupported — Go
-// dependency versions are resolved in-pipeline from go.mod). Every other language reuses its
+// Go is read here from go.mod, or under a go.work from the workspace's build list (the Go analyzer
+// plugin declares resolve_versions Unsupported — Go dependency versions are resolved in-pipeline). Every other language reuses its
 // plugin's existing whole-manifest parse: ResolveDependencyVersions already parses every
 // manifest/lockfile under the build dir into DependencyVersionResult.All and only then selects the
 // requested coordinate, so an EMPTY coordinate returns the full inventory with no plugin change.

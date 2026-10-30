@@ -257,8 +257,14 @@ func GoWorkspaceModules(ctx context.Context, buildDir string, ws GoWorkspace) (p
 		}
 		uses, _, _ := parseGoWork(ws.File)
 		for _, use := range uses {
-			data, _ := os.ReadFile(filepath.Join(use, "go.mod"))
-			mf, _ := modfile.Parse("go.mod", data, nil)
+			data, err := os.ReadFile(filepath.Join(use, "go.mod"))
+			if err != nil {
+				return nil, nil, fmt.Errorf("pipeline: the workspace %s cannot be read: %w", ws.File, err)
+			}
+			mf, err := modfile.Parse("go.mod", data, nil)
+			if err != nil {
+				return nil, nil, fmt.Errorf("pipeline: the workspace %s cannot be read: %w", ws.File, err)
+			}
 			for _, r := range mf.Require {
 				set[r.Mod.Path] = true
 			}

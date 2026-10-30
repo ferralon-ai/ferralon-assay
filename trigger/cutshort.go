@@ -15,12 +15,13 @@ import (
 )
 
 // analysisOr is the context a run's analysis half runs under: the request's Analysis context, or
-// ctx when the caller set none.
+// ctx when the caller set none. Every advisory of the run assesses one checked-out tree, so it
+// carries one nested-module walk for them all (pipeline.WithNestedModuleMemo).
 func analysisOr(analysis, ctx context.Context) context.Context {
 	if analysis == nil {
-		return ctx
+		analysis = ctx
 	}
-	return analysis
+	return pipeline.WithNestedModuleMemo(analysis)
 }
 
 // assessWithin runs one advisory's assessment under analysis and reports stopped when the scan
@@ -144,6 +145,18 @@ func inventoryCutShort(notes []report.PartialityNote) bool {
 		}
 	}
 	return false
+}
+
+// unqueriedModules returns notes' inventory limits that name Go modules the build root's module
+// graph leaves out, whose dependencies the SBOM therefore does not hold.
+func unqueriedModules(notes []report.PartialityNote) []report.PartialityNote {
+	var out []report.PartialityNote
+	for _, n := range inventoryLimits(notes) {
+		if n.Reason == plugin.PartialReasonNestedModule {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // ownStop is the cause recountCutShort states for a pass that cut rows itself, "" for one that cut

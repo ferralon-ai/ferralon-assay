@@ -44,7 +44,7 @@ import (
 // zero-node inventory. Collapsing them would make a whole-graph resolver less honest
 // than the single-coordinate moduleVersionFromGoMod it augments, and would make a
 // later CVE-watch read "we could not resolve this" as "this dependency is absent".
-// A go.mod that requires nothing is Complete only when no module nested below it holds
+// A go.mod that requires nothing is Complete only when no other module in the tree holds
 // requirements this graph cannot see (nestedModuleLimits).
 func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
 	if fi, err := os.Stat(req.BuildDir); err != nil || !fi.IsDir() {
@@ -93,9 +93,10 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 
 	// A module nested below this root and outside its module graph is resolved on its own, so
 	// this root's graph never sees what it requires. Name every such module: a stub root that requires
-	// nothing above modules that do must not read as a codebase with no dependencies.
-	nested := nestedModuleLimits(req.BuildDir)
-	if len(nested) > 0 {
+	// nothing above modules that do must not read as a codebase with no dependencies. A walk that
+	// could not read the whole tree may have missed one, so the limit is then run-wide too.
+	nested, complete := nestedModuleLimits(req.BuildDir)
+	if !complete {
 		graphReasons = append(graphReasons, PartialReasonNestedModule)
 	}
 
@@ -224,28 +225,37 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 }
 
 // PartialReasonNestedModule is the inventory limit for a go.mod below the build root that the build
-// root's module graph does not include, so neither are its requirements. It is a
-// did-not-run limit, so no not-affected verdict of the ecosystem rests on this inventory.
-const PartialReasonNestedModule = plugin.PartialReasonUnsupported + ":nested_module"
+// root's module graph does not include, so neither are its requirements. It is a did-not-run limit:
+// no not-affected verdict on a package the module may build against rests on this inventory.
+const PartialReasonNestedModule = plugin.PartialReasonNestedModule
 
-// nestedModuleLimits returns one PartialReasonNestedModule limit per module nested below buildDir
-// and outside its module graph (gomodtree.Nested), each naming the module's directory relative to
-// buildDir. Its Targets are empty: what a module the inventory never read requires is unbounded.
-func nestedModuleLimits(buildDir string) []plugin.ScopedReason {
-	dirs := gomodtree.Nested(buildDir, 0)
-	if len(dirs) == 0 {
-		return nil
+// nestedModuleLimits returns one PartialReasonNestedModule limit per module below buildDir that its
+// module graph does not include (gomodtree.Nested), each naming the module's directory relative to
+// buildDir, and whether the walk read the whole tree. A module whose go.mod lists every module its
+// build draws on (go 1.17 or later) is bounded: its Targets are its own module and those, as PURLs
+// without a version. Any other module's Targets are empty, which bounds nothing.
+func nestedModuleLimits(buildDir string) ([]plugin.ScopedReason, bool) {
+	tree := gomodtree.Nested(buildDir, buildDir)
+	var limits []plugin.ScopedReason
+	for _, m := range tree.Modules {
+		limit := plugin.ScopedReason{Reason: PartialReasonNestedModule, Path: m.Dir}
+		if m.Bounded {
+			for _, p := range append([]string{m.Path}, m.Requires...) {
+				if p != "" {
+					limit.Targets = append(limit.Targets, "pkg:golang/"+p)
+				}
+			}
+		}
+		limits = append(limits, limit)
 	}
-	limits := make([]plugin.ScopedReason, 0, len(dirs))
-	for _, d := range dirs {
-		limits = append(limits, plugin.ScopedReason{Reason: PartialReasonNestedModule, Path: d})
-	}
-	return limits
+	return limits, tree.Complete
 }
 
-// withScoped attaches the nested-module limits to an inventory Partiality.
+// withScoped attaches the nested-module limits to an inventory Partiality. A scoped limit leaves
+// the inventory partial even when no run-wide reason does.
 func withScoped(p plugin.Partiality, scoped []plugin.ScopedReason) plugin.Partiality {
 	if len(scoped) > 0 {
+		p.Complete = false
 		p.Scoped = scoped
 	}
 	return p

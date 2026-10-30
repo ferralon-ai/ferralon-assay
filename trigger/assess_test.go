@@ -684,7 +684,7 @@ func TestWithInventoryLimits(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := withInventoryLimits(tc.f, tc.limits)
+			got := withInventoryLimits(tc.f, tc.limits, nil)
 			if !tc.blocked {
 				if got.Verdict != report.VerdictNotExploitable {
 					t.Fatalf("verdict = %s/%q, want not_exploitable", got.Verdict, got.UndeterminedReason)
@@ -699,7 +699,7 @@ func TestWithInventoryLimits(t *testing.T) {
 	for _, v := range []report.Verdict{report.VerdictReachableCandidate, report.VerdictUndetermined} {
 		f := ne
 		f.Verdict = v
-		if got := withInventoryLimits(f, ambiguous); got.Verdict != v {
+		if got := withInventoryLimits(f, ambiguous, nil); got.Verdict != v {
 			t.Errorf("%s changed to %s", v, got.Verdict)
 		}
 	}
@@ -755,7 +755,7 @@ func TestWithInventoryLimits_Disqualified(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := withInventoryLimits(tc.f, tc.limits)
+			got := withInventoryLimits(tc.f, tc.limits, nil)
 			if !tc.blocked {
 				if got.Verdict != report.VerdictDisqualified {
 					t.Fatalf("verdict = %s/%q, want disqualified", got.Verdict, got.UndeterminedReason)
@@ -769,12 +769,90 @@ func TestWithInventoryLimits_Disqualified(t *testing.T) {
 	}
 }
 
-// withNestedModules scopes p's nested-module limit to each named module directory, as the Go
-// inventory does.
+// TestWithInventoryLimits_NestedModuleBound: a nested Go module whose go.mod lists all it builds
+// against demotes only a row whose advisory affects one of those modules. With the advisory's
+// packages unknown, or one of them unreadable, the bound narrows nothing.
+func TestWithInventoryLimits_NestedModuleBound(t *testing.T) {
+	disq := func(reason string) report.AdvisoryFinding {
+		return report.AdvisoryFinding{
+			Package:  &report.Package{Ecosystem: "Go", Name: "golang.org/x/crypto", Version: "v0.1.0"},
+			Verdict:  report.VerdictDisqualified,
+			Evidence: report.EvidenceSummary{Basis: disqualBasis(reason), Detail: disqualDetail(reason)},
+		}
+	}
+	absent := disq(pipeline.ReasonNoManifestEntry)
+	absent.Package = nil
+	outOfRange := disq(pipeline.ReasonVersionNotInRange)
+	// A nested module whose go.mod requires only x/text, and one that requires x/crypto.
+	text := inventoryPartialityNotes(withNestedModule(plugin.Partiality{}, "plugins/c", "pkg:golang/golang.org/x/text"), "Go")
+	crypto := inventoryPartialityNotes(withNestedModule(plugin.Partiality{}, "receiver/a", "pkg:golang/golang.org/x/crypto"), "Go")
+	advisory := []string{"pkg:golang/golang.org/x/crypto"}
+	cases := []struct {
+		name    string
+		f       report.AdvisoryFinding
+		limits  []report.PartialityNote
+		purls   []string
+		blocked bool
+	}{
+		{"absent, nested module requires something else", absent, text, advisory, false},
+		{"absent, nested module requires it", absent, crypto, advisory, true},
+		{"absent, nested module requires a module holding it", absent, crypto, []string{"pkg:golang/golang.org/x/crypto/ssh"}, true},
+		{"absent, advisory packages unknown", absent, text, nil, true},
+		{"absent, an advisory package that is not a package URL", absent, text, []string{"golang.org/x/crypto"}, true},
+		{"out of range, nested module requires something else", outOfRange, text, advisory, false},
+		{"out of range, nested module requires the row's package", outOfRange, crypto, []string{"pkg:golang/golang.org/x/net"}, true},
+		{"out of range, nested module requires another affected package", outOfRange, text, append(advisory, "pkg:golang/golang.org/x/text"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withInventoryLimits(tc.f, tc.limits, tc.purls)
+			if blocked := got.Verdict == report.VerdictUndetermined; blocked != tc.blocked {
+				t.Fatalf("verdict = %s/%q, want blocked %v", got.Verdict, got.UndeterminedReason, tc.blocked)
+			}
+		})
+	}
+}
+
+// TestInheritedLimits: a row a Report re-emits was judged under every limit its own Report carries,
+// so only a bounded limit that Report already carried, with the same bound, is left out.
+func TestInheritedLimits(t *testing.T) {
+	nested := func(targets ...string) report.PartialityNote {
+		return inventoryPartialityNotes(withNestedModule(plugin.Partiality{}, "a", targets...), "Go")[0]
+	}
+	unbounded := inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonToolFailure), "Go")[0]
+	base := &report.Report{Partiality: []report.PartialityNote{nested("pkg:golang/x"), unbounded}}
+	cases := []struct {
+		name string
+		head []report.PartialityNote
+		base *report.Report
+		want []report.PartialityNote
+	}{
+		{"a bounded limit the base carried", []report.PartialityNote{nested("pkg:golang/x")}, base, nil},
+		{"a bounded limit with a new bound", []report.PartialityNote{nested("pkg:golang/y")}, base, []report.PartialityNote{nested("pkg:golang/y")}},
+		{"an unbounded limit the base carried", []report.PartialityNote{unbounded}, base, []report.PartialityNote{unbounded}},
+		{"no base", []report.PartialityNote{nested("pkg:golang/x")}, nil, []report.PartialityNote{nested("pkg:golang/x")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := inheritedLimits(tc.head, tc.base); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("inheritedLimits = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// withNestedModules scopes p's nested-module limit to each named module directory, unbounded, as
+// the Go inventory does for a module whose go.mod does not list all it builds against.
 func withNestedModules(p plugin.Partiality, dirs ...string) plugin.Partiality {
 	for _, d := range dirs {
-		p.Scoped = append(p.Scoped, plugin.ScopedReason{Reason: goanalysis.PartialReasonNestedModule, Path: d})
+		p = withNestedModule(p, d)
 	}
+	return p
+}
+
+// withNestedModule adds one nested-module limit to p, bounded by targets when it names any.
+func withNestedModule(p plugin.Partiality, dir string, targets ...string) plugin.Partiality {
+	p.Scoped = append(p.Scoped, plugin.ScopedReason{Reason: goanalysis.PartialReasonNestedModule, Path: dir, Targets: targets})
 	return p
 }
 
@@ -784,6 +862,10 @@ func TestInventoryPartialityNotes(t *testing.T) {
 	nested := goanalysis.PartialReasonNestedModule
 	note := func(reason, path string) report.PartialityNote {
 		return report.PartialityNote{Reason: reason, Ecosystem: "Go", Detail: inventoryLimitDetail, Path: path}
+	}
+	bounded := func(n report.PartialityNote, targets ...string) report.PartialityNote {
+		n.Targets = targets
+		return n
 	}
 	scopedOnly := plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: nested, Path: "a"}}}
 	cases := []struct {
@@ -798,6 +880,13 @@ func TestInventoryPartialityNotes(t *testing.T) {
 			withNestedModules(plugin.Partial(plugin.PartialReasonToolFailure, nested), "exporter/b", "receiver/a"),
 			[]report.PartialityNote{note(plugin.PartialReasonToolFailure, ""), note(nested, "exporter/b, receiver/a")}},
 		{"scoped reason missing from Reasons", scopedOnly, []report.PartialityNote{note(nested, "a")}},
+		{"bounded nested modules bound the note by the union of their targets",
+			withNestedModule(withNestedModule(plugin.Partiality{}, "a", "pkg:golang/z", "pkg:golang/x"), "b", "pkg:golang/x", "pkg:golang/y"),
+			[]report.PartialityNote{bounded(note(nested, "a, b"), "pkg:golang/x", "pkg:golang/y", "pkg:golang/z")}},
+		{"one unbounded nested module leaves the note unbounded",
+			withNestedModules(withNestedModule(plugin.Partiality{}, "a", "pkg:golang/x"), "b"), []report.PartialityNote{note(nested, "a, b")}},
+		{"a run-wide reason leaves its scoped note unbounded",
+			withNestedModule(plugin.Partial(nested), "a", "pkg:golang/x"), []report.PartialityNote{note(nested, "a")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

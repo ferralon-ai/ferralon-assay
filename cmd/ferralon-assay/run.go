@@ -1304,6 +1304,7 @@ func runCVEWatch(args []string) error {
 			fmt.Fprintf(os.Stdout, "  no new advisories affect the stored SBOM; cursor bumped, nothing republished\n")
 		}
 		warnNoInventory(os.Stderr, res)
+		warnUnqueried(os.Stdout, os.Stderr, res)
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.

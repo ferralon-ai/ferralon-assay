@@ -56,6 +56,33 @@ func TestPartiality_DeduplicatedAndStablySorted(t *testing.T) {
 	}
 }
 
+// Two notes merged on their identity keep the widest bound: the union of their Targets, or none
+// when either is unbounded. Keeping only the first note's Targets would narrow a limit the second
+// note declared wider.
+func TestPartiality_MergedTargetsKeepTheWidestBound(t *testing.T) {
+	note := func(targets ...string) report.PartialityNote {
+		return report.PartialityNote{Reason: "tool_failure", Ecosystem: "Go", Path: "a", Targets: targets}
+	}
+	cases := []struct {
+		name  string
+		notes []report.PartialityNote
+		want  []string
+	}{
+		{"one bounded note", []report.PartialityNote{note("pkg:golang/b", "pkg:golang/a")}, []string{"pkg:golang/a", "pkg:golang/b"}},
+		{"bounded notes take the union", []report.PartialityNote{note("pkg:golang/a"), note("pkg:golang/b", "pkg:golang/a")}, []string{"pkg:golang/a", "pkg:golang/b"}},
+		{"an unbounded first note", []report.PartialityNote{note(), note("pkg:golang/a")}, nil},
+		{"an unbounded later note", []report.PartialityNote{note("pkg:golang/a"), note(), note("pkg:golang/b")}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := partialityBuilder().AddPartiality(tc.notes...).Build()
+			if len(r.Partiality) != 1 || !reflect.DeepEqual(r.Partiality[0].Targets, tc.want) {
+				t.Fatalf("Partiality = %+v, want one note with Targets %q", r.Partiality, tc.want)
+			}
+		})
+	}
+}
+
 // assessFailureNote (trigger/assess.go) mints one tool_failure note per failed
 // advisory, differing ONLY in Detail (the failed step + the advisory id). Before the dedup key
 // widened from {Reason, Ecosystem} to {Reason, Ecosystem, Detail} (the narrower key main's

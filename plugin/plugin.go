@@ -84,8 +84,10 @@ type Partiality struct {
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
-	// Targets exclude the advisory's package (trigger/assess.go). Only the ingress, reachability
-	// and vulnerable-symbol results' Scoped limits reach the verdict; set on any other result, they
+	// Targets exclude the advisory's package (trigger/assess.go). The ingress, reachability and
+	// vulnerable-symbol results' Scoped limits reach the verdict that way. The dependency inventory's
+	// reach it too: each is disclosed on the Report's inventory note for its reason, whose Targets
+	// bound which rows the limit demotes (trigger/inventory_sbom.go). Set on any other result, they
 	// are dropped.
 	Scoped []ScopedReason `json:"scoped,omitempty"`
 }
@@ -305,6 +307,11 @@ const (
 	// call graph. A limit of the method's source-level reading, not a per-run failure, so it
 	// is classified inherent alongside native_link_boundary.
 	PartialReasonMacroExpansion = "macro_expansion"
+	// PartialReasonNestedModule is the Go inventory's limit for a module in the checkout that the
+	// build root's module graph does not include, so neither are its requirements. A did-not-run
+	// limit: each such module is a scoped limit naming its directory, whose Targets are what its
+	// go.mod requires when that list is complete (go 1.17 or later), and unbounded otherwise.
+	PartialReasonNestedModule = PartialReasonUnsupported + ":nested_module"
 )
 
 // Complete is the constructor for a fully-resolved result.

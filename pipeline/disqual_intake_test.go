@@ -17,11 +17,13 @@
 package pipeline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/checkout/gomodtree"
 )
 
 // --- Pure predicate: intakeDisqualify ----------------------------------------
@@ -206,13 +208,7 @@ func writeGoTree(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for rel, body := range files {
-		p := filepath.Join(dir, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeGoFile(t, filepath.Join(dir, rel), body)
 	}
 	return dir
 }
@@ -220,40 +216,69 @@ func writeGoTree(t *testing.T, files map[string]string) string {
 const (
 	stubRootGoMod     = "module example.com/stub\n\ngo 1.21\n"
 	nestedCryptoGoMod = "module example.com/stub/receiver/a\n\ngo 1.21\n\nrequire golang.org/x/crypto v0.1.0\n"
+	// Shaped like this repository's plugins/cfamily: a module of its own beside the root, whose
+	// go.mod (go 1.17 or later) lists every module it builds against, x/crypto not among them.
+	unrelatedNestedGoMod = "module example.com/app/plugins/c\n\ngo 1.26\n\nrequire (\n\tgithub.com/example/c v1.0.0\n\tgolang.org/x/sys v0.1.0 // indirect\n)\n"
 )
 
-// TestGoModRequires: absence is proven only against the whole manifest. A module nested below the
-// build root (outside its go.work) may require what the root go.mod does not, so the root's silence
-// is unknown, never absent.
+// TestGoModRequires: absence is proven only against the whole manifest. Every other module of the
+// checkout that the build root's graph leaves out, and that may build against the module, makes
+// the root's silence unknown, never absent; one whose complete require list omits it does not.
 func TestGoModRequires(t *testing.T) {
 	cases := []struct {
 		name               string
 		files              map[string]string
 		module             string
+		tree               *gomodtree.Tree // the walk's result, when not walked from the files
 		wantPresent, known bool
 	}{
-		{"required by the root", map[string]string{"go.mod": goModWithText}, "golang.org/x/text", true, true},
-		{"absent from a lone root", map[string]string{"go.mod": goModWithText}, "golang.org/x/crypto", false, true},
-		{"no go.mod", map[string]string{"main.go": "package main\n"}, "golang.org/x/crypto", false, false},
+		{"required by the root", map[string]string{"go.mod": goModWithText}, "golang.org/x/text", nil, true, true},
+		{"absent from a lone root", map[string]string{"go.mod": goModWithText}, "golang.org/x/crypto", nil, false, true},
+		{"no go.mod", map[string]string{"main.go": "package main\n"}, "golang.org/x/crypto", nil, false, false},
 		{"stub root, nested module requires it", map[string]string{
 			"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod,
-		}, "golang.org/x/crypto", false, false},
+		}, "golang.org/x/crypto", nil, false, false},
+		{"stub root, nested module requires a module holding it", map[string]string{
+			"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod,
+		}, "golang.org/x/crypto/ssh", nil, false, false},
 		{"stub root, nested module requires something else", map[string]string{
 			"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod,
-		}, "example.com/never-required", false, false},
+		}, "example.com/never-required", nil, false, true},
+		{"an unrelated nested module beside a root that requires", map[string]string{
+			"go.mod": goModWithText, "plugins/c/go.mod": unrelatedNestedGoMod,
+		}, "golang.org/x/crypto", nil, false, true},
+		{"nested module below go 1.17", map[string]string{
+			"go.mod": stubRootGoMod, "receiver/a/go.mod": "module example.com/stub/receiver/a\n\ngo 1.16\n",
+		}, "golang.org/x/crypto", nil, false, false},
+		{"nested module with no go directive", map[string]string{
+			"go.mod": stubRootGoMod, "receiver/a/go.mod": "module example.com/stub/receiver/a\n",
+		}, "golang.org/x/crypto", nil, false, false},
+		{"nested module that does not parse", map[string]string{
+			"go.mod": stubRootGoMod, "receiver/a/go.mod": "not a go.mod\n",
+		}, "golang.org/x/crypto", nil, false, false},
 		{"root requires it, nested module present", map[string]string{
 			"go.mod": goModWithText, "receiver/a/go.mod": nestedCryptoGoMod,
-		}, "golang.org/x/text", true, true},
+		}, "golang.org/x/text", nil, true, true},
 		{"nested module under testdata is not source", map[string]string{
 			"go.mod": stubRootGoMod, "testdata/a/go.mod": nestedCryptoGoMod,
-		}, "golang.org/x/crypto", false, true},
-		{"nested module a go.work lists", map[string]string{
+		}, "golang.org/x/crypto", nil, false, true},
+		{"a go.work member may require it", map[string]string{
 			"go.mod": stubRootGoMod, "go.work": "go 1.21\n\nuse ./receiver/a\n", "receiver/a/go.mod": nestedCryptoGoMod,
-		}, "golang.org/x/crypto", false, true},
+		}, "golang.org/x/crypto", nil, false, false},
+		{"a go.work, the root requires it", map[string]string{
+			"go.mod": goModWithText, "go.work": "go 1.21\n\nuse .\n",
+		}, "golang.org/x/text", nil, true, true},
+		{"a walk that could not read the whole tree", map[string]string{"go.mod": goModWithText},
+			"golang.org/x/crypto", &gomodtree.Tree{Complete: false}, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			present, known := goModRequires(writeGoTree(t, tc.files), tc.module)
+			dir := writeGoTree(t, tc.files)
+			nested := func() gomodtree.Tree { return gomodtree.Nested(dir, dir) }
+			if tc.tree != nil {
+				nested = func() gomodtree.Tree { return *tc.tree }
+			}
+			present, known := goModRequires(dir, tc.module, nested)
 			if present != tc.wantPresent || known != tc.known {
 				t.Fatalf("goModRequires = (present %v, known %v), want (%v, %v)", present, known, tc.wantPresent, tc.known)
 			}
@@ -261,23 +286,78 @@ func TestGoModRequires(t *testing.T) {
 	}
 }
 
-// A stub root go.mod that requires nothing, above a nested module that requires the advisory's
-// module, cannot disqualify the advisory: the root's silence is not the manifest's.
-func TestIntakeRun_StubRootNestedModule_CannotDisqualify(t *testing.T) {
-	store := artifact.NewMemStore()
-	caseID := "case-stub-root"
-	buildDir := writeGoTree(t, map[string]string{"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod})
-	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id": "CVE-2024-45337",
-		"module":  "golang.org/x/crypto",
-		"purl":    "pkg:golang/golang.org/x/crypto",
-	})
-	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
-		"language": "go", "build_dir": buildDir,
-	})
-	res := runDisqual(t, store, caseID)
-	if res.Disqualified {
-		t.Fatalf("stub root above a nested module requiring the advisory's module must not disqualify, got %+v", res)
+// TestIntakeRun_NestedGoModules: intake disqualifies a Go advisory no_manifest_entry only when no
+// module of the checkout may build against its module. The walk covers the whole checkout from the
+// recorded checkout root, so a sibling of the build root counts as much as a module below it.
+func TestIntakeRun_NestedGoModules(t *testing.T) {
+	cases := []struct {
+		name         string
+		files        map[string]string
+		buildDir     string // relative to the checkout root
+		disqualified bool
+	}{
+		{"stub root above a nested module that requires it", map[string]string{
+			"go.mod": stubRootGoMod, "receiver/a/go.mod": nestedCryptoGoMod,
+		}, "", false},
+		{"an unrelated nested module keeps the disqualification", map[string]string{
+			"go.mod": goModWithText, "plugins/c/go.mod": unrelatedNestedGoMod,
+		}, "", true},
+		{"a sibling of the build root requires it", map[string]string{
+			"api/go.mod": goModWithText, "worker/go.mod": nestedCryptoGoMod,
+		}, "api", false},
+		{"a sibling of the build root requires something else", map[string]string{
+			"api/go.mod": goModWithText, "worker/go.mod": unrelatedNestedGoMod,
+		}, "api", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			caseID := "case-nested-go-modules"
+			root := writeGoTree(t, tc.files)
+			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
+				"vuln_id": "CVE-2024-45337",
+				"module":  "golang.org/x/crypto",
+				"purl":    "pkg:golang/golang.org/x/crypto",
+			})
+			putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
+				"language": "go", "build_dir": filepath.Join(root, tc.buildDir), "checkout_root": root,
+			})
+			res := runDisqual(t, store, caseID)
+			if res.Disqualified != tc.disqualified || (tc.disqualified && res.Reason != ReasonNoManifestEntry) {
+				t.Fatalf("got %+v, want disqualified %v (no_manifest_entry)", res, tc.disqualified)
+			}
+		})
+	}
+}
+
+// TestNestedModules_WalkedOncePerMemo: a scan's memo walks each (checkout root, build dir) once, so
+// a module added after the first walk is not seen through it; without a memo every call walks.
+func TestNestedModules_WalkedOncePerMemo(t *testing.T) {
+	root := writeGoTree(t, map[string]string{"go.mod": stubRootGoMod})
+	memo := WithNestedModuleMemo(context.Background())
+	if WithNestedModuleMemo(memo) != memo {
+		t.Fatal("a ctx carrying a memo must be returned as is")
+	}
+	if got := nestedModules(memo, root, root); len(got.Modules) != 0 {
+		t.Fatalf("first walk = %+v, want no modules", got)
+	}
+	writeGoFile(t, filepath.Join(root, "receiver/a/go.mod"), nestedCryptoGoMod)
+	if got := nestedModules(memo, root, root); len(got.Modules) != 0 {
+		t.Fatalf("memoised walk = %+v, want the first walk's result", got)
+	}
+	if got := nestedModules(context.Background(), root, root); len(got.Modules) != 1 {
+		t.Fatalf("unmemoised walk = %+v, want the added module", got)
+	}
+}
+
+// writeGoFile writes body to path, creating its directory.
+func writeGoFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

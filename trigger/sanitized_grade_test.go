@@ -128,6 +128,58 @@ func TestReachabilityEvidence_GoSanitizedFlow(t *testing.T) {
 	}
 }
 
+// TestReachabilityEvidence_GoSanitizedAndRawSinks runs the Go taint op over a handler that hands
+// one sink only a sanitized value and another the raw request method, asking about both as the
+// pipeline does. The raw sink's taint path grades the candidate attacker_tainted, even though the
+// first resolved sink, and its reach path, is the sanitized one.
+func TestReachabilityEvidence_GoSanitizedAndRawSinks(t *testing.T) {
+	const dir = "../internal/plugin/goanalysis/testdata/twosinkmod"
+	ctx := context.Background()
+	cg, err := goanalysis.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var escaped, raw, handler string
+	for _, e := range cg.Edges {
+		switch {
+		case strings.Contains(e.Callee.SCIP, "/Escaped()."):
+			escaped, handler = e.Callee.SCIP, e.Caller.SCIP
+		case strings.Contains(e.Callee.SCIP, "/Raw()."):
+			raw = e.Callee.SCIP
+		}
+	}
+	if escaped == "" || raw == "" {
+		t.Fatal("no edges to Escaped and Raw in the fixture's call graph")
+	}
+	taint, err := goanalysis.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: dir, Sinks: []string{escaped, raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := artifact.NewMemStore()
+	const aid = "a"
+	putJSON(t, store, aid, artifact.TypeIngressMap, plugin.IngressResult{
+		Ingresses: []plugin.Ingress{{Kind: "http_route", Symbol: plugin.Symbol{SCIP: handler}, Selector: "/"}},
+	})
+	putJSON(t, store, aid, artifact.TypeReachability, struct {
+		Reachability plugin.ReachabilityResult `json:"reachability"`
+	}{Reachability: plugin.ReachabilityResult{Paths: []plugin.ReachPath{{
+		Sink: plugin.Symbol{SCIP: escaped}, Ingress: plugin.Symbol{SCIP: handler},
+		Trace: []plugin.Symbol{{SCIP: handler}, {SCIP: escaped}},
+	}}}})
+	putJSON(t, store, aid, artifact.TypeTaint, struct {
+		Result plugin.TaintResult `json:"result"`
+	}{Result: taint})
+
+	grade, _, frames := reachabilityEvidence(store, aid)
+	if grade != report.GradeAttackerTainted {
+		t.Errorf("grade = %q, want attacker_tainted (taint result %+v)", grade, taint)
+	}
+	if got, want := frameSymbols(frames), []string{handler, raw}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("frames = %v, want the taint path to Raw %v", got, want)
+	}
+}
+
 func frameSymbols(frames []report.CallFrame) []string {
 	out := make([]string, 0, len(frames))
 	for _, f := range frames {

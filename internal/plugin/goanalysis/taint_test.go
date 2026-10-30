@@ -2,6 +2,7 @@ package goanalysis
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,6 +134,41 @@ func TestComputeTaint_RawFlowBesideSanitized(t *testing.T) {
 			}
 			if len(res.Paths) != 1 || res.Paths[0].Sink.SCIP != sink {
 				t.Errorf("want one taint path to %q; got %+v (reasons %v)", sink, res.Paths, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// TestComputeTaint_EverySinkGraded pins the rule over several requested sinks: one an unsanitized
+// flow reaches yields its path even when another is reached only by sanitized flows, and the
+// result is complete with zero paths only when every requested sink is sanitized-only.
+func TestComputeTaint_EverySinkGraded(t *testing.T) {
+	const dir = "testdata/twosinkmod"
+	escaped, raw := sinkSCIPIn(t, dir, "/Escaped()."), sinkSCIPIn(t, dir, "/Raw().")
+	for _, c := range []struct {
+		name         string
+		sinks        []string
+		wantPaths    []string
+		wantComplete bool
+	}{
+		{name: "sanitized only", sinks: []string{escaped}, wantComplete: true},
+		{name: "sanitized and raw", sinks: []string{escaped, raw}, wantPaths: []string{raw}, wantComplete: true},
+		{name: "sanitized and unreached", sinks: []string{escaped, sinkSCIPIn(t, sanitizerOnlyDir(t), "/Sink().")}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{BuildDir: dir, Sinks: c.sinks})
+			if err != nil {
+				t.Fatalf("ComputeTaint: %v", err)
+			}
+			var got []string
+			for _, p := range res.Paths {
+				got = append(got, p.Sink.SCIP)
+			}
+			if !slices.Equal(got, c.wantPaths) {
+				t.Errorf("path sinks = %v, want %v", got, c.wantPaths)
+			}
+			if res.Partiality.Complete != c.wantComplete {
+				t.Errorf("Complete = %v, want %v (reasons %v)", res.Partiality.Complete, c.wantComplete, res.Partiality.Reasons)
 			}
 		})
 	}

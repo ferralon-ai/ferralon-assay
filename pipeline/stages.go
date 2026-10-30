@@ -3371,7 +3371,10 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}, DependencyCache: depCache})
+		// Taint is asked about every resolved sink: the grade reads a complete result with no path
+		// as every flow sanitized, which holds only if no sink an unsanitized flow reaches was left
+		// out. The artifact keeps naming the first resolved sink, as the harness does.
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: sinks, DependencyCache: depCache})
 		if err != nil {
 			return err
 		}
@@ -3472,6 +3475,7 @@ type HarnessArtifact struct {
 }
 
 // taintDiscovery is the FROZEN persisted shape of a TypeTaint artifact (schema tegron.taint.v1).
+// Result covers every resolved sink; Sink names the first resolved one.
 type taintDiscovery struct {
 	SchemaVersion string             `json:"schema_version"`
 	Sink          string             `json:"sink"`

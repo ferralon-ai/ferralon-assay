@@ -595,8 +595,9 @@ func withSignals(p report.Provenance, sig *intel.Signals) report.Provenance {
 // a verdict — the strongest grade (attacker_tainted) still means *candidate*, never
 // exploitable. attacker_tainted requires BOTH an attacker-controllable ingress AND
 // taint path-presence to the sink; anything less is control_flow_only. A complete
-// taint result with no path (the taint op found every flow to the sink sanitized)
-// grades control_flow_only with the reach path's frames for display; it is still a
+// taint result with no path (the taint op observed only sanitized flows reaching
+// every resolved sink, and dropped no flow it could not follow) grades
+// control_flow_only with the reach path's frames for display; it is still a
 // candidate, never a safe verdict. Only a missing or Partial taint result leaves the
 // grade to the reach path.
 func reachabilityEvidence(store artifact.Store, assessmentID string) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
@@ -758,7 +759,7 @@ func firstTaintPath(store artifact.Store, assessmentID string) (plugin.ReachPath
 	return res.Paths[0], true
 }
 
-// taintResult reads the taint result recorded for the candidate's sink, if any.
+// taintResult reads the taint result recorded for the candidate's resolved sinks, if any.
 func taintResult(store artifact.Store, assessmentID string) (plugin.TaintResult, bool) {
 	arts, err := store.Query(assessmentID, artifact.TypeTaint)
 	if err != nil || len(arts) == 0 {

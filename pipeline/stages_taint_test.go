@@ -4,6 +4,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -58,6 +59,65 @@ func TestReachabilityEmitsTaintDiscovery(t *testing.T) {
 	// Path-presence taint is partial by construction; StubPlugin returns Unsupported() ⇒ Complete=false.
 	if td.Result.Partiality.Complete {
 		t.Fatal("taint discovery must stay declared-partial (Complete=false), not be upgraded to Complete")
+	}
+}
+
+// sinkRecordingPlugin records the sinks each ComputeTaint call asks about.
+type sinkRecordingPlugin struct {
+	plugin.StubPlugin
+	sinks *[][]string
+}
+
+func (p sinkRecordingPlugin) ComputeTaint(_ context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
+	*p.sinks = append(*p.sinks, req.Sinks)
+	return plugin.TaintResult{Partiality: plugin.Complete()}, nil
+}
+
+// TestReachabilityTaintCoversEverySink pins that taint is asked about every resolved sink at once,
+// so a complete result with no path means no requested sink was reached unsanitized, while the
+// artifact keeps naming the first resolved sink.
+func TestReachabilityTaintCoversEverySink(t *testing.T) {
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "case-taint-sinks"}
+	if _, err := PutArtifact(store, c, "codebase_inventory", artifact.TypeInventory, "inventory", struct {
+		BuildDir string `json:"build_dir"`
+	}{BuildDir: "/does/not/matter"}); err != nil {
+		t.Fatalf("seed inventory: %v", err)
+	}
+	res := plugin.SymbolResolutionResult{
+		Partiality: plugin.Complete(),
+		Resolved: []plugin.Symbol{
+			{SCIP: "scip:app#Escaped"},
+			{SCIP: "scip:dep#Raw"},
+			{SCIP: "scip:app#Escaped"},
+		},
+		Origins: map[string]string{"scip:dep#Raw": "pkg:golang/example.com/dep"},
+	}
+	if _, err := PutArtifact(store, c, "symbol_mapping", artifact.TypeVulnerableSymbol, "vulnerable symbol (resolved)", res); err != nil {
+		t.Fatalf("seed symbol: %v", err)
+	}
+
+	var calls [][]string
+	stage := reachabilityIngress{plugin: sinkRecordingPlugin{sinks: &calls}}
+	if err := stage.Run(context.Background(), c, store); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("ComputeTaint calls = %v, want 1", calls)
+	}
+	if want := []string{"scip:dep#Raw", "scip:app#Escaped"}; !slices.Equal(calls[0], want) {
+		t.Errorf("ComputeTaint sinks = %v, want %v", calls[0], want)
+	}
+	taints, err := store.Query(c.ID, artifact.TypeTaint)
+	if err != nil || len(taints) != 1 {
+		t.Fatalf("taint artifacts = %d (%v), want 1", len(taints), err)
+	}
+	var td taintDiscovery
+	if err := json.Unmarshal(taints[0].Payload, &td); err != nil {
+		t.Fatalf("decode taintDiscovery: %v", err)
+	}
+	if td.Sink != "scip:app#Escaped" {
+		t.Errorf("taint sink = %q, want the first resolved sink", td.Sink)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -174,34 +175,11 @@ func moduleVersionFromBuild(ctx context.Context, buildDir string, ws GoWorkspace
 	if ws.File == "" {
 		return moduleVersionFromGoMod(buildDir, module)
 	}
-	data, err := os.ReadFile(ws.File)
-	if err != nil {
+	unpinned, ok := workspaceUnpinned(ws)
+	if !ok {
 		return "", false, false
 	}
-	wf, err := modfile.ParseWork(ws.File, data, nil)
-	if err != nil {
-		return "", false, false
-	}
-	replaced := false
-	for _, r := range wf.Replace {
-		replaced = replaced || r.Old.Path == module
-	}
-	uses, _, _ := parseGoWork(ws.File)
-	for _, use := range uses {
-		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
-		if err != nil {
-			return "", false, false
-		}
-		mf, err := modfile.Parse("go.mod", data, nil)
-		if err != nil || mf.Module == nil {
-			return "", false, false
-		}
-		replaced = replaced || mf.Module.Mod.Path == module
-		for _, r := range mf.Replace {
-			replaced = replaced || r.Old.Path == module
-		}
-	}
-	if replaced {
+	if unpinned[module] {
 		return "", false, true
 	}
 	mods, err := workspaceBuildList(ctx, buildDir, ws)
@@ -212,12 +190,96 @@ func moduleVersionFromBuild(ctx context.Context, buildDir string, ws GoWorkspace
 		if m.Path != module {
 			continue
 		}
-		if m.Main || m.Replace != nil || m.Version == "" {
+		if !m.pinned() {
 			return "", false, true
 		}
 		return m.Version, true, true
 	}
 	return "", true, true
+}
+
+// workspaceUnpinned returns the modules the workspace ws uses or replaces, in its go.work or in a
+// go.mod of a module it uses: a build of any of them compiles code no required version describes.
+// ok is false when the go.work or one of those go.mod files is unreadable.
+func workspaceUnpinned(ws GoWorkspace) (unpinned map[string]bool, ok bool) {
+	data, err := os.ReadFile(ws.File)
+	if err != nil {
+		return nil, false
+	}
+	wf, err := modfile.ParseWork(ws.File, data, nil)
+	if err != nil {
+		return nil, false
+	}
+	unpinned = make(map[string]bool)
+	for _, r := range wf.Replace {
+		unpinned[r.Old.Path] = true
+	}
+	uses, _, _ := parseGoWork(ws.File)
+	for _, use := range uses {
+		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
+		if err != nil {
+			return nil, false
+		}
+		mf, err := modfile.Parse("go.mod", data, nil)
+		if err != nil || mf.Module == nil {
+			return nil, false
+		}
+		unpinned[mf.Module.Mod.Path] = true
+		for _, r := range mf.Replace {
+			unpinned[r.Old.Path] = true
+		}
+	}
+	return unpinned, true
+}
+
+// GoWorkspaceModules returns every module the build of the Go module at buildDir holds under the
+// workspace ws, other than buildDir's own, read as moduleVersionFromBuild reads each: pinned maps a
+// module to the version the build selects, and unpinned lists, sorted, the modules it holds at no
+// version a required release describes (one the workspace uses or replaces, or one the build list
+// reports replaced or versionless).
+//
+// When the go command cannot compute the build list, the modules are those the workspace uses and
+// those its go.mod files require, all unpinned: a go.mod's require is a lower bound under a
+// workspace's MVS, not the version built. An error means the go.work or a go.mod of buildDir or a
+// module the workspace uses cannot be read.
+func GoWorkspaceModules(ctx context.Context, buildDir string, ws GoWorkspace) (pinned map[string]string, unpinned []string, err error) {
+	own := goModFileModule(filepath.Join(buildDir, "go.mod"))
+	structural, ok := workspaceUnpinned(ws)
+	if !ok || own == "" {
+		return nil, nil, fmt.Errorf("pipeline: the workspace %s cannot be read", ws.File)
+	}
+	set := make(map[string]bool)
+	pinned = make(map[string]string)
+	mods, listErr := workspaceBuildList(ctx, buildDir, ws)
+	if listErr != nil {
+		for m := range structural {
+			set[m] = true
+		}
+		uses, _, _ := parseGoWork(ws.File)
+		for _, use := range uses {
+			data, _ := os.ReadFile(filepath.Join(use, "go.mod"))
+			mf, _ := modfile.Parse("go.mod", data, nil)
+			for _, r := range mf.Require {
+				set[r.Mod.Path] = true
+			}
+		}
+	} else {
+		for _, m := range mods {
+			switch {
+			case m.Path == own:
+			case structural[m.Path] || !m.pinned():
+				set[m.Path] = true
+			default:
+				pinned[m.Path] = m.Version
+			}
+		}
+	}
+	delete(set, own)
+	for m := range set {
+		unpinned = append(unpinned, m)
+	}
+	sort.Strings(unpinned)
+	return pinned, unpinned, nil
 }
 
 // listedModule is the part of `go list -m -json` output the pipeline reads.
@@ -226,6 +288,12 @@ type listedModule struct {
 	Version string
 	Main    bool
 	Replace *struct{ Path, Version string }
+}
+
+// pinned reports whether the build compiles the module at a released version: not a main module,
+// not replaced, and listed with a version.
+func (m listedModule) pinned() bool {
+	return !m.Main && m.Replace == nil && m.Version != ""
 }
 
 // buildLists memoizes workspaceBuildList by the build directory and the content of the go.work, every
@@ -318,9 +386,9 @@ var goListBuild = func(ctx context.Context, buildDir string, ws GoWorkspace) ([]
 	return mods, nil
 }
 
-// directives returns the go and toolchain lines of the go.work, which a workspace build runs under in
+// Directives returns the go and toolchain lines of the go.work, which a workspace build runs under in
 // place of its modules' own: "" for a line it does not declare, and both "" when it cannot be read.
-func (w GoWorkspace) directives() (goLine, toolchain string) {
+func (w GoWorkspace) Directives() (goLine, toolchain string) {
 	data, err := os.ReadFile(w.File)
 	if err != nil {
 		return "", ""

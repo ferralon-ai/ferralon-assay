@@ -87,3 +87,35 @@ func TestCodebaseInventory_GoWorkspace(t *testing.T) {
 		})
 	}
 }
+
+// TestCodebaseInventory_GoWorkspaceToolchainFloor: a workspace build runs under the go.work's go and
+// toolchain lines and ignores its modules' toolchain lines, so the toolchain floor is the go.work's.
+// A member's `toolchain go1.23.4` under a go.work at go 1.22.5 is no floor: that build runs go1.22.5.
+func TestCodebaseInventory_GoWorkspaceToolchainFloor(t *testing.T) {
+	const modA = "module example.com/mono/a\n\ngo 1.22\n\ntoolchain go1.23.4\n"
+	cases := []struct {
+		name     string
+		work     string
+		declared string
+		want     ToolchainFact
+	}{
+		{"the go.work's go line", "go 1.22.5\n\nuse ./a\n", "", ToolchainFact{Version: "go1.22.5", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}},
+		{"the go.work's toolchain line", "go 1.22.5\n\ntoolchain go1.24.1\n\nuse ./a\n", "", ToolchainFact{Version: "go1.24.1", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective}},
+		{"a go.work with a go line that does not bind", "go 1.22\n\nuse ./a\n", "", ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}},
+		{"off reads the module's own lines", "go 1.22.5\n\nuse ./a\n", "off", ToolchainFact{Version: "go1.23.4", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tree, _ := filepath.EvalSymlinks(writeTree(t, map[string]string{"go.work": tc.work, "a/go.mod": modA}))
+			gitTree(t, tree)
+			stage := codebaseInventory{
+				checkout:      dirCheckout{dir: filepath.Join(tree, "a"), lang: "go"},
+				plugin:        goManifestPlugin{pinBuildToolchain: true},
+				subjectGoWork: tc.declared,
+			}
+			if got := runRealInventory(t, stage).Toolchain; !toolchainFactEqual(got, tc.want) {
+				t.Fatalf("toolchain = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

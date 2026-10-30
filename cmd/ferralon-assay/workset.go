@@ -75,8 +75,10 @@ const (
 	// reasonWorkSetNoInventory: the repository's dependency coordinates could not be read, so there
 	// was nothing to ask OSV about. Distinct from "OSV said nothing affects you".
 	reasonWorkSetNoInventory = "work_set_no_inventory"
-	// reasonAdvisoryFactsUnavailable: OSV reported advisories affecting this repository that the
-	// advisory source has no facts for. They were NOT evaluated.
+	// reasonAdvisoryFactsUnavailable: OSV reported advisories against this repository's dependencies
+	// that the advisory source has no facts for. They were NOT evaluated. A by-name stdlib query
+	// contributes every stdlib id OSV records, so the count can include advisories that do not
+	// affect the subject's Go release.
 	reasonAdvisoryFactsUnavailable = "advisory_facts_unavailable"
 	// reasonWorkSetPolicyNotEnumerable: a policy is declared, but the corpus reader cannot list the
 	// ids it carries, so the policy could not define the work set. The pass
@@ -137,7 +139,9 @@ type workSet struct {
 	// widened is how many ids OSV contributed beyond the floor. Reporting-only.
 	widened int
 	// unresolved is every id OSV reported against this repository's dependencies that no fact
-	// source could resolve, sorted. These advisories were NOT evaluated by this pass.
+	// source could resolve, sorted. These advisories were NOT evaluated by this pass. A by-name
+	// stdlib query contributes every stdlib id OSV records, so this can include advisories that do
+	// not affect the subject's Go release.
 	//
 	// It exists so the number and the identities survive to a surface instead of dying inside
 	// resolveWorkSet. It is rendered at the terminal by describe(), and carried into the Report —
@@ -386,6 +390,12 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	// OSV answers a versionless query with every advisory ever recorded against the package, so an
 	// unresolved dependency is not queried. It is named instead: skipping it silently would read
 	// as OSV having found nothing.
+	//
+	// The Go standard library is the exception, and is queried by name. Its advisories are settled
+	// against the subject's toolchain fact, which the pipeline resolves whether or not it is exact,
+	// so every one the fact source can answer for is admitted and adjudicated there. A version short
+	// of exact (a go.mod directive) would be a guessed query point that drops the advisories of
+	// every other release the build may run.
 	purlType := purlTypeForEcosystem(ws.ecosystem)
 	pinned := make(map[string][]string, len(pkgs))
 	for _, p := range pkgs {
@@ -399,6 +409,10 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 		}
 	}
 	for _, u := range unversioned {
+		if u.Ecosystem == ecosystemGo && u.Name == goStdlibPackage {
+			pkgs = append(pkgs, u)
+			continue
+		}
 		switch named[versionlessPURL(purlType, u.Name)] {
 		case reasonWorkSetDependencyUnreadable:
 			ws.unreadable = append(ws.unreadable, u.Name)
@@ -594,8 +608,7 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 	}
 
 	if acq.language == checkout.LangGo {
-		pkgs, notes := goDependencyInventory(acq.buildDir)
-		return pkgs, nil, notes
+		return goDependencyInventory(ctx, acq)
 	}
 
 	// No analyzer plugin means no manifest parser for this language. That is an absent inventory,
@@ -722,8 +735,7 @@ func versionlessPURL(purlType, name string) string {
 	return "pkg:" + purlType + "/" + name
 }
 
-// goDependencyInventory reads every module go.mod requires, plus the Go standard library keyed to
-// the toolchain version.
+// goDependencyInventory reads every module go.mod requires, plus the Go standard library.
 //
 // Indirect requires are INCLUDED: a transitive dependency is a real dependency, and on a modern go
 // directive the indirect block is the resolved build list — the closest thing to a true SBOM the
@@ -733,19 +745,19 @@ func versionlessPURL(purlType, name string) string {
 // ecosystem. It matters disproportionately here: the compiled-in table's go-toolchain advisories
 // (the net/http, path/filepath and net/netip backport pairs) are the clearest advisories we hold
 // real facts for that no repository's go.mod will ever name, so without this the widening cannot
-// reach them.
-func goDependencyInventory(buildDir string) ([]report.Package, []report.PartialityNote) {
-	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
+// reach them. It is resolved at the subject's toolchain when that is exact (stdlibVersion), and is
+// otherwise unresolved: named, with no version.
+func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
+	data, err := os.ReadFile(filepath.Join(acq.buildDir, "go.mod"))
 	if err != nil {
-		return nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
+		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil {
-		return nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
+		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 	}
 
 	seen := make(map[report.Package]struct{}, len(mf.Require)+1)
-	var pkgs []report.Package
 	add := func(name, version string) {
 		if name == "" || version == "" {
 			return
@@ -755,7 +767,7 @@ func goDependencyInventory(buildDir string) ([]report.Package, []report.Partiali
 			return
 		}
 		seen[p] = struct{}{}
-		pkgs = append(pkgs, p)
+		resolved = append(resolved, p)
 	}
 
 	for _, r := range mf.Require {
@@ -764,42 +776,52 @@ func goDependencyInventory(buildDir string) ([]report.Package, []report.Partiali
 		}
 		add(r.Mod.Path, r.Mod.Version)
 	}
-	if v := toolchainVersion(mf); v != "" {
+	if v := stdlibVersion(ctx, acq, mf); v != "" {
 		add(goStdlibPackage, v)
+	} else {
+		unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
 	}
 
-	var notes []report.PartialityNote
-	if len(pkgs) == 0 {
-		notes = append(notes, report.PartialityNote{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo})
-	}
-	sortPackages(pkgs)
-	return pkgs, notes
+	sortPackages(resolved)
+	return resolved, unresolved, nil
 }
 
-// toolchainVersion returns the Go toolchain version go.mod pins, in the form OSV's Go ecosystem
-// expects for the "stdlib" package: a bare semver, NO "go" prefix.
+// stdlibVersion returns the subject's Go toolchain in the form OSV's Go ecosystem expects for the
+// "stdlib" package — a bare semver, NO "go" prefix — when the toolchain fact resolves EXACT, and ""
+// otherwise. The fact is pipeline.ResolveToolchain over the caller's declared and observed versions
+// and go.mod's directives, the fact the version axis adjudicates stdlib advisories against. A
+// directive is never exact, so a go.mod alone yields "".
 //
 // The prefix is not cosmetic. OSV cannot parse "go1.21.0" as a version and answers the query with
-// every stdlib advisory it has ever recorded (142 at the time of writing) instead of the 68 that
-// actually affect that release — an unfiltered firehose that reads exactly like a real answer.
-// Measured against api.osv.dev, 2026-07-29.
-func toolchainVersion(mf *modfile.File) string {
-	var raw string
-	if mf.Toolchain != nil && mf.Toolchain.Name != "" {
-		raw = mf.Toolchain.Name
-	} else if mf.Go != nil {
-		raw = mf.Go.Version
+// every stdlib advisory it has ever recorded instead of those that affect that release — an
+// unfiltered firehose that reads exactly like a real answer.
+//
+// The analyzer's resolved build toolchain is read only under trust, the only state in which the
+// resolution consults it.
+func stdlibVersion(ctx context.Context, acq *acquired, mf *modfile.File) string {
+	in := pipeline.ToolchainCandidates{
+		SubjectDeclared: acq.goToolchain.declared,
+		CIObserved:      acq.goToolchain.observed,
+		TrustCIObserved: acq.goToolchain.trustObserved,
 	}
-	raw = strings.TrimPrefix(raw, "go")
-	if raw == "" {
+	if mf.Go != nil {
+		in.GoDirective = mf.Go.Version
+	}
+	if mf.Toolchain != nil {
+		in.ToolchainDirective = mf.Toolchain.Name
+	}
+	if in.TrustCIObserved && acq.plugin != nil {
+		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: acq.buildDir}); err == nil {
+			if rt, ok := mani.PrimaryRuntime(); ok {
+				in.BuildResolved = rt.Resolved
+			}
+		}
+	}
+	fact := pipeline.ResolveToolchain(in)
+	if fact.Bound != pipeline.ToolchainBoundExact {
 		return ""
 	}
-	// A two-element go directive ("1.21") is not a version OSV can range-compare; normalize it to
-	// the release's .0 patch, which is what the directive means.
-	if strings.Count(raw, ".") == 1 {
-		raw += ".0"
-	}
-	return raw
+	return strings.TrimPrefix(fact.Version, "go")
 }
 
 // Ecosystem tags, matching both report.Package.Ecosystem and OSV.dev's ecosystem vocabulary (they

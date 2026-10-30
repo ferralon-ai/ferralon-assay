@@ -9,8 +9,11 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -364,12 +367,9 @@ func TestWorkSet_ProvenanceRecordsSourceAndSize(t *testing.T) {
 // the advisory set. report.SBOM is advisory-keyed — built by walking the work set — so querying OSV
 // with it would be circular and could never widen anything.
 func TestGoInventory_ReadsRequiresAndStdlib(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(fixtureGoMod), 0o600); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
+	acq := goFixture(t, fixtureGoMod)
 
-	pkgs, notes := goDependencyInventory(dir)
+	resolved, unresolved, notes := goDependencyInventory(context.Background(), acq)
 	if len(notes) != 0 {
 		t.Errorf("unexpected partiality for a readable go.mod: %+v", notes)
 	}
@@ -377,10 +377,9 @@ func TestGoInventory_ReadsRequiresAndStdlib(t *testing.T) {
 	want := map[string]string{
 		"golang.org/x/crypto": "v0.30.0",
 		"golang.org/x/text":   "v0.3.6", // indirect requires are real dependencies
-		goStdlibPackage:       "1.21.0", // the toolchain, with the "go" prefix stripped
 	}
 	got := map[string]string{}
-	for _, p := range pkgs {
+	for _, p := range resolved {
 		if p.Ecosystem != ecosystemGo {
 			t.Errorf("package %q ecosystem = %q, want %q", p.Name, p.Ecosystem, ecosystemGo)
 		}
@@ -391,38 +390,148 @@ func TestGoInventory_ReadsRequiresAndStdlib(t *testing.T) {
 			t.Errorf("inventory[%q] = %q, want %q", name, got[name], version)
 		}
 	}
+	if len(unresolved) != 1 || unresolved[0] != (report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage}) {
+		t.Errorf("unresolved = %+v, want only the standard library, named with no version", unresolved)
+	}
 }
 
-// TestToolchainVersion_StripsGoPrefix pins the measured OSV behaviour: "go1.21.0" is not a version
-// OSV can parse, and it answers the query with EVERY stdlib advisory ever recorded (142 vs the 68
-// that actually apply) instead of failing. An unfiltered firehose that reads like a real answer is
-// worse than an error, so the normalization is load-bearing, not cosmetic.
-func TestToolchainVersion_StripsGoPrefix(t *testing.T) {
-	for _, tc := range []struct{ gomod, want string }{
-		{"module m\n\ngo 1.21.0\n", "1.21.0"},
-		{"module m\n\ngo 1.21\n", "1.21.0"}, // a two-element directive means the .0 release
-		{"module m\n\ngo 1.22.0\n\ntoolchain go1.24.3\n", "1.24.3"},
-		{"module m\n", ""},
+// TestWorkSet_StdlibQueryPoint pins where the OSV widening asks about the Go standard library. Only
+// an EXACT toolchain is a query point, in OSV's bare-semver form: "go1.21.0" is not a version OSV
+// can parse, and it answers such a query with every stdlib advisory ever recorded, which reads like
+// a real answer. Anything short of exact — every go.mod directive — is queried by name, so the
+// version axis adjudicates each advisory against the resolved toolchain fact; a directive taken as
+// the query point drops the advisories of every other release the build may run.
+func TestWorkSet_StdlibQueryPoint(t *testing.T) {
+	const byName = ""
+	for _, tc := range []struct {
+		name  string
+		gomod string
+		tc    subjectGoToolchain
+		want  string
+	}{
+		{name: "two-part go line", gomod: "module m\n\ngo 1.21\n", want: byName},
+		{name: "three-part go line", gomod: "module m\n\ngo 1.21.0\n", want: byName},
+		{name: "toolchain line", gomod: "module m\n\ngo 1.22.0\n\ntoolchain go1.24.3\n", want: byName},
+		{name: "no directive", gomod: "module m\n", want: byName},
+		{name: "declared exact", gomod: "module m\n\ngo 1.21.0\n", tc: subjectGoToolchain{declared: "go1.22.7"}, want: "1.22.7"},
+		{name: "declared exact, no directive", gomod: "module m\n", tc: subjectGoToolchain{declared: "go1.22.7"}, want: "1.22.7"},
+		{name: "declared below the go line", gomod: "module m\n\ngo 1.22.0\n", tc: subjectGoToolchain{declared: "go1.21.5"}, want: byName},
+		{name: "declared unparseable", gomod: "module m\n\ngo 1.21.0\n", tc: subjectGoToolchain{declared: "latest"}, want: byName},
+		{name: "observed, trusted", gomod: "module m\n\ngo 1.21.0\n", tc: subjectGoToolchain{observed: "go1.23.4", trustObserved: true}, want: "1.23.4"},
+		{name: "observed, untrusted", gomod: "module m\n\ngo 1.21.0\n", tc: subjectGoToolchain{observed: "go1.23.4"}, want: byName},
 	} {
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(tc.gomod), 0o600); err != nil {
-			t.Fatalf("write go.mod: %v", err)
-		}
-		pkgs, _ := goDependencyInventory(dir)
+		t.Run(tc.name, func(t *testing.T) {
+			acq := goFixture(t, tc.gomod)
+			acq.goToolchain = tc.tc
+			osv := &fakeOSV{}
 
-		var got string
-		for _, p := range pkgs {
-			if p.Name == goStdlibPackage {
-				got = p.Version
+			ws := resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+
+			var queried []report.Package
+			for _, p := range osv.seen {
+				if p.Name == goStdlibPackage {
+					queried = append(queried, p)
+				}
 			}
-		}
-		if got != tc.want {
-			t.Errorf("go.mod %q -> stdlib version %q, want %q", tc.gomod, got, tc.want)
-		}
-		if got != "" && got[0] == 'g' {
-			t.Errorf("stdlib version %q kept its \"go\" prefix; OSV cannot range-compare it", got)
-		}
+			if len(queried) != 1 {
+				t.Fatalf("stdlib queried %d times (%+v), want once", len(queried), queried)
+			}
+			if got := queried[0].Version; got != tc.want {
+				t.Errorf("stdlib query point = %q, want %q (\"\" is by name)", got, tc.want)
+			}
+			for _, u := range ws.unversioned {
+				if u == goStdlibPackage {
+					t.Errorf("stdlib disclosed as unversioned and not asked about; it is queried by name")
+				}
+			}
+		})
 	}
+}
+
+// TestWorkSet_StdlibQueryPointFromBuildToolchain pins the analyzer-resolved build toolchain as a
+// stdlib query point: exact only under trust, consulted only under trust, and ignored when go.mod's
+// directives bind the toolchain.
+func TestWorkSet_StdlibQueryPointFromBuildToolchain(t *testing.T) {
+	const byName = ""
+	for _, tc := range []struct {
+		name      string
+		gomod     string
+		trust     bool
+		want      string
+		wantCalls int
+	}{
+		{name: "two-part go line, trusted", gomod: "module m\n\ngo 1.21\n", trust: true, want: "1.20.14", wantCalls: 1},
+		{name: "two-part go line, untrusted", gomod: "module m\n\ngo 1.21\n", want: byName, wantCalls: 0},
+		{name: "binding go line, trusted", gomod: "module m\n\ngo 1.21.0\n", trust: true, want: byName, wantCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acq := goFixture(t, tc.gomod)
+			acq.goToolchain = subjectGoToolchain{trustObserved: tc.trust}
+			build := &buildToolchainAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: "go"}, resolved: "go1.20.14"}
+			acq.plugin = build
+			osv := &fakeOSV{}
+
+			resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+
+			var queried []report.Package
+			for _, p := range osv.seen {
+				if p.Name == goStdlibPackage {
+					queried = append(queried, p)
+				}
+			}
+			if len(queried) != 1 {
+				t.Fatalf("stdlib queried %d times (%+v), want once", len(queried), queried)
+			}
+			if got := queried[0].Version; got != tc.want {
+				t.Errorf("stdlib query point = %q, want %q (\"\" is by name)", got, tc.want)
+			}
+			if build.calls != tc.wantCalls {
+				t.Errorf("BuildManifest called %d times, want %d", build.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// buildToolchainAnalyzer is an unsearchingAnalyzer whose build manifest reports one Go runtime the
+// build environment resolves to resolved, counting the calls.
+type buildToolchainAnalyzer struct {
+	unsearchingAnalyzer
+	resolved string
+	calls    int
+}
+
+func (a *buildToolchainAnalyzer) BuildManifest(context.Context, plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	a.calls++
+	return plugin.BuildManifestResult{Runtimes: []plugin.RuntimeSpec{{Name: "go", Resolved: a.resolved}}}, nil
+}
+
+// TestScanWorkSet_DeclaredToolchainReachesStdlibQuery proves -subject-go-version reaches the OSV
+// widening's stdlib query point on the scan path, at the transport.
+func TestScanWorkSet_DeclaredToolchainReachesStdlibQuery(t *testing.T) {
+	body := &osvBodyTrap{}
+	prev := http.DefaultTransport
+	http.DefaultTransport = body
+	t.Cleanup(func() { http.DefaultTransport = prev })
+
+	f := runFlagsFor(t, "-osv-work-set=true", "-subject-go-version=go1.22.7")
+	if _, err := f.scanWorkSet(context.Background(), goFixture(t, fixtureGoMod)); err != nil {
+		t.Fatalf("scanWorkSet err = %v", err)
+	}
+	if !strings.Contains(body.body, `{"version":"1.22.7","package":{"ecosystem":"Go","name":"stdlib"}}`) {
+		t.Errorf("OSV request does not query stdlib at the declared toolchain: %s", body.body)
+	}
+}
+
+// osvBodyTrap records the last request body and refuses the request.
+type osvBodyTrap struct{ body string }
+
+func (b *osvBodyTrap) RoundTrip(req *http.Request) (*http.Response, error) {
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	b.body = string(data)
+	return nil, errors.New("osvBodyTrap: refusing outbound request")
 }
 
 // TestInventory_UnknownLanguageQueriesNothing proves a language with no inventory path degrades to

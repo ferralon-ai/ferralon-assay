@@ -1850,13 +1850,13 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// ecosystems' runtime versions (e.g. a node engine range) live in RuntimeSpec{Name:"node"}, not here.
 	toolchain := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	if language == "go" {
-		toolchain = resolveToolchainFact(toolchainInputs{
-			subjectDeclared:    s.subjectGoVersion,
-			ciObserved:         s.ciGoVersion,
-			trustCIObserved:    s.trustCIGoVersion,
-			buildResolved:      buildToolchain,
-			toolchainDirective: toolchainDirective,
-			goDirective:        goVersion,
+		toolchain = ResolveToolchain(ToolchainCandidates{
+			SubjectDeclared:    s.subjectGoVersion,
+			CIObserved:         s.ciGoVersion,
+			TrustCIObserved:    s.trustCIGoVersion,
+			BuildResolved:      buildToolchain,
+			ToolchainDirective: toolchainDirective,
+			GoDirective:        goVersion,
 		})
 	}
 

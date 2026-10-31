@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,14 +23,14 @@ import (
 // pixiPyPIDeps returns the projects a pixi manifest's PyPI tables declare: [pypi-dependencies]
 // and the same table under any feature, inline environment, target, or feature or environment
 // target. root is the pixi table itself, [tool.pixi] in a pyproject or the whole of a pixi.toml.
-// An entry that installs a source directory under the manifest's own is skipped: the walk reads
-// that project's manifest itself.
+// An entry that installs a source directory under the manifest's own is skipped when the walk
+// reads that project's manifest itself (pixiInTreeSource).
 func pixiPyPIDeps(root map[string]any, source, dir string) ([]plugin.ResolvedDependency, []manifestOrigin) {
 	var deps []plugin.ResolvedDependency
 	addTable := func(tbl map[string]any) {
 		pypi, _ := tbl["pypi-dependencies"].(map[string]any)
 		for _, name := range slices.Sorted(maps.Keys(pypi)) {
-			if entry, ok := pypi[name].(map[string]any); ok && pixiInTreeSource(entry["path"]) {
+			if entry, ok := pypi[name].(map[string]any); ok && pixiInTreeSource(dir, entry["path"]) {
 				continue
 			}
 			deps = append(deps, pyResolved(name, "", false, source))
@@ -57,12 +58,14 @@ func pixiPyPIDeps(root map[string]any, source, dir string) ([]plugin.ResolvedDep
 	return deps, originsFor(deps, manifestOrigin{dir: dir})
 }
 
-// pixiInTreeSource reports whether a pypi-dependencies path names a source directory under the
-// manifest's directory. A wheel or sdist, a path that leaves the directory, and an absolute path
-// are distributions the walk may never read, so each stays an entry.
-func pixiInTreeSource(path any) bool {
+// pixiInTreeSource reports whether a pypi-dependencies path names a source directory under dir
+// that holds a manifest the walk reads: no component the walk skips, no symlink, and a
+// pyproject.toml, setup.py or setup.cfg in it. Anything else (a wheel or sdist, a path that
+// leaves dir, a Windows or home-relative spelling, a file:// URL) may be a distribution the walk
+// never reads, so it stays an entry.
+func pixiInTreeSource(dir string, path any) bool {
 	p, ok := path.(string)
-	if !ok || !filepath.IsLocal(filepath.FromSlash(p)) {
+	if !ok || strings.ContainsAny(p, `\:~`) || !filepath.IsLocal(p) {
 		return false
 	}
 	lower := strings.ToLower(p)
@@ -71,7 +74,25 @@ func pixiInTreeSource(path any) bool {
 			return false
 		}
 	}
-	return true
+	for _, c := range strings.Split(filepath.Clean(p), string(filepath.Separator)) {
+		if skipDir(c) {
+			return false
+		}
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	target := filepath.Join(dir, p)
+	if real, err := filepath.EvalSymlinks(target); err != nil || real != filepath.Join(realDir, p) {
+		return false
+	}
+	for _, m := range []string{"pyproject.toml", "setup.py", "setup.cfg"} {
+		if fi, err := os.Lstat(filepath.Join(target, m)); err == nil && fi.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 // pixiManifestDeps reads the PyPI names declared by every pixi.toml under root. read is false

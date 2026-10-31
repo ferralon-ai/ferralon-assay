@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -9,7 +10,8 @@ import (
 
 // Pixi's PyPI tables are read for the projects they name, each unresolved, under every feature,
 // inline environment and target. Conda dependencies are not PyPI projects, and an in-tree source
-// directory is read through its own manifest; a wheel and an out-of-tree path stay entries. The
+// directory is read through its own manifest. A wheel, an sdist, an out-of-tree or Windows-form
+// path, and a source directory the walk reads no manifest in stay entries. The
 // result stays partial, since pixi's tables are not resolved.
 func TestResolveVersions_PixiPyPINames(t *testing.T) {
 	const pixi = "[pypi-dependencies]\npyjwt = \"==2.10.0\"\nlocal_pkg = { path = \"./lib\", editable = true }\n" +
@@ -21,9 +23,20 @@ func TestResolveVersions_PixiPyPINames(t *testing.T) {
 		"[environments]\ndefault = [\"dev\"]\n\n" +
 		"[environments.ci.pypi-dependencies]\ncoverage = \"*\"\n" +
 		"wheelpkg = { path = \"./wheels/wheelpkg-1.0-py3-none-any.whl\" }\n" +
-		"outpkg = { path = \"../vendor/outpkg\" }\n\n" +
+		"outpkg = { path = \"../vendor/outpkg\" }\n" +
+		"barepkg = { path = \"./bare\" }\n" +
+		"hiddenpkg = { path = \".pixi/src/hiddenpkg\" }\n" +
+		"winpkg = { path = \"lib\\\\win\" }\n" +
+		"sdistpkg = { path = \"./dist-in/SdistPkg-1.0.TAR.GZ\" }\n\n" +
 		"[environments.ci.target.osx-arm64.pypi-dependencies]\nmlx = \"*\"\n"
-	want := []string{"coverage", "gitpkg", "mlx", "outpkg", "pyjwt", "pytest", "pywin32", "uvloop", "wheelpkg"}
+	want := []string{"barepkg", "coverage", "gitpkg", "hiddenpkg", "mlx", "outpkg", "pyjwt", "pytest", "pywin32", "sdistpkg",
+		"uvloop", "wheelpkg", "winpkg"}
+	// local_pkg's source holds a manifest the walk reads; bare's holds none, and .pixi is skipped.
+	srcs := map[string]string{
+		"lib/pyproject.toml":                 "[project]\nname = \"local_pkg\"\n",
+		"bare/local.py":                      "x = 1\n",
+		".pixi/src/hiddenpkg/pyproject.toml": "[project]\nname = \"hiddenpkg\"\n",
+	}
 	for name, files := range map[string]map[string]string{
 		"pixi.toml": {"pixi.toml": "[workspace]\nchannels = [\"conda-forge\"]\nplatforms = [\"linux-64\"]\n\n" + pixi},
 		"pyproject": {"pyproject.toml": "[project]\nname = \"app\"\n\n" + prefixPixiTables(pixi)},
@@ -33,6 +46,15 @@ func TestResolveVersions_PixiPyPINames(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			base := ""
+			for f := range files {
+				if strings.HasSuffix(f, "pixi.toml") || strings.HasSuffix(f, "pyproject.toml") {
+					base = strings.TrimSuffix(strings.TrimSuffix(f, "pixi.toml"), "pyproject.toml")
+				}
+			}
+			for f, body := range srcs {
+				files[base+f] = body
+			}
 			res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: writeTree(t, files)})
 			if err != nil {
 				t.Fatal(err)

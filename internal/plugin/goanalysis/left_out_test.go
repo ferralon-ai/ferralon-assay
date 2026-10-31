@@ -125,6 +125,30 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 	}
 }
 
+// TestWithholdForLeftOutFiles_NotGoPackage: a refutation whose package is not a Go package URL is
+// withheld as excluded_files even when the build leaves no file out, and no step failed.
+func TestWithholdForLeftOutFiles_NotGoPackage(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuted := plugin.ReachabilityResult{
+		Partiality: plugin.Complete(),
+		Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:npm/vulnmod"},
+	}
+	res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+	if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles) {
+		t.Fatalf("result %+v, want the refutation withheld as excluded_files", res)
+	}
+	if slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+		t.Errorf("tool_failure declared with no step failing (partiality %+v)", res.Partiality)
+	}
+}
+
 // TestWithholdForLeftOutFiles_StepFails: a left-out file that counts only because the check could not
 // read it, or a directory the walk could not read, declares tool_failure beside excluded_files.
 func TestWithholdForLeftOutFiles_StepFails(t *testing.T) {

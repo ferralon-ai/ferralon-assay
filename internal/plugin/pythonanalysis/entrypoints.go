@@ -484,8 +484,12 @@ func yamlCommandLines(lines []string) []string {
 				k = c
 			}
 		}
-		// A template control line ({{- if .Values.x }}) sits at any column and nests nothing.
-		if t != "" && !strings.HasPrefix(t, "#") && !strings.HasPrefix(t, "{{") {
+		// A template control line ({{- if .Values.x }}) sits at any column and nests or
+		// ends nothing.
+		if strings.HasPrefix(t, "{{") && strings.HasSuffix(t, "}}") {
+			continue
+		}
+		if t != "" && !strings.HasPrefix(t, "#") {
 			indent := len(line) - len(strings.TrimLeft(line, " \t")) + len(t) - len(key)
 			for len(path) > 0 && path[len(path)-1].indent >= indent {
 				path = path[:len(path)-1]

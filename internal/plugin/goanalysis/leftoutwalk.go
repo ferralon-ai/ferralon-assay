@@ -346,7 +346,7 @@ func (w *lofWorld) clauseName(dir string) string {
 			continue
 		}
 		f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.PackageClauseOnly)
-		if err != nil || f.Name.Name == "documentation" || strings.HasSuffix(f.Name.Name, "_test") {
+		if err != nil || f.Name.Name == "documentation" {
 			continue
 		}
 		return f.Name.Name
@@ -442,7 +442,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 			continue
 		}
 		clause := af.Name.Name
-		if clause == "documentation" || strings.HasSuffix(clause, "_test") {
+		if clause == "documentation" {
 			continue
 		}
 		if p.name == "" {
@@ -2066,7 +2066,7 @@ func readDirImports(dir string, std bool, excluded func(constraint.Expr) bool) (
 			item = lofParseError
 			continue
 		}
-		if af.Name.Name == "documentation" || strings.HasSuffix(af.Name.Name, "_test") {
+		if af.Name.Name == "documentation" {
 			continue
 		}
 		for _, im := range af.Imports {

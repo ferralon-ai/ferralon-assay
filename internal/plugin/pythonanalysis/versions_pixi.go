@@ -59,23 +59,17 @@ func pixiPyPIDeps(root map[string]any, source, dir string) ([]plugin.ResolvedDep
 }
 
 // pixiInTreeSource reports whether a pypi-dependencies path names a source directory under dir
-// that holds a manifest the walk reads: no component the walk skips, no symlink, and a
-// pyproject.toml, setup.py or setup.cfg in it. Anything else (a wheel or sdist, a path that
-// leaves dir, a Windows or home-relative spelling, a file:// URL) may be a distribution the walk
-// never reads, so it stays an entry.
+// that holds a manifest the walk reads: no component the walk skips (in any case, for a
+// case-insensitive filesystem), no symlink, and a pyproject.toml, setup.py or setup.cfg in it.
+// Anything else (a wheel or sdist, a path that leaves dir, a home-relative spelling) may be a
+// distribution the walk never reads, so it stays an entry.
 func pixiInTreeSource(dir string, path any) bool {
 	p, ok := path.(string)
-	if !ok || strings.ContainsAny(p, `\:~`) || !filepath.IsLocal(p) {
+	if !ok || strings.HasPrefix(p, "~") || !filepath.IsLocal(p) {
 		return false
 	}
-	lower := strings.ToLower(p)
-	for _, ext := range []string{".whl", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip"} {
-		if strings.HasSuffix(lower, ext) {
-			return false
-		}
-	}
 	for _, c := range strings.Split(filepath.Clean(p), string(filepath.Separator)) {
-		if skipDir(c) {
+		if skipDir(strings.ToLower(c)) {
 			return false
 		}
 	}

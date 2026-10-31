@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,8 +12,9 @@ import (
 
 // Pixi's PyPI tables are read for the projects they name, each unresolved, under every feature,
 // inline environment and target. Conda dependencies are not PyPI projects, and an in-tree source
-// directory is read through its own manifest. A wheel, an sdist, an out-of-tree or Windows-form
-// path, and a source directory the walk reads no manifest in stay entries. The
+// directory is read through its own manifest. A wheel, an sdist, an out-of-tree, absolute,
+// home-relative or Windows-form path, a symlink, and a source directory the walk reads no
+// manifest in stay entries. The
 // result stays partial, since pixi's tables are not resolved.
 func TestResolveVersions_PixiPyPINames(t *testing.T) {
 	const pixi = "[pypi-dependencies]\npyjwt = \"==2.10.0\"\nlocal_pkg = { path = \"./lib\", editable = true }\n" +
@@ -27,15 +30,22 @@ func TestResolveVersions_PixiPyPINames(t *testing.T) {
 		"barepkg = { path = \"./bare\" }\n" +
 		"hiddenpkg = { path = \".pixi/src/hiddenpkg\" }\n" +
 		"winpkg = { path = \"lib\\\\win\" }\n" +
-		"sdistpkg = { path = \"./dist-in/SdistPkg-1.0.TAR.GZ\" }\n\n" +
+		"sdistpkg = { path = \"./dist-in/SdistPkg-1.0.TAR.GZ\" }\n" +
+		"linkpkg = { path = \"./linked\" }\n" +
+		"abspkg = { path = \"/lib\" }\n" +
+		"homepkg = { path = \"~/homepkg\" }\n" +
+		"casepkg = { path = \"Build/casepkg\" }\n\n" +
 		"[environments.ci.target.osx-arm64.pypi-dependencies]\nmlx = \"*\"\n"
-	want := []string{"barepkg", "coverage", "gitpkg", "hiddenpkg", "mlx", "outpkg", "pyjwt", "pytest", "pywin32", "sdistpkg",
-		"uvloop", "wheelpkg", "winpkg"}
-	// local_pkg's source holds a manifest the walk reads; bare's holds none, and .pixi is skipped.
+	want := []string{"abspkg", "barepkg", "casepkg", "coverage", "gitpkg", "hiddenpkg", "homepkg", "linkpkg", "mlx", "outpkg",
+		"pyjwt", "pytest", "pywin32", "sdistpkg", "uvloop", "wheelpkg", "winpkg"}
+	// local_pkg's source holds a manifest the walk reads; bare's holds none, .pixi and build are
+	// skipped, ~ is not the manifest's directory, and linked is a symlink out of the tree.
 	srcs := map[string]string{
 		"lib/pyproject.toml":                 "[project]\nname = \"local_pkg\"\n",
 		"bare/local.py":                      "x = 1\n",
 		".pixi/src/hiddenpkg/pyproject.toml": "[project]\nname = \"hiddenpkg\"\n",
+		"~/homepkg/pyproject.toml":           "[project]\nname = \"homepkg\"\n",
+		"build/casepkg/pyproject.toml":       "[project]\nname = \"casepkg\"\n",
 	}
 	for name, files := range map[string]map[string]string{
 		"pixi.toml": {"pixi.toml": "[workspace]\nchannels = [\"conda-forge\"]\nplatforms = [\"linux-64\"]\n\n" + pixi},
@@ -55,7 +65,12 @@ func TestResolveVersions_PixiPyPINames(t *testing.T) {
 			for f, body := range srcs {
 				files[base+f] = body
 			}
-			res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: writeTree(t, files)})
+			root := writeTree(t, files)
+			out := writeTree(t, map[string]string{"pyproject.toml": "[project]\nname = \"linkpkg\"\n"})
+			if err := os.Symlink(out, filepath.Join(root, base, "linked")); err != nil {
+				t.Fatal(err)
+			}
+			res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: root})
 			if err != nil {
 				t.Fatal(err)
 			}

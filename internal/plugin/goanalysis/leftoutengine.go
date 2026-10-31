@@ -250,7 +250,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	for _, c := range cands {
 		cl := w.closure(c.path, c.pkg)
 		closures[c.path] = cl
-		f := &lofFacts{FC: cl.fc, FCStd: cl.fcStd, Dyn: cl.dyn, Vars: cl.vars, Reflect: cl.reflect,
+		f := &lofFacts{FC: cl.fc, FCStd: cl.fcStd, Dyn: cl.dyn, Vars: cl.vars, Reflect: cl.reflect, Sink: cl.sink,
 			Excluded: cl.excluded, Dropped: cl.dropped}
 		links, linkFC := w.links(filepath.Dir(c.path), c.std)
 		for ip := range links {
@@ -266,13 +266,6 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		}
 		for fn := range cl.funcs {
 			f.Funcs = append(f.Funcs, in.id(funcKey(fn)))
-			ps := fn.Signature().Params()
-			for i := 0; i < ps.Len(); i++ {
-				switch ps.At(i).Type().Underlying().(type) {
-				case *types.Signature, *types.Interface:
-					f.Sink = true
-				}
-			}
 		}
 		for tp := range cl.inits {
 			f.Funcs = append(f.Funcs, in.id(symKey(tp.Path(), "init")))

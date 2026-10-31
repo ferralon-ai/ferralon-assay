@@ -10,6 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,7 +154,6 @@ type lofFile struct {
 	links   map[string]string
 	badLink bool
 	cgo     bool
-	reflect bool
 	decls   []*lofDecl
 }
 
@@ -202,9 +202,13 @@ type lofAsm struct {
 type lofClosure struct {
 	funcs map[*types.Func]bool
 	// inits holds the loaded packages the closure links, whose initializers run once it does.
-	inits   map[*types.Package]bool
-	types   map[*types.TypeName]bool
-	vars    bool
+	inits map[*types.Package]bool
+	types map[*types.TypeName]bool
+	vars  bool
+	// sink is set when a loaded declaration it reaches can carry a value into loaded code that
+	// calls through it: a function's parameter or result, a type, or a variable whose type holds
+	// an interface or a func.
+	sink    bool
 	methods map[string]bool
 	dyn     bool
 	reflect bool
@@ -459,9 +463,6 @@ func (w *lofWorld) index(p *lofPkg, path string, af *ast.File) {
 			// The standard library resolves the golang.org/x packages it imports to its own vendor copies.
 			ip = "vendor/" + ip
 		}
-		if ip == "reflect" {
-			f.reflect = true
-		}
 		f.all = append(f.all, ip)
 		p.imports = append(p.imports, ip)
 		switch {
@@ -652,7 +653,9 @@ func (w *lofWorld) refsOf(d *lofDecl) {
 		d.dyn = d.dyn || call
 		switch x.Sel.Name {
 		case "Call", "CallSlice", "Method", "MethodByName":
-			d.reflect = d.reflect || f.reflect
+			// Keyed on the name alone: a reflect.Value can come from a package the file does not
+			// import.
+			d.reflect = true
 		}
 		visit(x.X)
 	}
@@ -882,13 +885,12 @@ func sameDir(a, b string) bool {
 //
 // A qualified reference qual names a standard-library package, which the toolchain's own source
 // holds whole: when no Go file of that package, under any build constraint, declares the name
-// (stdAbsent), every build of f fails on it. go/types, checking f alone against the build's type
-// information for those packages and failing every other import, must report each of them
+// (stdAbsent), every build of f fails on it. go/types, checking f alone, must report each of them
 // undefined. Any one unproved is lofUnresolvedName.
 //
-// With no qualified reference, the bare identifiers carry the proof: go/types, checking f alone
-// with every import failing, must report each "undefined: name", and the file is
-// lofUnresolvedName when a name could come from a file the check does not see:
+// With no qualified reference, the bare identifiers carry the proof: go/types, checking f alone,
+// must report each undefined (as "undefined: name", or as an undefined array length), and the file
+// is lofUnresolvedName when a name could come from a file the check does not see:
 //
 //   - f dot-imports a package;
 //   - the package's source set is incomplete: its directory, or a Go file in it, cannot be read or
@@ -896,15 +898,17 @@ func sameDir(a, b string) bool {
 //   - a name begins with "_" and a file of the package uses cgo (import "C"), whose generated Go
 //     declares such names;
 //   - the directory holds a SWIG interface, whose generated Go may declare any name;
-//   - the package lies outside the module cache and the toolchain's source, and a Go file in its
-//     directory carries a "// Code generated" header or a //go:generate directive, so its source
-//     may be generated before the build;
+//   - the package lies outside the module cache and the toolchain's source (fixedSource): any
+//     other source may gain a file before the build compiles it, from a generator no file of the
+//     package names;
 //   - another file of the package, in any build variant (excluded ones and the ignore tag
 //     included), declares the name.
 //
-// Either way, go/types may report nothing else but failed imports, other identifiers that f's
-// sibling files declare, and other names selected from a package it was given; otherwise the
-// file is lofVariantTypecheck.
+// Either way the check is given the build's type information for every import of f the build
+// loaded, so that a use of one does not cascade into an error, and fails every other import. It
+// may report nothing else but failed imports, other identifiers that f's sibling files declare,
+// and other names selected from a package it was given; otherwise the file is
+// lofVariantTypecheck.
 func (w *lofWorld) uncompilable(f *lofFile, bare []string, qual []lofRef) string {
 	byQual := len(qual) > 0
 	imports := map[string]*types.Package{}
@@ -915,17 +919,16 @@ func (w *lofWorld) uncompilable(f *lofFile, bare []string, qual []lofRef) string
 		}
 		imports[r.pkg] = lp.Types
 	}
-	if f.pkg.missing != "" || len(f.pkg.errs) > 0 || !byQual && len(f.dots) > 0 {
+	dir := filepath.Dir(f.path)
+	if f.pkg.missing != "" || len(f.pkg.errs) > 0 || !byQual && (len(f.dots) > 0 || !w.fixedSource(dir)) {
 		return lofUnresolvedName
 	}
-	dir := filepath.Dir(f.path)
 	clause := f.ast.Name.Name
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return lofUnresolvedName
 	}
 	underscore := slices.ContainsFunc(bare, func(n string) bool { return strings.HasPrefix(n, "_") })
-	fixed := w.fixedSource(dir)
 	siblings := map[string]bool{}
 	for _, e := range ents {
 		n := e.Name()
@@ -938,9 +941,6 @@ func (w *lofWorld) uncompilable(f *lofFile, bare []string, qual []lofRef) string
 		full := filepath.Join(dir, n)
 		src, err := os.ReadFile(full)
 		if err != nil {
-			return lofUnresolvedName
-		}
-		if !byQual && !fixed && lofGenerated(src) {
 			return lofUnresolvedName
 		}
 		if strings.HasSuffix(n, "_test.go") {
@@ -975,10 +975,20 @@ func (w *lofWorld) uncompilable(f *lofFile, bare []string, qual []lofRef) string
 	if err != nil {
 		return lofUnresolvedName
 	}
+	// The checker also gets every other import the build loaded, so that a use of one does not
+	// cascade into an error. Only imports confirms a name; any error left still withholds.
+	given := lofGivenImporter{"unsafe": types.Unsafe}
+	for _, im := range af.Imports {
+		ip, _ := strconv.Unquote(im.Path.Value)
+		if lp := w.loaded[ip]; lp != nil && lp.Types != nil {
+			given[ip] = lp.Types
+		}
+	}
+	maps.Copy(given, imports)
 	confirmed := map[string]bool{}
 	other := false
 	conf := types.Config{
-		Importer: lofGivenImporter(imports),
+		Importer: given,
 		Error: func(err error) {
 			te, ok := err.(types.Error)
 			if !ok {
@@ -986,6 +996,9 @@ func (w *lofWorld) uncompilable(f *lofFile, bare []string, qual []lofRef) string
 				return
 			}
 			undef, isUndef := strings.CutPrefix(te.Msg, "undefined: ")
+			if n, ok := strings.CutPrefix(te.Msg, "undefined array length "); ok {
+				undef, isUndef = strings.TrimSuffix(n, " or missing type constraint"), true
+			}
 			x, sel, isSel := strings.Cut(undef, ".")
 			switch {
 			case isUndef && isSel && imports[w.importFor(f, x)] != nil:
@@ -1058,28 +1071,29 @@ func lofDirNames(dir string) map[string]bool {
 	return names
 }
 
-// fixedSource reports whether dir lies in the module cache or the toolchain's source, which the
-// build compiles as they are: nothing is generated there before it.
+// fixedSource reports whether dir lies in a module the go command extracted into the module cache
+// (below a "path@version" directory) or in the toolchain's source, which the build compiles as they
+// are: nothing is generated there before it. A directory in the tree being built never is, wherever
+// that tree lies.
 func (w *lofWorld) fixedSource(dir string) bool {
-	return w.modcache != "" && lofUnder(dir, w.modcache) || w.goroot != "" && lofUnder(dir, filepath.Join(w.goroot, "src"))
+	if w.buildDir == "" || filepath.Clean(dir) == filepath.Clean(w.buildDir) || lofUnder(dir, w.buildDir) {
+		return false
+	}
+	if w.goroot != "" && lofUnder(dir, filepath.Join(w.goroot, "src")) {
+		return true
+	}
+	if w.modcache == "" || !lofUnder(dir, w.modcache) {
+		return false
+	}
+	rel, _ := filepath.Rel(w.modcache, dir)
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	return parts[0] != "cache" && slices.ContainsFunc(parts, func(p string) bool { return strings.Contains(p, "@") })
 }
 
 // lofUnder reports whether path lies below root.
 func lofUnder(path, root string) bool {
 	rel, err := filepath.Rel(root, path)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
-}
-
-// lofGenerated reports whether a Go file's source carries a line beginning "// Code generated" or
-// "//go:generate".
-func lofGenerated(src []byte) bool {
-	for _, line := range bytes.Split(src, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("// Code generated")) || bytes.HasPrefix(line, []byte("//go:generate")) {
-			return true
-		}
-	}
-	return false
 }
 
 // lofPackageNames returns the names a file declares at package level.
@@ -1322,11 +1336,90 @@ func (k *lofWalk) terminal(obj types.Object) {
 	switch o := obj.(type) {
 	case *types.Func:
 		k.out.funcs[o.Origin()] = true
+		sig := o.Signature()
+		k.out.sink = k.out.sink || lofHoldsDispatch(sig.Params(), nil) || lofCarriesIn(sig.Results())
+		if r := sig.Recv(); r != nil {
+			k.out.sink = k.out.sink || lofCarriesIn(r.Type())
+		}
 	case *types.TypeName:
 		k.out.types[o] = true
+		k.out.sink = k.out.sink || lofHoldsDispatch(o.Type(), nil)
 	case *types.Var:
 		k.out.vars = true
+		k.out.sink = k.out.sink || lofHoldsDispatch(o.Type(), nil)
 	}
+}
+
+// lofCarriesIn reports whether loaded code that hands out a value of type t can receive through it
+// a value holding an interface or a func: an interface or a func carries one in only through its
+// methods' or its own parameters; anything else through any part that can hold one.
+func lofCarriesIn(t types.Type) bool {
+	if tu, ok := t.(*types.Tuple); ok {
+		for i := 0; i < tu.Len(); i++ {
+			if lofCarriesIn(tu.At(i).Type()) {
+				return true
+			}
+		}
+		return false
+	}
+	switch u := types.Unalias(t).Underlying().(type) {
+	case *types.Interface:
+		for i := 0; i < u.NumMethods(); i++ {
+			if lofHoldsDispatch(u.Method(i).Signature().Params(), nil) {
+				return true
+			}
+		}
+		return false
+	case *types.Signature:
+		return lofHoldsDispatch(u.Params(), nil)
+	}
+	return lofHoldsDispatch(t, nil)
+}
+
+// lofHoldsDispatch reports whether a value of type t can hold an interface or a func: either is,
+// or contains one through a pointer, slice, array, map, channel, struct field or tuple element. A
+// type parameter may be instantiated with either.
+func lofHoldsDispatch(t types.Type, seen map[types.Type]bool) bool {
+	switch t := t.(type) {
+	case nil:
+		return false
+	case *types.Named:
+		if seen[t] {
+			return false
+		}
+		if seen == nil {
+			seen = map[types.Type]bool{}
+		}
+		seen[t] = true
+		return lofHoldsDispatch(t.Underlying(), seen)
+	case *types.Alias:
+		return lofHoldsDispatch(types.Unalias(t), seen)
+	case *types.Interface, *types.Signature, *types.TypeParam:
+		return true
+	case *types.Pointer:
+		return lofHoldsDispatch(t.Elem(), seen)
+	case *types.Slice:
+		return lofHoldsDispatch(t.Elem(), seen)
+	case *types.Array:
+		return lofHoldsDispatch(t.Elem(), seen)
+	case *types.Chan:
+		return lofHoldsDispatch(t.Elem(), seen)
+	case *types.Map:
+		return lofHoldsDispatch(t.Key(), seen) || lofHoldsDispatch(t.Elem(), seen)
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if lofHoldsDispatch(t.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	case *types.Tuple:
+		for i := 0; i < t.Len(); i++ {
+			if lofHoldsDispatch(t.At(i).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // remote follows a //go:linkname remote ("path.name", "path.T.m", "path.(*T).m") named in package

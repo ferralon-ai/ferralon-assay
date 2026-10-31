@@ -106,6 +106,8 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 	// hook takes the symbol's address in loaded code.
 	hook := map[string]string{"lib/hook.go": "package lib\n\nimport \"example.com/v/vuln\"\n\nvar Hook func()\n\nfunc Install() { Hook = vuln.Bad }\n"}
 	vulnOnly := "\t\"example.com/v/vuln\""
+	// newT makes a T where the left-out file names only the function.
+	newT := map[string]string{"_v/vuln/new.go": "package vuln\n\nfunc NewT() *T { return &T{} }\n"}
 	libOnly := "\t\"example.com/m/lib\""
 	bad := map[string][]string{"example.com/v/vuln": {"Bad", "T.Bad", "P.Bad", "Variadic"}}
 	badFunc := map[string][]string{"example.com/v/vuln": {"Bad"}}
@@ -133,6 +135,9 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		// method call x.m(), by name
 		{"a left-out init calls the symbol's method name on a value loaded code made", x(libOnly, "func init() { lib.Make().Bad() }\n"), nil, true, "", false},
 		{"a left-out init calls another method name on a value loaded code made", x(libOnly, "func init() { lib.MakeSafe().Safe() }\n"), nil, false, "", false},
+		{"a left-out init hands the symbol's type to a method of a value loaded code made", merge(x("\t\"example.com/m/lib\"\n\t\"example.com/v/vuln\"", "func init() { lib.MakeTaker().Take(vuln.T{}) }\n"), map[string]string{
+			"lib/take.go": "package lib\n\ntype taker struct{}\n\nfunc (taker) Take(v any) { v.(interface{ Bad() }).Bad() }\n\nfunc MakeTaker() interface{ Take(any) } { return taker{} }\n",
+		}), nil, true, "", false},
 		// interface dispatch: a type whose method set holds the symbol
 		{"a left-out init names a type whose method set holds the symbol", x(vulnOnly, "func init() { var v vuln.T; _ = v }\n"), nil, true, "", false},
 		{"a left-out init names a type whose method set does not", x(vulnOnly, "func init() { var v vuln.U; _ = v }\n"), nil, false, "", false},
@@ -178,6 +183,23 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out cgo file calls C and another function", x("\t\"C\"\n\t\"example.com/v/vuln\"", "func init() { C.puts(nil); vuln.Safe() }\n"), nil, false, "", false},
 		// reflection
 		{"a left-out init calls MethodByName", x("\t\"reflect\"\n\t\"example.com/m/lib\"", "func init() { reflect.ValueOf(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), nil, true, "", false},
+		{"a left-out init calls MethodByName on a value loaded code made, never importing reflect", merge(x(libOnly, "func init() { lib.Reflected(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), map[string]string{
+			"lib/refl.go": "package lib\n\nimport \"reflect\"\n\nfunc Reflected(x any) reflect.Value { return reflect.ValueOf(x) }\n",
+		}), nil, true, "", false},
+		// a value routed into loaded code that calls through it, other than as an argument
+		{"a left-out init stores the symbol's type in a loaded struct's field that loaded code calls", merge(x(vulnOnly+"\n"+libOnly, "func init() { lib.Box{X: vuln.NewT()}.Run() }\n"), newT, map[string]string{
+			"lib/box.go": "package lib\n\ntype Box struct{ X interface{ Bad() } }\n\nfunc (b Box) Run() { b.X.Bad() }\n",
+		}), nil, true, "", false},
+		{"a left-out init stores the symbol's type in a loaded variable that loaded code calls", merge(x(vulnOnly+"\n"+libOnly, "func init() { lib.Current = vuln.NewT(); lib.Fire() }\n"), newT, map[string]string{
+			"lib/current.go": "package lib\n\nvar Current interface{ Bad() }\n\nfunc Fire() { Current.Bad() }\n",
+		}), nil, true, "", false},
+		// what an unloaded package the file enters roots: its //export functions and initializers
+		{"a left-out file enters an unloaded cgo package whose exported function calls the symbol", merge(x("\t_ \"example.com/v/cg\"", ""), map[string]string{
+			"_v/cg/cg.go": "package cg\n\nimport \"C\"\n\nimport \"example.com/v/vuln\"\n\n//export Exported\nfunc Exported() { vuln.Bad() }\n",
+		}), nil, true, "", false},
+		{"a left-out file enters an unloaded package whose variable initializer calls the symbol", merge(x("\t_ \"example.com/v/initv\"", ""), map[string]string{
+			"_v/initv/initv.go": "package initv\n\nimport \"example.com/v/vuln\"\n\nvar v = f()\n\nfunc f() int { vuln.Bad(); return 0 }\n",
+		}), nil, true, "", false},
 		// fail-closed items
 		{"a left-out file does not parse", x(vulnOnly, "func init() {\n"), nil, true, lofParseError, false},
 		{"a left-out file imports a path nothing provides", x("\t\"example.org/nowhere\"", "func init() { nowhere.Call() }\n"), nil, true, lofUnresolvedImport, false},
@@ -233,96 +255,140 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 		// x.go calls the symbol, and names helper, which no file the walk reads declares.
 		"x.go": "//go:build lofalt\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { helper(); vuln.Bad() }\n",
 	}
+	// In a cached row example.com/v is read from the module cache, outside the build's tree, and the
+	// left-out file is y.go of the vulnerable package itself.
+	cachedBase := map[string]string{
+		"x.go":         "package main\n",
+		"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nfunc init() { helper(); Bad() }\n",
+	}
+	const cachedMod = "mc/example.com/v@v0.0.0/"
+	relocate := func(files map[string]string) map[string]string {
+		out := map[string]string{}
+		for name, body := range files {
+			if rest, ok := strings.CutPrefix(name, "_v/"); ok {
+				out[cachedMod+rest] = body
+			} else {
+				out["m/"+name] = body
+			}
+		}
+		out["m/go.mod"] = strings.Replace(out["m/go.mod"], "./_v", "../"+strings.TrimSuffix(cachedMod, "/"), 1)
+		return out
+	}
 	bad := map[string][]string{"example.com/v/vuln": {"Bad"}}
+	strs := map[string]string{
+		"main.go": "package main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { _ = strings.ToUpper(\"x\"); vuln.Safe() }\n",
+	}
 	cases := []struct {
 		name     string
 		files    map[string]string
+		cached   bool   // example.com/v lies in the module cache
 		unread   string // a file made unreadable after the load
-		modcache string // GOMODCACHE for the engine, below the tree, set after the load
+		modcache string // GOMODCACHE for the engine, set after the load: "mc" for a cached row when unset
 		withheld bool
 		item     string
-		dropped  string // the file dropped, x.go when unset
+		dropped  string // the file dropped: x.go, or y.go in a cached row, when unset
 	}{
-		{"nothing declares the name: the file never compiles", nil, "", "", false, "", ""},
-		{"only a file for another compiler declares the name", map[string]string{
-			"helper_gccgo.go": "//go:build gccgo\n\npackage main\n\nfunc helper() {}\n",
-		}, "", "", true, lofUnresolvedName, ""},
-		{"only an ignored file declares the name", map[string]string{
-			"helper.go": "//go:build ignore\n\npackage main\n\nfunc helper() {}\n",
-		}, "", "", true, lofUnresolvedName, ""},
-		{"the package has a cgo file, which generates no such name", map[string]string{
-			"c.go": "//go:build lofalt\n\npackage main\n\nimport \"C\"\n",
-		}, "", "", false, "", ""},
-		{"the package has a cgo file and the name is one cgo could generate", map[string]string{
-			"c.go": "//go:build lofalt\n\npackage main\n\nimport \"C\"\n",
-			"x.go": "//go:build lofalt\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { _helper(); vuln.Bad() }\n",
-		}, "", "", true, lofUnresolvedName, ""},
-		{"the package has a SWIG interface", map[string]string{
-			"x.swig": "%module x\n",
-		}, "", "", true, lofUnresolvedName, ""},
+		// Source outside the module cache and the toolchain may gain a file before it compiles.
+		{"nothing declares the name in the main module", nil, false, "", "", true, lofUnresolvedName, ""},
 		{"the package has a generated file", map[string]string{
 			"gen.go": "// Code generated by hand. DO NOT EDIT.\n\npackage main\n",
-		}, "", "", true, lofUnresolvedName, ""},
+		}, false, "", "", true, lofUnresolvedName, ""},
 		{"the package has a go:generate directive", map[string]string{
 			"gen.go": "package main\n\n//go:generate stringer -type=kind\n",
-		}, "", "", true, lofUnresolvedName, ""},
+		}, false, "", "", true, lofUnresolvedName, ""},
+		{"a module-cache package read from another cache", nil, true, "", "_elsewhere", true, lofUnresolvedName, ""},
+
+		{"nothing declares the name in a module-cache package: the file never compiles", nil, true, "", "", false, "", ""},
 		{"a module-cache package has a generated file", map[string]string{
-			"x.go":           "package main\n",
 			"_v/vuln/gen.go": "// Code generated by hand. DO NOT EDIT.\n\npackage vuln\n",
-			"_v/vuln/y.go":   "//go:build lofalt\n\npackage vuln\n\nfunc init() { helper(); Bad() }\n",
-		}, "", "_v", false, "", "_v/vuln/y.go"},
-		{"a package outside the module cache has a generated file", map[string]string{
-			"x.go":           "package main\n",
-			"_v/vuln/gen.go": "// Code generated by hand. DO NOT EDIT.\n\npackage vuln\n",
-			"_v/vuln/y.go":   "//go:build lofalt\n\npackage vuln\n\nfunc init() { helper(); Bad() }\n",
-		}, "", "_elsewhere", true, lofUnresolvedName, ""},
+		}, true, "", "", false, "", ""},
+		{"only a file for another compiler declares the name", map[string]string{
+			"_v/vuln/helper_gccgo.go": "//go:build gccgo\n\npackage vuln\n\nfunc helper() {}\n",
+		}, true, "", "", true, lofUnresolvedName, ""},
+		{"only an ignored file declares the name", map[string]string{
+			"_v/vuln/helper.go": "//go:build ignore\n\npackage vuln\n\nfunc helper() {}\n",
+		}, true, "", "", true, lofUnresolvedName, ""},
+		{"the package has a cgo file, which generates no such name", map[string]string{
+			"_v/vuln/c.go": "//go:build lofalt\n\npackage vuln\n\nimport \"C\"\n",
+		}, true, "", "", false, "", ""},
+		{"the package has a cgo file and the name is one cgo could generate", map[string]string{
+			"_v/vuln/c.go": "//go:build lofalt\n\npackage vuln\n\nimport \"C\"\n",
+			"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nfunc init() { _helper(); Bad() }\n",
+		}, true, "", "", true, lofUnresolvedName, ""},
+		{"the package has a SWIG interface", map[string]string{
+			"_v/vuln/x.swig": "%module x\n",
+		}, true, "", "", true, lofUnresolvedName, ""},
 		{"a file of the package cannot be read", map[string]string{
-			"y.go": "//go:build lofalt\n\npackage main\n",
-		}, "y.go", "", true, lofUnresolvedName, ""},
+			"_v/vuln/z.go": "//go:build lofalt\n\npackage vuln\n",
+		}, true, "_v/vuln/z.go", "", true, lofUnresolvedName, ""},
 		{"the file has another type error", map[string]string{
-			"x.go": "//go:build lofalt\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { helper(); var n int = \"s\"; _ = n; vuln.Bad() }\n",
-		}, "", "", true, lofVariantTypecheck, ""},
+			"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nfunc init() { helper(); var n int = \"s\"; _ = n; Bad() }\n",
+		}, true, "", "", true, lofVariantTypecheck, ""},
 		{"the file dot-imports a package", map[string]string{
-			"x.go": "//go:build lofalt\n\npackage main\n\nimport . \"example.com/v/vuln\"\n\nfunc init() { helper(); Bad() }\n",
-		}, "", "", true, lofUnresolvedName, ""},
+			"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nimport . \"strings\"\n\nfunc init() { helper(); _ = ToUpper; Bad() }\n",
+		}, true, "", "", true, lofUnresolvedName, ""},
+
 		// A qualified name the standard library does not declare, in any variant.
-		{"a loaded standard-library package declares no such name", map[string]string{
-			"main.go": "package main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { _ = strings.ToUpper(\"x\"); vuln.Safe() }\n",
-			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName(); vuln.Bad() }\n",
-		}, "", "", false, "", ""},
-		{"the standard-library name and a bare name nothing declares", map[string]string{
-			"main.go": "package main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { _ = strings.ToUpper(\"x\"); vuln.Safe() }\n",
-			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { helper(); strings.NoSuchName(); vuln.Bad() }\n",
-		}, "", "", false, "", ""},
-		{"the standard-library name, and another type error", map[string]string{
-			"main.go": "package main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { _ = strings.ToUpper(\"x\"); vuln.Safe() }\n",
-			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName(); var n int = \"s\"; _ = n; vuln.Bad() }\n",
-		}, "", "", true, lofVariantTypecheck, ""},
+		{"a loaded standard-library package declares no such name", merge(strs, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName(); vuln.Bad() }\n",
+		}), false, "", "", false, "", ""},
+		{"the standard-library name alone proves it, beside a bare name nothing declares", merge(strs, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { helper(); strings.NoSuchName(); vuln.Bad() }\n",
+		}), false, "", "", false, "", ""},
+		{"the standard-library name, and another type error", merge(strs, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName(); var n int = \"s\"; _ = n; vuln.Bad() }\n",
+		}), false, "", "", true, lofVariantTypecheck, ""},
+		// The checker is given the build's sync: the embedded Mutex's Lock is no error of its own.
+		{"the standard-library name, beside a use of another loaded package", merge(strs, map[string]string{
+			"main.go": "package main\n\nimport (\n\t\"strings\"\n\t\"sync\"\n\n\t\"example.com/v/vuln\"\n)\n\nvar mu sync.Mutex\n\nfunc main() { mu.Lock(); _ = strings.ToUpper(\"x\"); vuln.Safe() }\n",
+			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\t\"sync\"\n\n\t\"example.com/v/vuln\"\n)\n\ntype locked struct{ sync.Mutex }\n\nfunc init() { var l locked; l.Lock(); strings.NoSuchName(); vuln.Bad() }\n",
+		}), false, "", "", false, "", ""},
+		{"the standard-library name, beside an array length another file declares", merge(strs, map[string]string{
+			"size.go": "package main\n\nconst size = 4\n",
+			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nvar buf [size]byte\n\nfunc init() { _ = buf; strings.NoSuchName(); vuln.Bad() }\n",
+		}), false, "", "", false, "", ""},
 		{"a standard-library package the build did not load", map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t\"go/doc/comment\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { comment.NoSuchName(); vuln.Bad() }\n",
-		}, "", "", true, lofUnresolvedName, ""},
-		{"a standard-library name cgo could generate", map[string]string{
-			"main.go": "package main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { _ = strings.ToUpper(\"x\"); vuln.Safe() }\n",
-			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings._NoSuchName(); vuln.Bad() }\n",
-		}, "", "", true, lofUnresolvedName, ""},
+		}, false, "", "", true, lofUnresolvedName, ""},
+		{"a standard-library name cgo could generate", merge(strs, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings._NoSuchName(); vuln.Bad() }\n",
+		}), false, "", "", true, lofUnresolvedName, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := writeTree(t, merge(base, tc.files))
-			var prepare func(*LoadResult)
+			tree := merge(base, tc.files)
+			if tc.cached {
+				tree = relocate(merge(merge(base, cachedBase), tc.files))
+			}
+			root := writeTree(t, tree)
+			dir, modcache := root, tc.modcache
+			if tc.cached {
+				dir = filepath.Join(root, "m")
+				if modcache == "" {
+					modcache = "mc"
+				}
+			}
+			var prepares []func(*LoadResult)
 			if tc.unread != "" {
 				path := filepath.Join(dir, tc.unread)
-				prepare = func(*LoadResult) {
+				if rest, ok := strings.CutPrefix(tc.unread, "_v/"); ok && tc.cached {
+					path = filepath.Join(root, cachedMod, rest)
+				}
+				prepares = append(prepares, func(*LoadResult) {
 					if err := os.Chmod(path, 0); err != nil {
 						t.Fatal(err)
 					}
-				}
+				})
 				t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 			}
-			if tc.modcache != "" {
-				prepare = func(*LoadResult) { t.Setenv("GOMODCACHE", filepath.Join(dir, tc.modcache)) }
+			if modcache != "" {
+				prepares = append(prepares, func(*LoadResult) { t.Setenv("GOMODCACHE", filepath.Join(root, modcache)) })
 			}
-			got := lofRun(t, dir, "example.com/v", bad, false, prepare)
+			got := lofRun(t, dir, "example.com/v", bad, false, func(l *LoadResult) {
+				for _, p := range prepares {
+					p(l)
+				}
+			})
 			if got.withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
 			}
@@ -331,14 +397,58 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 			}
 			if tc.item == "" {
 				want := tc.dropped
-				if want == "" {
+				switch {
+				case want != "":
+				case tc.cached:
+					want = "vuln/y.go"
+				default:
 					want = "x.go"
 				}
-				if f := got.facts[want]; f == nil || !f.Dropped {
+				var f *lofFacts
+				for path, ff := range got.facts {
+					if path == want || tc.cached && strings.HasSuffix(filepath.ToSlash(path), "/"+cachedMod+want) {
+						f = ff
+					}
+				}
+				if f == nil || !f.Dropped {
 					t.Errorf("%s not dropped (facts %s)", want, lofDescribe(got))
 				}
 			}
 		})
+	}
+}
+
+// TestLofFixedSource: only the toolchain's source and a module-cache module version are fixed.
+func TestLofFixedSource(t *testing.T) {
+	w := &lofWorld{buildDir: "/work/m", goroot: "/go", modcache: "/cache/mod"}
+	for _, tc := range []struct {
+		dir  string
+		want bool
+	}{
+		{"/go/src/strings", true},
+		{"/go/pkg/tool", false},
+		{"/cache/mod/example.com/v@v1.0.0/vuln", true},
+		{"/cache/mod/example.com/v@v1.0.0", true},
+		{"/cache/mod/example.com/v/vuln", false},
+		{"/cache/mod/cache/download/example.com/v/@v", false},
+		{"/cache/mod", false},
+		{"/elsewhere/example.com/v@v1.0.0", false},
+		{"/work/m", false},
+		{"/work/m/vuln", false},
+	} {
+		if got := w.fixedSource(tc.dir); got != tc.want {
+			t.Errorf("fixedSource(%q) = %v, want %v", tc.dir, got, tc.want)
+		}
+	}
+	// A build tree inside the module cache is never fixed.
+	w = &lofWorld{buildDir: "/cache/mod/example.com/m@v1.0.0", modcache: "/cache/mod"}
+	for _, dir := range []string{"/cache/mod/example.com/m@v1.0.0", "/cache/mod/example.com/m@v1.0.0/x"} {
+		if w.fixedSource(dir) {
+			t.Errorf("fixedSource(%q) = true inside the build tree", dir)
+		}
+	}
+	if (&lofWorld{goroot: "/go"}).fixedSource("/go/src/strings") {
+		t.Error("fixedSource is true with no build tree")
 	}
 }
 

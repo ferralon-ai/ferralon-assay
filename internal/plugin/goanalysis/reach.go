@@ -198,7 +198,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // supplies the loaded program, and is asked for it only to build the graph or to withhold a
 // refutation. entry is the caller's statement of the build's library entry points.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
-	g, err := reconcileCallGraph(ctx, buildDir, load)
+	g, err := reconcileCallGraph(ctx, buildDir, scanned.partial.readImports(), load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
@@ -333,7 +333,7 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 		return res
 	}
 	vulnerable := scanned.vulnerablePackages(module)
-	incomplete := incompleteLoad(pkgs)
+	incomplete := incompleteLoad(pkgs, scanned.partial.readImports())
 	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
@@ -356,11 +356,13 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 }
 
 // incompleteLoad reports whether a package failed to load or type-check, so that its imports, and
-// what reaches through them, may be incomplete.
-func incompleteLoad(pkgs []*packages.Package) bool {
+// what reaches through them, may be incomplete. A package in known does not count: it, and every
+// package importing it, lies in the partial run's Hidden closure, whose modules' refutations are
+// withheld anyway (withholdForPartialRun, and reflectReachOf on why the rest stand).
+func incompleteLoad(pkgs []*packages.Package, known []string) bool {
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.Types == nil || len(p.Errors) > 0 {
+		if (p.Types == nil || len(p.Errors) > 0) && !slices.Contains(known, p.PkgPath) {
 			incomplete = true
 		}
 	})
@@ -1089,12 +1091,16 @@ type reconcileGraph struct {
 	ReflectReach map[string][]string    `json:"reflect_reach"`
 }
 
+func reconcileCacheKey(buildDir string, known []string) []string {
+	return append([]string{buildDir, "known=" + strings.Join(known, ",")}, os.Environ()...)
+}
+
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
 // once per tree per scan through the run cache. The program load reads the process environment, so
 // that is part of the key. Reflection's calls are bounded per advisory (withholdForReflectReach), so
-// the graph does not declare them run-wide.
-func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
-	b, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+// the graph does not declare them run-wide. known is as reflectReachOf takes it.
+func reconcileCallGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+	b, err := runCached(ctx, "reconcile", reconcileCacheKey(buildDir, known), func() ([]byte, error) {
 		loaded, err := load()
 		if err != nil {
 			return nil, err
@@ -1103,7 +1109,7 @@ func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*Load
 		if err != nil {
 			return nil, err
 		}
-		reasons, reach, err := reflectReachOf(loaded)
+		reasons, reach, err := reflectReachOf(loaded, known)
 		if err != nil {
 			return nil, err
 		}

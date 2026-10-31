@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/types"
 	"maps"
 	"os"
 	"path/filepath"
@@ -186,6 +187,9 @@ func TestPartialRunRecord(t *testing.T) {
 			if !slices.Equal(ran, tc.wantRun) || !slices.Equal(run.Excluded, tc.wantExcluded) || !slices.Equal(run.Unloadable, tc.wantP) {
 				t.Errorf("ran over %v excluding %v for P %v; want %v excluding %v for %v", ran, run.Excluded, run.Unloadable, tc.wantRun, tc.wantExcluded, tc.wantP)
 			}
+			if !slices.Equal(run.Hidden, hiddenModules(tc.graph, run.Excluded)) || run.Hidden == nil {
+				t.Errorf("hidden %v, want the excluded roots' modules", run.Hidden)
+			}
 			if tc.wantModules != nil && !maps.Equal(run.Modules, tc.wantModules) {
 				t.Errorf("modules %v, want %v", run.Modules, tc.wantModules)
 			}
@@ -265,7 +269,8 @@ func TestWithholdForPartialRun(t *testing.T) {
 
 // TestReconciledResult_PartialRunWithholdsRefutation pins that a partial run reaches the result: the
 // stream runGovulncheck answers a settled failure with carries the partial run into reconciledResult,
-// which withholds a refutation every other gate lets stand. The run cache is seeded, so no
+// which withholds a refutation every other gate lets stand, unless Hidden is known and holds no
+// package of its module. The run cache is seeded, so no
 // govulncheck runs: under one key a settled failure and the partial run that answers it, under the
 // other the same stream as a full run.
 func TestReconciledResult_PartialRunWithholdsRefutation(t *testing.T) {
@@ -295,14 +300,24 @@ func TestReconciledResult_PartialRunWithholdsRefutation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, partial := range []bool{false, true} {
+	for _, tc := range []struct {
+		partial bool
+		hidden  []string
+	}{
+		{},
+		{partial: true},
+		{partial: true, hidden: []string{"", "pkg:golang/example.com/vulnmod", "pkg:golang/stdlib"}},
+		{partial: true, hidden: []string{"", "pkg:golang/stdlib"}},
+	} {
 		cache := t.TempDir()
-		if partial {
+		if tc.partial {
 			seed(t, cache, govulncheckFailureKind, govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: "exit status 1", Stderr: "could not import C"})
-			seed(t, cache, govulncheckPartialKind, partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"example.com/m/c"}, Excluded: []string{"example.com/m/cmd/a"}, Stream: stream})
+			seed(t, cache, govulncheckPartialKind, partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"example.com/m/c"}, Excluded: []string{"example.com/m/cmd/a"}, Hidden: tc.hidden, Stream: stream})
 		} else {
 			seed(t, cache, "govulncheck", stream)
 		}
+		// The refutation stands unless the left-out roots may import vulnmod.
+		withheld := tc.partial && (tc.hidden == nil || slices.Contains(tc.hidden, "pkg:golang/example.com/vulnmod"))
 		ctx := WithRunCacheDir(context.Background(), cache)
 		scanned, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-1"}, env, true)
 		if err != nil {
@@ -312,12 +327,71 @@ func TestReconciledResult_PartialRunWithholdsRefutation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if refuted := res.Refutation != nil; refuted == partial {
-			t.Errorf("partial=%v: refutation %+v (%v)", partial, res.Refutation, res.Partiality.Reasons)
+		if refuted := res.Refutation != nil; refuted == withheld {
+			t.Errorf("%+v: refutation %+v (%v)", tc, res.Refutation, res.Partiality.Reasons)
 		}
-		if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != partial {
-			t.Errorf("partial=%v: reasons %v", partial, res.Partiality.Reasons)
+		if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != withheld {
+			t.Errorf("%+v: reasons %v", tc, res.Partiality.Reasons)
 		}
+	}
+}
+
+// TestReconciledResult_PartialRunReleasesPastIllTypedDependency pins that a partial run that could not
+// load a dependency does not count it as an incomplete load: with Hidden known and holding no package
+// of vulnmod, neither library_escape nor reflection:call withholds the refutation of vulnmod, while a
+// run whose Hidden is unknown still withholds it.
+func TestReconciledResult_PartialRunReleasesPastIllTypedDependency(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/bad v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/bad => ./_bad\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"cmd/a/main.go":       "package main\n\nimport \"example.com/bad/olm\"\n\nfunc main() { olm.F() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+		"_bad/go.mod":         "module example.com/bad\n\ngo 1.22\n",
+		"_bad/olm/olm.go":     "package olm\n\nfunc F() { var x int = \"s\"; _ = x }\n",
+	})
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "GOWORK=off")
+	key := append([]string{dir}, env...)
+	stream := []byte(`{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}` + "\n")
+	for _, tc := range []struct {
+		name   string
+		hidden []string
+		want   bool
+	}{
+		{"Hidden known", []string{"", "pkg:golang/example.com/bad", "pkg:golang/example.com/m", "pkg:golang/stdlib"}, true},
+		{"Hidden unknown", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			for kind, v := range map[string]any{
+				govulncheckFailureKind: govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: "exit status 1", Stderr: "could not type-check example.com/bad/olm"},
+				govulncheckPartialKind: partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"example.com/bad/olm"}, Excluded: []string{"example.com/m/cmd/a"}, Hidden: tc.hidden, Stream: stream},
+			} {
+				b, err := json.Marshal(v)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(runCachePath(cache, kind, key), b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx := WithRunCacheDir(context.Background(), cache)
+			scanned, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-1"}, env, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := reconciledResult(ctx, scanned, dir, env, func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if refuted := res.Refutation != nil; refuted != tc.want {
+				t.Errorf("refutation %+v (%v), want refuted=%v", res.Refutation, res.Partiality.Reasons, tc.want)
+			}
+		})
 	}
 }
 
@@ -329,6 +403,8 @@ func TestListBuildPackages(t *testing.T) {
 		"main.go":     "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
 		"_dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
 		"_dep/dep.go": "package dep\n\nfunc F() {}\n",
+		// Imports a package the dependency does not have: the go command cannot read it.
+		"cmd/broken/main.go": "package main\n\nimport \"example.com/dep/missing\"\n\nfunc main() { missing.F() }\n",
 	})
 	graph, err := listBuildPackages(context.Background(), dir, append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 	if err != nil {
@@ -340,6 +416,15 @@ func TestListBuildPackages(t *testing.T) {
 	}
 	if dep := graph[i]; !dep.DepOnly || dep.purl() != "pkg:golang/example.com/dep" {
 		t.Errorf("dependency listed as %+v (%s)", dep, dep.purl())
+	}
+	// Hidden reads Deps and Error (hiddenModules): a root's Deps hold its dependencies, implicit ones
+	// included, and a package the go command could not read carries an Error.
+	if i := slices.IndexFunc(graph, func(p listedPackage) bool { return p.ImportPath == "example.com/m" }); i < 0 ||
+		!slices.Contains(graph[i].Deps, "example.com/dep") || !slices.Contains(graph[i].Deps, "runtime") || graph[i].Error != nil {
+		t.Errorf("root listed as %+v; want Deps holding example.com/dep and runtime, and no Error", graph)
+	}
+	if i := slices.IndexFunc(graph, func(p listedPackage) bool { return p.ImportPath == "example.com/dep/missing" }); i < 0 || graph[i].Error == nil {
+		t.Errorf("graph %+v; want example.com/dep/missing listed with an Error", graph)
 	}
 }
 
@@ -396,5 +481,147 @@ func TestDecodePartialRun(t *testing.T) {
 				t.Errorf("decoded=%v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestHiddenModules pins Hidden: the modules of every package an excluded root imports, itself
+// included, through the go command's Deps, which hold the imports cgo and the runtime add. What the
+// go command could not read the imports of leaves it unknown.
+func TestHiddenModules(t *testing.T) {
+	main := &listedModule{Path: "example.com/m", Main: true}
+	dep := &listedModule{Path: "example.com/dep"}
+	root := listedPackage{ImportPath: "example.com/m/cmd/a", Module: main, Deps: []string{"example.com/dep/olm", "runtime/cgo"}}
+	graph := []listedPackage{
+		root,
+		{ImportPath: "example.com/dep/olm", Module: dep},
+		{ImportPath: "runtime/cgo"},
+		{ImportPath: "example.com/m/cmd/b", Module: main, Deps: []string{"golang.org/x/text/transform"}},
+		{ImportPath: "golang.org/x/text/transform", Module: &listedModule{Path: "golang.org/x/text"}},
+	}
+	broken := slices.Clone(graph)
+	broken[1].Error = &struct{}{}
+	for _, tc := range []struct {
+		name     string
+		graph    []listedPackage
+		excluded []string
+		want     []string
+	}{
+		{name: "an excluded root's imports", graph: graph, excluded: []string{"example.com/m/cmd/a"},
+			want: []string{"", "pkg:golang/example.com/dep", "pkg:golang/example.com/m", "pkg:golang/stdlib"}},
+		{name: "an import whose own imports are unknown", graph: broken, excluded: []string{"example.com/m/cmd/a"}},
+		{name: "an unlisted import", graph: graph[:2], excluded: []string{"example.com/m/cmd/a"}},
+		{name: "an unlisted root", graph: graph, excluded: []string{"example.com/m/cmd/a", "example.com/m/cmd/c"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hiddenModules(tc.graph, tc.excluded); !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Errorf("hiddenModules = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPartialRunHides pins which refutations a partial run withholds: those of a module Hidden holds
+// a package of, matched as the trigger matches Targets, and all of them while Hidden is unknown.
+func TestPartialRunHides(t *testing.T) {
+	run := &partialRun{Hidden: []string{"", "pkg:golang/example.com/dep", "pkg:golang/stdlib"}}
+	for _, tc := range []struct {
+		name string
+		run  *partialRun
+		purl string
+		want bool
+	}{
+		{"Hidden unknown", &partialRun{}, "pkg:golang/golang.org/x/text", true},
+		{"a module Hidden holds", run, "pkg:golang/example.com/dep", true},
+		{"a module under one Hidden holds", run, "pkg:golang/example.com/dep/v2", true},
+		{"a module holding one Hidden holds", &partialRun{Hidden: []string{"pkg:golang/example.com/dep/sub"}}, "pkg:golang/example.com/dep", true},
+		{"another spelling of a module Hidden holds", run, "pkg:golang/Example.com/Dep", true},
+		{"the standard library", run, "pkg:golang/stdlib", true},
+		{"not a Go package URL", run, "pkg:npm/dep", true},
+		{"a module Hidden does not hold", run, "pkg:golang/golang.org/x/text", false},
+		{"a module sharing only a prefix", run, "pkg:golang/example.com/depot", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.run.hides(tc.purl); got != tc.want {
+				t.Errorf("hides(%s) = %v, want %v", tc.purl, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithholdForPartialRunReleases pins ferralon-ai/tracker#612: with Hidden known, a refutation of
+// a module Hidden holds no package of stands, silence stays unknown to the analyzer, and the tool
+// failure that names the left-out roots is bounded to Hidden.
+func TestWithholdForPartialRunReleases(t *testing.T) {
+	hidden := []string{"", "pkg:golang/example.com/dep", "pkg:golang/example.com/m", "pkg:golang/stdlib"}
+	run := &partialRun{Unloadable: []string{"example.com/dep/olm"}, Modules: map[string]string{"example.com/dep/olm": "pkg:golang/example.com/dep"}, Excluded: []string{"example.com/m/cmd/a"}, Hidden: hidden}
+	finding := func(module string) []vulnFinding {
+		return []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: module, Version: "v1.0.0", Package: module + "/x"}}}}
+	}
+	for _, tc := range []struct {
+		name        string
+		findings    []vulnFinding
+		wantRefuted bool
+		wantReason  string
+	}{
+		{name: "a module outside Hidden", findings: finding("golang.org/x/text"), wantRefuted: true},
+		{name: "a module Hidden holds", findings: finding("example.com/dep"), wantReason: plugin.PartialReasonToolFailure},
+		{name: "the main module", findings: finding("example.com/m"), wantReason: plugin.PartialReasonToolFailure},
+		{name: "silence", wantReason: plugin.PartialReasonAdvisoryUnknownToAnalyzer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := withholdForPartialRun(evidenceResult(tc.findings, plugin.CallGraphResult{Partiality: plugin.Complete()}, nil), vulnScan{findings: tc.findings, partial: run})
+			if (res.Refutation != nil) != tc.wantRefuted {
+				t.Errorf("refutation %+v, want refuted=%v", res.Refutation, tc.wantRefuted)
+			}
+			if tc.wantReason != "" && !slices.Contains(res.Partiality.Reasons, tc.wantReason) {
+				t.Errorf("reasons %v, want %s", res.Partiality.Reasons, tc.wantReason)
+			}
+			if tc.wantReason != plugin.PartialReasonToolFailure && slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("reasons %v, want no run-wide tool_failure", res.Partiality.Reasons)
+			}
+			bounded := slices.ContainsFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+				return s.Reason == plugin.PartialReasonToolFailure && slices.Equal(s.Targets, hidden)
+			})
+			if !bounded || res.Partiality.Complete {
+				t.Errorf("partiality %+v, want a tool failure bounded to Hidden and incomplete", res.Partiality)
+			}
+		})
+	}
+}
+
+// TestIncompleteLoadKnown pins that a package a partial run could not load does not make the load
+// incomplete, and any other failed package still does.
+func TestIncompleteLoadKnown(t *testing.T) {
+	failed := &packages.Package{PkgPath: "example.com/dep/olm", Errors: []packages.Error{{Msg: "could not import C"}}}
+	root := &packages.Package{PkgPath: "example.com/m/cmd/a", Types: types.NewPackage("example.com/m/cmd/a", "main"), Imports: map[string]*packages.Package{"example.com/dep/olm": failed}}
+	for _, tc := range []struct {
+		name  string
+		known []string
+		want  bool
+	}{
+		{"nothing known", nil, true},
+		{"the failed package known", []string{"example.com/dep/olm"}, false},
+		{"another package known", []string{"example.com/dep/other"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := incompleteLoad([]*packages.Package{root}, tc.known); got != tc.want {
+				t.Errorf("incompleteLoad = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPartialRunReadImports pins that the packages a partial run could not load count as read only
+// while Hidden is known.
+func TestPartialRunReadImports(t *testing.T) {
+	var none *partialRun
+	if got := none.readImports(); got != nil {
+		t.Errorf("no partial run: %v", got)
+	}
+	if got := (&partialRun{Unloadable: []string{"p"}}).readImports(); got != nil {
+		t.Errorf("Hidden unknown: %v", got)
+	}
+	if got := (&partialRun{Unloadable: []string{"p"}, Hidden: []string{"pkg:golang/stdlib"}}).readImports(); !slices.Equal(got, []string{"p"}) {
+		t.Errorf("Hidden known: %v, want [p]", got)
 	}
 }

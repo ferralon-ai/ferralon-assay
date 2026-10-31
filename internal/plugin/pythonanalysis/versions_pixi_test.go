@@ -39,7 +39,7 @@ func TestResolveVersions_PixiPyPINames(t *testing.T) {
 	want := []string{"abspkg", "barepkg", "casepkg", "coverage", "gitpkg", "hiddenpkg", "homepkg", "linkpkg", "mlx", "outpkg",
 		"pyjwt", "pytest", "pywin32", "sdistpkg", "uvloop", "wheelpkg", "winpkg"}
 	// local_pkg's source holds a manifest the walk reads; bare's holds none, .pixi and build are
-	// skipped, ~ is not the manifest's directory, and linked is a symlink out of the tree.
+	// skipped, ~ may name the home directory, and linked is a symlink out of the tree.
 	srcs := map[string]string{
 		"lib/pyproject.toml":                 "[project]\nname = \"local_pkg\"\n",
 		"bare/local.py":                      "x = 1\n",

@@ -22,7 +22,7 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 
 	pkgs := make([]report.Package, 0, len(inv.Nodes))
 	keyByID := make(map[string]string, len(inv.Nodes))
-	seen := make(map[string]struct{}, len(inv.Nodes))
+	seen := make(map[string]int, len(inv.Nodes))
 	for i := range inv.Nodes {
 		n := inv.Nodes[i]
 		eco, name := ecosystemAndNameFromPURL(n.PURL, ecosystem)
@@ -33,6 +33,8 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 			PURL:      n.PURL,
 			Direct:    n.Direct,
 			Replace:   n.Replace,
+
+			NotInstalled: n.NotInstalled,
 		}
 		if !n.Partiality.Complete && len(n.Partiality.Reasons) > 0 {
 			// A node-level limit (e.g. a version that could not be pinned, a digest not acquired)
@@ -42,13 +44,15 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 		}
 		key := p.Key()
 		keyByID[n.ID] = key
-		if _, ok := seen[key]; ok {
+		if j, ok := seen[key]; ok {
 			// The report SBOM is package-granularity: distinct inventory node instances of one
-			// identity collapse to one package. The instance tree with distinct IDs stays in the
-			// inventory; edges below are re-expressed over the collapsed keys.
+			// identity collapse to one package, which the build installs when any instance is.
+			// The instance tree with distinct IDs stays in the inventory; edges below are
+			// re-expressed over the collapsed keys.
+			pkgs[j].NotInstalled = pkgs[j].NotInstalled && p.NotInstalled
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = len(pkgs)
 		pkgs = append(pkgs, p)
 	}
 

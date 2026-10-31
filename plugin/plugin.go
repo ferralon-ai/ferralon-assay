@@ -718,6 +718,9 @@ type DependencyNode struct {
 	Provenance DependencyProvenance `json:"provenance"`        // §4.1 manifest/lockfile/resolver/runtime-target provenance
 	Partiality Partiality           `json:"partiality"`        // §4.1 per-node declared partiality (unresolved condition on THIS node)
 	Replace    string               `json:"replace,omitempty"` // module path a replace directive substitutes for this one (Go); empty when not replaced or replaced by a directory
+	// NotInstalled marks a package a lockfile declares that every install the build is known to
+	// run leaves out, such as a poetry group no install selects. Version is still the declared pin.
+	NotInstalled bool `json:"not_installed,omitempty"`
 }
 
 // DependencyEdge is one parent→child dependency relationship (§4.1 "parent edges"). This is the

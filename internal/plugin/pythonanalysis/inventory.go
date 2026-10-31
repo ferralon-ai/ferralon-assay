@@ -47,6 +47,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 	}
 
 	manifests, read := manifestFiles(req.BuildDir)
+	uninstalled := inventoryUninstalled(req.BuildDir)
 
 	var (
 		nodes       []plugin.DependencyNode
@@ -70,6 +71,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 			scope = rel
 		}
 		idFor := func(name string) string { return scope + "#" + name }
+		left := uninstalled(m)
 
 		for _, r := range reqs {
 			if !r.Selected && !r.Unresolved {
@@ -81,7 +83,9 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 				// infer a dependency's absence from an unresolvable condition).
 				continue
 			}
-			nodes = append(nodes, buildNode(idFor(r.Name), r, req))
+			n := buildNode(idFor(r.Name), r, req)
+			n.NotInstalled = left[r.Name]
+			nodes = append(nodes, n)
 			for _, parent := range r.Parents {
 				edges = append(edges, plugin.DependencyEdge{Parent: idFor(parent), Child: idFor(r.Name)})
 			}
@@ -110,6 +114,20 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 	return plugin.DependencyInventory{Partiality: part, Nodes: nodes, Edges: edges}, nil
+}
+
+// inventoryUninstalled returns, for a manifest path, the packages by normalized name that every
+// install the build is known to run leaves out of the environment, shared with version
+// resolution's scoping (poetryInstalls). A script surface that may install a package no
+// manifest names (scriptWithheld), an allowed pip install -r of a file the inventory need not
+// read, or an allowed pip self-upgrade may each put such a package in place, so any of them
+// leaves every package installed.
+func inventoryUninstalled(buildDir string) func(path string) map[string]bool {
+	_, _, scriptWithheld, installs, poetry, tooling := versionSurfaces(buildDir)
+	if scriptWithheld || len(installs) > 0 || len(tooling) > 0 {
+		return func(string) map[string]bool { return nil }
+	}
+	return poetry.uninstalled
 }
 
 // manifestToPyReqs parses one recognized manifest into selected-set pyReq records for the

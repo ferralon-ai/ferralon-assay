@@ -94,6 +94,9 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all = append(all, deps...)
 		origins = append(origins, o...)
 	}
+	pixiDeps, pixiOrigins, pixiRead := pixiManifestDeps(req.BuildDir)
+	all, origins = append(all, pixiDeps...), append(origins, pixiOrigins...)
+	parseFailed = parseFailed || !pixiRead
 
 	part := plugin.Complete()
 	switch {

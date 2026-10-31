@@ -71,6 +71,9 @@ func TestRequirementsLineShapes(t *testing.T) {
 		{name: "marker false unnamed", line: `https://h/a.zip ; sys_platform == "nope"`},
 		{name: "marker unresolved local", line: `. ; extra_var == "x"`, locals: []string{"."}},
 		{name: "index option", line: "--index-url https://example.com/simple"},
+		{name: "relative dir without a dot", line: "libs/core", locals: []string{"libs/core"}},
+		{name: "vcs egg that is not a project name", line: "git+https://github.com/o/r.git#egg=foo!bar", unnamed: true},
+		{name: "wheel whose name is not a project name", line: "dist/foo!bar-1.0-py3-none-any.whl", unnamed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rf := parseRequirementsFile([]byte(tc.line+"\n"), map[string]string{"sys_platform": "linux"}, nil)
@@ -201,6 +204,27 @@ func TestInventoryIndexNames(t *testing.T) {
 				"build/requirements.txt": ".\n",
 			},
 			wantPURLs: []string{"pkg:pypi/click@8.1.7"},
+		},
+		{
+			name: "working directory is ambiguous and the other candidate is a partly read project",
+			files: map[string]string{
+				"pyproject.toml":          project,
+				"requirements.txt":        "-r deploy/requirements.txt\n",
+				"deploy/requirements.txt": ".\n",
+				"deploy/setup.py":         "from setuptools import setup\nsetup(install_requires=open('r').read().split())\n",
+			},
+			wantPURLs:    []string{"pkg:pypi/click@8.1.7"},
+			wantUnpinned: true,
+		},
+		{
+			name: "root self-install where one build definition is computed",
+			files: map[string]string{
+				"pyproject.toml":   "[build-system]\nbuild-backend = \"hatchling.build\"\n[project]\nname = \"app\"\ndynamic = [\"dependencies\"]\n",
+				"setup.py":         "from setuptools import setup\nsetup(install_requires=[\"click==8.1.7\"])\n",
+				"requirements.txt": ".\n",
+			},
+			wantPURLs:    []string{"pkg:pypi/click@8.1.7"},
+			wantUnpinned: true,
 		},
 		{
 			name:         "self-install with no manifest",
@@ -401,6 +425,11 @@ func TestInventoryIndexNames(t *testing.T) {
 			name:         "include missing",
 			files:        map[string]string{"requirements.txt": "-r requirements/framework.txt\nrequests==2.31.0\n"},
 			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "include of a directory",
+			files:        map[string]string{"requirements.txt": "-r sub\n", "sub/README": ""},
 			wantUnpinned: true,
 		},
 		{

@@ -212,6 +212,7 @@ type Veto struct {
 	vetoed    map[string]bool
 	bound     map[string]bool // lowercased base names of files allowed commands bind to
 	mentioned map[string]bool // lowercased base names other commands take as arguments
+	raw       []string        // the lowercased text of those arguments, and of any line this could not split
 	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
 	triggered bool            // a surface's text may reach a sample hook (trigger)
 }
@@ -221,6 +222,7 @@ type Veto struct {
 type sampleRun struct {
 	why              string
 	bound, mentioned map[string]bool
+	raw              []string
 }
 
 // New returns a Veto for the build rooted at root. read is the lane walk's own fullyRead:
@@ -251,7 +253,20 @@ func (v *Veto) FullyRead(path string) bool {
 // allowed command binds to, so may rewrite it first. Call it after the walk.
 func (v *Veto) Rebound() bool {
 	for name := range v.bound {
-		if v.mentioned[name] {
+		if v.mentioned[name] || textNames(v.raw, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// textNames reports whether name occurs in any of the texts. A command may write a file by a
+// spelling no one parse of its arguments recovers (a glued flag value, a Windows /X:value, a
+// brace list, a remote spec host:file), so every occurrence of a bound name counts. That
+// reads a name inside a longer word too, which costs precision and never soundness.
+func textNames(texts []string, name string) bool {
+	for _, t := range texts {
+		if strings.Contains(t, name) {
 			return true
 		}
 	}
@@ -270,16 +285,17 @@ func (v *Veto) samplesLive() bool {
 	if len(v.samples) == 0 || !v.triggered && !v.treeReaches() {
 		return false
 	}
-	bound, mentioned := maps.Clone(v.bound), maps.Clone(v.mentioned)
+	bound, mentioned, raw := maps.Clone(v.bound), maps.Clone(v.mentioned), slices.Clone(v.raw)
 	for _, s := range v.samples {
 		if s.why != "" {
 			return true
 		}
 		maps.Copy(bound, s.bound)
 		maps.Copy(mentioned, s.mentioned)
+		raw = append(raw, s.raw...)
 	}
 	for name := range bound {
-		if mentioned[name] {
+		if mentioned[name] || textNames(raw, name) {
 			return true
 		}
 	}
@@ -465,10 +481,25 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
+// unquote removes every quote character and backslash, so a name the shell would join from
+// pieces (ins"t.lock", 'inst'.lock, inst\.lock) is whole.
+var unquote = strings.NewReplacer("'", "", "\"", "", "`", "", "\\", "")
+
+// record keeps the lowercased text of an argument, as written and with its quotes and
+// backslashes removed, for textNames.
+func (v *Veto) record(text string) {
+	t := strings.ToLower(text)
+	v.raw = append(v.raw, t)
+	if u := unquote.Replace(t); u != t {
+		v.raw = append(v.raw, u)
+	}
+}
+
 // mention records the base names of a command's arguments, a redirect's or an option's
-// target included.
+// target included, and each argument's text for textNames.
 func (v *Veto) mention(args []string) {
 	for _, w := range args {
+		v.record(w)
 		w = trimShell(w)
 		if i := strings.LastIndexByte(w, '='); i >= 0 {
 			w = trimShell(w[i+1:])
@@ -598,11 +629,11 @@ func (v *Veto) surface(path string, head []byte) (string, bool) {
 	if !v.sampleHook(path) {
 		return v.classify(s, path, head, true)
 	}
-	bound, mentioned := v.bound, v.mentioned
-	v.bound, v.mentioned = map[string]bool{}, map[string]bool{}
+	bound, mentioned, raw := v.bound, v.mentioned, v.raw
+	v.bound, v.mentioned, v.raw = map[string]bool{}, map[string]bool{}, nil
 	why, _ := v.classify(s, path, head, false)
-	v.samples = append(v.samples, sampleRun{why: why, bound: v.bound, mentioned: v.mentioned})
-	v.bound, v.mentioned = bound, mentioned
+	v.samples = append(v.samples, sampleRun{why: why, bound: v.bound, mentioned: v.mentioned, raw: v.raw})
+	v.bound, v.mentioned, v.raw = bound, mentioned, raw
 	return "", false
 }
 

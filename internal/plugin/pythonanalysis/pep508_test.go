@@ -64,6 +64,9 @@ func TestParsePEP508SpecifierCommas(t *testing.T) {
 		{"foo>=1.0,<2,", ">=1.0,<2", true},
 		{"foo (>=1.0,)", ">=1.0", true},
 		{`foo>=1.0,;python_version>"3"`, ">=1.0", true},
+		{"foo[x]>=1,", ">=1", true},
+		{"foo>=1,\t", ">=1", true},
+		{"foo (,)", "", false},
 		{"foo>=1.0,,", "", false},
 		{"foo>=1.0, ,", "", false},
 		{"foo>=1.0,,<2", "", false},
@@ -80,8 +83,8 @@ func TestParsePEP508SpecifierCommas(t *testing.T) {
 	if norm, ok := normalizeSpecifier(" "); ok {
 		t.Errorf(`normalizeSpecifier(" ") = %q, true; want false`, norm)
 	}
-	if v, ok := specifierPin("==2.8.0,"); v != "2.8.0" || !ok {
-		t.Errorf(`specifierPin("==2.8.0,") = %q, %v; want "2.8.0", true`, v, ok)
+	if d, ok := declaredDependency("foo==2.8.0,", "requirements.txt"); !ok || d.Version != "2.8.0" || !d.Resolved {
+		t.Errorf(`declaredDependency("foo==2.8.0,") = %+v, %v; want 2.8.0 resolved`, d, ok)
 	}
 }
 

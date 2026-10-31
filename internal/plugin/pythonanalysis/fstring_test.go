@@ -139,6 +139,11 @@ func TestCallGraph_FStringCallSites(t *testing.T) {
 			want:  []string{funcSCIP("app", nil, "helper", 1)},
 		},
 		{
+			name:  "a doubled brace before a quote is text",
+			files: map[string]string{"app.py": helper + "def run():\n    return f\"{{\" + helper(1) + \"}}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
 			name:  "doubled braces are text",
 			files: map[string]string{"app.py": helper + "def run():\n    return f\"{{helper(1)}}\"\n"},
 		},

@@ -142,8 +142,8 @@ It looks each reason up in `floor/caveats.json` for the repository's language. P
 - `reasons`: the raw reason codes behind it.
 
 A finding is affected when it names the reason itself, as its `undetermined_reason` or as its
-package's `partial_reason`. A did-not-run partiality note whose reason no finding names keeps the
-run's refutations from standing, so it affects every finding left `undetermined` with
+package's `partial_reason`. A did-not-run partiality note whose reason is no finding's
+`undetermined_reason` keeps the run's refutations from standing, so it affects every finding left `undetermined` with
 `analysis_did_not_run`. The report doesn't say which limit held which of those findings, so each
 such caveat counts all of them. Read that number as an upper bound. A methodology note
 (`class: inherent_limit`) holds no verdict and affects no finding.

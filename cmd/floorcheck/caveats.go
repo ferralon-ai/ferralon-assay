@@ -153,8 +153,8 @@ type CaveatHit struct {
 // no path), a row's undetermined_reason, or a package's partial_reason.
 //
 // A finding is affected by a reason when it names the reason itself: as its undetermined_reason
-// or as its package's partial_reason. A did-not-run partiality note whose reason no row names
-// is a limit that holds the run's refutations: it affects every row left undetermined with
+// or as its package's partial_reason. A did-not-run partiality note whose reason is no row's
+// undetermined_reason is a limit that holds the run's refutations: it affects every row left undetermined with
 // analysis_did_not_run. The report does not say which limit held which of those rows, so each
 // such caveat counts all of them, an upper bound. An inherent-limit note holds no verdict and
 // affects none.

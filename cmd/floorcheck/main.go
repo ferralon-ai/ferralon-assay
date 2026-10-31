@@ -3,14 +3,17 @@
 //
 //	floorcheck matrix -targets floor/targets.json
 //	floorcheck check  -targets floor/targets.json -results DIR -summary floor-summary.json \
-//	                  -markdown floor-summary.md -alert floor-alert.txt [-assay-commit SHA] [-run-url URL]
+//	                  -markdown floor-summary.md -alert floor-alert.txt [-caveats floor/caveats.json] \
+//	                  [-assay-commit SHA] [-run-url URL]
 //
 // `matrix` validates the targets file and prints the workflow's step outputs: the scan matrix and
 // the corpus policy. `check` reads each scan job's result directory under -results (a meta.json and,
 // when the scan wrote one, its report.json), and fails a repository on any not_exploitable finding
 // without grounds, a disqualified finding on a basis that cannot ground it, a scan that failed, was
 // cut short or left no result, and a report that does not decode or validate. It writes the JSON
-// summary, the Markdown job summary and, when anything failed, the alert text.
+// summary, the Markdown job summary and, when anything failed, the alert text. It also tallies the
+// capability-matrix caveats each report fired, through floor/caveats.json; the tally never fails
+// a repository, and a mapping it cannot read leaves every reason unmapped instead of failing.
 //
 // Exit status: 0 when every repository passed, 1 when any failed, 2 on a usage or input error.
 // docs/floor.md describes the run.
@@ -75,6 +78,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	alertPath := fs.String("alert", "floor-alert.txt", "where to write the failure alert; written only when a repo failed")
 	assayCommit := fs.String("assay-commit", "", "the Assay commit the scanner was built from")
 	runURL := fs.String("run-url", "", "the workflow run's URL, for the summary and the alert")
+	caveatsPath := fs.String("caveats", "floor/caveats.json", "the reason-to-caveat mapping; informational, never fails the run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -93,6 +97,11 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	s := summarize(t, found, *assayCommit, *runURL)
+	cv, cerr := loadCaveats(*caveatsPath)
+	if cerr != nil {
+		fmt.Fprintln(stderr, "floorcheck: caveat tally without a mapping:", cerr)
+	}
+	s.addCaveats(cv, cerr, found)
 	js, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		fmt.Fprintln(stderr, "floorcheck:", err)

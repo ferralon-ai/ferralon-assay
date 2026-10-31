@@ -21,6 +21,7 @@ package pythonanalysis
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
@@ -32,6 +33,10 @@ type markerResult struct {
 	unresolved bool   // marker referenced an unbound variable (or was unevaluable)
 	unboundVar string // the first (source-order) unbound variable, "" if none/malformed
 }
+
+// markerSetVars are PEP 751's set-valued marker variables, bound in env as newline-separated
+// normalized names: `"x" in extras` is membership, not a substring test.
+var markerSetVars = map[string]bool{"extras": true, "dependency_groups": true}
 
 // versionMarkerVars are the marker variables whose values are PEP 440 versions and whose
 // comparisons must route through the shared pep440 comparator.
@@ -381,6 +386,10 @@ func evalMarkerCmp(c markerCmp, env map[string]string, selection []string) (bool
 	rVer := isVersionVarOperand(c.right)
 	if (lVer || rVer) && isVersionOp(c.op) {
 		return evalVersionCmp(c, env, lVer, rVer)
+	}
+	if c.right.isVar && markerSetVars[c.right.text] && !c.left.isVar && (c.op == "in" || c.op == "not in") {
+		in := slices.Contains(strings.Split(env[c.right.text], "\n"), normalizePyCoordinate(c.left.text))
+		return in == (c.op == "in"), true
 	}
 	lv := markerOperandValue(c.left, env)
 	rv := markerOperandValue(c.right, env)

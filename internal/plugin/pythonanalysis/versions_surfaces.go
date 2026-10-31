@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,6 +33,23 @@ import (
 // is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
 // or a script surface names one (pipConfigNamedRE).
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
+	return scanSurfaces(root, nil)
+}
+
+// scriptRun is a pip install a script surface runs: one the rule withholds, from a surface it
+// withholds on, or an allowed self-upgrade. args are pip's arguments after install, as written,
+// files the build-tree -r files they name that the lane does not already read, and uv whether
+// uv runs it.
+type scriptRun struct {
+	surface string
+	args    []string
+	files   []string
+	uv      bool
+}
+
+// scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip
+// install the script surfaces run that names what it installs (scriptRun).
+func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -51,11 +69,11 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 			}
 		}
 	}
-	read := func(path string) bool {
-		if wideMarked(path) {
-			return false
-		}
+	manifest := func(path string) bool {
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
+	}
+	read := func(path string) bool {
+		return !wideMarked(path) && manifest(path)
 	}
 	installs = pipInstalls{}
 	if !pipConfigInTree(root) {
@@ -66,13 +84,26 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
 	}
+	var rec *runRecorder
+	if runs != nil {
+		rec = &runRecorder{inner: spec.Allowed, tooling: tooling}
+		spec.Allowed = rec.allowed
+	}
 	veto := scriptsurface.New(root, read, spec)
-	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
+	classify := veto.Classify(pyInstallSurface)
+	if rec != nil {
+		classify = rec.classify(root, veto)
+	}
+	for _, c := range buildtree.Candidates(root, classify, veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
 	scriptWithheld = veto.Withheld()
+	if rec != nil {
+		rec.rescan(root, manifest, newScriptSpec(pipInstalls{}, maps.Clone(tooling)))
+		*runs = rec.runs
+	}
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}

@@ -255,6 +255,10 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"_v/pe/pe.go":     "package pe\n",
 			"_v/pe/broken.go": "package pe\n\nfunc (\n",
 		}), badFunc, true, lofParseError, false},
+		{"a left-out file enters an unloaded package one of whose build constraints does not parse", merge(x("\t_ \"example.com/v/pc\"\n"+vulnOnly, "func init() { vuln.Safe() }\n"), map[string]string{
+			"_v/pc/pc.go":  "package pc\n",
+			"_v/pc/bad.go": "//go:build a\n//go:build b\n\npackage pc\n",
+		}), badFunc, true, lofParseError, false},
 		{"a left-out file enters an unloaded package whose file imports a package whose init calls the symbol", merge(x("\t_ \"example.com/v/um2\"", ""), map[string]string{
 			"_v/um2/um2.go": "package um2\n\nimport _ \"example.com/v/w2\"\n",
 			"_v/w2/w2.go":   "package w2\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
@@ -750,6 +754,37 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		out := merge(tree, files)
 		delete(out, "x.go")
 		return out
+	}
+	// dep is a module the build does not load, whose package d x.go enters; x.go calls only vuln.Safe.
+	dep := func(imp, body string) map[string]string {
+		return merge(tree, map[string]string{
+			"go.mod":      "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/v v0.0.0\n\texample.com/dep v0.0.0\n)\n\nreplace (\n\texample.com/v => ./_v\n\texample.com/dep => ./_dep\n)\n",
+			"_dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
+			"_dep/d/d.go": "package d\n\nfunc Call() {}\n",
+			"_dep/d/e.go": "package d\n",
+			"x.go":        "//go:build lofalt\n\npackage main\n\nimport (\n\t" + imp + "\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { " + body + "vuln.Safe() }\n",
+		})
+	}
+	for _, tc := range []struct {
+		name, imp, body, blocked string
+		mode                     os.FileMode
+	}{
+		{"the loaded package the file calls cannot be listed", `_ "example.com/dep/d"`, "", "_v/vuln", 0o311},
+		{"another file of an unloaded package the file calls cannot be read", `"example.com/dep/d"`, "d.Call(); ", "_dep/d/e.go", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, dep(tc.imp, tc.body))
+			blocked := filepath.Join(dir, tc.blocked)
+			t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+				if err := os.Chmod(blocked, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !got.withheld || lofFileWith(got, lofMissingSource) == "" {
+				t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofMissingSource, lofDescribe(got))
+			}
+		})
 	}
 	t.Run("the left-out file's package directory cannot be listed", func(t *testing.T) {
 		// y.go of the loaded vulnerable package is left out; its directory stays searchable, so y.go

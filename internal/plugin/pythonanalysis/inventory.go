@@ -88,6 +88,14 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		}
 	}
 
+	have := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		have[n.ID] = true
+	}
+	scripted, withheld := scriptInventory(req, manifests, have)
+	nodes = append(nodes, scripted...)
+	parseFailed = parseFailed || withheld
+
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	sort.Slice(edges, func(i, j int) bool {
 		if edges[i].Parent != edges[j].Parent {

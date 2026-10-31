@@ -30,8 +30,33 @@ func TestParenthesizedSpecifierName(t *testing.T) {
 	}
 }
 
-// specifierPin resolves only an exact first-clause "==X": an arbitrary-equality "===", a
-// prefix match, a range, and an empty specifier all leave the version unresolved.
+// A requirements-file "===" pin resolves to its operand only when that is a PEP 440 version
+// (ferralon-ai/tracker#703); "foo===1.0" never becomes the version "=1.0".
+func TestParseRequirementSpecArbitraryEquality(t *testing.T) {
+	for _, tt := range []struct {
+		spec, version string
+		resolved      bool
+	}{
+		{"foo===1.0", "1.0", true},
+		{"foo === 1.0", "1.0", true},
+		{"foo===1.0+local", "1.0+local", true},
+		{"foo[x]===2!1.0.post1", "2!1.0.post1", true},
+		{"foo===1.0-custom", "", false},
+		{"foo===1.*", "", false},
+		{"foo====1.0", "", false},
+		{"foo===", "", false},
+		{"foo==1.0", "1.0", true},
+	} {
+		name, v, ok, _ := parseRequirementSpec(tt.spec)
+		if name != "foo" || v != tt.version || ok != tt.resolved {
+			t.Errorf("parseRequirementSpec(%q) = %q, %q, %v; want foo, %q, %v", tt.spec, name, v, ok, tt.version, tt.resolved)
+		}
+	}
+}
+
+// specifierPin resolves only an exact first-clause "==X", or a "===X" whose X is a PEP 440
+// version: any other arbitrary equality, a prefix match, a range, and an empty specifier all
+// leave the version unresolved.
 func TestSpecifierPin(t *testing.T) {
 	for _, tt := range []struct {
 		specifier, version string
@@ -39,7 +64,11 @@ func TestSpecifierPin(t *testing.T) {
 	}{
 		{"==2.8.0", "2.8.0", true},
 		{"==2.8.0,<3", "2.8.0", true},
-		{"===2.8.0", "", false},
+		{"===2.8.0", "2.8.0", true},
+		{"===1.0+local", "1.0+local", true},
+		{"===1.0-custom", "", false},
+		{"====1.0", "", false},
+		{"===", "", false},
 		{"==2.*", "", false},
 		{">=2", "", false},
 		{"<3,==2.8.0", "", false},

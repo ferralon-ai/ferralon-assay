@@ -705,7 +705,8 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 		if _, ok := stringLoaders[host+"."+attr]; ok {
 			return host + "." + attr, after, true
 		}
-		return "", end, !fetchDunders[attr]
+		// moduleLookups reads these by their spelled name, which a fetch by literal hides.
+		return "", end, !fetchDunders[attr] && !dynamicImportOpaqueLeafs[attr] && !dynamicImportLiteralLeafs[attr]
 	}
 	switch {
 	case len(rest) == 0:
@@ -733,6 +734,9 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 		// A module is not callable: the name is bound to something else here.
 		return "", end, true
 	}
+	if presenceTest(r, i, k) {
+		return "", end, true
+	}
 	if j < 0 || r[j] != '(' || k >= len(r) {
 		return "", end, false
 	}
@@ -747,11 +751,45 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 		return subscriptFetch(r, k+1, lits, end, leaf)
 	case precededByWord(r, j, "hasattr") && r[k] == ',', precededByWord(r, j, "type") && r[k] == ')':
 		return "", end, true
-	case (precededByWord(r, j, "setattr") || precededByWord(r, j, "delattr")) && r[k] == ',':
-		// A store or delete (monkeypatch.setattr(uvicorn, "run", spy)) hands no loader over.
+	case (precededByWord(r, j, "setattr") || precededByWord(r, j, "delattr") || patchObject(r, j)) && r[k] == ',':
+		// A store or delete (monkeypatch.setattr(uvicorn, "run", spy), mock.patch.object(uvicorn,
+		// "run")) hands no loader over.
 		return "", end, true
 	}
 	return "", end, false
+}
+
+// presenceTest reports whether the name at r[i], whose next non-space rune is r[k], is only
+// compared or truth-tested, as an optional import is (if uvicorn is None:, if not werkzeug,
+// HAS = uvicorn is not None). An and/or operand is not one: its value is the expression's.
+func presenceTest(r []rune, i, k int) bool {
+	next, _ := readWordRunes(r, k)
+	op := string(r[k:min(k+2, len(r))])
+	switch {
+	case next == "is", op == "==", op == "!=":
+		return true
+	case precededByWord(r, i, "not"):
+		return true
+	case precededByWord(r, i, "if") && (next == "else" || op != "" && op[0] == ':'),
+		(precededByWord(r, i, "elif") || precededByWord(r, i, "while")) && op != "" && op[0] == ':':
+		return true
+	}
+	return false
+}
+
+// patchObject reports whether the '(' at r[j] opens a patch.object call.
+func patchObject(r []rune, j int) bool {
+	if !precededByWord(r, j, "object") {
+		return false
+	}
+	q := j - 1
+	for q >= 0 && unicode.IsSpace(r[q]) {
+		q--
+	}
+	for q >= 0 && isIdentPart(r[q]) {
+		q--
+	}
+	return q >= 0 && r[q] == '.' && precededByWord(r, q, "patch")
 }
 
 // subscriptFetch reads the namespace mapping ending at r[p] (vars(m), m.__dict__): a literal

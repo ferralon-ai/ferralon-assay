@@ -11,6 +11,7 @@ package pythonanalysis
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -135,7 +136,7 @@ func normalizeSpecifier(spec string) (string, bool) {
 			return "", false
 		}
 		ver := strings.TrimSpace(c[len(op):])
-		if strings.ContainsAny(ver, " \t") {
+		if strings.IndexFunc(ver, unicode.IsSpace) >= 0 {
 			return "", false
 		}
 		if op == "===" {

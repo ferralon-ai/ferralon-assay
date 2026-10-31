@@ -71,6 +71,8 @@ func TestNormalizeSpecifierWhitespace(t *testing.T) {
 		{"= ==1.0", "", false},
 		{"> = 2.0", "", false},
 		{">=2 .0", "", false},
+		{"=== 1 .0", "", false},
+		{"===1\u00a0.0", "", false},
 	} {
 		if norm, ok := normalizeSpecifier(tt.spec); norm != tt.norm || ok != tt.ok {
 			t.Errorf("normalizeSpecifier(%q) = %q, %v; want %q, %v", tt.spec, norm, ok, tt.norm, tt.ok)

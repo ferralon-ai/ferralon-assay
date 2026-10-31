@@ -129,6 +129,9 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
 			}
+			if abbreviatesInstallOption(line) || laterInstallOption(line) {
+				return out, false
+			}
 			// pip parses every option on the line, not just the first, and accepts any
 			// unambiguous prefix of a long option; --no-r is the shortest for this one.
 			for _, f := range strings.Fields(line) {

@@ -167,6 +167,15 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"unmarked range must admit every locked version", map[string]string{"uv.lock": covUVLockForked, "pyproject.toml": covPyproject("requests>=2.32")}, false},
 		{"marked range needs one locked version", map[string]string{"uv.lock": covUVLockForked, "pyproject.toml": covPyproject(`requests>=2.32; python_version >= "3.12"`)}, true},
 
+		// Install options pip reads in shortened form, or after another option on the line.
+		{"abbreviated --requirement", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--requirem extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --requirement=", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--requirem=extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --editable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--edit ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"include after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -r extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"editable after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -e ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"constraint after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -c extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+
 		// Nested project definitions.
 		{"nested pyproject the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, false},
 		{"nested pyproject that is a workspace member", map[string]string{"uv.lock": covUVLockMember, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, true},

@@ -928,6 +928,15 @@ func TestCallGraph_StringLoaders(t *testing.T) {
 		{"loader on a sys.modules entry as a statement", "import sys\n\ndef f(s):\n    sys.modules['werkzeug.utils'].import_string(s)\n", nil, true},
 		{"loader on a from-imported modules entry by name", "from sys import modules\n\ndef f(s):\n    return modules['werkzeug.utils'].import_string(s)\n", nil, true},
 		{"loader host passed as a keyword argument", "import sys\nregister(mod=sys.modules['werkzeug.utils'])\n", nil, true},
+		{"loader module bound by an annotated assignment", "import importlib\nm: object = importlib.import_module('werkzeug.utils')\n\ndef f(s):\n    return m.import_string(s)\n", []string{"werkzeug.utils"}, true},
+		{"loader module returned by a lambda", "import importlib\nget = lambda: importlib.import_module('werkzeug.utils')\n\ndef f(s):\n    return get().import_string(s)\n", []string{"werkzeug.utils"}, true},
+		{"loader module in a multi-line list", "import importlib\nMODS = [\n    importlib.import_module('werkzeug.utils')\n]\n", []string{"werkzeug.utils"}, true},
+		{"loader module as a multi-line dict value", "import importlib\nMODS = {\n    'u': importlib.import_module('werkzeug.utils')\n}\n", []string{"werkzeug.utils"}, true},
+		{"loader module as the last element of a multi-line tuple", "import importlib\nMODS = (\n    1,\n    importlib.import_module('werkzeug.utils')\n)\n", []string{"werkzeug.utils"}, true},
+		{"loader module as a multi-line call argument", "import importlib\nregister(\n    importlib.import_module('werkzeug.utils')\n)\n", []string{"werkzeug.utils"}, true},
+		{"loader module as a multi-line keyword argument", "import importlib\nregister(\n    mod=importlib.import_module('werkzeug.utils')\n)\n", []string{"werkzeug.utils"}, true},
+		{"loader module bound through parentheses", "import importlib\nm = (\n    importlib.import_module('werkzeug.utils')\n)\n", []string{"werkzeug.utils"}, true},
+		{"loader module bound across a backslash", "import importlib\nm = \\\n    importlib.import_module('werkzeug.utils')\n", []string{"werkzeug.utils"}, true},
 		{"loader fetched from a bound import_module result", "import importlib\nm = importlib.import_module('pkgutil')\n\ndef f(s):\n    return getattr(m, 'resolve_name')(s)\n", []string{"pkgutil"}, true},
 		{"loader on a bound import_module result with a literal", "import importlib\nm = importlib.import_module('pkgutil')\nh = m.resolve_name('acme.plugins:load')\n", []string{"acme.plugins", "pkgutil"}, false},
 		{"loader module returned by import_module passed as a value", "import importlib\nregister(importlib.import_module('werkzeug.utils'))\n", []string{"werkzeug.utils"}, true},
@@ -1004,6 +1013,8 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 		{"resolve_name fetched from any object with a name", "def f(mod, s):\n    return getattr(mod, 'resolve_name')(s)\n", nil, true},
 		{"exec_module fetched as a value", "def f(mod):\n    return getattr(mod, 'exec_module')\n", nil, true},
 		{"unrelated attribute fetched by getattr", "def f(mod):\n    return getattr(mod, 'run'), vars(mod)['x'], mod.__dict__.get('y')\n", nil, false},
+		{"import_module fetched from a module value", "import sys\n\ndef f(s):\n    return getattr(sys.modules['importlib'], 'import_module')(s)\n", nil, true},
+		{"__import__ fetched from any object", "def f(b, s):\n    return getattr(b, '__import__')(s)\n", nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

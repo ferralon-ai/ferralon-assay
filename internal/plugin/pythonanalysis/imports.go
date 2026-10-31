@@ -502,6 +502,7 @@ var dynamicImportOpaqueLeafs = map[string]bool{
 // part) and whether any dynamic import names its module by a non-literal expression.
 // A leaf fetched from any object by a literal name (getattr(runpy, 'run_path'),
 // vars(m)['resolve_name']) counts as the leaf spelled out, and as a value when not called.
+// A literal fetch of import_module or __import__ from any object is opaque.
 // clean and lits come from stripPythonLiterals over the same source, so rune positions in
 // clean index the literal table.
 func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaque bool) {
@@ -528,7 +529,11 @@ func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaq
 			continue
 		}
 		w, end := readWordRunes(r, i)
-		if attr, after, ok := literalAttrFetch(r, w, end, lits); ok && (dynamicImportLiteralLeafs[attr] || dynamicImportOpaqueLeafs[attr]) {
+		if attr, after, ok := literalAttrFetch(r, w, end, lits); ok && (attr == "import_module" || attr == "__import__") {
+			opaque = true
+			i = end
+			continue
+		} else if ok && (dynamicImportLiteralLeafs[attr] || dynamicImportOpaqueLeafs[attr]) {
 			if open := skipAllSpace(r, after); open < n && r[open] == '(' {
 				call(attr, open)
 			} else {
@@ -676,7 +681,7 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			}
 			continue
 		}
-		if whole && statementStart(r, v.start) {
+		if whole && valueStatement(r, v.start) {
 			continue
 		}
 		vals = append(vals, v)
@@ -776,10 +781,21 @@ func boundName(r []rune, start int) string {
 	for j >= 0 && isIdentPart(r[j]) {
 		j--
 	}
-	if j+1 == e || !isIdentStartRune(r[j+1]) || !statementStart(r, j+1) {
+	if j+1 == e || !isIdentStartRune(r[j+1]) || !valueStatement(r, j+1) {
 		return ""
 	}
 	return string(r[j+1 : e])
+}
+
+// valueStatement: r[i] begins a statement at bracket depth zero, on a line not continued
+// from the one before, and not after a ':' (a lambda body, an annotation, a one-line block).
+func valueStatement(r []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+		j--
+	}
+	ok := j < 0 || r[j] == ';' || r[j] == '\n' && (j == 0 || r[j-1] != '\\')
+	return ok && enclosingOpen(r, i) < 0
 }
 
 // loaderHosts are the modules that hold a stringLoaders entry as an attribute.

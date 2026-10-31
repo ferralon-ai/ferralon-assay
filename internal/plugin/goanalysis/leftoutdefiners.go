@@ -53,9 +53,11 @@ type lofLinkIndex struct {
 }
 
 // lofGoDef is a Go declaration defining a bare link symbol: the local name in the package at path
-// whose files carry the package clause.
+// whose files carry the package clause. bss is set for a variable no declaration of which has an
+// initializer, a definition a //go:cgo_import_dynamic of the name overrides.
 type lofGoDef struct {
 	path, clause, local string
+	bss                 bool
 }
 
 // linkIndex returns the world's link index, built on first use from U alone, so that no closure's
@@ -182,7 +184,13 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 	// either of which may sit in any file of the package's clause.
 	type pushed struct{ clause, local, remote string }
 	var pushes []pushed
-	defined := map[[2]string]bool{}
+	// defined holds, by clause and name, lofDefBody for a function with a body or an initialized
+	// variable, lofDefBSS for a variable declared only without an initializer.
+	const (
+		lofDefBSS = 1 + iota
+		lofDefBody
+	)
+	defined := map[[2]string]int{}
 	for _, f := range goFiles {
 		af, err := parser.ParseFile(token.NewFileSet(), f.path, f.text, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
@@ -202,7 +210,7 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 				}
 				if name, ok := strings.CutPrefix(c.Text, "//export "); ok && cgo {
 					name = strings.TrimSpace(name)
-					ix.goDefs[name] = append(ix.goDefs[name], lofGoDef{ip, clause, name})
+					ix.goDefs[name] = append(ix.goDefs[name], lofGoDef{path: ip, clause: clause, local: name})
 				}
 			}
 		}
@@ -210,7 +218,7 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 			switch decl := decl.(type) {
 			case *ast.FuncDecl:
 				if decl.Recv == nil && decl.Body != nil {
-					defined[[2]string{clause, decl.Name.Name}] = true
+					defined[[2]string{clause, decl.Name.Name}] = lofDefBody
 				}
 			case *ast.GenDecl:
 				if decl.Tok != token.VAR {
@@ -219,7 +227,12 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 				for _, spec := range decl.Specs {
 					if vs, ok := spec.(*ast.ValueSpec); ok {
 						for _, n := range vs.Names {
-							defined[[2]string{clause, n.Name}] = true
+							k := [2]string{clause, n.Name}
+							if len(vs.Values) > 0 {
+								defined[k] = lofDefBody
+							} else {
+								defined[k] = max(defined[k], lofDefBSS)
+							}
 						}
 					}
 				}
@@ -227,8 +240,8 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 		}
 	}
 	for _, p := range pushes {
-		if defined[[2]string{p.clause, p.local}] {
-			ix.goDefs[p.remote] = append(ix.goDefs[p.remote], lofGoDef{ip, p.clause, p.local})
+		if d := defined[[2]string{p.clause, p.local}]; d != 0 {
+			ix.goDefs[p.remote] = append(ix.goDefs[p.remote], lofGoDef{path: ip, clause: p.clause, local: p.local, bss: d == lofDefBSS})
 		}
 	}
 }
@@ -468,12 +481,16 @@ func lofObjSymbols(path string) ([]string, error) {
 // from references and does not define itself: a Go declaration a //go:linkname pushes to it or an
 // //export function of it, walked; a Go assembly definition, whose body is walked. A definer the
 // walk cannot follow (a .syso object's symbol, a name a macro or header may produce), or a gap in
-// the index, fails closed. It reports whether there is any definer; when there is none, the name
-// binds only to foreign code.
-func (k *lofWalk) linkDefiner(from *lofPkg, name string) bool {
+// the index, fails closed on item. dynImported is set when the link imports name from a shared
+// library, which cmd/link then binds it to over a variable without an initializer. It reports
+// whether there is any definer; when there is none, the name binds only to foreign code.
+func (k *lofWalk) linkDefiner(from *lofPkg, name, item string, dynImported bool) bool {
 	ix := k.w.linkIndex()
 	found := false
 	for _, d := range ix.goDefs[name] {
+		if dynImported && d.bss {
+			continue
+		}
 		found = true
 		q := k.w.pkg(d.path)
 		if q.name != d.clause && q.missing == "" {
@@ -481,7 +498,7 @@ func (k *lofWalk) linkDefiner(from *lofPkg, name string) bool {
 		}
 		k.enter(q)
 		if q.missing != "" || !k.resolveIn(q, d.local) {
-			k.fail(q, lofAsmSymbol)
+			k.fail(q, item)
 		}
 	}
 	for _, path := range ix.asmText[name] {
@@ -490,7 +507,7 @@ func (k *lofWalk) linkDefiner(from *lofPkg, name string) bool {
 		k.enter(q)
 		bodies := q.asmText[name]
 		if q.missing != "" || len(bodies) == 0 {
-			k.fail(q, lofAsmSymbol)
+			k.fail(q, item)
 		}
 		for _, b := range bodies {
 			k.walkAsm(q, b)
@@ -501,15 +518,15 @@ func (k *lofWalk) linkDefiner(from *lofPkg, name string) bool {
 		q := k.w.pkg(path)
 		k.enter(q)
 		if q.missing != "" || !q.asmData[name] {
-			k.fail(q, lofAsmSymbol)
+			k.fail(q, item)
 		}
 	}
 	if src := ix.opaque[name] | ix.gap; src != 0 {
 		found = true
 		if src&lofDefMod != 0 {
-			k.out.fail(lofAsmSymbol)
+			k.out.fail(item)
 		} else {
-			k.fail(from, lofAsmSymbol)
+			k.fail(from, item)
 		}
 	}
 	return found

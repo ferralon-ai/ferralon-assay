@@ -188,9 +188,10 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"//go:linkname pulled example.com/v/vuln.Bad\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, "", false},
 		{"a left-out function pulls by linkname a symbol nothing declares", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.Nowhere\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, lofLinkname, false},
-		// The linker takes the dynamic import only when no Go code or assembly defines the symbol.
+		// The linker takes the dynamic import when no Go code or assembly defines the symbol, and the
+		// foreign code it binds reaches Go only through //export functions.
 		{"a left-out file links by linkname a C symbol it imports", x("\t_ \"unsafe\"\n\t\"example.com/v/vuln\"",
-			"//go:cgo_import_dynamic libc_puts puts \"libc.so\"\n\n//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, true, lofLinkname, false},
+			"//go:cgo_import_dynamic libc_puts puts \"libc.so\"\n\n//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, false, "", false},
 		{"a left-out file links by linkname a bare symbol nothing imports", x("\t_ \"unsafe\"\n\t\"example.com/v/vuln\"",
 			"//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, true, lofLinkname, false},
 		// asm
@@ -1558,5 +1559,171 @@ func TestLeftOutEngine_AsmLinkDefinerStd(t *testing.T) {
 				t.Errorf("x.go fails closed on %s = %v, for the standard library = %v; want %v, %v", lofAsmSymbol, fc, std, tc.fc, tc.std)
 			}
 		})
+	}
+}
+
+// TestLeftOutEngine_LinknameCImport: a left-out file's //go:linkname to a bare name it imports from a
+// shared library, as golang.org/x/sys/unix's solaris and aix files do. The link binds the name to a
+// Go definer of it, or of the name it imports, which is followed; otherwise to foreign code, which
+// reaches Go only through //export functions, a terminal as a call of C.f is. A definer the walk
+// cannot follow, a gap in the link, or a bare name the file does not import fails closed.
+func TestLeftOutEngine_LinknameCImport(t *testing.T) {
+	const imp = "//go:cgo_import_dynamic libc_pipe pipe \"libc.so\"\n"
+	solaris := func(directives string) string {
+		return "//go:build lofalt\n\npackage main\n\nimport _ \"unsafe\"\n\n" + directives +
+			"//go:linkname procpipe libc_pipe\n\ntype libcFunc uintptr\n\nvar procpipe libcFunc\n\nfunc init() { _ = procpipe }\n"
+	}
+	base := map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
+		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
+		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
+		"lib/lib.go":      "package lib\n",
+		"x.go":            solaris(imp),
+	}
+	// importer links pkg into some build through a file the build leaves out.
+	importer := func(pkg string) map[string]string {
+		return map[string]string{"lib/y_alt.go": "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/" + pkg + "\"\n"}
+	}
+	sy := func(obj []byte) map[string]string {
+		return merge(importer("sy"), map[string]string{"_v/sy/sy.go": "package sy\n", "_v/sy/sy.syso": string(obj)})
+	}
+	bad := symKey("example.com/v/vuln", "Bad")
+	impl := symKey("example.com/m/lib", "impl")
+	cases := []struct {
+		name     string
+		files    map[string]string
+		reach    string // a loaded function x.go's closure reaches, when set
+		sink     bool   // x.go's closure reaches a loaded variable holding a func
+		item     string // what x.go's closure fails closed on, when set
+		withheld bool
+	}{
+		{"nothing in the Go world defines either name", nil, "", false, "", false},
+		{"C code of a cgo package defines the imported name", merge(importer("cdef"), map[string]string{
+			"_v/cdef/cdef.go": "package cdef\n\n/*\nint pipe(int *p) { return 0; }\n*/\nimport \"C\"\n",
+			"_v/cdef/pipe.c":  "int pipe(int *p) { return 0; }\n",
+		}), "", false, "", false},
+		{"the aix shape beside it: a self-linkname of an uninitialized variable", map[string]string{
+			"x_aix.go": "//go:build lofalt\n\npackage main\n\nimport _ \"unsafe\"\n\n//go:cgo_import_dynamic libc_pipe pipe \"libc.a/shr_64.o\"\n//go:linkname libc_pipe libc_pipe\n\nvar libc_pipe uintptr\n",
+		}, "", false, "", false},
+		{"a loaded uninitialized variable pushed to the local name: the import overrides it", map[string]string{
+			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname v libc_pipe\nvar v func()\n\nfunc init() { v = vuln.Bad }\n",
+		}, "", false, "", false},
+		{"a loaded uninitialized variable pushed to the imported name", map[string]string{
+			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname v pipe\nvar v func()\n\nfunc init() { v = vuln.Bad }\n",
+		}, "", true, "", true},
+		{"a loaded variable pushed to the local name, initialized in another build", map[string]string{
+			"lib/def.go": "package lib\n\nimport _ \"unsafe\"\n\n//go:linkname v libc_pipe\n",
+			"lib/v_a.go": "//go:build lofa\n\npackage lib\n\nvar v func()\n",
+			"lib/v_b.go": "//go:build !lofa\n\npackage lib\n\nimport \"example.com/v/vuln\"\n\nvar v = vuln.Bad\n",
+		}, "", true, "", true},
+		{"a loaded //go:linkname push of the local name, with a body", map[string]string{
+			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl libc_pipe\nfunc impl() { vuln.Bad() }\n",
+		}, impl, false, "", true},
+		{"an unloaded package's //go:linkname push of the local name, with a body", merge(importer("def"), map[string]string{
+			"_v/def/def.go": "package def\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n" + imp + "//go:linkname impl libc_pipe\nfunc impl() { vuln.Bad() }\n",
+		}), bad, false, "", true},
+		{"an //export function of the imported name", merge(importer("exp"), map[string]string{
+			"_v/exp/exp.go": "package exp\n\nimport \"C\"\n\nimport \"example.com/v/vuln\"\n\n//export pipe\nfunc pipe() { vuln.Bad() }\n",
+		}), bad, false, "", true},
+		{"a .syso object defines the imported name", sy(lofELFObject("pipe")), "", false, lofLinkname, true},
+		{"a .syso object defines the local name", sy(lofELFObject("libc_pipe")), "", false, lofLinkname, true},
+		{"a .syso object defines the imported name past its version", merge(sy(lofELFObject("pipe")), map[string]string{
+			"x.go": solaris("//go:cgo_import_dynamic libc_pipe pipe#GLIBC_2.2.5 \"libc.so.6\"\n"),
+		}), "", false, lofLinkname, true},
+		{"a .syso object defines other names", sy(lofELFObject("other")), "", false, "", false},
+		{"an import some build links does not resolve", importer("nowhere"), "", false, lofLinkname, true},
+		{"the file does not import the name", map[string]string{"x.go": solaris("")}, "", false, lofLinkname, true},
+		{"only another file imports the name", map[string]string{
+			"x.go":   solaris(""),
+			"x_i.go": "//go:build lofalt\n\npackage main\n\n" + imp,
+		}, "", false, lofLinkname, true},
+		{"the file imports another name", map[string]string{
+			"x.go": solaris("//go:cgo_import_dynamic libc_write write \"libc.so\"\n"),
+		}, "", false, lofLinkname, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lofRun(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+			f := got.facts["x.go"]
+			if f == nil {
+				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
+			}
+			if f.Dyn {
+				t.Errorf("x.go makes a dynamic call; foreign code is a terminal")
+			}
+			var fc []string
+			if tc.item != "" {
+				fc = []string{tc.item}
+			}
+			if !slices.Equal(f.FC, fc) {
+				t.Errorf("x.go fails closed on %v, want %v", f.FC, fc)
+			}
+			for _, k := range []string{bad, impl, symKey("example.com/v/exp", "pipe")} {
+				if reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == k }); reached != (k == tc.reach) {
+					t.Errorf("x.go reaches %s = %v", k, reached)
+				}
+			}
+			if f.Sink != tc.sink {
+				t.Errorf("x.go sink = %v, want %v", f.Sink, tc.sink)
+			}
+			if got.withheld != tc.withheld {
+				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
+			}
+		})
+	}
+}
+
+// TestLeftOutEngine_LinknameCImportOrder: the Go definer of a bare name a left-out file imports from
+// a shared library sits in a package the build did not load; whether another closure parsed it
+// first changes nothing.
+func TestLeftOutEngine_LinknameCImportOrder(t *testing.T) {
+	const imp = "//go:cgo_import_dynamic libc_pipe pipe \"libc.so\"\n"
+	dir := writeTree(t, map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
+		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
+		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
+		"_v/def/def.go":   "package def\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n" + imp + "//go:linkname impl libc_pipe\nfunc impl() { vuln.Bad() }\n",
+		"lib/lib.go":      "package lib\n",
+		"lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/def\"\n",
+		"x.go":            "//go:build lofalt\n\npackage main\n\nimport _ \"unsafe\"\n\n" + imp + "//go:linkname procpipe libc_pipe\n\nvar procpipe uintptr\n\nfunc init() { _ = procpipe }\n",
+	})
+	ctx := context.Background()
+	load, err := LoadProgram(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load.buildGoVersion = load.goVersion
+	release := load.buildRelease()
+	env := append(os.Environ(), "GOWORK=off")
+	floor := goDirectiveFloor(load.Packages)
+	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
+	goroot, item := lofToolchain(ctx, dir, env, release)
+	if item != "" {
+		t.Fatal(item)
+	}
+	cands := map[string]lofCandidate{}
+	for _, c := range lofCandidates(load.Packages) {
+		cands[filepath.Base(c.path)] = c
+	}
+	if _, ok := cands["y_alt.go"]; !ok {
+		t.Fatalf("y_alt.go is no candidate: %v", cands)
+	}
+	bad := symKey("example.com/v/vuln", "Bad")
+	for _, order := range [][]string{{"x.go"}, {"y_alt.go", "x.go"}} {
+		w := newLofWorld(ctx, load.Packages, dir, env, excluded, goroot, time.Now().Add(time.Minute))
+		var cl *lofClosure
+		for _, name := range order {
+			c := cands[name]
+			cl = w.closure(c.path, c.pkg)
+		}
+		reached := false
+		for fn := range cl.funcs {
+			reached = reached || funcKey(fn) == bad
+		}
+		if !reached || len(cl.fc) > 0 || cl.dyn {
+			t.Errorf("after %v: x.go reaches vuln.Bad = %v, fails closed on %v, dyn = %v; want true, nothing, false", order, reached, cl.fc, cl.dyn)
+		}
 	}
 }

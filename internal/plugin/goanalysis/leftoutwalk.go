@@ -165,8 +165,10 @@ type lofFile struct {
 	// links maps a //go:linkname local name to its remote; badLink is set for a malformed one.
 	links   map[string]string
 	badLink bool
-	cgo     bool
-	decls   []*lofDecl
+	// dynImports maps a //go:cgo_import_dynamic local name to the remote names it imports.
+	dynImports map[string][]string
+	cgo        bool
+	decls      []*lofDecl
 }
 
 // lofDecl is one package-level declaration: a function or method, a type, or a var or const spec.
@@ -521,6 +523,12 @@ func (w *lofWorld) index(p *lofPkg, path string, af *ast.File) {
 			if name, ok := strings.CutPrefix(c.Text, "//export "); ok && f.cgo {
 				exports = append(exports, strings.TrimSpace(name))
 			}
+			if local, remote, ok := parseCgoImportDynamic(c.Text); ok {
+				if f.dynImports == nil {
+					f.dynImports = map[string][]string{}
+				}
+				f.dynImports[local] = append(f.dynImports[local], remote)
+			}
 		}
 	}
 	add := func(d *lofDecl) { f.decls = append(f.decls, d) }
@@ -582,6 +590,22 @@ func parseLinkname(text string) (local, remote string, ok bool) {
 		return "", "", true
 	}
 	return f[0], "\x00", true
+}
+
+// parseCgoImportDynamic reads a //go:cgo_import_dynamic directive importing the remote name of a
+// shared library under a local one, without the remote's "#version". ok is false for any other
+// comment, and for the forms that import no symbol.
+func parseCgoImportDynamic(text string) (local, remote string, ok bool) {
+	rest, ok := strings.CutPrefix(text, "//go:cgo_import_dynamic")
+	if !ok || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
+		return "", "", false
+	}
+	f := strings.Fields(rest)
+	if len(f) < 2 || len(f) > 3 || f[0] == "_" {
+		return "", "", false
+	}
+	remote, _, _ = strings.Cut(f[1], "#")
+	return f[0], remote, remote != ""
 }
 
 // recvName names a receiver's type with any pointer and type parameters dropped.
@@ -1251,7 +1275,7 @@ func (k *lofWalk) touch(f *lofFile) {
 	}
 	sort.Strings(locals)
 	for _, l := range locals {
-		k.remote(f.pkg, f.links[l])
+		k.remote(f, f.links[l])
 	}
 }
 
@@ -1550,14 +1574,31 @@ func (w *lofWorld) methodIndex() {
 	}
 }
 
-// remote follows a //go:linkname remote ("path.name", "path.T.m", "path.(*T).m") named in package
-// from. One the walk cannot find fails closed; inside the toolchain's own packages, for a
+// remote follows a //go:linkname remote ("path.name", "path.T.m", "path.(*T).m") named in file f.
+// One the walk cannot find fails closed; inside the toolchain's own packages, for a
 // standard-library refutation only.
-func (k *lofWalk) remote(from *lofPkg, remote string) {
+//
+// A bare remote that f also imports from a shared library (//go:cgo_import_dynamic) binds to a Go
+// definer of it other than a variable without an initializer, which the import overrides, or to a
+// Go definer of the name it imports, when the link has one, and those are followed; otherwise to
+// foreign code, which, as for a call of C.f, reaches Go only through //export functions, which are
+// roots. Any other bare remote fails closed.
+func (k *lofWalk) remote(f *lofFile, remote string) {
+	from := f.pkg
 	slash := strings.LastIndexByte(remote, '/')
 	dot := strings.IndexByte(remote[slash+1:], '.')
 	if dot < 0 {
-		k.fail(from, lofLinkname)
+		exts, ok := f.dynImports[remote]
+		if !ok {
+			k.fail(from, lofLinkname)
+			return
+		}
+		k.linkDefiner(from, remote, lofLinkname, true)
+		for _, e := range exts {
+			if e != remote {
+				k.linkDefiner(from, e, lofLinkname, false)
+			}
+		}
 		return
 	}
 	path, sym := remote[:slash+1+dot], remote[slash+1+dot+1:]
@@ -1758,7 +1799,7 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 			// p's own definition may sit in a file another build leaves out, or lose to a DUPOK
 			// definer elsewhere: some build's link may bind the name to any definer in the link,
 			// and a build linking none binds it to foreign code.
-			k.linkDefiner(p, ref)
+			k.linkDefiner(p, ref, lofAsmSymbol, false)
 			k.out.dyn = true
 		}
 	}

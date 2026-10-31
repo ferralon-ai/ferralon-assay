@@ -814,6 +814,12 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 		{"entry points", "from importlib.metadata import entry_points\n\nfor ep in entry_points(group='acme.plugins'):\n    ep.load()\n", nil, true},
 		{"file-path loader through an alias", "from importlib.util import spec_from_file_location as sffl\n\ndef load(p):\n    return sffl('plugin', p)\n", nil, true},
 		{"runpy as a value", "import runpy\n\nRUN = runpy.run_path\n", nil, true},
+		{"importlib literal continued", "import importlib\nmod = importlib \\\n    .import_module(\"yaml\")\n", []string{"yaml"}, false},
+		{"pkgutil resolve_name literal continued", "import pkgutil\nf = pkgutil.resolve_name \\\n    ('acme.plugins:load')\n", []string{"acme.plugins"}, false},
+		{"pkgutil resolve_name literal continued with CRLF", "import pkgutil\r\nf = pkgutil.resolve_name \\\r\n    ('acme.plugins:load')\r\n", []string{"acme.plugins"}, false},
+		{"pkgutil resolve_name non-literal continued", "import pkgutil\n\ndef f(spec):\n    return pkgutil.resolve_name \\\n        (spec)\n", nil, true},
+		{"entry points continued", "from importlib.metadata import entry_points\n\neps = entry_points \\\n    (group='acme.plugins')\n", nil, true},
+		{"resolve_name before a parenthesised line", "import pkgutil\npkgutil.resolve_name\n('acme.plugins:load')\n", nil, false},
 		{"comment and string only", "# importlib.import_module(name)\ns = 'import_module(name)'\n", nil, false},
 		{"def named import_module", "def import_module(name):\n    return name\n", nil, false},
 	}

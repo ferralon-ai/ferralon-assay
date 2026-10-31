@@ -501,7 +501,7 @@ var dynamicImportOpaqueLeafs = map[string]bool{
 // clean and lits come from stripPythonLiterals over the same source, so rune positions in
 // clean index the literal table.
 func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaque bool) {
-	r := []rune(clean)
+	r := statementBreaks(clean)
 	n := len(r)
 	for i := 0; i < n; {
 		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
@@ -590,7 +590,7 @@ func lookupTarget(target string) string {
 }
 
 func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque, computed bool) {
-	r := []rune(clean)
+	r := statementBreaks(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
 	names := map[string]lookupKind{}
@@ -648,7 +648,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			continue
 		}
 		w, end := readWordRunes(r, i)
-		dotted := i > 0 && r[i-1] == '.'
+		pj := skipSpaceBack(r, i-1)
+		dotted := pj >= 0 && r[pj] == '.'
 		kind := kindOf(w, dotted)
 		if kind == lookupNone || precededByDef(r, i) || assignedTo(r, end) {
 			i = end
@@ -736,10 +737,7 @@ var lookupAttrs = map[string]bool{"modules": true, "import_module": true, "__imp
 // argument of a call that only inspects it: hasattr(sys, ...), type(sys), or getattr(sys,
 // "attr") with a literal attribute that is not a lookup attribute.
 func inspectedOnly(r []rune, start, end int, lits map[int]strLiteral) bool {
-	j := start - 1
-	for j >= 0 && unicode.IsSpace(r[j]) {
-		j--
-	}
+	j := skipSpaceBack(r, start-1)
 	if j < 0 || r[j] != '(' {
 		return false
 	}
@@ -777,7 +775,7 @@ func importStatements(r []rune) (spans [][2]int, stars map[string]bool) {
 		stop := statementEnd(r, end)
 		spans = append(spans, [2]int{i, stop})
 		if w == "from" {
-			fields := strings.Fields(string(r[end:stop]))
+			fields := strings.Fields(strings.ReplaceAll(string(r[end:stop]), "\\", " "))
 			if len(fields) >= 3 && fields[1] == "import" && strings.Trim(fields[2], "()") == "*" {
 				stars[fields[0]] = true
 			}
@@ -813,7 +811,7 @@ func statementEnd(r []rune, i int) int {
 				return i
 			}
 		case '\n':
-			if depth <= 0 && (i == 0 || r[i-1] != '\\') {
+			if depth <= 0 && !continuedBreak(r, i) {
 				return i
 			}
 		}
@@ -984,10 +982,7 @@ func literalSpan(r []rune, span [2]int, lits map[int]strLiteral) (string, bool) 
 
 // precededByWord reports whether the word before r[i], across whitespace, is w.
 func precededByWord(r []rune, i int, w string) bool {
-	j := i - 1
-	for j >= 0 && unicode.IsSpace(r[j]) {
-		j--
-	}
+	j := skipSpaceBack(r, i-1)
 	end := j + 1
 	for j >= 0 && isIdentPart(r[j]) {
 		j--
@@ -1026,10 +1021,7 @@ func literalSubscript(r []rune, i int, lits map[int]strLiteral, closers string) 
 
 // precededByDef reports whether the identifier at r[i] is the name in a def statement.
 func precededByDef(r []rune, i int) bool {
-	j := i - 1
-	for j >= 0 && unicode.IsSpace(r[j]) {
-		j--
-	}
+	j := skipSpaceBack(r, i-1)
 	end := j + 1
 	for j >= 0 && isIdentPart(r[j]) {
 		j--
@@ -1037,13 +1029,63 @@ func precededByDef(r []rune, i int) bool {
 	return string(r[j+1:end]) == "def"
 }
 
-// skipAllSpace returns the first index at or after i that is not whitespace (newlines
-// included: the cleaned source is not joined into logical lines here).
+// statementBreaks returns the cleaned source as runes with each newline that ends a
+// statement (outside brackets, not after a continuation backslash) turned into ';', so the
+// scanners, which skip whitespace and newlines between a name and what follows it, never
+// read the next statement as a call or subscript of the name. Every rune index is kept.
+func statementBreaks(clean string) []rune {
+	r := []rune(clean)
+	depth := 0
+	for i, c := range r {
+		switch c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '\n':
+			if depth <= 0 && !continuedBreak(r, i) {
+				r[i] = ';'
+			}
+		}
+	}
+	return r
+}
+
+// skipAllSpace returns the first index at or after i that is neither whitespace (newlines
+// included) nor a line-continuation backslash, so a call or attribute split across lines
+// reads as one.
 func skipAllSpace(r []rune, i int) int {
-	for i < len(r) && unicode.IsSpace(r[i]) {
+	for i < len(r) && (unicode.IsSpace(r[i]) || continuationAt(r, i)) {
 		i++
 	}
 	return i
+}
+
+// skipSpaceBack is skipAllSpace scanning backwards: the last index at or before j that is
+// neither whitespace nor a line-continuation backslash, or -1.
+func skipSpaceBack(r []rune, j int) int {
+	for j >= 0 && (unicode.IsSpace(r[j]) || continuationAt(r, j)) {
+		j--
+	}
+	return j
+}
+
+// continuationAt reports whether r[i] is a backslash that continues the line: one followed
+// by LF or CRLF. The cleaned source holds no string or comment text, so any such backslash
+// is one.
+func continuationAt(r []rune, i int) bool {
+	if r[i] != '\\' {
+		return false
+	}
+	return i+1 < len(r) && (r[i+1] == '\n' || r[i+1] == '\r' && i+2 < len(r) && r[i+2] == '\n')
+}
+
+// continuedBreak reports whether the newline at r[i] ends a line that a backslash continues.
+func continuedBreak(r []rune, i int) bool {
+	if i > 0 && r[i-1] == '\r' {
+		i--
+	}
+	return i > 0 && r[i-1] == '\\'
 }
 
 // literalArg reads the first call argument starting at r[i] and returns its value when it

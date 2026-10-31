@@ -20,8 +20,8 @@ type runRecorder struct {
 	runs    []scriptRun
 	// withheld holds each surface the rule withheld on, with its head, for rescan.
 	withheld []surfaceHead
-	// laneRead, set on a rescan's recorder, is the lane's read: a -r file it reads is a
-	// manifest the inventory already holds. The rescan records every pip install, allowing
+	// laneRead, set on a rescan's recorder, reports a manifest the inventory already holds,
+	// which a -r of it adds nothing to. The rescan records every pip install, allowing
 	// every command, and resolves each -r file against the directory the command runs in.
 	laneRead func(string) bool
 }
@@ -37,26 +37,31 @@ func (r *runRecorder) allowed(words []string, b scriptsurface.Binder) bool {
 	switch {
 	case !isPip:
 	case r.laneRead != nil:
-		r.pending = append(r.pending, r.resolve(args, b))
+		r.pending = append(r.pending, r.resolve(words, args, b))
 	case !ok, r.tooling != nil && pipSelfUpgrade(args):
 		r.pending = append(r.pending, scriptRun{surface: r.surface, args: args})
 	}
 	return ok || r.laneRead != nil
 }
 
-// resolve is a run whose -r files are the build-tree files each names from every directory
-// the command may run in (Binder.Hosts), less those the lane already reads. A -r naming no
-// such file (an absolute path, an unknown directory) names nothing.
-func (r *runRecorder) resolve(args []string, b scriptsurface.Binder) scriptRun {
-	run := scriptRun{surface: r.surface, args: args}
+// resolve is a run whose -r files are the build-tree files each names, less those the lane
+// already reads. Binder.Hosts gives every directory the command may run in; a -r is resolved
+// only when that is one directory, so a -r naming an absolute path, a path from an unknown
+// directory, or one of several directories names nothing.
+func (r *runRecorder) resolve(words, args []string, b scriptsurface.Binder) scriptRun {
+	run := scriptRun{surface: r.surface, args: args, uv: isUVPip(words)}
 	for _, p := range pipRequirementFiles(args) {
-		for _, h := range b.Hosts(p) {
-			if !r.laneRead(h) {
-				run.files = append(run.files, filepath.Clean(h))
-			}
+		if h := b.Hosts(p); len(h) == 1 && !r.laneRead(h[0]) {
+			run.files = append(run.files, filepath.Clean(h[0]))
 		}
 	}
 	return run
+}
+
+// isUVPip reports whether words, a pip install, runs uv pip.
+func isUVPip(words []string) bool {
+	head, ok := scriptsurface.CommandName(words[0])
+	return ok && head == "uv"
 }
 
 // classify is veto's classifier, keeping the runs a surface recorded when the rule withholds
@@ -143,8 +148,8 @@ func pipInstallArgs(words []string) ([]string, bool) {
 // command, so the first read records only the first pip install it rejects; the second reads
 // on to a command it withholds for another reason. spec is a fresh lane Spec, and the second
 // read treats every file as read so each -r resolves (Binder.Hosts), so it changes none of the
-// first's installs, tooling or Veto state.
-func (r *runRecorder) rescan(root string, read func(string) bool, spec scriptsurface.Spec) {
+// first's installs, tooling or Veto state. manifest is laneRead.
+func (r *runRecorder) rescan(root string, manifest func(string) bool, spec scriptsurface.Spec) {
 	if len(r.withheld) == 0 {
 		return
 	}
@@ -158,7 +163,7 @@ func (r *runRecorder) rescan(root string, read func(string) bool, spec scriptsur
 			kept = append(kept, run)
 		}
 	}
-	second := &runRecorder{inner: spec.Allowed, laneRead: read}
+	second := &runRecorder{inner: spec.Allowed, laneRead: manifest}
 	spec.Allowed = second.allowed
 	classify := scriptsurface.New(root, func(string) bool { return true }, spec).Classify(pyInstallSurface)
 	for _, w := range r.withheld {

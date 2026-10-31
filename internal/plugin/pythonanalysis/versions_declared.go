@@ -75,7 +75,7 @@ func isCondaToolPackage(spec string) bool {
 // pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
 // dependency tables, and the uv and pdm dev-dependencies. [tool.pixi] is read for its presence
-// alone.
+// and the PyPI names it declares (pixiPyPIDeps).
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -112,7 +112,8 @@ type pyprojectDoc struct {
 // ends in a backslash (setuptoolsJoins),
 // when dynamic dependencies name no file this reader can read, when a dependency group or
 // tool dependency table holds an entry it cannot read (pyprojectToolDeps), or when the file
-// configures pixi, whose dependency tables this reader does not read.
+// configures pixi, whose dependency tables this reader does not resolve. The PyPI names pixi
+// declares are entries, each unresolved.
 func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -141,6 +142,10 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	}
 	tdeps, torigins, tok := pyprojectToolDeps(doc, dir)
 	deps, origins, readable = append(deps, tdeps...), append(origins, torigins...), readable && tok
+	if pixi, ok := doc.Tool.Pixi.(map[string]any); ok {
+		pdeps, porigins := pixiPyPIDeps(pixi, "pyproject.toml", dir)
+		deps, origins = append(deps, pdeps...), append(origins, porigins...)
+	}
 	if pyprojectDynamicDeps(doc) {
 		// Dynamic dependencies are read only from the requirement files a dynamic-metadata
 		// table names; with none named, nothing here can say what the build backend will

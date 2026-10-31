@@ -200,7 +200,8 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 
 // TestResolveVersions_ExhaustiveUnreadSurfaces: install formats the resolver never parses,
 // symlinks, and installed copies each withhold Exhaustive. Every row keeps the uv.lock and
-// pyproject that would otherwise prove PyJWT absent.
+// pyproject that would otherwise prove PyJWT absent. Pixi's PyPI tables are read for their names
+// (TestResolveVersions_PixiPyPINames), so the pixi rows declare PyJWT as a conda dependency.
 func TestResolveVersions_ExhaustiveUnreadSurfaces(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -211,8 +212,8 @@ func TestResolveVersions_ExhaustiveUnreadSurfaces(t *testing.T) {
 		{"pylock.<name>.toml", map[string]string{"pylock.dev.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n"}, false},
 		{"rye requirements.lock", map[string]string{"requirements.lock": "pyjwt==2.8.0\n"}, false},
 		{"rye requirements-dev.lock", map[string]string{"requirements-dev.lock": "pyjwt==2.8.0\n"}, false},
-		{"pixi.toml pypi-dependencies", map[string]string{"pixi.toml": "[project]\nname = \"app\"\n[pypi-dependencies]\npyjwt = \">=2\"\n"}, false},
-		{"pyproject configuring pixi", map[string]string{"pyproject.toml": exPyproject + "[tool.pixi.pypi-dependencies]\npyjwt = \">=2\"\n"}, false},
+		{"pixi.toml conda dependencies", map[string]string{"pixi.toml": "[project]\nname = \"app\"\n[dependencies]\npyjwt = \">=2\"\n"}, false},
+		{"pyproject configuring pixi", map[string]string{"pyproject.toml": exPyproject + "[tool.pixi.dependencies]\npyjwt = \">=2\"\n"}, false},
 		{"conda-lock.yml", map[string]string{"conda-lock.yml": "package:\n- name: pyjwt\n  manager: pip\n"}, false},
 		{"requirement file under any name", map[string]string{"deploy/prod.pins": "pyjwt==2.8.0 --hash=sha256:abc\n"}, false},
 		{"requirement file template", map[string]string{"requirements.txt.j2": "flask=={{ flask_version }}\npyjwt>=2\n"}, false},

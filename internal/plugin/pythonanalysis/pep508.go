@@ -111,14 +111,16 @@ func parsePEP508(s string) (pep508Req, bool) {
 	return r, true
 }
 
-// normalizeSpecifier validates a comma-separated PEP 440 specifier set and returns it with all
-// whitespace removed (">= 2.0, < 3" → ">=2.0,<3"). ok is false when any clause has an unknown
+// normalizeSpecifier validates a comma-separated PEP 440 specifier set and returns it with the
+// whitespace around each operator removed (">= 2.0, < 3" → ">=2.0,<3"). ok is false when any clause has an unknown
 // operator or a version that does not look like a PEP 440 version.
 func normalizeSpecifier(spec string) (string, bool) {
 	clauses := strings.Split(spec, ",")
 	out := make([]string, 0, len(clauses))
 	for _, c := range clauses {
-		c = strings.Join(strings.Fields(c), "")
+		// The operator is read before any inner whitespace goes: "== =1.0" is an "==" clause
+		// with a malformed version, not "===1.0", and packaging rejects it.
+		c = strings.TrimSpace(c)
 		if c == "" {
 			return "", false
 		}
@@ -132,7 +134,10 @@ func normalizeSpecifier(spec string) (string, bool) {
 		if op == "" {
 			return "", false
 		}
-		ver := c[len(op):]
+		ver := strings.TrimSpace(c[len(op):])
+		if strings.ContainsAny(ver, " \t") {
+			return "", false
+		}
 		if op == "===" {
 			if ver == "" {
 				return "", false

@@ -45,11 +45,35 @@ func TestParseRequirementSpecArbitraryEquality(t *testing.T) {
 		{"foo===1.*", "", false},
 		{"foo====1.0", "", false},
 		{"foo===", "", false},
+		{"foo===V1.0", "V1.0", true},
+		{"foo===1.0,<2", "1.0", true},
+		{"foo== =1.0", "", false},
+		{"foo= ==1.0", "", false},
 		{"foo==1.0", "1.0", true},
 	} {
 		name, v, ok, _ := parseRequirementSpec(tt.spec)
 		if name != "foo" || v != tt.version || ok != tt.resolved {
 			t.Errorf("parseRequirementSpec(%q) = %q, %q, %v; want foo, %q, %v", tt.spec, name, v, ok, tt.version, tt.resolved)
+		}
+	}
+}
+
+// normalizeSpecifier reads each clause's operator before dropping its whitespace, so a split
+// operator is malformed rather than a different operator, as packaging parses it.
+func TestNormalizeSpecifierWhitespace(t *testing.T) {
+	for _, tt := range []struct {
+		spec, norm string
+		ok         bool
+	}{
+		{">= 2.0, < 3", ">=2.0,<3", true},
+		{"=== 1.0", "===1.0", true},
+		{"== =1.0", "", false},
+		{"= ==1.0", "", false},
+		{"> = 2.0", "", false},
+		{">=2 .0", "", false},
+	} {
+		if norm, ok := normalizeSpecifier(tt.spec); norm != tt.norm || ok != tt.ok {
+			t.Errorf("normalizeSpecifier(%q) = %q, %v; want %q, %v", tt.spec, norm, ok, tt.norm, tt.ok)
 		}
 	}
 }
@@ -67,6 +91,8 @@ func TestSpecifierPin(t *testing.T) {
 		{"===2.8.0", "2.8.0", true},
 		{"===1.0+local", "1.0+local", true},
 		{"===1.0-custom", "", false},
+		{"===V1.0", "V1.0", true},
+		{"===1.0,<2", "1.0", true},
 		{"====1.0", "", false},
 		{"===", "", false},
 		{"==2.*", "", false},

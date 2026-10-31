@@ -644,8 +644,9 @@ func isProjectNameRune(c rune) bool {
 }
 
 // parseRequirementSpec extracts (name, version, resolved, extras) from a single requirement
-// spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix); anything else
-// (range, compatible, bare name) is UNRESOLVED. The extras group "[a,b]" is CAPTURED (PLAN-170
+// spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix), or a "===X" whose X
+// is a PEP 440 version; anything else (range, compatible, bare name) is UNRESOLVED. The extras
+// group "[a,b]" is CAPTURED (PLAN-170
 // E2, replacing the old unconditional skip) and returned normalized; the advisory path
 // (parseRequirementLines, parsePyproject) ignores it, while the selected-set path resolves it
 // against the declared extras selection.
@@ -692,8 +693,8 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool, ext
 	if i := strings.IndexAny(ver, ", \t"); i >= 0 {
 		ver = ver[:i]
 	}
-	if ver == "" || strings.Contains(ver, "*") || containsJinja(ver) {
-		return name, "", false, extras // "*" prefix or a Jinja-templated version → UNRESOLVED
+	if ver == "" || strings.HasPrefix(ver, "=") || strings.Contains(ver, "*") || containsJinja(ver) {
+		return name, "", false, extras // "== =1.0", a "*" prefix or a Jinja-templated version → UNRESOLVED
 	}
 	if op == "===" && !arbitraryPinIsVersion(ver) {
 		return name, "", false, extras
@@ -1045,7 +1046,7 @@ func stringList(v any) ([]string, bool) {
 }
 
 // parsePyprojectLexical reads the "dependencies = [ ... ]" array under a "[project]" table
-// line by line, resolving only exact "==" pins. It is the fallback for a file the TOML decoder
+// line by line, resolving only exact pins (as parseRequirementSpec does). It is the fallback for a file the TOML decoder
 // rejects.
 func parsePyprojectLexical(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency

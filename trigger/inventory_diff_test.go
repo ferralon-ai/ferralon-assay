@@ -331,3 +331,29 @@ func BenchmarkVersionOnly_Legacy(b *testing.B) {
 		_ = versionOnlyChanged(base, head)
 	}
 }
+
+// A PR that changes only which poetry groups the build installs moves a package in or out of the
+// install at the same version; the diff must see it, or the PR inherits the baseline's verdicts.
+func TestChangedPackages_DetectsNotInstalledFlip(t *testing.T) {
+	installed := report.Package{Ecosystem: "PyPI", Name: "pytest", Version: "8.3.2", PURL: "pkg:pypi/pytest@8.3.2", Direct: true}
+	left := installed
+	left.NotInstalled = true
+
+	for _, tt := range []struct {
+		name       string
+		base, head report.Package
+	}{
+		{"left out", installed, left},
+		{"put back", left, installed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			changed := changedPackages(report.SBOM{Packages: []report.Package{tt.base}}, report.SBOM{Packages: []report.Package{tt.head}})
+			if !contains(changed, "PyPI\x00pytest") {
+				t.Fatalf("an install-membership flip must be a change; changed=%v", changed)
+			}
+			if len(versionOnlyChanged(report.SBOM{Packages: []report.Package{tt.base}}, report.SBOM{Packages: []report.Package{tt.head}})) != 0 {
+				t.Fatal("control is vacuous: version-only diff already differs")
+			}
+		})
+	}
+}

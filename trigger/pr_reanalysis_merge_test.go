@@ -241,3 +241,15 @@ func TestReanalyzeSlice_NewAdvisoryWithNoBaselineRow_Issue309(t *testing.T) {
 		})
 	}
 }
+
+// Copies of one name that differ only in whether the build installs them are still a multiset:
+// listing them in another order changes nothing.
+func TestChangedPackages_InstalledCopyOrderIsNotAChange(t *testing.T) {
+	left := lodash("4.17.21")
+	left.NotInstalled = true
+	base := report.SBOM{Packages: []report.Package{lodash("4.17.21"), left}}
+	head := report.SBOM{Packages: []report.Package{left, lodash("4.17.21")}}
+	if changed := changedPackages(base, head); len(changed) != 0 {
+		t.Fatalf("changed = %q, want none", changed)
+	}
+}

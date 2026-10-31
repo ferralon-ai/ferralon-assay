@@ -39,8 +39,8 @@ func readForUpdate(ctx context.Context, store statestore.StateStore) (*statestor
 
 // packageSignature captures every axis of a package that can change which advisories
 // apply to it (§4.1 / §8 checkbox 12 "relevant dependency ... changes"): its exact
-// version, whether it is a direct or transitive dependency, and its immediate
-// neighbourhood in the selected graph. It is the relevance predicate this cycle makes
+// version, whether it is a direct or transitive dependency, whether the build installs
+// it, and its immediate neighbourhood in the selected graph. It is the relevance predicate this cycle makes
 // explicit — a change in any field is a relevant change that forces re-analysis of the
 // package's advisories; nothing else is.
 //
@@ -54,15 +54,16 @@ func readForUpdate(ctx context.Context, store statestore.StateStore) (*statestor
 // or removed edge, a direct/transitive flip, a version change — falls through to
 // "changed", so the rule's failure direction is re-analysis, never inheritance.
 type packageSignature struct {
-	version  string
-	direct   bool
-	parents  string // sorted \x00-joined ecosystem+name of immediate parents
-	children string // sorted \x00-joined ecosystem+name of immediate children
+	version      string
+	direct       bool
+	notInstalled bool
+	parents      string // sorted \x00-joined ecosystem+name of immediate parents
+	children     string // sorted \x00-joined ecosystem+name of immediate children
 }
 
 // changedPackages returns the ecosystem\x00name keys of packages whose signature
 // differs between the baseline and the candidate SBOM — added, removed, version-,
-// direct/transitive-, or parent/child-edge-changed. The result is sorted and
+// direct/transitive-, installed-, or parent/child-edge-changed. The result is sorted and
 // de-duplicated. An empty result is the PR-inherit fast-path condition (nothing
 // relevant changed). Relationship changes are now visible: before this cycle the
 // comparison was keyed on {ecosystem, name} → version alone and a package that became
@@ -125,10 +126,11 @@ func indexSignatures(s report.SBOM) map[string][]packageSignature {
 	for _, p := range s.Packages {
 		name := p.Ecosystem + "\x00" + p.Name
 		sigs[name] = append(sigs[name], packageSignature{
-			version:  p.Version,
-			direct:   p.Direct,
-			parents:  joinSortedUnique(parents[name]),
-			children: joinSortedUnique(children[name]),
+			version:      p.Version,
+			direct:       p.Direct,
+			notInstalled: p.NotInstalled,
+			parents:      joinSortedUnique(parents[name]),
+			children:     joinSortedUnique(children[name]),
 		})
 	}
 	for _, copies := range sigs {
@@ -136,6 +138,7 @@ func indexSignatures(s report.SBOM) map[string][]packageSignature {
 			return cmp.Or(
 				strings.Compare(a.version, b.version),
 				compareBool(a.direct, b.direct),
+				compareBool(a.notInstalled, b.notInstalled),
 				strings.Compare(a.parents, b.parents),
 				strings.Compare(a.children, b.children),
 			)

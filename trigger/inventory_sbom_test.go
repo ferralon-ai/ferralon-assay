@@ -96,3 +96,27 @@ func TestSBOMFromInventory_MavenColonCoordinate(t *testing.T) {
 		t.Errorf("ecosystem = %q, want %q", got, "Maven")
 	}
 }
+
+// A lockfile package no install the build runs puts in place reaches the SBOM marked not installed
+// rather than dropped, and a package two nodes collapse into is installed when either instance is.
+func TestSBOMFromInventory_NotInstalled(t *testing.T) {
+	inv := plugin.DependencyInventory{
+		Nodes: []plugin.DependencyNode{
+			{ID: "a", PURL: "pkg:pypi/pytest@8.3.2", Version: "8.3.2", NotInstalled: true},
+			{ID: "b", PURL: "pkg:pypi/colorama@0.4.6", Version: "0.4.6", NotInstalled: true},
+			{ID: "c", PURL: "pkg:pypi/colorama@0.4.6", Version: "0.4.6"},
+			{ID: "d", PURL: "pkg:pypi/sphinx@7.4.7", Version: "7.4.7", NotInstalled: true},
+			{ID: "e", PURL: "pkg:pypi/sphinx@7.4.7", Version: "7.4.7", NotInstalled: true},
+		},
+	}
+	sbom, _ := sbomFromInventory(inv, "PyPI")
+	want := map[string]bool{"pytest": true, "colorama": false, "sphinx": true}
+	if len(sbom.Packages) != len(want) {
+		t.Fatalf("got %d packages, want %d: %+v", len(sbom.Packages), len(want), sbom.Packages)
+	}
+	for _, p := range sbom.Packages {
+		if w, ok := want[p.Name]; !ok || p.NotInstalled != w {
+			t.Errorf("%s NotInstalled = %v, want %v", p.Name, p.NotInstalled, w)
+		}
+	}
+}

@@ -124,7 +124,7 @@ func TestReflectReachOf(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, reach, err := reflectReachOf(load)
+			_, reach, err := reflectReachOf(load, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,16 +168,21 @@ func TestWithholdForReflectReach_UnknownReach(t *testing.T) {
 }
 
 // TestReflectReachOf_IllTyped: the whole-program build makes no bodies for a package that does not
-// type-check, so what reflection reaches through one is unknown.
+// type-check, so what reflection reaches through one is unknown, unless a partial run could not load
+// that package and reads the reach only outside what imports it.
 func TestReflectReachOf_IllTyped(t *testing.T) {
 	main := "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n"
+	illTyped := "package vulnmod\n\nfunc Safe() { var x int = \"s\"; _ = x }\n\nfunc Bad() {}\n"
 	for _, tc := range []struct {
 		name    string
 		vulnmod string
+		known   []string
 		unknown bool
 	}{
-		{"every package type-checks", "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n", false},
-		{"a dependency does not type-check", "package vulnmod\n\nfunc Safe() { var x int = \"s\"; _ = x }\n\nfunc Bad() {}\n", true},
+		{"every package type-checks", "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n", nil, false},
+		{"a dependency does not type-check", illTyped, nil, true},
+		{"a partial run could not load it", illTyped, []string{"example.com/vulnmod"}, false},
+		{"a partial run could not load another", illTyped, []string{"example.com/other"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTree(t, merge(reflectBase, map[string]string{"main.go": main, "_vulnmod/vulnmod.go": tc.vulnmod}))
@@ -185,7 +190,7 @@ func TestReflectReachOf_IllTyped(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, reach, _ := reflectReachOf(load); (reach == nil) != tc.unknown {
+			if _, reach, _ := reflectReachOf(load, tc.known); (reach == nil) != tc.unknown {
 				t.Errorf("reflectReachOf reach unknown = %v, want %v", reach == nil, tc.unknown)
 			}
 		})
@@ -236,7 +241,7 @@ func reconcileFor(t *testing.T, files map[string]string, scanned vulnScan, entry
 		t.Fatal(err)
 	}
 	loadFn := func() (*LoadResult, error) { return load, nil }
-	g, err := reconcileCallGraph(context.Background(), dir, loadFn)
+	g, err := reconcileCallGraph(context.Background(), dir, nil, loadFn)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -159,8 +159,8 @@ func TestReachability_Live_SettledFailureReplays(t *testing.T) {
 // TestReachability_Live_PartialRunPastUnloadableCgo drives the real govulncheck over a tree where one
 // root imports a cgo package whose header does not exist: the full load fails and settles, and the
 // partial run over the other root still finds the vulnerable call, while an advisory it says nothing
-// about is a tool failure rather than unknown to the analyzer. Modules resolve offline; the
-// vulnerability database is still vuln.go.dev.
+// about stays unknown to the analyzer, beside a tool failure bounded to what the left-out root
+// imports. Modules resolve offline; the vulnerability database is still vuln.go.dev.
 func TestReachability_Live_PartialRunPastUnloadableCgo(t *testing.T) {
 	sum, err := os.ReadFile(filepath.Join(liveFixtureDir, "go.sum"))
 	if err != nil {
@@ -196,8 +196,56 @@ func TestReachability_Live_PartialRunPastUnloadableCgo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reachability, an advisory the run says nothing about: %v", err)
 	}
-	if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) ||
-		slices.Contains(res.Partiality.Reasons, plugin.PartialReasonAdvisoryUnknownToAnalyzer) {
-		t.Errorf("silence of a partial run: refutation %+v, reasons %v; want tool_failure", res.Refutation, res.Partiality.Reasons)
+	bounded := slices.ContainsFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+		return s.Reason == plugin.PartialReasonToolFailure && slices.Contains(s.Targets, "pkg:golang/example.com/m") &&
+			!slices.Contains(s.Targets, "pkg:golang/golang.org/x/text")
+	})
+	if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonAdvisoryUnknownToAnalyzer) || !bounded {
+		t.Errorf("silence of a partial run: refutation %+v, partiality %+v; want unknown to the analyzer, beside a tool failure bounded to the left-out root's imports", res.Refutation, res.Partiality)
+	}
+}
+
+// TestReachability_Live_PartialRunReleasesOutsideHidden pins ferralon-ai/tracker#612 end to end: a
+// root imports a dependency's cgo package whose header does not exist, so govulncheck runs over the
+// other root only. Nothing the left-out root imports is golang.org/x/text, so the refutation of
+// x/text stands, beside a tool failure whose Targets are what the left-out root imports.
+func TestReachability_Live_PartialRunReleasesOutsideHidden(t *testing.T) {
+	sum, err := os.ReadFile(filepath.Join(liveFixtureDir, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	depDir := writeTree(t, map[string]string{
+		"go.mod":     "module example.com/dep\n\ngo 1.22\n",
+		"olm/olm.go": "package olm\n\n// #include \"nonexistent.h\"\nimport \"C\"\n\nfunc F() {}\n",
+	})
+	dir := writeTree(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\tgolang.org/x/text v0.3.0\n\texample.com/dep v0.0.0\n)\n\nreplace example.com/dep => " + depDir + "\n",
+		"go.sum": string(sum),
+		// transform's own package has no left-out files, so excluded_files does not withhold.
+		"cmd/ok/main.go":  "package main\n\nimport \"golang.org/x/text/transform\"\n\nvar T transform.Transformer = transform.Nop\n\nfunc main() { println(T != nil) }\n",
+		"cmd/bad/main.go": "package main\n\nimport \"example.com/dep/olm\"\n\nfunc main() { olm.F() }\n",
+	})
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
+	t.Setenv("CGO_ENABLED", "1")
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+
+	res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: liveVulnID})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if res.Refutation == nil || res.Refutation.Package != "pkg:golang/golang.org/x/text" || len(res.Paths) > 0 {
+		t.Errorf("refutation %+v, %d paths, partiality %+v; want the refutation of x/text to stand", res.Refutation, len(res.Paths), res.Partiality)
+	}
+	if len(res.Partiality.Reasons) > 0 {
+		t.Errorf("run-wide reasons %v; want none", res.Partiality.Reasons)
+	}
+	i := slices.IndexFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == plugin.PartialReasonToolFailure })
+	if i < 0 {
+		t.Fatalf("partiality %+v names no tool failure for the left-out root", res.Partiality)
+	}
+	want := []string{"", "pkg:golang/example.com/dep", "pkg:golang/example.com/m", "pkg:golang/stdlib"}
+	if got := res.Partiality.Scoped[i].Targets; !slices.Equal(got, want) {
+		t.Errorf("tool failure Targets = %q, want %q", got, want)
 	}
 }

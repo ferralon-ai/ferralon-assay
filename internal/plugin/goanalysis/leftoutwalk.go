@@ -103,6 +103,9 @@ type lofWorld struct {
 	// holders holds the method names some loaded type declares a method of whose results hold an
 	// interface or a func.
 	holders map[string]bool
+	// linkIdx is the definers of bare link symbols over the whole link (linkIndex); nil until
+	// first asked.
+	linkIdx *lofLinkIndex
 }
 
 func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string, env []string, excluded func(constraint.Expr) bool, goroot string, deadline time.Time) *lofWorld {
@@ -1711,8 +1714,8 @@ func wasmImport(fn *ast.FuncDecl) bool {
 
 // walkAsm follows an assembly body's symbol references: "path.name" to a Go declaration or an
 // assembly symbol of that package, a file-local "name<>" to its file's, and a bare symbol to p's
-// own, else to foreign code, a dynamic call. A qualified or file-local symbol the walk cannot find
-// fails closed.
+// own, else to every definer of it elsewhere in the link (linkDefiner) and to foreign code, a
+// dynamic call. A qualified or file-local symbol the walk cannot find fails closed.
 func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 	if k.asmDone[body] {
 		return
@@ -1754,6 +1757,9 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 				k.walkAsm(p, b)
 			}
 			if !ok && !p.asmData[ref] {
+				// Some build's link may bind the name to a definer elsewhere; a build without one
+				// binds it to foreign code.
+				k.linkDefiner(p, ref)
 				k.out.dyn = true
 			}
 		}

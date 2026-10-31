@@ -3,8 +3,10 @@ package goanalysis
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/gob"
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -13,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/tools/go/packages"
 
@@ -1205,5 +1208,260 @@ func TestLofUnder(t *testing.T) {
 		if got := lofUnder(tc.path, tc.root); got != tc.want {
 			t.Errorf("lofUnder(%q, %q) = %v, want %v", tc.path, tc.root, got, tc.want)
 		}
+	}
+}
+
+// TestLeftOutEngine_AsmLinkDefiners: a bare symbol left-out assembly references and its own package
+// does not define binds, in some link, to whatever defines that name anywhere in the link: a Go
+// declaration a //go:linkname pushes to it or an //export function, followed; Go assembly, whose
+// body is followed; a .syso object, or a definer the index cannot see, which fails closed. lib's
+// file y_alt.go, left out and built under another tag, is the only importer of the packages holding
+// definers, so x.go's closure never enters them.
+func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
+	base := map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
+		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
+		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
+		"lib/lib.go":      "package lib\n",
+		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
+		"x_lofalt.s":      "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n",
+	}
+	// importer links pkg into some build through a file the build leaves out.
+	importer := func(pkg string) map[string]string {
+		return map[string]string{"lib/y_alt.go": "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/" + pkg + "\"\n"}
+	}
+	sy := func(obj []byte) map[string]string {
+		return merge(importer("sy"), map[string]string{"_v/sy/sy.go": "package sy\n", "_v/sy/sy.syso": string(obj)})
+	}
+	bad := symKey("example.com/v/vuln", "Bad")
+	cases := []struct {
+		name     string
+		files    map[string]string
+		reach    string // a loaded function x.go's closure reaches, when set
+		sink     bool   // x.go's closure reaches a loaded variable holding a func
+		item     string // what x.go's closure fails closed on, when set
+		withheld bool
+	}{
+		{"nothing defines the symbol: foreign code", nil, "", false, "", false},
+		{"a loaded //go:linkname push of a function with a body", map[string]string{
+			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nfunc impl() { vuln.Bad() }\n",
+		}, symKey("example.com/m/lib", "impl"), false, "", true},
+		{"a loaded //go:linkname push of an initialized variable", map[string]string{
+			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nvar impl = vuln.Bad\n",
+		}, "", true, "", true},
+		{"a //go:linkname push of a bodyless function defines nothing", map[string]string{
+			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nfunc impl()\n\nfunc F() { vuln.Bad() }\n",
+		}, "", false, "", false},
+		{"an //export function of an unloaded cgo package", merge(importer("exp"), map[string]string{
+			"_v/exp/exp.go": "package exp\n\nimport \"C\"\n\nimport \"example.com/v/vuln\"\n\n//export target\nfunc target() { vuln.Bad() }\n",
+		}), bad, false, "", true},
+		{"an //export comment outside a cgo file defines nothing", merge(importer("exp"), map[string]string{
+			"_v/exp/exp.go": "package exp\n\nimport \"example.com/v/vuln\"\n\n//export target\nfunc target() { vuln.Bad() }\n",
+		}), "", false, "", false},
+		{"Go assembly data of an unloaded package links it", merge(importer("def"), map[string]string{
+			"_v/def/def.go": "package def\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+			"_v/def/def.s":  "GLOBL target(SB),8,$8\n",
+		}), bad, false, "", true},
+		{"Go assembly of an unloaded package", merge(importer("def"), map[string]string{
+			"_v/def/def.go": "package def\n",
+			"_v/def/def.s":  "TEXT target(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n",
+		}), bad, false, "", true},
+		{"a macro of an included header may produce it", merge(importer("mac"), map[string]string{
+			"_v/mac/mac.go": "package mac\n",
+			"_v/mac/mk.h":   "#define MK(n) TEXT n(SB),0,$0; RET\n",
+			"_v/mac/mac.s":  "#include \"mk.h\"\n\nMK(target)\n",
+		}), "", false, lofAsmSymbol, true},
+		{"an included header that does not resolve may define anything", merge(importer("mac"), map[string]string{
+			"_v/mac/mac.go": "package mac\n",
+			"_v/mac/mac.s":  "#include \"missing.h\"\n",
+		}), "", false, lofAsmSymbol, true},
+		{"a .syso object defines it", sy(lofELFObject("target")), "", false, lofAsmSymbol, true},
+		{"a .syso object defines it with a leading underscore", sy(lofELFObject("_target")), "", false, lofAsmSymbol, true},
+		{"a .syso object defines other names", sy(lofELFObject("other")), "", false, "", false},
+		{"a .syso object of unknown format", sy([]byte("not an object")), "", false, lofAsmSymbol, true},
+		{"an import some build links does not resolve", importer("nowhere"), "", false, lofAsmSymbol, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, merge(base, tc.files))
+			got := lofRun(t, dir, "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+			f := got.facts["x.go"]
+			if f == nil {
+				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
+			}
+			if !f.Dyn {
+				t.Errorf("x.go: no dynamic call; a build without the definer binds the symbol to foreign code")
+			}
+			var fc []string
+			if tc.item != "" {
+				fc = []string{tc.item}
+			}
+			if !slices.Equal(f.FC, fc) {
+				t.Errorf("x.go fails closed on %v, want %v", f.FC, fc)
+			}
+			reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == tc.reach })
+			if tc.reach != "" && !reached {
+				t.Errorf("x.go does not reach %s", tc.reach)
+			}
+			for _, k := range []string{bad, symKey("example.com/m/lib", "impl"), symKey("example.com/v/exp", "target")} {
+				if tc.reach != k && slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == k }) {
+					t.Errorf("x.go reaches %s", k)
+				}
+			}
+			if f.Sink != tc.sink {
+				t.Errorf("x.go sink = %v, want %v", f.Sink, tc.sink)
+			}
+			if got.withheld != tc.withheld {
+				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
+			}
+		})
+	}
+}
+
+// TestLeftOutEngine_AsmLinkDefinerOrder: the definer of a bare symbol sits in a package no closure
+// has parsed yet; whether another closure parsed it first changes nothing.
+func TestLeftOutEngine_AsmLinkDefinerOrder(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
+		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
+		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
+		"lib/lib.go":      "package lib\n",
+		"lib/def.go":      "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nfunc impl() { vuln.Bad() }\n",
+		"lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nfunc init() {}\n",
+		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
+		"x_lofalt.s":      "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n",
+	})
+	ctx := context.Background()
+	load, err := LoadProgram(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load.buildGoVersion = load.goVersion
+	release := load.buildRelease()
+	env := append(os.Environ(), "GOWORK=off")
+	floor := goDirectiveFloor(load.Packages)
+	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
+	goroot, item := lofToolchain(ctx, dir, env, release)
+	if item != "" {
+		t.Fatal(item)
+	}
+	cands := map[string]lofCandidate{}
+	for _, c := range lofCandidates(load.Packages) {
+		cands[filepath.Base(c.path)] = c
+	}
+	if _, ok := cands["y_alt.go"]; !ok {
+		t.Fatalf("y_alt.go is no candidate: %v", cands)
+	}
+	// x reports what x.go's closure reaches and fails closed on after the closures of order.
+	x := func(order ...string) (bool, []string) {
+		w := newLofWorld(ctx, load.Packages, dir, env, excluded, goroot, time.Now().Add(time.Minute))
+		var cl *lofClosure
+		for _, name := range order {
+			c := cands[name]
+			cl = w.closure(c.path, c.pkg)
+		}
+		impl := false
+		for fn := range cl.funcs {
+			impl = impl || funcKey(fn) == symKey("example.com/m/lib", "impl")
+		}
+		return impl, cl.fc
+	}
+	for _, order := range [][]string{{"x.go"}, {"y_alt.go", "x.go"}} {
+		if impl, fc := x(order...); !impl || len(fc) > 0 {
+			t.Errorf("after %v: x.go reaches lib.impl = %v, fails closed on %v; want true, nothing", order, impl, fc)
+		}
+	}
+}
+
+// lofELFObject returns an ELF64 relocatable object whose text section defines each of names as a
+// global function symbol.
+func lofELFObject(names ...string) []byte {
+	le := binary.LittleEndian
+	strtab := []byte{0}
+	syms := make([]byte, 24) // the null symbol
+	for _, n := range names {
+		s := make([]byte, 24)
+		le.PutUint32(s[0:], uint32(len(strtab)))
+		s[4] = 1<<4 | 2 // STB_GLOBAL, STT_FUNC
+		le.PutUint16(s[6:], 1)
+		syms = append(syms, s...)
+		strtab = append(append(strtab, n...), 0)
+	}
+	shstrtab := []byte("\x00.text\x00.symtab\x00.strtab\x00.shstrtab\x00")
+	text := []byte{0xc3}
+	off := func(n int) int { return (n + 7) &^ 7 }
+	textOff := 64
+	symOff := off(textOff + len(text))
+	strOff := symOff + len(syms)
+	shstrOff := strOff + len(strtab)
+	shOff := off(shstrOff + len(shstrtab))
+	out := make([]byte, shOff+5*64)
+	copy(out, "\x7fELF\x02\x01\x01")
+	le.PutUint16(out[16:], 1)  // ET_REL
+	le.PutUint16(out[18:], 62) // EM_X86_64
+	le.PutUint32(out[20:], 1)
+	le.PutUint64(out[40:], uint64(shOff))
+	le.PutUint16(out[52:], 64)
+	le.PutUint16(out[58:], 64)
+	le.PutUint16(out[60:], 5)
+	le.PutUint16(out[62:], 4)
+	copy(out[textOff:], text)
+	copy(out[symOff:], syms)
+	copy(out[strOff:], strtab)
+	copy(out[shstrOff:], shstrtab)
+	section := func(i int, name, typ uint32, flags uint64, offset, size int, link, info uint32, entsize uint64) {
+		h := out[shOff+i*64:]
+		le.PutUint32(h[0:], name)
+		le.PutUint32(h[4:], typ)
+		le.PutUint64(h[8:], flags)
+		le.PutUint64(h[24:], uint64(offset))
+		le.PutUint64(h[32:], uint64(size))
+		le.PutUint32(h[40:], link)
+		le.PutUint32(h[44:], info)
+		le.PutUint64(h[48:], 1)
+		le.PutUint64(h[56:], entsize)
+	}
+	section(1, 1, 1, 6, textOff, len(text), 0, 0, 0)       // .text: SHT_PROGBITS, alloc+exec
+	section(2, 7, 2, 0, symOff, len(syms), 3, 1, 24)       // .symtab: SHT_SYMTAB, its strings in 3, locals end at 1
+	section(3, 15, 3, 0, strOff, len(strtab), 0, 0, 0)     // .strtab
+	section(4, 23, 3, 0, shstrOff, len(shstrtab), 0, 0, 0) // .shstrtab
+	return out
+}
+
+// TestLeftOutEngine_AsmLinkDefinerStd: the race detector's runtime assembly references the race
+// runtime's symbols bare, and the standard library's own .syso objects define them: a definer
+// inside the toolchain fails closed for a standard-library refutation only, and one of a module
+// for every refutation.
+func TestLeftOutEngine_AsmLinkDefinerStd(t *testing.T) {
+	base := map[string]string{
+		"go.mod":     "module example.com/m\n\ngo 1.22.0\n",
+		"main.go":    "package main\n\nfunc main() {}\n",
+		"x.go":       "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
+		"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL runtime·raceread(SB)\n\tRET\n",
+	}
+	for _, tc := range []struct {
+		name    string
+		files   map[string]string
+		fc, std bool
+	}{
+		{"only the toolchain defines it", nil, false, true},
+		{"a module's .syso object defines it too", map[string]string{
+			"main.go":   "package main\n\nimport _ \"example.com/m/sy\"\n\nfunc main() {}\n",
+			"sy/sy.go":  "package sy\n",
+			"sy/a.syso": string(lofELFObject("__tsan_read")),
+		}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lofRun(t, writeTree(t, merge(base, tc.files)), "stdlib", map[string][]string{"strings": {"Index"}}, false, nil)
+			f := got.facts["x.go"]
+			if f == nil {
+				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
+			}
+			if fc, std := slices.Contains(f.FC, lofAsmSymbol), slices.Contains(f.FCStd, lofAsmSymbol); fc != tc.fc || std != tc.std {
+				t.Errorf("x.go fails closed on %s = %v, for the standard library = %v; want %v, %v", lofAsmSymbol, fc, std, tc.fc, tc.std)
+			}
+		})
 	}
 }

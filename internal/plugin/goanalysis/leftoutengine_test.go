@@ -390,6 +390,15 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 		{"a file of the package cannot be read", map[string]string{
 			"_v/vuln/z.go": "//go:build lofalt\n\npackage vuln\n",
 		}, true, "_v/vuln/z.go", "", true, lofUnresolvedName, ""},
+		{"a file the build compiled cannot be read", map[string]string{
+			"_v/vuln/w.go": "package vuln\n",
+		}, true, "_v/vuln/w.go", "", true, lofUnresolvedName, ""},
+		{"a file of the package has a build constraint that does not parse", map[string]string{
+			"_v/vuln/z.go": "//go:build lofalt\n//go:build ignore\n\npackage vuln\n",
+		}, true, "", "", true, lofUnresolvedName, ""},
+		{"an ignored file of the package does not parse", map[string]string{
+			"_v/vuln/z.go": "//go:build ignore\n\npackage vuln\n\nfunc (\n",
+		}, true, "", "", true, lofUnresolvedName, ""},
 		{"the file has another type error", map[string]string{
 			"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nfunc init() { helper(); var n int = \"s\"; _ = n; Bad() }\n",
 		}, true, "", "", true, lofVariantTypecheck, ""},

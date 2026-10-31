@@ -229,6 +229,25 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"sample hook run by an extensionless node script", sample(`"prepare":"./bin/setup"`, "bin/setup", "#!/usr/bin/env node\nrequire('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"), false, ""},
 		{"node build script and React hooks beside a sample hook", sample(`"build":"node scripts/build.js"`, "scripts/build.js", "require('fs').copyFileSync('src/index.html', 'dist/index.html')\n", "src/hooks/useThing.ts", "export function useThing() { return 1 }\n", "src/index.ts", "import { useThing } from './hooks/useThing'\n"), true, ""},
 		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), false, ""},
+
+		// A quoted < or > is literal and falls to the install grammar; an unquoted one redirects.
+		{"npm ci redirected", npm(map[string]string{"install.sh": "npm ci > log\n"}), false, ""},
+		{"npm ci glued append", npm(map[string]string{"install.sh": "npm ci >>log\n"}), false, ""},
+		{"npm ci descriptor duplicate before a pipe", npm(map[string]string{"install.sh": "npm ci 2>&1 | tee x\n"}), false, ""},
+		{"yarn install glued input", npm(map[string]string{"install.sh": "yarn install <in\n"}), false, ""},
+		{"npm ci here-document", npm(map[string]string{"install.sh": "npm ci <<EOF\nx\nEOF\n"}), false, ""},
+		{"npm ci process substitution", npm(map[string]string{"install.sh": "npm ci < <(cat x)\n"}), false, ""},
+		{"npm i, unquoted > after a closing quote", npm(map[string]string{"install.sh": "npm i \"a\">b\n"}), false, ""},
+		{"npm i, unquoted > between quoted words", npm(map[string]string{"install.sh": "npm i 'x'>\"y\"\n"}), false, ""},
+		{"npm i, double-quoted > in a package", npm(map[string]string{"install.sh": "npm i \"a>b\"\n"}), false, ""},
+		{"npm i, single-quoted < in a package", npm(map[string]string{"install.sh": "npm i 'a<b'\n"}), false, ""},
+		{"npm i, escaped > in a package", npm(map[string]string{"install.sh": "npm i a\\>b\n"}), false, ""},
+		{"npm i, quoted range", npm(map[string]string{"install.sh": "npm i \"react@>=18\"\n"}), false, ""},
+		{"yarn add, quoted range", npm(map[string]string{"install.sh": "yarn add 'lodash@>4 <5'\n"}), false, ""},
+		{"pnpm add, quoted range", npm(map[string]string{"install.sh": "pnpm add \"x@>1\"\n"}), false, ""},
+		{"npm ci, quoted > as a flag value the lane does not take", npm(map[string]string{"install.sh": "npm ci --loglevel \">\"\n"}), false, ""},
+		{"npm ci, quoted > as a subset flag value", npm(map[string]string{"install.sh": "npm ci --omit \">\"\n"}), false, ""},
+		{"npm ci, quoted > in an echo beside it", npm(map[string]string{"install.sh": "echo \"a>b\" && npm ci\n"}), true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

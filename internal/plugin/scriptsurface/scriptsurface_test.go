@@ -212,6 +212,24 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Procfile command behind a redirect to a name starting -1", tree(map[string]string{"Procfile": "web: >-1#x inst add x\n"}), true, ""},
 		{"Procfile command behind a redirect, no installer", tree(map[string]string{"Procfile": "web: >/dev/null serve\n"}), false, ""},
 		{"unterminated quote", tree(map[string]string{"install.sh": "echo 'x && inst sync\n"}), true, ""},
+
+		// A quoted or escaped < or > is literal; an unquoted one, glued or not, redirects.
+		{"double-quoted > in a name an allowed form takes", tree(map[string]string{"install.sh": "inst run \"a>b\"\n"}), false, ""},
+		{"single-quoted < in a name an allowed form takes", tree(map[string]string{"install.sh": "inst run 'a<b'\n"}), false, ""},
+		{"escaped > in a name an allowed form takes", tree(map[string]string{"install.sh": "inst run a\\>b\n"}), false, ""},
+		{"quoted > through a run wrapper", tree(map[string]string{"install.sh": "instw run inst run \"a>b\"\n"}), false, ""},
+		{"quoted > in a name an allowed form rejects", tree(map[string]string{"install.sh": "inst add \"a>b\"\n"}), true, ""},
+		{"unquoted > after a closing quote", tree(map[string]string{"install.sh": "inst run \"a\">b\n"}), true, ""},
+		{"unquoted > between quoted words", tree(map[string]string{"install.sh": "inst run 'x'>\"y\"\n"}), true, ""},
+		{"quoted > beside an unquoted redirect", tree(map[string]string{"install.sh": "inst run \"a>b\" >log\n"}), true, ""},
+		{"glued append", tree(map[string]string{"install.sh": "inst sync >>log\n"}), true, ""},
+		{"descriptor duplicate before a pipe", tree(map[string]string{"install.sh": "inst sync 2>&1 | tee x\n"}), true, ""},
+		{"glued input redirect", tree(map[string]string{"install.sh": "inst sync <in\n"}), true, ""},
+		{"here-document", tree(map[string]string{"install.sh": "inst sync <<EOF\nx\nEOF\n"}), true, ""},
+		{"process substitution as input", tree(map[string]string{"install.sh": "inst sync < <(cat x)\n"}), true, ""},
+		{"quoted > in a shell-form RUN", tree(map[string]string{"Dockerfile": docker + "inst run \"a>b\"\n"}), false, ""},
+		{"> in an exec-form RUN, held to the word check", tree(map[string]string{"Dockerfile": docker + "[\"inst\", \"run\", \"a>b\"]\n"}), true, ""},
+		{"exec-form RUN without < or >", tree(map[string]string{"Dockerfile": docker + "[\"inst\", \"run\", \"ab\"]\n"}), false, ""},
 		{"unjoined continuation", tree(map[string]string{"install.sh": "inst sync \\"}), true, ""},
 
 		// Run wrappers.

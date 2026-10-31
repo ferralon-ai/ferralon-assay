@@ -951,7 +951,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		cur.other()
 		return ""
 	}
-	if seg.expands || hasRedirect(words) {
+	if seg.expands || segmentRedirects(seg, words) {
 		return "install command with an expansion or redirect: " + strings.Join(words, " ")
 	}
 	if v.spec.Concurrent != nil {
@@ -964,7 +964,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			if len(argv) == 0 || depth >= maxRunDepth || v.spec.RunBinds == nil || !v.spec.RunBinds(words, cur) {
 				return "install command: " + strings.Join(words, " ")
 			}
-			return v.command(segment{words: argv}, cur, depth+1)
+			return v.command(segment{words: argv, tokenised: seg.tokenised, redirects: seg.redirects}, cur, depth+1)
 		}
 	}
 	if !v.spec.Allowed(words, cur) {
@@ -1114,6 +1114,16 @@ func expandedInstallLine(line string) bool {
 		}
 	}
 	return false
+}
+
+// segmentRedirects reports whether seg, of which words are the command's, may redirect: a segment
+// read from shell text by whether it holds an unquoted < or >, which a quoted one does not; any
+// other by whether a word holds either.
+func segmentRedirects(seg segment, words []string) bool {
+	if seg.tokenised {
+		return seg.redirects
+	}
+	return hasRedirect(words)
 }
 
 func hasRedirect(words []string) bool {

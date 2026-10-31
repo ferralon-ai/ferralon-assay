@@ -166,6 +166,8 @@ func TestResolveVersions_PipSelfUpgrade(t *testing.T) {
 		{"every reviewed flag", "python3.12 -m pip install -q --quiet --no-cache-dir --disable-pip-version-check --no-warn-script-location --root-user-action=ignore -U pip", true},
 		{"pinned, quoted", `pip install "pip==24.0"`, true},
 		{"compatible release and exclusion", `pip install --upgrade 'pip~=24.0,!=24.0.1'`, true},
+		{"a quoted range holding < and >", `pip install --upgrade 'pip>=23,<25'`, true},
+		{"an unquoted range, read as a redirect", `pip install --upgrade pip>=23`, false},
 		{"name case", "pip install -U Pip", true},
 		{"chained before an allowed install", "pip install -U pip && pip install -r requirements.txt", true},
 
@@ -185,7 +187,7 @@ func TestResolveVersions_PipSelfUpgrade(t *testing.T) {
 		{"path", "pip install -U ./pip", false},
 		{"archive", "pip install -U pip-24.0-py3-none-any.whl", false},
 		{"specifier with no version", `pip install "pip=="`, false},
-		{"a range holding < or >, read as a redirect", `pip install --upgrade 'pip>=23,<25'`, false},
+
 		{"variable target", "pip install -U $PKG", false},
 
 		// Flags outside the reviewed list.

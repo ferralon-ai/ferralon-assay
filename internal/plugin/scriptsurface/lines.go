@@ -42,9 +42,13 @@ func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 // before what follows it; and marks one that follows &&, which runs only if the command before
 // it did; background marks one a lone & ends, which may not have finished when what follows runs.
 // end is the operator that ends it (&&, ||, |, & or ;), or "" at the end of the text.
+// tokenised marks one read from shell text, whose redirects records an unquoted, unescaped < or
+// >; any other segment redirects when one of its words holds < or > (segmentRedirects).
 type segment struct {
 	words      []string
 	expands    bool
+	tokenised  bool
+	redirects  bool
 	guarded    bool
 	and        bool
 	background bool
@@ -185,7 +189,7 @@ func quotedValue(s string) (string, bool) {
 // ends in &&, || or |, so that the next line continues the list.
 func shellSegments(s string) (segs []segment, ok, dangles bool) {
 	var (
-		cur    segment
+		cur    = segment{tokenised: true}
 		word   strings.Builder
 		inWord bool
 	)
@@ -201,7 +205,7 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 		if len(cur.words) > 0 {
 			segs = append(segs, cur)
 		}
-		cur = segment{}
+		cur = segment{tokenised: true}
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -260,6 +264,9 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 			cur.guarded = c != ';'
 			cur.and = c == '&' && i > 0 && s[i-1] == '&'
 		default:
+			if c == '<' || c == '>' {
+				cur.redirects = true
+			}
 			word.WriteByte(c)
 			inWord = true
 		}

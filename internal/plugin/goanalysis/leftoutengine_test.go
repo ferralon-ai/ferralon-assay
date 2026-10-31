@@ -434,13 +434,15 @@ func TestLeftOutEngine_LoadedValues(t *testing.T) {
 		"main.go":         "package main\n\nimport (\n\t\"example.com/m/lib\"\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { vuln.Safe(); lib.Fire() }\n",
 		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
 		"_v/vuln/vuln.go": "package vuln\n\nfunc Safe() {}\n\ntype T struct{}\n\nfunc NewT() *T { return &T{} }\n\nfunc (*T) Bad() {}\n",
-		"lib/lib.go": "package lib\n\ntype I interface{ Bad() }\n\nvar hook I\n\n" +
+		"lib/lib.go": "package lib\n\nimport \"unsafe\"\n\ntype I interface{ Bad() }\n\nvar hook I\n\n" +
 			"func Fire() {\n\tif hook != nil {\n\t\thook.Bad()\n\t}\n\tif box.X != nil {\n\t\tbox.X.Bad()\n\t}\n}\n\n" +
 			"type Reg struct{ n int }\n\nfunc (Reg) Register(h I) { hook = h }\n\nfunc (Reg) Len() int { return 0 }\n\nfunc Default() *Reg { return &Reg{} }\n\n" +
 			"type setter struct{ n int }\n\nfunc (setter) Set(v any) { hook, _ = v.(I) }\n\nfunc Any() any { return setter{} }\n\n" +
 			"func AnyF() any { return func(v any) { hook, _ = v.(I) } }\n\n" +
 			"func H() func() func(I) { return func() func(I) { return func(i I) { hook = i } } }\n\n" +
 			"type Box struct{ X I }\n\nvar box = &Box{}\n\ntype Getter interface{ Box() *Box }\n\ntype g struct{ n int }\n\nfunc (g) Box() *Box { return box }\n\nfunc Get() Getter { return g{} }\n\n" +
+			"func (Reg) AnyM() any { return func(v any) { hook, _ = v.(I) } }\n\nfunc (Reg) Thunk() func() any { return func() any { return func(v any) { hook, _ = v.(I) } } }\n\n" +
+			"var ch = make(chan any, 1)\n\nfunc (Reg) AnyC() any { return ch }\n\nvar R Reg\n\nfunc Ptr(p unsafe.Pointer) { hook = *(*I)(p) }\n\n" +
 			"type Taker interface{ Take(I) }\n\ntype Next interface{ Next() Taker }\n\ntype tk struct{ n int }\n\nfunc (tk) Take(i I) { hook = i }\n\nfunc (tk) Next() Taker { return tk{} }\n\nfunc Chain() Next { return tk{} }\n",
 	}
 	cases := []struct {
@@ -455,11 +457,21 @@ func TestLeftOutEngine_LoadedValues(t *testing.T) {
 		{"a func a returned func returns", "func init() { lib.H()()(vuln.NewT()) }\n", true},
 		{"a field of what an interface's method returns", "func init() { lib.Get().Box().X = vuln.NewT() }\n", true},
 		{"a method of what an interface's method returns", "func init() { lib.Chain().Next().Take(vuln.NewT()) }\n", true},
+		{"an any a loaded method returns asserted to a func type", "func init() { lib.Default().AnyM().(func(any))(vuln.NewT()) }\n", true},
+		{"an any a loaded method returns asserted to a channel", "func init() { lib.Default().AnyC().(chan any) <- vuln.NewT() }\n", true},
+		{"a loaded method of a loaded variable", "func init() { lib.R.AnyM().(func(any))(vuln.NewT()) }\n", true},
+		{"an any a loaded method's func result returns", "func init() { lib.Default().Thunk()().(func(any))(vuln.NewT()) }\n", true},
+		{"a type switch on an any a loaded method returns", "func init() {\n\tswitch f := lib.Default().AnyM().(type) {\n\tcase func(any):\n\t\tf(vuln.NewT())\n\t}\n}\n", true},
+		{"an unsafe.Pointer a loaded function takes", "func init() {\n\tvar i interface{ Bad() } = vuln.NewT()\n\tlib.Ptr(unsafe.Pointer(&i))\n}\n", true},
 		{"a method no loaded type takes a value through", "func init() { _ = lib.Default().Len(); vuln.Safe() }\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			x := "//go:build lofalt\n\npackage main\n\nimport (\n\t\"example.com/m/lib\"\n\t\"example.com/v/vuln\"\n)\n\n" + tc.body
+			imp := ""
+			if strings.Contains(tc.body, "unsafe.") {
+				imp = "\t\"unsafe\"\n"
+			}
+			x := "//go:build lofalt\n\npackage main\n\nimport (\n\t\"example.com/m/lib\"\n\t\"example.com/v/vuln\"\n" + imp + ")\n\n" + tc.body
 			dir := writeTree(t, merge(base, map[string]string{"x.go": x}))
 			got := lofRun(t, dir, "example.com/v", map[string][]string{"example.com/v/vuln": {"T.Bad"}}, false, nil)
 			if got.withheld != tc.withheld {

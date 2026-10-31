@@ -100,6 +100,9 @@ type lofWorld struct {
 	// carriers holds the method names some loaded type declares a method of that carries a value
 	// in (lofCarriesIn); nil until first asked.
 	carriers map[string]bool
+	// holders holds the method names some loaded type declares a method of whose results hold an
+	// interface or a func.
+	holders map[string]bool
 }
 
 func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string, env []string, excluded func(constraint.Expr) bool, goroot string, deadline time.Time) *lofWorld {
@@ -1312,6 +1315,7 @@ func (k *lofWalk) walk(d *lofDecl) {
 	for _, m := range d.called {
 		k.out.methods[m] = true
 		k.out.sink = k.out.sink || k.w.carrier(m)
+		k.out.held = k.out.held || k.w.holder(m)
 		if k.called[m] {
 			continue
 		}
@@ -1465,6 +1469,8 @@ func lofHoldsDispatch(t types.Type, seen map[types.Type]bool) bool {
 		return lofHoldsDispatch(types.Unalias(t), seen)
 	case *types.Interface, *types.Signature, *types.TypeParam:
 		return true
+	case *types.Basic:
+		return t.Kind() == types.UnsafePointer
 	case *types.Pointer:
 		return lofHoldsDispatch(t.Elem(), seen)
 	case *types.Slice:
@@ -1495,8 +1501,20 @@ func lofHoldsDispatch(t types.Type, seen map[types.Type]bool) bool {
 // code: a loaded value's dynamic type is a loaded one, and every method a call by name can
 // dispatch to is declared on a package-level type of a loaded package, or promoted from one.
 func (w *lofWorld) carrier(name string) bool {
+	w.methodIndex()
+	return w.carriers[name]
+}
+
+// holder reports whether a method named name of some loaded type returns a value that holds an
+// interface or a func, whose dynamic type the closure may assert.
+func (w *lofWorld) holder(name string) bool {
+	w.methodIndex()
+	return w.holders[name]
+}
+
+func (w *lofWorld) methodIndex() {
 	if w.carriers == nil {
-		w.carriers = map[string]bool{}
+		w.carriers, w.holders = map[string]bool{}, map[string]bool{}
 		for _, lp := range w.loaded {
 			sc := lp.Types.Scope()
 			for _, n := range sc.Names() {
@@ -1510,14 +1528,17 @@ func (w *lofWorld) carrier(name string) bool {
 				}
 				for i := 0; i < nt.NumMethods(); i++ {
 					m := nt.Method(i)
-					if sig := m.Signature(); lofHoldsDispatch(sig.Params(), nil) || lofCarriesIn(sig.Results(), nil) {
+					sig := m.Signature()
+					if lofHoldsDispatch(sig.Params(), nil) || lofCarriesIn(sig.Results(), nil) {
 						w.carriers[m.Name()] = true
+					}
+					if lofHoldsDispatch(sig.Results(), nil) {
+						w.holders[m.Name()] = true
 					}
 				}
 			}
 		}
 	}
-	return w.carriers[name]
 }
 
 // remote follows a //go:linkname remote ("path.name", "path.T.m", "path.(*T).m") named in package

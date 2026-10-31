@@ -232,6 +232,18 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"toolchain unknown: a file for releases before one after the go directive's", map[string]string{
 			"x.go": "//go:build !go1.23\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
 		}, nil, true, "", true},
+		// A go directive without a patch release does not bind the toolchain, so it fixes no release tag.
+		{"toolchain unknown: a file for releases before a go directive that does not bind the toolchain", map[string]string{
+			"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+			"x.go":   "//go:build !go1.22\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+		}, nil, true, "", true},
+		{"a left-out file for no compiler but gc under more tags than are judged", map[string]string{
+			"x.go": "//go:build !gc && t1 && t2 && t3 && t4 && t5 && t6 && t7 && t8 && t9 && t10 && t11 && t12 && t13 && t14 && t15 && t16\n\n" +
+				"package main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+		}, nil, true, "", false},
+		{"a left-out file whose constraint no build satisfies", map[string]string{
+			"x.go": "//go:build gc && !gc\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+		}, nil, true, "", false},
 		{"a left-out function pulls the symbol's pointer method by linkname", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.(*P).Bad\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), nil, true, "", false},
 		{"a left-out function pulls by linkname a method of an unloaded package that calls the symbol", merge(x("\t_ \"unsafe\"\n\t_ \"example.com/v/um\"",
@@ -288,6 +300,9 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		}), badFunc, true, "", false},
 		{"a left-out init reads a loaded variable while the symbol's address is taken", merge(x(libOnly, "func init() { lib.Install(); _ = lib.N }\n"), hook, map[string]string{
 			"lib/n.go": "package lib\n\nvar N int\n",
+		}), badFunc, true, "", false},
+		{"a left-out init calls by name a loaded method that calls the symbol", merge(x("", "type runner interface{ Run() }\n\nfunc init() { var v runner; v.Run() }\n"), map[string]string{
+			"lib/c.go": "package lib\n\nimport \"example.com/v/vuln\"\n\ntype C struct{}\n\nfunc (C) Run() { vuln.Bad() }\n",
 		}), badFunc, true, "", false},
 		// The receiver's type parameter shadows the type's name, so the closure never names the type.
 		{"a left-out method on a loaded generic type whose method set holds the symbol", map[string]string{

@@ -129,7 +129,15 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
 			}
-			if abbreviatesInstallOption(line) || laterInstallOption(line) {
+			// pip unquotes the option string first (--"requirement"), so test the unquoted line.
+			unq := strings.NewReplacer(`"`, "", `'`, "").Replace(line)
+			if _, isInclude := includeTarget(unq); isInclude {
+				return out, false
+			}
+			if kind, ok := optionKind(unq); ok && kind == reqEditable {
+				return out, false
+			}
+			if abbreviatesInstallOption(unq) || laterInstallOption(unq) || untrackedConstraint(unq) {
 				return out, false
 			}
 			// pip parses every option on the line, not just the first, and accepts any
@@ -165,6 +173,22 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 		})
 	}
 	return out, true
+}
+
+// untrackedConstraint reports a constraint option that includeTarget does not record: shortened
+// ("--cons c.txt") or after another option ("--pre -c c.txt"). A constraint file can itself
+// include a requirement file, so pip may install from it.
+func untrackedConstraint(line string) bool {
+	for i, f := range strings.Fields(line) {
+		word, _, _ := strings.Cut(f, "=")
+		if len(word) > 2 && strings.HasPrefix("--constraint", word) && (i > 0 || word != "--constraint") {
+			return true
+		}
+		if i > 0 && strings.HasPrefix(f, "-c") {
+			return true
+		}
+	}
+	return false
 }
 
 // pyprojectAll is every pyproject.toml table that declares something to install.

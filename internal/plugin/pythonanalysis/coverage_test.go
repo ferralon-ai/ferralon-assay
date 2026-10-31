@@ -173,7 +173,14 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"abbreviated --editable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--edit ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"include after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -r extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"editable after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -e ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
-		{"constraint after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -c extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"constraint after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -c c.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--cons c.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"include after another option, with =", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --requirement=extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --editable=", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--edi=./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted option name", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--\"requirement\" extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted short option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\"r\" extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted editable after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -\"e\" ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 
 		// Nested project definitions.
@@ -349,6 +356,31 @@ func TestPoetrySpecifier(t *testing.T) {
 		got, ok := poetrySpecifier(tt.in)
 		if got != tt.want || ok != tt.ok {
 			t.Errorf("poetrySpecifier(%q) = %q, %v; want %q, %v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+// TestUntrackedConstraint: a constraint option that includeTarget records stays out; a shortened
+// or later one is reported, since the constraint file may include a requirement file.
+func TestUntrackedConstraint(t *testing.T) {
+	for _, tt := range []struct {
+		line string
+		want bool
+	}{
+		{"-c c.txt", false},
+		{"-cc.txt", false},
+		{"--constraint c.txt", false},
+		{"--constraint=c.txt", false},
+		{"--pre", false},
+		{"--extra-index-url https://x/simple", false},
+		{"--cons c.txt", true},
+		{"--constr=c.txt", true},
+		{"--pre -c c.txt", true},
+		{"--pre -cc.txt", true},
+		{"--pre --constraint=c.txt", true},
+	} {
+		if got := untrackedConstraint(tt.line); got != tt.want {
+			t.Errorf("untrackedConstraint(%q) = %v, want %v", tt.line, got, tt.want)
 		}
 	}
 }

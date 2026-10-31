@@ -36,9 +36,14 @@ type lofEngine struct {
 	In0   [][]int32
 	InT   [][]int32
 	// Decls holds every function and declared method of every loaded package, in or out of either
-	// graph, as {Pkg, Name, Sym, method name} string ids (method name -1 for a function): S is
-	// every one of them the advisory names, whether loaded code calls it or not.
-	Decls [][4]int32
+	// graph, as {Pkg, Name, Sym, method name, receiver type} string ids (method name and receiver
+	// type -1 for a function): S is every one of them the advisory names, whether loaded code calls
+	// it or not.
+	Decls [][5]int32
+	// Live0 and LiveT hold the named types with methods or interface underlyings (string ids of
+	// symKey(package, type name), sorted) a value of which can exist at run time in G0's or G_T's
+	// program (lofLive).
+	Live0, LiveT []int32
 	// Fail is set when the engine could not be built (lofGraphError): every left-out file counts.
 	Fail string
 	// FailStd is set when the toolchain's standard library source cannot be established
@@ -90,8 +95,10 @@ func (e *lofEngine) file(path string) (f *lofFacts, ok bool) {
 // -1 for none), whether its address is taken in G_T's slice (Addr), and the slices it lies in: G0's
 // final (F0) and G_T's final (FT).
 type lofNode struct {
-	Pkg, Name, Sym, M1, M2 int32
-	Addr, F0, FT           bool
+	// Recv is a method's receiver type (the string id of symKey(package, type name)),
+	// lofRecvUnknown when it has a receiver no named type declares, -1 for a function.
+	Pkg, Name, Sym, M1, M2, Recv int32
+	Addr, F0, FT                 bool
 	// Synth marks a package's synthesized initializer: never a vulnerable symbol itself, only a
 	// caller of the declared init functions and the calls in variable initializers it runs.
 	Synth bool
@@ -104,7 +111,8 @@ type lofNode struct {
 // (string ids); Src the source functions it walks (package path, "F" or "T.M"). Novel is set when
 // one of the file's loaded roots lies outside G0's CHA-round or final slice. Links holds the
 // packages the build did not load that the file can link (string ids), with LinkFC what that walk
-// fails closed on.
+// fails closed on. Live holds the named types (as lofEngine.Live0) a value of which the closure can
+// make or reach from the types and functions it names, less G0's.
 type lofFacts struct {
 	FC, FCStd                []string
 	Funcs, TypeMeth, NewMeth []int32
@@ -115,6 +123,7 @@ type lofFacts struct {
 	Excluded                 bool
 	Links                    []int32
 	LinkFC                   []string
+	Live                     []int32
 }
 
 // lofCandidate is a left-out file and the package it belongs to.
@@ -203,6 +212,7 @@ type lofWire struct {
 	Fail, FailStd string
 	Facts         map[string][]byte
 	Graph         []byte
+	Live0, LiveT  []int32
 }
 
 func (e *lofEngine) encode() ([]byte, error) {
@@ -217,7 +227,7 @@ func (e *lofEngine) encode() ([]byte, error) {
 	}
 	g = u32(g, uint32(len(e.Nodes)))
 	for _, n := range e.Nodes {
-		for _, v := range []int32{n.Pkg, n.Name, n.Sym, n.M1, n.M2} {
+		for _, v := range []int32{n.Pkg, n.Name, n.Sym, n.M1, n.M2, n.Recv} {
 			g = u32(g, uint32(v))
 		}
 		var flags byte
@@ -246,7 +256,7 @@ func (e *lofEngine) encode() ([]byte, error) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(lofWire{Fail: e.Fail, FailStd: e.FailStd, Facts: e.Facts, Graph: g}); err != nil {
+	if err := gob.NewEncoder(&buf).Encode(lofWire{Fail: e.Fail, FailStd: e.FailStd, Facts: e.Facts, Graph: g, Live0: e.Live0, LiveT: e.LiveT}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -257,7 +267,7 @@ func decodeLofEngine(b []byte) (*lofEngine, error) {
 	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&w); err != nil {
 		return nil, err
 	}
-	e := &lofEngine{Fail: w.Fail, FailStd: w.FailStd, Facts: w.Facts}
+	e := &lofEngine{Fail: w.Fail, FailStd: w.FailStd, Facts: w.Facts, Live0: w.Live0, LiveT: w.LiveT}
 	g := w.Graph
 	short := false
 	next := func() uint32 {
@@ -294,10 +304,10 @@ func decodeLofEngine(b []byte) (*lofEngine, error) {
 	for i, l := range lens {
 		e.Strs[i], all = all[:l], all[l:]
 	}
-	e.Nodes = make([]lofNode, count(21))
+	e.Nodes = make([]lofNode, count(25))
 	for i := range e.Nodes {
 		n := &e.Nodes[i]
-		n.Pkg, n.Name, n.Sym, n.M1, n.M2 = int32(next()), int32(next()), int32(next()), int32(next()), int32(next())
+		n.Pkg, n.Name, n.Sym, n.M1, n.M2, n.Recv = int32(next()), int32(next()), int32(next()), int32(next()), int32(next()), int32(next())
 		if len(g) < 1 {
 			short = true
 			break
@@ -325,7 +335,7 @@ func decodeLofEngine(b []byte) (*lofEngine, error) {
 			(*in)[i], edges = edges[:l:l], edges[l:]
 		}
 	}
-	e.Decls = make([][4]int32, count(16))
+	e.Decls = make([][5]int32, count(20))
 	for i := range e.Decls {
 		for j := range e.Decls[i] {
 			e.Decls[i][j] = int32(next())
@@ -494,6 +504,42 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		}
 	}
 
+	// What can exist at run time: every value G0's slice computes and every package variable, then
+	// G_T's slice on top; and what each file's closure names, less G0's.
+	globals := func(l *lofLive) {
+		for _, p := range sp.prog.AllPackages() {
+			for _, m := range p.Members {
+				if g, ok := m.(*ssa.Global); ok {
+					l.add(g.Type())
+				}
+			}
+		}
+	}
+	live := newLofLive()
+	globals(live)
+	for fn := range sl0 {
+		live.addFunc(fn)
+	}
+	e.Live0 = live.ids(in)
+	for fn := range slT {
+		live.addFunc(fn)
+	}
+	e.LiveT = live.ids(in)
+	for path, cl := range closures {
+		l := newLofLive()
+		for tn := range cl.types {
+			l.add(tn.Type())
+		}
+		for fn := range cl.funcs {
+			l.add(fn.Type())
+		}
+		for _, id := range l.ids(in) {
+			if _, ok := slices.BinarySearch(e.Live0, id); !ok {
+				e.files[path].Live = append(e.files[path].Live, id)
+			}
+		}
+	}
+
 	addr := map[*ssa.Function]bool{}
 	for fn := range slT {
 		for _, b := range fn.Blocks {
@@ -523,13 +569,15 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		id := int32(len(e.Nodes))
 		ids[fn] = id
 		pkg, name := lofSymbol(fn)
-		n := lofNode{Pkg: in.id(pkg), Name: in.id(name), Sym: in.id(symKey(pkg, name)), M1: -1, M2: -1, Addr: addr[fn], F0: sl0[fn], FT: slT[fn],
+		n := lofNode{Pkg: in.id(pkg), Name: in.id(name), Sym: in.id(symKey(pkg, name)), M1: -1, M2: -1, Recv: -1, Addr: addr[fn], F0: sl0[fn], FT: slT[fn],
 			Synth: fn.Object() == nil && fn.Parent() == nil && fn.Name() == "init"}
 		if fn.Signature.Recv() != nil {
 			n.M1 = in.id(fn.Name())
+			n.Recv = lofRecvUnknown
 		}
-		if _, m, ok := strings.Cut(name, "."); ok {
+		if t, m, ok := strings.Cut(name, "."); ok {
 			n.M2 = in.id(m)
+			n.Recv = in.id(symKey(pkg, t))
 		}
 		e.Nodes = append(e.Nodes, n)
 		return id
@@ -572,7 +620,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		for _, name := range scope.Names() {
 			switch o := scope.Lookup(name).(type) {
 			case *types.Func:
-				e.Decls = append(e.Decls, [4]int32{in.id(path), in.id(name), in.id(symKey(path, name)), -1})
+				e.Decls = append(e.Decls, [5]int32{in.id(path), in.id(name), in.id(symKey(path, name)), -1, -1})
 			case *types.TypeName:
 				named, ok := o.Type().(*types.Named)
 				if !ok || o.IsAlias() {
@@ -581,7 +629,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 				for i := 0; i < named.NumMethods(); i++ {
 					m := named.Method(i).Name()
 					sym := name + "." + m
-					e.Decls = append(e.Decls, [4]int32{in.id(path), in.id(sym), in.id(symKey(path, sym)), in.id(m)})
+					e.Decls = append(e.Decls, [5]int32{in.id(path), in.id(sym), in.id(symKey(path, sym)), in.id(m), in.id(symKey(path, name))})
 				}
 			}
 		}
@@ -678,6 +726,123 @@ func lofGraph(initial *callgraph.Graph, roots []*ssa.Function) (*callgraph.Graph
 	return vta.CallGraph(fs, v1), fs, cs
 }
 
+// lofRecvUnknown is lofNode.Recv for a method whose receiver no named type declares: its type is
+// taken to exist at run time.
+const lofRecvUnknown = -2
+
+// lofLive collects the named types a value of which can exist at run time once values of the types
+// it is given can: those types, and every type a value of one holds or reflection can name from it,
+// through elements, keys, fields, type arguments, constraints and the parameters and results of
+// its methods and of its own signature. Reflection makes a value of any type it can name
+// (reflect.New, reflect.Zero), and any method it can name it can call with the values it made.
+type lofLive struct {
+	seen  map[types.Type]bool
+	named map[*types.TypeName]bool
+}
+
+func newLofLive() *lofLive {
+	return &lofLive{seen: map[types.Type]bool{}, named: map[*types.TypeName]bool{}}
+}
+
+func (l *lofLive) add(t types.Type) {
+	if t == nil || l.seen[t] {
+		return
+	}
+	l.seen[t] = true
+	switch t := t.(type) {
+	case *types.Alias:
+		l.add(types.Unalias(t))
+	case *types.Pointer:
+		l.add(t.Elem())
+	case *types.Slice:
+		l.add(t.Elem())
+	case *types.Array:
+		l.add(t.Elem())
+	case *types.Chan:
+		l.add(t.Elem())
+	case *types.Map:
+		l.add(t.Key())
+		l.add(t.Elem())
+	case *types.Struct:
+		for i := range t.NumFields() {
+			l.add(t.Field(i).Type())
+		}
+	case *types.Tuple:
+		for i := range t.Len() {
+			l.add(t.At(i).Type())
+		}
+	case *types.Signature:
+		l.add(t.Params())
+		l.add(t.Results())
+	case *types.Interface:
+		for i := range t.NumMethods() {
+			l.add(t.Method(i).Type())
+		}
+	case *types.TypeParam:
+		l.add(t.Constraint())
+	case *types.Named:
+		l.named[t.Origin().Obj()] = true
+		for i := range t.TypeArgs().Len() {
+			l.add(t.TypeArgs().At(i))
+		}
+		for i := range t.NumMethods() {
+			l.add(t.Method(i).Type())
+		}
+		l.add(t.Underlying())
+	}
+}
+
+// addFunc adds the types of every value fn computes, and of its signature, type arguments,
+// parameters and free variables.
+func (l *lofLive) addFunc(fn *ssa.Function) {
+	l.add(fn.Signature)
+	for _, t := range fn.TypeArgs() {
+		l.add(t)
+	}
+	for _, p := range fn.Params {
+		l.add(p.Type())
+	}
+	for _, v := range fn.FreeVars {
+		l.add(v.Type())
+	}
+	var buf [10]*ssa.Value
+	for _, b := range fn.Blocks {
+		for _, ins := range b.Instrs {
+			if v, ok := ins.(ssa.Value); ok {
+				l.add(v.Type())
+			}
+			for _, op := range ins.Operands(buf[:0]) {
+				if op == nil || *op == nil {
+					continue
+				}
+				l.add((*op).Type())
+				if f, ok := (*op).(*ssa.Function); ok {
+					for _, t := range f.TypeArgs() {
+						l.add(t)
+					}
+				}
+			}
+		}
+	}
+}
+
+// ids returns the string ids of symKey(package, type name), sorted, of the named types collected
+// that have methods or an interface underlying.
+func (l *lofLive) ids(in *lofInterner) []int32 {
+	var out []int32
+	for tn := range l.named {
+		if tn.Pkg() == nil {
+			continue
+		}
+		if n, ok := tn.Type().(*types.Named); ok && n.NumMethods() == 0 && !types.IsInterface(n) {
+			continue
+		}
+		out = append(out, in.id(symKey(tn.Pkg().Path(), tn.Name())))
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // lofRow evaluates the left-out reach test for one refutation: the refuted module and its symbols
 // that count, S (inS). sLoaded is set when one of S's packages is loaded in the build.
 type lofRow struct {
@@ -691,16 +856,36 @@ type lofRow struct {
 
 // lofReach is what reaches S in one graph: R, as symbols, is every function of S, whether the
 // graph holds it or not, and every function of the graph's slice that calls into one; names, the
-// method names R's functions answer to; addr, whether R holds a function whose address the slice
-// takes.
+// method names R's functions answer to; recvs, the receiver types of R's methods (string ids of
+// symKey(package, type name)), with anyRecv set when one has a receiver no named type declares;
+// addr, whether R holds a function whose address the slice takes.
 type lofReach struct {
-	syms  map[int32]bool
-	names map[int32]bool
-	addr  bool
+	syms    map[int32]bool
+	names   map[int32]bool
+	recvs   map[int32]bool
+	anyRecv bool
+	addr    bool
+}
+
+// liveMethod reports whether R holds a method a value of whose receiver type can exist at run
+// time: in the graph's program (live, sorted) or made by the file's closure (f.Live).
+func (r *lofReach) liveMethod(live []int32, f *lofFacts) bool {
+	if r.anyRecv {
+		return true
+	}
+	for id := range r.recvs {
+		if _, ok := slices.BinarySearch(live, id); ok {
+			return true
+		}
+		if _, ok := slices.BinarySearch(f.Live, id); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReach {
-	r := &lofReach{syms: map[int32]bool{}, names: map[int32]bool{}}
+	r := &lofReach{syms: map[int32]bool{}, names: map[int32]bool{}, recvs: map[int32]bool{}}
 	// inPkg by package string id, computed once per id: most declarations lie outside S's packages.
 	pkgIn := map[int32]bool{}
 	inS := func(pkg, name int32) bool {
@@ -716,6 +901,7 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 			r.syms[d[2]] = true
 			if d[3] >= 0 {
 				r.names[d[3]] = true
+				r.recvs[d[4]] = true
 			}
 		}
 	}
@@ -736,6 +922,12 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 			if m >= 0 {
 				r.names[m] = true
 			}
+		}
+		switch {
+		case n.Recv == lofRecvUnknown:
+			r.anyRecv = true
+		case n.Recv >= 0:
+			r.recvs[n.Recv] = true
 		}
 		r.addr = r.addr || n.Addr
 		if int(id) < len(callers) {
@@ -765,11 +957,13 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 //   - method-name-in-R: it selects a method name some R function answers to;
 //   - dynamic-call-and-R-address-taken: it calls a function value, or reads a loaded variable,
 //     while R holds a function whose address is taken;
-//   - reflect-call: it calls reflect's Call, CallSlice, Method or MethodByName while R holds a
-//     method or an address-taken function;
+//   - reflect-call: it calls reflect's Call, CallSlice, Method or MethodByName while R holds an
+//     address-taken function, or a method a value of whose receiver type can exist at run time
+//     (lofReach.liveMethod);
 //   - reaches-S-in-source: it walks the source of a function in S;
 //   - routed: it passes a value to a loaded function with a func- or interface-typed parameter
-//     while R holds a method or an address-taken function.
+//     while R holds an address-taken function, or a method a value of whose receiver type can
+//     exist at run time.
 //
 // A file none of whose loaded roots is new to G0 (not Novel) is tested against G0's R, otherwise
 // against G_T's. A non-novel file's roots already lie in both of G0's slices, so G0 already holds
@@ -801,11 +995,12 @@ func (row *lofRow) counts(path string) bool {
 		return true
 	}
 	var r *lofReach
+	live := e.Live0
 	if f.Novel {
 		if row.rT == nil {
 			row.rT = row.reach(e.InT, func(n lofNode) bool { return n.FT })
 		}
-		r = row.rT
+		r, live = row.rT, e.LiveT
 	} else {
 		if row.r0 == nil {
 			row.r0 = row.reach(e.In0, func(n lofNode) bool { return n.F0 })
@@ -820,7 +1015,7 @@ func (row *lofRow) counts(path string) bool {
 		return true
 	case (f.Dyn || f.Vars) && r.addr:
 		return true
-	case (f.Reflect || f.Sink) && (r.addr || len(r.names) > 0):
+	case (f.Reflect || f.Sink) && (r.addr || r.liveMethod(live, f)):
 		return true
 	}
 	return slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) })

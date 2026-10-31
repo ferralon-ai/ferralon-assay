@@ -115,6 +115,19 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 	libOnly := "\t\"example.com/m/lib\""
 	bad := map[string][]string{"example.com/v/vuln": {"Bad", "T.Bad", "P.Bad", "Variadic"}}
 	badFunc := map[string][]string{"example.com/v/vuln": {"Bad"}}
+	// d declares D, whose method is the only symbol (dBad); nothing in the base makes a D.
+	d := map[string]string{"_v/vuln/d.go": "package vuln\n\ntype D struct{}\n\nfunc (D) Bad() {}\n"}
+	dBad := map[string][]string{"example.com/v/vuln": {"D.Bad"}}
+	// sinkMain makes the build convert a value of the type v names to an interface.
+	sinkMain := func(imports, v string) map[string]string {
+		return map[string]string{"main.go": "package main\n\nimport (\n" + imports + "\n)\n\nvar sink any\n\nfunc main() { vuln.Safe(); sink = " + v + " }\n"}
+	}
+	vulnLib := vulnOnly + "\n" + libOnly
+	// refl loads reflect, as any real build does; walking an unloaded reflect reaches runtime's
+	// linknames into main and test packages, which fail closed before the reflection arm counts.
+	refl := map[string]string{"lib/refl.go": "package lib\n\nimport \"reflect\"\n\nfunc Reflected(x any) reflect.Value { return reflect.ValueOf(x) }\n"}
+	reflectSafe := merge(x("\t\"reflect\"\n"+libOnly, "func init() { reflect.ValueOf(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), refl)
+	hold := map[string]string{"lib/hold.go": "package lib\n\nimport \"example.com/v/vuln\"\n\ntype Hold struct{ D vuln.D }\n"}
 	cases := []struct {
 		name     string
 		files    map[string]string
@@ -202,10 +215,30 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out cgo file's exported function calls the symbol", x("\t\"C\"\n\t\"example.com/v/vuln\"", "//export Exported\nfunc Exported() { vuln.Bad() }\n"), nil, true, "", false},
 		{"a left-out cgo file calls C and another function", x("\t\"C\"\n\t\"example.com/v/vuln\"", "func init() { C.puts(nil); vuln.Safe() }\n"), nil, false, "", false},
 		// reflection
-		{"a left-out init calls MethodByName", x("\t\"reflect\"\n\t\"example.com/m/lib\"", "func init() { reflect.ValueOf(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), nil, true, "", false},
-		{"a left-out init calls MethodByName on a value loaded code made, never importing reflect", merge(x(libOnly, "func init() { lib.Reflected(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), map[string]string{
-			"lib/refl.go": "package lib\n\nimport \"reflect\"\n\nfunc Reflected(x any) reflect.Value { return reflect.ValueOf(x) }\n",
-		}), nil, true, "", false},
+		{"a left-out init calls MethodByName", reflectSafe, nil, true, "", false},
+		{"a left-out init calls MethodByName on a value loaded code made, never importing reflect", merge(x(libOnly, "func init() { lib.Reflected(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), refl), nil, true, "", false},
+		// reflection and routed values reach a method only through a value of its receiver type
+		{"a left-out init calls MethodByName while no value of the method's receiver type can exist", merge(reflectSafe, d), dBad, false, "", false},
+		{"a left-out init calls MethodByName while the build converts a value of the method's receiver type to an interface", merge(reflectSafe, d, sinkMain(vulnOnly, "vuln.D{}")), dBad, true, "", false},
+		{"a left-out init calls MethodByName while the build makes a value of a type with a field of the receiver type", merge(reflectSafe, d, hold, sinkMain(vulnLib, "lib.Hold{}")), dBad, true, "", false},
+		{"a left-out init calls MethodByName while the build makes a value of a type with a method returning the receiver type", merge(reflectSafe, d, sinkMain(vulnLib, "lib.Getter{}"), map[string]string{
+			"lib/get.go": "package lib\n\nimport \"example.com/v/vuln\"\n\ntype Getter struct{}\n\nfunc (Getter) Get() *vuln.D { return nil }\n",
+		}), dBad, true, "", false},
+		{"a left-out init calls MethodByName while a loaded package variable holds the receiver type", merge(reflectSafe, d, map[string]string{
+			"lib/spare.go": "package lib\n\nimport \"example.com/v/vuln\"\n\nvar Spare vuln.D\n",
+		}), dBad, true, "", false},
+		{"a left-out init calls MethodByName while the build instantiates a loaded generic function with the receiver type", merge(reflectSafe, d, sinkMain(vulnLib, "lib.Zero[vuln.D]()"), map[string]string{
+			"lib/zero.go": "package lib\n\nfunc Zero[T any]() any { var t T; return t }\n",
+		}), dBad, true, "", false},
+		{"a left-out init reflects on a loaded type it names with a field of the receiver type", merge(x("\t\"reflect\"\n"+libOnly, "func init() { reflect.ValueOf(lib.Hold{}).Field(0).MethodByName(\"Bad\").Call(nil) }\n"), d, hold, refl), dBad, true, "", false},
+		{"a left-out init reflects on what a loaded function it calls makes of the receiver type", merge(x("\t\"reflect\"\n"+libOnly, "func init() { reflect.ValueOf(lib.MakeD()).MethodByName(\"Bad\").Call(nil) }\n"), d, refl, map[string]string{
+			"lib/maked.go": "package lib\n\nimport \"example.com/v/vuln\"\n\nfunc MakeD() any { return vuln.D{} }\n",
+		}), dBad, true, "", false},
+		{"a left-out init already in the build's graph calls MethodByName while no value of the receiver type can exist", merge(x("\t\"reflect\"", "func init() { reflect.ValueOf(0).MethodByName(\"Bad\").Call(nil) }\n"), d, map[string]string{
+			"main.go": "package main\n\nimport (\n\t\"reflect\"\n\n" + vulnOnly + "\n)\n\nfunc main() { vuln.Safe(); reflect.ValueOf(0).MethodByName(\"Bad\").Call(nil) }\n",
+		}), dBad, false, "", false},
+		{"a left-out init passes a func to a loaded func-typed parameter while no value of the receiver type can exist", merge(x(libOnly, "func init() { lib.Apply(func() {}) }\n"), d), dBad, false, "", false},
+		{"a left-out init passes a func to a loaded func-typed parameter while the build converts a value of the receiver type to an interface", merge(x(libOnly, "func init() { lib.Apply(func() {}) }\n"), d, sinkMain(vulnOnly, "vuln.D{}")), dBad, true, "", false},
 		// a value routed into loaded code that calls through it, other than as an argument
 		{"a left-out init stores the symbol's type in a loaded struct's field that loaded code calls", merge(x(vulnOnly+"\n"+libOnly, "func init() { lib.Box{X: vuln.NewT()}.Run() }\n"), newT, map[string]string{
 			"lib/box.go": "package lib\n\ntype Box struct{ X interface{ Bad() } }\n\nfunc (b Box) Run() { b.X.Bad() }\n",
@@ -616,10 +649,12 @@ func TestLeftOutEngine_LoadedValues(t *testing.T) {
 func TestLofEngineEncoding(t *testing.T) {
 	e := &lofEngine{
 		Strs:    []string{"", "p", "p\x00F", "M", "héllo"},
-		Nodes:   []lofNode{{Pkg: 1, Name: 2, Sym: 2, M1: -1, M2: -1, F0: true}, {Pkg: 1, Name: 3, Sym: 4, M1: 3, M2: -1, Addr: true, FT: true, Synth: true}},
+		Nodes:   []lofNode{{Pkg: 1, Name: 2, Sym: 2, M1: -1, M2: -1, Recv: -1, F0: true}, {Pkg: 1, Name: 3, Sym: 4, M1: 3, M2: -1, Recv: lofRecvUnknown, Addr: true, FT: true, Synth: true}},
 		In0:     [][]int32{{1}, nil},
 		InT:     [][]int32{{1, 0}},
-		Decls:   [][4]int32{{1, 2, 2, -1}, {1, 4, 4, 3}},
+		Decls:   [][5]int32{{1, 2, 2, -1, -1}, {1, 4, 4, 3, 2}},
+		Live0:   []int32{2},
+		LiveT:   []int32{2, 4},
 		FailStd: lofUnknownToolchain,
 		Facts:   map[string][]byte{"x.go": {1, 2, 3}},
 	}
@@ -632,6 +667,7 @@ func TestLofEngineEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Equal(got.Strs, e.Strs) || !slices.Equal(got.Nodes, e.Nodes) || !slices.Equal(got.Decls, e.Decls) ||
+		!slices.Equal(got.Live0, e.Live0) || !slices.Equal(got.LiveT, e.LiveT) ||
 		got.Fail != e.Fail || got.FailStd != e.FailStd || !slices.Equal(got.Facts["x.go"], e.Facts["x.go"]) || len(got.Facts) != 1 {
 		t.Fatalf("decoded %+v, want %+v", got, e)
 	}

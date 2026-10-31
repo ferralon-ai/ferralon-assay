@@ -66,7 +66,8 @@ func lofRun(t *testing.T, dir, module string, symbols map[string][]string, unkno
 		t.Fatal(err)
 	}
 	facts := map[string]*lofFacts{}
-	for path, f := range e.Files {
+	for path := range e.Facts {
+		f, _ := e.file(path)
 		real, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			real = path

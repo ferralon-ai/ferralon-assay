@@ -42,7 +42,44 @@ type lofEngine struct {
 	// (lofUnknownToolchain, lofGorootMismatch): every left-out file counts for a standard-library
 	// refutation.
 	FailStd string
-	Files   map[string]*lofFacts
+	// Facts holds each left-out file's lofFacts, gob-encoded on its own: a scan's check reads a few
+	// files' facts, so it decodes only those (file).
+	Facts map[string][]byte
+	files map[string]*lofFacts
+}
+
+// seal encodes every file's facts into Facts.
+func (e *lofEngine) seal() error {
+	e.Facts = make(map[string][]byte, len(e.files))
+	for path, f := range e.files {
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(f); err != nil {
+			return err
+		}
+		e.Facts[path] = buf.Bytes()
+	}
+	return nil
+}
+
+// file returns the facts of the left-out file at path, decoding them on first use; ok is false
+// when the engine holds no such file or its facts cannot be decoded.
+func (e *lofEngine) file(path string) (f *lofFacts, ok bool) {
+	if f, ok := e.files[path]; ok {
+		return f, true
+	}
+	b, ok := e.Facts[path]
+	if !ok {
+		return nil, false
+	}
+	f = &lofFacts{}
+	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(f); err != nil {
+		return nil, false
+	}
+	if e.files == nil {
+		e.files = map[string]*lofFacts{}
+	}
+	e.files[path] = f
+	return f, true
 }
 
 // lofNode is one function of the program: its symbol as the vulnerability database names it
@@ -141,6 +178,9 @@ func loadLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRel
 		if err != nil {
 			return nil, err
 		}
+		if err := e.seal(); err != nil {
+			return nil, err
+		}
 		var buf bytes.Buffer
 		if err := gob.NewEncoder(&buf).Encode(e); err != nil {
 			return nil, err
@@ -203,7 +243,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	w := newLofWorld(ctx, pkgs, buildDir, env, excluded, goroot, time.Now().Add(lofBudgetTime))
 	w.modcache = lofModCache(ctx, buildDir, env)
 	in := &lofInterner{ids: map[string]int32{}}
-	e := &lofEngine{FailStd: failStd, Files: map[string]*lofFacts{}}
+	e := &lofEngine{FailStd: failStd, files: map[string]*lofFacts{}}
 
 	cands := lofCandidates(pkgs)
 	closures := map[string]*lofClosure{}
@@ -243,7 +283,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		for _, tn := range cl.newMeth {
 			f.NewMeth = append(f.NewMeth, methodKeys(in, tn)...)
 		}
-		e.Files[c.path] = f
+		e.files[c.path] = f
 	}
 
 	sp, err := buildSSAWith(&LoadResult{Packages: pkgs}, ssautil.AllPackages)
@@ -288,7 +328,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		for fn := range roots {
 			extra[fn] = true
 			if !sl0[fn] || !cs0[fn] {
-				e.Files[path].Novel = true
+				e.files[path].Novel = true
 			}
 		}
 	}
@@ -490,8 +530,18 @@ type lofReach struct {
 
 func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReach {
 	r := &lofReach{syms: map[int32]bool{}, names: map[int32]bool{}}
+	// inPkg by package string id, computed once per id: most declarations lie outside S's packages.
+	pkgIn := map[int32]bool{}
+	inS := func(pkg, name int32) bool {
+		in, ok := pkgIn[pkg]
+		if !ok {
+			in = row.inPkg(row.e.Strs[pkg])
+			pkgIn[pkg] = in
+		}
+		return in && row.inS(row.e.Strs[pkg], row.e.Strs[name])
+	}
 	for _, d := range row.e.Decls {
-		if row.inS(row.e.Strs[d[0]], row.e.Strs[d[1]]) {
+		if inS(d[0], d[1]) {
 			r.syms[d[2]] = true
 			if d[3] >= 0 {
 				r.names[d[3]] = true
@@ -501,7 +551,7 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 	seen := make([]bool, len(row.e.Nodes))
 	var queue []int32
 	for i, n := range row.e.Nodes {
-		if inSlice(n) && !n.Synth && row.inS(row.e.Strs[n.Pkg], row.e.Strs[n.Name]) {
+		if inSlice(n) && !n.Synth && inS(n.Pkg, n.Name) {
 			seen[i] = true
 			queue = append(queue, int32(i))
 		}
@@ -563,7 +613,7 @@ func (row *lofRow) counts(path string) bool {
 	if e.Fail != "" {
 		return true
 	}
-	f, ok := e.Files[path]
+	f, ok := e.file(path)
 	if !ok {
 		return true
 	}

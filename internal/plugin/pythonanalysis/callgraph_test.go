@@ -819,6 +819,7 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 		{"pkgutil resolve_name literal continued with CRLF", "import pkgutil\r\nf = pkgutil.resolve_name \\\r\n    ('acme.plugins:load')\r\n", []string{"acme.plugins"}, false},
 		{"pkgutil resolve_name non-literal continued", "import pkgutil\n\ndef f(spec):\n    return pkgutil.resolve_name \\\n        (spec)\n", nil, true},
 		{"entry points continued", "from importlib.metadata import entry_points\n\neps = entry_points \\\n    (group='acme.plugins')\n", nil, true},
+		{"resolve_name before a parenthesised line", "import pkgutil\npkgutil.resolve_name\n('acme.plugins:load')\n", nil, false},
 		{"comment and string only", "# importlib.import_module(name)\ns = 'import_module(name)'\n", nil, false},
 		{"def named import_module", "def import_module(name):\n    return name\n", nil, false},
 	}

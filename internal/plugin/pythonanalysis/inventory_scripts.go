@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -155,9 +157,52 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 			}
 			readFile[f] = true
 			if data, err := readRegular(f); err == nil {
-				add(relScope(req.BuildDir, f), resolveRequirements(data, req.TargetEnv, req.Selection))
+				add(relScope(req.BuildDir, f), requirementFileReqs(f, data, req))
 			}
 		}
 	}
 	return nodes
+}
+
+// requirementFileReqs reads a -r file the way uv reads it by name: a pylock.toml (PEP 751) as
+// a lock, another TOML, setup.cfg or setup.py as project metadata this does not read (it names
+// nothing), and any other file as requirements lines.
+func requirementFileReqs(path string, data []byte, req plugin.ResolveInventoryRequest) []pyReq {
+	lower := strings.ToLower(filepath.Base(path))
+	switch ext := filepath.Ext(lower); {
+	case lower == "pylock.toml" || strings.HasPrefix(lower, "pylock.") && ext == ".toml":
+		return parsePyLockTOML(data, req.TargetEnv, req.Selection)
+	case ext == ".toml", ext == ".cfg", ext == ".py":
+		return nil
+	}
+	return resolveRequirements(data, req.TargetEnv, req.Selection)
+}
+
+type pyLockTOML struct {
+	Packages []struct {
+		Name    string `toml:"name"`
+		Version string `toml:"version"`
+		Marker  string `toml:"marker"`
+	} `toml:"packages"`
+}
+
+// parsePyLockTOML returns each package a PEP 751 lock records, its marker evaluated against
+// the declared environment. A lock that does not decode names nothing.
+func parsePyLockTOML(data []byte, env map[string]string, selection []string) []pyReq {
+	var lock pyLockTOML
+	if err := toml.Unmarshal(data, &lock); err != nil {
+		return nil
+	}
+	var out []pyReq
+	for _, p := range lock.Packages {
+		name := normalizePyCoordinate(p.Name)
+		if name == "" {
+			continue
+		}
+		v := strings.TrimSpace(p.Version)
+		r := pyReq{Name: name, Version: v, Resolved: v != "", Source: "pylock.toml", Kind: reqNormal, Marker: strings.TrimSpace(p.Marker)}
+		applyMarker(&r, env, selection)
+		out = append(out, r)
+	}
+	return out
 }

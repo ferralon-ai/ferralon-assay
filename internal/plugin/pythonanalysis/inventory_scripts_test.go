@@ -61,6 +61,12 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 			".github/workflows/ci.yml": "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: pip install -r dev.in\n",
 			"dev.in":                   "pyjwt==1.5.0\n", ".github/workflows/dev.in": "decoy==9.9\n"},
 			[]string{"dev.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
+		{"a -r pylock.toml is read as a lock", map[string]string{"install.sh": "uv pip install -r deps/pylock.toml\n",
+			"deps/pylock.toml": "lock-version = \"1.0\"\ncreated-by = \"uv\"\n[[packages]]\nname = \"PyJWT\"\nversion = \"1.5.0\"\n" +
+				"[[packages]]\nname = \"pywin32\"\nversion = \"306\"\nmarker = \"sys_platform == 'win32'\"\n"},
+			[]string{"deps/pylock.toml#pyjwt pkg:pypi/pyjwt@1.5.0", "deps/pylock.toml#pywin32 pkg:pypi/pywin32@306"}}, // an unbound marker keeps it
+		{"a -r of project metadata names nothing", map[string]string{"install.sh": "uv pip install -r deps/setup.cfg -r deps/other.toml\n",
+			"deps/setup.cfg": "[metadata]\nname = x\n", "deps/other.toml": "[tool]\nx = 1\n"}, nil},
 		{"a -r file outside the tree", map[string]string{"Dockerfile": "FROM python:3.12\nRUN pip install -r /app/extra.in\n"}, nil},
 		{"a -r file two surfaces install is read once", map[string]string{"a.sh": "pip install -r deps/extra.in\n", "b.sh": "pip install -r deps/extra.in -r deps/extra.in\n",
 			"deps/extra.in": "pyjwt==1.5.0\n"},

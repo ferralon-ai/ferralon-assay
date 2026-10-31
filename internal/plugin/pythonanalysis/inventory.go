@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -63,7 +65,9 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 	for _, m := range manifests {
 		walked[filepath.Clean(m)] = true
 	}
-	projectDirs := map[string]bool{} // project directory -> its build definitions are all read in full
+	projectDirs := map[string]bool{}            // project directory -> its build definitions are all read in full
+	declared := map[string][]string{}           // project directory -> the [tool.poetry] runtime dependencies it declares
+	inventoried := map[string]map[string]bool{} // project directory -> the packages its manifests put in the inventory
 	emit := func(path string, rf reqFile) {
 		// The node ID is scoped to the declaring file's path within the build dir, so a
 		// package that appears in two manifests (or two requirements*.txt) yields two distinct
@@ -108,34 +112,67 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 			parseFailed = true
 			continue
 		}
+		dir := filepath.Dir(filepath.Clean(m))
 		switch filepath.Base(m) {
 		case "pyproject.toml", "setup.py", "setup.cfg", "hatch_build.py":
 			// A project directory is inventoried only when every build definition in it
 			// declares its dependencies as literals. The advisory reader is the strict one: a
 			// computed setup.py install_requires reads as no dependencies here, but fails there.
-			dir := filepath.Dir(filepath.Clean(m))
 			_, _, complete := parseManifest(m)
 			if prev, seen := projectDirs[dir]; !seen || prev {
 				projectDirs[dir] = complete
+			}
+			if filepath.Base(m) == "pyproject.toml" {
+				declared[dir] = append(declared[dir], poetryRuntimeDeps(m)...)
+			}
+		}
+		if !strings.HasSuffix(m, ".txt") {
+			if inventoried[dir] == nil {
+				inventoried[dir] = map[string]bool{}
+			}
+			for _, r := range rf.reqs {
+				inventoried[dir][normalizePyCoordinate(r.Name)] = true
 			}
 		}
 		emit(m, rf)
 	}
 
+	// A project directory also counts as read in full only when the inventory carries every
+	// runtime dependency it declares under [tool.poetry]: the strict reader accepts that
+	// table, but with no lock beside it nothing here puts it in the inventory.
+	for dir, names := range declared {
+		for _, n := range names {
+			if !inventoried[dir][n] {
+				projectDirs[dir] = false
+				break
+			}
+		}
+	}
+
 	// A "-r" include that the walk did not already inventory is read in place, as pip would
 	// read it; one that cannot be read leaves the graph incomplete.
+	buildReal, err := filepath.EvalSymlinks(req.BuildDir)
+	if err != nil {
+		buildReal = req.BuildDir
+	}
+	walkedReal := make(map[string]bool, len(walked))
+	for m := range walked {
+		if r, err := filepath.EvalSymlinks(m); err == nil {
+			walkedReal[r] = true
+		}
+	}
 	followed := map[string]bool{}
 	for len(includes) > 0 {
 		inc := includes[0]
 		includes = includes[1:]
-		path, read := includePath(req.BuildDir, inc, walked, followed)
+		path, key, read := includePath(buildReal, inc, walkedReal, followed)
 		if path == "" {
 			if !read {
 				unpinned = true
 			}
 			continue
 		}
-		followed[path] = true
+		followed[key] = true
 		data, err := readRegular(path)
 		if err != nil {
 			unpinned = true
@@ -223,6 +260,36 @@ func manifestToPyReqs(path string, env map[string]string, selection []string) (r
 	return reqFile{reqs: reqs}, true
 }
 
+// poetryRuntimeDeps names the dependencies a pyproject declares only under
+// [tool.poetry.dependencies], which the poetry backend installs when [project].dependencies
+// is absent. "python" is the interpreter constraint, not a package.
+func poetryRuntimeDeps(path string) []string {
+	data, err := readRegular(path)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Project struct {
+			Dependencies []string `toml:"dependencies"`
+		} `toml:"project"`
+		Tool struct {
+			Poetry struct {
+				Dependencies map[string]any `toml:"dependencies"`
+			} `toml:"poetry"`
+		} `toml:"tool"`
+	}
+	if toml.Unmarshal(data, &doc) != nil || len(doc.Project.Dependencies) > 0 {
+		return nil
+	}
+	var names []string
+	for n := range doc.Tool.Poetry.Dependencies {
+		if n = normalizePyCoordinate(n); n != "python" {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
 // liftManifest adapts an advisory-path parser's result for manifestToPyReqs.
 func liftManifest(deps []plugin.ResolvedDependency, ok bool) func(source string) (reqFile, bool) {
 	return func(source string) (reqFile, bool) { return reqFile{reqs: liftAdvisory(deps, source)}, ok }
@@ -232,31 +299,32 @@ func liftManifest(deps []plugin.ResolvedDependency, ok bool) func(source string)
 // declared it.
 type reqLink struct{ from, target string }
 
-// includePath resolves a "-r" include. pip reads the target relative to the including file;
-// it is already read when that file, or the same path from the build root, is a manifest the
-// walk inventoried (or one already followed). It returns the path still to read, or "" with
-// read reporting whether the include is covered. A URL, or a target outside the build dir, is
-// not read.
-func includePath(buildDir string, inc reqLink, walked, followed map[string]bool) (path string, read bool) {
+// includePath resolves a "-r" include the way pip does: relative to the including file. It is
+// already read when it is a manifest the walk inventoried or an include already followed, both
+// keyed by real path (walkedReal, followed), so a symlinked directory cannot re-include a file
+// it reaches. It returns the path still to read and its real-path key, or "" with read
+// reporting whether the include is covered. A URL, a missing target, or one outside the build
+// dir is not read.
+func includePath(buildReal string, inc reqLink, walkedReal, followed map[string]bool) (path, key string, read bool) {
 	t := inc.target
 	if strings.Contains(t, "://") {
-		return "", false
+		return "", "", false
 	}
-	pipPath := filepath.Clean(t)
-	candidates := []string{pipPath}
+	path = filepath.Clean(t)
 	if !filepath.IsAbs(t) {
-		pipPath = filepath.Join(filepath.Dir(inc.from), t)
-		candidates = []string{pipPath, filepath.Join(buildDir, t)}
+		path = filepath.Join(filepath.Dir(inc.from), t)
 	}
-	for _, c := range candidates {
-		if walked[c] || followed[c] {
-			return "", true
-		}
+	key, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", "", false
 	}
-	if !within(buildDir, pipPath) {
-		return "", false
+	if walkedReal[key] || followed[key] {
+		return "", "", true
 	}
-	return pipPath, false
+	if !within(buildReal, key) {
+		return "", "", false
+	}
+	return path, key, false
 }
 
 // localInventoried reports whether a local directory install (".", "-e ./pkg") is a project

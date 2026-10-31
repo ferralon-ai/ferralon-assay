@@ -128,13 +128,14 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 		// requirement — is recorded, never silently omitted. A pure option line (e.g.
 		// --index-url) carries no dependency and is skipped.
 		if strings.HasPrefix(line, "-") {
-			kind, ok := optionKind(line)
-			if !ok {
-				continue
-			}
 			spec, marker := splitMarker(line)
-			target := optionTarget(spec)
-			if target == "" || !markerMaySelect(marker, env, selection) {
+			kind := reqInclude
+			target, ok := includeTarget(spec)
+			if !ok {
+				kind = reqEditable
+				target, ok = editableTarget(spec)
+			}
+			if !ok || target == "" || !markerMaySelect(marker, env, selection) {
 				continue
 			}
 			switch {
@@ -146,7 +147,7 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 			continue
 		}
 		line = requirementArgs(line)
-		if _, ok := urlKind(line); ok || isPathSpec(line) || directRefName(line) != "" {
+		if _, ok := urlKind(line); ok || isPathSpec(line) || isFileLink(line) || directRefName(line) != "" {
 			if spec, marker := splitMarker(line); markerMaySelect(marker, env, selection) {
 				f.addSource(line, spec, reqNormal, hashes, env, selection)
 			}
@@ -260,12 +261,9 @@ func markerMaySelect(marker string, env map[string]string, selection []string) b
 	return mr.unresolved || mr.selected
 }
 
-// optionTarget is the value after an option flag ("-r base.txt", "--editable=./pkg").
-func optionTarget(spec string) string {
-	if i := strings.IndexAny(spec, " \t="); i >= 0 {
-		return strings.TrimSpace(spec[i+1:])
-	}
-	return ""
+// editableTarget returns the target of an editable line ("-e .", "-e.", "--editable=./pkg").
+func editableTarget(line string) (string, bool) {
+	return optionValue(line, "--editable", "-e")
 }
 
 func isConstraintFlag(spec string) bool {
@@ -277,6 +275,12 @@ func isConstraintFlag(spec string) bool {
 func isPathSpec(spec string) bool {
 	spec, _ = splitMarker(spec)
 	return strings.ContainsAny(spec, `/\`) || strings.HasPrefix(spec, ".") || hasArchiveExt(spec)
+}
+
+// isFileLink reports a "file:" link without "//" ("file:.", "file:pkg"), which pip installs
+// as a local path.
+func isFileLink(spec string) bool {
+	return len(spec) >= len("file:") && strings.EqualFold(spec[:len("file:")], "file:")
 }
 
 // pipArchiveExts are the archive suffixes pip treats as a file to install.
@@ -324,18 +328,24 @@ func directRefName(spec string) string {
 
 // eggName is the project a VCS or URL requirement's "#egg=<name>" fragment names, or "".
 func eggName(spec string) string {
-	i := strings.Index(spec, "#egg=")
-	if i < 0 {
+	_, frag, ok := strings.Cut(spec, "#")
+	if !ok {
 		return ""
 	}
-	egg := spec[i+len("#egg="):]
-	if j := strings.IndexAny(egg, "&; \t"); j >= 0 {
-		egg = egg[:j]
+	for _, kv := range strings.Split(frag, "&") {
+		egg, ok := strings.CutPrefix(kv, "egg=")
+		if !ok {
+			continue
+		}
+		if j := strings.IndexAny(egg, "; \t"); j >= 0 {
+			egg = egg[:j]
+		}
+		if !validProjectName(egg) {
+			return ""
+		}
+		return normalizePyCoordinate(egg)
 	}
-	if !validProjectName(egg) {
-		return ""
-	}
-	return normalizePyCoordinate(egg)
+	return ""
 }
 
 // wheelName is the project a wheel filename names (PEP 427: the field before the first "-"),
@@ -420,18 +430,14 @@ func stripReqCommentSafe(line string) string {
 }
 
 // optionKind classifies a leading-"-" line. It returns (kind, true) for the dependency-
-// bearing option lines the old parser dropped — "-e"/"--editable" editables and
-// "-r"/"--requirement"/"-c"/"--constraint" includes — and (0, false) for a pure option line
-// (e.g. --index-url) that carries no dependency and should be skipped rather than recorded.
+// bearing option lines — "-e"/"--editable" editables and "-r"/"--requirement"/"-c"/
+// "--constraint" includes, in any of pip's spellings — and (0, false) for a pure option line
+// (e.g. --index-url) that carries no dependency.
 func optionKind(line string) (reqKind, bool) {
-	flag := line
-	if i := strings.IndexAny(line, " \t="); i >= 0 {
-		flag = line[:i]
-	}
-	switch flag {
-	case "-e", "--editable":
+	if _, ok := editableTarget(line); ok {
 		return reqEditable, true
-	case "-r", "--requirement", "-c", "--constraint":
+	}
+	if _, ok := includeTarget(line); ok {
 		return reqInclude, true
 	}
 	return 0, false

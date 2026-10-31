@@ -383,7 +383,13 @@ func archiveNames(file, coord string) bool {
 // includeTarget returns the file an include line names, in any of pip's spellings
 // (-r f, -rf, -r=f, --requirement f, --requirement=f, and the -c/--constraint equivalents).
 func includeTarget(line string) (string, bool) {
-	for _, flag := range []string{"--requirement", "--constraint", "-r", "-c"} {
+	return optionValue(line, "--requirement", "--constraint", "-r", "-c")
+}
+
+// optionValue returns the value of the first of flags (long ones first) that line starts with,
+// in any of pip's spellings: "-x v", "-xv", "-x=v", "--long v", "--long=v".
+func optionValue(line string, flags ...string) (string, bool) {
+	for _, flag := range flags {
 		rest, ok := strings.CutPrefix(line, flag)
 		if !ok {
 			continue

@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
@@ -59,6 +61,10 @@ func TestRequirementsLineShapes(t *testing.T) {
 		{name: "direct ref url", line: "en_core_web_sm[x] @ https://h/en_core_web_sm-3.7.1.tar.gz", wantNode: "en-core-web-sm", wantKind: reqURL},
 		{name: "include", line: "-r base.txt", includes: []string{"base.txt"}},
 		{name: "include long", line: "--requirement=base.txt", includes: []string{"base.txt"}},
+		{name: "include attached", line: "-rbase.txt", includes: []string{"base.txt"}},
+		{name: "editable attached", line: "-e.", locals: []string{"."}},
+		{name: "file link", line: "file:libs/core", locals: []string{"file:libs/core"}},
+		{name: "egg after another fragment param", line: "git+https://github.com/o/r#subdirectory=x&egg=r", wantNode: "r", wantKind: reqVCS},
 		{name: "constraint", line: "-c constraints.txt"},
 		{name: "marker false local", line: `. ; sys_platform == "nope"`},
 		{name: "marker false include", line: `-r base.txt ; sys_platform == "nope"`},
@@ -226,12 +232,59 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
 		},
 		{
-			name: "include walked, named from the build root",
+			// pip reads an include relative to the including file only; a same-named root file
+			// is not the one it reads.
+			name: "include named from the build root is not read",
 			files: map[string]string{
 				"a/b/requirements.txt": "-r a/c/requirements.txt\n",
 				"a/c/requirements.txt": "requests==2.31.0\n",
 			},
-			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name: "nested include read beside its file, not the root's",
+			files: map[string]string{
+				"requirements.txt":     "requests==2.31.0\n-r .ci/dev.in\n",
+				".ci/dev.in":           "-r requirements.txt\n",
+				".ci/requirements.txt": "django==5.0\n",
+			},
+			wantPURLs: []string{"pkg:pypi/django@5.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name: "attached include flag",
+			files: map[string]string{
+				"requirements.txt": "-rinc.txt\n",
+				"inc.txt":          "six==1.16.0\n",
+			},
+			wantPURLs: []string{"pkg:pypi/six@1.16.0"},
+		},
+		{
+			name:         "attached editable flag",
+			files:        map[string]string{"requirements.txt": "-e.\n"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "file link without slashes",
+			files:        map[string]string{"requirements.txt": "file:sub\n"},
+			wantUnpinned: true,
+		},
+		{
+			name: "file link to the read build root",
+			files: map[string]string{
+				"pyproject.toml":   project,
+				"requirements.txt": "file:.\n",
+			},
+			wantPURLs: []string{"pkg:pypi/click@8.1.7"},
+		},
+		{
+			// [tool.poetry] dependencies with no lock put nothing in the inventory.
+			name: "root self-install of an unlocked poetry project",
+			files: map[string]string{
+				"pyproject.toml":   "[tool.poetry]\nname = \"app\"\n[tool.poetry.dependencies]\npython = \"^3.10\"\nrequests = \"^2.31\"\n",
+				"requirements.txt": "-e .\n",
+			},
+			wantUnpinned: true,
 		},
 		{
 			name: "include followed",
@@ -280,5 +333,23 @@ func TestInventoryIndexNames(t *testing.T) {
 				t.Errorf("graph partiality = %+v, want complete", inv.Partiality)
 			}
 		})
+	}
+}
+
+// A symlinked directory that leads back to an include's own directory does not re-include it.
+func TestInventoryIncludeSymlinkLoop(t *testing.T) {
+	dir := writeTree(t, map[string]string{"requirements.txt": "-r loop/requirements.txt\nrequests==2.31.0\n"})
+	if err := os.Symlink(".", filepath.Join(dir, "loop")); err != nil {
+		t.Skip(err)
+	}
+	inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sortedPURLs(inv), []string{"pkg:pypi/requests@2.31.0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("PURLs = %q, want %q", got, want)
+	}
+	if !inv.Partiality.Complete {
+		t.Errorf("graph partiality = %+v, want complete", inv.Partiality)
 	}
 }

@@ -794,8 +794,17 @@ func valueStatement(r []rune, i int) bool {
 	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
 		j--
 	}
-	ok := j < 0 || r[j] == ';' || r[j] == '\n' && (j == 0 || r[j-1] != '\\')
+	ok := j < 0 || r[j] == ';' || r[j] == '\n' && !continued(r, j)
 	return ok && enclosingOpen(r, i) < 0
+}
+
+// continued: the line break at r[j] follows a backslash, directly or through a '\r'.
+func continued(r []rune, j int) bool {
+	k := j - 1
+	if k >= 0 && r[k] == '\r' {
+		k--
+	}
+	return k >= 0 && r[k] == '\\'
 }
 
 // loaderHosts are the modules that hold a stringLoaders entry as an attribute.

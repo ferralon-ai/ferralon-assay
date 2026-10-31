@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -1375,5 +1377,30 @@ func TestResolveVersions_ReadDeclarationsVetoUnpinned(t *testing.T) {
 				mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
 			}
 		})
+	}
+}
+
+// A manifest written in Python reads the same whatever its line endings: a comment ends at a
+// lone "\r" as at "\n", so what follows it is still read.
+func TestParseManifestData_LineEndings(t *testing.T) {
+	cases := []struct {
+		name, file, src string
+		deps            int
+		ok              bool
+	}{
+		{"setup.py splat after a comment", "setup.py", "from setuptools import setup\n# deps\nsetup(install_requires=['flask==3.0.0'], **extra)\n", 1, false},
+		{"hatch_build.py requirement after a comment", "hatch_build.py", "# build hook\nDEPS = ['pyjwt==2.10.0']\n", 1, true},
+		{"setup.py comment inside install_requires", "setup.py", "from setuptools import setup\nsetup(install_requires=[  # runtime\n    'flask==3.0.0',\n])\n", 1, true},
+		{"hatch_build.py requirement continued inside its literal", "hatch_build.py", "DEPS = ['pyjwt\\\n==2.10.0']\n", 1, true},
+	}
+	for _, c := range cases {
+		for _, eol := range []string{"\n", "\r\n", "\r"} {
+			t.Run(c.name+" "+strconv.Quote(eol), func(t *testing.T) {
+				deps, _, ok := parseManifestData(c.file, []byte(strings.ReplaceAll(c.src, "\n", eol)))
+				if len(deps) != c.deps || ok != c.ok {
+					t.Errorf("deps = %v, ok = %v; want %d deps, ok = %v", deps, ok, c.deps, c.ok)
+				}
+			})
+		}
 	}
 }

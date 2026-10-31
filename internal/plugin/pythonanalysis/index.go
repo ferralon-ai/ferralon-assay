@@ -58,12 +58,12 @@ func loadFiles(buildDir string) (files []parseResult, readFailed, skipped bool, 
 		return nil, false, false, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
 	}
 	for _, p := range paths {
-		data, readErr := readRegular(p)
+		src, readErr := readPythonSource(p)
 		if readErr != nil {
 			readFailed = true
 			continue
 		}
-		pr := parseFile(moduleOf(buildDir, p), string(data))
+		pr := parseFile(moduleOf(buildDir, p), src)
 		if pr.skipped {
 			skipped = true
 		}

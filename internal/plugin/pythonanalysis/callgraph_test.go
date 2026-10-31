@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1459,6 +1460,61 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 			res := callGraphOf(prog)
 			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != c.dynReason {
 				t.Errorf("dynamic_import reason = %v, want %v (reasons %v)", got, c.dynReason, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// A file's line endings don't change what the lane reads: "\r\n" and a lone "\r" end a line as
+// "\n" does, as they do for Python's tokenizer.
+func TestCallGraph_LineEndings(t *testing.T) {
+	src := flaskApp + `
+import importlib
+plugin = importlib.import_module('yaml')
+doc = """first
+second"""
+total = 1 + \
+    2
+
+def load(name):
+    return importlib.import_module(name)
+`
+	handleFetch := funcSCIP("app", nil, "handle_fetch", 0)
+	handle := funcSCIP("app", nil, "handle", 1)
+	run := func(t *testing.T, src string) (plugin.CallGraphResult, []string, plugin.SymbolIndexResult) {
+		t.Helper()
+		dir := writeTree(t, map[string]string{"app.py": src})
+		prog, err := loadProgram(dir)
+		if err != nil {
+			t.Fatalf("loadProgram: %v", err)
+		}
+		res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+		if err != nil {
+			t.Fatalf("CallGraph: %v", err)
+		}
+		return res, prog.files[0].loadRoots, indexOf(t, dir)
+	}
+	lf, lfRoots, lfIndex := run(t, src)
+	if !hasEdge(lf.Edges, handleFetch, handle) {
+		t.Fatalf("LF: missing edge %s -> %s", handleFetch, handle)
+	}
+	if !reflect.DeepEqual(lfRoots, []string{"yaml"}) || !hasReason(lf.Partiality, plugin.PartialReasonDynamicImportSpecifier) {
+		t.Fatalf("LF: loadRoots = %v, reasons %v", lfRoots, lf.Partiality.Reasons)
+	}
+	if !hasDisplay(lfIndex, "load()") && !hasDisplay(lfIndex, "load(1)") {
+		t.Fatalf("LF: load not indexed")
+	}
+	for _, eol := range []string{"\r\n", "\r"} {
+		t.Run(strconv.Quote(eol), func(t *testing.T) {
+			res, roots, index := run(t, strings.ReplaceAll(src, "\n", eol))
+			if !reflect.DeepEqual(res, lf) {
+				t.Errorf("call graph differs from LF:\n got %+v\nwant %+v", res, lf)
+			}
+			if !reflect.DeepEqual(roots, lfRoots) {
+				t.Errorf("loadRoots = %v, want %v", roots, lfRoots)
+			}
+			if !reflect.DeepEqual(index, lfIndex) {
+				t.Errorf("index differs from LF:\n got %+v\nwant %+v", index, lfIndex)
 			}
 		})
 	}

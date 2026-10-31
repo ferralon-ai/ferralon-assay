@@ -633,14 +633,14 @@ func loadProgram(buildDir string) (*program, error) {
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
 	for _, p := range paths {
-		data, readErr := readRegular(p)
+		src, readErr := readPythonSource(p)
 		if readErr != nil {
 			prog.readFailed = true
 			prog.sourceUnread = true
 			continue
 		}
 		module := moduleOf(buildDir, p)
-		clean, lits := stripPythonLiterals(string(data))
+		clean, lits := stripPythonLiterals(src)
 		clean, lits, unread := spliceFStrings(clean, lits)
 		lines := logicalLines(clean)
 

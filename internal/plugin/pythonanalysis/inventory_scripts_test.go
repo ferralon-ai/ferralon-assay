@@ -89,6 +89,13 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 				"[[packages]]\nname = \"ruff\"\nversion = \"0.5\"\nmarker = \"'dev' in dependency_groups\"\n" +
 				"[[packages]]\nname = \"mypy\"\nversion = \"1.0\"\nmarker = \"'lint' in dependency_groups\"\n"},
 			[]string{"pylock.toml#mypy pkg:pypi/mypy@1.0"}},
+		{"a pylock.toml two runs install with different extras names both selections", map[string]string{
+			"a.sh": "uv pip install -r pylock.toml\n", "b.sh": "uv pip install -r pylock.toml --extra docs\n",
+			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"core\"\nversion = \"1.0\"\n" +
+				"[[packages]]\nname = \"sphinx\"\nversion = \"7.0\"\nmarker = \"'docs' in extras\"\n"},
+			[]string{"pylock.toml#core pkg:pypi/core@1.0", "pylock.toml#sphinx pkg:pypi/sphinx@7.0"}},
+		{"an extensionless script outside the root runs from where it is invoked: its -r names nothing", map[string]string{
+			"ci/install": "#!/bin/sh\npip install -r extra.in\n", "ci/extra.in": "decoy==9.9\n", "extra.in": "pyjwt==1.5.0\n"}, nil},
 		{"a pylock.toml's extras and groups are sets, not strings", map[string]string{"install.sh": "uv pip install -r pylock.toml --extra docs\n",
 			"pylock.toml": "lock-version = \"1.0\"\ndefault-groups = [\"dev\"]\n" +
 				"[[packages]]\nname = \"sphinx\"\nversion = \"7.0\"\nmarker = \"'doc' in extras\"\n" +
@@ -105,7 +112,7 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 		{"a -r of project metadata names nothing", map[string]string{"install.sh": "uv pip install -r deps/setup.cfg -r deps/other.toml\n",
 			"deps/setup.cfg": "[metadata]\nname = x\n", "deps/other.toml": "[tool]\nx = 1\n"}, nil},
 		{"a -r file outside the tree", map[string]string{"Dockerfile": "FROM python:3.12\nRUN pip install -r /app/extra.in\n"}, nil},
-		{"a -r file two surfaces install is read once", map[string]string{"a.sh": "pip install -r deps/extra.in\n", "b.sh": "pip install -r deps/extra.in -r deps/extra.in\n",
+		{"a -r file two surfaces install is listed once", map[string]string{"a.sh": "pip install -r deps/extra.in\n", "b.sh": "pip install -r deps/extra.in -r deps/extra.in\n",
 			"deps/extra.in": "pyjwt==1.5.0\n"},
 			[]string{"deps/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
 		{"a -r file a manifest already reads", map[string]string{"a.sh": "pip install -r reqs/base.txt --index-url https://x\n",
@@ -240,5 +247,9 @@ func TestMarkers_SetVarsOnlyFromPyLock(t *testing.T) {
 		if r := evaluateMarker(c.marker, sel, nil); r.unresolved || r.selected != c.want {
 			t.Errorf("%s: %+v, want %v", c.marker, r, c.want)
 		}
+	}
+	// a selection this does not read unbinds the variable rather than keeping the declared one
+	if r := evaluateMarker("'docs' in extras", pyLockSelection(lock, []string{"--no-extra", "docs"}, env), nil); !r.unresolved {
+		t.Errorf("unread extras selection: %+v, want unresolved", r)
 	}
 }

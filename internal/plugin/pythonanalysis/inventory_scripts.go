@@ -142,13 +142,13 @@ func relScope(root, p string) string {
 }
 
 // scriptInventory returns the inventory nodes the pip installs script surfaces run name, with
-// no ID the manifest nodes already hold. Each -r file is read once, and only when it resolves,
+// no ID the manifest nodes already hold. A -r file is read for each run that names it, so each
+// run's pylock selection counts, and only when it resolves,
 // through every symlink, inside the build.
 func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) []plugin.DependencyNode {
 	var runs []scriptRun
 	scanSurfaces(req.BuildDir, &runs)
 	realRoot, rootErr := filepath.EvalSymlinks(req.BuildDir)
-	readFile := map[string]bool{}
 	seen := map[string]bool{}
 	var nodes []plugin.DependencyNode
 	add := func(scope string, reqs []pyReq) {
@@ -178,10 +178,9 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 			add(relScope(req.BuildDir, run.surface), resolveRequirements([]byte(strings.Join(args, "\n")+"\n"), req.TargetEnv, req.Selection))
 		}
 		for _, f := range run.files {
-			if readFile[f] || rootErr != nil || !buildtree.Inside(realRoot, f) {
+			if rootErr != nil || !buildtree.Inside(realRoot, f) {
 				continue
 			}
-			readFile[f] = true
 			if data, err := readRegular(f); err == nil {
 				add(relScope(req.BuildDir, f), requirementFileReqs(f, data, run, req))
 			}
@@ -190,16 +189,13 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 	return nodes
 }
 
-// requirementFileReqs reads a -r file the way the installer running it reads it by name: uv
-// reads a pylock.toml (PEP 751) as a lock, which pip cannot install from, and another TOML,
-// setup.cfg or setup.py as project metadata this does not read. Those name nothing; any other
-// file is requirements lines.
+// requirementFileReqs reads a -r file the way the installer running it reads it by name. Only
+// uv reaches the first two cases (pipRejectsFile drops pip's run): it reads a pylock.toml (PEP
+// 751) as a lock, and another TOML, setup.cfg or setup.py as project metadata this does not
+// read, which names nothing. Any other file is requirements lines.
 func requirementFileReqs(path string, data []byte, run scriptRun, req plugin.ResolveInventoryRequest) []pyReq {
 	switch ext := strings.ToLower(filepath.Ext(path)); {
 	case isPyLockName(filepath.Base(path)):
-		if !run.uv {
-			return nil
-		}
 		return parsePyLockTOML(data, run.args, req.TargetEnv, req.Selection)
 	case ext == ".toml", ext == ".cfg", ext == ".py":
 		return nil

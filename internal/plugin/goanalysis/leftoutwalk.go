@@ -66,7 +66,10 @@ type lofWorld struct {
 	// refutation describes (toolchainExcluded).
 	excluded func(constraint.Expr) bool
 	// goroot is the toolchain's root the compiler's intrinsic table is read from; "" reads none.
-	goroot   string
+	goroot string
+	// modcache is the module cache's root, whose module source the build compiles as it was
+	// downloaded; "" when not known.
+	modcache string
 	deadline time.Time
 	loaded   map[string]*packages.Package
 	modules  map[string]bool
@@ -85,6 +88,9 @@ type lofWorld struct {
 	dropped    map[string]bool
 	linkMemo   map[string]lofLinks
 	importMemo map[string]lofDirImports
+	// stdNames holds, by directory, the names a standard-library package declares in any build
+	// variant; nil when the directory cannot be read whole.
+	stdNames map[string]map[string]bool
 }
 
 func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string, env []string, excluded func(constraint.Expr) bool, goroot string, deadline time.Time) *lofWorld {
@@ -93,7 +99,7 @@ func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string,
 		loaded: map[string]*packages.Package{}, modules: map[string]bool{},
 		dirs: map[string]string{}, names: map[string]string{}, std: map[string]bool{}, pkgs: map[string]*lofPkg{},
 		pushes: map[string][][2]string{}, dropped: map[string]bool{},
-		linkMemo: map[string]lofLinks{}, importMemo: map[string]lofDirImports{},
+		linkMemo: map[string]lofLinks{}, importMemo: map[string]lofDirImports{}, stdNames: map[string]map[string]bool{},
 	}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		if p.Types != nil {
@@ -203,9 +209,11 @@ type lofClosure struct {
 	// fcStd holds what fails closed only for a standard-library refutation: a target inside the
 	// toolchain's own packages, which call no module code.
 	fcStd []string
-	// unres holds the bare identifiers no declaration has.
-	unres []lofRef
-	decls int
+	// unres holds the bare identifiers no declaration has, and unresQ the qualified references to a
+	// standard-library package that no declaration of it has.
+	unres  []lofRef
+	unresQ []lofRef
+	decls  int
 	// excluded is set when the file compiles in no build the refutation describes; dropped when
 	// that is because it never compiles at all (uncompilable).
 	excluded bool
@@ -806,18 +814,33 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 	k.touch(file)
 	k.enter(own)
 	k.drain()
-	if len(out.unres) == 0 || k.stopped {
+	if len(out.unres)+len(out.unresQ) == 0 || k.stopped {
 		return out
 	}
-	// A bare identifier no declaration has leaves the closure open unless the file that names it
-	// never compiles (uncompilable); then the walk restarts without that file.
-	var drop []string
+	// A name no declaration has leaves the closure open unless the file that names it never
+	// compiles (uncompilable); then the walk restarts without that file.
+	var files []*lofFile
+	bare := map[*lofFile][]string{}
+	qual := map[*lofFile][]lofRef{}
 	for _, r := range out.unres {
-		if item := w.uncompilable(r.file, r.name); item != "" {
+		if !slices.Contains(files, r.file) {
+			files = append(files, r.file)
+		}
+		bare[r.file] = append(bare[r.file], r.name)
+	}
+	for _, r := range out.unresQ {
+		if !slices.Contains(files, r.file) {
+			files = append(files, r.file)
+		}
+		qual[r.file] = append(qual[r.file], r)
+	}
+	var drop []string
+	for _, f := range files {
+		if item := w.uncompilable(f, bare[f], qual[f]); item != "" {
 			out.fail(item)
 			return out
 		}
-		drop = append(drop, r.file.path)
+		drop = append(drop, f.path)
 	}
 	for _, d := range drop {
 		w.dropped[d] = true
@@ -846,46 +869,70 @@ func sameDir(a, b string) bool {
 	return err == nil && os.SameFile(ai, bi)
 }
 
-// uncompilable proves that the Go file f, which names the package-level identifier name that no
-// declaration has, compiles in no build: go/types, checking f alone with every import failing,
-// reports "undefined: name", and reports nothing else but failed imports and other identifiers
-// that f's sibling files declare. The identifier is bare: a qualified one names a package the walk
-// reads whole, and is unresolved_name outright.
+// uncompilable proves that the Go file f, which names identifiers no declaration has, compiles in
+// no build. It returns "" when proved, and otherwise what the closure fails closed on.
 //
-// It returns "" when proved, and otherwise what the closure fails closed on: lofVariantTypecheck
-// when go/types reports any other error or not that one, and lofUnresolvedName when the name could
-// come from a file the check does not see:
+// A qualified reference qual names a standard-library package, which the toolchain's own source
+// holds whole: when no Go file of that package, under any build constraint, declares the name
+// (stdAbsent), every build of f fails on it. go/types, checking f alone against the build's type
+// information for those packages and failing every other import, must report each of them
+// undefined. Any one unproved is lofUnresolvedName.
+//
+// With no qualified reference, the bare identifiers carry the proof: go/types, checking f alone
+// with every import failing, must report each "undefined: name", and the file is
+// lofUnresolvedName when a name could come from a file the check does not see:
 //
 //   - f dot-imports a package;
 //   - the package's source set is incomplete: its directory, or a Go file in it, cannot be read or
 //     parsed;
-//   - a file of the package uses cgo (import "C"), whose generated Go declares names no source
-//     file does;
-//   - a Go file in the directory carries a "// Code generated" header or a //go:generate directive,
-//     so the package's source may be generated before the build;
+//   - a name begins with "_" and a file of the package uses cgo (import "C"), whose generated Go
+//     declares such names;
+//   - the directory holds a SWIG interface, whose generated Go may declare any name;
+//   - the package lies outside the module cache and the toolchain's source, and a Go file in its
+//     directory carries a "// Code generated" header or a //go:generate directive, so its source
+//     may be generated before the build;
 //   - another file of the package, in any build variant (excluded ones and the ignore tag
-//     included), declares name.
-func (w *lofWorld) uncompilable(f *lofFile, name string) string {
-	if len(f.dots) > 0 || f.pkg.missing != "" || len(f.pkg.errs) > 0 {
+//     included), declares the name.
+//
+// Either way, go/types may report nothing else but failed imports, other identifiers that f's
+// sibling files declare, and other names selected from a package it was given; otherwise the
+// file is lofVariantTypecheck.
+func (w *lofWorld) uncompilable(f *lofFile, bare []string, qual []lofRef) string {
+	byQual := len(qual) > 0
+	imports := map[string]*types.Package{}
+	for _, r := range qual {
+		lp := w.loaded[r.pkg]
+		if lp == nil || !w.stdAbsent(w.pkg(r.pkg), r.name) {
+			return lofUnresolvedName
+		}
+		imports[r.pkg] = lp.Types
+	}
+	if f.pkg.missing != "" || len(f.pkg.errs) > 0 || !byQual && len(f.dots) > 0 {
 		return lofUnresolvedName
 	}
+	dir := filepath.Dir(f.path)
 	clause := f.ast.Name.Name
-	ents, err := os.ReadDir(filepath.Dir(f.path))
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return lofUnresolvedName
 	}
+	underscore := slices.ContainsFunc(bare, func(n string) bool { return strings.HasPrefix(n, "_") })
+	fixed := w.fixedSource(dir)
 	siblings := map[string]bool{}
 	for _, e := range ents {
 		n := e.Name()
+		if !byQual && (strings.HasSuffix(n, ".swig") || strings.HasSuffix(n, ".swigcxx")) {
+			return lofUnresolvedName
+		}
 		if e.IsDir() || !strings.HasSuffix(n, ".go") {
 			continue
 		}
-		full := filepath.Join(filepath.Dir(f.path), n)
+		full := filepath.Join(dir, n)
 		src, err := os.ReadFile(full)
 		if err != nil {
 			return lofUnresolvedName
 		}
-		if lofGenerated(src) {
+		if !byQual && !fixed && lofGenerated(src) {
 			return lofUnresolvedName
 		}
 		if strings.HasSuffix(n, "_test.go") {
@@ -898,16 +945,18 @@ func (w *lofWorld) uncompilable(f *lofFile, name string) string {
 		if af.Name.Name != clause {
 			continue
 		}
-		for _, im := range af.Imports {
-			if im.Path.Value == `"C"` {
-				return lofUnresolvedName
+		if !byQual && underscore {
+			for _, im := range af.Imports {
+				if im.Path.Value == `"C"` {
+					return lofUnresolvedName
+				}
 			}
 		}
 		if full == f.path {
 			continue
 		}
 		for _, n := range lofPackageNames(af) {
-			if n == name {
+			if !byQual && slices.Contains(bare, n) {
 				return lofUnresolvedName
 			}
 			siblings[n] = true
@@ -918,10 +967,10 @@ func (w *lofWorld) uncompilable(f *lofFile, name string) string {
 	if err != nil {
 		return lofUnresolvedName
 	}
-	confirmed := false
+	confirmed := map[string]bool{}
 	other := false
 	conf := types.Config{
-		Importer: lofNoImporter{},
+		Importer: lofGivenImporter(imports),
 		Error: func(err error) {
 			te, ok := err.(types.Error)
 			if !ok {
@@ -929,9 +978,12 @@ func (w *lofWorld) uncompilable(f *lofFile, name string) string {
 				return
 			}
 			undef, isUndef := strings.CutPrefix(te.Msg, "undefined: ")
+			x, sel, isSel := strings.Cut(undef, ".")
 			switch {
-			case isUndef && undef == name:
-				confirmed = true
+			case isUndef && isSel && imports[w.importFor(f, x)] != nil:
+				confirmed[w.importFor(f, x)+"."+sel] = true
+			case isUndef && slices.Contains(bare, undef):
+				confirmed[undef] = true
 			case isUndef && siblings[undef]:
 			case strings.HasPrefix(te.Msg, "could not import "):
 			default:
@@ -940,10 +992,74 @@ func (w *lofWorld) uncompilable(f *lofFile, name string) string {
 		},
 	}
 	_, _ = conf.Check(f.pkg.path, fset, []*ast.File{af}, nil)
-	if other || !confirmed {
+	if other {
 		return lofVariantTypecheck
 	}
+	if byQual {
+		for _, r := range qual {
+			if !confirmed[r.pkg+"."+r.name] {
+				return lofVariantTypecheck
+			}
+		}
+		return ""
+	}
+	for _, n := range bare {
+		if !confirmed[n] {
+			return lofVariantTypecheck
+		}
+	}
 	return ""
+}
+
+// stdAbsent reports whether no Go file of the standard-library package p declares name, under any
+// build constraint: p is read from the build toolchain's own source, every non-test Go file in its
+// directory. A name beginning with "_" may be one cgo generates, and is never proved absent.
+func (w *lofWorld) stdAbsent(p *lofPkg, name string) bool {
+	if !p.std || w.goroot == "" || strings.HasPrefix(name, "_") || !lofUnder(p.dir, filepath.Join(w.goroot, "src")) {
+		return false
+	}
+	names, ok := w.stdNames[p.dir]
+	if !ok {
+		names = lofDirNames(p.dir)
+		w.stdNames[p.dir] = names
+	}
+	return names != nil && !names[name]
+}
+
+// lofDirNames returns the names every non-test Go file in dir declares at package level, or nil
+// when the directory or one of them cannot be read or parsed.
+func lofDirNames(dir string) map[string]bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, n), nil, parser.SkipObjectResolution)
+		if err != nil {
+			return nil
+		}
+		for _, name := range lofPackageNames(af) {
+			names[name] = true
+		}
+	}
+	return names
+}
+
+// fixedSource reports whether dir lies in the module cache or the toolchain's source, which the
+// build compiles as they are: nothing is generated there before it.
+func (w *lofWorld) fixedSource(dir string) bool {
+	return w.modcache != "" && lofUnder(dir, w.modcache) || w.goroot != "" && lofUnder(dir, filepath.Join(w.goroot, "src"))
+}
+
+// lofUnder reports whether path lies below root.
+func lofUnder(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // lofGenerated reports whether a Go file's source carries a line beginning "// Code generated" or
@@ -983,10 +1099,14 @@ func lofPackageNames(af *ast.File) []string {
 	return out
 }
 
-// lofNoImporter fails every import, so go/types checks a file against its own declarations only.
-type lofNoImporter struct{}
+// lofGivenImporter imports only the packages it holds, by import path, and fails every other
+// import, so go/types checks a file against its own declarations and those packages only.
+type lofGivenImporter map[string]*types.Package
 
-func (lofNoImporter) Import(path string) (*types.Package, error) {
+func (g lofGivenImporter) Import(path string) (*types.Package, error) {
+	if p := g[path]; p != nil {
+		return p, nil
+	}
 	return nil, fmt.Errorf("not loaded: %s", path)
 }
 
@@ -1154,6 +1274,10 @@ func (k *lofWalk) ref(r lofRef) {
 		return
 	}
 	if !k.resolveIn(p, r.name) {
+		if p.std {
+			k.out.unresQ = append(k.out.unresQ, r)
+			return
+		}
 		k.out.fail(lofUnresolvedName)
 	}
 }
@@ -1570,6 +1694,19 @@ func lofToolchain(ctx context.Context, buildDir string, env []string, release *g
 		return "", lofGorootMismatch
 	}
 	return root, ""
+}
+
+// lofModCache returns the module cache's root the build's go command reads modules from, or "".
+func lofModCache(ctx context.Context, buildDir string, env []string) string {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE")
+	cmd.Dir = buildDir
+	cmd.Env = env
+	out, err := cmd.Output()
+	root := strings.TrimSpace(string(out))
+	if err != nil || !filepath.IsAbs(root) {
+		return ""
+	}
+	return root
 }
 
 // links returns the packages the build did not load that a file in dir can link, over every build

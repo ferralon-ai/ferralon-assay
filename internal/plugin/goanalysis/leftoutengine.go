@@ -201,6 +201,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
 	goroot, failStd := lofToolchain(ctx, buildDir, env, release)
 	w := newLofWorld(ctx, pkgs, buildDir, env, excluded, goroot, time.Now().Add(lofBudgetTime))
+	w.modcache = lofModCache(ctx, buildDir, env)
 	in := &lofInterner{ids: map[string]int32{}}
 	e := &lofEngine{FailStd: failStd, Files: map[string]*lofFacts{}}
 

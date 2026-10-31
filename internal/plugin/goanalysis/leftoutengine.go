@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/tools/go/callgraph"
@@ -384,6 +385,15 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	in := &lofInterner{ids: map[string]int32{}}
 	e := &lofEngine{FailStd: failStd, files: map[string]*lofFacts{}}
 
+	// The closures and the build's SSA program are independent; build them side by side.
+	var sp *ssaProgram
+	var chaG *callgraph.Graph
+	ssaDone := lofGo(func() (err error) {
+		if sp, err = buildSSAWith(&LoadResult{Packages: pkgs}, ssautil.AllPackages); err == nil {
+			chaG = cha.CallGraph(sp.prog)
+		}
+		return err
+	})
 	cands := lofCandidates(pkgs)
 	closures := map[string]*lofClosure{}
 	for _, c := range cands {
@@ -418,17 +428,23 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		e.files[c.path] = f
 	}
 
-	sp, err := buildSSAWith(&LoadResult{Packages: pkgs}, ssautil.AllPackages)
-	if err != nil {
+	if err := ssaDone(); err != nil {
 		return nil, err
 	}
-	chaG := cha.CallGraph(sp.prog)
 	entries := sp.govulncheckEntries()
-	g0, sl0, cs0 := lofGraph(chaG, entries)
+	// g0 and gT share only read-only inputs (the program and chaG); build g0 while the closures'
+	// roots are collected and gT is built.
+	var g0 *callgraph.Graph
+	var sl0, cs0 map[*ssa.Function]bool
+	g0Done := lofGo(func() error {
+		g0, sl0, cs0 = lofGraph(chaG, entries)
+		return nil
+	})
 
 	// The loaded roots each closure adds: the functions it reaches and the methods of the named
 	// types it names.
 	extra := map[*ssa.Function]bool{}
+	fileRoots := map[string]map[*ssa.Function]bool{}
 	for path, cl := range closures {
 		roots := map[*ssa.Function]bool{}
 		for fn := range cl.funcs {
@@ -459,16 +475,24 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		}
 		for fn := range roots {
 			extra[fn] = true
-			if !sl0[fn] || !cs0[fn] {
-				e.files[path].Novel = true
-			}
 		}
+		fileRoots[path] = roots
 	}
 	rootsT := slices.Clone(entries)
 	for fn := range extra {
 		rootsT = append(rootsT, fn)
 	}
 	gT, slT, _ := lofGraph(chaG, rootsT)
+	if err := g0Done(); err != nil {
+		return nil, err
+	}
+	for path, roots := range fileRoots {
+		for fn := range roots {
+			if !sl0[fn] || !cs0[fn] {
+				e.files[path].Novel = true
+			}
+		}
+	}
 
 	addr := map[*ssa.Function]bool{}
 	for fn := range slT {
@@ -602,6 +626,21 @@ func lofSymbol(fn *ssa.Function) (pkg, name string) {
 // at roots: the functions roots reach through initial's call edges and function references (the
 // CHA-round slice), refined by VTA, sliced again from the refined graph (the final slice), and
 // refined by VTA once more. It returns the graph, its final slice and its CHA-round slice.
+// lofGo runs f on its own goroutine; the function it returns waits for f and returns its error, or
+// the panic f raised as one.
+func lofGo(f func() error) func() error {
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("left-out engine: %v", r)
+			}
+		}()
+		done <- f()
+	}()
+	return sync.OnceValue(func() error { return <-done })
+}
+
 func lofGraph(initial *callgraph.Graph, roots []*ssa.Function) (*callgraph.Graph, map[*ssa.Function]bool, map[*ssa.Function]bool) {
 	slice := func(cg *callgraph.Graph) map[*ssa.Function]bool {
 		seen := map[*ssa.Function]bool{}

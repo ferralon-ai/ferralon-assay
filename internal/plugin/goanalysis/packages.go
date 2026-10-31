@@ -29,7 +29,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
+	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/packages"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -445,26 +447,32 @@ func goflagsTags(env []string) []string {
 // standard library's only when no module in the graph holds it. A file that cannot be read counts. A
 // file left out of a loaded package that reaches a package that counts through the load counts
 // whatever it imports, unless its package clause names another package. A file constrained by the
-// ignore tag is never built and does not count, nor, when release is the Go release the build
-// compiles under, is a file whose goN.M build tags alone exclude it from every build under that
-// release (releaseExcluded); the files of an unloaded import are read the same way.
+// ignore tag is never built and does not count, nor is a file whose toolchain-fixed tags alone
+// exclude it from every build the refutation describes (toolchainExcluded, with release the Go
+// release the build compiles under, or the go-directive floor when that is unknown); the files of an
+// unloaded import are read the same way.
 //
 // When module is the standard library, the packages that count are its vulnerable ones, or every
 // standard-library package when vulnerable is empty. Every unloaded import is followed, the standard
 // library's own included, and the files the build left out of the standard library's loaded packages
 // are left-out files too: another platform's file may call what the scan's own platform never
 // reaches. The golang.org/x packages the standard library imports resolve to its vendored copies.
-// Outside a standard-library refutation, the standard library's own files are not checked: it
-// imports no module.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
+// Outside a standard-library refutation, a standard-library file never counts: it imports no module.
+//
+// A file that may call into the module by these imports counts only when its declaration closure
+// may also reach one of the advisory's vulnerable symbols (symbols, by vulnerable package; none
+// listed stands for every function in it), against the scan's left-out engine (lofRow.counts),
+// which counts every file when it cannot be built.
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *goRelease, buildDir string, env []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
 	var graph modGraph
 	var graphErr error
 	graphRead := false
 	src := sourceImports{}
+	floor := goDirectiveFloor(pkgs)
 	built := func(expr constraint.Expr) bool {
-		return !ignored(expr) && (release == nil || !releaseExcluded(expr, *release))
+		return !ignored(expr) && !toolchainExcluded(expr, release, floor)
 	}
 
 	// classify reports whether the import imp counts outright and, when it does not, whether it is a
@@ -569,7 +577,36 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		}
 		return (own != "" && name == own) || slices.ContainsFunc(imports, mayCall)
 	}
-	leftOut := func(path string) bool { return leftOutOf(path, "", false) }
+	// counts narrows a file leftOutOf keeps to one that may reach the advisory's vulnerable symbols
+	// (lofRow.counts), against the scan's left-out engine, built on first use.
+	row := sync.OnceValue(func() *lofRow {
+		e := loadLofEngine(ctx, pkgs, release, buildDir, env)
+		vsyms := map[string][]string{}
+		for _, p := range vulnerable {
+			vsyms[p] = symbols[p]
+		}
+		r := &lofRow{e: e, stdlib: stdlib, inPkg: func(pkg string) bool { return reach.inModule(pkg, reach.loaded[pkg]) }}
+		r.inS = func(pkg, name string) bool {
+			if !r.inPkg(pkg) {
+				return false
+			}
+			if len(vulnerable) == 0 {
+				return true
+			}
+			names := vsyms[pkg]
+			return len(names) == 0 || slices.Contains(names, name)
+		}
+		for path, p := range reach.loaded {
+			if p.Types != nil && reach.inModule(path, p) {
+				r.sLoaded = true
+				break
+			}
+		}
+		return r
+	})
+	counts := func(path string, own string, std bool) bool {
+		return leftOutOf(path, own, std) && row().counts(path)
+	}
 
 	found := false
 	loadedDirs := map[string]bool{}
@@ -578,29 +615,22 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if found {
 			return false
 		}
-		if p.Module == nil {
-			if stdlib && isStdlibPath(p.PkgPath, reach.modules) {
-				own := ""
-				if reach.reachesModule(p) {
-					own = p.Name
-				}
-				found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own, true) })
-			}
-			return !found
-		}
-		if p.Module.Main && mainDir == "" {
+		if p.Module != nil && p.Module.Main && mainDir == "" {
 			mainDir = p.Module.Dir
 		}
-		for _, files := range [][]string{p.GoFiles, p.OtherFiles, p.IgnoredFiles} {
-			for _, f := range files {
-				loadedDirs[filepath.Dir(f)] = true
+		std := p.Module == nil && isStdlibPath(p.PkgPath, reach.modules)
+		if p.Module != nil {
+			for _, files := range [][]string{p.GoFiles, p.OtherFiles, p.IgnoredFiles} {
+				for _, f := range files {
+					loadedDirs[filepath.Dir(f)] = true
+				}
 			}
 		}
 		own := ""
 		if reach.reachesModule(p) {
 			own = p.Name
 		}
-		found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return leftOutOf(f, own, false) })
+		found = slices.ContainsFunc(p.IgnoredFiles, func(f string) bool { return counts(f, own, std) })
 		return !found
 	}, nil)
 	if found {
@@ -609,7 +639,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 	if mainDir == "" {
 		mainDir = buildDir
 	}
-	return firstPartyLeftOut(mainDir, loadedDirs, leftOut)
+	return firstPartyLeftOut(mainDir, loadedDirs, func(path string) bool { return counts(path, "", false) })
 }
 
 // moduleReach answers, over the load's own import graph, whether a package is or imports one of a
@@ -884,20 +914,32 @@ func ignored(x constraint.Expr) bool {
 	return ok && tag.Tag == "ignore"
 }
 
-// maxFreeTags bounds the tags releaseExcluded enumerates; a constraint with more is not judged.
+// maxFreeTags bounds the tags toolchainExcluded enumerates; a constraint with more is not judged.
 const maxFreeTags = 16
 
-// releaseExcluded reports whether the build constraint x excludes a file only through its goN.M
-// release tags: some assignment of its tags satisfies x, but none does once every release tag takes
-// the value a build under release r gives it. Every other tag (GOOS, GOARCH, cgo, custom tags)
-// ranges freely, so a file that some platform or tag of a build under r selects is not excluded.
-// A tag spelled otherwise than a release tag the go command sets ("go1.05") is not one.
-func releaseExcluded(x constraint.Expr, r goRelease) bool {
+// toolchainExcluded reports whether the build constraint x excludes a file only through the tags the
+// toolchain fixes: some assignment of its tags satisfies x, but none does once every fixed tag takes
+// the value every build the refutation describes gives it. Every other tag (GOOS, GOARCH, cgo,
+// custom tags) ranges freely, so a file that some platform or tag of such a build selects is not
+// excluded. The fixed tags are:
+//
+//   - gc, true, and gccgo, false: the refutation describes the build the gc toolchain compiles, the
+//     only one the scan loads and the go command runs, so a file only gccgo compiles is in no build
+//     it speaks for;
+//   - goN.M, from release when the Go release the build compiles under is known: true for every
+//     minor up to its own;
+//   - goN.M, when release is unknown, true for every N up to and including floor, the minor of the
+//     main module's go directive when that directive binds the toolchain (goDirectiveFloor): a go
+//     command older than the directive refuses to build the module, so every build sets those tags.
+//     A tag above floor ranges freely. A floor of 0 fixes none.
+//
+// A tag spelled otherwise than a release tag the go command sets ("go1.05") is free.
+func toolchainExcluded(x constraint.Expr, release *goRelease, floor int) bool {
 	if x == nil {
 		return false
 	}
 	var tags []string
-	release := map[string]bool{}
+	fixed := map[string]bool{}
 	seen := map[string]bool{}
 	var walk func(constraint.Expr)
 	walk = func(x constraint.Expr) {
@@ -907,9 +949,17 @@ func releaseExcluded(x constraint.Expr, r goRelease) bool {
 				return
 			}
 			seen[x.Tag] = true
-			if minor, ok := releaseTagMinor(x.Tag); ok {
-				release[x.Tag] = r.major > 1 || minor <= r.minor
-			} else {
+			minor, isRelease := releaseTagMinor(x.Tag)
+			switch {
+			case x.Tag == "gc":
+				fixed[x.Tag] = true
+			case x.Tag == "gccgo":
+				fixed[x.Tag] = false
+			case isRelease && release != nil:
+				fixed[x.Tag] = release.major > 1 || minor <= release.minor
+			case isRelease && floor > 0 && minor <= floor:
+				fixed[x.Tag] = true
+			default:
 				tags = append(tags, x.Tag)
 			}
 		case *constraint.NotExpr:
@@ -923,7 +973,7 @@ func releaseExcluded(x constraint.Expr, r goRelease) bool {
 		}
 	}
 	walk(x)
-	if len(release) == 0 || len(seen) > maxFreeTags {
+	if len(fixed) == 0 || len(seen) > maxFreeTags {
 		return false
 	}
 	// satisfiable reports whether some assignment of free satisfies x, with fixed for the rest.
@@ -945,7 +995,47 @@ func releaseExcluded(x constraint.Expr, r goRelease) bool {
 		return false
 	}
 	all := slices.Sorted(maps.Keys(seen))
-	return satisfiable(all, nil) && !satisfiable(tags, release)
+	return satisfiable(all, nil) && !satisfiable(tags, fixed)
+}
+
+// goDirectiveFloor returns the minor of the main module's go directive when go.mod's directives bind
+// the toolchain that builds it (directivesBindToolchain), else 0: the floor toolchainExcluded fixes
+// goN.M tags to when the build's release is unknown. A go.mod that cannot be read gives 0.
+func goDirectiveFloor(pkgs []*packages.Package) int {
+	gomod := ""
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if gomod == "" && p.Module != nil && p.Module.Main {
+			gomod = p.Module.GoMod
+		}
+	})
+	if gomod == "" {
+		return 0
+	}
+	data, err := os.ReadFile(gomod)
+	if err != nil {
+		return 0
+	}
+	mf, err := modfile.Parse(gomod, data, nil)
+	if err != nil || mf.Go == nil {
+		return 0
+	}
+	toolchain := ""
+	if mf.Toolchain != nil {
+		toolchain = mf.Toolchain.Name
+	}
+	if !directivesBindToolchain(mf.Go.Version, toolchain) {
+		return 0
+	}
+	rest, ok := strings.CutPrefix(mf.Go.Version, "1.")
+	if !ok {
+		return 0
+	}
+	digits := rest[:len(rest)-len(strings.TrimLeft(rest, "0123456789"))]
+	minor, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0
+	}
+	return minor
 }
 
 // releaseTagMinor returns N for a release tag "go1.N" as the go command spells it (N >= 1, no

@@ -7,17 +7,23 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// Pixi's PyPI tables are read for the projects they name, each unresolved, under every feature
-// and target. Conda dependencies and local path installs are not PyPI projects. The result stays
-// partial, since pixi's tables are not resolved.
+// Pixi's PyPI tables are read for the projects they name, each unresolved, under every feature,
+// inline environment and target. Conda dependencies are not PyPI projects, and an in-tree source
+// directory is read through its own manifest; a wheel and an out-of-tree path stay entries. The
+// result stays partial, since pixi's tables are not resolved.
 func TestResolveVersions_PixiPyPINames(t *testing.T) {
 	const pixi = "[pypi-dependencies]\npyjwt = \"==2.10.0\"\nlocal_pkg = { path = \"./lib\", editable = true }\n" +
 		"gitpkg = { git = \"https://example.com/gitpkg.git\" }\n\n" +
 		"[dependencies]\nnumpy = \"1.26.*\"\n\n" +
 		"[target.linux-64.pypi-dependencies]\nuvloop = \"*\"\n\n" +
 		"[feature.dev.pypi-dependencies]\npytest = { version = \"==8.0.0\" }\n\n" +
-		"[feature.dev.target.win-64.pypi-dependencies]\npywin32 = \"*\"\n"
-	want := []string{"gitpkg", "pyjwt", "pytest", "pywin32", "uvloop"}
+		"[feature.dev.target.win-64.pypi-dependencies]\npywin32 = \"*\"\n\n" +
+		"[environments]\ndefault = [\"dev\"]\n\n" +
+		"[environments.ci.pypi-dependencies]\ncoverage = \"*\"\n" +
+		"wheelpkg = { path = \"./wheels/wheelpkg-1.0-py3-none-any.whl\" }\n" +
+		"outpkg = { path = \"../vendor/outpkg\" }\n\n" +
+		"[environments.ci.target.osx-arm64.pypi-dependencies]\nmlx = \"*\"\n"
+	want := []string{"coverage", "gitpkg", "mlx", "outpkg", "pyjwt", "pytest", "pywin32", "uvloop", "wheelpkg"}
 	for name, files := range map[string]map[string]string{
 		"pixi.toml": {"pixi.toml": "[workspace]\nchannels = [\"conda-forge\"]\nplatforms = [\"linux-64\"]\n\n" + pixi},
 		"pyproject": {"pyproject.toml": "[project]\nname = \"app\"\n\n" + prefixPixiTables(pixi)},
@@ -61,6 +67,26 @@ func TestResolveVersions_PixiNameWithholdsPin(t *testing.T) {
 	}), "pyjwt")
 	if !res.Found || res.Match.Resolved || res.Partiality.Complete {
 		t.Fatalf("Found=%v Match=%+v partiality %+v, want found, unresolved and partial", res.Found, res.Match, res.Partiality)
+	}
+}
+
+// A name only pixi declares, beside a uv.lock and pyproject that would otherwise prove it
+// absent, is found, unresolved, and the answer is not exhaustive.
+func TestResolveVersions_PixiNameBesideCoveringLock(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"pixi.toml": {"pixi.toml": "[pypi-dependencies]\npyjwt = \">=2\"\n"},
+		"pyproject": {"pyproject.toml": exPyproject + "[tool.pixi.pypi-dependencies]\npyjwt = \">=2\"\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tree := map[string]string{"uv.lock": exUVLock, "pyproject.toml": exPyproject}
+			for k, v := range files {
+				tree[k] = v
+			}
+			r := resolveVersion(t, writeTree(t, tree), "PyJWT")
+			if !r.Found || r.Match.Resolved || r.Exhaustive {
+				t.Fatalf("Found=%v Match=%+v Exhaustive=%v, want found, unresolved and not exhaustive", r.Found, r.Match, r.Exhaustive)
+			}
+		})
 	}
 }
 

@@ -153,8 +153,11 @@ type lofFile struct {
 	// links maps a //go:linkname local name to its remote; badLink is set for a malformed one.
 	links   map[string]string
 	badLink bool
-	cgo     bool
-	decls   []*lofDecl
+	// cSyms holds the local names its //go:cgo_import_dynamic and //go:cgo_import_static
+	// directives bind to C symbols.
+	cSyms map[string]bool
+	cgo   bool
+	decls []*lofDecl
 }
 
 // lofDecl is one package-level declaration: a function or method, a type, or a var or const spec.
@@ -485,6 +488,16 @@ func (w *lofWorld) index(p *lofPkg, path string, af *ast.File) {
 				case remote != "":
 					f.links[local] = remote
 					w.pushes[remote] = append(w.pushes[remote], [2]string{path, local})
+				}
+			}
+			for _, dir := range []string{"//go:cgo_import_dynamic ", "//go:cgo_import_static "} {
+				if rest, ok := strings.CutPrefix(c.Text, dir); ok {
+					if fs := strings.Fields(rest); len(fs) > 0 {
+						if f.cSyms == nil {
+							f.cSyms = map[string]bool{}
+						}
+						f.cSyms[fs[0]] = true
+					}
 				}
 			}
 			if name, ok := strings.CutPrefix(c.Text, "//export "); ok && f.cgo {
@@ -964,7 +977,8 @@ func (w *lofWorld) uncompilable(f *lofFile, bare []string, qual []lofRef) string
 			continue
 		}
 		for _, n := range lofPackageNames(af) {
-			if !byQual && slices.Contains(bare, n) {
+			// A dropped file compiles in no build, so no build that compiles f has its names.
+			if !byQual && slices.Contains(bare, n) && !w.dropped[full] {
 				return lofUnresolvedName
 			}
 			siblings[n] = true
@@ -1185,6 +1199,11 @@ func (k *lofWalk) touch(f *lofFile) {
 	}
 	sort.Strings(locals)
 	for _, l := range locals {
+		if r := f.links[l]; !strings.Contains(r, ".") && f.cSyms[r] {
+			// A C symbol the same file imports: no Go code, and one the linker cannot also take
+			// from assembly.
+			continue
+		}
 		k.remote(f.pkg, f.links[l])
 	}
 }

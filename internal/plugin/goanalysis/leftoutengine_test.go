@@ -170,6 +170,10 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"//go:linkname pulled example.com/v/vuln.Bad\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, "", false},
 		{"a left-out function pulls by linkname a symbol nothing declares", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.Nowhere\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, lofLinkname, false},
+		{"a left-out file links by linkname a C symbol it imports", x("\t_ \"unsafe\"\n\t\"example.com/v/vuln\"",
+			"//go:cgo_import_dynamic libc_puts puts \"libc.so\"\n\n//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, false, "", false},
+		{"a left-out file links by linkname a bare symbol nothing imports", x("\t_ \"unsafe\"\n\t\"example.com/v/vuln\"",
+			"//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, true, lofLinkname, false},
 		// asm
 		{"a left-out bodyless function's assembly calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); _ = vuln.Safe }\n"), map[string]string{
 			"x_lofalt.s": "//go:build lofalt\n\n#include \"textflag.h\"\n\nTEXT ·asm(SB),NOSPLIT,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n",
@@ -315,6 +319,9 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 			"_v/vuln/c.go": "//go:build lofalt\n\npackage vuln\n\nimport \"C\"\n",
 			"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nfunc init() { _helper(); Bad() }\n",
 		}, true, "", "", true, lofUnresolvedName, ""},
+		{"only a file that never compiles declares the name", map[string]string{
+			"_v/vuln/z.go": "//go:build lofalt\n\npackage vuln\n\nfunc helper() { nowhere() }\n",
+		}, true, "", "", false, "", ""},
 		{"the package has a SWIG interface", map[string]string{
 			"_v/vuln/x.swig": "%module x\n",
 		}, true, "", "", true, lofUnresolvedName, ""},

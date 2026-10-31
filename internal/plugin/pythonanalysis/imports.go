@@ -631,11 +631,20 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			break
 		}
 		kind, name, ok := stringLoaderKind(segs, qualified, targets)
-		if !ok || precededByDef(r, i) || precededByWord(r, i, "class") || assignedTo(r, end) {
+		fetchEnd := end
+		if !ok && !qualified && !assignedTo(r, end) {
+			var fetched bool
+			name, fetchEnd, fetched = loaderFetch(r, i, end, segs, targets, lits)
+			if !fetched {
+				opaque = true
+			}
+			kind, ok = stringLoaders[name]
+		}
+		if !ok || precededByDef(r, i) || precededByWord(r, i, "class") || assignedTo(r, fetchEnd) {
 			i = end
 			continue
 		}
-		open := skipAllSpace(r, end)
+		open := skipAllSpace(r, fetchEnd)
 		if open >= n || r[open] != '(' {
 			// A loader passed or bound as a value may be called anywhere. A Config class
 			// named as a type (an annotation, isinstance) is no call.
@@ -655,6 +664,209 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 		i = end
 	}
 	return sortedDedup(roots), opaque
+}
+
+// loaderHosts are the modules that hold a stringLoaders entry as an attribute.
+var loaderHosts = func() map[string]bool {
+	hosts := map[string]bool{}
+	for name := range stringLoaders {
+		mod, _, _ := cutLast(name, ".")
+		hosts[mod] = true
+	}
+	return hosts
+}()
+
+// fetchDunders are the module attributes that fetch another attribute by a computed name.
+var fetchDunders = map[string]bool{"__dict__": true, "__getattribute__": true, "__getattr__": true}
+
+// loaderFetch reads a use of a loaderHosts module, named by the dotted name segs running from
+// r[i] to r[end], that may fetch one of its loaders by name: a getattr of it, a vars() or
+// __dict__ subscript or .get. A literal attribute naming a loader returns that stringLoaders
+// entry as name and the index just past the fetch, so the caller reads the fetched loader as
+// it reads one spelled out. A fetch by a name the scanner cannot read, a computed-access
+// dunder, or the module passed or bound as a value reports fetched false. Any other use
+// (hasattr, setattr, a plain attribute), and a dotted name that is not such a module, is
+// neither.
+func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]string, lits map[int]strLiteral) (name string, after int, fetched bool) {
+	host, rest := "", segs
+	for _, t := range targets[segs[0]] {
+		for k := len(segs); k >= 1; k-- {
+			full := strings.Join(append([]string{t}, segs[1:k]...), ".")
+			if loaderHosts[full] && len(full) > len(host) {
+				host, rest = full, segs[k:]
+				break
+			}
+		}
+	}
+	if host == "" {
+		return "", end, true
+	}
+	leaf := func(attr string, after int) (string, int, bool) {
+		if _, ok := stringLoaders[host+"."+attr]; ok {
+			return host + "." + attr, after, true
+		}
+		// moduleLookups reads these by their spelled name, which a fetch by literal hides.
+		return "", end, !fetchDunders[attr] && !dynamicImportOpaqueLeafs[attr] && !dynamicImportLiteralLeafs[attr]
+	}
+	switch {
+	case len(rest) == 0:
+	case rest[0] == "__dict__" && len(rest) == 1:
+		return subscriptFetch(r, end, lits, end, leaf)
+	case rest[0] == "__dict__" && len(rest) == 2 && rest[1] == "get":
+		p := skipAllSpace(r, end)
+		if p >= len(r) || r[p] != '(' {
+			return "", end, false
+		}
+		attr, ok := literalSubscript(r, p+1, lits, "),")
+		if !ok {
+			return "", end, false
+		}
+		return leaf(attr, callClose(r, p))
+	default:
+		return "", end, !fetchDunders[rest[0]]
+	}
+	j := i - 1
+	for j >= 0 && unicode.IsSpace(r[j]) {
+		j--
+	}
+	k := skipAllSpace(r, end)
+	if k < len(r) && r[k] == '(' && !strings.ContainsRune(string(r[end:k]), '\n') {
+		// A module is not callable: the name is bound to something else here. A '(' on a
+		// later line may open the next statement instead.
+		return "", end, true
+	}
+	if presenceTest(r, i, end, k) {
+		return "", end, true
+	}
+	if j < 0 || r[j] != '(' || k >= len(r) {
+		return "", end, false
+	}
+	switch {
+	case precededByWord(r, j, "getattr") && r[k] == ',':
+		attr, ok := literalSubscript(r, k+1, lits, "),")
+		if !ok {
+			return "", end, false
+		}
+		return leaf(attr, callClose(r, j))
+	case precededByWord(r, j, "vars") && r[k] == ')':
+		return subscriptFetch(r, k+1, lits, end, leaf)
+	case precededByWord(r, j, "hasattr") && r[k] == ',', precededByWord(r, j, "type") && r[k] == ')':
+		return "", end, true
+	case (precededByWord(r, j, "setattr") || precededByWord(r, j, "delattr") || patchObject(r, j)) && r[k] == ',':
+		// A store or delete (monkeypatch.setattr(uvicorn, "run", spy), mock.patch.object(uvicorn,
+		// "run")) hands no loader over.
+		return "", end, true
+	}
+	return "", end, false
+}
+
+// presenceTest reports whether the name at r[i], ending at r[end] and followed by r[k], is
+// only tested for presence, as an optional import is (if uvicorn is None:, if not werkzeug,
+// HAS = uvicorn is not None). It must be a whole operand: in reg + uvicorn == 0 or not
+// uvicorn in reg the module is handed to another object's operator, and so it is in
+// uvicorn == reg, through reg's reflected __eq__, and as an and/or operand.
+func presenceTest(r []rune, i, end, k int) bool {
+	next, wend := readWordRunes(r, k)
+	op := string(r[k:min(k+2, len(r))])
+	switch {
+	case next == "is" && operandStart(r, i):
+		p := skipAllSpace(r, wend)
+		if w, e := readWordRunes(r, p); w == "not" {
+			p = skipAllSpace(r, e)
+		}
+		return noneAt(r, p)
+	case (op == "==" || op == "!=") && operandStart(r, i):
+		// The None must be the whole right operand: uvicorn == None + reg hands the module to
+		// the reflected __eq__ of whatever None + reg returns.
+		p := skipAllSpace(r, k+2)
+		return noneAt(r, p) && operandEnd(r, skipAllSpace(r, p+len("None")))
+	case precededByWord(r, i, "not") && operandEnd(r, k):
+		return true
+	case precededByWord(r, i, "if") && (next == "else" || op != "" && op[0] == ':'),
+		(precededByWord(r, i, "elif") || precededByWord(r, i, "while")) && op != "" && op[0] == ':':
+		return true
+	}
+	return false
+}
+
+// noneAt reports whether the word at r[p] is None.
+func noneAt(r []rune, p int) bool {
+	w, _ := readWordRunes(r, p)
+	return w == "None"
+}
+
+// operandStart reports whether nothing that binds tighter than a comparison precedes r[i].
+// A newline is not a boundary: inside brackets the expression runs on.
+func operandStart(r []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && unicode.IsSpace(r[j]) {
+		j--
+	}
+	switch {
+	case j >= 0 && strings.ContainsRune("([,:", r[j]):
+		return true
+	case j >= 0 && r[j] == '=':
+		return j == 0 || !strings.ContainsRune("=!<>", r[j-1])
+	}
+	for _, w := range []string{"if", "elif", "while", "and", "or", "not", "return", "assert", "else"} {
+		if precededByWord(r, i, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// operandEnd reports whether r[k], the next non-space rune after an operand, starts nothing
+// that binds tighter than not. A newline is not a boundary: inside brackets the expression
+// runs on.
+func operandEnd(r []rune, k int) bool {
+	if k >= len(r) || strings.ContainsRune(":),]};", r[k]) {
+		return true
+	}
+	w, _ := readWordRunes(r, k)
+	return w == "and" || w == "or" || w == "if" || w == "else"
+}
+
+// patchObject reports whether the '(' at r[j] opens a patch.object call.
+func patchObject(r []rune, j int) bool {
+	if !precededByWord(r, j, "object") {
+		return false
+	}
+	q := j - 1
+	for q >= 0 && unicode.IsSpace(r[q]) {
+		q--
+	}
+	for q >= 0 && isIdentPart(r[q]) {
+		q--
+	}
+	return q >= 0 && r[q] == '.' && precededByWord(r, q, "patch")
+}
+
+// subscriptFetch reads the namespace mapping ending at r[p] (vars(m), m.__dict__): a literal
+// subscript or .get key is handed to leaf, and any other use may fetch any attribute.
+func subscriptFetch(r []rune, p int, lits map[int]strLiteral, end int, leaf func(string, int) (string, int, bool)) (string, int, bool) {
+	p = skipAllSpace(r, p)
+	switch {
+	case p < len(r) && r[p] == '[':
+		if attr, close, ok := literalCloser(r, p+1, lits, "]"); ok {
+			return leaf(attr, close+1)
+		}
+	case p < len(r) && r[p] == '.':
+		w, wend := readWordRunes(r, skipAllSpace(r, p+1))
+		q := skipAllSpace(r, wend)
+		if w == "get" && q < len(r) && r[q] == '(' {
+			if attr, ok := literalSubscript(r, q+1, lits, "),"); ok {
+				return leaf(attr, callClose(r, q))
+			}
+		}
+	}
+	return "", end, false
+}
+
+// callClose returns the index just past the ')' that closes the call whose '(' is r[open].
+func callClose(r []rune, open int) int {
+	spans := callArgSpans(r, open)
+	return min(spans[len(spans)-1][1]+1, len(r))
 }
 
 // stringLoaderKind reports whether the dotted call segs is a string loader: its head
@@ -1511,6 +1723,12 @@ func ownModuleArg(r []rune, i int, closers string) bool {
 
 // literalSubscript is literalArg for a subscript or call argument closed by one of closers.
 func literalSubscript(r []rune, i int, lits map[int]strLiteral, closers string) (string, bool) {
+	body, _, ok := literalCloser(r, i, lits, closers)
+	return body, ok
+}
+
+// literalCloser is literalSubscript that also returns the index of the closer.
+func literalCloser(r []rune, i int, lits map[int]strLiteral, closers string) (string, int, bool) {
 	i = skipAllSpace(r, i)
 	if i < len(r) && r[i] != '_' {
 		j := i
@@ -1521,13 +1739,13 @@ func literalSubscript(r []rune, i int, lits map[int]strLiteral, closers string) 
 	}
 	lit, ok := lits[i]
 	if !ok {
-		return "", false
+		return "", 0, false
 	}
 	k := skipAllSpace(r, lit.end)
 	if k >= len(r) || !strings.ContainsRune(closers, r[k]) {
-		return "", false
+		return "", 0, false
 	}
-	return lit.body, true
+	return lit.body, k, true
 }
 
 // precededByDef reports whether the identifier at r[i] is the name in a def statement.

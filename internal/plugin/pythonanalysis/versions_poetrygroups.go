@@ -201,20 +201,22 @@ func readPoetryGroups(path string) *poetryGroups {
 // --only or --with names counts only as the manifest spells it, since poetry 1.x matches the
 // name as written; --without drops every spelling of its name.
 func (g *poetryGroups) selected(sel poetrySelection) map[string]bool {
-	return g.selectBy(sel, func(name string) bool { return g.spelled[name] })
+	return g.selectBy(sel, func(name string) bool { return g.spelled[name] }, func(string) bool { return true })
 }
 
-// mayselect is selected with a group --only or --with names counted under any spelling of a
-// declared group, as a poetry that matches names normalized reads it.
+// mayselect is selected read as widely as any poetry might: a group --only or --with names counts
+// under any spelling of a declared group, and --without drops a group only as the manifest
+// spells it, since a poetry that matches names as written keeps it.
 func (g *poetryGroups) mayselect(sel poetrySelection) map[string]bool {
 	return g.selectBy(sel, func(name string) bool {
 		_, ok := g.optional[normalizePyCoordinate(name)]
 		return ok
-	})
+	}, func(name string) bool { return g.spelled[name] })
 }
 
-// selectBy is selected, counting a group --only or --with names when declared reports true.
-func (g *poetryGroups) selectBy(sel poetrySelection, declared func(string) bool) map[string]bool {
+// selectBy is selected, counting a group --only or --with names when declared reports true, and
+// dropping one --without names when drops does.
+func (g *poetryGroups) selectBy(sel poetrySelection, declared, drops func(string) bool) map[string]bool {
 	out := map[string]bool{}
 	pick := func(names []string) {
 		for _, name := range names {
@@ -234,7 +236,9 @@ func (g *poetryGroups) selectBy(sel poetrySelection, declared func(string) bool)
 	}
 	pick(sel.with)
 	for _, name := range sel.without {
-		delete(out, normalizePyCoordinate(name))
+		if drops(name) {
+			delete(out, normalizePyCoordinate(name))
+		}
 	}
 	return out
 }
@@ -321,7 +325,9 @@ func (g *poetryGroups) excludes(pkg poetryLockPackage, selected map[string]bool)
 	case pkg.Category != nil:
 		switch pkg.Category {
 		case "main":
-			return !selected["main"]
+			// main pulls it in, and a dev dependency may share it: only an install of no group
+			// leaves it out.
+			return len(g.optional) > 0 && none("")
 		case "dev":
 			return len(g.optional) > 1 && none("main")
 		}

@@ -137,7 +137,7 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(unq); ok && kind == reqEditable {
 				return out, false
 			}
-			if abbreviatesInstallOption(unq) || laterInstallOption(unq) || untrackedConstraint(unq) {
+			if abbreviatesInstallOption(unq) || laterInstallOption(unq) || untrackedConstraint(unq) || envOptionName(unq) {
 				return out, false
 			}
 			// pip parses every option on the line, not just the first, and accepts any
@@ -173,6 +173,17 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 		})
 	}
 	return out, true
+}
+
+// envOptionName reports an option whose name comes from an environment variable ("-${R} x.txt"):
+// pip expands it before parsing, so it may name an install option.
+func envOptionName(line string) bool {
+	for _, f := range strings.Fields(line) {
+		if strings.HasPrefix(f, "-") && strings.Contains(f, "${") {
+			return true
+		}
+	}
+	return false
 }
 
 // untrackedConstraint reports a constraint option that includeTarget does not record: shortened

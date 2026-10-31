@@ -86,6 +86,7 @@ func stripPythonLiterals(src string) (string, map[int]strLiteral) {
 	r := []rune(src)
 	n := len(r)
 	lits := map[int]strLiteral{}
+	ends := fieldEnds{}
 	for i := 0; i < n; {
 		c := r[i]
 		switch {
@@ -97,7 +98,7 @@ func stripPythonLiterals(src string) (string, map[int]strLiteral) {
 			}
 		case c == '"' || c == '\'':
 			start := i
-			i = stripStringLiteral(&b, r, i)
+			i, _ = stripLiteral(&b, r, i, ends)
 			body, from := literalBody(r, start, i)
 			lits[start] = strLiteral{end: i, body: body, from: from}
 		default:
@@ -136,6 +137,7 @@ func spliceFStrings(clean string, lits map[int]strLiteral) (spliced string, all 
 // r, adding the literals inside them to lits, and returns the text of those it can't splice.
 // raw reports a raw prefix, under which \N{...} is text rather than a named escape.
 func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int, raw bool) (unread []string) {
+	ends := fieldEnds{}
 	for i := 0; i < len(body); i++ {
 		if body[i] != '{' {
 			continue
@@ -150,11 +152,11 @@ func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int,
 			}
 			continue
 		}
-		end := scanField(body, i+1, true)
+		end := scanField(body, i+1, true, nil, ends)
 		if end >= len(body) {
 			return append(unread, string(body[i+1:]))
 		}
-		exprEnd := scanField(body, i+1, false)
+		exprEnd := scanField(body, i+1, false, nil, ends)
 		code := exprEnd
 		if k := trimRightSpace(body, i+1, code); k > i+1 && body[k-1] == '=' {
 			code = k - 1
@@ -182,15 +184,27 @@ func spliceSubstitutions(r []rune, lits map[int]strLiteral, body []rune, at int,
 
 // scanField returns the index in body, from i, of the brace that closes a substitution, or
 // with whole false of the first conversion '!' or format-spec ':' before it, skipping nested
-// brackets and string literals; len(body) when there is none. A format spec is text apart
-// from its nested substitutions, so its quotes and brackets open nothing.
-func scanField(body []rune, i int, whole bool) int {
+// brackets, string literals and comments; len(body) when there is none. A format spec is text
+// apart from its nested substitutions, so its quotes and brackets open nothing; a non-nil
+// stop reports the spec runes that end the enclosing literal instead, and scanField returns
+// the first one's index. A nested literal left open ends the scan, as len(body). ends
+// memoizes the fields of nested f-strings, keyed on body's indices.
+func scanField(body []rune, i int, whole bool, stop func(int) bool, ends fieldEnds) int {
 	depth := 0
 	var sink strings.Builder
 	for i < len(body) {
 		switch c := body[i]; {
 		case c == '"' || c == '\'':
-			i = stripStringLiteral(&sink, body, i)
+			j, closed := stripLiteral(&sink, body, i, ends)
+			if !closed {
+				return len(body)
+			}
+			i = j
+			continue
+		case c == '#':
+			for i < len(body) && body[i] != '\n' {
+				i++
+			}
 			continue
 		case c == '(' || c == '[' || c == '{':
 			depth++
@@ -203,9 +217,14 @@ func scanField(body []rune, i int, whole bool) int {
 			depth--
 		case depth == 0 && whole && c == ':':
 			for i++; i < len(body); i++ {
+				if stop != nil && stop(i) {
+					return i
+				}
 				switch body[i] {
 				case '{':
-					i = scanField(body, i+1, true)
+					if i = scanField(body, i+1, true, stop, ends); i < len(body) && body[i] != '}' {
+						return i
+					}
 				case '}':
 					return i
 				}
@@ -269,20 +288,28 @@ func literalBody(r []rune, start, end int) (string, int) {
 	return string(r[from:to]), from
 }
 
-// stripStringLiteral blanks a Python string literal starting at the quote rune r[i]
-// (single- or triple-quoted) and returns the index just past the closing quote. The
+// stripLiteral blanks a Python string literal starting at the quote rune r[i]
+// (single- or triple-quoted) and returns the index just past the closing quote, and whether
+// there was one: an unterminated literal ends at EOF or, single-quoted, at a newline. The
 // literal is replaced by a single '_' token; interior runes become spaces and interior
 // newlines are preserved so the line structure of a multi-line (triple-quoted) string
-// is kept intact.
-func stripStringLiteral(b *strings.Builder, r []rune, i int) int {
+// is kept intact. An f-string or t-string's substitutions are skipped whole, so a quote
+// inside one opens a nested literal (PEP 701) rather than closing this one.
+func stripLiteral(b *strings.Builder, r []rune, i int, ends fieldEnds) (int, bool) {
 	n := len(r)
 	quote := r[i]
 	triple := i+2 < n && r[i+1] == quote && r[i+2] == quote
+	field := fieldSkipper(r, i, triple, ends)
 	b.WriteByte('_')
 	if triple {
 		b.WriteString("  ")
 		i += 3
 		for i < n {
+			if j := field(i); j > i {
+				blankRunes(b, r[i:j])
+				i = j
+				continue
+			}
 			if r[i] == '\\' && i+1 < n {
 				b.WriteString("  ")
 				i += 2
@@ -290,7 +317,7 @@ func stripStringLiteral(b *strings.Builder, r []rune, i int) int {
 			}
 			if r[i] == quote && i+2 < n && r[i+1] == quote && r[i+2] == quote {
 				b.WriteString("   ")
-				return i + 3
+				return i + 3, true
 			}
 			if r[i] == quote && i+2 >= n {
 				// closing triple at EOF
@@ -303,10 +330,15 @@ func stripStringLiteral(b *strings.Builder, r []rune, i int) int {
 			}
 			i++
 		}
-		return i
+		return i, false
 	}
 	i++
 	for i < n && r[i] != quote {
+		if j := field(i); j > i {
+			blankRunes(b, r[i:j])
+			i = j
+			continue
+		}
 		if r[i] == '\\' && i+1 < n {
 			b.WriteString("  ")
 			i += 2
@@ -314,16 +346,87 @@ func stripStringLiteral(b *strings.Builder, r []rune, i int) int {
 		}
 		if r[i] == '\n' {
 			// unterminated single-line string — stop at the newline
-			return i
+			return i, false
 		}
 		b.WriteByte(' ')
 		i++
 	}
 	if i < n {
 		b.WriteByte(' ')
-		i++
+		return i + 1, true
 	}
-	return i
+	return i, false
+}
+
+// fieldKey names a substitution by the index of its opening brace and the literal around
+// it, whose quotes decide where its format spec ends.
+type fieldKey struct {
+	brace  int
+	quote  rune
+	triple bool
+}
+
+// fieldEnds memoizes scanField over the substitutions of one rune slice. Invalid source can
+// leave a substitution open to a later literal's, and without it each enclosing scan that
+// falls back would scan the later one again.
+type fieldEnds map[fieldKey]int
+
+// fieldSkipper returns, for the literal whose opening quote is r[start], a function giving
+// the index just past the f-string or t-string construct that starts at r[i] and holds a
+// brace: a whole substitution, a {{ escape, a \N{...} named escape, or the backslash before a
+// brace, which escapes nothing. It returns i when none starts there, which is always so
+// outside f-strings and for a substitution that never closes; that brace is then text, as
+// before PEP 701. ends memoizes the substitution scans.
+func fieldSkipper(r []rune, start int, triple bool, ends fieldEnds) func(i int) int {
+	if !fStringPrefix(r, start) {
+		return func(i int) int { return i }
+	}
+	quote, raw := r[start], rawPrefix(r, start)
+	// A single-quoted literal's format spec ends at its quote or a newline, a triple-quoted
+	// one's at three quotes.
+	stop := func(j int) bool {
+		if !triple {
+			return r[j] == quote || r[j] == '\n'
+		}
+		return r[j] == quote && j+2 < len(r) && r[j+1] == quote && r[j+2] == quote
+	}
+	return func(i int) int {
+		switch {
+		case r[i] == '\\' && i+1 < len(r) && r[i+1] == '{':
+			return i + 1
+		case r[i] == '\\' && !raw && i+2 < len(r) && r[i+1] == 'N' && r[i+2] == '{':
+			for j := i + 3; j < len(r) && r[j] != quote && r[j] != '\n'; j++ {
+				if r[j] == '}' {
+					return j + 1
+				}
+			}
+		case r[i] != '{':
+		case i+1 < len(r) && r[i+1] == '{':
+			return i + 2
+		default:
+			key := fieldKey{i, quote, triple}
+			end, ok := ends[key]
+			if !ok {
+				end = scanField(r, i+1, true, stop, ends)
+				ends[key] = end
+			}
+			if end < len(r) && r[end] == '}' {
+				return end + 1
+			}
+		}
+		return i
+	}
+}
+
+// blankRunes writes a space for each rune of s, keeping its newlines.
+func blankRunes(b *strings.Builder, s []rune) {
+	for _, c := range s {
+		if c == '\n' {
+			b.WriteByte('\n')
+		} else {
+			b.WriteByte(' ')
+		}
+	}
 }
 
 // logicalLines splits cleaned source into logical lines, joining physical lines across

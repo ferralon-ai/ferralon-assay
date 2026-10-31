@@ -62,6 +62,8 @@ type lofWorld struct {
 	ctx      context.Context
 	buildDir string
 	env      []string
+	// epoch numbers the walks; closures run one at a time.
+	epoch int
 	// excluded reports whether a file with this build constraint compiles in no build the
 	// refutation describes (toolchainExcluded).
 	excluded func(constraint.Expr) bool
@@ -134,6 +136,8 @@ type lofPkg struct {
 	imports []string
 	asmText map[string][]*lofAsm
 	asmData map[string]bool
+	// asmNames holds the names under this package's path among asmText's and asmData's symbols.
+	asmNames map[string]bool
 }
 
 // lofFile is one parsed Go file of a lofPkg.
@@ -160,6 +164,9 @@ type lofDecl struct {
 	name string
 	recv string
 	done bool
+	// seen is the epoch of the last walk that queued it; src is its key in lofClosure.src.
+	seen int
+	src  string
 	refs []lofRef
 	// called holds the names it selects on a value: methods, or fields it may call.
 	called  []string
@@ -739,7 +746,7 @@ func (w *lofWorld) refsOf(d *lofDecl) {
 type lofWalk struct {
 	w       *lofWorld
 	out     *lofClosure
-	visited map[*lofDecl]bool
+	epoch   int
 	touched map[*lofFile]bool
 	entered map[*lofPkg]bool
 	called  map[string]bool
@@ -802,7 +809,8 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 		}
 		return out
 	}
-	k := &lofWalk{w: w, out: out, visited: map[*lofDecl]bool{}, touched: map[*lofFile]bool{}, entered: map[*lofPkg]bool{}, called: map[string]bool{}, asmDone: map[*lofAsm]bool{}}
+	w.epoch++
+	k := &lofWalk{w: w, out: out, epoch: w.epoch, touched: map[*lofFile]bool{}, entered: map[*lofPkg]bool{}, called: map[string]bool{}, asmDone: map[*lofAsm]bool{}}
 	for _, d := range file.decls {
 		k.push(d)
 		if d.recv != "" && own.loaded != nil {
@@ -1112,10 +1120,10 @@ func (g lofGivenImporter) Import(path string) (*types.Package, error) {
 
 // push queues d for walking.
 func (k *lofWalk) push(d *lofDecl) {
-	if k.visited[d] {
+	if d.seen == k.epoch {
 		return
 	}
-	k.visited[d] = true
+	d.seen = k.epoch
 	k.queue = append(k.queue, d)
 }
 
@@ -1211,11 +1219,13 @@ func (k *lofWalk) walk(d *lofDecl) {
 	k.w.refsOf(d)
 	switch n := d.node.(type) {
 	case *ast.FuncDecl:
-		name := d.name
-		if d.recv != "" {
-			name = d.recv + "." + d.name
+		if d.src == "" {
+			d.src = d.name
+			if d.recv != "" {
+				d.src = d.recv + "." + d.name
+			}
 		}
-		k.out.src[[2]string{p.path, name}] = true
+		k.out.src[[2]string{p.path, d.src}] = true
 		if n.Body == nil && d.recv == "" {
 			k.bodyless(d, n)
 		}
@@ -1295,6 +1305,9 @@ func (k *lofWalk) resolveIn(p *lofPkg, name string) bool {
 	for _, d := range p.decls[name] {
 		k.push(d)
 		found = true
+	}
+	if !p.asmNames[name] {
+		return found
 	}
 	sym := p.path + "." + name
 	for _, b := range p.asmText[sym] {
@@ -1529,6 +1542,16 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 	}
 }
 
+// asmName indexes sym under asmNames when it names a symbol of p.
+func (p *lofPkg) asmName(sym string) {
+	if name, ok := strings.CutPrefix(sym, p.path+"."); ok {
+		if p.asmNames == nil {
+			p.asmNames = map[string]bool{}
+		}
+		p.asmNames[name] = true
+	}
+}
+
 // parseAsm records an assembly file's TEXT bodies, with the symbols each references, and its data
 // symbols. A symbol is "pkgpath.name" for the Go-visible form ("·name", "pkg∕path·name"),
 // "file:name<>" for a file-local one, and the bare name otherwise. A reference made by a macro the
@@ -1594,11 +1617,13 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 			cur = &lofAsm{file: path}
 			sym := norm(refs[0])
 			p.asmText[sym] = append(p.asmText[sym], cur)
+			p.asmName(sym)
 			bodies = append(bodies, cur)
 			continue
 		case "GLOBL", "DATA":
 			for _, ref := range asmRefs(t) {
 				p.asmData[norm(ref)] = true
+				p.asmName(norm(ref))
 			}
 			continue
 		}

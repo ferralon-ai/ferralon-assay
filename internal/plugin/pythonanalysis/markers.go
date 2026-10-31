@@ -34,9 +34,13 @@ type markerResult struct {
 	unboundVar string // the first (source-order) unbound variable, "" if none/malformed
 }
 
-// markerSetVars are PEP 751's set-valued marker variables, bound in env as newline-separated
-// normalized names: `"x" in extras` is membership, not a substring test.
+// markerSetVars are PEP 751's set-valued marker variables. Where env also holds the variable's
+// markerSetKey, pyLockSelection bound it as newline-separated normalized names, and `"x" in
+// extras` is membership, not a substring test; a value bound any other way is a string.
 var markerSetVars = map[string]bool{"extras": true, "dependency_groups": true}
+
+// markerSetKey is the env key marking name as bound as a set; no marker can name it.
+func markerSetKey(name string) string { return "\x00set:" + name }
 
 // versionMarkerVars are the marker variables whose values are PEP 440 versions and whose
 // comparisons must route through the shared pep440 comparator.
@@ -387,7 +391,7 @@ func evalMarkerCmp(c markerCmp, env map[string]string, selection []string) (bool
 	if (lVer || rVer) && isVersionOp(c.op) {
 		return evalVersionCmp(c, env, lVer, rVer)
 	}
-	if c.right.isVar && markerSetVars[c.right.text] && !c.left.isVar && (c.op == "in" || c.op == "not in") {
+	if _, set := env[markerSetKey(c.right.text)]; set && c.right.isVar && markerSetVars[c.right.text] && !c.left.isVar && (c.op == "in" || c.op == "not in") {
 		in := slices.Contains(strings.Split(env[c.right.text], "\n"), normalizePyCoordinate(c.left.text))
 		return in == (c.op == "in"), true
 	}

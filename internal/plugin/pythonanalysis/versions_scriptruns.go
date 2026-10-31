@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"bytes"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,6 +25,10 @@ type runRecorder struct {
 	// which a -r of it adds nothing to. The rescan records every pip install, allowing
 	// every command, and resolves each -r file against the directory the command runs in.
 	laneRead func(string) bool
+	// root and head, set on a rescan's recorder, are the build root and the head of the
+	// surface it reads.
+	root string
+	head []byte
 }
 
 type surfaceHead struct {
@@ -47,15 +52,30 @@ func (r *runRecorder) allowed(words []string, b scriptsurface.Binder) bool {
 // resolve is a run whose -r files are the build-tree files each names, less those the lane
 // already reads. Binder.Hosts gives every directory the command may run in; a -r is resolved
 // only when that is one directory, so a -r naming an absolute path, a path from an unknown
-// directory, or one of several directories names nothing.
+// directory, or one of several directories names nothing. A script runs in the directory it
+// is invoked from, which Hosts reads as the script's own; that is known only for a script at
+// the build root, where CI invokes it, so a -r in a script elsewhere names nothing.
 func (r *runRecorder) resolve(words, args []string, b scriptsurface.Binder) scriptRun {
 	run := scriptRun{surface: r.surface, args: args, uv: isUVPip(words)}
+	if invokedScript(r.surface, r.head) && filepath.Dir(r.surface) != filepath.Clean(r.root) {
+		return run
+	}
 	for _, p := range pipRequirementFiles(args) {
 		if h := b.Hosts(p); len(h) == 1 && !r.laneRead(h[0]) {
 			run.files = append(run.files, filepath.Clean(h[0]))
 		}
 	}
 	return run
+}
+
+// invokedScript reports whether the surface at path, with its head, is a script, shell,
+// PowerShell or batch, that runs in whatever directory invokes it rather than its own.
+func invokedScript(path string, head []byte) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".sh", ".bash", ".zsh", ".ksh", ".ash", ".dash", ".ps1", ".bat", ".cmd":
+		return true
+	}
+	return bytes.HasPrefix(head, []byte("#!"))
 }
 
 // isUVPip reports whether words, a pip install, runs uv pip.
@@ -163,11 +183,11 @@ func (r *runRecorder) rescan(root string, manifest func(string) bool, spec scrip
 			kept = append(kept, run)
 		}
 	}
-	second := &runRecorder{inner: spec.Allowed, laneRead: manifest}
+	second := &runRecorder{inner: spec.Allowed, laneRead: manifest, root: root}
 	spec.Allowed = second.allowed
 	classify := scriptsurface.New(root, func(string) bool { return true }, spec).Classify(pyInstallSurface)
 	for _, w := range r.withheld {
-		second.surface, second.pending = w.path, nil
+		second.surface, second.head, second.pending = w.path, w.head, nil
 		classify(w.path, w.head)
 		second.runs = append(second.runs, second.pending...)
 	}

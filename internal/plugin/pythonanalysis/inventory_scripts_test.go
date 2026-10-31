@@ -51,9 +51,11 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 			[]string{"deps/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
 		{"uv's --requirements", map[string]string{"install.sh": "uv pip install --requirements deps/extra.in\n", "deps/extra.in": "pyjwt==1.5.0\n"},
 			[]string{"deps/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
-		{"a script's -r resolves from the directory it runs in", map[string]string{"ci/install.sh": "pip install --requirement=extra.in\n",
-			"ci/extra.in": "pyjwt==1.5.0\n", "extra.in": "decoy==9.9\n"},
-			[]string{"ci/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
+		{"a script outside the root runs from where it is invoked: its -r names nothing", map[string]string{
+			"ci/install.sh": "pip install --requirement=extra.in\n", "ci/extra.in": "decoy==9.9\n", "extra.in": "pyjwt==1.5.0\n"}, nil},
+		{"a Makefile's -r resolves from its own directory", map[string]string{"svc/Makefile": "deps:\n\tpip install -r extra.in\n",
+			"svc/extra.in": "pyjwt==1.5.0\n", "extra.in": "decoy==9.9\n"},
+			[]string{"svc/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
 		{"a -r resolves after cd", map[string]string{"install.sh": "cd deps && pip install -r extra.in\n",
 			"deps/extra.in": "pyjwt==1.5.0\n", "extra.in": "decoy==9.9\n"},
 			[]string{"deps/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
@@ -80,6 +82,20 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 				"[[packages]]\nname = \"ruff\"\nversion = \"0.5\"\nmarker = \"'dev' in dependency_groups\"\n" +
 				"[[packages]]\nname = \"mypy\"\nversion = \"1.0\"\nmarker = \"'lint' in dependency_groups\"\n"},
 			[]string{"pylock.toml#forked pkg:pypi/forked", "pylock.toml#ruff pkg:pypi/ruff@0.5", "pylock.toml#sphinx pkg:pypi/sphinx@7.0"}},
+		{"a pylock.toml's --group replaces its default groups", map[string]string{"install.sh": "uv pip install -r pylock.toml --group lint\n",
+			"pylock.toml": "lock-version = \"1.0\"\ndefault-groups = [\"dev\"]\n" +
+				"[[packages]]\nname = \"ruff\"\nversion = \"0.5\"\nmarker = \"'dev' in dependency_groups\"\n" +
+				"[[packages]]\nname = \"mypy\"\nversion = \"1.0\"\nmarker = \"'lint' in dependency_groups\"\n"},
+			[]string{"pylock.toml#mypy pkg:pypi/mypy@1.0"}},
+		{"a pylock.toml's extras and groups are sets, not strings", map[string]string{"install.sh": "uv pip install -r pylock.toml --extra docs\n",
+			"pylock.toml": "lock-version = \"1.0\"\ndefault-groups = [\"dev\"]\n" +
+				"[[packages]]\nname = \"sphinx\"\nversion = \"7.0\"\nmarker = \"'doc' in extras\"\n" +
+				"[[packages]]\nname = \"ruff\"\nversion = \"0.5\"\nmarker = \"'de' in dependency_groups\"\n"}, nil},
+		{"uv refuses a pylock.toml beside another requirement or a name it does not read as a lock", map[string]string{
+			"a.sh": "uv pip install -r pylock.toml pyjwt==1.5.0\n", "b.sh": "uv pip install -r x/PYLOCK.TOML\n", "c.sh": "uv pip install -r pylock.a.b.toml\n",
+			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"a\"\nversion = \"1\"\n",
+			"x/PYLOCK.TOML": "lock-version = \"1.0\"\n[[packages]]\nname = \"b\"\nversion = \"1\"\n",
+			"pylock.a.b.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"c\"\nversion = \"1\"\n"}, nil},
 		{"pip cannot install a -r pylock.toml", map[string]string{"install.sh": "pip install -r pylock.toml\n",
 			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"pyjwt\"\nversion = \"1.5.0\"\n"}, nil},
 		{"a -r of project metadata names nothing", map[string]string{"install.sh": "uv pip install -r deps/setup.cfg -r deps/other.toml\n",
@@ -106,6 +122,7 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 			[]string{"install.sh#pyjwt pkg:pypi/pyjwt@1.5.0"}},
 		{"value-less options and --", map[string]string{"install.sh": "uv pip install --system --no-cache --use-pep517 --verify-hashes a==1 -- b==2\n"},
 			[]string{"install.sh#a pkg:pypi/a@1", "install.sh#b pkg:pypi/b@2"}},
+		{"an option after -- fails pip", map[string]string{"install.sh": "pip install -- -r x.in pyjwt==1.5.0\n", "x.in": "a==1\n"}, nil},
 		{"paths, archives, URLs and editables name nothing", map[string]string{"install.sh": "pip install . -e ./lib ./dist/a-1.0-py3-none-any.whl a-1.0.tar.gz git+https://x/y\n"}, nil},
 		{"a wildcard version is a requirement", map[string]string{"install.sh": "pip install 'transformers==4.51.*'\n"},
 			[]string{"install.sh#transformers pkg:pypi/transformers"}},
@@ -198,5 +215,26 @@ func TestInventory_ScriptInstallWideManifest(t *testing.T) {
 	}
 	if without, with := count(map[string]string{"a.txt": ""}), count(map[string]string{"install.sh": "pip install -r requirements.txt\n"}); with != without {
 		t.Errorf("nodes = %d with the -r, want %d", with, without)
+	}
+}
+
+// TestMarkers_SetVarsOnlyFromPyLock pins that extras and dependency_groups are sets only as a
+// pylock.toml's selection binds them: a declared environment binding either is a string, as on
+// main.
+func TestMarkers_SetVarsOnlyFromPyLock(t *testing.T) {
+	env := map[string]string{"extras": "docs,test"}
+	if r := evaluateMarker("'docs' in extras", env, nil); r.unresolved || !r.selected {
+		t.Errorf("declared extras: %+v, want selected by substring", r)
+	}
+	lock := pyLockTOML{DefaultGroups: []string{"dev"}}
+	sel := pyLockSelection(lock, []string{"--extra", "docs"}, env)
+	for _, c := range []struct {
+		marker string
+		want   bool
+	}{{"'docs' in extras", true}, {"'doc' in extras", false}, {"'test' in extras", false},
+		{"'dev' in dependency_groups", true}, {"'de' not in dependency_groups", true}} {
+		if r := evaluateMarker(c.marker, sel, nil); r.unresolved || r.selected != c.want {
+			t.Errorf("%s: %+v, want %v", c.marker, r, c.want)
+		}
 	}
 }

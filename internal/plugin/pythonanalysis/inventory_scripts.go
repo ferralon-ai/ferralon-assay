@@ -61,6 +61,9 @@ func pipArgs(args []string) (files, reqs []string) {
 		switch {
 		case a == "--":
 			for _, a := range args[i+1:] {
+				if strings.HasPrefix(a, "-") {
+					return nil, nil // pip reads it as a requirement and fails
+				}
 				if pipRequirementArg(a) {
 					reqs = append(reqs, a)
 				}
@@ -168,6 +171,9 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 		}
 	}
 	for _, run := range runs {
+		if run.uv && uvRejectsPyLock(run.args) {
+			continue
+		}
 		if _, args := pipArgs(run.args); len(args) > 0 {
 			add(relScope(req.BuildDir, run.surface), resolveRequirements([]byte(strings.Join(args, "\n")+"\n"), req.TargetEnv, req.Selection))
 		}
@@ -189,9 +195,8 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 // setup.cfg or setup.py as project metadata this does not read. Those name nothing; any other
 // file is requirements lines.
 func requirementFileReqs(path string, data []byte, run scriptRun, req plugin.ResolveInventoryRequest) []pyReq {
-	lower := strings.ToLower(filepath.Base(path))
-	switch ext := filepath.Ext(lower); {
-	case lower == "pylock.toml" || strings.HasPrefix(lower, "pylock.") && ext == ".toml":
+	switch ext := strings.ToLower(filepath.Ext(path)); {
+	case isPyLockName(filepath.Base(path)):
 		if !run.uv {
 			return nil
 		}
@@ -200,6 +205,29 @@ func requirementFileReqs(path string, data []byte, run scriptRun, req plugin.Res
 		return nil
 	}
 	return resolveRequirements(data, req.TargetEnv, req.Selection)
+}
+
+// isPyLockName is uv's test for a PEP 751 lock's file name: pylock.toml, or pylock.<name>.toml
+// with no dot in name, matched case-sensitively.
+func isPyLockName(base string) bool {
+	name, ok := strings.CutPrefix(base, "pylock.")
+	name, ok2 := strings.CutSuffix(name, ".toml")
+	return base == "pylock.toml" || ok && ok2 && name != "" && !strings.Contains(name, ".")
+}
+
+// uvRejectsPyLock reports whether a uv pip install's arguments name a pylock.toml with another
+// requirement, -r file, constraint or override, which uv refuses to install.
+func uvRejectsPyLock(args []string) bool {
+	files, reqs := pipArgs(args)
+	if !slices.ContainsFunc(files, func(f string) bool { return isPyLockName(filepath.Base(f)) }) {
+		return false
+	}
+	others := len(files) > 1 || len(reqs) > 0
+	for _, a := range args {
+		others = others || a == "--" || strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "--constraint") ||
+			strings.HasPrefix(a, "--override") || strings.HasPrefix(a, "-e") || strings.HasPrefix(a, "--editable")
+	}
+	return others
 }
 
 type pyLockTOML struct {
@@ -261,13 +289,13 @@ func parsePyLockTOML(data []byte, args []string, env map[string]string, selectio
 	return out
 }
 
-// pyLockSelection is env with PEP 751's extras and dependency_groups marker variables bound to
-// what uv pip install's arguments select from lock: the --extra names (every extra with
-// --all-extras, none without), and the --group names with the lock's default groups. An
-// argument this does not read as a selection (another group option, a group from a named
-// file) leaves the variable unbound, so a marker naming it stays unresolved.
+// pyLockSelection is env with PEP 751's extras and dependency_groups marker variables bound, as
+// sets, to what uv pip install's arguments select from lock: the --extra names (every extra
+// with --all-extras, none without), and the --group names, or the lock's default groups when
+// none is given. An argument this does not read as a selection (another group option, a group
+// from a named file) leaves the variable unbound, so a marker naming it stays unresolved.
 func pyLockSelection(lock pyLockTOML, args []string, env map[string]string) map[string]string {
-	extras, groups := []string{}, slices.Clone(lock.DefaultGroups)
+	var extras, groups []string
 	extrasOK, groupsOK := true, true
 	for i := 0; i < len(args); i++ {
 		flag, v, attached := strings.Cut(args[i], "=")
@@ -289,18 +317,23 @@ func pyLockSelection(lock pyLockTOML, args []string, env map[string]string) map[
 			groupsOK = false
 		}
 	}
+	if groups == nil {
+		groups = slices.Clone(lock.DefaultGroups)
+	}
 	out := maps.Clone(env)
 	if out == nil {
 		out = map[string]string{}
 	}
 	bind := func(name string, ok bool, values []string) {
+		delete(out, name)
+		delete(out, markerSetKey(name))
 		if !ok {
 			return
 		}
 		for i, v := range values {
 			values[i] = normalizePyCoordinate(v)
 		}
-		out[name] = strings.Join(values, "\n")
+		out[name], out[markerSetKey(name)] = strings.Join(values, "\n"), ""
 	}
 	bind("extras", extrasOK, extras)
 	bind("dependency_groups", groupsOK, groups)

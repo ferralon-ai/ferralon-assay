@@ -1470,7 +1470,8 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 func TestCallGraphAndIndex_LineEndings(t *testing.T) {
 	src := flaskApp + `
 import importlib
-plugin = importlib.import_module('yaml')
+greeting = 'hello \
+world'; plugin = importlib.import_module('yaml')
 doc = """first
 second"""
 total = 1 + \

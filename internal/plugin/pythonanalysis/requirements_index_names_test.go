@@ -347,6 +347,30 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantUnpinned: true,
 		},
 		{
+			name: "include after another option",
+			files: map[string]string{
+				"requirements.txt": "--pre -r inc.txt\nsix==1.16.0\n",
+				"inc.txt":          "django==5.0\n",
+			},
+			wantPURLs:    []string{"pkg:pypi/six@1.16.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "editable after another option",
+			files:        map[string]string{"requirements.txt": "--index-url https://example.com/simple -e ./pkg\n"},
+			wantUnpinned: true,
+		},
+		{
+			name:      "constraint after another option adds nothing",
+			files:     map[string]string{"requirements.txt": "--pre -c c.txt\nsix==1.16.0\n"},
+			wantPURLs: []string{"pkg:pypi/six@1.16.0"},
+		},
+		{
+			name:      "plain options",
+			files:     map[string]string{"requirements.txt": "--extra-index-url https://example.com/simple --prefer-binary\nsix==1.16.0\n"},
+			wantPURLs: []string{"pkg:pypi/six@1.16.0"},
+		},
+		{
 			name: "include followed",
 			files: map[string]string{
 				"requirements.txt":           "-r requirements/framework.txt\n",
@@ -414,13 +438,14 @@ func TestInventoryIncludeSymlinkLoop(t *testing.T) {
 	}
 }
 
-// A ".." after a symlinked directory steps out of the link's target, as pip's open resolves
-// it, not back to the walked root manifest.
+// A ".." after a symlinked directory is collapsed as text, as pip's os.path.abspath does,
+// so it steps back out of the link's own directory, not out of its target.
 func TestInventoryIncludeDotDotAfterSymlink(t *testing.T) {
 	dir := writeTree(t, map[string]string{
-		"requirements.txt":       "requests==2.31.0\n-r .link/dev.txt\n",
-		".reqs/inner/dev.txt":    "-r ../requirements.txt\n",
-		".reqs/requirements.txt": "django==5.0\n",
+		"requirements.txt":    "requests==2.31.0\n-r .link/dev.txt\n",
+		".reqs/inner/dev.txt": "-r ../other.txt\n",
+		".reqs/other.txt":     "django==5.0\n",
+		"other.txt":           "flask==3.0\n",
 	})
 	if err := os.Symlink(filepath.Join(".reqs", "inner"), filepath.Join(dir, ".link")); err != nil {
 		t.Skip(err)
@@ -429,7 +454,7 @@ func TestInventoryIncludeDotDotAfterSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := sortedPURLs(inv), []string{"pkg:pypi/django@5.0", "pkg:pypi/requests@2.31.0"}; !reflect.DeepEqual(got, want) {
+	if got, want := sortedPURLs(inv), []string{"pkg:pypi/flask@3.0", "pkg:pypi/requests@2.31.0"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("PURLs = %q, want %q", got, want)
 	}
 	if !inv.Partiality.Complete {

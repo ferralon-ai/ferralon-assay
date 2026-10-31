@@ -135,7 +135,7 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 				kind = reqEditable
 				target, ok = editableTarget(spec)
 			}
-			if !ok && abbreviatesInstallOption(spec) {
+			if (!ok && abbreviatesInstallOption(spec)) || laterInstallOption(spec) {
 				f.unnamed = true // an install this reader does not follow
 				continue
 			}
@@ -279,6 +279,24 @@ func abbreviatesInstallOption(line string) bool {
 	}
 	word, _, _ := strings.Cut(fields[0], "=")
 	return len(word) > 2 && (strings.HasPrefix("--requirement", word) || strings.HasPrefix("--editable", word))
+}
+
+// laterInstallOption reports whether an option line carries an include or editable after its
+// first option ("--pre -r dev.txt"); pip reads every option on the line.
+func laterInstallOption(line string) bool {
+	fields := strings.Fields(line)
+	for i := 1; i < len(fields); i++ {
+		if !strings.HasPrefix(fields[i], "-") {
+			continue
+		}
+		if _, ok := editableTarget(fields[i]); ok || abbreviatesInstallOption(fields[i]) {
+			return true
+		}
+		if _, ok := includeTarget(fields[i]); ok && !isConstraintFlag(fields[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 func isConstraintFlag(spec string) bool {

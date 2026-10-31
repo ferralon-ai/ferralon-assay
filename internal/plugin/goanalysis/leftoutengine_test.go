@@ -405,6 +405,12 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 		{"the file dot-imports a package", map[string]string{
 			"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nimport . \"strings\"\n\nfunc init() { helper(); _ = ToUpper; Bad() }\n",
 		}, true, "", "", true, lofUnresolvedName, ""},
+		// go/types never evaluates the arguments of a generic type it could not import, so it
+		// reports nothing about helper.
+		{"the name is an argument of a generic type from a package the build did not load", map[string]string{
+			"_v/gen/gen.go": "package gen\n\ntype T[X any] struct{}\n",
+			"_v/vuln/y.go":  "//go:build lofalt\n\npackage vuln\n\nimport \"example.com/v/gen\"\n\nvar _ gen.T[helper]\n\nfunc init() { Bad() }\n",
+		}, true, "", "", true, lofVariantTypecheck, ""},
 
 		// A qualified name the standard library does not declare, in any variant.
 		{"a loaded standard-library package declares no such name", merge(strs, map[string]string{
@@ -425,6 +431,12 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 			"size.go": "package main\n\nconst size = 4\n",
 			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nvar buf [size]byte\n\nfunc init() { _ = buf; strings.NoSuchName(); vuln.Bad() }\n",
 		}), false, "", "", false, "", ""},
+		// The receiver's type parameter shadows the import: the file compiles.
+		{"a receiver's type parameter is named for an import and selects a method of its constraint", merge(strs, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\n" +
+				"type namer interface{ NoSuchName() }\n\ntype r[T namer] struct{}\n\nfunc (r[strings]) m() { _ = strings.NoSuchName }\n\n" +
+				"func init() { _ = strings.ToUpper; vuln.Bad() }\n",
+		}), false, "", "", true, lofVariantTypecheck, ""},
 		{"a standard-library package the build did not load", map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t\"go/doc/comment\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { comment.NoSuchName(); vuln.Bad() }\n",
 		}, false, "", "", true, lofUnresolvedName, ""},
@@ -980,6 +992,7 @@ func TestLofStdAbsent(t *testing.T) {
 		{"declared only in a test file", std("src/p"), "InTest", true},
 		{"a name cgo could generate", std("src/p"), "_Nowhere", false},
 		{"a file of the package does not parse", std("src/bad"), "Nowhere", false},
+		{"the package's directory cannot be read", std("src/gone"), "Nowhere", false},
 		{"the directory is outside the toolchain's source", std("elsewhere/q"), "Nowhere", false},
 		{"the package is not the standard library's", &lofPkg{dir: filepath.Join(goroot, "src/p")}, "Nowhere", false},
 		{"a vendored standard-library package", std("src/vendor/v"), "Nowhere", true},

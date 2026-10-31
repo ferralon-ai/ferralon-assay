@@ -69,6 +69,7 @@ func TestInventory_PoetryInstallGroups(t *testing.T) {
 		{"no membership keys under a group flag", map[string]string{"install.sh": "poetry install --only main\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, nil},
 		{"no install recorded", nil, nil},
 		{"a withheld script surface", map[string]string{"install.sh": "poetry install --only main\npip install pytest\n"}, nil},
+		{"a pip self-upgrade", map[string]string{"install.sh": "pip install -U pip\npoetry install --only main\n"}, nil},
 		{"an allowed pip install -r", map[string]string{"install.sh": "poetry install --only main\npip install -r requirements-dev.txt\n",
 			"requirements-dev.txt": "pytest==8.3.2\n"}, nil},
 	}

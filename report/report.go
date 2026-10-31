@@ -181,6 +181,8 @@ type Package struct {
 	Replace string `json:"replace,omitempty"`
 	// NotInstalled marks a package a lockfile declares that every install the build is known to
 	// run leaves out (plugin.DependencyNode.NotInstalled). Version is still the declared pin.
+	// It says this lock entry is not what the build installs, not that no copy of the package is
+	// present: a tool the environment seeds, such as pip, may still be there at another version.
 	NotInstalled bool `json:"not_installed,omitempty"`
 }
 

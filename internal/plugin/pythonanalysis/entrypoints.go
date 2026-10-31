@@ -453,6 +453,15 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 // list item that is a mapping ("- name: web") ends the list. A compose healthcheck's test:
 // and a Kubernetes probe's or lifecycle hook's exec: command: are probes, not launches, and
 // are dropped with their items.
+func templateTag(t string) bool {
+	for _, d := range [][2]string{{"{{", "}}"}, {"{%", "%}"}} {
+		if strings.HasPrefix(t, d[0]) && strings.Index(t, d[1]) == len(t)-len(d[1]) {
+			return true
+		}
+	}
+	return false
+}
+
 func yamlCommandLines(lines []string) []string {
 	var out []string
 	var grp map[string]string
@@ -484,9 +493,9 @@ func yamlCommandLines(lines []string) []string {
 				k = c
 			}
 		}
-		// A template control line ({{- if .Values.x }}) sits at any column and nests or
-		// ends nothing.
-		if strings.HasPrefix(t, "{{") && strings.HasSuffix(t, "}}") {
+		// A line that is one template tag ({{- if .Values.x }}, {% endif %}) sits at any
+		// column and nests or ends nothing.
+		if templateTag(t) {
 			continue
 		}
 		if t != "" && !strings.HasPrefix(t, "#") {

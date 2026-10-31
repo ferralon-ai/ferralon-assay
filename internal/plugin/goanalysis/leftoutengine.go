@@ -250,7 +250,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	for _, c := range cands {
 		cl := w.closure(c.path, c.pkg)
 		closures[c.path] = cl
-		f := &lofFacts{FC: cl.fc, FCStd: cl.fcStd, Dyn: cl.dyn, Vars: cl.vars, Reflect: cl.reflect, Sink: cl.sink,
+		f := &lofFacts{FC: cl.fc, FCStd: cl.fcStd, Dyn: cl.dyn, Vars: cl.vars, Reflect: cl.reflect, Sink: cl.sink || (cl.held && cl.asserts),
 			Excluded: cl.excluded, Dropped: cl.dropped}
 		links, linkFC := w.links(filepath.Dir(c.path), c.std)
 		for ip := range links {

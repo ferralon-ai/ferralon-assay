@@ -94,6 +94,9 @@ type lofWorld struct {
 	// stdNames holds, by directory, the names a standard-library package declares in any build
 	// variant; nil when the directory cannot be read whole.
 	stdNames map[string]map[string]bool
+	// carriers holds the method names some loaded type declares a method of that carries a value
+	// in (lofCarriesIn); nil until first asked.
+	carriers map[string]bool
 }
 
 func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string, env []string, excluded func(constraint.Expr) bool, goroot string, deadline time.Time) *lofWorld {
@@ -172,6 +175,9 @@ type lofDecl struct {
 	called  []string
 	dyn     bool
 	reflect bool
+	// asserts is set when it asserts or switches on an interface value's dynamic type to a type
+	// other than an interface literal, whose methods it can only call by name.
+	asserts bool
 }
 
 // lofRef is a reference a declaration makes. A bare identifier resolves in its own package (in),
@@ -207,8 +213,13 @@ type lofClosure struct {
 	vars  bool
 	// sink is set when a loaded declaration it reaches can carry a value into loaded code that
 	// calls through it: a function's parameter or result, a type, or a variable whose type holds
-	// an interface or a func.
-	sink    bool
+	// an interface or a func; or a method of a loaded type it may call by name whose parameter
+	// or result does.
+	sink bool
+	// held is set when a loaded function's result holds an interface or a func, and asserts
+	// when the closure asserts a dynamic type: together, a value of any type loaded code made.
+	held    bool
+	asserts bool
 	methods map[string]bool
 	dyn     bool
 	reflect bool
@@ -707,6 +718,12 @@ func (w *lofWorld) refsOf(d *lofDecl) {
 					visit(x.Value)
 					return false
 				}
+			case *ast.TypeAssertExpr:
+				if _, ok := ast.Unparen(x.Type).(*ast.InterfaceType); !ok && x.Type != nil {
+					d.asserts = true
+				}
+			case *ast.TypeSwitchStmt:
+				d.asserts = true
 			case *ast.BranchStmt:
 				return false
 			case *ast.LabeledStmt:
@@ -1255,8 +1272,10 @@ func (k *lofWalk) walk(d *lofDecl) {
 	}
 	k.out.dyn = k.out.dyn || d.dyn
 	k.out.reflect = k.out.reflect || d.reflect
+	k.out.asserts = k.out.asserts || d.asserts
 	for _, m := range d.called {
 		k.out.methods[m] = true
+		k.out.sink = k.out.sink || k.w.carrier(m)
 		if k.called[m] {
 			continue
 		}
@@ -1338,9 +1357,10 @@ func (k *lofWalk) terminal(obj types.Object) {
 	case *types.Func:
 		k.out.funcs[o.Origin()] = true
 		sig := o.Signature()
-		k.out.sink = k.out.sink || lofHoldsDispatch(sig.Params(), nil) || lofCarriesIn(sig.Results())
+		k.out.sink = k.out.sink || lofHoldsDispatch(sig.Params(), nil) || lofCarriesIn(sig.Results(), nil)
+		k.out.held = k.out.held || lofHoldsDispatch(sig.Results(), nil)
 		if r := sig.Recv(); r != nil {
-			k.out.sink = k.out.sink || lofCarriesIn(r.Type())
+			k.out.sink = k.out.sink || lofCarriesIn(r.Type(), nil)
 		}
 	case *types.TypeName:
 		k.out.types[o] = true
@@ -1353,26 +1373,38 @@ func (k *lofWalk) terminal(obj types.Object) {
 
 // lofCarriesIn reports whether loaded code that hands out a value of type t can receive through it
 // a value holding an interface or a func: an interface or a func carries one in only through its
-// methods' or its own parameters; anything else through any part that can hold one.
-func lofCarriesIn(t types.Type) bool {
+// methods' or its own parameters, or what its methods or it return; anything else through any
+// part that can hold one. Methods called on the value by name are lofWorld.carrier's, and a
+// dynamic type asserted out of an interface lofClosure.held's.
+func lofCarriesIn(t types.Type, seen map[types.Type]bool) bool {
 	if tu, ok := t.(*types.Tuple); ok {
 		for i := 0; i < tu.Len(); i++ {
-			if lofCarriesIn(tu.At(i).Type()) {
+			if lofCarriesIn(tu.At(i).Type(), seen) {
 				return true
 			}
 		}
 		return false
 	}
-	switch u := types.Unalias(t).Underlying().(type) {
+	t = types.Unalias(t)
+	if _, ok := t.(*types.Named); ok {
+		if seen[t] {
+			return false
+		}
+		if seen == nil {
+			seen = map[types.Type]bool{}
+		}
+		seen[t] = true
+	}
+	switch u := t.Underlying().(type) {
 	case *types.Interface:
 		for i := 0; i < u.NumMethods(); i++ {
-			if lofHoldsDispatch(u.Method(i).Signature().Params(), nil) {
+			if sig := u.Method(i).Signature(); lofHoldsDispatch(sig.Params(), nil) || lofCarriesIn(sig.Results(), seen) {
 				return true
 			}
 		}
 		return false
 	case *types.Signature:
-		return lofHoldsDispatch(u.Params(), nil)
+		return lofHoldsDispatch(u.Params(), nil) || lofCarriesIn(u.Results(), seen)
 	}
 	return lofHoldsDispatch(t, nil)
 }
@@ -1421,6 +1453,35 @@ func lofHoldsDispatch(t types.Type, seen map[types.Type]bool) bool {
 		}
 	}
 	return false
+}
+
+// carrier reports whether a method named name of some loaded type can carry a value into loaded
+// code: a loaded value's dynamic type is a loaded one, and every method a call by name can
+// dispatch to is declared on a package-level type of a loaded package, or promoted from one.
+func (w *lofWorld) carrier(name string) bool {
+	if w.carriers == nil {
+		w.carriers = map[string]bool{}
+		for _, lp := range w.loaded {
+			sc := lp.Types.Scope()
+			for _, n := range sc.Names() {
+				tn, ok := sc.Lookup(n).(*types.TypeName)
+				if !ok {
+					continue
+				}
+				nt, ok := types.Unalias(tn.Type()).(*types.Named)
+				if !ok {
+					continue
+				}
+				for i := 0; i < nt.NumMethods(); i++ {
+					m := nt.Method(i)
+					if sig := m.Signature(); lofHoldsDispatch(sig.Params(), nil) || lofCarriesIn(sig.Results(), nil) {
+						w.carriers[m.Name()] = true
+					}
+				}
+			}
+		}
+	}
+	return w.carriers[name]
 }
 
 // remote follows a //go:linkname remote ("path.name", "path.T.m", "path.(*T).m") named in package

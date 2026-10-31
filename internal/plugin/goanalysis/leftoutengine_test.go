@@ -426,6 +426,49 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 	}
 }
 
+// TestLeftOutEngine_LoadedValues: a left-out file hands its own value to loaded code through a value
+// loaded code made, which loaded code the build runs (lib.Fire) later calls the symbol through.
+func TestLeftOutEngine_LoadedValues(t *testing.T) {
+	base := map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+		"main.go":         "package main\n\nimport (\n\t\"example.com/m/lib\"\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { vuln.Safe(); lib.Fire() }\n",
+		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
+		"_v/vuln/vuln.go": "package vuln\n\nfunc Safe() {}\n\ntype T struct{}\n\nfunc NewT() *T { return &T{} }\n\nfunc (*T) Bad() {}\n",
+		"lib/lib.go": "package lib\n\ntype I interface{ Bad() }\n\nvar hook I\n\n" +
+			"func Fire() {\n\tif hook != nil {\n\t\thook.Bad()\n\t}\n\tif box.X != nil {\n\t\tbox.X.Bad()\n\t}\n}\n\n" +
+			"type Reg struct{ n int }\n\nfunc (Reg) Register(h I) { hook = h }\n\nfunc (Reg) Len() int { return 0 }\n\nfunc Default() *Reg { return &Reg{} }\n\n" +
+			"type setter struct{ n int }\n\nfunc (setter) Set(v any) { hook, _ = v.(I) }\n\nfunc Any() any { return setter{} }\n\n" +
+			"func AnyF() any { return func(v any) { hook, _ = v.(I) } }\n\n" +
+			"func H() func() func(I) { return func() func(I) { return func(i I) { hook = i } } }\n\n" +
+			"type Box struct{ X I }\n\nvar box = &Box{}\n\ntype Getter interface{ Box() *Box }\n\ntype g struct{ n int }\n\nfunc (g) Box() *Box { return box }\n\nfunc Get() Getter { return g{} }\n\n" +
+			"type Taker interface{ Take(I) }\n\ntype Next interface{ Next() Taker }\n\ntype tk struct{ n int }\n\nfunc (tk) Take(i I) { hook = i }\n\nfunc (tk) Next() Taker { return tk{} }\n\nfunc Chain() Next { return tk{} }\n",
+	}
+	cases := []struct {
+		name     string
+		body     string
+		withheld bool
+	}{
+		{"a method of a loaded type a loaded function returns", "func init() { lib.Default().Register(vuln.NewT()) }\n", true},
+		{"a method of a loaded type the file names", "func init() { var r lib.Reg; r.Register(vuln.NewT()) }\n", true},
+		{"a method of an any asserted to a file-local interface", "func init() { lib.Any().(interface{ Set(any) }).Set(vuln.NewT()) }\n", true},
+		{"an any asserted to a func type", "func init() { lib.AnyF().(func(any))(vuln.NewT()) }\n", true},
+		{"a func a returned func returns", "func init() { lib.H()()(vuln.NewT()) }\n", true},
+		{"a field of what an interface's method returns", "func init() { lib.Get().Box().X = vuln.NewT() }\n", true},
+		{"a method of what an interface's method returns", "func init() { lib.Chain().Next().Take(vuln.NewT()) }\n", true},
+		{"a method no loaded type takes a value through", "func init() { _ = lib.Default().Len(); vuln.Safe() }\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			x := "//go:build lofalt\n\npackage main\n\nimport (\n\t\"example.com/m/lib\"\n\t\"example.com/v/vuln\"\n)\n\n" + tc.body
+			dir := writeTree(t, merge(base, map[string]string{"x.go": x}))
+			got := lofRun(t, dir, "example.com/v", map[string][]string{"example.com/v/vuln": {"T.Bad"}}, false, nil)
+			if got.withheld != tc.withheld {
+				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
+			}
+		})
+	}
+}
+
 // TestLofFixedSource: only the toolchain's source and a module-cache module version are fixed.
 func TestLofFixedSource(t *testing.T) {
 	w := &lofWorld{buildDir: "/work/m", goroot: "/go", modcache: "/cache/mod"}

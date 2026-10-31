@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // logicalLines splits src into logical lines, joining a line that ends in an odd run of
@@ -42,9 +43,9 @@ func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 // before what follows it; and marks one that follows &&, which runs only if the command before
 // it did; background marks one a lone & ends, which may not have finished when what follows runs.
 // end is the operator that ends it (&&, ||, |, & or ;), or "" at the end of the text.
-// tokenised marks one read from shell text, whose redirects records a < or > that quotes do not
-// make literal in sh, PowerShell and cmd alike (a backslash escapes only in sh); any other segment
-// redirects when one of its words holds < or > (segmentRedirects).
+// tokenised marks one read from shell text, whose redirects records a < or > outside quotes, or
+// any < or > in text whose quotes another shell may pair differently (literalQuotes); any other
+// segment redirects when one of its words holds < or > (segmentRedirects).
 type segment struct {
 	words      []string
 	expands    bool
@@ -183,6 +184,15 @@ func quotedValue(s string) (string, bool) {
 	return val, true
 }
 
+// literalQuotes reports whether sh, PowerShell and cmd pair the quotes in s alike, so that a < or
+// > sh reads as quoted is literal under each. A step is read as sh whatever shell runs it, and
+// these break that: a backslash (PowerShell and cmd end a quote at \"), cmd's ^ escape and %
+// variables, and non-ASCII text (PowerShell reads curly quotes as quotes). cmd does not read
+// single quotes as quotes at all; that stays open.
+func literalQuotes(s string) bool {
+	return !strings.ContainsAny(s, `\^%`) && strings.IndexFunc(s, func(r rune) bool { return r > unicode.MaxASCII }) < 0
+}
+
 // shellSegments splits shell text into simple commands on unquoted &&, ||, ;, | and &,
 // and each into words with quotes removed. An unquoted # starting a word ends the text. ok is
 // false for an unterminated quote, a trailing backslash, or an unquoted parenthesis or brace
@@ -190,9 +200,10 @@ func quotedValue(s string) (string, bool) {
 // ends in &&, || or |, so that the next line continues the list.
 func shellSegments(s string) (segs []segment, ok, dangles bool) {
 	var (
-		cur    = segment{tokenised: true}
-		word   strings.Builder
-		inWord bool
+		cur     = segment{tokenised: true}
+		word    strings.Builder
+		inWord  bool
+		literal = literalQuotes(s)
 	)
 	endWord := func() {
 		if inWord {
@@ -220,25 +231,24 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 			if j < 0 {
 				return nil, false, false
 			}
+			if !literal && strings.ContainsAny(s[i+1:i+1+j], "<>") {
+				cur.redirects = true
+			}
 			word.WriteString(s[i+1 : i+1+j])
 			i += j + 1
 			inWord = true
 		case c == '"':
-			// A backslash escapes only under POSIX sh: PowerShell and cmd end the quote at \",
-			// so a < or > after one in the span may redirect there.
-			escaped := false
 			j := i + 1
 			for ; j < len(s) && s[j] != '"'; j++ {
 				switch s[j] {
 				case '\\':
-					escaped = true
 					if j+1 < len(s) {
 						j++
 					}
 				case '$', '`':
 					cur.expands = true
 				}
-				if escaped && (s[j] == '<' || s[j] == '>') {
+				if !literal && (s[j] == '<' || s[j] == '>') {
 					cur.redirects = true
 				}
 				word.WriteByte(s[j])
@@ -253,8 +263,7 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 				return nil, false, false
 			}
 			i++
-			// Only POSIX sh reads \< or \> as literal; PowerShell and cmd redirect.
-			if s[i] == '<' || s[i] == '>' {
+			if !literal && (s[i] == '<' || s[i] == '>') {
 				cur.redirects = true
 			}
 			word.WriteByte(s[i])

@@ -247,6 +247,10 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"pnpm add, quoted range", npm(map[string]string{"install.sh": "pnpm add \"x@>1\"\n"}), false, ""},
 		{"npm ci, quoted > as a flag value the lane does not take", npm(map[string]string{"install.sh": "npm ci --loglevel \">\"\n"}), false, ""},
 		{"npm ci, quoted > as a subset flag value", npm(map[string]string{"install.sh": "npm ci --omit \">\"\n"}), false, ""},
+		{"npm run, double-quoted > in a script name", npm(map[string]string{"install.sh": "npm run \"a>b\"\n"}), true, ""},
+		{"npm run, escaped > onto the lockfile, a redirect outside sh", npm(map[string]string{"install.sh": "npm run x\\>package-lock.json\n"}), false, ""},
+		{"npm run, quoted > after a quote escaped outside quotes, a redirect in PowerShell", npm(map[string]string{"install.sh": "npm run x\\\"\">package-lock.json #\"\n"}), false, ""},
+		{"npm run, double-quoted > after a curly quote, a redirect in PowerShell", npm(map[string]string{"install.sh": "npm run \"a”>package-lock.json #\"\n"}), false, ""},
 		{"npm ci, quoted > in an echo beside it", npm(map[string]string{"install.sh": "echo \"a>b\" && npm ci\n"}), true, ""},
 	}
 	for _, tt := range tests {

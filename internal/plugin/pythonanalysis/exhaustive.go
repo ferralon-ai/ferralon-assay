@@ -387,7 +387,8 @@ func includeTarget(line string) (string, bool) {
 }
 
 // optionValue returns the value of the first of flags (long ones first) that line starts with,
-// in any of pip's spellings: "-x v", "-xv", "-x=v", "--long v", "--long=v".
+// in any of pip's spellings: "-x v", "-xv", "--long v", "--long=v". After a short flag an "="
+// is part of the value, as pip's option parser reads it.
 func optionValue(line string, flags ...string) (string, bool) {
 	for _, flag := range flags {
 		rest, ok := strings.CutPrefix(line, flag)
@@ -397,7 +398,10 @@ func optionValue(line string, flags ...string) (string, bool) {
 		if strings.HasPrefix(flag, "--") && rest != "" && rest[0] != '=' && rest[0] != ' ' && rest[0] != '\t' {
 			continue // a longer option sharing the prefix
 		}
-		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
+		if strings.HasPrefix(flag, "--") {
+			rest = strings.TrimPrefix(strings.TrimSpace(rest), "=")
+		}
+		return strings.TrimSpace(rest), true
 	}
 	return "", false
 }

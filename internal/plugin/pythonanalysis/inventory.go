@@ -310,9 +310,11 @@ func includePath(buildReal string, inc reqLink, walkedReal, followed map[string]
 	if strings.Contains(t, "://") {
 		return "", "", false
 	}
-	path = filepath.Clean(t)
+	// Joined as text, not cleaned: a ".." after a symlinked directory steps out of the
+	// link's target, as the kernel resolves it for pip, not out of the link's own directory.
+	path = t
 	if !filepath.IsAbs(t) {
-		path = filepath.Join(filepath.Dir(inc.from), t)
+		path = filepath.Dir(inc.from) + string(filepath.Separator) + t
 	}
 	key, err := filepath.EvalSymlinks(path)
 	if err != nil {

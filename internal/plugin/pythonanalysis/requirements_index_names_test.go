@@ -287,6 +287,66 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantUnpinned: true,
 		},
 		{
+			name: "root self-install of a locked poetry project",
+			files: map[string]string{
+				"pyproject.toml":   "[tool.poetry]\nname = \"app\"\n[tool.poetry.dependencies]\npython = \"^3.10\"\nRequests = \"^2.31\"\n",
+				"poetry.lock":      "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n",
+				"requirements.txt": "-e .\n",
+			},
+			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
+		},
+		{
+			// pip installs [project].dependencies; a [tool.poetry] table beside them is not
+			// what it reads.
+			name: "root self-install of a poetry project with project dependencies",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"app\"\ndependencies = [\"six==1.16.0\"]\n[tool.poetry.dependencies]\nrequests = \"^2.31\"\n",
+				"requirements.txt": "-e .\n",
+			},
+			wantPURLs: []string{"pkg:pypi/six@1.16.0"},
+		},
+		{
+			name: "root self-install of a poetry project locked elsewhere",
+			files: map[string]string{
+				"pyproject.toml":   "[tool.poetry]\nname = \"app\"\n[tool.poetry.dependencies]\nrequests = \"^2.31\"\n",
+				"sub/poetry.lock":  "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n",
+				"requirements.txt": "-e .\n",
+			},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name: "attached constraint flags add nothing",
+			files: map[string]string{
+				"requirements.txt": "-cc.txt\n--constraint=c.txt\nsix==1.16.0\n",
+				"c.txt":            "django==5.0\n",
+			},
+			wantPURLs: []string{"pkg:pypi/six@1.16.0"},
+		},
+		{
+			name: "abbreviated include flag",
+			files: map[string]string{
+				"requirements.txt": "--requirem inc.txt\nsix==1.16.0\n",
+				"inc.txt":          "django==5.0\n",
+			},
+			wantPURLs:    []string{"pkg:pypi/six@1.16.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "abbreviated editable flag",
+			files:        map[string]string{"requirements.txt": "--edit ./pkg\n"},
+			wantUnpinned: true,
+		},
+		{
+			// pip reads the value of "-r=inc.txt" as "=inc.txt".
+			name: "short include flag with an equals sign",
+			files: map[string]string{
+				"requirements.txt": "-r=inc.txt\n",
+				"inc.txt":          "django==5.0\n",
+			},
+			wantUnpinned: true,
+		},
+		{
 			name: "include followed",
 			files: map[string]string{
 				"requirements.txt":           "-r requirements/framework.txt\n",
@@ -351,5 +411,80 @@ func TestInventoryIncludeSymlinkLoop(t *testing.T) {
 	}
 	if !inv.Partiality.Complete {
 		t.Errorf("graph partiality = %+v, want complete", inv.Partiality)
+	}
+}
+
+// A ".." after a symlinked directory steps out of the link's target, as pip's open resolves
+// it, not back to the walked root manifest.
+func TestInventoryIncludeDotDotAfterSymlink(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"requirements.txt":       "requests==2.31.0\n-r .link/dev.txt\n",
+		".reqs/inner/dev.txt":    "-r ../requirements.txt\n",
+		".reqs/requirements.txt": "django==5.0\n",
+	})
+	if err := os.Symlink(filepath.Join(".reqs", "inner"), filepath.Join(dir, ".link")); err != nil {
+		t.Skip(err)
+	}
+	inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sortedPURLs(inv), []string{"pkg:pypi/django@5.0", "pkg:pypi/requests@2.31.0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("PURLs = %q, want %q", got, want)
+	}
+	if !inv.Partiality.Complete {
+		t.Errorf("graph partiality = %+v, want complete", inv.Partiality)
+	}
+}
+
+// An include is read by where it leads: a symlink out of the build dir is not read, an
+// absolute path into it is.
+func TestInventoryIncludeResolvedPath(t *testing.T) {
+	outside := writeTree(t, map[string]string{"dev.txt": "django==5.0\n"})
+	for _, tc := range []struct {
+		name         string
+		include      func(dir string) string
+		wantPURLs    []string
+		wantUnpinned bool
+	}{
+		{
+			name: "symlink to a file outside",
+			include: func(dir string) string {
+				if err := os.Symlink(filepath.Join(outside, "dev.txt"), filepath.Join(dir, "dev.txt")); err != nil {
+					t.Skip(err)
+				}
+				return "dev.txt"
+			},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name: "absolute path inside",
+			include: func(dir string) string {
+				if err := os.WriteFile(filepath.Join(dir, "dev.txt"), []byte("django==5.0\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(dir, "dev.txt")
+			},
+			wantPURLs: []string{"pkg:pypi/django@5.0", "pkg:pypi/requests@2.31.0"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			req := "requests==2.31.0\n-r " + tc.include(dir) + "\n"
+			if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte(req), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sortedPURLs(inv); !reflect.DeepEqual(got, tc.wantPURLs) {
+				t.Errorf("PURLs = %q, want %q", got, tc.wantPURLs)
+			}
+			if got := containsString(inv.Partiality.Reasons, plugin.PartialReasonSourceUnpinned); got != tc.wantUnpinned {
+				t.Errorf("graph partiality = %+v, want source_unpinned=%v", inv.Partiality, tc.wantUnpinned)
+			}
+		})
 	}
 }

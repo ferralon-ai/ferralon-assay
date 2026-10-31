@@ -135,6 +135,10 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 				kind = reqEditable
 				target, ok = editableTarget(spec)
 			}
+			if !ok && abbreviatesInstallOption(spec) {
+				f.unnamed = true // an install this reader does not follow
+				continue
+			}
 			if !ok || target == "" || !markerMaySelect(marker, env, selection) {
 				continue
 			}
@@ -264,6 +268,17 @@ func markerMaySelect(marker string, env map[string]string, selection []string) b
 // editableTarget returns the target of an editable line ("-e .", "-e.", "--editable=./pkg").
 func editableTarget(line string) (string, bool) {
 	return optionValue(line, "--editable", "-e")
+}
+
+// abbreviatesInstallOption reports whether line opens with a shortened --requirement or
+// --editable, which pip's option parser accepts as the full option.
+func abbreviatesInstallOption(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	word, _, _ := strings.Cut(fields[0], "=")
+	return len(word) > 2 && (strings.HasPrefix("--requirement", word) || strings.HasPrefix("--editable", word))
 }
 
 func isConstraintFlag(spec string) bool {

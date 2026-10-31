@@ -1390,6 +1390,8 @@ func TestParseManifestData_LineEndings(t *testing.T) {
 	}{
 		{"setup.py splat after a comment", "setup.py", "from setuptools import setup\n# deps\nsetup(install_requires=['flask==3.0.0'], **extra)\n", 1, false},
 		{"hatch_build.py requirement after a comment", "hatch_build.py", "# build hook\nDEPS = ['pyjwt==2.10.0']\n", 1, true},
+		{"setup.py comment inside install_requires", "setup.py", "from setuptools import setup\nsetup(install_requires=[  # runtime\n    'flask==3.0.0',\n])\n", 1, true},
+		{"hatch_build.py requirement continued inside its literal", "hatch_build.py", "DEPS = ['pyjwt\\\n==2.10.0']\n", 1, true},
 	}
 	for _, c := range cases {
 		for _, eol := range []string{"\n", "\r\n", "\r"} {

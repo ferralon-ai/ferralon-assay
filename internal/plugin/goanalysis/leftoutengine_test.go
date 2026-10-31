@@ -110,6 +110,8 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 	vulnOnly := "\t\"example.com/v/vuln\""
 	// newT makes a T where the left-out file names only the function.
 	newT := map[string]string{"_v/vuln/new.go": "package vuln\n\nfunc NewT() *T { return &T{} }\n"}
+	// um is a package the build does not load, whose method calls the symbol.
+	um := map[string]string{"_v/um/um.go": "package um\n\nimport \"example.com/v/vuln\"\n\ntype T struct{}\n\nfunc (*T) Run() { vuln.Bad() }\n\nfunc Nop() {}\n"}
 	libOnly := "\t\"example.com/m/lib\""
 	bad := map[string][]string{"example.com/v/vuln": {"Bad", "T.Bad", "P.Bad", "Variadic"}}
 	badFunc := map[string][]string{"example.com/v/vuln": {"Bad"}}
@@ -229,6 +231,63 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		}, nil, true, "", true},
 		{"a left-out function pulls the symbol's pointer method by linkname", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.(*P).Bad\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), nil, true, "", false},
+		{"a left-out function pulls by linkname a method of an unloaded package that calls the symbol", merge(x("\t_ \"unsafe\"\n\t_ \"example.com/v/um\"",
+			"//go:linkname pulled example.com/v/um.(*T).Run\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), um), badFunc, true, "", false},
+		{"a left-out file holds a malformed linkname directive", x("\t_ \"unsafe\"\n"+vulnOnly,
+			"//go:linkname local remote extra\nvar local byte\n\nfunc init() { vuln.Safe() }\n"), badFunc, true, lofLinkname, false},
+		// a loaded method whose receiver can carry a func in, and a result whose methods return one
+		{"a left-out function pulls by linkname a loaded method whose receiver takes a func", merge(x("\t_ \"unsafe\"\n"+vulnOnly,
+			"//go:linkname pulled example.com/m/lib.H.Do\nfunc pulled()\n\nfunc init() { pulled(); vuln.Safe() }\n"), map[string]string{
+			"lib/h.go": "package lib\n\ntype H func(func())\n\nfunc (h H) Do() {}\n",
+		}), nil, true, "", false},
+		{"a left-out init calls a loaded function whose interface result returns a func that takes one", merge(x(libOnly+"\n"+vulnOnly,
+			"func init() { _ = lib.Make2(); vuln.Safe() }\n"), map[string]string{
+			"lib/i2.go": "package lib\n\ntype I2 interface{ Get() func(func()) }\n\nfunc Make2() I2 { return nil }\n",
+		}), nil, true, "", false},
+		// dot imports resolve through the imported package
+		{"a left-out init calls another function through a dot-import", x("\t. \"example.com/v/vuln\"", "func init() { Safe() }\n"), badFunc, false, "", false},
+		// what the file enters: a package nothing provides, one that does not parse, and an unloaded package's imports
+		{"a left-out file blank-imports a path nothing provides", x("\t_ \"example.org/nowhere\"\n"+vulnOnly, "func init() { vuln.Safe() }\n"), badFunc, true, lofUnresolvedImport, false},
+		{"a left-out file enters an unloaded package one of whose files does not parse", merge(x("\t_ \"example.com/v/pe\"\n"+vulnOnly, "func init() { vuln.Safe() }\n"), map[string]string{
+			"_v/pe/pe.go":     "package pe\n",
+			"_v/pe/broken.go": "package pe\n\nfunc (\n",
+		}), badFunc, true, lofParseError, false},
+		{"a left-out file enters an unloaded package whose file imports a package whose init calls the symbol", merge(x("\t_ \"example.com/v/um2\"", ""), map[string]string{
+			"_v/um2/um2.go": "package um2\n\nimport _ \"example.com/v/w2\"\n",
+			"_v/w2/w2.go":   "package w2\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+		}), badFunc, true, "", false},
+		// methods of unloaded types: of a type the closure names, and by a name the closure calls
+		{"a left-out init names an unloaded type whose method calls the symbol", merge(x("\t\"example.com/v/um\"", "func init() { var v um.T; _ = v }\n"), um), badFunc, true, "", false},
+		{"a left-out init calls by name a method of an unloaded package it entered", merge(x("\t_ \"example.com/v/um\"",
+			"type runner interface{ Run() }\n\nfunc init() { var v runner; v.Run() }\n"), um), badFunc, true, "", false},
+		{"left-out assembly enters an unloaded package after the file called its method's name", merge(x(vulnOnly,
+			"type runner interface{ Run() }\n\nfunc init() { var v runner; v.Run(); vuln.Safe() }\n\nfunc asm()\n"), um, map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL example.com∕v∕um·Nop(SB)\n\tRET\n",
+		}), badFunc, true, "", false},
+		// dynamic calls and reflection, while the symbol's address is taken
+		{"a left-out init calls a local function value while the symbol's address is taken", merge(x(libOnly,
+			"func init() { lib.Install(); f := lib.Install; f() }\n"), hook), badFunc, true, "", false},
+		{"a left-out init selects reflect's Call name while the symbol's address is taken", merge(x(libOnly,
+			"type s struct{}\n\nfunc (s) Call() {}\n\nfunc init() { lib.Install(); var v s; _ = v.Call }\n"), hook), badFunc, true, "", false},
+		{"left-out assembly calls a foreign symbol while the symbol's address is taken", merge(x(libOnly, "func asm()\n\nfunc init() { lib.Install(); asm() }\n"), hook, map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL foreign(SB)\n\tRET\n",
+		}), badFunc, true, "", false},
+		{"left-out assembly calls through a register while the symbol's address is taken", merge(x(libOnly, "func asm()\n\nfunc init() { lib.Install(); asm() }\n"), hook, map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL AX\n\tRET\n",
+		}), badFunc, true, "", false},
+		// assembly bodies: of a function nothing calls, of a symbol only assembly declares, and file-local ones
+		{"a left-out bodyless function nothing calls has assembly that calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n",
+		}), badFunc, true, "", false},
+		{"left-out assembly calls an assembly-only symbol that calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL ·helper(SB)\n\tRET\n\nTEXT ·helper(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n",
+		}), badFunc, true, "", false},
+		{"left-out assembly calls a file-local symbol that calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL helper<>(SB)\n\tRET\n\nTEXT helper<>(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n",
+		}), badFunc, true, "", false},
+		{"left-out assembly calls a file-local symbol nothing declares", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL helper<>(SB)\n\tRET\n",
+		}), badFunc, true, lofAsmSymbol, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -615,6 +674,147 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofMissingSource, lofDescribe(got))
 		}
 	})
+	t.Run("the scan is cancelled", func(t *testing.T) {
+		dir := writeTree(t, tree)
+		load, err := LoadProgram(context.Background(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		load.buildGoVersion = load.goVersion
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		e := loadLofEngine(ctx, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+		got := lofResult{engine: e, facts: map[string]*lofFacts{}}
+		for path := range e.Facts {
+			got.facts[path], _ = e.file(path)
+		}
+		if f := lofFileWith(got, lofBudget); !strings.HasSuffix(f, "/x.go") {
+			t.Fatalf("x.go does not fail closed on %s (facts %s)", lofBudget, lofDescribe(got))
+		}
+	})
+
+	// A left-out file's closure fails closed on the file itself: unreadable, or its build constraint
+	// or package clause does not parse. The file is rewritten after the load.
+	for _, tc := range []struct{ name, item, src string }{
+		{"the left-out file cannot be read", lofMissingSource, ""},
+		{"the left-out file's build constraint does not parse", lofParseError, "//go:build lofalt\n//go:build other\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Safe() }\n"},
+		{"the left-out file's package clause does not parse", lofParseError, "//go:build lofalt\n\npackage\n\nimport \"example.com/v/vuln\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, tree)
+			path := filepath.Join(dir, "x.go")
+			t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+				var err error
+				if tc.src == "" {
+					err = os.Chmod(path, 0)
+				} else {
+					err = os.WriteFile(path, []byte(tc.src), 0o644)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !got.withheld || lofFileWith(got, tc.item) == "" {
+				t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, tc.item, lofDescribe(got))
+			}
+		})
+	}
+
+	// noX is the tree without x.go.
+	noX := func(files map[string]string) map[string]string {
+		out := merge(tree, files)
+		delete(out, "x.go")
+		return out
+	}
+	t.Run("the left-out file's package directory cannot be listed", func(t *testing.T) {
+		// y.go of the loaded vulnerable package is left out; its directory stays searchable, so y.go
+		// itself reads.
+		dir := writeTree(t, noX(map[string]string{
+			"_v/vuln/y.go": "//go:build lofalt\n\npackage vuln\n\nfunc init() { Safe() }\n",
+		}))
+		vdir := filepath.Join(dir, "_v", "vuln")
+		t.Cleanup(func() { _ = os.Chmod(vdir, 0o755) })
+		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			if err := os.Chmod(vdir, 0o311); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if !got.withheld || lofFileWith(got, lofMissingSource) == "" {
+			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofMissingSource, lofDescribe(got))
+		}
+	})
+
+	// The walk stops at the budget with a standard-library name nothing declares still open: the
+	// file is withheld on the budget, never dropped as uncompilable on a walk it did not finish.
+	strs := "package main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { _ = strings.ToUpper(\"x\"); vuln.Safe() }\n"
+	budget := func(t *testing.T, decls int) {
+		saved := lofBudgetDecls
+		lofBudgetDecls = decls
+		t.Cleanup(func() { lofBudgetDecls = saved })
+	}
+	t.Run("the budget stops the file's walk with a name still open", func(t *testing.T) {
+		budget(t, 1)
+		dir := writeTree(t, merge(tree, map[string]string{
+			"main.go": strs,
+			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName(); vuln.Bad() }\n\nfunc other() {}\n",
+		}))
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		if !got.withheld || lofFileWith(got, lofBudget) == "" {
+			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
+		}
+	})
+	t.Run("the budget stops the walk of the package's roots with a name still open", func(t *testing.T) {
+		// tool is a directory of the main module the build does not load: a.go's package roots are
+		// its two initializers, and the walk of them, which the file's walk continues, stops.
+		budget(t, 1)
+		dir := writeTree(t, noX(map[string]string{
+			"main.go":   strs,
+			"tool/a.go": "//go:build lofalt\n\npackage tool\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName() }\n\nfunc init() { vuln.Safe() }\n",
+		}))
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		if !got.withheld || lofFileWith(got, lofBudget) == "" {
+			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
+		}
+	})
+
+	// The walk of a package's roots, which each of its left-out files continues, is rebuilt for
+	// another package and once a file is dropped.
+	t.Run("a dropped file's imports leave the package roots' walk", func(t *testing.T) {
+		// tool/a.go calls u.Helper. u.go, one variant of it, names a standard-library name nothing
+		// declares, and imports w2, whose initializer calls the symbol; u.go is dropped, and with it
+		// w2's initializer from the walk of tool's roots.
+		dir := writeTree(t, noX(map[string]string{
+			"main.go":         strs,
+			"tool/a.go":       "//go:build lofalt\n\npackage tool\n\nimport \"example.com/v/u\"\n\nfunc run() { u.Helper() }\n",
+			"_v/u/u.go":       "//go:build lofalt\n\npackage u\n\nimport (\n\t\"strings\"\n\n\t_ \"example.com/v/w2\"\n)\n\nfunc Helper() { strings.NoSuchName() }\n",
+			"_v/u/u_other.go": "//go:build !lofalt\n\npackage u\n\nfunc Helper() {}\n",
+			"_v/w2/w2.go":     "package w2\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+		}))
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		if got.withheld {
+			t.Fatalf("withheld, want released (facts %s)", lofDescribe(got))
+		}
+	})
+	t.Run("each package's left-out files continue that package's roots", func(t *testing.T) {
+		// a and b are directories of the main module the build does not load; a's initializer calls
+		// the symbol, and b's file reaches nothing of it.
+		dir := writeTree(t, noX(map[string]string{
+			"a/a.go": "//go:build lofalt\n\npackage a\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+			"b/b.go": "//go:build lofalt\n\npackage b\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Safe() }\n",
+		}))
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		reaches := func(path string) bool {
+			f := got.facts[path]
+			if f == nil {
+				t.Fatalf("the engine holds no %s (facts %s)", path, lofDescribe(got))
+			}
+			return slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == symKey("example.com/v/vuln", "Bad") })
+		}
+		if !reaches("a/a.go") || reaches("b/b.go") {
+			t.Fatalf("a/a.go reaches Bad = %v, b/b.go = %v; want true, false (facts %s)", reaches("a/a.go"), reaches("b/b.go"), lofDescribe(got))
+		}
+	})
 	t.Run("the call graphs cannot be built", func(t *testing.T) {
 		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, func(load *LoadResult) {
 			// A package with syntax but no type information for it: SSA cannot build it.
@@ -648,6 +848,9 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 		}
 	}
 	verify := useStd("crypto/x509", "_, _ = (&x509.Certificate{}).Verify(x509.VerifyOptions{})")
+	// The build loads strings and not container/list, the vulnerable package.
+	stringsMain := useStd("strings", "_ = strings.ToUpper(\"x\")")
+	list := map[string][]string{"container/list": {"New"}}
 	cases := []struct {
 		name     string
 		tree     map[string]string
@@ -668,6 +871,17 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 			map[string][]string{"os": {"Root.Open"}}, true, "", true, lofUnknownToolchain, ""},
 		{"the build reads the standard library through an overlay", useStd("os", "_, _ = os.Open(\"x\")"),
 			map[string][]string{"os": {"Root.Open"}}, false, "-overlay=overlay.json", true, lofGorootMismatch, ""},
+		// A left-out file that links the vulnerable package names a standard-library symbol nothing declares.
+		{"a left-out file pulls by linkname a standard-library symbol nothing declares", merge(stringsMain, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t_ \"unsafe\"\n)\n\n//go:linkname pulled strings.NoSuchName\nfunc pulled()\n\nfunc init() { pulled() }\n",
+		}), list, false, "", true, "", ""},
+		{"left-out assembly calls a standard-library symbol nothing declares", merge(stringsMain, map[string]string{
+			"x.go":       "//go:build lofalt\n\npackage main\n\nimport _ \"container/list\"\n\nfunc asm()\n\nfunc init() { asm() }\n",
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL strings·NoSuchName(SB)\n\tRET\n",
+		}), list, false, "", true, "", ""},
+		{"a left-out file links the vulnerable package and names only declared symbols", merge(stringsMain, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t_ \"unsafe\"\n)\n\n//go:linkname pulled strings.ToUpper\nfunc pulled(string) string\n\nfunc init() { pulled(\"x\") }\n",
+		}), list, false, "", false, "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

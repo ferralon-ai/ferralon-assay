@@ -104,6 +104,41 @@ func TestCallGraph_FStringCallSites(t *testing.T) {
 			want:  []string{funcSCIP("app", nil, "helper", 1)},
 		},
 		{
+			name:  "a substitution reusing the literal's quote",
+			files: map[string]string{"app.py": helper + "def run(d):\n    return f\"{helper(d[\"k\"])}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "f-strings nested three deep in one quote",
+			files: map[string]string{"app.py": helper + "def run():\n    return f\"{f\"{f\"{helper(1)}\"}\"}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "the other quote inside a reused quote opens nothing",
+			files: map[string]string{"app.py": helper + "def run(d):\n    return f\"{d[\"it's\"]}{helper(1)}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "a substitution spanning lines in a single-quoted f-string",
+			files: map[string]string{"app.py": helper + "def run(d):\n    return f\"{helper(\n        d[\")\"])}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "a comment inside a substitution",
+			files: map[string]string{"app.py": helper + "def run():\n    return f\"\"\"{helper(1) # {\"\n}\"\"\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "a backslash before a brace escapes nothing",
+			files: map[string]string{"app.py": helper + "def run(d):\n    return f\"\\{helper(d[\"k\"])}\"\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
+			name:  "a reused quote's bracket does not join the next def",
+			files: map[string]string{"app.py": helper + "def other(d):\n    return f\"{d[\"(\"]}\"\n\ndef run():\n    return helper(1)\n"},
+			want:  []string{funcSCIP("app", nil, "helper", 1)},
+		},
+		{
 			name:  "doubled braces are text",
 			files: map[string]string{"app.py": helper + "def run():\n    return f\"{{helper(1)}}\"\n"},
 		},

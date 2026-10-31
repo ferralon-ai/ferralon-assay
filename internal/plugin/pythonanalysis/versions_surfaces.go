@@ -37,10 +37,12 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 }
 
 // scriptRun is a pip install a script surface runs: one the rule withholds, from a surface it
-// withholds on, or an allowed self-upgrade. args are pip's arguments after install, as written.
+// withholds on, or an allowed self-upgrade. args are pip's arguments after install, as written,
+// and files the build-tree -r files they name that the lane does not already read.
 type scriptRun struct {
 	surface string
 	args    []string
+	files   []string
 }
 
 // scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip
@@ -88,7 +90,7 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 	veto := scriptsurface.New(root, read, spec)
 	classify := veto.Classify(pyInstallSurface)
 	if rec != nil {
-		classify = rec.classify(veto)
+		classify = rec.classify(root, veto)
 	}
 	for _, c := range buildtree.Candidates(root, classify, veto.FullyRead) {
 		if !c.FullyRead {

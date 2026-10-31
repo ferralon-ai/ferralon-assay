@@ -5,91 +5,108 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // --- script installs ---------------------------------------------------------------
 //
-// A pip install a script surface runs (scriptRun) installs what its arguments name, read as
-// the lines of a requirements file: each requirement, editable and URL argument is one line,
-// and a -r file the walk does not already read as a manifest is read in place. Its packages
-// join the inventory scoped to the surface, or to the -r file, so a build script that changes
-// what it installs changes the inventory. A run whose arguments this cannot read names
-// nothing, and the scan-level partiality says so.
+// A pip install a script surface runs (scriptRun) installs what its arguments name: each
+// requirement argument is one requirements line, and each -r file the lane does not already
+// read is read in place. Its packages join the inventory scoped to the surface, or to the -r
+// file, so a build script that changes what it installs changes the inventory. An argument
+// this cannot read as a package name (a path, a URL, an editable, an expansion the rule
+// withholds on) names nothing.
 
-// pipValueFlags are the pip install (and uv pip install) options that take the next argument
-// as their value, so it is not read as a requirement.
-var pipValueFlags = map[string]bool{
-	"-c": true, "--constraint": true, "-t": true, "--target": true, "--platform": true,
-	"--python-version": true, "--implementation": true, "--abi": true, "--root": true,
-	"--prefix": true, "--src": true, "--upgrade-strategy": true, "-C": true,
-	"--config-settings": true, "--global-option": true, "--no-binary": true, "--only-binary": true,
-	"--progress-bar": true, "--root-user-action": true, "--report": true, "-i": true,
-	"--index-url": true, "--extra-index-url": true, "-f": true, "--find-links": true,
-	"--trusted-host": true, "--cert": true, "--client-cert": true, "--cache-dir": true,
-	"--log": true, "--proxy": true, "--retries": true, "--timeout": true, "--exists-action": true,
-	"--python": true, "-p": true, "--keyring-provider": true, "--use-feature": true,
-	"--use-deprecated": true, "--group": true, "--index": true, "--default-index": true,
-	"--index-strategy": true, "--extra": true, "--resolution": true, "--prerelease": true,
-	"--override": true, "--exclude-newer": true, "--link-mode": true, "--python-platform": true,
+// pipBoolFlags are the pip install (and uv pip install) long options that take no value. Any
+// other long option without "=" is read as taking the next argument, so an option's value is
+// never read as a requirement.
+var pipBoolFlags = map[string]bool{
+	"--break-system-packages": true, "--check-build-dependencies": true, "--compile": true,
+	"--debug": true, "--disable-pip-version-check": true, "--dry-run": true,
+	"--force-reinstall": true, "--ignore-requires-python": true, "--isolated": true,
+	"--no-build-isolation": true, "--no-cache-dir": true, "--no-clean": true, "--no-color": true,
+	"--no-compile": true, "--no-deps": true, "--no-index": true, "--no-input": true,
+	"--no-warn-conflicts": true, "--no-warn-script-location": true, "--pre": true,
+	"--prefer-binary": true, "--require-hashes": true, "--require-virtualenv": true,
+	"--user": true, "--help": true, "--ignore-installed": true, "--quiet": true,
+	"--upgrade": true, "--verbose": true, "--version": true, "--system": true,
+	"--reinstall": true, "--strict": true, "--compile-bytecode": true, "--no-build": true,
+	"--offline": true, "--refresh": true, "--native-tls": true, "--all-extras": true,
+	"--no-sources": true, "--no-config": true, "--no-progress": true, "--exact": true,
 }
 
-// scriptInstallReqs returns, by scope, the requirements a pip install a script surface runs
-// names. discovered holds the manifests the inventory already reads, whose packages a -r of
-// one adds nothing to.
-func scriptInstallReqs(root string, run scriptRun, discovered map[string]bool, env map[string]string, selection []string) map[string][]pyReq {
-	out := map[string][]pyReq{}
-	var lines []string
-	for i := 0; i < len(run.args); i++ {
-		a := run.args[i]
+// pipShortValueFlags are the short options that take a value, attached or as the next
+// argument; -r's is a requirements file.
+const pipShortValueFlags = "bcefiprtCP"
+
+// pipArgs splits pip install's arguments into the -r files and the requirement arguments
+// they name.
+func pipArgs(args []string) (files, reqs []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, bool) {
+			if i+1 < len(args) {
+				i++
+				return args[i], true
+			}
+			return "", false
+		}
 		switch {
-		case (a == "-r" || a == "--requirement") && i+1 < len(run.args):
-			i++
-			scriptRequirementFile(root, run.surface, run.args[i], discovered, env, selection, out)
-		case strings.HasPrefix(a, "--requirement="):
-			scriptRequirementFile(root, run.surface, strings.TrimPrefix(a, "--requirement="), discovered, env, selection, out)
-		case (a == "-e" || a == "--editable") && i+1 < len(run.args):
-			i++
-			lines = append(lines, "-e "+run.args[i])
-		case strings.HasPrefix(a, "--editable="):
-			lines = append(lines, "-e "+strings.TrimPrefix(a, "--editable="))
-		case strings.HasPrefix(a, "-"):
-			if pipValueFlags[a] {
+		case a == "--requirement" || a == "--requirements":
+			if v, ok := next(); ok {
+				files = append(files, v)
+			}
+		case strings.HasPrefix(a, "--requirement=") || strings.HasPrefix(a, "--requirements="):
+			files = append(files, a[strings.IndexByte(a, '=')+1:])
+		case strings.HasPrefix(a, "--"):
+			if !strings.Contains(a, "=") && !pipBoolFlags[a] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
 			}
-		default:
-			lines = append(lines, a)
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			for j := 1; j < len(a); j++ {
+				if !strings.ContainsRune(pipShortValueFlags, rune(a[j])) {
+					continue
+				}
+				v, ok := a[j+1:], j+1 < len(a)
+				if !ok {
+					v, ok = next()
+				}
+				if ok && a[j] == 'r' {
+					files = append(files, v)
+				}
+				break
+			}
+		case pipRequirementArg(a):
+			reqs = append(reqs, a)
 		}
 	}
-	if len(lines) > 0 {
-		reqs := resolveRequirements([]byte(strings.Join(lines, "\n")+"\n"), env, selection)
-		out[relScope(root, run.surface)] = append(out[relScope(root, run.surface)], reqs...)
-	}
-	return out
+	return files, reqs
 }
 
-// scriptRequirementFile reads a -r file a script surface names, from the surface's directory
-// or else the build root, into out under its own scope. A file that is not an in-tree regular
-// file names nothing here: the run that names it is withheld, so the scan is partial.
-func scriptRequirementFile(root, surface, p string, discovered map[string]bool, env map[string]string, selection []string, out map[string][]pyReq) {
-	if filepath.IsAbs(p) {
-		return
+// pipRequirementFiles returns the -r files pip install's arguments name.
+func pipRequirementFiles(args []string) []string {
+	files, _ := pipArgs(args)
+	return files
+}
+
+// pipRequirementArg reports whether a, a pip install argument, names a package by name: not a
+// local path, archive or URL, which installs from a source rather than the index.
+func pipRequirementArg(a string) bool {
+	if a == "" || !isASCIIAlnum(a[0]) || strings.ContainsAny(a, `/\:@`) {
+		return false
 	}
-	for _, dir := range []string{filepath.Dir(surface), root} {
-		f := filepath.Join(dir, p)
-		rel, err := filepath.Rel(root, f)
-		if err != nil || !filepath.IsLocal(rel) {
-			continue
+	lower := strings.ToLower(a)
+	for _, ext := range []string{".whl", ".zip", ".tar.gz", ".tgz", ".tar.bz2", ".tar"} {
+		if strings.HasSuffix(lower, ext) {
+			return false
 		}
-		data, err := readRegular(f)
-		if err != nil {
-			continue
-		}
-		if !discovered[f] {
-			out[rel] = append(out[rel], resolveRequirements(data, env, selection)...)
-		}
-		return
 	}
+	return true
+}
+
+func isASCIIAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 func relScope(root, p string) string {
@@ -100,31 +117,47 @@ func relScope(root, p string) string {
 }
 
 // scriptInventory returns the inventory nodes the pip installs script surfaces run name, with
-// no ID the manifest nodes already hold, and whether a script surface may install a package
-// none of them names.
-func scriptInventory(req plugin.ResolveInventoryRequest, manifests []string, have map[string]bool) ([]plugin.DependencyNode, bool) {
+// no ID the manifest nodes already hold. Each -r file is read once, and only when it resolves,
+// through every symlink, inside the build.
+func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) []plugin.DependencyNode {
 	var runs []scriptRun
-	_, _, withheld, _, _ := scanSurfaces(req.BuildDir, &runs)
-	discovered := make(map[string]bool, len(manifests))
-	for _, m := range manifests {
-		discovered[m] = true
-	}
+	scanSurfaces(req.BuildDir, &runs)
+	realRoot, rootErr := filepath.EvalSymlinks(req.BuildDir)
+	readFile := map[string]bool{}
+	seen := map[string]bool{}
 	var nodes []plugin.DependencyNode
+	add := func(scope string, reqs []pyReq) {
+		for _, r := range reqs {
+			if !r.Selected && !r.Unresolved {
+				continue
+			}
+			n := buildNode(scope+"#"+r.Name, r, req)
+			if key := scope + " " + n.PURL; seen[key] {
+				continue
+			} else {
+				seen[key] = true
+			}
+			// Two runs in one surface may install one name at two versions: each is a node.
+			for i := 2; have[n.ID]; i++ {
+				n.ID = fmt.Sprintf("%s#%s#%d", scope, r.Name, i)
+			}
+			have[n.ID] = true
+			nodes = append(nodes, n)
+		}
+	}
 	for _, run := range runs {
-		for scope, reqs := range scriptInstallReqs(req.BuildDir, run, discovered, req.TargetEnv, req.Selection) {
-			for _, r := range reqs {
-				if !r.Selected && !r.Unresolved {
-					continue
-				}
-				// Two runs in one surface may install one name at two versions: each is a node.
-				id := scope + "#" + r.Name
-				for n := 2; have[id]; n++ {
-					id = fmt.Sprintf("%s#%s#%d", scope, r.Name, n)
-				}
-				have[id] = true
-				nodes = append(nodes, buildNode(id, r, req))
+		if _, args := pipArgs(run.args); len(args) > 0 {
+			add(relScope(req.BuildDir, run.surface), resolveRequirements([]byte(strings.Join(args, "\n")+"\n"), req.TargetEnv, req.Selection))
+		}
+		for _, f := range run.files {
+			if readFile[f] || rootErr != nil || !buildtree.Inside(realRoot, f) {
+				continue
+			}
+			readFile[f] = true
+			if data, err := readRegular(f); err == nil {
+				add(relScope(req.BuildDir, f), resolveRequirements(data, req.TargetEnv, req.Selection))
 			}
 		}
 	}
-	return nodes, withheld
+	return nodes
 }

@@ -180,6 +180,10 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"quoted option name", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--\"requirement\" extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"quoted short option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\"r\" extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"quoted editable after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -\"e\" ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"single-quoted short option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-'r' extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted editable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\"e\" ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"escaped short option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\\r extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"escaped constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\\c c.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 

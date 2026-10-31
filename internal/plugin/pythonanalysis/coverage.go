@@ -129,8 +129,8 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
 			}
-			// pip unquotes the option string first (--"requirement"), so test the unquoted line.
-			unq := strings.NewReplacer(`"`, "", `'`, "").Replace(line)
+			// pip unquotes the option string first (--"requirement", -\r), so test the unquoted line.
+			unq := strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(line)
 			if _, isInclude := includeTarget(unq); isInclude {
 				return out, false
 			}

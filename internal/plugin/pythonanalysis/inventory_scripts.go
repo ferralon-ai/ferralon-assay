@@ -171,7 +171,7 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 		}
 	}
 	for _, run := range runs {
-		if run.uv && uvRejectsPyLock(run.args) {
+		if run.uv && uvRejectsPyLock(run.args) || !run.uv && pipRejectsFile(run.args) {
 			continue
 		}
 		if _, args := pipArgs(run.args); len(args) > 0 {
@@ -224,10 +224,29 @@ func uvRejectsPyLock(args []string) bool {
 	}
 	others := len(files) > 1 || len(reqs) > 0
 	for _, a := range args {
-		others = others || a == "--" || strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "--constraint") ||
-			strings.HasPrefix(a, "--override") || strings.HasPrefix(a, "-e") || strings.HasPrefix(a, "--editable")
+		switch {
+		case a == "--", strings.HasPrefix(a, "--constraint"), strings.HasPrefix(a, "--override"), strings.HasPrefix(a, "--editable"):
+			others = true
+		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--"):
+			// the first value-taking letter of a short group is the option the group sets
+			if i := strings.IndexAny(a[1:], pipShortValueFlags); i >= 0 && (a[1+i] == 'c' || a[1+i] == 'e') {
+				others = true
+			}
+		}
 	}
 	return others
+}
+
+// pipRejectsFile reports whether a pip install's arguments name a -r file pip reads as
+// requirements lines and fails on, a pylock.toml or project metadata, aborting the install.
+func pipRejectsFile(args []string) bool {
+	return slices.ContainsFunc(pipRequirementFiles(args), func(f string) bool {
+		switch strings.ToLower(filepath.Ext(f)) {
+		case ".toml", ".cfg", ".py":
+			return true
+		}
+		return false
+	})
 }
 
 type pyLockTOML struct {

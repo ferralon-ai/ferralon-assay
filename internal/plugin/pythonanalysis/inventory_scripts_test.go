@@ -53,6 +53,8 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 			[]string{"deps/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
 		{"a script outside the root runs from where it is invoked: its -r names nothing", map[string]string{
 			"ci/install.sh": "pip install --requirement=extra.in\n", "ci/extra.in": "decoy==9.9\n", "extra.in": "pyjwt==1.5.0\n"}, nil},
+		{"a make fragment outside the root runs where the Makefile including it runs: its -r names nothing", map[string]string{
+			"Makefile": "include mk/python.mk\n", "mk/python.mk": "deps:\n\tpip install -r dev.in\n", "mk/dev.in": "decoy==9.9\n", "dev.in": "pyjwt==1.5.0\n"}, nil},
 		{"a Makefile's -r resolves from its own directory", map[string]string{"svc/Makefile": "deps:\n\tpip install -r extra.in\n",
 			"svc/extra.in": "pyjwt==1.5.0\n", "extra.in": "decoy==9.9\n"},
 			[]string{"svc/extra.in#pyjwt pkg:pypi/pyjwt@1.5.0"}},
@@ -93,11 +95,13 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 				"[[packages]]\nname = \"ruff\"\nversion = \"0.5\"\nmarker = \"'de' in dependency_groups\"\n"}, nil},
 		{"uv refuses a pylock.toml beside another requirement or a name it does not read as a lock", map[string]string{
 			"a.sh": "uv pip install -r pylock.toml pyjwt==1.5.0\n", "b.sh": "uv pip install -r x/PYLOCK.TOML\n", "c.sh": "uv pip install -r pylock.a.b.toml\n",
+			"d.sh": "uv pip install -qc c.txt -r pylock.toml\n", "c.txt": "a==1\n",
 			"pylock.toml":     "lock-version = \"1.0\"\n[[packages]]\nname = \"a\"\nversion = \"1\"\n",
 			"x/PYLOCK.TOML":   "lock-version = \"1.0\"\n[[packages]]\nname = \"b\"\nversion = \"1\"\n",
 			"pylock.a.b.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"c\"\nversion = \"1\"\n"}, nil},
-		{"pip cannot install a -r pylock.toml", map[string]string{"install.sh": "pip install -r pylock.toml\n",
-			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"pyjwt\"\nversion = \"1.5.0\"\n"}, nil},
+		{"pip fails on a -r pylock.toml or project metadata and installs nothing", map[string]string{
+			"install.sh": "pip install -r pylock.toml pyjwt==1.5.0\n", "b.sh": "pip install -r setup.cfg requests==2.0\n",
+			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"pyjwt\"\nversion = \"1.5.0\"\n", "setup.cfg": "[metadata]\nname = x\n"}, nil},
 		{"a -r of project metadata names nothing", map[string]string{"install.sh": "uv pip install -r deps/setup.cfg -r deps/other.toml\n",
 			"deps/setup.cfg": "[metadata]\nname = x\n", "deps/other.toml": "[tool]\nx = 1\n"}, nil},
 		{"a -r file outside the tree", map[string]string{"Dockerfile": "FROM python:3.12\nRUN pip install -r /app/extra.in\n"}, nil},

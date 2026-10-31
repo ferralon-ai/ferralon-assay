@@ -68,11 +68,12 @@ func (r *runRecorder) resolve(words, args []string, b scriptsurface.Binder) scri
 	return run
 }
 
-// invokedScript reports whether the surface at path, with its head, is a script, shell,
-// PowerShell or batch, that runs in whatever directory invokes it rather than its own.
+// invokedScript reports whether the surface at path, with its head, runs in whatever directory
+// invokes it rather than its own: a shell, PowerShell or batch script, or a make fragment, whose
+// recipes run where the Makefile including it runs.
 func invokedScript(path string, head []byte) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".sh", ".bash", ".zsh", ".ksh", ".ash", ".dash", ".ps1", ".bat", ".cmd":
+	case ".sh", ".bash", ".zsh", ".ksh", ".ash", ".dash", ".ps1", ".bat", ".cmd", ".mk", ".mak", ".make":
 		return true
 	}
 	return bytes.HasPrefix(head, []byte("#!"))

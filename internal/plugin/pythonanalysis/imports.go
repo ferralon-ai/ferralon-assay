@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -499,30 +500,18 @@ var dynamicImportOpaqueLeafs = map[string]bool{
 // not read (pkgutil.resolve_name, entry points, package walks). It returns the
 // literal module names imported (load roots; a pkgutil "mod:attr" spec keeps the module
 // part) and whether any dynamic import names its module by a non-literal expression.
+// A leaf fetched from any object by a literal name (getattr(runpy, 'run_path'),
+// vars(m)['resolve_name']) counts as the leaf spelled out, and as a value when not called.
+// A literal fetch of import_module or __import__ from any object is opaque.
 // clean and lits come from stripPythonLiterals over the same source, so rune positions in
 // clean index the literal table.
 func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaque bool) {
 	r := []rune(clean)
 	n := len(r)
-	for i := 0; i < n; {
-		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
-			i++
-			continue
-		}
-		w, end := readWordRunes(r, i)
-		if !dynamicImportLiteralLeafs[w] && !dynamicImportOpaqueLeafs[w] {
-			i = end
-			continue
-		}
-		open := skipAllSpace(r, end)
-		if open >= n || r[open] != '(' || precededByDef(r, i) {
-			i = end
-			continue
-		}
+	call := func(w string, open int) {
 		if dynamicImportOpaqueLeafs[w] {
 			opaque = true
-			i = end
-			continue
+			return
 		}
 		name, ok := literalArg(r, open+1, lits)
 		if !ok {
@@ -533,10 +522,74 @@ func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaq
 			}
 			roots = append(roots, name)
 		}
+	}
+	for i := 0; i < n; {
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if attr, after, ok := literalAttrFetch(r, w, end, lits); ok && (attr == "import_module" || attr == "__import__") {
+			opaque = true
+			i = end
+			continue
+		} else if ok && (dynamicImportLiteralLeafs[attr] || dynamicImportOpaqueLeafs[attr]) {
+			if open := skipAllSpace(r, after); open < n && r[open] == '(' {
+				call(attr, open)
+			} else {
+				opaque = true
+			}
+			i = end
+			continue
+		}
+		if !dynamicImportLiteralLeafs[w] && !dynamicImportOpaqueLeafs[w] {
+			i = end
+			continue
+		}
+		open := skipAllSpace(r, end)
+		if open >= n || r[open] != '(' || precededByDef(r, i) {
+			i = end
+			continue
+		}
+		call(w, open)
 		i = end
 	}
 	return sortedDedup(roots), opaque
 }
+
+// literalAttrFetch reads an attribute fetched by a literal name through the word w ending at
+// r[end]: getattr(x, 'attr'), vars(x)['attr'] or .get('attr'), and x.__dict__['attr'] or
+// .get('attr'). It returns the attribute and the index just past the fetch.
+func literalAttrFetch(r []rune, w string, end int, lits map[int]strLiteral) (attr string, after int, ok bool) {
+	open := skipAllSpace(r, end)
+	switch w {
+	case "getattr":
+		if open >= len(r) || r[open] != '(' {
+			return "", 0, false
+		}
+		args, ok := callArgs(r, open)
+		if !ok || len(args) < 2 {
+			return "", 0, false
+		}
+		attr, ok := literalSpan(r, args[1], lits)
+		return attr, callClose(r, open), ok
+	case "vars":
+		if open >= len(r) || r[open] != '(' {
+			return "", 0, false
+		}
+		close := matchingClose(r, open)
+		if close < 0 {
+			return "", 0, false
+		}
+		return subscriptFetch(r, close+1, lits, end, keyFetch)
+	case "__dict__":
+		return subscriptFetch(r, end, lits, end, keyFetch)
+	}
+	return "", 0, false
+}
+
+// keyFetch is the subscriptFetch leaf that returns the key read.
+func keyFetch(attr string, after int) (string, int, bool) { return attr, after, true }
 
 // stringLoaderArg says what a string loader's name argument may be.
 type stringLoaderArg int
@@ -590,8 +643,9 @@ var loaderOwnKeywords = map[string]string{
 // stringLoaderMethods. It returns the module names literal arguments import and whether a
 // loader may import a module the scanner cannot name: a computed argument, or a loader
 // used as a value (map(import_string, paths)), whose calls it cannot see. bindings resolve
-// the head of each dotted call to the module the file imported it from.
-func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots []string, opaque bool) {
+// the head of each dotted call to the module the file imported it from; mvals are the
+// expressions moduleLookups read as a module value, read as that module's name.
+func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scopedBinding, mvals []moduleValue) (roots []string, opaque bool) {
 	r := []rune(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
@@ -606,30 +660,34 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			targets[leaf] = append(targets[leaf], name)
 		}
 	}
-	si := 0
-	for i := 0; i < n; {
-		if si < len(spans) && i >= spans[si][0] {
-			i = max(i, spans[si][1])
-			si++
+	// A module value that reaches no loader host is any other module. One bound to a name
+	// by a whole statement (m = importlib.import_module('pkgutil')) makes the name that
+	// module; one discarded as a statement goes nowhere. Both are read no further.
+	var vals []moduleValue
+	for _, v := range mvals {
+		if !slices.ContainsFunc(v.mods, func(m string) bool { return loaderHosts[m] || loaderAncestors[m] }) {
 			continue
 		}
-		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
-			i++
-			continue
+		p := v.end
+		for p < n && (r[p] == ' ' || r[p] == '\t') {
+			p++
 		}
-		qualified := i > 0 && r[i-1] == '.'
-		var segs []string
-		end := i
-		for {
-			var w string
-			w, end = readWordRunes(r, end)
-			segs = append(segs, w)
-			if end+1 < n && r[end] == '.' && isIdentStartRune(r[end+1]) {
-				end++
-				continue
+		whole := p >= n || r[p] == '\n' || r[p] == ';' || r[p] == '#'
+		if bound := boundName(r, v.start); whole && bound != "" {
+			for _, m := range v.mods {
+				if !slices.Contains(targets[bound], m) {
+					targets[bound] = append(targets[bound], m)
+				}
 			}
-			break
+			continue
 		}
+		if whole && valueStatement(r, v.start) {
+			continue
+		}
+		vals = append(vals, v)
+	}
+	slices.SortFunc(vals, func(a, b moduleValue) int { return a.start - b.start })
+	use := func(i, end int, segs []string, qualified bool) {
 		kind, name, ok := stringLoaderKind(segs, qualified, targets)
 		fetchEnd := end
 		if !ok && !qualified && !assignedTo(r, end) {
@@ -641,16 +699,14 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			kind, ok = stringLoaders[name]
 		}
 		if !ok || precededByDef(r, i) || precededByWord(r, i, "class") || assignedTo(r, fetchEnd) {
-			i = end
-			continue
+			return
 		}
 		open := skipAllSpace(r, fetchEnd)
 		if open >= n || r[open] != '(' {
 			// A loader passed or bound as a value may be called anywhere. A Config class
 			// named as a type (an annotation, isinstance) is no call.
 			opaque = opaque || !strings.HasSuffix(name, ".Config") || !typePosition(r, i)
-			i = end
-			continue
+			return
 		}
 		arg, known := loaderNameArg(r, open, loaderOwnKeywords[name])
 		switch {
@@ -661,9 +717,94 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			roots = append(roots, c.roots...)
 			opaque = opaque || c.computed || c.other && kind == loaderNameOnly
 		}
+	}
+	// chain reads the dotted attributes running on from r[end] onto segs.
+	chain := func(segs []string, end int) ([]string, int) {
+		for end+1 < n && r[end] == '.' && isIdentStartRune(r[end+1]) {
+			var w string
+			w, end = readWordRunes(r, end+1)
+			segs = append(segs, w)
+		}
+		return segs, end
+	}
+	si, vi := 0, 0
+	for i := 0; i < n; {
+		if si < len(spans) && i >= spans[si][0] {
+			i = max(i, spans[si][1])
+			si++
+			continue
+		}
+		if vi < len(vals) && i >= vals[vi].start {
+			v := vals[vi]
+			for vi < len(vals) && vals[vi].start < v.end {
+				vi++
+			}
+			if i < v.end && !precededByWord(r, v.start, "del") {
+				// The value stands in for a name bound to its module.
+				head := "\x00" + strconv.Itoa(v.start)
+				targets[head] = v.mods
+				segs, end := chain([]string{head}, v.end)
+				use(v.start, end, segs, false)
+				i = end
+			}
+			i = max(i, v.end)
+			continue
+		}
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		qualified := i > 0 && r[i-1] == '.'
+		w, end := readWordRunes(r, i)
+		segs, end := chain([]string{w}, end)
+		use(i, end, segs, qualified)
 		i = end
 	}
 	return sortedDedup(roots), opaque
+}
+
+// boundName returns the name a plain assignment statement starting before r[start] binds
+// (m = <value at r[start]>), or "".
+func boundName(r []rune, start int) string {
+	j := start - 1
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+		j--
+	}
+	if j < 1 || r[j] != '=' || strings.ContainsRune("=!<>+-*/%&|^@:", r[j-1]) {
+		return ""
+	}
+	j--
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+		j--
+	}
+	e := j + 1
+	for j >= 0 && isIdentPart(r[j]) {
+		j--
+	}
+	if j+1 == e || !isIdentStartRune(r[j+1]) || !valueStatement(r, j+1) {
+		return ""
+	}
+	return string(r[j+1 : e])
+}
+
+// valueStatement: r[i] begins a statement at bracket depth zero, on a line not continued
+// from the one before, and not after a ':' (a lambda body, an annotation, a one-line block).
+func valueStatement(r []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+		j--
+	}
+	ok := j < 0 || r[j] == ';' || r[j] == '\n' && !continued(r, j)
+	return ok && enclosingOpen(r, i) < 0
+}
+
+// continued: the line break at r[j] follows a backslash, directly or through a '\r'.
+func continued(r []rune, j int) bool {
+	k := j - 1
+	if k >= 0 && r[k] == '\r' {
+		k--
+	}
+	return k >= 0 && r[k] == '\\'
 }
 
 // loaderHosts are the modules that hold a stringLoaders entry as an attribute.
@@ -674,6 +815,21 @@ var loaderHosts = func() map[string]bool {
 		hosts[mod] = true
 	}
 	return hosts
+}()
+
+// loaderAncestors are the packages above a loaderHosts module (django, django.utils): a
+// literal fetch of the next package down reaches a loader host, and the package handed on
+// as a value may be fetched from anywhere.
+var loaderAncestors = func() map[string]bool {
+	anc := map[string]bool{}
+	for host := range loaderHosts {
+		for mod, _, ok := cutLast(host, "."); ok; mod, _, ok = cutLast(mod, ".") {
+			if !loaderHosts[mod] {
+				anc[mod] = true
+			}
+		}
+	}
+	return anc
 }()
 
 // fetchDunders are the module attributes that fetch another attribute by a computed name.
@@ -692,7 +848,7 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 	for _, t := range targets[segs[0]] {
 		for k := len(segs); k >= 1; k-- {
 			full := strings.Join(append([]string{t}, segs[1:k]...), ".")
-			if loaderHosts[full] && len(full) > len(host) {
+			if (loaderHosts[full] || loaderAncestors[full]) && len(full) > len(host) {
 				host, rest = full, segs[k:]
 				break
 			}
@@ -705,8 +861,11 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 		if _, ok := stringLoaders[host+"."+attr]; ok {
 			return host + "." + attr, after, true
 		}
-		// moduleLookups reads these by their spelled name, which a fetch by literal hides.
-		return "", end, !fetchDunders[attr] && !dynamicImportOpaqueLeafs[attr] && !dynamicImportLiteralLeafs[attr]
+		// moduleLookups reads these by their spelled name, which a fetch by literal hides; a
+		// fetched submodule that hosts a loader is handed on as a value.
+		sub := host + "." + attr
+		return "", end, !fetchDunders[attr] && !dynamicImportOpaqueLeafs[attr] && !dynamicImportLiteralLeafs[attr] &&
+			!loaderHosts[sub] && !loaderAncestors[sub]
 	}
 	switch {
 	case len(rest) == 0:
@@ -1307,7 +1466,7 @@ func lookupTarget(target string) string {
 	return target
 }
 
-func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, opaque, computed bool) {
+func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values []string, mvals []moduleValue, opaque, computed bool) {
 	r := []rune(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
@@ -1383,9 +1542,12 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				for k := range strings.Split(name, ".") {
 					values = append(values, strings.Join(strings.Split(name, ".")[:k+1], "."))
 				}
+				open := skipAllSpace(r, end)
+				mvals = append(mvals, moduleValue{dottedStart(r, i), callClose(r, open), dunderImported(r, open, name)})
 			default:
 				roots = append(roots, name)
 				values = append(values, name)
+				mvals = append(mvals, moduleValue{dottedStart(r, i), callClose(r, skipAllSpace(r, end)), []string{name}})
 			}
 			// The module object it returns reaches every name through sys.modules or
 			// builtins.globals, wherever the value goes next.
@@ -1410,6 +1572,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 					computed = true
 				default:
 					values = append(values, name)
+					if e := modulesEnd(r, aend); e > 0 {
+						mvals = append(mvals, moduleValue{dottedStart(r, i), e, []string{name}})
+					}
 				}
 				end = aend
 			}
@@ -1426,11 +1591,83 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				computed = true
 			default:
 				values = append(values, name)
+				if e := modulesEnd(r, end); e > 0 {
+					mvals = append(mvals, moduleValue{dottedStart(r, i), e, []string{name}})
+				}
 			}
 		}
 		i = end
 	}
-	return sortedDedup(roots), sortedDedup(values), opaque, computed
+	return sortedDedup(roots), sortedDedup(values), mvals, opaque, computed
+}
+
+// dunderImported returns the modules an __import__ of name, whose '(' is r[open], may
+// return: the top package, or the module itself when the fromlist is not empty.
+func dunderImported(r []rune, open int, name string) []string {
+	top, _, _ := strings.Cut(name, ".")
+	args, _ := callArgs(r, open)
+	var from [2]int
+	for k, a := range args {
+		s := skipAllSpace(r, a[0])
+		if w, e := readWordRunes(r, s); w == "fromlist" && assignedTo(r, e) {
+			from = [2]int{skipAllSpace(r, e) + 1, a[1]}
+		} else if k == 3 && !assignedTo(r, e) {
+			from = a
+		}
+	}
+	f := strings.Join(strings.Fields(string(r[from[0]:from[1]])), "")
+	switch {
+	case f == "" || f == "[]" || f == "()" || f == "None" || top == name:
+		return []string{top}
+	case len(f) > 2 && (f[0] == '[' && f[len(f)-1] == ']' || f[0] == '(' && f[len(f)-1] == ')'):
+		// A list or tuple of string literals (blanked to _) is not empty.
+		items := strings.Split(strings.TrimSuffix(f[1:len(f)-1], ","), ",")
+		if !slices.ContainsFunc(items, func(it string) bool { return it != "_" }) {
+			return []string{name}
+		}
+	}
+	// A computed fromlist may be empty or not.
+	return []string{top, name}
+}
+
+// moduleValue is an expression running from r[start] to r[end] whose value is one of the
+// modules mods: importlib.import_module('pkgutil'), sys.modules['werkzeug.utils'].
+type moduleValue struct {
+	start, end int
+	mods       []string
+}
+
+// dottedStart returns the start of the dotted name whose last segment starts at r[i].
+func dottedStart(r []rune, i int) int {
+	for i >= 2 && r[i-1] == '.' && isIdentPart(r[i-2]) {
+		j := i - 2
+		for j > 0 && isIdentPart(r[j-1]) {
+			j--
+		}
+		if !isIdentStartRune(r[j]) {
+			break
+		}
+		i = j
+	}
+	return i
+}
+
+// modulesEnd returns the index just past the literal subscript or .get call on sys.modules
+// that ends at r[end], or -1 when none follows.
+func modulesEnd(r []rune, end int) int {
+	p := skipAllSpace(r, end)
+	switch {
+	case p < len(r) && r[p] == '[':
+		if c := matchingClose(r, p); c >= 0 {
+			return c + 1
+		}
+	case p < len(r) && r[p] == '.':
+		g, e := readWordRunes(r, skipAllSpace(r, p+1))
+		if q := skipAllSpace(r, e); g == "get" && q < len(r) && r[q] == '(' {
+			return callClose(r, q)
+		}
+	}
+	return -1
 }
 
 // namerAttrs are the builtins that reach a namespace's names by computed access.

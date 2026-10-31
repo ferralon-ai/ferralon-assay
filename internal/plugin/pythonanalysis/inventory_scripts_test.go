@@ -93,8 +93,8 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 				"[[packages]]\nname = \"ruff\"\nversion = \"0.5\"\nmarker = \"'de' in dependency_groups\"\n"}, nil},
 		{"uv refuses a pylock.toml beside another requirement or a name it does not read as a lock", map[string]string{
 			"a.sh": "uv pip install -r pylock.toml pyjwt==1.5.0\n", "b.sh": "uv pip install -r x/PYLOCK.TOML\n", "c.sh": "uv pip install -r pylock.a.b.toml\n",
-			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"a\"\nversion = \"1\"\n",
-			"x/PYLOCK.TOML": "lock-version = \"1.0\"\n[[packages]]\nname = \"b\"\nversion = \"1\"\n",
+			"pylock.toml":     "lock-version = \"1.0\"\n[[packages]]\nname = \"a\"\nversion = \"1\"\n",
+			"x/PYLOCK.TOML":   "lock-version = \"1.0\"\n[[packages]]\nname = \"b\"\nversion = \"1\"\n",
 			"pylock.a.b.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"c\"\nversion = \"1\"\n"}, nil},
 		{"pip cannot install a -r pylock.toml", map[string]string{"install.sh": "pip install -r pylock.toml\n",
 			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"pyjwt\"\nversion = \"1.5.0\"\n"}, nil},

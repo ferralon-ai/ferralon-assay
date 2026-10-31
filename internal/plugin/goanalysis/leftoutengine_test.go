@@ -134,6 +134,9 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out file not named _test.go with a _test clause calls the symbol", map[string]string{
 			"x.go": off("package main_test\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n"),
 		}, nil, true, "", false},
+		{"a left-out file of a directory holding only _test clauses calls the symbol", map[string]string{
+			"ext/x.go": off("package ext_test\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n"),
+		}, nil, true, "", false},
 		{"the vulnerable package is not loaded and a left-out file calls the symbol", map[string]string{
 			"main.go": "package main\n\nfunc main() {}\n",
 			"x.go":    off("package main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n"),

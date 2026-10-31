@@ -336,6 +336,65 @@ func TestReconciledResult_PartialRunWithholdsRefutation(t *testing.T) {
 	}
 }
 
+// TestReconciledResult_PartialRunReleasesPastIllTypedDependency pins that a partial run that could not
+// load a dependency does not count it as an incomplete load: with Hidden known and holding no package
+// of vulnmod, neither library_escape nor reflection:call withholds the refutation of vulnmod, while a
+// run whose Hidden is unknown still withholds it.
+func TestReconciledResult_PartialRunReleasesPastIllTypedDependency(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/bad v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/bad => ./_bad\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"cmd/a/main.go":       "package main\n\nimport \"example.com/bad/olm\"\n\nfunc main() { olm.F() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+		"_bad/go.mod":         "module example.com/bad\n\ngo 1.22\n",
+		"_bad/olm/olm.go":     "package olm\n\nfunc F() { var x int = \"s\"; _ = x }\n",
+	})
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "GOWORK=off")
+	key := append([]string{dir}, env...)
+	stream := []byte(`{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}` + "\n")
+	for _, tc := range []struct {
+		name   string
+		hidden []string
+		want   bool
+	}{
+		{"Hidden known", []string{"", "pkg:golang/example.com/bad", "pkg:golang/example.com/m", "pkg:golang/stdlib"}, true},
+		{"Hidden unknown", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			for kind, v := range map[string]any{
+				govulncheckFailureKind: govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: "exit status 1", Stderr: "could not type-check example.com/bad/olm"},
+				govulncheckPartialKind: partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"example.com/bad/olm"}, Excluded: []string{"example.com/m/cmd/a"}, Hidden: tc.hidden, Stream: stream},
+			} {
+				b, err := json.Marshal(v)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(runCachePath(cache, kind, key), b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx := WithRunCacheDir(context.Background(), cache)
+			scanned, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-1"}, env, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := reconciledResult(ctx, scanned, dir, env, func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if refuted := res.Refutation != nil; refuted != tc.want {
+				t.Errorf("refutation %+v (%v), want refuted=%v", res.Refutation, res.Partiality.Reasons, tc.want)
+			}
+		})
+	}
+}
+
 // TestListBuildPackages pins that the listing holds the build's dependencies as well as its roots,
 // so an unloadable package outside the main module still names a package.
 func TestListBuildPackages(t *testing.T) {
@@ -344,6 +403,8 @@ func TestListBuildPackages(t *testing.T) {
 		"main.go":     "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
 		"_dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
 		"_dep/dep.go": "package dep\n\nfunc F() {}\n",
+		// Imports a package the dependency does not have: the go command cannot read it.
+		"cmd/broken/main.go": "package main\n\nimport \"example.com/dep/missing\"\n\nfunc main() { missing.F() }\n",
 	})
 	graph, err := listBuildPackages(context.Background(), dir, append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 	if err != nil {
@@ -355,6 +416,15 @@ func TestListBuildPackages(t *testing.T) {
 	}
 	if dep := graph[i]; !dep.DepOnly || dep.purl() != "pkg:golang/example.com/dep" {
 		t.Errorf("dependency listed as %+v (%s)", dep, dep.purl())
+	}
+	// Hidden reads Deps and Error (hiddenModules): a root's Deps hold its dependencies, implicit ones
+	// included, and a package the go command could not read carries an Error.
+	if i := slices.IndexFunc(graph, func(p listedPackage) bool { return p.ImportPath == "example.com/m" }); i < 0 ||
+		!slices.Contains(graph[i].Deps, "example.com/dep") || !slices.Contains(graph[i].Deps, "runtime") || graph[i].Error != nil {
+		t.Errorf("root listed as %+v; want Deps holding example.com/dep and runtime, and no Error", graph)
+	}
+	if i := slices.IndexFunc(graph, func(p listedPackage) bool { return p.ImportPath == "example.com/dep/missing" }); i < 0 || graph[i].Error == nil {
+		t.Errorf("graph %+v; want example.com/dep/missing listed with an Error", graph)
 	}
 }
 

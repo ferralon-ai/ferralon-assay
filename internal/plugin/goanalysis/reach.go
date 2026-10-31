@@ -356,8 +356,9 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 }
 
 // incompleteLoad reports whether a package failed to load or type-check, so that its imports, and
-// what reaches through them, may be incomplete. A package in known failed to load, but the go command
-// read its imports, so it does not count.
+// what reaches through them, may be incomplete. A package in known does not count: it, and every
+// package importing it, lies in the partial run's Hidden closure, whose modules' refutations are
+// withheld anyway (withholdForPartialRun, and reflectReachOf on why the rest stand).
 func incompleteLoad(pkgs []*packages.Package, known []string) bool {
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {

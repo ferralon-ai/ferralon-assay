@@ -282,10 +282,11 @@ func abbreviatesInstallOption(line string) bool {
 }
 
 // laterInstallOption reports whether an option line carries an include or editable after its
-// first option ("--pre -r dev.txt"); pip reads every option on the line.
+// first option ("--pre -r dev.txt"); pip reads every option on the line, shell-unquoted.
 func laterInstallOption(line string) bool {
 	fields := strings.Fields(line)
 	for i := 1; i < len(fields); i++ {
+		fields[i] = strings.Trim(fields[i], `'"`)
 		if !strings.HasPrefix(fields[i], "-") {
 			continue
 		}

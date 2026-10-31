@@ -361,6 +361,24 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantUnpinned: true,
 		},
 		{
+			name: "abbreviated include after another option",
+			files: map[string]string{
+				"requirements.txt": "--pre --requirem inc.txt\nsix==1.16.0\n",
+				"inc.txt":          "django==5.0\n",
+			},
+			wantPURLs:    []string{"pkg:pypi/six@1.16.0"},
+			wantUnpinned: true,
+		},
+		{
+			name: "quoted include after another option",
+			files: map[string]string{
+				"requirements.txt": "--pre '-rinc.txt'\nsix==1.16.0\n",
+				"inc.txt":          "django==5.0\n",
+			},
+			wantPURLs:    []string{"pkg:pypi/six@1.16.0"},
+			wantUnpinned: true,
+		},
+		{
 			name:      "constraint after another option adds nothing",
 			files:     map[string]string{"requirements.txt": "--pre -c c.txt\nsix==1.16.0\n"},
 			wantPURLs: []string{"pkg:pypi/six@1.16.0"},

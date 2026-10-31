@@ -179,3 +179,21 @@ func TestCallGraph_FStringCallSites(t *testing.T) {
 }
 
 func isRun(scip string) bool { return strings.Contains(scip, "app/run(") }
+
+// TestStripPythonLiterals_OpenSubstitution: a substitution left open by a nested literal
+// that never closes ends there, so the code after it stays code rather than being blanked
+// up to a later line's brace.
+func TestStripPythonLiterals_OpenSubstitution(t *testing.T) {
+	for _, tc := range []struct{ name, src, keep string }{
+		{"brace in a later literal", "x = f\"{a\"\nimportlib.import_module(name)\ny = b}\"\n", "importlib.import_module(name)"},
+		{"brace in later code", "x = f\"{a\"\nimportlib.import_module(name)\ny = {1: 2}\nz = 3}\n", "importlib.import_module(name)"},
+		{"brace closing a later call", "msg = f\"{user\"\nload(name)\ncfg = dict(\n  a=1}\n", "load(name)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clean, _ := stripPythonLiterals(tc.src)
+			if !strings.Contains(clean, tc.keep) {
+				t.Errorf("%q blanked; got %q", tc.keep, clean)
+			}
+		})
+	}
+}

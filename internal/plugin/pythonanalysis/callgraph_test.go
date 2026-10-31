@@ -1438,7 +1438,7 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 		{"literal inside a triple-quoted substitution with a quote in its spec", "import importlib\nx = f\"\"\"{d[\"\"\"importlib.import_module(n)\"\"\"]:\"}\"\"\"\n", nil, false},
 		{"after a nested format spec cut by its literal's quote", "import importlib\nx = f\"{a:{b:\"} + importlib.import_module(name) + \"}\"\n", nil, true},
 		{"after an f-string substitution left open by a nested literal", "import importlib\nx = f\"{a\"\nimportlib.import_module(name)\ny = b}\"\n", nil, true},
-		{"after many f-string substitutions left open", "import importlib\n" + strings.Repeat("x = f\"{a\"\n", 64) + "importlib.import_module(name)\n", nil, true},
+		{"after many f-string substitutions left open by a comment", "import importlib\n" + strings.Repeat("x = f\"{a # \"\n", 64) + "importlib.import_module(name)\n", nil, true},
 		{"concatenation", "import importlib\n\ndef load(n):\n    return importlib.import_module(\"plugins.\" + n)\n", nil, true},
 		{"entry points", "from importlib.metadata import entry_points\n\nfor ep in entry_points(group='acme.plugins'):\n    ep.load()\n", nil, true},
 		{"file-path loader through an alias", "from importlib.util import spec_from_file_location as sffl\n\ndef load(p):\n    return sffl('plugin', p)\n", nil, true},

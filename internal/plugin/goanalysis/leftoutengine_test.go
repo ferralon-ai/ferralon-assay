@@ -792,6 +792,72 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			}
 		})
 	}
+	// unlinked leaves the vulnerable package unloaded: x.go enters u, an unloaded package of the
+	// vulnerable module that is not one of the symbol's, so only the walk of what x.go links decides.
+	unlinked := merge(tree, map[string]string{
+		"main.go":   "package main\n\nfunc main() {}\n",
+		"_v/u/u.go": "package u\n",
+		"x.go":      "//go:build lofalt\n\npackage main\n\nimport _ \"example.com/v/u\"\n",
+	})
+	for _, tc := range []struct {
+		name, item string
+		files      map[string]string
+		blocked    map[string]os.FileMode
+	}{
+		// Here the left-out file is in loaded package d of another module, outside the main module's
+		// tree, which the gate walks whole; x.go at the root imports nothing and is not kept.
+		{"the left-out file's directory cannot be listed and the vulnerable package is not loaded", lofMissingSource, map[string]string{
+			"go.mod":      "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/v v0.0.0\n\texample.com/dep v0.0.0\n)\n\nreplace (\n\texample.com/v => ./_v\n\texample.com/dep => ./_dep\n)\n",
+			"_dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
+			"_dep/d/d.go": "package d\n\nfunc F() {}\n",
+			"_dep/d/x.go": "//go:build lofalt\n\npackage d\n\nimport _ \"example.com/v/u\"\n",
+			"main.go":     "package main\n\nimport \"example.com/dep/d\"\n\nfunc main() { d.F() }\n",
+			"x.go":        "//go:build lofalt\n\npackage main\n",
+		}, map[string]os.FileMode{"_dep/d": 0o311, "_v/u/u.go": 0}},
+		{"a file of an unloaded package the file enters cannot be read and the vulnerable package is not loaded", lofMissingSource, nil,
+			map[string]os.FileMode{"_v/u/u.go": 0}},
+		{"a build constraint of an unloaded package the file enters does not parse and the vulnerable package is not loaded", lofParseError,
+			map[string]string{"_v/u/bad.go": "//go:build a\n//go:build b\n\npackage u\n"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, merge(unlinked, tc.files))
+			t.Cleanup(func() {
+				for p := range tc.blocked {
+					_ = os.Chmod(filepath.Join(dir, p), 0o755)
+				}
+			})
+			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+				for p, mode := range tc.blocked {
+					if err := os.Chmod(filepath.Join(dir, p), mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			if !got.withheld || lofFileWith(got, tc.item) == "" {
+				t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, tc.item, lofDescribe(got))
+			}
+		})
+	}
+	t.Run("the vulnerable package is not loaded and a file that cannot link it fails closed", func(t *testing.T) {
+		// The module graph cannot be read, so the gate keeps x.go; x.go names a function u does not
+		// declare, and still links only u, which reaches nothing of the symbol's package.
+		dir := writeTree(t, merge(unlinked, map[string]string{
+			"go.mod":      "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/v v0.0.0\n\texample.com/dep v0.0.0\n)\n\nreplace (\n\texample.com/v => ./_v\n\texample.com/dep => ./_dep\n)\n",
+			"_dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
+			"_dep/d/d.go": "package d\n",
+			"x.go":        "//go:build lofalt\n\npackage main\n\nimport \"example.com/v/u\"\n\nfunc init() { u.Missing() }\n",
+		}))
+		blocked := filepath.Join(dir, "_dep", "go.mod")
+		t.Cleanup(func() { _ = os.Chmod(blocked, 0o644) })
+		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			if err := os.Chmod(blocked, 0); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if got.withheld || lofFileWith(got, lofUnresolvedName) == "" {
+			t.Fatalf("withheld = %v, want released despite %s (facts %s)", got.withheld, lofUnresolvedName, lofDescribe(got))
+		}
+	})
 	t.Run("the left-out file's package directory cannot be listed", func(t *testing.T) {
 		// y.go of the loaded vulnerable package is left out; its directory stays searchable, so y.go
 		// itself reads.
@@ -944,6 +1010,9 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 			"x.go":       "//go:build lofalt\n\npackage main\n\nimport _ \"container/list\"\n\nfunc asm()\n\nfunc init() { asm() }\n",
 			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL strings·NoSuchName(SB)\n\tRET\n",
 		}), list, false, "", true, "", ""},
+		{"the toolchain is unknown and a left-out file links the vulnerable package without naming a symbol", merge(stringsMain, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport _ \"container/list\"\n",
+		}), list, true, "", true, lofUnknownToolchain, ""},
 		{"a left-out file links the vulnerable package and names only declared symbols", merge(stringsMain, map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t_ \"unsafe\"\n)\n\n//go:linkname pulled strings.ToUpper\nfunc pulled(string) string\n\nfunc init() { pulled(\"x\") }\n",
 		}), list, false, "", false, "", ""},
@@ -974,6 +1043,33 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 				if !found {
 					t.Errorf("the engine holds no %s", tc.counts)
 				}
+			}
+		})
+	}
+	// The go command's GOROOT, set after the load, is not the release's own standard library.
+	for _, tc := range []struct {
+		name, version, failStd string
+		absent                 bool
+	}{
+		{"the go command cannot report its GOROOT", "", lofUnknownToolchain, true},
+		{"the GOROOT holds no VERSION file", "", lofUnknownToolchain, false},
+		{"the GOROOT is another release's", "go1.20\n", lofGorootMismatch, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lofRun(t, writeTree(t, useStd("os", "_, _ = os.Open(\"x\")")), "stdlib", map[string][]string{"os": {"Root.Open"}}, false, func(*LoadResult) {
+				root := t.TempDir()
+				switch {
+				case tc.absent:
+					root = filepath.Join(root, "absent")
+				case tc.version != "":
+					if err := os.WriteFile(filepath.Join(root, "VERSION"), []byte(tc.version), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Setenv("GOROOT", root)
+			})
+			if !got.withheld || got.engine.FailStd != tc.failStd {
+				t.Fatalf("withheld = %v, standard-library failure = %q, want withheld on %q (facts %s)", got.withheld, got.engine.FailStd, tc.failStd, lofDescribe(got))
 			}
 		})
 	}

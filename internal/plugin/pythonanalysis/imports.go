@@ -730,8 +730,9 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 		j--
 	}
 	k := skipAllSpace(r, end)
-	if k < len(r) && r[k] == '(' {
-		// A module is not callable: the name is bound to something else here.
+	if k < len(r) && r[k] == '(' && !strings.ContainsRune(string(r[end:k]), '\n') {
+		// A module is not callable: the name is bound to something else here. A '(' on a
+		// later line may open the next statement instead.
 		return "", end, true
 	}
 	if presenceTest(r, i, end, k) {
@@ -760,17 +761,23 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 }
 
 // presenceTest reports whether the name at r[i], ending at r[end] and followed by r[k], is
-// only compared or truth-tested, as an optional import is (if uvicorn is None:, if not
-// werkzeug, HAS = uvicorn is not None). It must be a whole operand: in reg + uvicorn == 0 or
-// not uvicorn in reg the module is handed to another object's operator, and an and/or
-// operand's value is the expression's.
+// only tested for presence, as an optional import is (if uvicorn is None:, if not werkzeug,
+// HAS = uvicorn is not None). It must be a whole operand: in reg + uvicorn == 0 or not
+// uvicorn in reg the module is handed to another object's operator, and so it is in
+// uvicorn == reg, through reg's reflected __eq__, and as an and/or operand.
 func presenceTest(r []rune, i, end, k int) bool {
-	next, _ := readWordRunes(r, k)
+	next, wend := readWordRunes(r, k)
 	op := string(r[k:min(k+2, len(r))])
 	switch {
-	case (next == "is" || op == "==" || op == "!=") && operandStart(r, i):
-		return true
-	case precededByWord(r, i, "not") && operandEnd(r, end, k):
+	case next == "is" && operandStart(r, i):
+		p := skipAllSpace(r, wend)
+		if w, e := readWordRunes(r, p); w == "not" {
+			p = skipAllSpace(r, e)
+		}
+		return noneAt(r, p)
+	case (op == "==" || op == "!=") && operandStart(r, i):
+		return noneAt(r, skipAllSpace(r, k+2))
+	case precededByWord(r, i, "not") && operandEnd(r, k):
 		return true
 	case precededByWord(r, i, "if") && (next == "else" || op != "" && op[0] == ':'),
 		(precededByWord(r, i, "elif") || precededByWord(r, i, "while")) && op != "" && op[0] == ':':
@@ -779,16 +786,23 @@ func presenceTest(r []rune, i, end, k int) bool {
 	return false
 }
 
+// noneAt reports whether the word at r[p] is None.
+func noneAt(r []rune, p int) bool {
+	w, _ := readWordRunes(r, p)
+	return w == "None"
+}
+
 // operandStart reports whether nothing that binds tighter than a comparison precedes r[i].
+// A newline is not a boundary: inside brackets the expression runs on.
 func operandStart(r []rune, i int) bool {
 	j := i - 1
-	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+	for j >= 0 && unicode.IsSpace(r[j]) {
 		j--
 	}
 	switch {
-	case j < 0, strings.ContainsRune("([,:", r[j]), r[j] == '\n' && (j == 0 || r[j-1] != '\\'):
+	case j >= 0 && strings.ContainsRune("([,:", r[j]):
 		return true
-	case r[j] == '=':
+	case j >= 0 && r[j] == '=':
 		return j == 0 || !strings.ContainsRune("=!<>", r[j-1])
 	}
 	for _, w := range []string{"if", "elif", "while", "and", "or", "not", "return", "assert", "else"} {
@@ -799,17 +813,15 @@ func operandStart(r []rune, i int) bool {
 	return false
 }
 
-// operandEnd reports whether the operand ending at r[end] closes there: r[k], the next
-// non-space rune, starts nothing that binds tighter than not.
-func operandEnd(r []rune, end, k int) bool {
+// operandEnd reports whether r[k], the next non-space rune after an operand, starts nothing
+// that binds tighter than not. A newline is not a boundary: inside brackets the expression
+// runs on.
+func operandEnd(r []rune, k int) bool {
 	if k >= len(r) || strings.ContainsRune(":),]};", r[k]) {
 		return true
 	}
-	if w, _ := readWordRunes(r, k); w == "and" || w == "or" || w == "if" || w == "else" {
-		return true
-	}
-	// r[end:k] is whitespace only, so a '\\' continuation stops k and is not a closer.
-	return strings.ContainsRune(string(r[end:k]), '\n')
+	w, _ := readWordRunes(r, k)
+	return w == "and" || w == "or" || w == "if" || w == "else"
 }
 
 // patchObject reports whether the '(' at r[j] opens a patch.object call.

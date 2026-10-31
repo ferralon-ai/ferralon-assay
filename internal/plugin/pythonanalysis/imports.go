@@ -462,7 +462,8 @@ func moduleInitSCIP(module string) string {
 
 // dynamicImportLiteralLeafs are callables, other than the ones moduleLookups reads, that
 // import the module their first argument names. A literal argument is a load root; anything
-// else is an import the scanner cannot name.
+// else is an import the scanner cannot name. Each is a stringLoaders entry as well, which
+// reads it under the names the file's imports bind it to and as a value.
 var dynamicImportLiteralLeafs = map[string]bool{
 	"resolve_name": true, // pkgutil.resolve_name("pkg.mod:attr")
 }
@@ -560,6 +561,7 @@ var stringLoaders = map[string]stringLoaderArg{
 	"uvicorn.Config":                            loaderNameOrObject,
 	"uvicorn.main.run":                          loaderNameOrObject,
 	"uvicorn.config.Config":                     loaderNameOrObject,
+	"pkgutil.resolve_name":                      loaderNameOnly,
 }
 
 // stringLoaderMethods are loader methods called on an instance the scanner cannot type,
@@ -572,8 +574,8 @@ var stringLoaderMethods = map[string]bool{
 
 // loaderKeywords are the parameter names string loaders give the argument that names the
 // module: uvicorn's app, werkzeug's and django's import_name and dotted_path, Flask's and
-// Celery's obj.
-var loaderKeywords = map[string]bool{"app": true, "import_name": true, "dotted_path": true, "obj": true}
+// Celery's obj, pkgutil's name.
+var loaderKeywords = map[string]bool{"app": true, "import_name": true, "dotted_path": true, "obj": true, "name": true}
 
 // stringLoaderImports scans one file's cleaned source for calls to stringLoaders and
 // stringLoaderMethods. It returns the module names literal arguments import and whether a

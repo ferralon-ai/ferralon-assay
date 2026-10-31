@@ -51,3 +51,40 @@ func TestSpecifierPin(t *testing.T) {
 		}
 	}
 }
+
+// A requirement's specifier set takes one trailing comma, as packaging's Requirement does; any
+// other empty clause is invalid. Each row's expectation is packaging 26.3's result.
+func TestParsePEP508SpecifierCommas(t *testing.T) {
+	for _, tt := range []struct {
+		req, spec string
+		ok        bool
+	}{
+		{"foo>=1.0,", ">=1.0", true},
+		{"foo >= 1.0 ,", ">=1.0", true},
+		{"foo>=1.0,<2,", ">=1.0,<2", true},
+		{"foo (>=1.0,)", ">=1.0", true},
+		{`foo>=1.0,;python_version>"3"`, ">=1.0", true},
+		{"foo>=1.0,,", "", false},
+		{"foo>=1.0, ,", "", false},
+		{"foo>=1.0,,<2", "", false},
+		{"foo>=1.0, ,<2", "", false},
+		{"foo,>=1.0", "", false},
+		{"foo,", "", false},
+	} {
+		r, ok := parsePEP508(tt.req)
+		if ok != tt.ok || ok && r.Specifier != tt.spec {
+			t.Errorf("parsePEP508(%q) = %q, %v; want %q, %v", tt.req, r.Specifier, ok, tt.spec, tt.ok)
+		}
+	}
+	if v, ok := specifierPin("==2.8.0,"); v != "2.8.0" || !ok {
+		t.Errorf(`specifierPin("==2.8.0,") = %q, %v; want "2.8.0", true`, v, ok)
+	}
+}
+
+// A requirement line ending in a trailing comma reads as a requirement file, so a file of
+// such lines is a manifest candidate.
+func TestPyCandidateTrailingCommaLine(t *testing.T) {
+	if _, ok := pyCandidate("svc/deps", []byte("foo >= 1.0,\n")); !ok {
+		t.Error(`pyCandidate("svc/deps", "foo >= 1.0,") is not a candidate; pip installs from it`)
+	}
+}

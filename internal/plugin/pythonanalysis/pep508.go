@@ -116,6 +116,11 @@ func parsePEP508(s string) (pep508Req, bool) {
 // operator or a version that does not look like a PEP 440 version.
 func normalizeSpecifier(spec string) (string, bool) {
 	clauses := strings.Split(spec, ",")
+	// packaging accepts one trailing comma after the last clause (">= 1.0,"), but no empty
+	// clause anywhere else (",,", ", ,", a leading ",").
+	if n := len(clauses); n > 1 && strings.TrimSpace(clauses[n-1]) == "" {
+		clauses = clauses[:n-1]
+	}
 	out := make([]string, 0, len(clauses))
 	for _, c := range clauses {
 		c = strings.Join(strings.Fields(c), "")

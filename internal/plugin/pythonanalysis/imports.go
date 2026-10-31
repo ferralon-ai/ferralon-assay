@@ -632,7 +632,7 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 		}
 		kind, name, ok := stringLoaderKind(segs, qualified, targets)
 		fetchEnd := end
-		if !ok && !qualified && !precededByDef(r, i) && !assignedTo(r, end) {
+		if !ok && !qualified && !assignedTo(r, end) {
 			var fetched bool
 			name, fetchEnd, fetched = loaderFetch(r, i, end, segs, targets, lits)
 			if !fetched {
@@ -684,8 +684,9 @@ var fetchDunders = map[string]bool{"__dict__": true, "__getattribute__": true, "
 // __dict__ subscript or .get. A literal attribute naming a loader returns that stringLoaders
 // entry as name and the index just past the fetch, so the caller reads the fetched loader as
 // it reads one spelled out. A fetch by a name the scanner cannot read, a computed-access
-// dunder, or the module passed or bound as a value reports fetched false. Any other use, and
-// a dotted name that is not such a module, is neither.
+// dunder, or the module passed or bound as a value reports fetched false. Any other use
+// (hasattr, setattr, a plain attribute), and a dotted name that is not such a module, is
+// neither.
 func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]string, lits map[int]strLiteral) (name string, after int, fetched bool) {
 	host, rest := "", segs
 	for _, t := range targets[segs[0]] {
@@ -745,6 +746,9 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 	case precededByWord(r, j, "vars") && r[k] == ')':
 		return subscriptFetch(r, k+1, lits, end, leaf)
 	case precededByWord(r, j, "hasattr") && r[k] == ',', precededByWord(r, j, "type") && r[k] == ')':
+		return "", end, true
+	case (precededByWord(r, j, "setattr") || precededByWord(r, j, "delattr")) && r[k] == ',':
+		// A store or delete (monkeypatch.setattr(uvicorn, "run", spy)) hands no loader over.
 		return "", end, true
 	}
 	return "", end, false

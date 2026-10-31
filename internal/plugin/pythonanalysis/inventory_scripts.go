@@ -178,29 +178,47 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 			add(relScope(req.BuildDir, run.surface), resolveRequirements([]byte(strings.Join(args, "\n")+"\n"), req.TargetEnv, req.Selection))
 		}
 		for _, f := range run.files {
-			if rootErr != nil || !buildtree.Inside(realRoot, f) {
+			if rootErr != nil || !buildtree.Inside(realRoot, f.path) {
 				continue
 			}
-			if data, err := readRegular(f); err == nil {
-				add(relScope(req.BuildDir, f), requirementFileReqs(f, data, run, req))
+			if data, err := readRegular(f.path); err == nil {
+				add(relScope(req.BuildDir, f.path), requirementFileReqs(f, data, run, req))
 			}
 		}
 	}
 	return nodes
 }
 
-// requirementFileReqs reads a -r file the way the installer running it reads it by name. Only
-// uv reaches the first two cases (pipRejectsFile drops pip's run): it reads a pylock.toml (PEP
-// 751) as a lock, and another TOML, setup.cfg or setup.py as project metadata this does not
-// read, which names nothing. Any other file is requirements lines.
-func requirementFileReqs(path string, data []byte, run scriptRun, req plugin.ResolveInventoryRequest) []pyReq {
-	switch ext := strings.ToLower(filepath.Ext(path)); {
-	case isPyLockName(filepath.Base(path)):
+// requirementFileReqs reads a -r file the way the installer running it reads it: by the name
+// it is given, which a Dockerfile COPY may have changed from the build-tree file's. The file's
+// own name tells what it holds, so when the two read as different kinds the installer fails on
+// it and it names nothing. uv reads a pylock.toml (PEP 751) as a lock, and another TOML,
+// setup.cfg or setup.py as project metadata this does not read, which names nothing; pip
+// reaches neither by name (pipRejectsFile drops its run). Any other file is requirements lines.
+func requirementFileReqs(f runFile, data []byte, run scriptRun, req plugin.ResolveInventoryRequest) []pyReq {
+	kind := reqFileKind(f.name)
+	if kind != reqFileKind(filepath.Base(f.path)) {
+		return nil
+	}
+	switch kind {
+	case "lock":
 		return parsePyLockTOML(data, run.args, req.TargetEnv, req.Selection)
-	case ext == ".toml", ext == ".cfg", ext == ".py":
+	case "metadata":
 		return nil
 	}
 	return resolveRequirements(data, req.TargetEnv, req.Selection)
+}
+
+// reqFileKind is how uv reads a -r file by its base name: a lock, project metadata or
+// requirements lines.
+func reqFileKind(base string) string {
+	switch ext := strings.ToLower(filepath.Ext(base)); {
+	case isPyLockName(base):
+		return "lock"
+	case ext == ".toml", ext == ".cfg", ext == ".py":
+		return "metadata"
+	}
+	return "lines"
 }
 
 // isPyLockName is uv's test for a PEP 751 lock's file name: pylock.toml, or pylock.<name>.toml

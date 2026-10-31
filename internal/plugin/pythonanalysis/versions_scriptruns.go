@@ -62,7 +62,7 @@ func (r *runRecorder) resolve(words, args []string, b scriptsurface.Binder) scri
 	}
 	for _, p := range pipRequirementFiles(args) {
 		if h := b.Hosts(p); len(h) == 1 && !r.laneRead(h[0]) {
-			run.files = append(run.files, filepath.Clean(h[0]))
+			run.files = append(run.files, runFile{filepath.Clean(h[0]), filepath.Base(p)})
 		}
 	}
 	return run

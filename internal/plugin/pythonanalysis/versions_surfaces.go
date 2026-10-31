@@ -43,8 +43,14 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 type scriptRun struct {
 	surface string
 	args    []string
-	files   []string
+	files   []runFile
 	uv      bool
+}
+
+// runFile is a -r file a run resolves: the build-tree path, and the name the installer is
+// given, by which it reads the file.
+type runFile struct {
+	path, name string
 }
 
 // scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip

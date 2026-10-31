@@ -109,6 +109,12 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 		{"pip fails on a -r pylock.toml or project metadata and installs nothing", map[string]string{
 			"install.sh": "pip install -r pylock.toml pyjwt==1.5.0\n", "b.sh": "pip install -r setup.cfg requests==2.0\n",
 			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"pyjwt\"\nversion = \"1.5.0\"\n", "setup.cfg": "[metadata]\nname = x\n"}, nil},
+		{"a -r file a COPY renames is read by its new name; one of another kind names nothing", map[string]string{
+			"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY pylock.toml reqs.txt\nRUN pip install -r reqs.txt\n" +
+				"COPY pylock.toml /app/r2.txt\nRUN uv pip install -r /app/r2.txt\nCOPY deps.txt /app/pylock.toml\nRUN uv pip install -r /app/pylock.toml\n" +
+				"COPY deps.txt /app/extra.in\nRUN pip install -r /app/extra.in\n",
+			"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"locked\"\nversion = \"1.0\"\n", "deps.txt": "pyjwt==1.5.0\n"},
+			[]string{"deps.txt#pyjwt pkg:pypi/pyjwt@1.5.0"}},
 		{"a -r of project metadata names nothing", map[string]string{"install.sh": "uv pip install -r deps/setup.cfg -r deps/other.toml\n",
 			"deps/setup.cfg": "[metadata]\nname = x\n", "deps/other.toml": "[tool]\nx = 1\n"}, nil},
 		{"a -r file outside the tree", map[string]string{"Dockerfile": "FROM python:3.12\nRUN pip install -r /app/extra.in\n"}, nil},

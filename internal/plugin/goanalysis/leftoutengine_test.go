@@ -170,8 +170,9 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"//go:linkname pulled example.com/v/vuln.Bad\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, "", false},
 		{"a left-out function pulls by linkname a symbol nothing declares", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.Nowhere\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, lofLinkname, false},
+		// The linker takes the dynamic import only when no Go code or assembly defines the symbol.
 		{"a left-out file links by linkname a C symbol it imports", x("\t_ \"unsafe\"\n\t\"example.com/v/vuln\"",
-			"//go:cgo_import_dynamic libc_puts puts \"libc.so\"\n\n//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, false, "", false},
+			"//go:cgo_import_dynamic libc_puts puts \"libc.so\"\n\n//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, true, lofLinkname, false},
 		{"a left-out file links by linkname a bare symbol nothing imports", x("\t_ \"unsafe\"\n\t\"example.com/v/vuln\"",
 			"//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, true, lofLinkname, false},
 		// asm

@@ -286,6 +286,21 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"left-out assembly calls through a register while the symbol's address is taken", merge(x(libOnly, "func asm()\n\nfunc init() { lib.Install(); asm() }\n"), hook, map[string]string{
 			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL AX\n\tRET\n",
 		}), badFunc, true, "", false},
+		{"a left-out init reads a loaded variable while the symbol's address is taken", merge(x(libOnly, "func init() { lib.Install(); _ = lib.N }\n"), hook, map[string]string{
+			"lib/n.go": "package lib\n\nvar N int\n",
+		}), badFunc, true, "", false},
+		// The receiver's type parameter shadows the type's name, so the closure never names the type.
+		{"a left-out method on a loaded generic type whose method set holds the symbol", map[string]string{
+			"lib/g.go":     "package lib\n\nimport \"example.com/v/vuln\"\n\ntype G[E any] struct{ vuln.T }\n",
+			"lib/g_alt.go": off("package lib\n\nfunc (G[G]) Extra() {}\n"),
+		}, nil, true, "", false},
+		// The build's call x.m() reaches b.m in the class-hierarchy graph (b is boxed into sink) but
+		// not in the type-propagation one, where only a flows into x.
+		{"a left-out init names a type whose method only the class-hierarchy graph reaches", map[string]string{
+			"main.go": "package main\n\nimport \"example.com/v/vuln\"\n\ntype i interface{ m() }\n\ntype a struct{}\n\nfunc (a) m() {}\n\ntype b struct{}\n\n" +
+				"func (b) m() { vuln.Bad() }\n\nfunc run(x i) { x.m() }\n\nvar sink any = b{}\n\nfunc main() { vuln.Safe(); run(a{}) }\n",
+			"x.go": off("package main\n\nfunc init() { var v b; _ = v }\n"),
+		}, badFunc, true, "", false},
 		// assembly bodies: of a function nothing calls, of a symbol only assembly declares, and file-local ones
 		{"a left-out bodyless function nothing calls has assembly that calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
 			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n",

@@ -94,6 +94,9 @@ type lofWorld struct {
 	// stdNames holds, by directory, the names a standard-library package declares in any build
 	// variant; nil when the directory cannot be read whole.
 	stdNames map[string]map[string]bool
+	// base is the walk of the roots of the package whose files closure last walked; a walk of
+	// another package's files, or a dropped file, replaces it.
+	base *lofWalk
 	// carriers holds the method names some loaded type declares a method of that carries a value
 	// in (lofCarriesIn); nil until first asked.
 	carriers map[string]bool
@@ -240,6 +243,17 @@ type lofClosure struct {
 	// that is because it never compiles at all (uncompilable).
 	excluded bool
 	dropped  bool
+}
+
+func newLofClosure() *lofClosure {
+	return &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}}
+}
+
+func (c *lofClosure) clone() *lofClosure {
+	cp := *c
+	cp.funcs, cp.inits, cp.types, cp.methods, cp.src = maps.Clone(c.funcs), maps.Clone(c.inits), maps.Clone(c.types), maps.Clone(c.methods), maps.Clone(c.src)
+	cp.newMeth, cp.fc, cp.fcStd, cp.unres, cp.unresQ = slices.Clone(c.newMeth), slices.Clone(c.fc), slices.Clone(c.fcStd), slices.Clone(c.unres), slices.Clone(c.unresQ)
+	return &cp
 }
 
 func (c *lofClosure) fail(item string) {
@@ -764,9 +778,12 @@ func (w *lofWorld) refsOf(d *lofDecl) {
 
 // lofWalk is one left-out file's closure in progress.
 type lofWalk struct {
-	w       *lofWorld
-	out     *lofClosure
-	epoch   int
+	w     *lofWorld
+	out   *lofClosure
+	epoch int
+	// base is the epoch of the walk this one continues: what it queued counts as queued.
+	base    int
+	own     *lofPkg
 	touched map[*lofFile]bool
 	entered map[*lofPkg]bool
 	called  map[string]bool
@@ -780,7 +797,7 @@ type lofWalk struct {
 // every package the closure enters and the //export functions of its cgo files. Loaded
 // declarations are terminals, not walked.
 func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
-	out := &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}}
+	out := newLofClosure()
 	src, err := os.ReadFile(path)
 	if err != nil {
 		out.fail(lofMissingSource)
@@ -829,18 +846,20 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 		}
 		return out
 	}
-	w.epoch++
-	k := &lofWalk{w: w, out: out, epoch: w.epoch, touched: map[*lofFile]bool{}, entered: map[*lofPkg]bool{}, called: map[string]bool{}, asmDone: map[*lofAsm]bool{}}
 	for _, d := range file.decls {
-		k.push(d)
 		if d.recv != "" && own.loaded != nil {
 			if tn, ok := own.loaded.Types.Scope().Lookup(d.recv).(*types.TypeName); ok && !slices.Contains(out.newMeth, tn) {
 				out.newMeth = append(out.newMeth, tn)
 			}
 		}
 	}
+	k := w.continued(own)
+	k.out.newMeth = out.newMeth
+	out = k.out
+	for _, d := range file.decls {
+		k.push(d)
+	}
 	k.touch(file)
-	k.enter(own)
 	k.drain()
 	if len(out.unres)+len(out.unresQ) == 0 || k.stopped {
 		return out
@@ -873,6 +892,7 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 	for _, d := range drop {
 		w.dropped[d] = true
 	}
+	w.base = nil
 	for key, p := range w.pkgs {
 		if slices.ContainsFunc(p.files, func(f *lofFile) bool { return w.dropped[f.path] }) {
 			delete(w.pkgs, key)
@@ -882,6 +902,22 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 		return &lofClosure{excluded: true, dropped: true}
 	}
 	return w.closure(path, pkgPath)
+}
+
+// continued returns a walk of own's closure, continued from a copy of the walk of own's roots
+// alone (its initializers, exports and files), which the files of own that follow in turn share.
+// The closure is the least fixed point of its roots, so the continued walk reaches what one rooted
+// at the file and own together does.
+func (w *lofWorld) continued(own *lofPkg) *lofWalk {
+	if w.base == nil || w.base.own != own {
+		w.epoch++
+		w.base = &lofWalk{w: w, out: newLofClosure(), epoch: w.epoch, own: own, touched: map[*lofFile]bool{}, entered: map[*lofPkg]bool{}, called: map[string]bool{}, asmDone: map[*lofAsm]bool{}}
+		w.base.enter(own)
+		w.base.drain()
+	}
+	b := w.base
+	w.epoch++
+	return &lofWalk{w: w, out: b.out.clone(), epoch: w.epoch, base: b.epoch, own: own, touched: maps.Clone(b.touched), entered: maps.Clone(b.entered), called: maps.Clone(b.called), asmDone: maps.Clone(b.asmDone), stopped: b.stopped}
 }
 
 // sameDir reports whether a and b name the same directory.
@@ -1152,7 +1188,7 @@ func (g lofGivenImporter) Import(path string) (*types.Package, error) {
 
 // push queues d for walking.
 func (k *lofWalk) push(d *lofDecl) {
-	if d.seen == k.epoch {
+	if d.seen == k.epoch || k.base != 0 && d.seen == k.base {
 		return
 	}
 	d.seen = k.epoch

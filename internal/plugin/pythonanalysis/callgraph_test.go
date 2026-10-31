@@ -1465,9 +1465,9 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 	}
 }
 
-// A file's line endings don't change what the lane reads: "\r\n" and a lone "\r" end a line as
-// "\n" does, as they do for Python's tokenizer.
-func TestCallGraph_LineEndings(t *testing.T) {
+// A source file's line endings change neither its call graph nor its symbol index: "\r\n" and a
+// lone "\r" end a line as "\n" does, as they do for Python's tokenizer.
+func TestCallGraphAndIndex_LineEndings(t *testing.T) {
 	src := flaskApp + `
 import importlib
 plugin = importlib.import_module('yaml')

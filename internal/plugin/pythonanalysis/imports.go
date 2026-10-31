@@ -734,7 +734,7 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 		// A module is not callable: the name is bound to something else here.
 		return "", end, true
 	}
-	if presenceTest(r, i, k) {
+	if presenceTest(r, i, end, k) {
 		return "", end, true
 	}
 	if j < 0 || r[j] != '(' || k >= len(r) {
@@ -759,22 +759,57 @@ func loaderFetch(r []rune, i, end int, segs []string, targets map[string][]strin
 	return "", end, false
 }
 
-// presenceTest reports whether the name at r[i], whose next non-space rune is r[k], is only
-// compared or truth-tested, as an optional import is (if uvicorn is None:, if not werkzeug,
-// HAS = uvicorn is not None). An and/or operand is not one: its value is the expression's.
-func presenceTest(r []rune, i, k int) bool {
+// presenceTest reports whether the name at r[i], ending at r[end] and followed by r[k], is
+// only compared or truth-tested, as an optional import is (if uvicorn is None:, if not
+// werkzeug, HAS = uvicorn is not None). It must be a whole operand: in reg + uvicorn == 0 or
+// not uvicorn in reg the module is handed to another object's operator, and an and/or
+// operand's value is the expression's.
+func presenceTest(r []rune, i, end, k int) bool {
 	next, _ := readWordRunes(r, k)
 	op := string(r[k:min(k+2, len(r))])
 	switch {
-	case next == "is", op == "==", op == "!=":
+	case (next == "is" || op == "==" || op == "!=") && operandStart(r, i):
 		return true
-	case precededByWord(r, i, "not"):
+	case precededByWord(r, i, "not") && operandEnd(r, end, k):
 		return true
 	case precededByWord(r, i, "if") && (next == "else" || op != "" && op[0] == ':'),
 		(precededByWord(r, i, "elif") || precededByWord(r, i, "while")) && op != "" && op[0] == ':':
 		return true
 	}
 	return false
+}
+
+// operandStart reports whether nothing that binds tighter than a comparison precedes r[i].
+func operandStart(r []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t') {
+		j--
+	}
+	switch {
+	case j < 0, strings.ContainsRune("([,:", r[j]), r[j] == '\n' && (j == 0 || r[j-1] != '\\'):
+		return true
+	case r[j] == '=':
+		return j == 0 || !strings.ContainsRune("=!<>", r[j-1])
+	}
+	for _, w := range []string{"if", "elif", "while", "and", "or", "not", "return", "assert", "else"} {
+		if precededByWord(r, i, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// operandEnd reports whether the operand ending at r[end] closes there: r[k], the next
+// non-space rune, starts nothing that binds tighter than not.
+func operandEnd(r []rune, end, k int) bool {
+	if k >= len(r) || strings.ContainsRune(":),]};", r[k]) {
+		return true
+	}
+	if w, _ := readWordRunes(r, k); w == "and" || w == "or" || w == "if" || w == "else" {
+		return true
+	}
+	// r[end:k] is whitespace only, so a '\\' continuation stops k and is not a closer.
+	return strings.ContainsRune(string(r[end:k]), '\n')
 }
 
 // patchObject reports whether the '(' at r[j] opens a patch.object call.

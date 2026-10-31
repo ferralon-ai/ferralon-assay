@@ -358,8 +358,8 @@ func loadProgram(buildDir string) (*program, error) {
 		scan := parseCallsAndIngresses(lines)
 		scan.refs.scanFStrings(clean, lits)
 		roots, opaque := dynamicImports(clean, lits)
-		lookupRoots, lookups, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
-		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings)
+		lookupRoots, lookups, moduleVals, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
+		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings, moduleVals)
 		roots = sortedDedup(append(append(roots, lookupRoots...), loaderRoots...))
 		opaque = opaque || lookupOpaque || loaderOpaque
 		if opaque {

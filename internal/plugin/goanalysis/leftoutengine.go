@@ -3,7 +3,9 @@ package goanalysis
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"go/build/constraint"
 	"go/types"
@@ -181,20 +183,157 @@ func loadLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRel
 		if err := e.seal(); err != nil {
 			return nil, err
 		}
-		var buf bytes.Buffer
-		if err := gob.NewEncoder(&buf).Encode(e); err != nil {
-			return nil, err
-		}
-		return buf.Bytes(), nil
+		return e.encode()
 	})
 	if err != nil {
 		return &lofEngine{Fail: lofGraphError}
 	}
-	var e lofEngine
-	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&e); err != nil {
+	e, err := decodeLofEngine(b)
+	if err != nil {
 		return &lofEngine{Fail: lofGraphError}
 	}
-	return &e
+	return e
+}
+
+// lofWire is an engine's encoding: gob for the failures and the facts, and the graph (Strs, Nodes,
+// In0, InT, Decls) packed by hand as little-endian uint32s. Every analyzer request decodes the
+// engine afresh, and gob decodes the graph's millions of elements one by one through reflection.
+type lofWire struct {
+	Fail, FailStd string
+	Facts         map[string][]byte
+	Graph         []byte
+}
+
+func (e *lofEngine) encode() ([]byte, error) {
+	u32 := binary.LittleEndian.AppendUint32
+	var g []byte
+	g = u32(g, uint32(len(e.Strs)))
+	for _, s := range e.Strs {
+		g = u32(g, uint32(len(s)))
+	}
+	for _, s := range e.Strs {
+		g = append(g, s...)
+	}
+	g = u32(g, uint32(len(e.Nodes)))
+	for _, n := range e.Nodes {
+		for _, v := range []int32{n.Pkg, n.Name, n.Sym, n.M1, n.M2} {
+			g = u32(g, uint32(v))
+		}
+		var flags byte
+		for i, f := range []bool{n.Addr, n.F0, n.FT, n.Synth} {
+			if f {
+				flags |= 1 << i
+			}
+		}
+		g = append(g, flags)
+	}
+	for _, in := range [][][]int32{e.In0, e.InT} {
+		g = u32(g, uint32(len(in)))
+		for _, cs := range in {
+			g = u32(g, uint32(len(cs)))
+		}
+		for _, cs := range in {
+			for _, c := range cs {
+				g = u32(g, uint32(c))
+			}
+		}
+	}
+	g = u32(g, uint32(len(e.Decls)))
+	for _, d := range e.Decls {
+		for _, v := range d {
+			g = u32(g, uint32(v))
+		}
+	}
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(lofWire{Fail: e.Fail, FailStd: e.FailStd, Facts: e.Facts, Graph: g}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeLofEngine(b []byte) (*lofEngine, error) {
+	var w lofWire
+	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&w); err != nil {
+		return nil, err
+	}
+	e := &lofEngine{Fail: w.Fail, FailStd: w.FailStd, Facts: w.Facts}
+	g := w.Graph
+	short := false
+	next := func() uint32 {
+		if len(g) < 4 {
+			short = true
+			return 0
+		}
+		v := binary.LittleEndian.Uint32(g)
+		g = g[4:]
+		return v
+	}
+	// count reads a length, refusing one the remaining bytes cannot hold at width bytes per element,
+	// so a corrupt encoding fails rather than allocating without bound.
+	count := func(width int) int {
+		n := int(next())
+		if n*width > len(g) {
+			short = true
+			return 0
+		}
+		return n
+	}
+	lens := make([]int, count(4))
+	total := 0
+	for i := range lens {
+		lens[i] = int(next())
+		total += lens[i]
+	}
+	if total > len(g) {
+		return nil, errors.New("left-out engine: short graph")
+	}
+	all := string(g[:total])
+	g = g[total:]
+	e.Strs = make([]string, len(lens))
+	for i, l := range lens {
+		e.Strs[i], all = all[:l], all[l:]
+	}
+	e.Nodes = make([]lofNode, count(21))
+	for i := range e.Nodes {
+		n := &e.Nodes[i]
+		n.Pkg, n.Name, n.Sym, n.M1, n.M2 = int32(next()), int32(next()), int32(next()), int32(next()), int32(next())
+		if len(g) < 1 {
+			short = true
+			break
+		}
+		flags := g[0]
+		g = g[1:]
+		n.Addr, n.F0, n.FT, n.Synth = flags&1 != 0, flags&2 != 0, flags&4 != 0, flags&8 != 0
+	}
+	for _, in := range []*[][]int32{&e.In0, &e.InT} {
+		ls := make([]int, count(4))
+		total := 0
+		for i := range ls {
+			ls[i] = int(next())
+			total += ls[i]
+		}
+		if total*4 > len(g) {
+			return nil, errors.New("left-out engine: short graph")
+		}
+		edges := make([]int32, total)
+		for i := range edges {
+			edges[i] = int32(next())
+		}
+		*in = make([][]int32, len(ls))
+		for i, l := range ls {
+			(*in)[i], edges = edges[:l:l], edges[l:]
+		}
+	}
+	e.Decls = make([][4]int32, count(16))
+	for i := range e.Decls {
+		for j := range e.Decls[i] {
+			e.Decls[i][j] = int32(next())
+		}
+	}
+	if short || len(g) != 0 {
+		return nil, errors.New("left-out engine: malformed graph")
+	}
+	return e, nil
 }
 
 // lofInterner assigns string ids.

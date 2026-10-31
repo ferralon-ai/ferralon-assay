@@ -1,7 +1,9 @@
 package goanalysis
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -482,6 +484,52 @@ func TestLeftOutEngine_LoadedValues(t *testing.T) {
 }
 
 // TestLofFixedSource: only the toolchain's source and a module-cache module version are fixed.
+func TestLofEngineEncoding(t *testing.T) {
+	e := &lofEngine{
+		Strs:    []string{"", "p", "p\x00F", "M", "héllo"},
+		Nodes:   []lofNode{{Pkg: 1, Name: 2, Sym: 2, M1: -1, M2: -1, F0: true}, {Pkg: 1, Name: 3, Sym: 4, M1: 3, M2: -1, Addr: true, FT: true, Synth: true}},
+		In0:     [][]int32{{1}, nil},
+		InT:     [][]int32{{1, 0}},
+		Decls:   [][4]int32{{1, 2, 2, -1}, {1, 4, 4, 3}},
+		FailStd: lofUnknownToolchain,
+		Facts:   map[string][]byte{"x.go": {1, 2, 3}},
+	}
+	b, err := e.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeLofEngine(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Strs, e.Strs) || !slices.Equal(got.Nodes, e.Nodes) || !slices.Equal(got.Decls, e.Decls) ||
+		got.Fail != e.Fail || got.FailStd != e.FailStd || !slices.Equal(got.Facts["x.go"], e.Facts["x.go"]) || len(got.Facts) != 1 {
+		t.Fatalf("decoded %+v, want %+v", got, e)
+	}
+	for _, in := range [][2][][]int32{{got.In0, e.In0}, {got.InT, e.InT}} {
+		if !slices.EqualFunc(in[0], in[1], func(a, b []int32) bool { return slices.Equal(a, b) }) {
+			t.Fatalf("callers %v, want %v", in[0], in[1])
+		}
+	}
+
+	// A truncated or overlong graph is an error, never a panic or a partial engine.
+	var w lofWire
+	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&w); err != nil {
+		t.Fatal(err)
+	}
+	graph := w.Graph
+	for _, g := range [][]byte{graph[:len(graph)-1], graph[:len(graph)/2], graph[:3], append(slices.Clone(graph), 0)} {
+		w.Graph = g
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(w); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeLofEngine(buf.Bytes()); err == nil {
+			t.Fatalf("graph of %d bytes (of %d) decoded", len(g), len(graph))
+		}
+	}
+}
+
 func TestLofFixedSource(t *testing.T) {
 	w := &lofWorld{buildDir: "/work/m", goroot: "/go", modcache: "/cache/mod"}
 	for _, tc := range []struct {

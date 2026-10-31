@@ -820,8 +820,9 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 		out.fail(lofParseError)
 		return out
 	}
-	// go/build never compiles these clauses into the package (parse leaves them out of its files).
-	if c := af.Name.Name; c == "documentation" || strings.HasSuffix(c, "_test") {
+	// go/build never compiles a documentation clause into the package. A _test clause in a file not
+	// named _test.go is an ordinary package name to it, so such a file is walked (and fails closed).
+	if af.Name.Name == "documentation" {
 		out.excluded = true
 		return out
 	}

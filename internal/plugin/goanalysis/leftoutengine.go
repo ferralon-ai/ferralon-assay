@@ -622,10 +622,6 @@ func lofSymbol(fn *ssa.Function) (pkg, name string) {
 	return dbSymbol(fn)
 }
 
-// lofGraph builds the call graph govulncheck (v1.3.0, internal/vulncheck callGraph) builds, rooted
-// at roots: the functions roots reach through initial's call edges and function references (the
-// CHA-round slice), refined by VTA, sliced again from the refined graph (the final slice), and
-// refined by VTA once more. It returns the graph, its final slice and its CHA-round slice.
 // lofGo runs f on its own goroutine; the function it returns waits for f and returns its error, or
 // the panic f raised as one.
 func lofGo(f func() error) func() error {
@@ -641,6 +637,10 @@ func lofGo(f func() error) func() error {
 	return sync.OnceValue(func() error { return <-done })
 }
 
+// lofGraph builds the call graph govulncheck (v1.3.0, internal/vulncheck callGraph) builds, rooted
+// at roots: the functions roots reach through initial's call edges and function references (the
+// CHA-round slice), refined by VTA, sliced again from the refined graph (the final slice), and
+// refined by VTA once more. It returns the graph, its final slice and its CHA-round slice.
 func lofGraph(initial *callgraph.Graph, roots []*ssa.Function) (*callgraph.Graph, map[*ssa.Function]bool, map[*ssa.Function]bool) {
 	slice := func(cg *callgraph.Graph) map[*ssa.Function]bool {
 		seen := map[*ssa.Function]bool{}

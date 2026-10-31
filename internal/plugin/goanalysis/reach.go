@@ -319,7 +319,7 @@ func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []str
 // entry point reaches the refuted module (for the standard library, a vulnerable package), or the
 // entry points or their reach are unknown, the result declares library_escape instead. A refutation
 // that stands only because the caller declared a package no entry point carries that declaration
-// as an assumption.
+// as an assumption. A withhold the incomplete load contributes to declares tool_failure beside it.
 func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -337,6 +337,9 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+		if incomplete {
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
+		}
 		return res
 	}
 	// With the load complete, auto's own exclusions are the inferred rule and need no statement.
@@ -574,8 +577,9 @@ func isMain(p *packages.Package) bool {
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
 // packages in the refuted module was never traced, so the refutation holds only for builds that
-// leave it out. The result then declares excluded_files instead. An advisory that lists no vulnerable
-// package in the module, or lists the module once with none, makes every package of it count.
+// leave it out. The result then declares excluded_files instead, and tool_failure beside it when the
+// check withholds because one of its own steps failed. An advisory that lists no vulnerable package in
+// the module, or lists the module once with none, makes every package of it count.
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -586,9 +590,17 @@ func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult,
 	if scanned.wholeModule[module] || len(scanned.imports[module]) == 0 {
 		vulnerable = nil
 	}
-	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {
+	if !ok {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+		return res
+	}
+	if counts, failed := leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env); counts {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+		if failed {
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
+		}
 	}
 	return res
 }

@@ -118,6 +118,64 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
+			if slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("tool_failure declared with every step succeeding (partiality %+v)", res.Partiality)
+			}
+		})
+	}
+}
+
+// TestWithholdForLeftOutFiles_StepFails: a left-out file that counts only because the check could not
+// read it, or a directory the walk could not read, declares tool_failure beside excluded_files.
+func TestWithholdForLeftOutFiles_StepFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files whatever their mode")
+	}
+	base := map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/dep v0.0.0\n)\n\nreplace (\n\texample.com/vulnmod => ./_vulnmod\n\texample.com/dep => ./_dep\n)\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+		"_dep/go.mod":         "module example.com/dep\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n",
+		"_dep/dep.go":         "package dep\n\nfunc Call() {}\n",
+		"plain/plain.go":      "package plain\n\nfunc Call() {}\n",
+	}
+	cases := []struct {
+		name   string
+		files  map[string]string
+		lock   string // made unreadable after the load
+		failed bool
+	}{
+		{"a left-out file that imports the module", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n\nimport _ \"example.com/vulnmod\"\n"}, "", false},
+		{"an unreadable left-out file", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n"}, "plain/prod.go", true},
+		{"an unreadable directory the load never listed", map[string]string{"tool/t.go": "//go:build tools\n\npackage tool\n"}, "tool", true},
+		{"an unloaded dependency with an unreadable file", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n\nimport _ \"example.com/dep\"\n"}, "_dep/dep.go", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, merge(base, tc.files))
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.lock != "" {
+				locked := filepath.Join(dir, tc.lock)
+				if err := os.Chmod(locked, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+			}
+			refuted := plugin.ReachabilityResult{
+				Partiality: plugin.Complete(),
+				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
+			}
+			res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+			if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles) {
+				t.Fatalf("result %+v, want the refutation withheld as excluded_files", res)
+			}
+			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.failed {
+				t.Errorf("tool_failure declared = %v, want %v (partiality %+v)", failed, tc.failed, res.Partiality)
+			}
 		})
 	}
 }
@@ -323,6 +381,9 @@ func TestWithholdForLeftOutFiles_UnreadableModuleGraph(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
+			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.withheld {
+				t.Errorf("tool_failure declared = %v, want %v (partiality %+v)", failed, tc.withheld, res.Partiality)
+			}
 		})
 	}
 }
@@ -363,15 +424,20 @@ func TestSourceImports_ListFails(t *testing.T) {
 	env := append(os.Environ(), "GOWORK=off")
 
 	src := sourceImports{}
-	src.read(context.Background(), dir, env, []string{"example.com/m/dep"}, all)
+	if unread := src.read(context.Background(), dir, env, []string{"example.com/m/dep", "example.com/m/nosuch"}, all); len(unread) > 0 {
+		t.Errorf("unread = %v, want none: a package `go list` places nowhere is absent, not unread", unread)
+	}
 	if got := src["example.com/m/dep"]; !slices.Equal(got, []string{"strings"}) {
 		t.Fatalf("read imports = %v, want [strings]", got)
 	}
 
 	src = sourceImports{}
-	src.read(context.Background(), dir, append(env, "GOFLAGS=-modfile="+filepath.Join(dir, "nosuch.mod")), []string{"example.com/m/dep"}, all)
+	unread := src.read(context.Background(), dir, append(env, "GOFLAGS=-modfile="+filepath.Join(dir, "nosuch.mod")), []string{"example.com/m/dep"}, all)
 	if got, ok := src["example.com/m/dep"]; ok {
 		t.Fatalf("go list failed, yet the package was read: %v", got)
+	}
+	if !slices.Equal(unread, []string{"example.com/m/dep"}) {
+		t.Errorf("unread = %v, want [example.com/m/dep]", unread)
 	}
 }
 

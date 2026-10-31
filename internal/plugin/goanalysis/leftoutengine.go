@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"go/build/constraint"
 	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -504,35 +505,46 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		}
 	}
 
-	// What can exist at run time: every value G0's slice computes and every package variable, then
-	// G_T's slice on top; and what each file's closure names, less G0's.
-	globals := func(l *lofLive) {
-		for _, p := range sp.prog.AllPackages() {
-			for _, m := range p.Members {
-				if g, ok := m.(*ssa.Global); ok {
-					l.add(g.Type())
+	// What can exist at run time: every value G0's slice computes, every package variable and
+	// every value the runtime makes for calls the compiler inserts, then G_T's slice on top; and
+	// what each file's closure names, less G0's.
+	live := newLofLive(sp.prog, nil)
+	for _, p := range sp.prog.AllPackages() {
+		rt := p.Pkg.Path() == "runtime"
+		for _, m := range p.Members {
+			switch m := m.(type) {
+			case *ssa.Global:
+				live.add(m.Type())
+			case *ssa.Function:
+				if rt {
+					live.addFunc(m)
 				}
 			}
 		}
 	}
-	live := newLofLive()
-	globals(live)
 	for fn := range sl0 {
 		live.addFunc(fn)
 	}
+	live.drain()
 	e.Live0 = live.ids(in)
+	live0 := live.clone()
 	for fn := range slT {
 		live.addFunc(fn)
 	}
+	live.drain()
 	e.LiveT = live.ids(in)
 	for path, cl := range closures {
-		l := newLofLive()
+		l := newLofLive(sp.prog, live0)
 		for tn := range cl.types {
 			l.add(tn.Type())
 		}
 		for fn := range cl.funcs {
 			l.add(fn.Type())
+			if v := sp.prog.FuncValue(fn); v != nil {
+				l.addFunc(v)
+			}
 		}
+		l.drain()
 		for _, id := range l.ids(in) {
 			if _, ok := slices.BinarySearch(e.Live0, id); !ok {
 				e.files[path].Live = append(e.files[path].Live, id)
@@ -731,21 +743,51 @@ func lofGraph(initial *callgraph.Graph, roots []*ssa.Function) (*callgraph.Graph
 const lofRecvUnknown = -2
 
 // lofLive collects the named types a value of which can exist at run time once values of the types
-// it is given can: those types, and every type a value of one holds or reflection can name from it,
-// through elements, keys, fields, type arguments, constraints and the parameters and results of
-// its methods and of its own signature. Reflection makes a value of any type it can name
-// (reflect.New, reflect.Zero), and any method it can name it can call with the values it made.
+// and functions it is given can: those types, and every type a value of one holds or reflection can
+// name from it, through elements, keys, fields, type arguments, constraints and the parameters and
+// results of its methods and of its own signature; and, to a fixed point (drain), every value the
+// functions it is given compute, the functions they name, and the methods of every named type it
+// collects. Reflection makes a value of any type it can name (reflect.New, reflect.Zero), and any
+// method it can name it can call, whose body makes values of types its signature need not name.
+// A collector with a parent skips what the parent, drained, already holds.
 type lofLive struct {
-	seen  map[types.Type]bool
-	named map[*types.TypeName]bool
+	prog   *ssa.Program
+	parent *lofLive
+	seen   map[types.Type]bool
+	named  map[*types.TypeName]bool
+	funcs  map[*ssa.Function]bool
+	queue  []*ssa.Function
 }
 
-func newLofLive() *lofLive {
-	return &lofLive{seen: map[types.Type]bool{}, named: map[*types.TypeName]bool{}}
+func newLofLive(prog *ssa.Program, parent *lofLive) *lofLive {
+	return &lofLive{prog: prog, parent: parent, seen: map[types.Type]bool{}, named: map[*types.TypeName]bool{}, funcs: map[*ssa.Function]bool{}}
+}
+
+// clone returns a copy of drained l.
+func (l *lofLive) clone() *lofLive {
+	return &lofLive{prog: l.prog, parent: l.parent, seen: maps.Clone(l.seen), named: maps.Clone(l.named), funcs: maps.Clone(l.funcs)}
+}
+
+// addFunc queues fn's body for drain.
+func (l *lofLive) addFunc(fn *ssa.Function) {
+	if fn == nil || l.funcs[fn] || l.parent != nil && l.parent.funcs[fn] {
+		return
+	}
+	l.funcs[fn] = true
+	l.queue = append(l.queue, fn)
+}
+
+// drain walks the queued functions until none is left.
+func (l *lofLive) drain() {
+	for len(l.queue) > 0 {
+		fn := l.queue[len(l.queue)-1]
+		l.queue = l.queue[:len(l.queue)-1]
+		l.walk(fn)
+	}
 }
 
 func (l *lofLive) add(t types.Type) {
-	if t == nil || l.seen[t] {
+	if t == nil || l.seen[t] || l.parent != nil && l.parent.seen[t] {
 		return
 	}
 	l.seen[t] = true
@@ -781,7 +823,13 @@ func (l *lofLive) add(t types.Type) {
 	case *types.TypeParam:
 		l.add(t.Constraint())
 	case *types.Named:
-		l.named[t.Origin().Obj()] = true
+		o := t.Origin()
+		if !l.named[o.Obj()] && (l.parent == nil || !l.parent.named[o.Obj()]) {
+			for i := range o.NumMethods() {
+				l.addFunc(l.prog.FuncValue(o.Method(i)))
+			}
+		}
+		l.named[o.Obj()] = true
 		for i := range t.TypeArgs().Len() {
 			l.add(t.TypeArgs().At(i))
 		}
@@ -792,9 +840,14 @@ func (l *lofLive) add(t types.Type) {
 	}
 }
 
-// addFunc adds the types of every value fn computes, and of its signature, type arguments,
-// parameters and free variables.
-func (l *lofLive) addFunc(fn *ssa.Function) {
+// walk adds the types of every value fn computes, and of its signature, type arguments,
+// parameters and free variables, and queues the functions it names, its anonymous functions and,
+// for an instantiation, its generic origin.
+func (l *lofLive) walk(fn *ssa.Function) {
+	l.addFunc(fn.Origin())
+	for _, a := range fn.AnonFuncs {
+		l.addFunc(a)
+	}
 	l.add(fn.Signature)
 	for _, t := range fn.TypeArgs() {
 		l.add(t)
@@ -820,6 +873,7 @@ func (l *lofLive) addFunc(fn *ssa.Function) {
 					for _, t := range f.TypeArgs() {
 						l.add(t)
 					}
+					l.addFunc(f)
 				}
 			}
 		}

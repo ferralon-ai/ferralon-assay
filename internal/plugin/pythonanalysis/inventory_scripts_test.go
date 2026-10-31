@@ -192,6 +192,24 @@ func TestInventory_ScriptInstallSymlinkEscape(t *testing.T) {
 	}
 }
 
+// A -r file that is a symlink to a file of another kind is read as its installer reads the
+// link's name, and names nothing; a link to one of the same kind is read through.
+func TestInventory_ScriptInstallSymlinkKind(t *testing.T) {
+	dir := writeTree(t, map[string]string{"requirements.txt": "flask==3.0.0\n",
+		"install.sh":  "pip install -r reqs.txt\nuv pip install -r dev.txt\n",
+		"pylock.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"locked\"\nversion = \"1.0\"\n",
+		"deps/dev.in": "pyjwt==1.5.0\n"})
+	for link, target := range map[string]string{"reqs.txt": "pylock.toml", "dev.txt": filepath.Join("deps", "dev.in")} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := scriptNodes(t, dir)
+	if want := []string{"dev.txt#pyjwt pkg:pypi/pyjwt@1.5.0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("script nodes = %q, want %q", got, want)
+	}
+}
+
 // Recording the runs changes nothing version resolution reads from the script surfaces.
 func TestScanSurfaces_RecordingLeavesVersionSurfaces(t *testing.T) {
 	trees := []map[string]string{

@@ -190,14 +190,18 @@ func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) [
 }
 
 // requirementFileReqs reads a -r file the way the installer running it reads it: by the name
-// it is given, which a Dockerfile COPY may have changed from the build-tree file's. The file's
-// own name tells what it holds, so when the two read as different kinds the installer fails on
-// it and it names nothing. uv reads a pylock.toml (PEP 751) as a lock, and another TOML,
+// it is given, which a Dockerfile COPY or a symlink may have changed from the build-tree file's.
+// The file's own name, through every symlink, tells what it holds, so when the two read as
+// different kinds the installer fails on it and it names nothing. uv reads a pylock.toml (PEP 751) as a lock, and another TOML,
 // setup.cfg or setup.py as project metadata this does not read, which names nothing; pip
 // reaches neither by name (pipRejectsFile drops its run). Any other file is requirements lines.
 func requirementFileReqs(f runFile, data []byte, run scriptRun, req plugin.ResolveInventoryRequest) []pyReq {
+	own := f.path
+	if p, err := filepath.EvalSymlinks(f.path); err == nil {
+		own = p
+	}
 	kind := reqFileKind(f.name)
-	if kind != reqFileKind(filepath.Base(f.path)) {
+	if kind != reqFileKind(filepath.Base(own)) {
 		return nil
 	}
 	switch kind {

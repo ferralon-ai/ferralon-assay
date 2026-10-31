@@ -820,6 +820,11 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 		out.fail(lofParseError)
 		return out
 	}
+	// go/build never compiles these clauses into the package (parse leaves them out of its files).
+	if c := af.Name.Name; c == "documentation" || strings.HasSuffix(c, "_test") {
+		out.excluded = true
+		return out
+	}
 	own := w.pkg(pkgPath)
 	if own.name != af.Name.Name {
 		own = w.pkgVariant(pkgPath, af.Name.Name)

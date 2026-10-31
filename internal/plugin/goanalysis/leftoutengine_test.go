@@ -128,6 +128,9 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out init calls the symbol", x(vulnOnly, "func init() { vuln.Bad() }\n"), nil, true, "", false},
 		{"a left-out init calls another function of the vulnerable package", x(vulnOnly, "func init() { vuln.Safe() }\n"), nil, false, "", false},
 		{"a left-out init takes the symbol's value", x(vulnOnly, "var f = vuln.Bad\n"), nil, true, "", false},
+		{"a package documentation file calls the symbol", map[string]string{
+			"doc.go": "package documentation\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
+		}, nil, false, "", false},
 		{"the vulnerable package is not loaded and a left-out file calls the symbol", map[string]string{
 			"main.go": "package main\n\nfunc main() {}\n",
 			"x.go":    off("package main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n"),

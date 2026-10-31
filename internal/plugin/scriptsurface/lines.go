@@ -42,8 +42,9 @@ func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 // before what follows it; and marks one that follows &&, which runs only if the command before
 // it did; background marks one a lone & ends, which may not have finished when what follows runs.
 // end is the operator that ends it (&&, ||, |, & or ;), or "" at the end of the text.
-// tokenised marks one read from shell text, whose redirects records an unquoted, unescaped < or
-// >; any other segment redirects when one of its words holds < or > (segmentRedirects).
+// tokenised marks one read from shell text, whose redirects records a < or > that quotes do not
+// make literal in sh, PowerShell and cmd alike (a backslash escapes only in sh); any other segment
+// redirects when one of its words holds < or > (segmentRedirects).
 type segment struct {
 	words      []string
 	expands    bool
@@ -223,15 +224,22 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 			i += j + 1
 			inWord = true
 		case c == '"':
+			// A backslash escapes only under POSIX sh: PowerShell and cmd end the quote at \",
+			// so a < or > after one in the span may redirect there.
+			escaped := false
 			j := i + 1
 			for ; j < len(s) && s[j] != '"'; j++ {
 				switch s[j] {
 				case '\\':
+					escaped = true
 					if j+1 < len(s) {
 						j++
 					}
 				case '$', '`':
 					cur.expands = true
+				}
+				if escaped && (s[j] == '<' || s[j] == '>') {
+					cur.redirects = true
 				}
 				word.WriteByte(s[j])
 			}
@@ -245,6 +253,10 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 				return nil, false, false
 			}
 			i++
+			// Only POSIX sh reads \< or \> as literal; PowerShell and cmd redirect.
+			if s[i] == '<' || s[i] == '>' {
+				cur.redirects = true
+			}
 			word.WriteByte(s[i])
 			inWord = true
 		case c == ' ' || c == '\t':

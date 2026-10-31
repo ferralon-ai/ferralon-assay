@@ -241,7 +241,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"npm i, unquoted > between quoted words", npm(map[string]string{"install.sh": "npm i 'x'>\"y\"\n"}), false, ""},
 		{"npm i, double-quoted > in a package", npm(map[string]string{"install.sh": "npm i \"a>b\"\n"}), false, ""},
 		{"npm i, single-quoted < in a package", npm(map[string]string{"install.sh": "npm i 'a<b'\n"}), false, ""},
-		{"npm i, escaped > in a package", npm(map[string]string{"install.sh": "npm i a\\>b\n"}), false, ""},
+		{"npm i, escaped > in a package, a redirect outside sh", npm(map[string]string{"install.sh": "npm i a\\>b\n"}), false, ""},
 		{"npm i, quoted range", npm(map[string]string{"install.sh": "npm i \"react@>=18\"\n"}), false, ""},
 		{"yarn add, quoted range", npm(map[string]string{"install.sh": "yarn add 'lodash@>4 <5'\n"}), false, ""},
 		{"pnpm add, quoted range", npm(map[string]string{"install.sh": "pnpm add \"x@>1\"\n"}), false, ""},

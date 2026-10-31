@@ -216,7 +216,9 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		// A quoted or escaped < or > is literal; an unquoted one, glued or not, redirects.
 		{"double-quoted > in a name an allowed form takes", tree(map[string]string{"install.sh": "inst run \"a>b\"\n"}), false, ""},
 		{"single-quoted < in a name an allowed form takes", tree(map[string]string{"install.sh": "inst run 'a<b'\n"}), false, ""},
-		{"escaped > in a name an allowed form takes", tree(map[string]string{"install.sh": "inst run a\\>b\n"}), false, ""},
+		{"escaped > in a name an allowed form takes, a redirect outside sh", tree(map[string]string{"install.sh": "inst run a\\>b\n"}), true, ""},
+		{"double-quoted > after an escaped quote, a redirect outside sh", tree(map[string]string{"install.sh": "inst run \"a\\\">b\"\n"}), true, ""},
+		{"double-quoted > before an escape", tree(map[string]string{"install.sh": "inst run \"a>b\\\\\"\n"}), false, ""},
 		{"quoted > through a run wrapper", tree(map[string]string{"install.sh": "instw run inst run \"a>b\"\n"}), false, ""},
 		{"quoted > in a name an allowed form rejects", tree(map[string]string{"install.sh": "inst add \"a>b\"\n"}), true, ""},
 		{"unquoted > after a closing quote", tree(map[string]string{"install.sh": "inst run \"a\">b\n"}), true, ""},

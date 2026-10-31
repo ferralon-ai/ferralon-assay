@@ -1117,7 +1117,7 @@ func expandedInstallLine(line string) bool {
 }
 
 // segmentRedirects reports whether seg, of which words are the command's, may redirect: a segment
-// read from shell text by whether it holds an unquoted < or >, which a quoted one does not; any
+// read from shell text by whether it holds a < or > its quotes do not make literal; any
 // other by whether a word holds either.
 func segmentRedirects(seg segment, words []string) bool {
 	if seg.tokenised {

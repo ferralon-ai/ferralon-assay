@@ -447,14 +447,9 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 	return eps
 }
 
-// yamlCommandLines joins the adjacent entrypoint:, command: and args: keys of one YAML
-// mapping, with the block-list items under each, into one line in that order, so a
-// manifest's or compose service's launch reads as one command whichever key comes first. A
-// list item that is a mapping ("- name: web") ends the list. A compose healthcheck's test:
-// and a Kubernetes probe's or lifecycle hook's exec: command: are probes, not launches, and
-// are dropped with their items.
+// templateTag reports whether a trimmed line is exactly one Helm or Jinja tag.
 func templateTag(t string) bool {
-	for _, d := range [][2]string{{"{{", "}}"}, {"{%", "%}"}} {
+	for _, d := range [][2]string{{"{{", "}}"}, {"{%", "%}"}, {"{#", "#}"}} {
 		if strings.HasPrefix(t, d[0]) && strings.Index(t, d[1]) == len(t)-len(d[1]) {
 			return true
 		}
@@ -462,6 +457,12 @@ func templateTag(t string) bool {
 	return false
 }
 
+// yamlCommandLines joins the adjacent entrypoint:, command: and args: keys of one YAML
+// mapping, with the block-list items under each, into one line in that order, so a
+// manifest's or compose service's launch reads as one command whichever key comes first. A
+// list item that is a mapping ("- name: web") ends the list. A compose healthcheck's test:
+// and a Kubernetes probe's or lifecycle hook's exec: command: are probes, not launches, and
+// are dropped with their items.
 func yamlCommandLines(lines []string) []string {
 	var out []string
 	var grp map[string]string

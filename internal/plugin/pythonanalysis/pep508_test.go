@@ -76,6 +76,10 @@ func TestParsePEP508SpecifierCommas(t *testing.T) {
 			t.Errorf("parsePEP508(%q) = %q, %v; want %q, %v", tt.req, r.Specifier, ok, tt.spec, tt.ok)
 		}
 	}
+	// The trailing-comma drop needs a clause before it: an empty set is not a specifier.
+	if norm, ok := normalizeSpecifier(" "); ok {
+		t.Errorf(`normalizeSpecifier(" ") = %q, true; want false`, norm)
+	}
 	if v, ok := specifierPin("==2.8.0,"); v != "2.8.0" || !ok {
 		t.Errorf(`specifierPin("==2.8.0,") = %q, %v; want "2.8.0", true`, v, ok)
 	}

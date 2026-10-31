@@ -225,6 +225,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"glued append", tree(map[string]string{"install.sh": "inst sync >>log\n"}), true, ""},
 		{"descriptor duplicate before a pipe", tree(map[string]string{"install.sh": "inst sync 2>&1 | tee x\n"}), true, ""},
 		{"glued input redirect", tree(map[string]string{"install.sh": "inst sync <in\n"}), true, ""},
+		{"glued input redirect in place of a name an allowed form takes", tree(map[string]string{"install.sh": "inst run <in\n"}), true, ""},
+		{"quoted > in a segment after another", tree(map[string]string{"install.sh": "echo x && inst run \"a>b\"\n"}), false, ""},
 		{"here-document", tree(map[string]string{"install.sh": "inst sync <<EOF\nx\nEOF\n"}), true, ""},
 		{"process substitution as input", tree(map[string]string{"install.sh": "inst sync < <(cat x)\n"}), true, ""},
 		{"quoted > in a shell-form RUN", tree(map[string]string{"Dockerfile": docker + "inst run \"a>b\"\n"}), false, ""},

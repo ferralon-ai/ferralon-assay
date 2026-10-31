@@ -399,7 +399,7 @@ var wsgiServers = map[string]bool{
 }
 
 // shellSeparators end one command on a line.
-var shellSeparators = map[string]bool{"&&": true, "||": true, ";": true, "|": true, "&": true}
+var shellSeparators = map[string]bool{"&&": true, "||": true, ";": true, "|": true, "&": true, "|&": true}
 
 // separatorSpacer splits off the separators a shell writes attached to a word (pip install
 // -r x; gunicorn app:app).
@@ -428,9 +428,9 @@ func spaceLoneSeparators(line string) string {
 	return b.String()
 }
 
-// redirection is a shell redirection word (> log, >log, 2>&1, &>, < in), which ends a
+// redirection is a shell redirection word (> log, >log, 2>&1, &>, < in, << EOF), which ends a
 // command's arguments: the file it names is no argument. A word like <host>:8000 is not.
-var redirection = regexp.MustCompile(`^(?:\d*|&)(?:>>?|<)(?:&\d+|[^<>]*)$`)
+var redirection = regexp.MustCompile(`^(?:\d*|&)(?:>>?|<<?<?)(?:&\d+(?:\d*>>?\S*)?|[^<>]*)$`)
 
 // commandEntrypoints reads the launch commands in text. deploy admits the script forms
 // (python -m, python file.py, streamlit/fastapi run), which only a production launch file
@@ -456,7 +456,19 @@ func commandEntrypoints(text string, deploy bool) []entrypoint {
 func yamlCommandLines(lines []string) []string {
 	var out []string
 	var grp map[string]string
-	last, prev, parent := "", "", ""
+	last := ""
+	// path is the chain of mapping keys enclosing the line, by indentation.
+	type pathKey struct {
+		indent int
+		key    string
+	}
+	var path []pathKey
+	above := func(n int) string {
+		if len(path) < n {
+			return ""
+		}
+		return path[len(path)-n].key
+	}
 	flush := func() {
 		if grp != nil {
 			out = append(out, grp["entrypoint"]+" "+grp["command"]+" "+grp["args"])
@@ -472,12 +484,18 @@ func yamlCommandLines(lines []string) []string {
 				k = c
 			}
 		}
-		if k == "command" && prev == "exec:" && probeKeys[strings.TrimSuffix(parent, ":")] ||
-			strings.HasPrefix(key, "exec:") && probeKeys[strings.TrimSuffix(prev, ":")] {
-			k = "test"
-		}
-		if bare, _, _ := strings.Cut(t, " #"); bare != "" && !strings.HasPrefix(bare, "#") {
-			parent, prev = prev, strings.TrimSpace(bare)
+		if t != "" && !strings.HasPrefix(t, "#") {
+			indent := len(line) - len(strings.TrimLeft(line, " \t")) + len(t) - len(key)
+			for len(path) > 0 && path[len(path)-1].indent >= indent {
+				path = path[:len(path)-1]
+			}
+			if k == "command" && above(1) == "exec" && probeKeys[above(2)] ||
+				strings.HasPrefix(key, "exec:") && probeKeys[above(1)] {
+				k = "test"
+			}
+			if name, _, ok := strings.Cut(key, ":"); ok {
+				path = append(path, pathKey{indent, name})
+			}
 		}
 		switch {
 		case k == "test":

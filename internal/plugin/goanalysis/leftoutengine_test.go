@@ -259,6 +259,10 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"_v/pc/pc.go":  "package pc\n",
 			"_v/pc/bad.go": "//go:build a\n//go:build b\n\npackage pc\n",
 		}), badFunc, true, lofParseError, false},
+		{"a left-out file enters an unloaded package one of whose assembly build constraints does not parse", merge(x("\t_ \"example.com/v/pa\"\n"+vulnOnly, "func init() { vuln.Safe() }\n"), map[string]string{
+			"_v/pa/pa.go": "package pa\n",
+			"_v/pa/pa.s":  "//go:build a\n//go:build b\n",
+		}), badFunc, true, lofParseError, false},
 		{"a left-out file enters an unloaded package whose file imports a package whose init calls the symbol", merge(x("\t_ \"example.com/v/um2\"", ""), map[string]string{
 			"_v/um2/um2.go": "package um2\n\nimport _ \"example.com/v/w2\"\n",
 			"_v/w2/w2.go":   "package w2\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
@@ -762,6 +766,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"_dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
 			"_dep/d/d.go": "package d\n\nfunc Call() {}\n",
 			"_dep/d/e.go": "package d\n",
+			"_dep/d/d.s":  "// d has assembly.\n",
 			"x.go":        "//go:build lofalt\n\npackage main\n\nimport (\n\t" + imp + "\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { " + body + "vuln.Safe() }\n",
 		})
 	}
@@ -771,6 +776,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 	}{
 		{"the loaded package the file calls cannot be listed", `_ "example.com/dep/d"`, "", "_v/vuln", 0o311},
 		{"another file of an unloaded package the file calls cannot be read", `"example.com/dep/d"`, "d.Call(); ", "_dep/d/e.go", 0},
+		{"an assembly file of an unloaded package the file enters cannot be read", `_ "example.com/dep/d"`, "", "_dep/d/d.s", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTree(t, dep(tc.imp, tc.body))

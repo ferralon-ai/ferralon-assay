@@ -462,7 +462,8 @@ func moduleInitSCIP(module string) string {
 
 // dynamicImportLiteralLeafs are callables, other than the ones moduleLookups reads, that
 // import the module their first argument names. A literal argument is a load root; anything
-// else is an import the scanner cannot name.
+// else is an import the scanner cannot name. Each is a stringLoaders entry as well, which
+// reads it under the names the file's imports bind it to and as a value.
 var dynamicImportLiteralLeafs = map[string]bool{
 	"resolve_name": true, // pkgutil.resolve_name("pkg.mod:attr")
 }
@@ -560,6 +561,8 @@ var stringLoaders = map[string]stringLoaderArg{
 	"uvicorn.Config":                            loaderNameOrObject,
 	"uvicorn.main.run":                          loaderNameOrObject,
 	"uvicorn.config.Config":                     loaderNameOrObject,
+	"pkgutil.resolve_name":                      loaderNameOnly,
+	"pkgutil_resolve_name.resolve_name":         loaderNameOnly, // the PyPI backport
 }
 
 // stringLoaderMethods are loader methods called on an instance the scanner cannot type,
@@ -574,6 +577,14 @@ var stringLoaderMethods = map[string]bool{
 // module: uvicorn's app, werkzeug's and django's import_name and dotted_path, Flask's and
 // Celery's obj.
 var loaderKeywords = map[string]bool{"app": true, "import_name": true, "dotted_path": true, "obj": true}
+
+// loaderOwnKeywords are name-argument keywords only one loader takes, keyed by the
+// stringLoaders entry: name is too common a parameter to read as the module name of every
+// loader's call.
+var loaderOwnKeywords = map[string]string{
+	"pkgutil.resolve_name":              "name",
+	"pkgutil_resolve_name.resolve_name": "name",
+}
 
 // stringLoaderImports scans one file's cleaned source for calls to stringLoaders and
 // stringLoaderMethods. It returns the module names literal arguments import and whether a
@@ -632,7 +643,7 @@ func stringLoaderImports(clean string, lits map[int]strLiteral, bindings []scope
 			i = end
 			continue
 		}
-		arg, known := loaderNameArg(r, open)
+		arg, known := loaderNameArg(r, open, loaderOwnKeywords[name])
 		switch {
 		case !known:
 			opaque = opaque || kind == loaderNameOnly
@@ -674,10 +685,10 @@ func stringLoaderKind(segs []string, qualified bool, targets map[string][]string
 }
 
 // loaderNameArg returns the span of a loader call's name argument, given the index of its
-// '(': a loaderKeywords keyword argument anywhere, else the first positional one. The span
-// is empty when the call passes neither; known is false when an unpacking (*args, **kw)
-// may pass it.
-func loaderNameArg(r []rune, open int) (arg [2]int, known bool) {
+// '(': a loaderKeywords keyword argument, or the loader's own keyword when own is not
+// empty, anywhere, else the first positional one. The span is empty when the call passes
+// neither; known is false when an unpacking (*args, **kw) may pass it.
+func loaderNameArg(r []rune, open int, own string) (arg [2]int, known bool) {
 	var positional [2]int
 	found, unpacked := false, false
 	for _, sp := range callArgSpans(r, open) {
@@ -687,7 +698,7 @@ func loaderNameArg(r []rune, open int) (arg [2]int, known bool) {
 		case r[s] == '*':
 			unpacked = true
 		case isIdentStartRune(r[s]) && assignedTo(r, wordEnd(r, s)):
-			if w, end := readWordRunes(r, s); loaderKeywords[w] {
+			if w, end := readWordRunes(r, s); loaderKeywords[w] || own != "" && w == own {
 				return [2]int{skipAllSpace(r, end) + 1, sp[1]}, true
 			}
 		case !found && !unpacked:

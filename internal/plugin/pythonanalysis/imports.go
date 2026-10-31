@@ -776,7 +776,10 @@ func presenceTest(r []rune, i, end, k int) bool {
 		}
 		return noneAt(r, p)
 	case (op == "==" || op == "!=") && operandStart(r, i):
-		return noneAt(r, skipAllSpace(r, k+2))
+		// The None must be the whole right operand: uvicorn == None + reg hands the module to
+		// the reflected __eq__ of whatever None + reg returns.
+		p := skipAllSpace(r, k+2)
+		return noneAt(r, p) && operandEnd(r, skipAllSpace(r, p+len("None")))
 	case precededByWord(r, i, "not") && operandEnd(r, k):
 		return true
 	case precededByWord(r, i, "if") && (next == "else" || op != "" && op[0] == ':'),

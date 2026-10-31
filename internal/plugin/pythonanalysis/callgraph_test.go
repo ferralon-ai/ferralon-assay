@@ -900,6 +900,7 @@ func TestCallGraph_StringLoaders(t *testing.T) {
 		{"loader module as an arithmetic operand across a bracketed line", "import uvicorn\n\ndef f(reg):\n    return (reg +\n            uvicorn == 0)\n", nil, true},
 		{"loader module compared with another object", "import uvicorn\n\ndef f(reg):\n    return uvicorn == reg\n", nil, true},
 		{"loader module bound before a statement opening with a bracket", "import uvicorn\nX = uvicorn\n(a, b) = 1, 2\n", nil, true},
+		{"loader module compared with an expression starting with None", "import uvicorn\n\ndef f(reg):\n    return uvicorn == None + reg\n", nil, true},
 		{"loader module as an or operand", "try:\n    import uvicorn\nexcept ImportError:\n    uvicorn = None\n\nserver = None or uvicorn\n", nil, true},
 		{"loader module name bound to a function and called", "from uvicorn import main\n\nif __name__ == '__main__':\n    main()\n", nil, false},
 		{"loader module name as another object's attribute", "import pkgutil\n\ndef f(cfg, n):\n    return getattr(cfg.pkgutil, n)\n", nil, false},

@@ -40,8 +40,8 @@ type lofLinkIndex struct {
 	// gap is set when U holds a package the index cannot resolve or read whole, or a file that may
 	// define any name (an object file of unknown format, an #include that does not resolve).
 	gap lofDefSrc
-	// goDefs holds the Go declarations a //go:linkname pushes to the name, each with a body or an
-	// initializer, and the //export functions of that name.
+	// goDefs holds the Go declarations a //go:linkname pushes to the name, each a function with a
+	// body or a variable, and the //export functions of that name.
 	goDefs map[string][]lofGoDef
 	// asmText and asmData hold the packages whose Go assembly defines the name, by TEXT and by
 	// DATA or GLOBL.
@@ -178,8 +178,8 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 	if !directives {
 		return
 	}
-	// A //go:linkname push defines its remote only from a declaration with a body or an
-	// initializer, which may sit in any file of the package's clause.
+	// A //go:linkname push defines its remote only from a function with a body or a variable,
+	// either of which may sit in any file of the package's clause.
 	type pushed struct{ clause, local, remote string }
 	var pushes []pushed
 	defined := map[[2]string]bool{}
@@ -217,7 +217,7 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 					continue
 				}
 				for _, spec := range decl.Specs {
-					if vs, ok := spec.(*ast.ValueSpec); ok && len(vs.Values) > 0 {
+					if vs, ok := spec.(*ast.ValueSpec); ok {
 						for _, n := range vs.Names {
 							defined[[2]string{clause, n.Name}] = true
 						}

@@ -149,6 +149,10 @@ type lofPkg struct {
 	imports []string
 	asmText map[string][]*lofAsm
 	asmData map[string]bool
+	// asmDupok holds the symbols some TEXT or GLOBL of p marks DUPOK, and asmFill those some DATA
+	// of p fills: the link may keep another package's definition of a DUPOK or unfilled symbol.
+	asmDupok map[string]bool
+	asmFill  map[string]bool
 	// asmNames holds the names under this package's path among asmText's and asmData's symbols.
 	asmNames map[string]bool
 }
@@ -377,7 +381,7 @@ func (w *lofWorld) pkgVariant(path, name string) *lofPkg {
 	p := &lofPkg{
 		path: path, dir: w.dirs[path], name: w.names[path], std: w.std[path],
 		decls: map[string][]*lofDecl{}, methods: map[string][]*lofDecl{}, byRecv: map[string][]*lofDecl{},
-		asmText: map[string][]*lofAsm{}, asmData: map[string]bool{},
+		asmText: map[string][]*lofAsm{}, asmData: map[string]bool{}, asmDupok: map[string]bool{}, asmFill: map[string]bool{},
 	}
 	if lp := w.loaded[path]; lp != nil && (name == "" || name == lp.Name) {
 		p.loaded, p.name = lp, lp.Name
@@ -1756,11 +1760,15 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 			for _, b := range bodies {
 				k.walkAsm(p, b)
 			}
-			if !ok && !p.asmData[ref] {
+			switch {
+			case !ok && !p.asmData[ref]:
 				// Some build's link may bind the name to a definer elsewhere; a build without one
 				// binds it to foreign code.
 				k.linkDefiner(p, ref)
 				k.out.dyn = true
+			case p.asmDupok[ref] || !ok && !p.asmFill[ref]:
+				// The link may keep another definer's DUPOK body or filled data over p's own.
+				k.linkDefiner(p, ref)
 			}
 		}
 	}
@@ -1841,6 +1849,9 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 			cur = &lofAsm{file: path}
 			sym := norm(refs[0])
 			p.asmText[sym] = append(p.asmText[sym], cur)
+			if asmDupok(t, op) {
+				p.asmDupok[sym] = true
+			}
 			p.asmName(sym)
 			bodies = append(bodies, cur)
 			continue
@@ -1848,6 +1859,11 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 			for _, ref := range asmRefs(t) {
 				p.asmData[norm(ref)] = true
 				p.asmName(norm(ref))
+				if op == "DATA" {
+					p.asmFill[norm(ref)] = true
+				} else if asmDupok(t, op) {
+					p.asmDupok[norm(ref)] = true
+				}
 			}
 			continue
 		}
@@ -1864,6 +1880,31 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 	for _, b := range bodies {
 		b.refs = append(b.refs, shared...)
 	}
+}
+
+// lofTextFlags is textflag.h's flags other than DUPOK.
+var lofTextFlags = map[string]bool{
+	"NOPROF": true, "NOSPLIT": true, "RODATA": true, "NOPTR": true, "WRAPPER": true, "NEEDCTXT": true,
+	"TLSBSS": true, "NOFRAME": true, "REFLECTMETHOD": true, "TOPFRAME": true, "ABIWRAPPER": true,
+}
+
+// asmDupok reports whether a TEXT or GLOBL statement's flags may include DUPOK (textflag.h's 2):
+// a term that is neither a known flag nor an integer counts as DUPOK.
+func asmDupok(stmt, op string) bool {
+	args := strings.Split(stmt[strings.Index(stmt, op)+len(op):], ",")
+	if len(args) < 3 {
+		return false
+	}
+	for _, term := range strings.FieldsFunc(args[1], func(r rune) bool { return strings.ContainsRune("|+() \t", r) }) {
+		if v, err := strconv.ParseInt(term, 0, 64); err == nil {
+			if v&2 != 0 {
+				return true
+			}
+		} else if !lofTextFlags[term] {
+			return true
+		}
+	}
+	return false
 }
 
 // asmRefs returns the symbols a line of assembly references as name(SB).

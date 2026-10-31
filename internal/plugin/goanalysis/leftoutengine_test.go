@@ -1250,6 +1250,12 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 		{"a loaded //go:linkname push of an initialized variable", map[string]string{
 			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nvar impl = vuln.Bad\n",
 		}, "", true, "", true},
+		{"a loaded //go:linkname push of an uninitialized variable", map[string]string{
+			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nvar impl func()\n\nfunc init() { impl = vuln.Bad }\n",
+		}, "", true, "", true},
+		{"an uninitialized variable an unloaded package pushes", merge(importer("def"), map[string]string{
+			"_v/def/def.go": "package def\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname v target\nvar v func()\n\nfunc init() { v = vuln.Bad }\n",
+		}), bad, false, lofLinkname, true},
 		{"a //go:linkname push of a bodyless function defines nothing", map[string]string{
 			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nfunc impl()\n\nfunc F() { vuln.Bad() }\n",
 		}, "", false, "", false},
@@ -1314,6 +1320,73 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 			}
 			if got.withheld != tc.withheld {
 				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
+			}
+		})
+	}
+}
+
+// TestLeftOutEngine_AsmLinkOwnDefiner: a bare symbol x.go's own assembly defines binds to that
+// definition, except that the link may keep another package's for a DUPOK TEXT or GLOBL, or for a
+// GLOBL no DATA fills.
+func TestLeftOutEngine_AsmLinkOwnDefiner(t *testing.T) {
+	base := map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
+		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
+		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
+		"lib/lib.go":      "package lib\n",
+		"lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/def\"\n",
+		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
+	}
+	loadedDef := "package main\n\nimport (\n\t_ \"example.com/v/def\"\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { vuln.Safe() }\n"
+	// The other definer: a DUPOK body calling Bad, or a variable holding Bad.
+	text := map[string]string{"_v/def/def.go": "package def\n", "_v/def/def.s": "TEXT target(SB),2,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n"}
+	data := map[string]string{"_v/def/def.go": "package def\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname v target\nvar v = vuln.Bad\n"}
+	ownText := func(flags string) map[string]string {
+		return map[string]string{"x_lofalt.s": "//go:build lofalt\n\nTEXT target(SB)," + flags + "$0\n\tRET\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n"}
+	}
+	ownData := func(def string) map[string]string {
+		return map[string]string{"x_lofalt.s": "//go:build lofalt\n\n" + def + "\nTEXT ·asm(SB),0,$0\n\tMOVQ target(SB), AX\n\tRET\n"}
+	}
+	cases := []struct {
+		name  string
+		files map[string]string
+		reach bool   // x.go's closure reaches vuln.Bad
+		sink  bool   // x.go's closure reaches a loaded variable holding a func
+		item  string // what x.go's closure fails closed on, when set: entering an unloaded package
+		// that pushes a //go:linkname fails closed at the dot-less linkname arm
+	}{
+		{"own DUPOK TEXT, another package's DUPOK TEXT", merge(text, ownText("2,")), true, false, ""},
+		{"own NOSPLIT|DUPOK TEXT, a loaded package's DUPOK TEXT", merge(text, ownText("NOSPLIT|DUPOK,"), map[string]string{"main.go": loadedDef}), true, false, ""},
+		{"own TEXT with an unknown flag", merge(text, ownText("FLAGS,")), true, false, ""},
+		{"own NOSPLIT TEXT binds", merge(text, ownText("NOSPLIT,")), false, false, ""},
+		{"own TEXT with flags 4 binds", merge(text, ownText("4,")), false, false, ""},
+		{"own TEXT with no flags binds", merge(text, ownText("")), false, false, ""},
+		{"own unfilled GLOBL, another package's variable", merge(data, ownData("GLOBL target(SB),8,$8\n")), true, false, lofLinkname},
+		{"own unfilled GLOBL, a loaded package's variable", merge(data, ownData("GLOBL target(SB),8,$8\n"), map[string]string{"main.go": loadedDef}), false, true, ""},
+		{"own DUPOK GLOBL filled by DATA, another package's variable", merge(data, ownData("DATA target+0(SB)/8, $0\nGLOBL target(SB),10,$8\n")), true, false, lofLinkname},
+		{"own GLOBL filled by DATA binds", merge(data, ownData("DATA target+0(SB)/8, $0\nGLOBL target(SB),8,$8\n")), false, false, ""},
+	}
+	bad := symKey("example.com/v/vuln", "Bad")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lofRun(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+			f := got.facts["x.go"]
+			if f == nil {
+				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
+			}
+			var fc []string
+			if tc.item != "" {
+				fc = []string{tc.item}
+			}
+			if f.Dyn || !slices.Equal(f.FC, fc) {
+				t.Errorf("x.go: dyn = %v, fails closed on %v; want no dyn, %v", f.Dyn, f.FC, fc)
+			}
+			if reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == bad }); reached != tc.reach {
+				t.Errorf("x.go reaches vuln.Bad = %v, want %v", reached, tc.reach)
+			}
+			if f.Sink != tc.sink {
+				t.Errorf("x.go sink = %v, want %v", f.Sink, tc.sink)
 			}
 		})
 	}

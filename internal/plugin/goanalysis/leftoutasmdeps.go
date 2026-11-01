@@ -326,12 +326,7 @@ func (s *lofAsmSession) depDirs(std bool, paths []string) map[string]string {
 		cmd := exec.CommandContext(s.ctx, filepath.Join(t.root, "bin", "go"), append([]string{"list", "-e", "-find", "-f", "{{.ImportPath}}\t{{.Dir}}"}, need...)...)
 		cmd.Dir = s.buildDir
 		env := append(lofAsmBaseEnv(s.env), "GOPROXY=off", "GONOPROXY=none.invalid", "GOVCS=*:off", "GOTOOLCHAIN=local")
-		if s.vendor {
-			env = append(env, "GOFLAGS=-mod=vendor")
-		} else {
-			env = append(env, "GOFLAGS=-mod=readonly")
-		}
-		cmd.Env = env
+		cmd.Env = append(env, s.modGoflags())
 		if lofAsmExecHook != nil {
 			lofAsmExecHook(cmd)
 		}

@@ -3,6 +3,7 @@ package goanalysis
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -92,6 +93,9 @@ type lofAsmSession struct {
 	buildDir string
 	env      []string
 	goflags  string
+	// modfile is the -modfile the user's GOFLAGS name, "" for none: the module graph a module
+	// package's header build and dependency lookups resolve against.
+	modfile  string
 	vendor   bool
 	excluded func(constraint.Expr) bool
 	modPorts func(lofPort) bool
@@ -183,6 +187,12 @@ func newLofAsmSession(ctx context.Context, deadline time.Time, root, buildDir st
 	if !goflagsOK || lofAsmGoflagsOff(goflags) || lofAsmGoflagsOff(envOr(env, "GOFLAGS", "")) {
 		return s
 	}
+	m1, ok1 := lofAsmModfile(goflags)
+	m2, ok2 := lofAsmModfile(envOr(env, "GOFLAGS", ""))
+	if !ok1 || !ok2 || (m1 != "" && m2 != "" && m1 != m2) {
+		return s
+	}
+	s.modfile = cmp.Or(m1, m2)
 	if root == "" {
 		cmd := exec.CommandContext(s.ctx, "go", "env", "GOROOT")
 		cmd.Dir = buildDir
@@ -214,6 +224,41 @@ func lofAsmGoflagsOff(goflags string) bool {
 		}
 	}
 	return false
+}
+
+// lofAsmModfile returns the -modfile goflags name, the last where several do, and false when goflags
+// spell one this cannot read.
+func lofAsmModfile(goflags string) (string, bool) {
+	if !strings.Contains(goflags, "modfile") {
+		return "", true
+	}
+	if strings.ContainsAny(goflags, "\"'") {
+		return "", false
+	}
+	v := ""
+	for _, f := range strings.Fields(goflags) {
+		name, val, eq := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(f, "-"), "-"), "=")
+		if name != "modfile" {
+			continue
+		}
+		if !eq || val == "" {
+			return "", false
+		}
+		v = val
+	}
+	return v, true
+}
+
+// modGoflags returns the GOFLAGS a go command resolving the build's module graph runs with.
+func (s *lofAsmSession) modGoflags() string {
+	f := "GOFLAGS=-mod=readonly"
+	if s.vendor {
+		f = "GOFLAGS=-mod=vendor"
+	}
+	if s.modfile != "" {
+		f += " -modfile=" + s.modfile
+	}
+	return f
 }
 
 // close releases the session's temporary files.
@@ -2223,11 +2268,7 @@ func (s *lofAsmSession) runHeaderBuild(it lofAsmItem, tu lofAsmTuple, tags []str
 		env = append(env, "GOFLAGS=", "GOWORK=off")
 	} else {
 		cmd.Dir = s.buildDir
-		if s.vendor {
-			env = append(env, "GOFLAGS=-mod=vendor")
-		} else {
-			env = append(env, "GOFLAGS=-mod=readonly")
-		}
+		env = append(env, s.modGoflags())
 	}
 	cmd.Env = env
 	var errb bytes.Buffer

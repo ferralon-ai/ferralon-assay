@@ -364,6 +364,64 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 	}
 }
 
+// TestLofAsmObjHeaderModfile: the user's GOFLAGS -modfile names the module graph a header build
+// resolves the package's imports in; a -modfile this cannot read leaves the session off.
+func TestLofAsmObjHeaderModfile(t *testing.T) {
+	files := map[string]string{
+		"go.mod":   "module example.com/v\n\ngo 1.22\n",
+		"alt.mod":  "module example.com/v\n\ngo 1.22\n\nrequire example.com/w v0.0.0\n\nreplace example.com/w => ./w\n",
+		"w/go.mod": "module example.com/w\n\ngo 1.22\n",
+		"w/w.go":   "package w\n\nconst K = 1\n",
+		"p/p.go":   "package p\n\nimport \"example.com/w\"\n\nconst K = w.K\n",
+		"p/p.s":    "//go:build linux && amd64\n\n#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n#ifdef const_K\n\tCALL ·sym(SB)\n#endif\n\tRET\n",
+	}
+	for _, tc := range []struct {
+		name, goflags string
+		ok, on        bool
+	}{
+		{"-modfile", "-modfile=alt.mod", true, true},
+		{"--modfile", "--modfile=alt.mod", true, true},
+		{"control: go.mod lacks the dependency", "", false, true},
+		{"a quoted -modfile", `"-modfile=alt.mod"`, false, false},
+		{"-modfile with no value", "-modfile", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var flags []string
+			lofAsmHook(t, func(c *exec.Cmd) {
+				if len(c.Args) > 1 && c.Args[1] == "build" {
+					v, _ := lofEnvLast(c.Env, "GOFLAGS")
+					mu.Lock()
+					flags = append(flags, v)
+					mu.Unlock()
+				}
+			})
+			env := append(os.Environ(), "GOFLAGS=", "GOWORK=off")
+			s, it := lofAsmTestSession(t, files, "p/p.s", env, tc.goflags)
+			if on := s.version() != ""; on != tc.on {
+				t.Fatalf("session on = %v, want %v", on, tc.on)
+			}
+			o := s.read(it)
+			if (o != nil) != tc.ok {
+				t.Fatalf("read = %v, want ok %v", o, tc.ok)
+			}
+			if tc.ok && !slices.Contains(o.refs, "example.com/v/p.sym") {
+				t.Errorf("refs %v lack example.com/v/p.sym", o.refs)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if tc.ok && len(flags) == 0 {
+				t.Error("no header build ran")
+			}
+			for _, f := range flags {
+				if tc.ok && f != "-mod=readonly -modfile=alt.mod" {
+					t.Errorf("header build GOFLAGS = %q", f)
+				}
+			}
+		})
+	}
+}
+
 // TestLofAsmObjExperiments: a GOEXPERIMENT_ macro the file or a header it includes tests is defined
 // by cmd/asm, for the packages it allows ABI selectors in, in builds whose GOEXPERIMENT sets the
 // experiment, whatever the session's: the file is assembled with each experiment it tests set on and

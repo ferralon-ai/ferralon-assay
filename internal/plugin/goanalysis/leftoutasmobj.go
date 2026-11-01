@@ -68,6 +68,11 @@ var lofAsmNonce = func() string {
 // lofAsmExecHook, when set, sees every command the session runs before it runs.
 var lofAsmExecHook func(*exec.Cmd)
 
+// lofAsmStdPorts, when set, keeps only the ports it holds for of those a standard-library file is
+// assembled on. It is a test seam: tests whose standard-library reads stand in for the real thing,
+// rather than exercise port enumeration, set it with lofAsmCacheDir to a cache of their own.
+var lofAsmStdPorts func(lofPort) bool
+
 // lofAsmSession reads one engine's assembly through the toolchain: tool is the assembler's, nil when
 // none can be run faithfully (off), in which case every file fails closed.
 type lofAsmSession struct {
@@ -262,13 +267,7 @@ func (s *lofAsmSession) stdObject(it lofAsmItem) *lofAsmObj {
 	if o != nil {
 		return o
 	}
-	cache := ""
-	if src, err := os.ReadFile(it.file); err == nil && lofAsmCacheDir != "" {
-		c := sha256.Sum256(src)
-		sum := sha256.Sum256([]byte(strings.Join([]string{t.version, t.experiment, t.root, it.pkg, it.file, hex.EncodeToString(c[:])}, "\x01")))
-		key := hex.EncodeToString(sum[:])
-		cache = filepath.Join(lofAsmCacheDir, "obj", key[:2], key+".json")
-	}
+	cache := t.stdCache(it)
 	if cache != "" {
 		var w lofAsmObjWire
 		if b, err := os.ReadFile(cache); err == nil && json.Unmarshal(b, &w) == nil && w.Text != nil && w.Data != nil {
@@ -292,6 +291,18 @@ func (s *lofAsmSession) stdObject(it lofAsmItem) *lofAsmObj {
 	return o
 }
 
+// stdCache returns where the cache keeps what a standard-library file assembles to, "" for nowhere.
+func (t *lofAsmTool) stdCache(it lofAsmItem) string {
+	src, err := os.ReadFile(it.file)
+	if err != nil || lofAsmCacheDir == "" {
+		return ""
+	}
+	c := sha256.Sum256(src)
+	sum := sha256.Sum256([]byte(strings.Join([]string{t.version, t.experiment, t.root, it.pkg, it.file, hex.EncodeToString(c[:])}, "\x01")))
+	key := hex.EncodeToString(sum[:])
+	return filepath.Join(lofAsmCacheDir, "obj", key[:2], key+".json")
+}
+
 // read assembles the file once per build tuple that assembles it and unions what the objects
 // emit; nil when any fails.
 func (s *lofAsmSession) read(it lofAsmItem) *lofAsmObj {
@@ -308,6 +319,9 @@ func (s *lofAsmSession) read(it lofAsmItem) *lofAsmObj {
 		return nil
 	}
 	ports := t.admit(filepath.Base(it.file), x)
+	if it.std && lofAsmStdPorts != nil {
+		ports = slices.DeleteFunc(ports, func(p lofPort) bool { return !lofAsmStdPorts(p) })
+	}
 	out := &lofAsmObj{ok: true, text: map[string]bool{}, data: map[string]bool{}}
 	if len(ports) == 0 {
 		return out
@@ -991,7 +1005,7 @@ func parseListing(b []byte) ([]*lofListSym, bool) {
 	var out []*lofListSym
 	var cur *lofListSym
 	sc := bufio.NewScanner(bytes.NewReader(b))
-	sc.Buffer(make([]byte, 1<<20), 1<<26)
+	sc.Buffer(nil, 1<<26)
 	for sc.Scan() {
 		line := sc.Text()
 		switch {
@@ -1817,7 +1831,13 @@ func (s *lofAsmSession) header(it lofAsmItem, tu lofAsmTuple, tags, files []stri
 	if it.std && lofAsmCacheDir != "" {
 		cache = filepath.Join(lofAsmCacheDir, key[:2], key+".h")
 	}
-	return lofMemo(&s.mu, s.hdrs, key+"\x00"+tu.level+"\x00"+it.dir, func() lofAsmHdr {
+	memo := key + "\x00" + it.dir
+	if cache == "" {
+		memo += "\x00" + tu.level
+	}
+	// The cache keeps a standard-library header for every level of the port, so one session builds it
+	// once for them all, not once per level, racing the cache.
+	return lofMemo(&s.mu, s.hdrs, memo, func() lofAsmHdr {
 		if cache != "" {
 			if b, err := os.ReadFile(cache); err == nil {
 				return lofAsmHdrDecode(b)

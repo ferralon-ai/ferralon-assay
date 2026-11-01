@@ -1,7 +1,6 @@
 package goanalysis
 
 import (
-	"context"
 	"errors"
 	"go/ast"
 	"go/build"
@@ -341,8 +340,7 @@ func (s *lofAsmSession) depDirs(std bool, paths []string) map[string]string {
 		if lofAsmExecHook != nil {
 			lofAsmExecHook(cmd)
 		}
-		var b []byte
-		if err := s.procs.do(s.ctx, func() (err error) { b, err = cmd.Output(); return err }); err == nil {
+		if b, err := cmd.Output(); err == nil {
 			for _, line := range strings.Split(string(b), "\n") {
 				if p, d, ok := strings.Cut(line, "\t"); ok && d != "" {
 					found[p] = d
@@ -610,10 +608,7 @@ func lofAsmABIPkgs(root string) []string {
 // GOEXPERIMENT over the port's defaults (go list's context.ToolTags, internal/buildcfg): two
 // tuples that resolve alike build alike. The GOEXPERIMENT itself, marked apart, when the toolchain
 // cannot resolve it.
-//
-// The answer is the toolchain's, kept for every session: it is asked with no session's context, so
-// that a session's end cannot stand in for it, and waits for a slot of procs however long that takes.
-func (t *lofAsmTool) effective(procs lofLimiter, tu lofAsmTuple) string {
+func (t *lofAsmTool) effective(tu lofAsmTuple) string {
 	x := tu.goexperiment(t.experiment)
 	vars := append(tu.envVars(), "GOEXPERIMENT="+x)
 	return lofMemo(&t.mu, t.effs, strings.Join(vars, "\x00"), func() string {
@@ -623,8 +618,8 @@ func (t *lofAsmTool) effective(procs lofLimiter, tu lofAsmTuple) string {
 		if lofAsmExecHook != nil {
 			lofAsmExecHook(cmd)
 		}
-		var b []byte
-		if err := procs.do(context.Background(), func() (err error) { b, err = cmd.Output(); return err }); err != nil {
+		b, err := cmd.Output()
+		if err != nil {
 			return "raw:" + x
 		}
 		var on []string

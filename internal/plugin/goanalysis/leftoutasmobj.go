@@ -84,36 +84,6 @@ var lofAsmStdPorts func(lofPort) bool
 
 type lofAsmModPortsKey struct{}
 
-// lofLimiter bounds how many subprocesses run at once: each holds one slot while it runs.
-type lofLimiter chan struct{}
-
-// lofProcs is the process's limiter for the subprocesses assembly reads run, shared by every session
-// so that sessions side by side stay within the machine's CPUs together. A context carrying a
-// limiter under lofLimiterKey uses that one instead. A toolchain's header builds, each a go build
-// running its own CPUs, take a slot of its hdrSem instead, never of both.
-var lofProcs = make(lofLimiter, max(2, runtime.NumCPU()))
-
-type lofLimiterKey struct{}
-
-func lofLimiterOf(ctx context.Context) lofLimiter {
-	if l, ok := ctx.Value(lofLimiterKey{}).(lofLimiter); ok {
-		return l
-	}
-	return lofProcs
-}
-
-// do runs f holding a slot of l, taken unless ctx ends first. f runs one subprocess and nothing
-// else: it never waits on another slot or a lock, so no holder waits on a holder.
-func (l lofLimiter) do(ctx context.Context, f func() error) error {
-	select {
-	case l <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	defer func() { <-l }()
-	return f()
-}
-
 // lofAsmSession reads one engine's assembly through the toolchain: tool is the assembler's, nil when
 // none can be run faithfully (off), in which case every file fails closed.
 type lofAsmSession struct {
@@ -130,7 +100,7 @@ type lofAsmSession struct {
 	excluded func(constraint.Expr) bool
 	modPorts func(lofPort) bool
 	tmp      string
-	procs    lofLimiter
+	sem      chan struct{}
 
 	mu      sync.Mutex
 	objs    map[string]*lofOnce[*lofAsmObj]
@@ -203,8 +173,8 @@ func newLofAsmSession(ctx context.Context, deadline time.Time, root, buildDir st
 	}
 	s := &lofAsmSession{
 		buildDir: buildDir, env: env, goflags: goflags, excluded: excluded,
-		procs: lofLimiterOf(ctx),
-		objs:  map[string]*lofOnce[*lofAsmObj]{}, hdrs: map[string]*lofOnce[lofAsmHdr]{}, srcs: map[string]*lofOnce[*lofGoSrc]{},
+		sem:  make(chan struct{}, max(2, runtime.NumCPU())),
+		objs: map[string]*lofOnce[*lofAsmObj]{}, hdrs: map[string]*lofOnce[lofAsmHdr]{}, srcs: map[string]*lofOnce[*lofGoSrc]{},
 		stdGaps: map[string]bool{},
 		deps:    map[string]*lofOnce[*lofDepPkg]{}, depPaths: map[string]string{}, closures: map[string]*lofOnce[lofDepFacts]{},
 	}
@@ -227,8 +197,7 @@ func newLofAsmSession(ctx context.Context, deadline time.Time, root, buildDir st
 		cmd := exec.CommandContext(s.ctx, "go", "env", "GOROOT")
 		cmd.Dir = buildDir
 		cmd.Env = env
-		var out []byte
-		err := s.procs.do(s.ctx, func() (err error) { out, err = cmd.Output(); return err })
+		out, err := cmd.Output()
 		if err != nil {
 			return s
 		}
@@ -342,21 +311,17 @@ type lofAsmItem struct {
 
 // prefetch reads items side by side, so object returns them from memory.
 func (s *lofAsmSession) prefetch(items []lofAsmItem) {
-	todo := make(chan lofAsmItem)
 	var wg sync.WaitGroup
-	for range min(cap(s.procs), len(items)) {
+	lim := make(chan struct{}, cap(s.sem))
+	for _, it := range items {
 		wg.Add(1)
+		lim <- struct{}{}
 		go func() {
 			defer wg.Done()
-			for it := range todo {
-				s.object(it)
-			}
+			defer func() { <-lim }()
+			s.object(it)
 		}()
 	}
-	for _, it := range items {
-		todo <- it
-	}
-	close(todo)
 	wg.Wait()
 }
 
@@ -653,7 +618,7 @@ type lofAsmTool struct {
 	// them; nil when they could not be read.
 	exps   []string
 	env    []string
-	hdrSem lofLimiter
+	hdrSem chan struct{}
 
 	mu     sync.Mutex
 	tags   map[string]*lofOnce[map[lofPort]bool]
@@ -714,9 +679,7 @@ func newLofAsmTool(ctx context.Context, root string, env []string) (*lofAsmTool,
 		if lofAsmExecHook != nil {
 			lofAsmExecHook(cmd)
 		}
-		var out []byte
-		err := lofLimiterOf(ctx).do(ctx, func() (err error) { out, err = cmd.Output(); return err })
-		return out, err
+		return cmd.Output()
 	}
 	out, err := run("env", "GOVERSION", "GOTOOLDIR", "GOEXPERIMENT")
 	if err != nil {
@@ -728,7 +691,7 @@ func newLofAsmTool(ctx context.Context, root string, env []string) (*lofAsmTool,
 	}
 	t := &lofAsmTool{
 		root: root, version: strings.TrimSpace(lines[0]), experiment: strings.TrimSpace(lines[2]),
-		asm: filepath.Join(strings.TrimSpace(lines[1]), "asm"), hdrSem: make(lofLimiter, 2),
+		asm: filepath.Join(strings.TrimSpace(lines[1]), "asm"), hdrSem: make(chan struct{}, 2),
 		tags: map[string]*lofOnce[map[lofPort]bool]{}, cals: map[string]*lofOnce[*lofAsmCal]{}, nmPath: map[string]*lofOnce[string]{}, std: map[string]*lofOnce[*lofAsmObj]{},
 	}
 	r, ok := parseGoRelease(t.version)
@@ -820,8 +783,8 @@ func (t *lofAsmTool) nm(ctx context.Context) string {
 		if lofAsmExecHook != nil {
 			lofAsmExecHook(cmd)
 		}
-		var out []byte
-		if err := lofLimiterOf(ctx).do(ctx, func() (err error) { out, err = cmd.Output(); return err }); err != nil {
+		out, err := cmd.Output()
+		if err != nil {
 			return ""
 		}
 		return strings.TrimSpace(string(out))
@@ -1258,7 +1221,9 @@ func (s *lofAsmSession) asm(dir, file, pkg string, tu lofAsmTuple, objdir string
 	if lofAsmExecHook != nil {
 		lofAsmExecHook(cmd)
 	}
-	err = s.procs.do(s.ctx, cmd.Run)
+	s.sem <- struct{}{}
+	err = cmd.Run()
+	<-s.sem
 	return out.Bytes(), errb.Bytes(), obj, err
 }
 
@@ -1620,8 +1585,8 @@ func (s *lofAsmSession) merge(it lofAsmItem, tu lofAsmTuple, l *lofListing, out 
 		if lofAsmExecHook != nil {
 			lofAsmExecHook(cmd)
 		}
-		var b []byte
-		if err := s.procs.do(s.ctx, func() (err error) { b, err = cmd.Output(); return err }); err != nil {
+		b, err := cmd.Output()
+		if err != nil {
 			return nil, false
 		}
 		undef = map[string]bool{}
@@ -2186,7 +2151,7 @@ func (s *lofAsmSession) hdrLevel(it lofAsmItem, tu lofAsmTuple) string {
 // only. The standard library's headers are cached across runs.
 // hdrKey returns the key of the go_asm.h a build of the package with tags compiles on the tuple.
 func (s *lofAsmSession) hdrKey(it lofAsmItem, tu lofAsmTuple, tags, files []string) string {
-	return s.tool.hdrKey(it, tu, s.hdrLevel(it, tu), s.tool.effective(s.procs, tu), tags, files)
+	return s.tool.hdrKey(it, tu, s.hdrLevel(it, tu), s.tool.effective(tu), tags, files)
 }
 
 func (s *lofAsmSession) header(it lofAsmItem, tu lofAsmTuple, tags, files []string) lofAsmHdr {
@@ -2311,7 +2276,9 @@ func (s *lofAsmSession) runHeaderBuild(it lofAsmItem, tu lofAsmTuple, tags []str
 	if lofAsmExecHook != nil {
 		lofAsmExecHook(cmd)
 	}
-	runErr := t.hdrSem.do(s.ctx, cmd.Run)
+	t.hdrSem <- struct{}{}
+	runErr := cmd.Run()
+	<-t.hdrSem
 	if s.ctx.Err() != nil {
 		return nil, nil, errLofAsmHdrBuild
 	}

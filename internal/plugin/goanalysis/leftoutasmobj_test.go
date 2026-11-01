@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -22,7 +23,14 @@ import (
 // every test, and assembles that assembly on two ports: those tests read the standard library to
 // reach its definers and gaps. Module fixtures keep every port, and exercise the port enumeration,
 // unless they call lofAsmNarrowPorts.
+//
+// The tests load and type-check a program each, and the collector spends much of the package's
+// CPU on what they allocate; a higher GC target trades memory for that time. A GOGC set in the
+// environment wins.
 func TestMain(m *testing.M) {
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(400)
+	}
 	dir, err := os.MkdirTemp("", "lofasmcache")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

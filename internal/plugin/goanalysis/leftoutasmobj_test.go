@@ -305,8 +305,11 @@ func TestLofAsmObjExperiments(t *testing.T) {
 	}
 }
 
-// TestLofAsmHdrKey: a go_asm.h is keyed by the toolchain root, the architecture level and the
-// experiments the build sets, so builds that differ in any share no entry.
+// TestLofAsmHdrKey: a go_asm.h is keyed by the toolchain root and the experiments the build sets,
+// and by the architecture level wherever a file of the package's import closure is level-specific,
+// whether a build at one level compiles it (GoFiles), sets it aside (IgnoredGoFiles) or rejects it
+// (InvalidGoFiles, which a file whose constraint cannot be read keys as unknown): such a file may
+// change a constant the package takes from it.
 func TestLofAsmHdrKey(t *testing.T) {
 	a := &lofAsmTool{root: "/a", version: "go1.26.3"}
 	b := &lofAsmTool{root: "/b", version: "go1.26.3"}
@@ -314,15 +317,43 @@ func TestLofAsmHdrKey(t *testing.T) {
 	tu := lofAsmTuple{lofPort{"linux", "amd64"}, "v1", ""}
 	v3, on := tu, tu
 	v3.level, on.exp = "v3", "fieldtrack"
-	k := a.hdrKey(it, tu, nil, []string{"a.go"})
+	k := a.hdrKey(it, tu, "v1", nil, []string{"a.go"})
 	for name, other := range map[string]string{
-		"N2: another root":       b.hdrKey(it, tu, nil, []string{"a.go"}),
-		"N2: another level":      a.hdrKey(it, v3, nil, []string{"a.go"}),
-		"N1: another experiment": a.hdrKey(it, on, nil, []string{"a.go"}),
+		"N2: another root":       b.hdrKey(it, tu, "v1", nil, []string{"a.go"}),
+		"N1: another experiment": a.hdrKey(it, on, "v1", nil, []string{"a.go"}),
 	} {
 		if other == k {
 			t.Errorf("%s shares the key", name)
 		}
+	}
+
+	mod := map[string]string{
+		"go.mod": "module example.com/v\n\ngo 1.22\n",
+		"d/a.go": "package d\n\nconst K = 1\n",
+		"p/p.go": "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
+		"p/p.s":  "#include \"go_asm.h\"\n",
+	}
+	for _, c := range []struct {
+		name, file, src string
+		split           bool
+	}{
+		{"level-tagged dependency file compiled at v1 (GoFiles)", "d/l.go", "//go:build !amd64.v3\n\npackage d\n\nconst L = 1\n", true},
+		{"level-tagged dependency file left out at v1 (IgnoredGoFiles)", "d/l.go", "//go:build amd64.v3\n\npackage d\n\nconst K2 = 1\n", true},
+		{"level-tagged dependency file go/build rejects (InvalidGoFiles)", "d/z.go", "//go:build amd64.v3\n//go:build amd64.v3\n\npackage d\n\nconst K2 = 1\n", true},
+		{"level-named dependency file", "d/race_v3_amd64.go", "package d\n", true},
+		{"no level-specific file in the closure", "d/l.go", "package d\n\nconst L = 1\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, it := lofAsmTestSession(t, merge(mod, map[string]string{c.file: c.src}), "p/p.s", nil, "")
+			if s.tool == nil {
+				t.Skip("no toolchain")
+			}
+			k1 := s.hdrKey(it, tu, nil, []string{"p.go"})
+			k3 := s.hdrKey(it, v3, nil, []string{"p.go"})
+			if split := k1 != k3; split != c.split {
+				t.Errorf("v1 and v3 keys differ: %v, want %v", split, c.split)
+			}
+		})
 	}
 }
 

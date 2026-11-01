@@ -61,7 +61,7 @@ var lofAsmCacheDir = func() string {
 
 // lofAsmCacheGen names what this code reads a standard-library file and its go_asm.h to; a change
 // to either moves it, so the cache never serves a read made under other rules.
-const lofAsmCacheGen = "2"
+const lofAsmCacheGen = "3"
 
 // lofAsmNonce returns the -D macro a go_asm.h build passes the assembler, which no build defines, so
 // the go command cannot reuse a cached build of the package and skip generating its header.
@@ -98,6 +98,11 @@ type lofAsmSession struct {
 	hdrs    map[string]*lofOnce[lofAsmHdr]
 	srcs    map[string]*lofOnce[*lofGoSrc]
 	stdGaps map[string]bool
+	// deps, depPaths and closures hold what leftoutasmdeps.go reads of packages outside the
+	// standard library: the packages by directory, import paths resolved, and closures by directory.
+	deps     map[string]*lofOnce[*lofDepPkg]
+	depPaths map[string]string
+	closures map[string]*lofOnce[lofDepFacts]
 }
 
 type lofOnce[T any] struct {
@@ -131,6 +136,7 @@ func newLofAsmSession(ctx context.Context, deadline time.Time, root, buildDir st
 		sem:  make(chan struct{}, max(2, runtime.NumCPU())),
 		objs: map[string]*lofOnce[*lofAsmObj]{}, hdrs: map[string]*lofOnce[lofAsmHdr]{}, srcs: map[string]*lofOnce[*lofGoSrc]{},
 		stdGaps: map[string]bool{},
+		deps:    map[string]*lofOnce[*lofDepPkg]{}, depPaths: map[string]string{}, closures: map[string]*lofOnce[lofDepFacts]{},
 	}
 	if deadline.IsZero() {
 		s.ctx, s.cancel = context.WithCancel(ctx)
@@ -534,6 +540,10 @@ type lofAsmTool struct {
 	nmPath *lofOnce[string]
 	// std holds the standard-library files read whole, by file, for every session of the tool.
 	std map[string]*lofAsmObj
+	// arches holds the ports' GOARCH values; deps the standard-library packages leftoutasmdeps.go
+	// read, by directory.
+	arches map[string]bool
+	deps   map[string]*lofOnce[*lofDepPkg]
 }
 
 var lofAsmTools = struct {
@@ -618,6 +628,10 @@ func newLofAsmTool(ctx context.Context, root string, env []string) (*lofAsmTool,
 	}
 	if len(t.ports) == 0 {
 		return nil, errors.New("no ports")
+	}
+	t.arches, t.deps = map[string]bool{}, map[string]*lofOnce[*lofDepPkg]{}
+	for _, p := range t.ports {
+		t.arches[p.goarch] = true
 	}
 	slices.SortFunc(t.ports, func(a, b lofPort) int {
 		return strings.Compare(a.goarch+"/"+a.goos, b.goarch+"/"+b.goos)
@@ -1973,21 +1987,37 @@ func lofAsmHdrValue(v string) bool {
 	return v != "" && strings.Trim(strings.TrimPrefix(v, "-"), "0123456789") == ""
 }
 
-// header generates the go_asm.h a build of the package with tags compiles on the tuple: a go build
-// of the package with a nonce assembler macro, which makes the go command rebuild it rather than
-// reuse a cached build. It never fetches: modules come from the module cache or vendor directory
-// only. The standard library's headers are cached across runs.
-// hdrKey returns the key of the go_asm.h a build of the package with tags compiles on the tuple. The
-// level and experiments are in it: the file set covers the package's own files, not a dependency's
-// level- or experiment-tagged files a constant may take its value from.
-func (t *lofAsmTool) hdrKey(it lofAsmItem, tu lofAsmTuple, tags, files []string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{lofAsmCacheGen, t.version, t.experiment, t.root, it.pkg, tu.goos, tu.goarch, tu.level, tu.exp,
+// hdrKey returns the key of the go_asm.h a build of the package with tags compiles on the port at
+// level. The file set covers the package's own files, not a dependency's level- or experiment-tagged
+// files a constant may take its value from: level is "" only where no file the package's import
+// closure holds is level-specific (hdrLevel), and the experiments are in the key.
+func (t *lofAsmTool) hdrKey(it lofAsmItem, tu lofAsmTuple, level string, tags, files []string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{lofAsmCacheGen, t.version, t.experiment, t.root, it.pkg, tu.goos, tu.goarch, level, tu.exp,
 		strings.Join(files, "\x00"), strings.Join(tags, ",")}, "\x01")))
 	return hex.EncodeToString(sum[:])
 }
 
+// hdrLevel returns the level a go_asm.h of the package on the tuple is keyed by: the tuple's where
+// some file of the package's import closure, compiled at one level or not, is level-specific;
+// otherwise "", as every level then compiles the same files.
+func (s *lofAsmSession) hdrLevel(it lofAsmItem, tu lofAsmTuple) string {
+	if tu.level == "" || !s.levelDep(it) {
+		return ""
+	}
+	return tu.level
+}
+
+// header generates the go_asm.h a build of the package with tags compiles on the tuple: a go build
+// of the package with a nonce assembler macro, which makes the go command rebuild it rather than
+// reuse a cached build. It never fetches: modules come from the module cache or vendor directory
+// only. The standard library's headers are cached across runs.
+// hdrKey returns the key of the go_asm.h a build of the package with tags compiles on the tuple.
+func (s *lofAsmSession) hdrKey(it lofAsmItem, tu lofAsmTuple, tags, files []string) string {
+	return s.tool.hdrKey(it, tu, s.hdrLevel(it, tu), tags, files)
+}
+
 func (s *lofAsmSession) header(it lofAsmItem, tu lofAsmTuple, tags, files []string) lofAsmHdr {
-	key := s.tool.hdrKey(it, tu, tags, files)
+	key := s.hdrKey(it, tu, tags, files)
 	cache := ""
 	if it.std && lofAsmCacheDir != "" {
 		cache = filepath.Join(lofAsmCacheDir, key[:2], key+".h")

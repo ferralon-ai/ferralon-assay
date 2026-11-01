@@ -335,7 +335,7 @@ func (v *Veto) dockerfile(file, src string) string {
 	if ctxs[0] != v.root {
 		ctxs = append(ctxs, v.root)
 	}
-	lines, joined := logicalLines(src)
+	lines, joined := dockerLines(src)
 	if !joined && v.hasToken(lines[len(lines)-1]) {
 		return "install command in an unjoined continuation"
 	}
@@ -359,7 +359,7 @@ func (v *Veto) dockerfile(file, src string) string {
 		}
 		word, rest, _ := strings.Cut(line, " ")
 		instr, rest := strings.ToUpper(word), strings.TrimSpace(rest)
-		if hd := heredocRE.FindAllStringSubmatch(rest, -1); hd != nil && (instr == "RUN" || instr == "COPY" || instr == "ADD") {
+		if hd := dockerHeredocs(line); hd != nil {
 			body := line
 			for _, m := range hd {
 				for i++; i < len(lines) && strings.TrimSpace(lines[i]) != m[1]; i++ {

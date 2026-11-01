@@ -4,37 +4,227 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
-// logicalLines splits src into logical lines, joining a line that ends in an odd run of
-// backslashes to the next. joined is false when the last line still continues.
-func logicalLines(src string) (lines []string, joined bool) {
-	lines, _, joined = logicalLinesAt(src)
-	return lines, joined
-}
-
-// logicalLinesAt is logicalLines, also returning the source line, from 0, each starts on.
-func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
+// logicalLinesAt splits src into logical lines, joining a line that ends in an odd run of
+// backslashes to the next the way kind's reader does, and returns the source line, from 0,
+// each starts on. joined is false when the last line still continues.
+//
+// A shell removes the backslash and newline, so the two sides join with nothing, outside
+// single quotes, comments and heredoc bodies; make passes a recipe line (one that starts
+// with a tab) to the shell that way, after taking one tab off the next line. Every other
+// join is not one this can read exactly: inside single quotes the pair stays in the text,
+// which an sh -c or eval may still remove; a comment's backslash ends nothing; a heredoc
+// body is the input of whatever reads it; and a Makefile line outside a recipe and a data
+// surface's lines pass through make, YAML or TOML before any shell. Those keep the two sides
+// apart: by a space, or, after a comment and in a heredoc body, by not joining. hidden
+// returns the word the two sides would make joined with nothing, for the caller to check.
+func logicalLinesAt(src, kind string) (lines []string, starts []int, hidden []string, joined bool) {
 	var cur strings.Builder
-	start := 0
+	var docs []heredoc
+	sh := shellQuote{prev: '\n'}
+	start, open, recipe, left := 0, false, false, ""
 	for i, l := range strings.Split(src, "\n") {
 		l = strings.TrimSuffix(l, "\r")
-		if cur.Len() == 0 {
-			start = i
+		if w := boundaryWord(left, l); w != "" {
+			hidden = append(hidden, w)
 		}
-		if n := len(l) - len(strings.TrimRight(l, `\`)); n%2 == 1 {
-			cur.WriteString(l[:len(l)-1])
-			cur.WriteByte(' ')
+		left = ""
+		if len(docs) > 0 {
+			if n := len(l) - len(strings.TrimRight(l, `\`)); n%2 == 1 {
+				left = l[:len(l)-1]
+			}
+			if d := docs[0]; l == d.word || d.dash && strings.TrimLeft(l, "\t") == d.word {
+				docs = docs[1:]
+			}
+			lines, starts = append(lines, l), append(starts, i)
 			continue
 		}
+		if !open {
+			start, open = i, true
+			recipe = kind == kindMakefile && strings.HasPrefix(l, "\t")
+			if kind != kindShell {
+				sh = shellQuote{prev: '\n'}
+			}
+		} else if recipe {
+			l = strings.TrimPrefix(l, "\t")
+		}
+		shell := kind == kindShell || recipe
+		if !shell {
+			// Read here only for where a comment starts, line by line.
+			sh = shellQuote{prev: '\n'}
+		}
+		if n := len(l) - len(strings.TrimRight(l, `\`)); n%2 == 1 {
+			body := l[:len(l)-1]
+			comment := sh.feed(body)
+			switch {
+			case comment:
+				left = body
+			case shell && (sh.q == 0 || sh.q == '"'):
+				cur.WriteString(body)
+				continue
+			default:
+				cur.WriteString(body)
+				cur.WriteByte(' ')
+				left = body
+				continue
+			}
+		} else {
+			sh.feed(l)
+		}
+		sh.prev = '\n'
 		cur.WriteString(l)
 		lines, starts = append(lines, cur.String()), append(starts, start)
 		cur.Reset()
+		open = false
+		if kind == kindShell {
+			docs, sh.docs = sh.docs, nil
+		}
 	}
-	if cur.Len() > 0 {
-		return append(lines, cur.String()), append(starts, start), false
+	if open {
+		return append(lines, cur.String()), append(starts, start), hidden, false
 	}
-	return lines, starts, true
+	return lines, starts, hidden, true
+}
+
+// shellQuote follows a shell's quoting through text fed to it a piece at a time. q is the
+// quote open: 0, ', ", or $ for $'...'. prev is the last byte fed, outside a quote, for
+// whether a # starts a word. docs are the heredocs opened, whose bodies start on the next line.
+type shellQuote struct {
+	q    byte
+	prev byte
+	docs []heredoc
+}
+
+// heredoc is a heredoc's terminator, and whether <<- lets leading tabs precede it.
+type heredoc struct {
+	word string
+	dash bool
+}
+
+var shellHeredocRE = regexp.MustCompile(`^<<(-?)[ \t]*(?:\\|'|")?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
+
+// feed reads t on from the state so far, reporting whether a comment starts in it, in which
+// case the rest of t is not read.
+func (s *shellQuote) feed(t string) (comment bool) {
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		switch {
+		case s.q == '\'':
+			if c == '\'' {
+				s.q = 0
+			}
+		case s.q != 0:
+			if c == '\\' {
+				i++
+			} else if c == '"' && s.q == '"' || c == '\'' && s.q == '$' {
+				s.q = 0
+			}
+		case c == '\\':
+			i++
+		case c == '\'', c == '"':
+			s.q = c
+		case c == '$' && i+1 < len(t) && t[i+1] == '\'':
+			s.q, i = '$', i+1
+		case c == '#' && strings.IndexByte(" \t\n;&|()", s.prev) >= 0:
+			return true
+		case strings.HasPrefix(t[i:], "<<<"):
+			i += 2
+		case c == '<':
+			if m := shellHeredocRE.FindStringSubmatch(t[i:]); m != nil {
+				s.docs = append(s.docs, heredoc{word: m[2], dash: m[1] == "-"})
+				i += len(m[0]) - 1
+			}
+		}
+		s.prev = c
+	}
+	return false
+}
+
+var (
+	wordTailRE = regexp.MustCompile(`[A-Za-z0-9_.+-]+$`)
+	wordHeadRE = regexp.MustCompile(`^[A-Za-z0-9_.+-]+`)
+)
+
+// boundaryWord returns the word left's last word and right's first make with nothing
+// between them, right's leading blanks dropped, or "" when either side has none.
+func boundaryWord(left, right string) string {
+	a, b := wordTailRE.FindString(left), wordHeadRE.FindString(strings.TrimLeft(right, " \t"))
+	if a == "" || b == "" {
+		return ""
+	}
+	return a + b
+}
+
+var (
+	dockerDirectiveRE = regexp.MustCompile(`^#\s*([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$`)
+	dockerDirectives  = map[string]bool{"escape": true, "syntax": true, "check": true}
+	dockerContinues   = map[string]*regexp.Regexp{
+		`\`: regexp.MustCompile(`([^\\])\\[ \t]*$|^\\[ \t]*$`),
+		"`": regexp.MustCompile("([^`])`[ \t]*$|^`[ \t]*$"),
+	}
+)
+
+// dockerLines splits a Dockerfile into instructions the way BuildKit's parser does. A line
+// whose last character other than blanks is the escape character, not after another,
+// continues onto the next with nothing between, quoted or not; comment and blank lines
+// inside a continuation are dropped; and the body lines of a RUN, COPY or ADD heredoc, and
+// its terminator, are kept as they are. The escape character is \ unless an escape
+// directive at the top sets a backtick. joined is false when the last instruction still
+// continues.
+func dockerLines(src string) (lines []string, joined bool) {
+	raw := strings.Split(strings.TrimPrefix(src, "\ufeff"), "\n")
+	cont, directives := dockerContinues[`\`], true
+	for i := 0; i < len(raw); i++ {
+		l := strings.TrimLeftFunc(strings.TrimRight(raw[i], "\r"), unicode.IsSpace)
+		if directives {
+			m := dockerDirectiveRE.FindStringSubmatch(l)
+			directives = m != nil && dockerDirectives[strings.ToLower(m[1])]
+			if directives && strings.EqualFold(m[1], "escape") && dockerContinues[m[2]] != nil {
+				cont = dockerContinues[m[2]]
+			}
+		}
+		if l == "" || l[0] == '#' {
+			continue
+		}
+		var b strings.Builder
+		more := cont.MatchString(l)
+		b.WriteString(cont.ReplaceAllString(l, "$1"))
+		for more && i+1 < len(raw) {
+			i++
+			l := strings.TrimRight(raw[i], "\r")
+			if t := strings.TrimSpace(l); t == "" || t[0] == '#' {
+				continue
+			}
+			more = cont.MatchString(l)
+			b.WriteString(cont.ReplaceAllString(l, "$1"))
+		}
+		lines = append(lines, b.String())
+		for _, m := range dockerHeredocs(b.String()) {
+			for i++; i < len(raw); i++ {
+				l := strings.TrimRight(raw[i], "\r")
+				lines = append(lines, l)
+				if strings.TrimSpace(l) == m[1] {
+					break
+				}
+			}
+		}
+		if more {
+			return lines, false
+		}
+	}
+	return lines, true
+}
+
+// dockerHeredocs returns the heredocs a RUN, COPY or ADD instruction opens.
+func dockerHeredocs(line string) [][]string {
+	word, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
+	switch strings.ToUpper(word) {
+	case "RUN", "COPY", "ADD":
+		return heredocRE.FindAllStringSubmatch(strings.TrimSpace(rest), -1)
+	}
+	return nil
 }
 
 // segment is one simple command: its words, unquoted, and whether its text holds a $ or

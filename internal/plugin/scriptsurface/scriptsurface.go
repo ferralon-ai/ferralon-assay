@@ -825,7 +825,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.
 				cur.mark.made, cur.wd = "", ""
-				if v.hasToken(line) {
+				if v.hasToken(line) || v.hidesToken(line) {
 					return "install command that does not tokenise"
 				}
 				if expandedInstallLine(line) {
@@ -1015,8 +1015,8 @@ var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true
 var shellArgOptions = map[string]bool{"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true}
 
 // nestedShell finds in a command's words shell text that is read a second time, with its
-// quotes removed again: the argument of a shell's -c, or the words after eval joined by
-// spaces. at is the index of the shell or eval word, and fork is true when the text runs in a
+// quotes removed again: the argument of a shell's or su's -c, or the words after eval joined
+// by spaces. at is the index of the shell or eval word, and fork is true when the text runs in a
 // shell of its own.
 func nestedShell(words []string) (at int, text string, fork, ok bool) {
 	for i, w := range words {
@@ -1026,6 +1026,19 @@ func nestedShell(words []string) (at int, text string, fork, ok bool) {
 		case name == "eval":
 			if i == 0 || words[i-1] == "command" || words[i-1] == "builtin" {
 				return i, strings.Join(words[i+1:], " "), false, true
+			}
+		case name == "su" || name == "runuser":
+			// su runs the argument of its -c in the user's shell.
+			for j := i + 1; j < len(words); j++ {
+				a := words[j]
+				switch {
+				case strings.HasPrefix(a, "--command="):
+					return i, strings.TrimPrefix(a, "--command="), true, true
+				case a == "--command" || len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.HasSuffix(a, "c"):
+					if j+1 < len(words) {
+						return i, words[j+1], true, true
+					}
+				}
 			}
 		case shells[name]:
 			c := false
@@ -1065,7 +1078,7 @@ func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth 
 	}
 	segs, ok, dangles := shellSegments(text)
 	if !ok || strings.ContainsAny(text, "$`") {
-		if v.hasToken(unquote.Replace(expansionRE.ReplaceAllString(text, ""))) || v.hasToken(splitExpansions.Replace(text)) {
+		if v.hidesToken(text) {
 			return why
 		}
 		if !ok {
@@ -1095,6 +1108,12 @@ var (
 	unquote         = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
 	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, "", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
 )
+
+// hidesToken reports whether shell text names a token once its quotes and escapes are
+// gone, with its expansions either dropped or split apart: what a shell reading it may run.
+func (v *Veto) hidesToken(text string) bool {
+	return v.hasToken(unquote.Replace(expansionRE.ReplaceAllString(text, ""))) || v.hasToken(splitExpansions.Replace(text))
+}
 
 // pathOnlyScripts are the version-manager init scripts, as written after . or source, that
 // only set PATH and functions when sourced and install nothing.

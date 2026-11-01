@@ -188,20 +188,15 @@ var (
 // dockerLines splits a Dockerfile into instructions the way BuildKit's parser does. A line
 // whose last character other than blanks is the escape character, not after another,
 // continues onto the next with nothing between, quoted or not; comment and blank lines
-// inside a continuation are dropped; and, with heredocs, the body lines of a RUN, COPY or ADD
-// heredoc, and its terminator, are kept as they are. The escape character is \ unless an
-// escape directive at the top sets a backtick. joined is false when the last instruction
-// still continues.
-func dockerLines(src string, heredocs bool) (lines []string, joined bool) {
-	lines, _, joined = dockerLinesAt(src, heredocs)
-	return lines, joined
-}
-
-// dockerLinesAt is dockerLines, and also returns the source line, from 0, each instruction
-// starts on, or -1 for a heredoc's body and terminator lines.
-func dockerLinesAt(src string, heredocs bool) (lines []string, at []int, joined bool) {
+// inside a continuation are dropped; and the body lines of a RUN, COPY or ADD heredoc, and
+// its terminator, are kept as they are. A heredoc opens where open, given its instruction's
+// first source line, from 0, and text, says so; docs holds, by index in lines, the heredocs
+// each instruction opens. The escape character is \ unless an escape directive at the top
+// sets a backtick. joined is false when the last instruction still continues.
+func dockerLines(src string, open func(start int, line string) bool) (lines []string, docs map[int][]heredoc, joined bool) {
 	raw := strings.Split(strings.TrimPrefix(src, "\ufeff"), "\n")
 	cont, directives := dockerContinues[`\`], true
+	docs = map[int][]heredoc{}
 	for i := 0; i < len(raw); i++ {
 		l := strings.TrimLeftFunc(strings.TrimRight(raw[i], "\r"), unicode.IsSpace)
 		if directives {
@@ -227,25 +222,27 @@ func dockerLinesAt(src string, heredocs bool) (lines []string, at []int, joined 
 			more = cont.MatchString(l)
 			b.WriteString(cont.ReplaceAllString(l, "$1"))
 		}
-		lines, at = append(lines, b.String()), append(at, start)
-		var docs []heredoc
-		if heredocs {
-			docs = dockerHeredocs(b.String())
+		lines = append(lines, b.String())
+		hd := dockerHeredocs(b.String())
+		if hd == nil || !open(start, b.String()) {
+			hd = nil
+		} else {
+			docs[len(lines)-1] = hd
 		}
-		for _, d := range docs {
+		for _, d := range hd {
 			for i++; i < len(raw); i++ {
 				l := strings.TrimRight(raw[i], "\r")
-				lines, at = append(lines, l), append(at, -1)
+				lines = append(lines, l)
 				if d.ends(l) {
 					break
 				}
 			}
 		}
 		if more {
-			return lines, at, false
+			return lines, docs, false
 		}
 	}
-	return lines, at, true
+	return lines, docs, true
 }
 
 var (

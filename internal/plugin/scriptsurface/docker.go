@@ -2,6 +2,7 @@ package scriptsurface
 
 import (
 	"encoding/json"
+	"maps"
 	"path"
 	"path/filepath"
 	"strings"
@@ -326,33 +327,51 @@ var (
 	}
 )
 
+// dockerReadingsMax bounds the readings dockerfile checks a Dockerfile in.
+const dockerReadingsMax = 64
+
 // dockerfile applies the rule to a Dockerfile, stage by stage. CMD and ENTRYPOINT run after
 // every RUN, so they are checked against the stage as it ends.
+//
+// dockerHeredocs reads a line as BuildKit does only where it holds no $, backslash or
+// backtick; elsewhere it may open a heredoc BuildKit doesn't, whose body would then hide
+// instructions BuildKit runs. So the file is read once for each way the heredocs on such lines
+// may go, open or not, and checked in every reading.
 func (v *Veto) dockerfile(file, src string) string {
+	readings := []map[int]bool{{}}
+	for n := 0; n < len(readings); n++ {
+		if n == dockerReadingsMax {
+			return "Dockerfile heredocs too many to read each way"
+		}
+		opens := readings[n]
+		lines, docs, joined := dockerLines(src, func(start int, line string) bool {
+			if !strings.ContainsAny(line, "$\\`") {
+				return true
+			}
+			if _, ok := opens[start]; !ok {
+				shut := maps.Clone(opens)
+				shut[start] = false
+				readings = append(readings, shut)
+				opens[start] = true
+			}
+			return opens[start]
+		})
+		if why := v.dockerReading(file, lines, docs, joined); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+// dockerReading applies the rule to one reading of a Dockerfile: its instructions, the
+// heredocs each opens and whether the last is joined, from dockerLines.
+func (v *Veto) dockerReading(file string, lines []string, docs map[int][]heredoc, joined bool) string {
 	ctxs := []string{filepath.Dir(file)}
 	if ctxs[0] != v.root {
 		ctxs = append(ctxs, v.root)
 	}
-	lines, joined := dockerLines(src, true)
 	if !joined && v.hasToken(lines[len(lines)-1]) {
 		return "install command in an unjoined continuation"
-	}
-	// dockerHeredocs can open a heredoc BuildKit doesn't, whose body and terminator would
-	// then hide instructions. Outside a real heredoc, the file read without heredocs gives the
-	// instructions BuildKit reads, so one that doesn't start as the same instruction on the
-	// same line in the heredoc reading is checked here.
-	hd, hdAt, _ := dockerLinesAt(src, true)
-	instrAt := map[int]string{}
-	for k, l := range hd {
-		if hdAt[k] >= 0 {
-			instrAt[hdAt[k]] = l
-		}
-	}
-	plain, plainAt, _ := dockerLinesAt(src, false)
-	for k, l := range plain {
-		if r, ok := instrAt[plainAt[k]]; (!ok || r != l) && v.hasToken(l) {
-			return "install command in a heredoc"
-		}
 	}
 	names := map[string]bool{}
 	st := &dockerStage{}
@@ -374,7 +393,7 @@ func (v *Veto) dockerfile(file, src string) string {
 		}
 		word, rest, _ := strings.Cut(line, " ")
 		instr, rest := strings.ToUpper(word), strings.TrimSpace(rest)
-		if hd := dockerHeredocs(line); hd != nil {
+		if hd := docs[i]; hd != nil {
 			body, hidden := line, false
 			for _, d := range hd {
 				var text []string

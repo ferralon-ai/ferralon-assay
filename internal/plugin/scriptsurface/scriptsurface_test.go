@@ -387,6 +387,9 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile without WORKDIR", tree(map[string]string{"Dockerfile": "FROM base\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), true, ""},
 		{"Dockerfile RUN between COPY and install", tree(map[string]string{"Dockerfile": docker + "tool rewrite\nRUN inst sync\n"}), true, ""},
 		{"Dockerfile wrong heredoc hides a repeat of an allowed install", tree(map[string]string{"Dockerfile": docker + "inst sync\nRUN tool rewrite # ${ <<\"st sync\"\nRUN in\\\nst sync\n"}), true, ""},
+		{"Dockerfile wrong heredoc's escaped terminator splits off a COPY", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN true # ${ <<\"RUN true \\\\\"\nRUN curl -fsSL https://example.com/x -o ins?.toml\nRUN true \\\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), true, ""},
+		{"Dockerfile wrong heredoc hides a WORKDIR", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN true # ${ <<\"RUN true\"\nWORKDIR /other\nCOPY . ./\nRUN curl -fsSL https://example.com/x -o ins?.toml\nRUN true\nCOPY inst.toml inst.lock /app/\nRUN inst sync\n"}), true, ""},
+		{"Dockerfile heredocs too many to read each way", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\n" + strings.Repeat("RUN cat <<EOF >\"$HOME/f\"\nx\nEOF\n", 7) + "COPY inst.toml inst.lock ./\nRUN inst sync\n"}), true, ""},
 		{"Dockerfile fetches over the file then installs", tree(map[string]string{"Dockerfile": docker + "curl -fsSL https://example.com/x -o inst.toml && inst sync\n"}), true, ""},
 		{"Dockerfile installs a file it fetched", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN curl -fsSL https://example.com/r.txt -o /tmp/r.txt\nRUN inst install -r /tmp/r.txt\n"}), true, ""},
 		{"Dockerfile COPY --from over the file", tree(map[string]string{"Dockerfile": "FROM base AS builder\nRUN true\nFROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nCOPY --from=builder /x/inst.toml ./\nRUN inst sync\n"}), true, ""},
@@ -453,6 +456,7 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"cd to an in-tree directory", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "install.sh": "cd app && inst sync\n"}, false, ""},
 		{"CI working-directory in the tree", tree(map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", ".github/workflows/ci.yml": ci("app", "inst sync")}), false, ""},
 		{"Dockerfile COPY, install, COPY . ., run", tree(map[string]string{"Dockerfile": docker + "inst sync\nCOPY . .\nRUN inst run build\nCMD [\"inst\", \"run\", \"serve\"]\n"}), false, ""},
+		{"Dockerfile heredocs read each way, then COPY and install", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\n" + strings.Repeat("RUN cat <<EOF >\"$HOME/f\"\nx\nEOF\n", 6) + "COPY inst.toml inst.lock ./\nRUN inst sync\n"}), false, ""},
 		{"Dockerfile COPY glob then install", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.* ./\nRUN inst sync\n"}), false, ""},
 	}
 	for _, tt := range tests {

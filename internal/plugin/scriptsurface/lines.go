@@ -327,6 +327,8 @@ func unquoteWord(w string) string {
 		case c == '\\' && i+1 < len(w) && (q == 0 || q == '"' && strings.IndexByte(`"$\\`, w[i+1]) >= 0):
 			i++
 			b.WriteByte(w[i])
+		case c == '\\' && i+1 == len(w) && q == 0:
+			// BuildKit drops a trailing escape.
 		case q == 0 && (c == '\'' || c == '"'):
 			q = c
 		case c == q:

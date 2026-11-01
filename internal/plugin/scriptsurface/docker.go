@@ -335,7 +335,8 @@ const dockerReadingsMax = 64
 //
 // dockerHeredocs reads a line as BuildKit does only where it holds no $, backslash or
 // backtick; elsewhere it may open a heredoc BuildKit doesn't, whose body would then hide
-// instructions BuildKit runs. So the file is read once for each way the heredocs on such lines
+// instructions BuildKit runs. Where both open heredocs, they agree on how many and on their
+// names. So the file is read once for each way the heredocs on such lines
 // may go, open or not, and checked in every reading.
 func (v *Veto) dockerfile(file, src string) string {
 	readings := []map[int]bool{{}}

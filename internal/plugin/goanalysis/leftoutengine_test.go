@@ -1454,8 +1454,22 @@ func TestLeftOutEngine_AsmInclude(t *testing.T) {
 			"m/include/n.h": "#include \"../include/n.h\"\n#include \"y.h\"\n", "m/app/y.h": "#define M CALL ext(SB)\n"}), true, lofAsmSymbol},
 		{"an include found nowhere", asm("#include \"missing.h\"\n\n", "NOP"), false, lofAsmSymbol},
 		{"an include with no closing quote", asm("#include \"missing.h\n\n", "NOP"), false, lofAsmSymbol},
-		{"an include in a comment", asm("/* #include \"missing.h\" */\n// #include \"missing.h\"\n\n", "NOP"), false, ""},
-		{"an include on a line of a block comment", asm("/*\n#include \"missing.h\"\n*/\n\n", "NOP"), false, ""},
+		// Directives are read from the raw text: one in a comment is read too, and fails closed when
+		// it resolves to nothing.
+		{"an include in a comment, over-read", asm("/* #include \"missing.h\" */\n\n", "NOP"), false, lofAsmSymbol},
+		{"an include in a line comment, over-read", asm("// #include \"missing.h\"\n\n", "NOP"), false, lofAsmSymbol},
+		{"an include on a line of a block comment, over-read", asm("/*\n#include \"missing.h\"\n*/\n\n", "NOP"), false, lofAsmSymbol},
+		{"an include after a block comment on its line", merge(asm("/* c */ #include \"../include/x.h\"\n\n", "M"), header, definer), true, lofAsmSymbol},
+		// lofAsmScan strips comments before it finds directives, so it reads no opaque mention of ext
+		// behind a stray /*: these hold on the reach alone.
+		{"an include after a line comment holding /*, before a block comment", merge(asm("// like C's /* unbalanced\n#include \"../include/x.h\"\n/* block */\n\n", "M"), header, definer), true, ""},
+		{"an include after a string holding /*, before a block comment", merge(asm("DATA s<>+0(SB)/8, $\"/*abcdef\"\n#include \"../include/x.h\"\n/* block */\n\n", "M"), header, definer), true, ""},
+		{"an own-directory include after a line comment holding /*, before a block comment", merge(asm("// like C's /* unbalanced\n#include \"y.h\"\n/* block */\n\n", "M"), definer,
+			map[string]string{"m/app/y.h": "#define M CALL ext(SB)\n"}), true, ""},
+		{"a nested include after a line comment holding /*, before a block comment", merge(asm("#include \"../include/n.h\"\n\n", "M"), definer, map[string]string{
+			"m/include/n.h": "// like C's /* unbalanced\n#include \"y.h\"\n/* block */\n", "m/app/y.h": "#define M CALL ext(SB)\n"}), true, ""},
+		{"an include of an unquoted name", asm("#include missing.h\n\n", "NOP"), false, lofAsmSymbol},
+		{"an include of <name>", asm("#include <missing.h>\n\n", "NOP"), false, ""},
 		{"an include leaving the module", asm("#include \"../../outside.h\"\n\n", "NOP"), false, lofAsmSymbol},
 		{"an absolute include leaving the module", nil, false, lofAsmSymbol},
 		{"the generated go_asm.h", asm("#include \"go_asm.h\"\n\n", "NOP"), false, ""},

@@ -1920,35 +1920,32 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 	}
 }
 
+var lofAsmIncludeDirective = regexp.MustCompile(`#\s*include\b`)
+
 // asmIncludes returns the names text's #include directives give, "" for one cmd/asm cannot read
-// a name from. cmd/asm takes only a quoted name: another form fails the assembly when it is not
-// skipped by an #ifdef, so it includes nothing.
+// a name from. Directives are found in the raw text, comments and strings included: cmd/asm's lexer
+// is not modelled, and reading a header it skips only adds references, while an include read from a
+// comment that resolves to nothing fails closed. cmd/asm takes only a quoted name; <name> includes
+// nothing, and another form fails the assembly when it is not skipped by an #ifdef.
 func asmIncludes(text []byte) []string {
-	src := lofAsmComment.ReplaceAllStringFunc(string(text), func(c string) string {
-		return strings.Repeat("\n", strings.Count(c, "\n"))
-	})
 	var out []string
-	for _, line := range strings.Split(src, "\n") {
-		if i := strings.Index(line, "//"); i >= 0 {
-			line = line[:i]
+	for _, m := range lofAsmIncludeDirective.FindAllIndex(text, -1) {
+		arg := text[m[1]:]
+		if i := bytes.IndexByte(arg, '\n'); i >= 0 {
+			arg = arg[:i]
 		}
-		d, ok := strings.CutPrefix(strings.TrimSpace(line), "#")
-		if !ok {
+		arg = bytes.TrimLeft(arg, " \t")
+		if bytes.HasPrefix(arg, []byte("<")) {
 			continue
 		}
-		arg, ok := strings.CutPrefix(strings.TrimSpace(d), "include")
-		if !ok {
-			continue
+		name, ok := bytes.CutPrefix(arg, []byte(`"`))
+		if ok {
+			name, _, ok = bytes.Cut(name, []byte(`"`))
 		}
-		name, ok := strings.CutPrefix(strings.TrimSpace(arg), `"`)
 		if !ok {
-			continue
+			name = nil
 		}
-		name, _, ok = strings.Cut(name, `"`)
-		if !ok {
-			name = ""
-		}
-		out = append(out, name)
+		out = append(out, string(name))
 	}
 	return out
 }

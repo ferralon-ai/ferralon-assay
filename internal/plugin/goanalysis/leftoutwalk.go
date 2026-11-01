@@ -470,7 +470,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 		if w.excluded(x) {
 			continue
 		}
-		parseAsm(p, full, src, headers)
+		parseAsm(p, full, src, headers, w.goroot)
 	}
 	slices.Sort(p.imports)
 	p.imports = slices.Compact(p.imports)
@@ -1778,8 +1778,8 @@ func (p *lofPkg) asmName(sym string) {
 // symbols. A symbol is "pkgpath.name" for the Go-visible form ("·name", "pkg∕path·name"),
 // "file:name<>" for a file-local one, and the bare name otherwise. A reference made by a macro the
 // file defines or includes from its own directory counts for every body of the file. A call or
-// jump through a register is a dynamic call.
-func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
+// jump through a register is a dynamic call. goroot is the toolchain's root, "" when unknown.
+func parseAsm(p *lofPkg, path string, src []byte, headers []string, goroot string) {
 	norm := func(sym string) string {
 		if i := strings.IndexByte(sym, '<'); i >= 0 && !strings.HasSuffix(sym, "<>") {
 			sym = sym[:i]
@@ -1799,24 +1799,19 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 	var shared []string
 	var bodies []*lofAsm
 	var cur *lofAsm
-	// Any header of the directory may reach the file through another's #include.
-	redef := asmFuncdataMacro.Match(src)
-	included := map[string]string{}
 	for _, h := range headers {
-		hs, err := os.ReadFile(h)
-		if err != nil {
-			continue
-		}
-		redef = redef || asmFuncdataMacro.Match(hs)
 		if bytes.Contains(src, []byte(filepath.Base(h))) {
-			included[h] = string(hs)
-		}
-	}
-	for _, h := range headers {
-		if hs, ok := included[h]; ok {
-			for _, l := range strings.Split(hs, "\n") {
-				for _, ref := range asmLineRefs(l, redef) {
-					shared = append(shared, norm(ref))
+			if hs, err := os.ReadFile(h); err == nil {
+				// The assembler renames these FUNCDATA operands (obj/plist.go); the toolchain fixes std's use.
+				funcdata := p.std && goroot != "" && (filepath.Clean(h) == filepath.Join(goroot, "src", "runtime", "funcdata.h") ||
+					filepath.Clean(h) == filepath.Join(goroot, "pkg", "include", "funcdata.h"))
+				for _, l := range strings.Split(string(hs), "\n") {
+					for _, ref := range asmRefs(l) {
+						if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
+							continue
+						}
+						shared = append(shared, norm(ref))
+					}
 				}
 			}
 		}
@@ -1827,7 +1822,7 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 		}
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "#define") || strings.HasSuffix(t, "\\") {
-			for _, ref := range asmLineRefs(t, redef) {
+			for _, ref := range asmRefs(t) {
 				shared = append(shared, norm(ref))
 			}
 			continue
@@ -1863,7 +1858,7 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 		if cur == nil {
 			continue
 		}
-		for _, ref := range asmLineRefs(t, redef) {
+		for _, ref := range asmRefs(t) {
 			cur.refs = append(cur.refs, norm(ref))
 		}
 		if asmIndirect(fields) {
@@ -1873,110 +1868,6 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 	for _, b := range bodies {
 		b.refs = append(b.refs, shared...)
 	}
-}
-
-// asmFuncdataMacro matches a #define of FUNCDATA, which makes the token a macro, not the instruction.
-var asmFuncdataMacro = regexp.MustCompile(`#(?:\s|\\|/\*[\s\S]*?\*/)*define(?:\s|\\|/\*[\s\S]*?\*/)+FUNCDATA\b`)
-
-// asmLineRefs returns the symbols each ;-separated statement of a line of assembly, or of a macro
-// body, references, less each funcdata.h placeholder a FUNCDATA instruction names as its symbol
-// operand: the assembler renames that operand (cmd/internal/obj plist.go), so no link binds it.
-// redef reports that the file or a header defines FUNCDATA as a macro.
-func asmLineRefs(line string, redef bool) []string {
-	var skip []string
-	// A */ left over closes a comment opened on an earlier line, which may hide where code starts.
-	if code := asmStripComments(line); !redef && !strings.Contains(code, "*/") {
-		for _, stmt := range strings.Split(code, ";") {
-			if name := asmFuncdataPlaceholder(stmt); name != "" {
-				skip = append(skip, name)
-			}
-		}
-	}
-	var out []string
-	for _, stmt := range strings.Split(line, ";") {
-		for _, ref := range asmRefs(stmt) {
-			if i := slices.Index(skip, ref); i >= 0 {
-				skip = slices.Delete(skip, i, i+1)
-				continue
-			}
-			out = append(out, ref)
-		}
-	}
-	return out
-}
-
-// asmStripComments returns a line of assembly less its /* */ and // comments; a /* left open
-// runs to the end of the line.
-func asmStripComments(line string) string {
-	var b strings.Builder
-	for {
-		i, j := strings.Index(line, "/*"), strings.Index(line, "//")
-		if j >= 0 && (i < 0 || j < i) {
-			b.WriteString(line[:j])
-			return b.String()
-		}
-		if i < 0 {
-			b.WriteString(line)
-			return b.String()
-		}
-		b.WriteString(line[:i])
-		b.WriteByte(' ')
-		k := strings.Index(line[i+2:], "*/")
-		if k < 0 {
-			return b.String()
-		}
-		line = line[i+2+k+2:]
-	}
-}
-
-// asmFuncdataPlaceholder returns go_args_stackmap or no_pointers_stackmap when a statement, free
-// of comments, is a FUNCDATA instruction whose operand after the first top-level comma names it,
-// with an optional label or "#define NAME" / "#define NAME(args)" before the opcode; else "".
-func asmFuncdataPlaceholder(stmt string) string {
-	rest := strings.TrimSpace(stmt)
-	if d, ok := strings.CutPrefix(rest, "#"); ok {
-		if d, ok = strings.CutPrefix(strings.TrimLeft(d, " \t"), "define"); !ok {
-			return ""
-		}
-		d = strings.TrimLeft(d, " \t")
-		i := strings.IndexAny(d, " \t(")
-		if i < 0 {
-			return ""
-		}
-		if d = d[i:]; d[0] == '(' {
-			j := strings.IndexByte(d, ')')
-			if j < 0 {
-				return ""
-			}
-			d = d[j+1:]
-		}
-		rest = strings.TrimSpace(d)
-	}
-	if f := strings.Fields(rest); len(f) > 1 && strings.HasSuffix(f[0], ":") {
-		rest = strings.TrimSpace(strings.TrimPrefix(rest, f[0]))
-	}
-	ops, ok := strings.CutPrefix(rest, "FUNCDATA")
-	if !ok || ops == "" || (ops[0] != ' ' && ops[0] != '\t') {
-		return ""
-	}
-	depth := 0
-	for i, r := range ops {
-		switch r {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth != 0 {
-				continue
-			}
-			if refs := asmRefs(ops[i+1:]); len(refs) == 1 && (refs[0] == "go_args_stackmap" || refs[0] == "no_pointers_stackmap") {
-				return refs[0]
-			}
-			return ""
-		}
-	}
-	return ""
 }
 
 // asmRefs returns the symbols a line of assembly references as name(SB).

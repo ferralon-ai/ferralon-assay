@@ -142,6 +142,15 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"hyphenated tool name", tree(map[string]string{"install.sh": "inst_wrapper x\n"}), true, ""},
 		{"input key naming a token", tree(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: org/setup@v1\n        with:\n          inst-args: x==2\n"}), true, ""},
 		{"installer variable set", tree(map[string]string{"install.sh": "export INST_INDEX=https://x\ninst sync\n"}), true, ""},
+		{"installer variable set by ${:=}", tree(map[string]string{"install.sh": ": \"${INST_INDEX:=https://x}\"\ninst sync\n"}), true, ""},
+		{"installer variable set by ${=}", tree(map[string]string{"install.sh": ": ${INST_INDEX=https://x}\ninst sync\n"}), true, ""},
+		{"installer variable set by zsh ${::=}", tree(map[string]string{"install.sh": ": ${INST_INDEX::=https://x}\ninst sync\n"}), true, ""},
+		{"installer variable set by ${:=} inside a word", tree(map[string]string{"install.sh": "echo a${INST_INDEX:=https://x}\ninst sync\n"}), true, ""},
+		{"installer variable read by ${}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX}\"\ninst sync\n"}), false, ""},
+		{"installer variable read by ${:-}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX:-https://x}\"\ninst sync\n"}), false, ""},
+		{"installer variable read by ${-}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX-https://x}\"\ninst sync\n"}), false, ""},
+		{"installer variable read by ${:+}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX:+x=y}\"\ninst sync\n"}), false, ""},
+		{"another variable set by ${:=}", tree(map[string]string{"install.sh": ": ${OTHER_INDEX:=https://x}\ninst sync\n"}), false, ""},
 
 		// PowerShell and batch, which are not parsed, and GitLab includes.
 		{"PowerShell install", tree(map[string]string{"install.ps1": "Set-Location app\ninst sync\n"}), true, ""},
@@ -602,6 +611,9 @@ func TestVeto_EnvKeeps(t *testing.T) {
 		{"another variable", keeps, "export INST_INDEX=https://x\ninst sync\n", true},
 		{"a name extending a kept one", keeps, "export INST_ONLY_X=1\ninst sync\n", true},
 		{"no EnvKeeps", testSpec, "export INST_ONLY=prod\ninst sync\n", true},
+		{"kept variable set by ${:=}", keeps, ": ${INST_ONLY:=prod}\ninst sync\n", false},
+		{"another variable set by ${:=}", keeps, ": ${INST_ONLY:=prod} ${INST_INDEX:=https://x}\ninst sync\n", true},
+		{"no EnvKeeps, set by ${:=}", testSpec, ": ${INST_ONLY:=prod}\ninst sync\n", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -442,11 +442,22 @@ func (v *Veto) gitHooksFile(p string) bool {
 	return false
 }
 
-// setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep.
+// assignDefaultRE matches an expansion that assigns its variable when unset or empty:
+// ${NAME:=…}, ${NAME=…} and zsh's ${NAME::=…}. ${NAME}, ${NAME:-…} and ${NAME-…} only read it.
+var assignDefaultRE = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*):{0,2}=`)
+
+// setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep,
+// by assignment or by an assigning expansion. Env does not match inside ${…}, so the name an
+// assigning expansion sets is checked as the assignment NAME=.
 func (v *Veto) setsEnv(src string) bool {
 	for _, m := range v.spec.Env.FindAllString(src, -1) {
 		name := strings.TrimLeftFunc(m, func(r rune) bool { return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 		if v.spec.EnvKeeps == nil || !v.spec.EnvKeeps(name) {
+			return true
+		}
+	}
+	for _, m := range assignDefaultRE.FindAllStringSubmatch(src, -1) {
+		if v.setsEnv(m[1] + "=") {
 			return true
 		}
 	}

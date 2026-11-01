@@ -87,6 +87,12 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"UV_NO_DEV in CI: this lane keeps no variable", map[string]string{"pyproject.toml": project, "uv.lock": lockUV,
 			".github/workflows/ci.yml": "on: push\nenv:\n  UV_NO_DEV: \"1\"\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync --locked\n"}, false, ""},
 		{"PIP_ONLY_BINARY exported: this lane keeps no variable", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_ONLY_BINARY=:all:\npip install -r requirements.txt\n"}, false, ""},
+		{"PIP_INDEX_URL set by ${:=}", map[string]string{"requirements.txt": reqs, "install.sh": ": \"${PIP_INDEX_URL:=https://pkgs.example.com/simple}\"\npip install --no-cache-dir -r requirements.txt\n"}, false, ""},
+		{"PIP_INDEX_URL set by ${=}", map[string]string{"requirements.txt": reqs, "install.sh": ": ${PIP_INDEX_URL=https://pkgs.example.com/simple}\npip install --no-cache-dir -r requirements.txt\n"}, false, ""},
+		{"UV_INDEX_URL set by zsh ${::=}", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Makefile": "install:\n\t: $${UV_INDEX_URL::=https://pkgs.example.com/simple}\n\tuv sync --locked\n"}, false, ""},
+		{"PIP_INDEX_URL read by ${}", map[string]string{"requirements.txt": reqs, "install.sh": "echo \"${PIP_INDEX_URL}\"\npip install --no-cache-dir -r requirements.txt\n"}, true, ""},
+		{"PIP_INDEX_URL read by ${:-}", map[string]string{"requirements.txt": reqs, "install.sh": "echo \"${PIP_INDEX_URL:-https://pypi.org/simple}\"\npip install --no-cache-dir -r requirements.txt\n"}, true, ""},
+		{"PIP_INDEX_URL read by ${-}", map[string]string{"requirements.txt": reqs, "install.sh": "echo \"${PIP_INDEX_URL-https://pypi.org/simple}\"\npip install --no-cache-dir -r requirements.txt\n"}, true, ""},
 		{"flag outside the allowed set", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --index-url https://x -r requirements.txt\n"}, false, ""},
 
 		{"folded run joins a pin to an allowed form", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: >\n          pip install -r requirements.txt\n          jinja2==3.1.2\n"}, false, ""},

@@ -89,7 +89,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"PIP_ONLY_BINARY exported: this lane keeps no variable", map[string]string{"requirements.txt": reqs, "install.sh": "export PIP_ONLY_BINARY=:all:\npip install -r requirements.txt\n"}, false, ""},
 		{"PIP_INDEX_URL set by ${:=}", map[string]string{"requirements.txt": reqs, "install.sh": ": \"${PIP_INDEX_URL:=https://pkgs.example.com/simple}\"\npip install --no-cache-dir -r requirements.txt\n"}, false, ""},
 		{"PIP_INDEX_URL set by ${=}", map[string]string{"requirements.txt": reqs, "install.sh": ": ${PIP_INDEX_URL=https://pkgs.example.com/simple}\npip install --no-cache-dir -r requirements.txt\n"}, false, ""},
-		{"UV_INDEX_URL set by zsh ${::=}", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Makefile": "install:\n\t: $${UV_INDEX_URL::=https://pkgs.example.com/simple}\n\tuv sync --locked\n"}, false, ""},
+		{"UV_INDEX_URL named by ${::=} in a Makefile recipe", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Makefile": "install:\n\t: $${UV_INDEX_URL::=https://pkgs.example.com/simple}\n\tuv sync --locked\n"}, false, ""},
 		{"PIP_INDEX_URL read by ${}", map[string]string{"requirements.txt": reqs, "install.sh": "echo \"${PIP_INDEX_URL}\"\npip install --no-cache-dir -r requirements.txt\n"}, true, ""},
 		{"PIP_INDEX_URL read by ${:-}", map[string]string{"requirements.txt": reqs, "install.sh": "echo \"${PIP_INDEX_URL:-https://pypi.org/simple}\"\npip install --no-cache-dir -r requirements.txt\n"}, true, ""},
 		{"PIP_INDEX_URL read by ${-}", map[string]string{"requirements.txt": reqs, "install.sh": "echo \"${PIP_INDEX_URL-https://pypi.org/simple}\"\npip install --no-cache-dir -r requirements.txt\n"}, true, ""},

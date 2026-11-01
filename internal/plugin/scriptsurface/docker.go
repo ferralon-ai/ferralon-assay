@@ -10,19 +10,27 @@ import (
 
 // dockerEvent is one change to a stage's filesystem, by container path: a COPY from the
 // build context (hosts, the host files or directories copied), or a taint at dst, under dst
-// when dir, or everywhere when all.
+// when dir, or everywhere when all. venv marks the taint a virtual environment's creation at
+// dst left.
 type dockerEvent struct {
 	dst   string
 	hosts []string
 	dir   bool
 	taint bool
 	all   bool
+	venv  bool
+}
+
+// covers reports whether the event changes the container path f.
+func (e dockerEvent) covers(f string) bool {
+	return e.all || f == e.dst || e.dir && (e.dst == "/" || strings.HasPrefix(f, e.dst+"/"))
 }
 
 type dockerStage struct {
 	events  []dockerEvent
 	wd      string
 	wdKnown bool
+	shell   bool // a SHELL instruction changed what runs a RUN's command line
 }
 
 const (
@@ -35,14 +43,10 @@ const (
 func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 	for i := len(st.events) - 1; i >= 0; i-- {
 		e := st.events[i]
-		if e.all {
-			return nil, pathTainted
-		}
-		under := e.dir && (e.dst == "/" || strings.HasPrefix(f, e.dst+"/"))
-		if f != e.dst && !under {
+		if !e.covers(f) {
 			continue
 		}
-		if e.taint {
+		if e.all || e.taint {
 			return nil, pathTainted
 		}
 		if !e.dir {
@@ -181,11 +185,12 @@ func (st *dockerStage) copyInstr(v *Veto, ctxs []string, rest string, add bool) 
 
 // dockerCursor is the container directory a RUN, CMD or ENTRYPOINT command runs in.
 type dockerCursor struct {
-	v     *Veto
-	st    *dockerStage
-	dir   string
-	known bool
-	mark  venvMark
+	v      *Veto
+	st     *dockerStage
+	dir    string
+	known  bool
+	mounts bool // the RUN mounts something, which may cover a venv the stage made
+	mark   venvMark
 }
 
 func (c *dockerCursor) cd(words []string) {
@@ -207,8 +212,23 @@ func (c *dockerCursor) cd(words []string) {
 func (c *dockerCursor) other() { c.st.taintAll() }
 
 // wrote taints only what is under the container path key.
-func (c *dockerCursor) wrote(key string) {
-	c.st.events = append(c.st.events, dockerEvent{dst: key, dir: true, taint: true})
+func (c *dockerCursor) wrote(key string, venv bool) {
+	c.st.events = append(c.st.events, dockerEvent{dst: key, dir: true, taint: true, venv: venv})
+}
+
+// madeVenv is true when the newest change to key/bin/activate is the creation of a venv at
+// key, and no SHELL or mount of this RUN changes what a . of it runs.
+func (c *dockerCursor) madeVenv(key string) bool {
+	if c.mounts || c.st.shell {
+		return false
+	}
+	f := path.Join(key, "bin", "activate")
+	for i := len(c.st.events) - 1; i >= 0; i-- {
+		if e := c.st.events[i]; e.covers(f) {
+			return e.venv && e.dst == key
+		}
+	}
+	return false
 }
 
 func (c *dockerCursor) fork() cursor {
@@ -395,6 +415,8 @@ func (v *Veto) dockerfile(file, src string) string {
 			if len(f) >= 3 && strings.EqualFold(f[1], "as") {
 				names[strings.ToLower(f[2])] = true
 			}
+		case instr == "SHELL":
+			st.shell = true
 		case instr == "WORKDIR":
 			p := strings.Trim(rest, `"`)
 			if c, ok := st.resolve(p); ok {
@@ -405,7 +427,9 @@ func (v *Veto) dockerfile(file, src string) string {
 		case instr == "COPY" || instr == "ADD":
 			st.copyInstr(v, ctxs, rest, instr == "ADD")
 		case instr == "RUN" || instr == "CMD" || instr == "ENTRYPOINT":
+			mounts := false
 			for instr == "RUN" && strings.HasPrefix(rest, "--") {
+				mounts = mounts || strings.HasPrefix(rest, "--mount")
 				_, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
 			}
@@ -430,7 +454,7 @@ func (v *Veto) dockerfile(file, src string) string {
 				deferred = append(deferred, segs...)
 				continue
 			}
-			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown}
+			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mounts: mounts}
 			for _, seg := range segs {
 				if why := v.command(seg, cur, 0); why != "" {
 					return why

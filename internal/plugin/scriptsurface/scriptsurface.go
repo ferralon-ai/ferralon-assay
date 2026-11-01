@@ -953,7 +953,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		v.mention(words[1:])
 		switch dir, ok := venvWrites(seg, cur); {
 		case ok:
-			cur.wrote(dir)
+			cur.wrote(dir, mark.made == dir)
 		case !nvmOnly(seg):
 			cur.other()
 		}
@@ -1014,9 +1014,9 @@ var pathOnlyScripts = map[string]bool{
 }
 
 // pathOnly reports whether a . or source of a file the walk does not read only sets PATH: one
-// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate of the virtual
-// environment that made, the previous command but for directory changes, created at the same
-// place.
+// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate, // and ./ aside, of
+// the virtual environment that made, the previous command but for directory changes, created
+// at the same place, or of one an earlier shell made there (madeVenv).
 func pathOnly(seg segment, cur cursor, made string) bool {
 	if len(seg.words) != 2 {
 		return false
@@ -1025,12 +1025,12 @@ func pathOnly(seg segment, cur cursor, made string) bool {
 	if pathOnlyScripts[op] {
 		return seg.expands == strings.Contains(op, "$")
 	}
-	dir, ok := strings.CutSuffix(op, "/bin/activate")
-	if seg.expands || !ok {
+	bin, name := path.Split(path.Clean(op))
+	if seg.expands || name != "activate" || path.Base(bin) != "bin" {
 		return false
 	}
-	key, ok := cur.at(dir)
-	return ok && made != "" && key == made
+	key, ok := cur.at(path.Dir(path.Clean(bin)))
+	return ok && (made != "" && key == made || cur.madeVenv(key))
 }
 
 // blockDepth is how far each word opening or closing an if, case or loop moves a command into

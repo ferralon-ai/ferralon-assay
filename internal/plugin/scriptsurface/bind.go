@@ -33,7 +33,7 @@ type cursor interface {
 	other()            // a command that runs no installer and may change files
 	// wrote is a command that runs no installer and writes only under the place key, from at,
 	// names.
-	wrote(key string)
+	wrote(key string, venv bool)
 	// fork returns a cursor for a command started from here in a shell of its own, whose
 	// directory changes do not reach this one.
 	fork() cursor
@@ -49,6 +49,9 @@ type cursor interface {
 	present(p string) bool
 	// venv is the state of the venv rule at this command.
 	venv() *venvMark
+	// madeVenv reports whether key, from at, holds the venv a creation in an earlier shell
+	// made, unchanged since.
+	madeVenv(key string) bool
 }
 
 // venvMark is what the venv rule carries from command to command in one shell.
@@ -101,7 +104,10 @@ func (c *hostCursor) cd(words []string) {
 
 func (c *hostCursor) other() {}
 
-func (c *hostCursor) wrote(string) {}
+func (c *hostCursor) wrote(string, bool) {}
+
+// madeVenv is false: what runs between two host shells is not seen.
+func (c *hostCursor) madeVenv(string) bool { return false }
 
 func (c *hostCursor) fork() cursor {
 	f := *c

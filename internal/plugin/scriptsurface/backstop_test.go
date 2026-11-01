@@ -30,6 +30,10 @@ func backstopped(root string) (bool, string) {
 func TestVeto_Backstop(t *testing.T) {
 	const mcp = `{"mcpServers": {"a": {"command": "inst", "args": ["add", "x"]}}}`
 	const localAction = "name: a\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: inst add x\n"
+	const modInstall = "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"
+	wf := func(run string) string {
+		return "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: " + run + "\n"
+	}
 	lock := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "reqs.txt": "x==1\n"}
 	tree := func(extra map[string]string) map[string]string {
 		files := map[string]string{}
@@ -92,6 +96,7 @@ func TestVeto_Backstop(t *testing.T) {
 		{"YAML under a test directory", tree(map[string]string{"e2e/ci.yml": "steps:\n  - command: inst add x\n"}), true, "e2e/ci.yml:2"},
 		{"poe tasks in a pyproject under a test directory", tree(map[string]string{"tests/pyproject.toml": "[tool.poe.tasks]\nsetup = \"inst add x\"\n"}), true, "tests/pyproject.toml:2"},
 		{"JSON under a test directory that a pipeline uploads", tree(map[string]string{"ci/tests/steps.json": mcp, ".buildkite/pipeline.yml": "steps:\n  - command: buildkite-agent pipeline upload ci/tests/steps.json\n"}), true, "ci/tests/steps.json:1"},
+		{"JSON under src/ a pipeline uploads from its package root", tree(map[string]string{"src/tests/steps.json": mcp, ".buildkite/pipeline.yml": "steps:\n  - command: buildkite-agent pipeline upload tests/steps.json\n"}), true, "src/tests/steps.json:1"},
 		{"JSON in a package under a test directory", tree(map[string]string{"tests/app/turbo.json": mcp, "tests/app/package.json": "{\"name\": \"app\"}\n"}), true, "tests/app/turbo.json:1"},
 		{"JSON in a Python project under a test directory", tree(map[string]string{"tests/app/tasks.json": mcp, "tests/app/pyproject.toml": "[project]\nname = \"app\"\n"}), true, "tests/app/tasks.json:1"},
 		{"non-data file under a test directory", tree(map[string]string{"tests/ci.cfg": "[x]\ncommand = inst add x\n"}), true, "tests/ci.cfg:2"},
@@ -165,6 +170,26 @@ func TestVeto_Backstop(t *testing.T) {
 		{"package module setup.py imports by dotted name", tree(map[string]string{"pkg/__init__.py": "", "pkg/install.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "setup.py": "from setuptools import setup\nimport pkg.install\nsetup(cmdclass={\"install\": pkg.install.Install})\n"}), true, "pkg/install.py:2"},
 		{"build script beside an __init__.py at the root", tree(map[string]string{"__init__.py": "", "tasks.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"}), true, "tasks.py:2"},
 		{"package module the build names only by its package", tree(map[string]string{"src/app/console/commands/__init__.py": "", "src/app/console/commands/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "pyproject.toml": "[project]\nname = \"app\"\n[project.scripts]\napp = \"app.console:main\"\n", ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: python -m build\n"}), false, ""},
+		{"package module a workflow runs after cd", tree(map[string]string{"packages/foo/foo/__init__.py": "", "packages/foo/foo/build.py": modInstall, ".github/workflows/ci.yml": wf("cd packages/foo && python -m foo.build")}), true, "packages/foo/foo/build.py:2"},
+		{"package module a workflow runs by path from a working-directory", tree(map[string]string{"packages/foo/foo/__init__.py": "", "packages/foo/foo/build.py": modInstall, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    defaults:\n      run:\n        working-directory: packages/foo\n    steps:\n      - run: python foo/build.py\n"}), true, "packages/foo/foo/build.py:2"},
+		{"package module a workflow runs with -m from a working-directory", tree(map[string]string{"packages/foo/foo/__init__.py": "", "packages/foo/foo/build.py": modInstall, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: python -m foo.build\n        working-directory: packages/foo\n"}), true, "packages/foo/foo/build.py:2"},
+		{"package module tox runs after changedir", tree(map[string]string{"app/mypkg/__init__.py": "", "app/mypkg/build.py": modInstall, "tox.ini": "[testenv]\nchangedir = app\ncommands =\n    python -m mypkg.build\n"}), true, "app/mypkg/build.py:2"},
+		{"package module a Dockerfile copies then runs", tree(map[string]string{"app/mypkg/__init__.py": "", "app/mypkg/build.py": modInstall, "Dockerfile": "FROM base\nWORKDIR /srv\nCOPY app/ .\nRUN python -m mypkg.build\n"}), true, "app/mypkg/build.py:2"},
+		{"package module a pre-commit hook runs with -m", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, ".pre-commit-config.yaml": "repos:\n  - repo: local\n    hooks:\n      - id: deps\n        entry: python -m mypkg.build\n        language: system\n"}), true, "mypkg/build.py:2"},
+		{"package module a pre-commit hook runs by path", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, ".pre-commit-config.yaml": "repos:\n  - repo: local\n    hooks:\n      - id: deps\n        entry: python mypkg/build.py\n        language: system\n"}), true, "mypkg/build.py:2"},
+		{"package module a root action runs", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - uses: ./\n", "action.yml": "name: s\nruns:\n  using: composite\n  steps:\n    - run: python -m mypkg.build\n      shell: bash\n"}), true, "mypkg/build.py:2"},
+		{"package module a hatch.toml hook names", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, "hatch.toml": "[build.hooks.custom]\npath = \"mypkg/build.py\"\n"}), true, "mypkg/build.py:2"},
+		{"package module tox.toml runs", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, "tox.toml": "[env_run_base]\ncommands = [[\"python\", \"-m\", \"mypkg.build\"]]\n"}), true, "mypkg/build.py:2"},
+		{"package module a GitLab local include runs", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, ".gitlab-ci.yml": "include:\n  - local: ci/jobs.yml\n", "ci/jobs.yml": "deps:\n  script:\n    - python -m mypkg.build\n"}), true, "mypkg/build.py:2"},
+		{"package module setup.py imports in a parenthesised group", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, "setup.py": "from setuptools import setup\nfrom mypkg import (\n    other,\n    build,\n)\nsetup(name=\"app\", cmdclass={\"build_py\": build.BuildPy})\n"}), true, "mypkg/build.py:2"},
+		{"package module named only as a longer identifier", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, "mypkg/build_utils.py": "", ".github/workflows/ci.yml": wf("python -m mypkg.build_utils")}), false, ""},
+		{"package module another package's path ends in", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, ".github/workflows/ci.yml": wf("python other/mypkg/build.py")}), true, "mypkg/build.py:2"},
+		{"package module a JS config names", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, "package.json": "{\"scripts\": {\"deps\": \"python mypkg/build.py\"}}\n"}), true, "mypkg/build.py:2"},
+		{"package module only prose, tests and its own package mention", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, "mypkg/run.py": "#!/usr/bin/env python3\nfrom mypkg import build\n", "tests/test_build.py": "from mypkg import build\n", "README.md": "Run `python -m mypkg.build`.\n", "docs/notes.txt": "python -m mypkg.build\n"}), false, ""},
+		{"package module a tool-directory script runs", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.py": modInstall, "scripts/all.py": "import subprocess\nsubprocess.run([\"python\", \"-m\", \"mypkg.build\"])\n"}), true, "mypkg/build.py:2"},
+		{"package module a setup.py beside an __init__.py imports", tree(map[string]string{"__init__.py": "", "mypkg/__init__.py": "", "mypkg/build.py": modInstall, "setup.py": "from mypkg import build\n"}), true, "mypkg/build.py:2"},
+		{"package module setup.py imports from its dotted package", tree(map[string]string{"src/mypkg/__init__.py": "", "src/mypkg/build.py": modInstall, "setup.py": "from src.mypkg import build\n"}), true, "src/mypkg/build.py:2"},
+		{"package module whose stem is not one identifier", tree(map[string]string{"mypkg/__init__.py": "", "mypkg/build.local.py": modInstall}), true, "mypkg/build.local.py:2"},
 		{"non-Python build script beside an __init__.py", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.js": "require('child_process').execSync('inst add x')\n"}), true, "pkg/build.js:1"},
 		{"bare call named like the installer", tree(map[string]string{"tasks.py": "from helpers import inst\ninst(\"add\", \"x\")\n"}), false, ""},
 		{"root build script beside no package", tree(map[string]string{"build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"}), true, "build.py:2"},
@@ -202,6 +227,14 @@ func TestVeto_Backstop(t *testing.T) {
 		{"URL piped through tee into an interpreter", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | tee g.py | python3 - x\n"}), true, "ci/x.yml:2"},
 		{"URL in a process substitution an interpreter runs", tree(map[string]string{"ci/x.yml": "steps:\n  - run: python3 <(curl -sS https://example.com/get-inst) x\n"}), true, "ci/x.yml:2"},
 		{"URL in a process substitution another command reads", tree(map[string]string{"ci/x.yml": "steps:\n  - run: diff <(curl -sS https://example.com/get-inst) x\n"}), false, ""},
+		{"URL piped into an output process substitution an interpreter runs", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | tee >(python3 - x) >/dev/null\n"}), true, "ci/x.yml:2"},
+		{"URL redirected into an output process substitution an interpreter runs", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst > >(python3 - x)\n"}), true, "ci/x.yml:2"},
+		{"URL piped into an output process substitution another command reads", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | tee >(sha256sum) >/dev/null\n"}), false, ""},
+		{"Nx project under an e2e directory", tree(map[string]string{"e2e/app-e2e/project.json": "{\"name\": \"app-e2e\", \"targets\": {\"setup\": {\"executor\": \"nx:run-commands\", \"options\": {\"command\": \"inst add x\"}}}}\n"}), true, "e2e/app-e2e/project.json:1"},
+		{"Nx project under a test directory", tree(map[string]string{"tests/project.json": "{\"name\": \"tests\", \"targets\": {\"setup\": {\"executor\": \"nx:run-commands\", \"options\": {\"commands\": [\"inst add x\"]}}}}\n"}), true, "tests/project.json:1"},
+		{"Deno tasks under a test directory", tree(map[string]string{"tests/deno.json": "{\"tasks\": {\"setup\": \"inst add x\"}}\n"}), true, "tests/deno.json:1"},
+		{"Deno JSONC tasks under a test directory", tree(map[string]string{"tests/deno.jsonc": "{\"tasks\": {\"setup\": \"inst add x\"}}\n"}), true, "tests/deno.jsonc:1"},
+		{"turbo tasks under a test directory", tree(map[string]string{"tests/turbo.json": mcp}), true, "tests/turbo.json:1"},
 		{"single-quoted YAML continuation", tree(map[string]string{"ci/x.yml": "steps:\n  - command: 'echo start &&\n      inst add x'\n"}), true, "ci/x.yml:2"},
 		{"audit that fixes with a value", tree(map[string]string{"ci/x.yml": "steps:\n  - run: inst audit --fix=all\n"}), true, "ci/x.yml:2"},
 		{"entry point in project.scripts", tree(map[string]string{"pyproject.toml": "[project.scripts]\nsetup = \"inst add x\"\n"}), false, ""},
@@ -332,6 +365,50 @@ func TestVeto_BackstopPackageModuleFailsClosed(t *testing.T) {
 			}
 			return func(string) bool { return false }
 		}, true},
+		{"a text file unreadable", func(t *testing.T, root string) func(string) bool {
+			if err := os.WriteFile(filepath.Join(root, "ci.cfg"), []byte("[x]\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return func(p string) bool { return filepath.Base(p) == "ci.cfg" }
+		}, true},
+		{"a file whose head cannot be read", func(t *testing.T, root string) func(string) bool {
+			p := filepath.Join(root, "ci.cfg")
+			if err := os.WriteFile(p, []byte("[x]\n"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.ReadFile(p); err == nil {
+				t.Skip("file permissions not enforced")
+			}
+			return func(string) bool { return false }
+		}, true},
+		{"a symlinked directory", func(t *testing.T, root string) func(string) bool {
+			if err := os.Symlink("pkg", filepath.Join(root, "ci")); err != nil {
+				t.Fatal(err)
+			}
+			return func(string) bool { return false }
+		}, true},
+		{"a link out of the build", func(t *testing.T, root string) func(string) bool {
+			out := filepath.Join(t.TempDir(), "jobs.yml")
+			if err := os.WriteFile(out, []byte("deps:\n  script: [make]\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(out, filepath.Join(root, "jobs.yml")); err != nil {
+				t.Fatal(err)
+			}
+			return func(string) bool { return false }
+		}, true},
+		{"a dangling link", func(t *testing.T, root string) func(string) bool {
+			if err := os.Symlink("missing", filepath.Join(root, "ci")); err != nil {
+				t.Fatal(err)
+			}
+			return func(string) bool { return false }
+		}, true},
+		{"a link to a file in the build", func(t *testing.T, root string) func(string) bool {
+			if err := os.Symlink("inst.toml", filepath.Join(root, "notes.toml")); err != nil {
+				t.Fatal(err)
+			}
+			return func(string) bool { return false }
+		}, false},
 		{"a directory unreadable", func(t *testing.T, root string) func(string) bool {
 			d := filepath.Join(root, "ci")
 			if err := os.Mkdir(d, 0o000); err != nil {

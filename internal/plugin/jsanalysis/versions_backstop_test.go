@@ -37,6 +37,7 @@ func TestResolveVersions_UnrecognisedInstallSurface(t *testing.T) {
 		{"npx in .vscode/mcp.json", ".vscode/mcp.json", "{\"servers\": {\"a\": {\"type\": \"stdio\", \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\"]}}}\n", false, ""},
 		{"npx in a JSON file that is not an MCP config", "ci/install.json", "{\"mcpServers\": {\"a\": {\"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\"]}}}\n", true, "ci/install.json:1"},
 		{"root package.json is a surface, not test data", "package.json", "{\"name\":\"app\",\"version\":\"1.0.0\",\"scripts\":{\"postinstall\":\"npm install left-pad@1.0.0\"}}", true, ""},
+		{"Deno tasks under tests", "tests/deno.json", "{\"tasks\": {\"setup\": \"npm install left-pad@1.0.0\"}}\n", true, "tests/deno.json:1"},
 		{"package.json under tests is a surface, not test data", "tests/e2e/package.json", "{\"name\":\"e2e\",\"version\":\"1.0.0\",\"scripts\":{\"postinstall\":\"npm install left-pad@1.0.0\"}}", true, ""},
 		{"workflow named for tests", ".github/workflows/tests.yml", "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm install left-pad@1.0.0\n", true, ""},
 		{"README.md", "README.md", "## Install\n\n```\nnpm install express@4.18.2\nRUN npm install express\n```\n", false, ""},

@@ -256,11 +256,12 @@ func (v *Veto) dirsOf(path string) []string {
 }
 
 // packageModule reports whether the file at path is a module of an importable Python package
-// that no file the build reads names: a .py file beside an __init__.py, below the build root,
-// which the application imports (mindsdb's integrations/utilities/install.py, poetry's
+// that nothing outside Python source mentions: a .py file beside an __init__.py, below the build
+// root, which the application imports (mindsdb's integrations/utilities/install.py, poetry's
 // console/commands/build.py). Its build-script stem then says nothing about the build running
-// it. A module named by a workflow, Makefile, tox, nox, Dockerfile or any pyproject.toml,
-// setup.py or setup.cfg in the tree is a build script (namedByBuild).
+// it. Any other mention of it, in any text file that is not Python source (mentionSource), by
+// its package-qualified tail at any anchor (pkg/build.py, pkg/build, pkg.build, from pkg
+// import build), makes it a build script: a module counts unless the walk shows otherwise.
 func (v *Veto) packageModule(path string) bool {
 	if !strings.EqualFold(filepath.Ext(path), ".py") || filepath.Dir(path) == v.root {
 		return false
@@ -268,14 +269,18 @@ func (v *Veto) packageModule(path string) bool {
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py")); err != nil {
 		return false
 	}
-	return !v.namedByBuild(path)
+	b := v.buildRead()
+	return b.whole && b.modules[path] && !b.mentioned[path]
 }
 
-// buildFiles are the files the build reads, each with its directory and text, and whether
-// every one of them was read.
+// buildFiles is what one walk of the build found: the files the build reads (for namedByBuild),
+// the package modules with a build-script stem (packageModule) and which of them a text file
+// mentions, and whether every entry the walk met was read.
 type buildFiles struct {
-	files []buildFile
-	whole bool
+	files     []buildFile
+	modules   map[string]bool
+	mentioned map[string]bool
+	whole     bool
 }
 
 type buildFile struct {
@@ -287,14 +292,21 @@ type buildFile struct {
 // project's own build configuration, wherever a sub-project keeps it.
 var buildNames = map[string]bool{"pyproject.toml": true, "setup.py": true, "setup.cfg": true}
 
-// buildRead walks the build once for the files it reads: every script surface (walkedSurface)
-// and every buildNames file. A directory, file or link among them that cannot be read leaves
-// whole false.
+// launcherNames are the Python files that run a project's tasks by name; their mentions count
+// as any config file's do.
+var launcherNames = map[string]bool{"setup.py": true, "noxfile.py": true, "tasks.py": true, "fabfile.py": true}
+
+// buildRead walks the build once. It keeps every script surface (walkedSurface) and every
+// buildNames file, and lists every package module with a build-script stem and every text file
+// that may mention one (mentionSource), then scans those for mentions (mentions). A directory or
+// file that cannot be read, a symlinked directory, or a symlink that leaves the build leaves
+// whole false, and then every module counts.
 func (v *Veto) buildRead() *buildFiles {
 	if v.build != nil {
 		return v.build
 	}
-	b := &buildFiles{whole: true}
+	b := &buildFiles{whole: true, modules: map[string]bool{}, mentioned: map[string]bool{}}
+	var texts []string
 	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
 		if err != nil {
 			b.whole = false
@@ -303,9 +315,13 @@ func (v *Veto) buildRead() *buildFiles {
 		if e.D.IsDir() || e.Skipped || v.inGitDir(e.Path) && !v.gitHooksFile(e.Path) || v.sampleHook(e.Path) {
 			return nil
 		}
-		named := buildNames[strings.ToLower(e.D.Name())]
+		lower := strings.ToLower(e.D.Name())
+		named := buildNames[lower]
 		if e.Symlink {
-			if _, ok := surfaceOf(e.Path, nil); ok || named {
+			fi, err := os.Stat(e.Path)
+			if e.Escapes || err != nil || fi.IsDir() {
+				b.whole = false
+			} else if _, ok := surfaceOf(e.Path, nil); ok || named {
 				b.whole = false
 			}
 			return nil
@@ -313,12 +329,18 @@ func (v *Veto) buildRead() *buildFiles {
 		if !e.D.Type().IsRegular() {
 			return nil
 		}
+		head, err := buildtree.Head(e.Path)
+		if err != nil {
+			b.whole = false
+			return nil
+		}
+		if v.stemModule(e.Path, lower) {
+			b.modules[e.Path] = true
+		}
+		if head != nil && v.mentionSource(e.Path, lower, head) {
+			texts = append(texts, e.Path)
+		}
 		if !named {
-			head, err := buildtree.Head(e.Path)
-			if err != nil {
-				b.whole = false
-				return nil
-			}
 			if _, ok := surfaceOf(e.Path, head); !ok {
 				return nil
 			}
@@ -331,14 +353,118 @@ func (v *Veto) buildRead() *buildFiles {
 		b.files = append(b.files, buildFile{dir: filepath.Dir(e.Path), data: data})
 		return nil
 	})
+	if b.whole && len(b.modules) > 0 {
+		b.mentions(v, texts)
+	}
 	v.build = b
 	return b
 }
 
-// namedByBuild reports whether a file the build reads (buildRead) names the file at path: its
-// path from the build root or from the naming file's directory, with or without a leading src/,
-// and for a .py file its dotted module the same ways or a from-import of it (from pkg import
-// build). When a file the build reads could not be read, every path counts as named.
+// stemModule reports whether the regular file at path, with lowercased base name lower, is
+// what packageModule asks about: a .py file below the build root, beside an __init__.py, whose
+// stem is a buildScriptStems name.
+func (v *Veto) stemModule(path, lower string) bool {
+	i := strings.IndexByte(lower, '.')
+	if !strings.HasSuffix(lower, ".py") || i <= 0 || !buildScriptStems[lower[:i]] || filepath.Dir(path) == v.root {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py"))
+	return err == nil
+}
+
+// mentionSource reports whether a text file may mention a package module to run it: every
+// file but prose, lockfiles and stubs, Python source included only for a launcherNames file or a
+// build script outside any package (buildScript; packageModule never asks about a file without
+// an __init__.py beside it, so the walk does not recurse).
+func (v *Veto) mentionSource(path, lower string, head []byte) bool {
+	ext := filepath.Ext(lower)
+	switch {
+	case inertName(path, head), proseExts[ext], proseNames[lower], ext == ".lock", lower == "go.sum", ext == ".pyi":
+		return false
+	case ext != ".py", launcherNames[lower]:
+		return true
+	}
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py")); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	return v.buildScript(path, head)
+}
+
+// fromImportRE matches a from-import with its names, on one line or across a parenthesised
+// group (from pkg import (\n    build,\n)).
+var fromImportRE = regexp.MustCompile(`\bfrom[ \t]+([\w.]+)[ \t]+import[ \t]*(\([^)]*\)|[^\n]*)`)
+
+// mentions marks every module in b.modules that one of texts mentions by its tail, the
+// identifier pair <package>.<module> or <package>/<module>, compared whole (build_utils is not
+// build), or by a from-import of the module from its package. A module whose stem is not one
+// identifier (build.local.py) cannot be matched that way, so it counts as mentioned.
+func (b *buildFiles) mentions(v *Veto, texts []string) {
+	pairs := map[string]map[string][]string{}
+	for m := range b.modules {
+		leaf := strings.TrimSuffix(filepath.Base(m), filepath.Ext(m))
+		parent := filepath.Base(filepath.Dir(m))
+		if strings.ContainsFunc(leaf, func(r rune) bool { return !identRune(r) }) {
+			b.mentioned[m] = true
+			continue
+		}
+		if pairs[parent] == nil {
+			pairs[parent] = map[string][]string{}
+		}
+		pairs[parent][leaf] = append(pairs[parent][leaf], m)
+	}
+	mark := func(parent, leaf []byte) {
+		for _, m := range pairs[string(parent)][string(leaf)] {
+			b.mentioned[m] = true
+		}
+	}
+	for _, t := range texts {
+		data, err := v.spec.ReadRegular(t)
+		if err != nil {
+			b.whole = false
+			return
+		}
+		identPairs(data, mark)
+		for _, g := range fromImportRE.FindAllSubmatch(data, -1) {
+			mod := g[1][bytes.LastIndexByte(g[1], '.')+1:]
+			if pairs[string(mod)] == nil {
+				continue
+			}
+			for _, name := range identRE.FindAll(g[2], -1) {
+				mark(mod, name)
+			}
+		}
+	}
+}
+
+var identRE = regexp.MustCompile(`\w+`)
+
+func identRune(r rune) bool {
+	return r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+}
+
+// identPairs calls visit for every two identifiers in data joined by exactly one '.' or '/'.
+func identPairs(data []byte, visit func(a, b []byte)) {
+	var prev []byte
+	prevEnd := -2
+	for i := 0; i < len(data); {
+		if !identRune(rune(data[i])) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(data) && identRune(rune(data[j])) {
+			j++
+		}
+		if prev != nil && i == prevEnd+1 && (data[prevEnd] == '.' || data[prevEnd] == '/') {
+			visit(prev, data[i:j])
+		}
+		prev, prevEnd, i = data[i:j], j, j
+	}
+}
+
+// namedByBuild reports whether a file the build reads (buildRead) names the file at path by
+// its path from the build root or from the naming file's directory, with or without a leading
+// src/. When an entry of the build could not be read, every path counts as named.
 func (v *Veto) namedByBuild(path string) bool {
 	b := v.buildRead()
 	if !b.whole {
@@ -350,32 +476,10 @@ func (v *Veto) namedByBuild(path string) bool {
 			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 				continue
 			}
-			if namesFile(f.data, filepath.ToSlash(rel)) {
+			rel = filepath.ToSlash(rel)
+			if bytes.Contains(f.data, []byte(rel)) || bytes.Contains(f.data, []byte(strings.TrimPrefix(rel, "src/"))) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-// namesFile reports whether data names the file at the slash path rel, as namedByBuild says.
-func namesFile(data []byte, rel string) bool {
-	for _, r := range []string{rel, strings.TrimPrefix(rel, "src/")} {
-		if bytes.Contains(data, []byte(r)) {
-			return true
-		}
-		stem, ok := strings.CutSuffix(r, ".py")
-		i := strings.LastIndexByte(stem, '/')
-		if !ok || i < 0 {
-			continue
-		}
-		if bytes.Contains(data, []byte(strings.ReplaceAll(stem, "/", "."))) {
-			return true
-		}
-		parent, leaf := strings.ReplaceAll(stem[:i], "/", "."), stem[i+1:]
-		from := regexp.MustCompile(`(?m)^[ \t]*from[ \t]+` + regexp.QuoteMeta(parent) + `[ \t]+import[ \t(]+[^\n]*\b` + regexp.QuoteMeta(leaf) + `\b`)
-		if from.Match(data) {
-			return true
 		}
 	}
 	return false
@@ -386,6 +490,10 @@ func namesFile(data []byte, rel string) bool {
 // build's (testFixture).
 var fixtureExts = map[string]bool{".json": true, ".jsonc": true, ".json5": true}
 
+// taskFiles are the base names of JSON files a task runner reads as its tasks wherever they
+// sit: Nx project.json, Deno deno.json(c), turbo.json. testFixture never skips one.
+var taskFiles = map[string]bool{"project.json": true, "deno.json": true, "deno.jsonc": true, "turbo.json": true}
+
 // testDirs are directory names that hold tests and their fixtures.
 var testDirs = map[string]bool{
 	"test": true, "tests": true, "__tests__": true, "testing": true, "fixtures": true,
@@ -393,10 +501,13 @@ var testDirs = map[string]bool{
 }
 
 // testFixture reports whether the file at path, not source code, is a test's JSON input: a
-// fixtureExts file under a testDirs directory, whose own directory holds no package.json or
-// pyproject.toml (a workspace package the build installs), and which no file the build reads
-// names (namedByBuild), as a CI file that uploads or includes it would.
+// fixtureExts file, not a taskFiles one, under a testDirs directory, whose own directory holds
+// no package.json or pyproject.toml (a workspace package the build installs), and which no file
+// the build reads names (namedByBuild), as a CI file that uploads or includes it would.
 func (v *Veto) testFixture(path string) bool {
+	if taskFiles[strings.ToLower(filepath.Base(path))] {
+		return false
+	}
 	if !fixtureExts[strings.ToLower(filepath.Ext(path))] || !slices.ContainsFunc(v.dirsOf(path), func(d string) bool { return testDirs[d] }) {
 		return false
 	}
@@ -907,17 +1018,29 @@ func (v *Veto) valueText(text string, shell bool) (int, string) {
 func (v *Veto) segments(segs []segment) string { return v.segmentsAt(segs, false) }
 
 // segmentsAt gates each command of segs; recipe strips a make recipe prefix. A command piped
-// into an interpreter or shell, directly or through other commands, keeps its URL words: what it fetches
-// runs. So does an interpreter or shell that runs a process substitution
-// (python3 <(curl -sS https://bootstrap.pypa.io/get-pip.py) x), which splits as one command.
+// into an interpreter or shell, directly or through other commands, keeps its URL words: what
+// it fetches runs. So does an interpreter or shell that runs a process substitution
+// (python3 <(curl -sS https://bootstrap.pypa.io/get-pip.py) x), and a command that writes into
+// one an interpreter or shell runs (outputSubst); each splits as one command.
 func (v *Veto) segmentsAt(segs []segment, recipe bool) string {
 	for k, seg := range segs {
-		piped := feedsInput(segs, k) || runsInput(seg) && slices.ContainsFunc(seg.words, func(w string) bool { return strings.HasPrefix(w, "<(") })
+		piped := feedsInput(segs, k) || runsInput(seg) && slices.ContainsFunc(seg.words, func(w string) bool { return strings.HasPrefix(w, "<(") }) || outputSubst(seg)
 		if why := v.installAt(seg, recipe, piped); why != "" {
 			return why
 		}
 	}
 	return ""
+}
+
+// outputSubst reports whether seg writes into an output process substitution that runs an
+// interpreter or shell (tee >(python3 -), > >(sh)), which splits as one command.
+func outputSubst(seg segment) bool {
+	for i, w := range seg.words {
+		if rest, ok := strings.CutPrefix(w, ">("); ok && runsInput(segment{words: append([]string{rest}, seg.words[i+1:]...)}) {
+			return true
+		}
+	}
+	return false
 }
 
 // feedsInput reports whether segs[k] pipes into an interpreter or shell (runsInput), directly

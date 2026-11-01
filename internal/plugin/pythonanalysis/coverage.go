@@ -178,13 +178,18 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 // envOptionName reports an option name that comes from an environment variable ("-${R} x.txt",
 // "--pre ${R} x.txt"): pip expands it before parsing, so it may name an install option. A
 // variable in an option's value ("--index-url=https://${TOKEN}@host/simple") is left alone; one
-// whose expansion itself carries whitespace and options is out of reach of a static read. Each
-// field is unquoted on its own, so an empty value ("-i \"\"") still occupies its place.
+// whose expansion itself carries whitespace and options is out of reach of a static read. pip
+// splits the line shell-style, so with any quote or backslash a value can hide an option word
+// ("-i \"x -i\" ${R}") and the line fails closed; without them the fields are pip's.
 func envOptionName(line string) bool {
-	unquote := strings.NewReplacer(`"`, "", `'`, "", `\`, "")
+	if !strings.Contains(line, "${") {
+		return false
+	}
+	if strings.ContainsAny(line, `"'\`) {
+		return true
+	}
 	value := false
 	for _, f := range strings.Fields(line) {
-		f = unquote.Replace(f)
 		if value {
 			value = false
 			continue

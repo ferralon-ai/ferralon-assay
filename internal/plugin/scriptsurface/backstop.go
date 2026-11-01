@@ -561,11 +561,11 @@ func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 			}
 			text = strings.Trim(strings.Join(append([]string{val}, lines[i+1:j+1]...), "\n"), `"'`)
 		case strings.HasPrefix(val, `"`):
-			text, shell = continued(lines, i, ind, val, false), false
+			text, shell = continued(lines, i, ind, val), false
 		case strings.HasPrefix(val, "'"), strings.HasPrefix(val, "{"):
 			shell = false
 		default:
-			text = continued(lines, i, ind, val, true)
+			text = continued(lines, i, ind, val)
 		}
 		if line, why := v.valueText(text, shell); why != "" {
 			return start + line + 1, why
@@ -576,15 +576,15 @@ func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 
 // continued returns the scalar val that starts on lines[i] with its continuation lines, those
 // after it indented past ind, joined on with spaces as YAML folds a plain or double-quoted
-// scalar. A comment line ends a plain scalar.
-func continued(lines []string, i, ind int, val string, plain bool) string {
+// scalar. A comment line folded into a plain scalar stays a shell comment.
+func continued(lines []string, i, ind int, val string) string {
 	parts := []string{val}
 	for j := i + 1; j < len(lines); j++ {
 		t := strings.TrimSpace(lines[j])
 		if t == "" {
 			continue
 		}
-		if indentOf(lines[j]) <= ind || plain && strings.HasPrefix(t, "#") {
+		if indentOf(lines[j]) <= ind {
 			break
 		}
 		parts = append(parts, t)

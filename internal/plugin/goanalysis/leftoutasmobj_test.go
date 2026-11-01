@@ -453,6 +453,112 @@ func TestLofAsmObjHeaderModfile(t *testing.T) {
 	}
 }
 
+// TestLofProcs: sessions take their subprocess slots from one limiter, the one their context
+// carries. More sessions than slots all finish; a slot is given back however the subprocess ends;
+// and a session waiting for a slot gives up when its context ends.
+func TestLofProcs(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"go.mod": "module example.com/v\n\ngo 1.22\n",
+		"d/d.go": "package d\n\nconst K = 1\n",
+		"p/p.go": "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
+		"p/p.s":  "//go:build linux && amd64\n\n#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n#ifdef const_K\n\tCALL ·sym(SB)\n#endif\n\tRET\n",
+	}
+	item := func(dir string) lofAsmItem {
+		path := filepath.Join(dir, "p", "p.s")
+		return lofAsmItem{pkg: "example.com/v/p", dir: filepath.Dir(path), file: path}
+	}
+
+	t.Run("more sessions than slots finish", func(t *testing.T) {
+		t.Parallel()
+		lim := make(lofLimiter, 2)
+		ctx := context.WithValue(lofAsmNarrowPorts(context.Background()), lofLimiterKey{}, lim)
+		dirs := make([]string, 6)
+		for i := range dirs {
+			dirs[i] = writeTree(t, files)
+		}
+		read := make([]bool, len(dirs))
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			var wg sync.WaitGroup
+			for i, dir := range dirs {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					s := newLofAsmSession(ctx, time.Time{}, "", dir, nil, "", true, ignored)
+					defer s.close()
+					it := item(dir)
+					s.prefetch([]lofAsmItem{it})
+					read[i] = slices.Contains(s.object(it).refs, "example.com/v/p.sym")
+				}()
+			}
+			wg.Wait()
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Minute):
+			t.Fatal("sessions waiting on the limiter's two slots did not finish")
+		}
+		for i, ok := range read {
+			if !ok {
+				t.Errorf("session %d did not read example.com/v/p.sym", i)
+			}
+		}
+		if n := len(lim); n != 0 {
+			t.Errorf("%d slots held after every session ended", n)
+		}
+	})
+
+	t.Run("a slot is given back however the subprocess ends", func(t *testing.T) {
+		lim := make(lofLimiter, 1)
+		boom := errors.New("boom")
+		if err := lim.do(context.Background(), func() error { return boom }); err != boom {
+			t.Errorf("do = %v, want %v", err, boom)
+		}
+		func() {
+			defer func() { _ = recover() }()
+			_ = lim.do(context.Background(), func() error { panic(boom) })
+		}()
+		if n := len(lim); n != 0 {
+			t.Errorf("%d slots held", n)
+		}
+		lim <- struct{}{}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ran := false
+		if err := lim.do(ctx, func() error { ran = true; return nil }); !errors.Is(err, context.Canceled) || ran {
+			t.Errorf("do on a full limiter with an ended context = %v, ran %v", err, ran)
+		}
+	})
+
+	t.Run("a session waiting for a slot gives up when its context ends", func(t *testing.T) {
+		t.Parallel()
+		lim := make(lofLimiter, 2)
+		lim <- struct{}{}
+		lim <- struct{}{}
+		const wait = 500 * time.Millisecond
+		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), lofLimiterKey{}, lim), wait)
+		defer cancel()
+		dir := writeTree(t, files)
+		start := time.Now()
+		got := make(chan *lofAsmSession, 1)
+		go func() { got <- newLofAsmSession(ctx, time.Time{}, "", dir, nil, "", true, ignored) }()
+		select {
+		case s := <-got:
+			defer s.close()
+			if d := time.Since(start); d < wait {
+				t.Errorf("session returned after %v, before its context ended: it took no slot of its context's limiter", d)
+			}
+			if s.version() != "" {
+				t.Error("session on without a slot")
+			}
+		case <-time.After(time.Minute):
+			t.Fatal("session waiting for a slot did not give up when its context ended")
+		}
+	})
+}
+
 // TestLofAsmObjExperiments: a GOEXPERIMENT_ macro the file or a header it includes tests is defined
 // by cmd/asm, for the packages it allows ABI selectors in, in builds whose GOEXPERIMENT sets the
 // experiment, whatever the session's: the file is assembled with each experiment it tests set on and

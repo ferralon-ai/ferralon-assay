@@ -335,11 +335,11 @@ const dockerReadingsMax = 64
 //
 // dockerHeredocs takes a line's instruction as BuildKit's splitCommand does and splits its
 // words at Unicode blanks as BuildKit's lexer does, but reads those words as BuildKit does
-// only where the line holds no $, backslash or backtick; elsewhere it may open a heredoc BuildKit doesn't, whose body would then hide
-// instructions BuildKit runs. Where both open heredocs, they agree on how many and on their
-// names, except on a line with a ${name<op>word} expansion, which is withheld (dockerUnsure).
-// So the file is read once for each way the heredocs on such lines may go, open or not, and
-// checked in every reading.
+// only where the line holds no $, backslash or backtick; elsewhere it may open a heredoc
+// BuildKit doesn't, whose body would then hide instructions BuildKit runs. Where both open
+// heredocs, they agree on how many and on their names, except on a line with a
+// ${name<op>word} expansion, which is withheld (dockerUnsure). So the file is read once for
+// each way the heredocs on such lines may go, open or not, and checked in every reading.
 func (v *Veto) dockerfile(file, src string) string {
 	readings := []map[int]bool{{}}
 	for n := 0; n < len(readings); n++ {

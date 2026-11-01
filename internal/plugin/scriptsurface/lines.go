@@ -343,7 +343,7 @@ func dockerFlagsEnd(line string) string {
 // quote, opens none.
 func dockerHeredocs(line string) []heredoc {
 	var form []string
-	if name, args := dockerInstr(line); !dockerHeredocInstrs[name] || json.Unmarshal([]byte(args), &form) == nil {
+	if name, args := dockerInstr(line); !dockerHeredocInstrs[name] || strings.HasPrefix(args, "[") && json.Unmarshal([]byte(args), &form) == nil {
 		return nil
 	}
 	var docs []heredoc

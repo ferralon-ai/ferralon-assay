@@ -186,6 +186,11 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"escaped constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\\c c.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"option name from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url ${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"later field from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"long option name from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--re${Q}=extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"attached option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--index-url=https://${TOKEN}@host/simple\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"short option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"shortened option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra ${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 

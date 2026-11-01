@@ -175,11 +175,41 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	return out, true
 }
 
-// envOptionName reports an option whose name comes from an environment variable ("-${R} x.txt"):
-// pip expands it before parsing, so it may name an install option.
+// envOptionName reports an option name that comes from an environment variable ("-${R} x.txt",
+// "--pre ${R} x.txt"): pip expands it before parsing, so it may name an install option. A
+// variable in an option's value ("--index-url=https://${TOKEN}@host/simple") is left alone; one
+// whose expansion itself carries whitespace and options is out of reach of a static read.
 func envOptionName(line string) bool {
-	for _, f := range strings.Fields(line) {
-		if strings.HasPrefix(f, "-") && strings.Contains(f, "${") {
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		switch {
+		case strings.HasPrefix(f, "--"):
+			if name, _, _ := strings.Cut(f, "="); strings.Contains(name, "${") {
+				return true
+			}
+		case strings.HasPrefix(f, "-"):
+			if strings.HasPrefix(f[1:], "${") {
+				return true
+			}
+		case strings.HasPrefix(f, "${") && i > 0 && !takesValue(fields[i-1]):
+			return true
+		}
+	}
+	return false
+}
+
+// takesValue reports a requirements-file option, in any shortened spelling, that consumes the
+// next field as its value.
+func takesValue(f string) bool {
+	switch f {
+	case "-i", "-f", "-c", "-r", "-e":
+		return true
+	}
+	if len(f) <= 2 || !strings.HasPrefix(f, "--") || strings.Contains(f, "=") {
+		return false
+	}
+	for _, opt := range []string{"--index-url", "--extra-index-url", "--find-links", "--trusted-host", "--no-binary", "--only-binary", "--use-feature", "--constraint", "--requirement", "--editable", "--hash", "--config-settings", "--global-option"} {
+		if strings.HasPrefix(opt, f) {
 			return true
 		}
 	}

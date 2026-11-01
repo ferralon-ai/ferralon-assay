@@ -345,6 +345,9 @@ func TestResolveVersions_ExhaustiveServerlessFileName(t *testing.T) {
 		{"serverless.yml names a file the name ends with", tree(prod, map[string]string{"serverless.yml": sls("prod.txt")}), true},
 		{"serverless.yml without custom", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\n"}), true},
 		{"pythonRequirements without fileName", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements:\n    dockerizePip: true\n"}), true},
+		{"pythonRequirements left empty", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements:\n"}), true},
+		{"package.json lists the plugin", tree(prod, map[string]string{"package.json": `{"devDependencies": {"serverless-python-requirements": "^6.1.0"}}`}), true},
+		{"pythonRequirements in the root .serverless output", tree(prod, map[string]string{".serverless/serverless-state.json": `{"service": {"custom": {"pythonRequirements": {}}}}`}), true},
 		{"a function module holds the named file", tree("svc/"+prod, map[string]string{"serverless.yml": sls(prod)}), false},
 		{"a function module outside the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls(prod)}), false},
 		{"a --config file under another name", tree(prod, map[string]string{"lambda.yaml": sls(prod)}), false},
@@ -356,10 +359,13 @@ func TestResolveVersions_ExhaustiveServerlessFileName(t *testing.T) {
 		{"fileName is a variable", tree(prod, map[string]string{"serverless.yml": sls("${opt:reqs, 'requirements.txt'}")}), false},
 		{"fileName is not a string", tree(prod, map[string]string{"serverless.yml": sls("[a, b]")}), false},
 		{"fileName climbs out of the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls("../" + prod)}), false},
+		{"fileName climbs above the root and back down", tree(prod, map[string]string{"svc/serverless.yml": sls("../../repo/" + prod)}), false},
 		{"fileName is absolute", tree("x/"+prod, map[string]string{"serverless.yml": sls("/x/" + prod)}), false},
 		{"custom from a ${file()} fragment", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.yml)}\n", "custom.yml": "pythonRequirements:\n  fileName: " + prod + "\n"}), false},
 		{"custom from a fragment in another directory", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./config/sls.yml):custom}\n", "config/sls.yml": sls(prod)}), false},
 		{"custom from a fragment written in code", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.js)}\n", "custom.js": "module.exports = { pythonRequirements: {} };\n"}), false},
+		{"the plugin with custom from a fragment under node_modules", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\ncustom: ${file(./node_modules/@org/sls/custom.yml)}\n", "node_modules/@org/sls/custom.yml": "pythonRequirements:\n  fileName: " + prod + "\n"}), false},
+		{"the plugin with custom from outside the tree", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\ncustom: ${file(../shared/custom.yml)}\n"}), false},
 		{"pythonRequirements is a variable", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements: ${file(./reqs.yml)}\n"}), false},
 		{"YAML that does not parse", tree(prod, map[string]string{"serverless.yml": "custom:\n  pythonRequirements: [\n"}), false},
 		{"YAML that mentions pythonRequirements outside custom", tree(prod, map[string]string{".github/workflows/ci.yml": "on: push\n# pythonRequirements\n"}), false},
@@ -416,6 +422,19 @@ func TestServerlessNames_Unreadable(t *testing.T) {
 				t.Fatal("unreadable entry not counted as naming the file")
 			}
 		})
+	}
+}
+
+// A root given relative matches the files at its top, which have no separator before their name.
+// The CLI passes an absolute root, so the walk runs directly.
+func TestServerlessNames_RelativeRoot(t *testing.T) {
+	t.Chdir(writeTree(t, map[string]string{"serverless.yml": "custom:\n  pythonRequirements:\n    fileName: requirements-prod.txt\n"}))
+	s := serverlessNames(".")
+	if !s.named("requirements-prod.txt") {
+		t.Fatal("top-level named file not matched under a relative root")
+	}
+	if s.named("requirements-dev.txt") {
+		t.Fatal("unnamed file matched under a relative root")
 	}
 }
 

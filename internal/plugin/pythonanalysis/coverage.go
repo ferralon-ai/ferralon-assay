@@ -853,7 +853,7 @@ func (r *reqInstalls) serverlessNamed(f string) bool {
 }
 
 func (r *reqInstalls) narrowed(f string) bool {
-	if filepath.Base(f) == "requirements.txt" || r.directed[f] || r.decls[f] == nil || r.serverlessNamed(f) {
+	if filepath.Base(f) == "requirements.txt" || r.directed[f] || r.decls[f] == nil {
 		return false
 	}
 	paths := 0
@@ -869,5 +869,5 @@ func (r *reqInstalls) narrowed(f string) bool {
 		}
 		paths++
 	}
-	return paths > 0
+	return paths > 0 && !r.serverlessNamed(f)
 }

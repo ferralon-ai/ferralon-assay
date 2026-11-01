@@ -9,18 +9,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// serverless-python-requirements installs, for a Serverless service and for each function
-// module under it, the requirements file custom.pythonRequirements.fileName names, joined to
-// the service directory and the module path, with pip install -r and so with dependencies.
-
-// slsName is one fileName a Serverless config sets: name, relative to dir or to a function
-// module under dir.
-type slsName struct{ dir, name string }
+// serverless-python-requirements installs the requirements file custom.pythonRequirements.fileName
+// names, for a Serverless service and for each function module, with pip install -r and so with
+// dependencies. It finds the file at path.join(servicePath, modulePath, fileName), and nothing
+// keeps a module path inside the service, so the file may be anywhere whose path ends with the
+// name.
 
 // slsNames is what the Serverless configs under a root name.
 type slsNames struct {
-	names []slsName
-	any   bool // a config this cannot resolve, so any file may be named
+	names []string // the tail each path.join of a fileName ends with
+	any   bool     // a config or fragment this cannot resolve, so any file may be named
 }
 
 // named reports whether a config may name the requirements file f.
@@ -28,30 +26,23 @@ func (s *slsNames) named(f string) bool {
 	if s.any {
 		return true
 	}
-	sep := string(filepath.Separator)
 	for _, n := range s.names {
-		rel, err := filepath.Rel(n.dir, f)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+sep) {
-			continue
-		}
-		if rel == n.name || strings.HasSuffix(rel, sep+n.name) {
+		if strings.HasSuffix(f, string(filepath.Separator)+n) {
 			return true
 		}
 	}
 	return false
 }
 
-// slsScriptConfigs are the Serverless config names written in code, which this does not
-// evaluate.
-var slsScriptConfigs = map[string]bool{
-	"serverless.js": true, "serverless.cjs": true, "serverless.mjs": true, "serverless.ts": true,
-}
+// slsScriptExts are the extensions of Serverless configs and ${file()} fragments written in
+// code, which this does not evaluate.
+var slsScriptExts = map[string]bool{".js": true, ".cjs": true, ".mjs": true, ".ts": true}
 
-// serverlessNames walks root (all but its own .git) for the fileNames Serverless configs set:
-// every YAML file and serverless.json that mentions pythonRequirements is read, since a config
-// passed with --config may have any name. A config in code that mentions it, a value that is
-// not a plain string, a name that leaves the service directory, or a walk or read error makes
-// any file named.
+// serverlessNames walks root (all but its own .git and every node_modules) for the fileNames
+// Serverless configs set. A config passed with --config may have any name, and custom or any
+// part of it may be a ${file()} fragment, so every YAML, JSON or code file that mentions
+// pythonRequirements is read. A YAML or JSON file names what its custom.pythonRequirements.fileName
+// holds; any other file that mentions it, or a walk or read error, makes any file named.
 func serverlessNames(root string) *slsNames {
 	s := &slsNames{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -60,15 +51,14 @@ func serverlessNames(root string) *slsNames {
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
+			if d.Name() == "node_modules" || d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		base := strings.ToLower(d.Name())
-		ext := filepath.Ext(base)
-		script := slsScriptConfigs[base]
-		if !script && ext != ".yml" && ext != ".yaml" && base != "serverless.json" {
+		ext := strings.ToLower(filepath.Ext(d.Name()))
+		script := slsScriptExts[ext]
+		if !script && ext != ".yml" && ext != ".yaml" && ext != ".json" {
 			return nil
 		}
 		data, err := readRegular(path)
@@ -85,7 +75,7 @@ func serverlessNames(root string) *slsNames {
 			return filepath.SkipAll
 		}
 		if name != "" {
-			s.names = append(s.names, slsName{filepath.Dir(path), name})
+			s.names = append(s.names, name)
 		}
 		return nil
 	})
@@ -95,32 +85,27 @@ func serverlessNames(root string) *slsNames {
 	return s
 }
 
-// slsFileName reads custom.pythonRequirements.fileName from a YAML or JSON config, cleaned
-// and relative. It returns "" when the config sets none, which leaves the plugin's
-// requirements.txt, and false when the value cannot be resolved here: a variable, a value that
-// is not a string, or a path that leaves the directory it is joined to.
+// slsFileName reads custom.pythonRequirements.fileName from a YAML or JSON config, as the tail
+// every path.join of it ends with: cleaned as if rooted, which drops a leading / and any ..
+// that climbs past the start, so relative and with no .. element. It returns "" when the
+// config sets none, which leaves the plugin's requirements.txt, or names no file, and false
+// when the value cannot be resolved here: a document without custom or
+// custom.pythonRequirements as a map (a fragment, or a reference to one), a variable, or a
+// fileName that is not a string.
 func slsFileName(data []byte) (string, bool) {
 	var doc map[string]any
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return "", false
 	}
-	custom, ok := doc["custom"]
-	if !ok || custom == nil {
-		return "", true
-	}
-	cm, ok := custom.(map[string]any)
+	custom, ok := doc["custom"].(map[string]any)
 	if !ok {
 		return "", false
 	}
-	pr, ok := cm["pythonRequirements"]
-	if !ok || pr == nil {
-		return "", true
-	}
-	pm, ok := pr.(map[string]any)
+	pr, ok := custom["pythonRequirements"].(map[string]any)
 	if !ok {
 		return "", false
 	}
-	v, ok := pm["fileName"]
+	v, ok := pr["fileName"]
 	if !ok || v == nil {
 		return "", true
 	}
@@ -128,12 +113,6 @@ func slsFileName(data []byte) (string, bool) {
 	if !ok || strings.Contains(name, "${") {
 		return "", false
 	}
-	name = filepath.Clean(filepath.FromSlash(name))
-	if name == "." {
-		return "", true
-	}
-	if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	return name, true
+	sep := string(filepath.Separator)
+	return strings.TrimPrefix(filepath.Clean(sep+filepath.FromSlash(name)), sep), true
 }

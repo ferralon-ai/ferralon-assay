@@ -316,8 +316,9 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 
 // serverless-python-requirements installs the file custom.pythonRequirements.fileName names,
 // joined to the service directory and to each function module, with its dependencies, so a
-// --no-deps install elsewhere no longer narrows that file. A config this cannot resolve may name
-// any file.
+// --no-deps install elsewhere no longer narrows that file. A module may lie outside the service,
+// so the name matches wherever a path ends with it. A config or fragment this cannot resolve may
+// name any file.
 func TestResolveVersions_ExhaustiveServerlessFileName(t *testing.T) {
 	const docker = "FROM python:3.12\nWORKDIR /app\nCOPY . .\n"
 	sls := func(fileName string) string {
@@ -345,18 +346,23 @@ func TestResolveVersions_ExhaustiveServerlessFileName(t *testing.T) {
 		{"serverless.yml without custom", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\n"}), true},
 		{"pythonRequirements without fileName", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements:\n    dockerizePip: true\n"}), true},
 		{"a function module holds the named file", tree("svc/"+prod, map[string]string{"serverless.yml": sls(prod)}), false},
-		{"the file is outside the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls(prod)}), true},
+		{"a function module outside the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls(prod)}), false},
 		{"a --config file under another name", tree(prod, map[string]string{"lambda.yaml": sls(prod)}), false},
+		{"a --config JSON file under another name", tree(prod, map[string]string{"serverless.prod.json": `{"custom": {"pythonRequirements": {"fileName": "` + prod + `"}}}`}), false},
 		{"serverless.json names the file", tree(prod, map[string]string{"serverless.json": `{"custom": {"pythonRequirements": {"fileName": "` + prod + `"}}}`}), false},
 		{"serverless.ts sets pythonRequirements", tree(prod, map[string]string{"serverless.ts": "export default { custom: { pythonRequirements: { fileName: f } } };\n"}), false},
 		{"serverless.js without pythonRequirements", tree(prod, map[string]string{"serverless.js": "module.exports = { service: 'app' };\n"}), true},
+		{"pythonRequirements inside node_modules", tree(prod, map[string]string{"node_modules/serverless-python-requirements/index.js": "const pythonRequirements = {};\n"}), true},
 		{"fileName is a variable", tree(prod, map[string]string{"serverless.yml": sls("${opt:reqs, 'requirements.txt'}")}), false},
 		{"fileName is not a string", tree(prod, map[string]string{"serverless.yml": sls("[a, b]")}), false},
-		{"fileName leaves the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls("../" + prod)}), false},
-		{"custom is a variable", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.yml)}\n# pythonRequirements\n"}), false},
+		{"fileName climbs out of the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls("../" + prod)}), false},
+		{"fileName is absolute", tree("x/"+prod, map[string]string{"serverless.yml": sls("/x/" + prod)}), false},
+		{"custom from a ${file()} fragment", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.yml)}\n", "custom.yml": "pythonRequirements:\n  fileName: " + prod + "\n"}), false},
+		{"custom from a fragment in another directory", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./config/sls.yml):custom}\n", "config/sls.yml": sls(prod)}), false},
+		{"custom from a fragment written in code", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.js)}\n", "custom.js": "module.exports = { pythonRequirements: {} };\n"}), false},
 		{"pythonRequirements is a variable", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements: ${file(./reqs.yml)}\n"}), false},
 		{"YAML that does not parse", tree(prod, map[string]string{"serverless.yml": "custom:\n  pythonRequirements: [\n"}), false},
-		{"YAML that mentions pythonRequirements outside custom", tree(prod, map[string]string{".github/workflows/ci.yml": "on: push\n# pythonRequirements\n"}), true},
+		{"YAML that mentions pythonRequirements outside custom", tree(prod, map[string]string{".github/workflows/ci.yml": "on: push\n# pythonRequirements\n"}), false},
 		{"a config inside the root .git directory", tree(prod, map[string]string{".git/serverless.yml": sls(prod)}), true},
 	}
 	for _, tt := range tests {

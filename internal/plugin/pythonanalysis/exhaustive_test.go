@@ -385,29 +385,24 @@ func TestPipConfigDisablesHashes_Unreadable(t *testing.T) {
 
 // The walk skips the .git directory at the repository root and nothing else. Tracked content
 // cannot live under .git, and a pip config written there at build time is as invisible to this
-// check as one written to ~/.config/pip, so walking it would close nothing. A .git file (a
-// worktree or submodule gitlink) and a directory named .git deeper in the tree are walked.
+// check as one written to ~/.config/pip, so walking it would close nothing. The rest of the tree
+// is still walked, a .git file (a worktree or submodule gitlink) does not stop the walk, and a
+// directory named .git deeper in the tree is walked.
 func TestPipConfigMatches_GitSkip(t *testing.T) {
 	const off = "[install]\nno-require-hashes = true\n"
 	tests := []struct {
 		name  string
-		dirs  []string
 		files map[string]string
 		want  bool
 	}{
-		{"pip.conf under the root .git directory", []string{".git"}, map[string]string{".git/pip.conf": off}, false},
-		{"pip.conf beside a root .git file", nil, map[string]string{".git": "gitdir: ../main/.git/worktrees/x\n", "svc/pip.conf": off}, true},
-		{"pip.conf under a nested .git directory", []string{"sub/.git"}, map[string]string{"sub/.git/pip.conf": off}, true},
-		{"pip.ini under a nested .git directory", []string{"sub/.git"}, map[string]string{"sub/.git/pip.ini": off}, true},
+		{"pip.conf under the root .git directory", map[string]string{".git/pip.conf": off}, false},
+		{"pip.conf beside a root .git directory", map[string]string{".git/HEAD": "ref: refs/heads/main\n", "svc/pip.conf": off}, true},
+		{"pip.conf beside a root .git file", map[string]string{".git": "gitdir: ../main/.git/worktrees/x\n", "svc/pip.conf": off}, true},
+		{"pip.conf under a nested .git directory", map[string]string{"sub/.git/pip.conf": off}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			for _, d := range tt.dirs {
-				if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
 			for name, body := range tt.files {
 				p := filepath.Join(root, name)
 				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {

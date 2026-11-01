@@ -3,6 +3,8 @@ package scriptsurface
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -253,52 +255,157 @@ func (v *Veto) dirsOf(path string) []string {
 	return strings.Split(strings.ToLower(filepath.ToSlash(rel)), "/")
 }
 
-// packageModule reports whether the file at path is a module of an importable Python package:
-// a .py file beside an __init__.py, which the application imports (mindsdb's
-// integrations/utilities/install.py, poetry's console/commands/build.py), unless the build
-// root's pyproject.toml, setup.py or setup.cfg names it, as an in-tree build backend or hook is
-// named. Its build-script stem then says nothing about the build running it.
+// packageModule reports whether the file at path is a module of an importable Python package
+// that no file the build reads names: a .py file beside an __init__.py, below the build root,
+// which the application imports (mindsdb's integrations/utilities/install.py, poetry's
+// console/commands/build.py). Its build-script stem then says nothing about the build running
+// it. A module named by a workflow, Makefile, tox, nox, Dockerfile or any pyproject.toml,
+// setup.py or setup.cfg in the tree is a build script (namedByBuild).
 func (v *Veto) packageModule(path string) bool {
-	if !strings.EqualFold(filepath.Ext(path), ".py") {
+	if !strings.EqualFold(filepath.Ext(path), ".py") || filepath.Dir(path) == v.root {
 		return false
 	}
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py")); err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(v.root, path)
-	if err != nil {
-		return false
-	}
-	rel = filepath.ToSlash(rel)
-	mod := strings.ReplaceAll(strings.TrimSuffix(rel, filepath.Ext(rel)), "/", ".")
-	names := []string{rel, mod, strings.TrimPrefix(mod, "src.")}
-	for _, f := range []string{"pyproject.toml", "setup.py", "setup.cfg"} {
-		data, err := v.spec.ReadRegular(filepath.Join(v.root, f))
-		if err != nil {
-			if !v.spec.Absent(err) {
-				return false
-			}
-			continue
-		}
-		for _, n := range names {
-			if bytes.Contains(data, []byte(n)) {
-				return false
-			}
-		}
-	}
-	return true
+	return !v.namedByBuild(path)
 }
 
-// dataExts are the extensions of data files: under a testDirs directory they are a test's
-// inputs, not the build's.
-var dataExts = map[string]bool{
-	".json": true, ".jsonc": true, ".json5": true, ".yaml": true, ".yml": true, ".toml": true,
+// buildFiles are the files the build reads, each with its directory and text, and whether
+// every one of them was read.
+type buildFiles struct {
+	files []buildFile
+	whole bool
 }
+
+type buildFile struct {
+	dir  string
+	data []byte
+}
+
+// buildNames are the base names of the files the build reads beside the script surfaces: a
+// project's own build configuration, wherever a sub-project keeps it.
+var buildNames = map[string]bool{"pyproject.toml": true, "setup.py": true, "setup.cfg": true}
+
+// buildRead walks the build once for the files it reads: every script surface (walkedSurface)
+// and every buildNames file. A directory, file or link among them that cannot be read leaves
+// whole false.
+func (v *Veto) buildRead() *buildFiles {
+	if v.build != nil {
+		return v.build
+	}
+	b := &buildFiles{whole: true}
+	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
+		if err != nil {
+			b.whole = false
+			return nil
+		}
+		if e.D.IsDir() || e.Skipped || v.inGitDir(e.Path) && !v.gitHooksFile(e.Path) || v.sampleHook(e.Path) {
+			return nil
+		}
+		named := buildNames[strings.ToLower(e.D.Name())]
+		if e.Symlink {
+			if _, ok := surfaceOf(e.Path, nil); ok || named {
+				b.whole = false
+			}
+			return nil
+		}
+		if !e.D.Type().IsRegular() {
+			return nil
+		}
+		if !named {
+			head, err := buildtree.Head(e.Path)
+			if err != nil {
+				b.whole = false
+				return nil
+			}
+			if _, ok := surfaceOf(e.Path, head); !ok {
+				return nil
+			}
+		}
+		data, err := v.spec.ReadRegular(e.Path)
+		if err != nil {
+			b.whole = false
+			return nil
+		}
+		b.files = append(b.files, buildFile{dir: filepath.Dir(e.Path), data: data})
+		return nil
+	})
+	v.build = b
+	return b
+}
+
+// namedByBuild reports whether a file the build reads (buildRead) names the file at path: its
+// path from the build root or from the naming file's directory, with or without a leading src/,
+// and for a .py file its dotted module the same ways or a from-import of it (from pkg import
+// build). When a file the build reads could not be read, every path counts as named.
+func (v *Veto) namedByBuild(path string) bool {
+	b := v.buildRead()
+	if !b.whole {
+		return true
+	}
+	for _, f := range b.files {
+		for _, dir := range []string{v.root, f.dir} {
+			rel, err := filepath.Rel(dir, path)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			if namesFile(f.data, filepath.ToSlash(rel)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// namesFile reports whether data names the file at the slash path rel, as namedByBuild says.
+func namesFile(data []byte, rel string) bool {
+	for _, r := range []string{rel, strings.TrimPrefix(rel, "src/")} {
+		if bytes.Contains(data, []byte(r)) {
+			return true
+		}
+		stem, ok := strings.CutSuffix(r, ".py")
+		i := strings.LastIndexByte(stem, '/')
+		if !ok || i < 0 {
+			continue
+		}
+		if bytes.Contains(data, []byte(strings.ReplaceAll(stem, "/", "."))) {
+			return true
+		}
+		parent, leaf := strings.ReplaceAll(stem[:i], "/", "."), stem[i+1:]
+		from := regexp.MustCompile(`(?m)^[ \t]*from[ \t]+` + regexp.QuoteMeta(parent) + `[ \t]+import[ \t(]+[^\n]*\b` + regexp.QuoteMeta(leaf) + `\b`)
+		if from.Match(data) {
+			return true
+		}
+	}
+	return false
+}
+
+// fixtureExts are the extensions of JSON data files: under a testDirs directory, outside a
+// package of its own and named by no file the build reads, one is a test's input, not the
+// build's (testFixture).
+var fixtureExts = map[string]bool{".json": true, ".jsonc": true, ".json5": true}
 
 // testDirs are directory names that hold tests and their fixtures.
 var testDirs = map[string]bool{
 	"test": true, "tests": true, "__tests__": true, "testing": true, "fixtures": true,
 	"__fixtures__": true, "testdata": true, "e2e": true,
+}
+
+// testFixture reports whether the file at path, not source code, is a test's JSON input: a
+// fixtureExts file under a testDirs directory, whose own directory holds no package.json or
+// pyproject.toml (a workspace package the build installs), and which no file the build reads
+// names (namedByBuild), as a CI file that uploads or includes it would.
+func (v *Veto) testFixture(path string) bool {
+	if !fixtureExts[strings.ToLower(filepath.Ext(path))] || !slices.ContainsFunc(v.dirsOf(path), func(d string) bool { return testDirs[d] }) {
+		return false
+	}
+	for _, m := range []string{"package.json", "pyproject.toml"} {
+		if _, err := os.Lstat(filepath.Join(filepath.Dir(path), m)); !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+	}
+	return !v.namedByBuild(path)
 }
 
 // testFile reports whether a source file, by its lowercased base name and the directories
@@ -331,7 +438,7 @@ func (v *Veto) backstop(path string, head []byte) (string, bool) {
 	if source && !v.buildScript(path, head) {
 		return "", false
 	}
-	if !source && dataExts[strings.ToLower(filepath.Ext(path))] && slices.ContainsFunc(v.dirsOf(path), func(d string) bool { return testDirs[d] }) {
+	if !source && v.testFixture(path) {
 		return "", false
 	}
 	src := string(head)
@@ -364,7 +471,8 @@ func (v *Veto) backstop(path string, head []byte) (string, bool) {
 			line, why = v.backstopJSON(src)
 		}
 		if why == "" {
-			line, why = v.backstopLines(src, strings.HasPrefix(strings.ToLower(filepath.Base(path)), "bitrise."))
+			lower := strings.ToLower(filepath.Base(path))
+			line, why = v.backstopLines(src, strings.HasPrefix(lower, "bitrise."), filepath.Ext(lower) != ".cue")
 		}
 	}
 	if why != "" {
@@ -488,7 +596,9 @@ func indentOf(s string) int { return len(s) - len(strings.TrimLeft(s, " \t")) }
 
 // backstopLines reads a file that is not source code for its command positions, and returns
 // the first 1-based line that runs an installer, or sets an installer variable, and why.
-func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
+// recipes reads a tab-indented line under a "target:" line as a make recipe; a CUE file has
+// none, and its tab-indented fields sit under "name: {" lines shaped as rules.
+func (v *Veto) backstopLines(src string, bitrise, recipes bool) (int, string) {
 	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
 	table, rule := "", false
 	for i := 0; i < len(lines); i++ {
@@ -506,7 +616,7 @@ func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 			continue
 		}
 		if !strings.HasPrefix(raw, "\t") {
-			rule = ruleRE.MatchString(raw)
+			rule = recipes && ruleRE.MatchString(raw)
 		}
 		if lineComment(t) {
 			continue
@@ -560,9 +670,9 @@ func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 				j = min(j, len(lines)-1)
 			}
 			text = strings.Trim(strings.Join(append([]string{val}, lines[i+1:j+1]...), "\n"), `"'`)
-		case strings.HasPrefix(val, `"`):
+		case strings.HasPrefix(val, `"`), strings.HasPrefix(val, "'"):
 			text, shell = continued(lines, i, ind, val), false
-		case strings.HasPrefix(val, "'"), strings.HasPrefix(val, "{"):
+		case strings.HasPrefix(val, "{"):
 			shell = false
 		default:
 			text = continued(lines, i, ind, val)
@@ -575,8 +685,8 @@ func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 }
 
 // continued returns the scalar val that starts on lines[i] with its continuation lines, those
-// after it indented past ind, joined on with spaces as YAML folds a plain or double-quoted
-// scalar. A comment line folded into a plain scalar stays a shell comment.
+// after it indented past ind, joined on with spaces as YAML folds a plain or quoted scalar. A
+// comment line folded into a plain scalar stays a shell comment.
 func continued(lines []string, i, ind int, val string) string {
 	parts := []string{val}
 	for j := i + 1; j < len(lines); j++ {
@@ -797,15 +907,36 @@ func (v *Veto) valueText(text string, shell bool) (int, string) {
 func (v *Veto) segments(segs []segment) string { return v.segmentsAt(segs, false) }
 
 // segmentsAt gates each command of segs; recipe strips a make recipe prefix. A command piped
-// into an interpreter or shell keeps its URL words: what it fetches runs.
+// into an interpreter or shell, directly or through tee, keeps its URL words: what it fetches
+// runs. So does an interpreter or shell that runs a process substitution
+// (python3 <(curl -sS https://bootstrap.pypa.io/get-pip.py) x), which splits as one command.
 func (v *Veto) segmentsAt(segs []segment, recipe bool) string {
 	for k, seg := range segs {
-		piped := seg.end == "|" && k+1 < len(segs) && runsInput(segs[k+1])
+		piped := feedsInput(segs, k) || runsInput(seg) && slices.ContainsFunc(seg.words, func(w string) bool { return strings.HasPrefix(w, "<(") })
 		if why := v.installAt(seg, recipe, piped); why != "" {
 			return why
 		}
 	}
 	return ""
+}
+
+// feedsInput reports whether segs[k] pipes into an interpreter or shell (runsInput), directly
+// or through tee commands, each of which passes its input on.
+func feedsInput(segs []segment, k int) bool {
+	for j := k; segs[j].end == "|" && j+1 < len(segs); j++ {
+		next := segs[j+1]
+		if runsInput(next) {
+			return true
+		}
+		i := programAt(next.words)
+		if i >= len(next.words) {
+			return false
+		}
+		if name, ok := CommandName(next.words[i]); !ok || name != "tee" {
+			return false
+		}
+	}
+	return false
 }
 
 // runsInput reports whether seg's program is an interpreter or shell, which runs what a pipe

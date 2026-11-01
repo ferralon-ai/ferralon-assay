@@ -85,10 +85,15 @@ func TestVeto_Backstop(t *testing.T) {
 		{"Cursor .cursor/mcp.json", tree(map[string]string{".cursor/mcp.json": mcp}), false, ""},
 		{"Claude Desktop config", tree(map[string]string{"claude_desktop_config.json": mcp}), false, ""},
 		{"mcp.json outside an editor directory", tree(map[string]string{"ci/mcp.json": mcp}), true, "ci/mcp.json:1"},
-		{"MCP fixtures under a test directory", tree(map[string]string{"tests/fixtures/mcp_configs/uvx.json": mcp, "tests/e2e/agent.yaml": "steps:\n  - command: inst add x\n", "testdata/cfg.toml": "[x]\ncommand = \"inst add x\"\n"}), false, ""},
+		{"JSON fixtures under a test directory", tree(map[string]string{"tests/fixtures/mcp_configs/uvx.json": mcp, "testdata/cfg.jsonc": mcp, "__fixtures__/cfg.json5": mcp}), false, ""},
 		{"JSON data under a test directory", tree(map[string]string{"tests/fixtures/mcp_configs/uvx.json": mcp}), false, ""},
-		{"YAML data under a test directory", tree(map[string]string{"tests/e2e/agent.yaml": "steps:\n  - command: inst add x\n"}), false, ""},
-		{"TOML data under a test directory", tree(map[string]string{"testdata/cfg.toml": "[x]\ncommand = \"inst add x\"\n"}), false, ""},
+		{"JSONC data under a test directory", tree(map[string]string{"testdata/cfg.jsonc": mcp}), false, ""},
+		{"JSON5 data under a test directory", tree(map[string]string{"__fixtures__/cfg.json5": mcp}), false, ""},
+		{"YAML under a test directory", tree(map[string]string{"e2e/ci.yml": "steps:\n  - command: inst add x\n"}), true, "e2e/ci.yml:2"},
+		{"poe tasks in a pyproject under a test directory", tree(map[string]string{"tests/pyproject.toml": "[tool.poe.tasks]\nsetup = \"inst add x\"\n"}), true, "tests/pyproject.toml:2"},
+		{"JSON under a test directory that a pipeline uploads", tree(map[string]string{"ci/tests/steps.json": mcp, ".buildkite/pipeline.yml": "steps:\n  - command: buildkite-agent pipeline upload ci/tests/steps.json\n"}), true, "ci/tests/steps.json:1"},
+		{"JSON in a package under a test directory", tree(map[string]string{"tests/app/turbo.json": mcp, "tests/app/package.json": "{\"name\": \"app\"}\n"}), true, "tests/app/turbo.json:1"},
+		{"JSON in a Python project under a test directory", tree(map[string]string{"tests/app/tasks.json": mcp, "tests/app/pyproject.toml": "[project]\nname = \"app\"\n"}), true, "tests/app/tasks.json:1"},
 		{"non-data file under a test directory", tree(map[string]string{"tests/ci.cfg": "[x]\ncommand = inst add x\n"}), true, "tests/ci.cfg:2"},
 		{"workflow named for tests", tree(map[string]string{".github/workflows/tests.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: inst add x\n"}), true, "-"},
 		{"make-like recipe", tree(map[string]string{"tasks.cfg": "deps:\n\tinst add x\n"}), true, "tasks.cfg:2"},
@@ -148,6 +153,17 @@ func TestVeto_Backstop(t *testing.T) {
 		{"package module named in pyproject", tree(map[string]string{"app/utilities/__init__.py": "", "app/utilities/install.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "pyproject.toml": "[tool.x]\nhook = \"app.utilities.install:main\"\n"}), true, "app/utilities/install.py:2"},
 		{"src-layout package module named in setup.cfg", tree(map[string]string{"src/pkg/__init__.py": "", "src/pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "setup.cfg": "[x]\nhook = pkg.build\n"}), true, "src/pkg/build.py:2"},
 		{"package module by path in setup.py", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "setup.py": "exec(open(\"pkg/build.py\").read())\n"}), true, "pkg/build.py:2"},
+		{"package module a workflow runs by path", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: python pkg/build.py\n"}), true, "pkg/build.py:2"},
+		{"package module a workflow runs with -m", tree(map[string]string{"pkg/__init__.py": "", "pkg/install.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: python -m pkg.install\n"}), true, "pkg/install.py:2"},
+		{"package module a Makefile runs", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "Makefile": "deps:\n\tpython pkg/build.py\n"}), true, "pkg/build.py:2"},
+		{"package module tox runs", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "tox.ini": "[testenv]\ncommands =\n    python pkg/build.py\n"}), true, "pkg/build.py:2"},
+		{"package module nox runs", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "noxfile.py": "import nox\n@nox.session\ndef deps(session):\n    session.run(\"python\", \"pkg/build.py\")\n"}), true, "pkg/build.py:2"},
+		{"package module a Dockerfile runs", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "Dockerfile": "FROM base\nCOPY . .\nRUN python pkg/build.py\n"}), true, "pkg/build.py:2"},
+		{"package module a sub-project names from its directory", tree(map[string]string{"packages/foo/foo/__init__.py": "", "packages/foo/foo/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "packages/foo/pyproject.toml": "[tool.hatch.build.hooks.custom]\npath = \"foo/build.py\"\n"}), true, "packages/foo/foo/build.py:2"},
+		{"package module setup.py imports from its package", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "setup.py": "from setuptools import setup\nfrom pkg import build\nsetup(cmdclass={\"build_py\": build.BuildPy})\n"}), true, "pkg/build.py:2"},
+		{"package module setup.py imports by dotted name", tree(map[string]string{"pkg/__init__.py": "", "pkg/install.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "setup.py": "from setuptools import setup\nimport pkg.install\nsetup(cmdclass={\"install\": pkg.install.Install})\n"}), true, "pkg/install.py:2"},
+		{"build script beside an __init__.py at the root", tree(map[string]string{"__init__.py": "", "tasks.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"}), true, "tasks.py:2"},
+		{"package module the build names only by its package", tree(map[string]string{"src/app/console/commands/__init__.py": "", "src/app/console/commands/build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n", "pyproject.toml": "[project]\nname = \"app\"\n[project.scripts]\napp = \"app.console:main\"\n", ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: python -m build\n"}), false, ""},
 		{"non-Python build script beside an __init__.py", tree(map[string]string{"pkg/__init__.py": "", "pkg/build.js": "require('child_process').execSync('inst add x')\n"}), true, "pkg/build.js:1"},
 		{"bare call named like the installer", tree(map[string]string{"tasks.py": "from helpers import inst\ninst(\"add\", \"x\")\n"}), false, ""},
 		{"root build script beside no package", tree(map[string]string{"build.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"}), true, "build.py:2"},
@@ -179,6 +195,15 @@ func TestVeto_Backstop(t *testing.T) {
 		{"sibling key after a plain YAML value", tree(map[string]string{"ci/x.yml": "steps:\n  - script: make\n    name: inst add x\n"}), false, ""},
 		{"URL piped into an interpreter", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | python3 - x\n"}), true, "ci/x.yml:2"},
 		{"URL piped into a shell", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/inst | sh\n"}), true, "ci/x.yml:2"},
+		{"URL piped through tee into an interpreter", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sS https://example.com/get-inst | tee g.py | python3 - x\n"}), true, "ci/x.yml:2"},
+		{"URL in a process substitution an interpreter runs", tree(map[string]string{"ci/x.yml": "steps:\n  - run: python3 <(curl -sS https://example.com/get-inst) x\n"}), true, "ci/x.yml:2"},
+		{"URL in a process substitution another command reads", tree(map[string]string{"ci/x.yml": "steps:\n  - run: diff <(curl -sS https://example.com/get-inst) x\n"}), false, ""},
+		{"single-quoted YAML continuation", tree(map[string]string{"ci/x.yml": "steps:\n  - command: 'echo start &&\n      inst add x'\n"}), true, "ci/x.yml:2"},
+		{"audit that fixes with a value", tree(map[string]string{"ci/x.yml": "steps:\n  - run: inst audit --fix=all\n"}), true, "ci/x.yml:2"},
+		{"sequence in a project table", tree(map[string]string{"pyproject.toml": "[project.scripts.x]\nsequence = [\"inst add x\"]\n"}), false, ""},
+		{"CUE fields under a rule-shaped line", tree(map[string]string{"schema/x.cue": "kind: x: {\n\tinst add x\n}\n"}), false, ""},
+		{"the same lines read as a make recipe", tree(map[string]string{"schema/x.cfg": "kind: x: {\n\tinst add x\n}\n"}), true, "schema/x.cfg:2"},
+		{"CUE command key", tree(map[string]string{"ci/x_tool.cue": "package ci\n\nsetup: {\n\tcmd: \"inst add x\"\n}\n"}), true, "ci/x_tool.cue:4"},
 		{"URL fetched to a file", tree(map[string]string{"ci/x.yml": "steps:\n  - run: curl -sSo get.py https://example.com/get-inst | tee log\n"}), false, ""},
 		{"tab-indented continuation under no rule", tree(map[string]string{"ci/tool.cfg": "help = run this first\n\tinst add x\n"}), false, ""},
 		{"usage example in a docstring", tree(map[string]string{"tasks.py": "def deps(c):\n    \"\"\"Install deps.\n\n    c.run(\"inst add x\")\n    \"\"\"\n"}), false, ""},
@@ -277,5 +302,45 @@ func TestVeto_BackstopUnreadable(t *testing.T) {
 	}
 	if got := v.Unrecognised(); got != "ci.cfg" {
 		t.Fatalf("Unrecognised() = %q, want ci.cfg", got)
+	}
+}
+
+func TestVeto_BackstopPackageModuleFailsClosed(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"inst.toml":       "[deps]\n",
+		"inst.lock":       "lock\n",
+		"pkg/__init__.py": "",
+		"pkg/build.py":    "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n",
+		"Makefile":        "all:\n\techo ok\n",
+	})
+	tests := []struct {
+		name string
+		fail string
+		want bool
+	}{
+		{"every build file readable", "", false},
+		{"a build file unreadable", "Makefile", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := testSpec
+			read := spec.ReadRegular
+			spec.ReadRegular = func(p string) ([]byte, error) {
+				if tt.fail != "" && filepath.Base(p) == tt.fail {
+					return nil, errors.New("unreadable")
+				}
+				return read(p)
+			}
+			v := New(root, testRead(root), spec)
+			p := filepath.Join(root, "pkg", "build.py")
+			head, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, ok := v.Classify(func(string, []byte) (string, bool) { return "", false })(p, head)
+			if ok != tt.want {
+				t.Fatalf("Classify withheld = %v, want %v", ok, tt.want)
+			}
+		})
 	}
 }

@@ -1367,6 +1367,7 @@ func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
 			{c.name + ": a FUNCDATA macro with parameters", body("#define M(a, b) FUNCDATA $"+c.slot+", "+c.name+"(SB)\n\n", "M(1, 2)"), false},
 			{c.name + ": a header FUNCDATA macro with a comment", merge(body("#include \"fd.h\"\n\n", c.macro), map[string]string{"fd.h": "#define " + c.macro + " FUNCDATA $" + c.slot + ", " + c.name + "(SB) // not */\n"}), false},
 			{c.name + ": the first FUNCDATA operand", body("", "FUNCDATA $"+c.name+"(SB), ·asm(SB)"), true},
+			{c.name + ": the only symbol, as the first FUNCDATA operand", body("", "FUNCDATA $"+c.name+"(SB), $"+c.slot), true},
 			{c.name + ": FUNCDATA as an operand", body("", "MOVQ FUNCDATA $"+c.slot+", "+c.name+"(SB)"), true},
 			{c.name + ": a CALL after a FUNCDATA statement", body("", "FUNCDATA $"+c.slot+", "+c.name+"(SB); CALL "+c.name+"(SB)"), true},
 			{c.name + ": a CALL commented FUNCDATA", body("", "CALL "+c.name+"(SB) /* FUNCDATA */"), true},

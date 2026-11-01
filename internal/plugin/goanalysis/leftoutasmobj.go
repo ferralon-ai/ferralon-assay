@@ -933,6 +933,9 @@ type lofAsmGate struct {
 	badExp     bool
 	unresolved bool
 	needsHdr   bool
+	// depTags holds the build tags the dependency files a go_asm.h name may take its value from are
+	// constrained on.
+	depTags []string
 	// hfiles holds the package's headers cmd/go copies into the build's object directory under
 	// a GOOS and GOARCH free name.
 	hfiles []string
@@ -1055,6 +1058,7 @@ func (s *lofAsmSession) gate(it lofAsmItem, src []byte) *lofAsmGate {
 			f = s.slice(it.dir, names)
 		}
 		g.badExp = g.badExp || f.bad
+		g.depTags = f.tags
 		for _, x := range f.exps {
 			addExp(x)
 		}
@@ -1815,11 +1819,20 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 			addTag("cgo")
 		}
 	}
+	// A dependency file a name may take its value from is selected by the build's tags, which apply
+	// to every package of the build.
+	var depMask uint64
+	for _, tag := range g.depTags {
+		addTag(tag)
+		if i, ok := bit[tag]; ok && i < 64 {
+			depMask |= 1 << i
+		}
+	}
 	named := make([]bool, len(src.files))
 	for i, f := range src.files {
 		named[i] = lofMatchName(tu.lofPort, f.name)
 	}
-	relevant := g.badIfdef || g.unresolved
+	relevant := g.badIfdef || g.unresolved || depMask != 0
 	for _, d := range g.ifdefs {
 		relevant = relevant || len(lofAsmHdrCandidates(src, d)) > 0
 	}
@@ -1883,6 +1896,8 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 		sel := make([]bool, len(src.files))
 		skip := false
 		var key strings.Builder
+		key.WriteString(strconv.FormatUint(mask&depMask, 16))
+		key.WriteByte(0)
 		for i, f := range src.files {
 			sel[i] = named[i] && eval(f.expr, mask) && (!f.cgo || on)
 			if sel[i] && f.cgo {
@@ -1925,6 +1940,8 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 		seen := map[string]bool{}
 		for _, v := range variants {
 			var key strings.Builder
+			key.WriteString(strconv.FormatUint(v.mask&depMask, 16))
+			key.WriteByte(0)
 			for i, on := range v.sel {
 				if on {
 					key.WriteString(src.files[i].name)
@@ -2185,13 +2202,19 @@ func (s *lofAsmSession) runHeaderBuild(it lofAsmItem, tu lofAsmTuple, tags []str
 		nonce = lofAsmNonce()
 	}
 	args := []string{"build", "-x", "-work", "-o", os.DevNull, "-asmflags=" + it.pkg + "=-D=" + nonce}
+	cgoEnabled := "CGO_ENABLED=0"
+	if slices.Contains(tags, "cgo") {
+		// go/build sets cgo files aside unless cgo is enabled, whatever -tags names.
+		cgoEnabled = "CGO_ENABLED=1"
+		tags = slices.DeleteFunc(slices.Clone(tags), func(t string) bool { return t == "cgo" })
+	}
 	if len(tags) > 0 {
 		args = append(args, "-tags", strings.Join(tags, ","))
 	}
 	args = append(args, it.pkg)
 	cmd := exec.CommandContext(s.ctx, filepath.Join(t.root, "bin", "go"), args...)
 	env := append(lofAsmBaseEnv(s.env), tu.envVars()...)
-	env = append(env, "GOPROXY=off", "GONOPROXY=none.invalid", "GOVCS=*:off", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOTMPDIR="+gotmp)
+	env = append(env, "GOPROXY=off", "GONOPROXY=none.invalid", "GOVCS=*:off", "GOTOOLCHAIN=local", cgoEnabled, "GOTMPDIR="+gotmp)
 	if x := tu.goexperiment(t.experiment); x != "" {
 		env = append(env, "GOEXPERIMENT="+x)
 	}

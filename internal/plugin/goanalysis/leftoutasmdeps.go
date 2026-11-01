@@ -25,6 +25,8 @@ import (
 type lofDepFacts struct {
 	level, bad bool
 	exps       []string
+	// tags holds every other build tag the files are constrained on, and cgo where one imports "C".
+	tags []string
 }
 
 func (f *lofDepFacts) add(o lofDepFacts) {
@@ -33,6 +35,11 @@ func (f *lofDepFacts) add(o lofDepFacts) {
 	for _, x := range o.exps {
 		if !slices.Contains(f.exps, x) {
 			f.exps = append(f.exps, x)
+		}
+	}
+	for _, x := range o.tags {
+		if !slices.Contains(f.tags, x) {
+			f.tags = append(f.tags, x)
 		}
 	}
 }
@@ -123,6 +130,8 @@ func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bo
 			}
 		} else if arch, _, ok := strings.Cut(tag, "."); ok && arches[arch] {
 			f.level = true
+		} else if !slices.Contains(f.tags, tag) {
+			f.tags = append(f.tags, tag)
 		}
 	}
 	f.level = f.level || lofDepLevelName(filepath.Base(path), arches)
@@ -140,6 +149,9 @@ func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bo
 			name = im.Name.Name
 		}
 		f.imports = append(f.imports, lofDepImport{name, p})
+		if p == "C" && !slices.Contains(f.tags, "cgo") {
+			f.tags = append(f.tags, "cgo")
+		}
 	}
 	for _, d := range af.Decls {
 		switch d := d.(type) {
@@ -346,6 +358,7 @@ func (s *lofAsmSession) closure(dir string) lofDepFacts {
 			}
 		}
 		slices.Sort(out.exps)
+		slices.Sort(out.tags)
 		return out
 	})
 }
@@ -448,6 +461,7 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 		}
 	}
 	slices.Sort(out.exps)
+	slices.Sort(out.tags)
 	return out
 }
 

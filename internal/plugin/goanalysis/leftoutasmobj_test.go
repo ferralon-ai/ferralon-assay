@@ -267,13 +267,15 @@ func TestLofAsmObjHeader(t *testing.T) {
 	}
 }
 
-// TestLofAsmObjHeaderDeps: a macro dumpasmhdr spells for a type a and field b_c reads as type a_b
-// and field c too.
+// TestLofAsmObjHeaderDeps: a go_asm.h name a dependency's tagged files may change is assembled
+// against each assignment of those tags, as a name the package's own tagged files may change is; and
+// a macro dumpasmhdr spells for a type a and field b_c reads as type a_b and field c too.
 func TestLofAsmObjHeaderDeps(t *testing.T) {
 	mod := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n"}
 	text := func(body string) string {
 		return "//go:build linux && amd64\n\n#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n" + body + "\tRET\n"
 	}
+	ifdefK := text("#ifdef const_K\n\tCALL ·sym(SB)\n#endif\n")
 	fieldtrack := map[string]string{
 		"d/on.go":  "//go:build goexperiment.fieldtrack\n\npackage d\n\ntype S struct{ c int }\n",
 		"d/off.go": "//go:build !goexperiment.fieldtrack\n\npackage d\n\ntype S int\n",
@@ -291,6 +293,23 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 		{"R1 control: type a_b with field c alone", merge(merge(mod, fieldtrack), map[string]string{
 			"p/p.go": "package p\n\nimport \"example.com/v/d\"\n\ntype a_b d.S\n",
 			"p/p.s":  text("#ifdef a_b_c\n\tCALL ·sym(SB)\n#endif\n"),
+		}), true, []string{"example.com/v/p.sym"}},
+		{"R2: a user tag in a dependency sets the constant's kind", merge(mod, map[string]string{
+			"d/on.go":  "//go:build t0\n\npackage d\n\nconst K = 1\n",
+			"d/off.go": "//go:build !t0\n\npackage d\n\nconst K = 1.5\n",
+			"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
+			"p/p.s":    ifdefK,
+		}), true, []string{"example.com/v/p.sym"}},
+		{"R2 control: the tag in the package's own files", merge(mod, map[string]string{
+			"p/on.go":  "//go:build t0\n\npackage p\n\nconst K = 1\n",
+			"p/off.go": "//go:build !t0\n\npackage p\n\nconst K = 1.5\n",
+			"p/p.s":    ifdefK,
+		}), true, []string{"example.com/v/p.sym"}},
+		{"R2b: cgo in a dependency sets the constant's kind", merge(mod, map[string]string{
+			"d/on.go":  "//go:build cgo\n\npackage d\n\nconst K = 1\n",
+			"d/off.go": "//go:build !cgo\n\npackage d\n\nconst K = 1.5\n",
+			"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
+			"p/p.s":    ifdefK,
 		}), true, []string{"example.com/v/p.sym"}},
 	}
 	for _, tc := range cases {

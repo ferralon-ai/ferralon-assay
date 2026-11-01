@@ -45,6 +45,10 @@ type lofEngine struct {
 	// (lofUnknownToolchain, lofGorootMismatch): every left-out file counts for a standard-library
 	// refutation.
 	FailStd string
+	// AsmToolchain is the release the assembler that read the build's Go assembly ran as, "" when
+	// none could run; StdGaps counts the standard-library assembly files it could not read.
+	AsmToolchain string
+	StdGaps      int
 	// Facts holds each left-out file's lofFacts, gob-encoded on its own: a scan's check reads a few
 	// files' facts, so it decodes only those (file).
 	Facts map[string][]byte
@@ -201,6 +205,8 @@ func loadLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRel
 // engine afresh, and gob decodes the graph's millions of elements one by one through reflection.
 type lofWire struct {
 	Fail, FailStd string
+	AsmToolchain  string
+	StdGaps       int
 	Facts         map[string][]byte
 	Graph         []byte
 }
@@ -246,7 +252,7 @@ func (e *lofEngine) encode() ([]byte, error) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(lofWire{Fail: e.Fail, FailStd: e.FailStd, Facts: e.Facts, Graph: g}); err != nil {
+	if err := gob.NewEncoder(&buf).Encode(lofWire{Fail: e.Fail, FailStd: e.FailStd, AsmToolchain: e.AsmToolchain, StdGaps: e.StdGaps, Facts: e.Facts, Graph: g}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -257,7 +263,7 @@ func decodeLofEngine(b []byte) (*lofEngine, error) {
 	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&w); err != nil {
 		return nil, err
 	}
-	e := &lofEngine{Fail: w.Fail, FailStd: w.FailStd, Facts: w.Facts}
+	e := &lofEngine{Fail: w.Fail, FailStd: w.FailStd, AsmToolchain: w.AsmToolchain, StdGaps: w.StdGaps, Facts: w.Facts}
 	g := w.Graph
 	short := false
 	next := func() uint32 {
@@ -381,9 +387,11 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
 	goroot, failStd := lofToolchain(ctx, buildDir, env, release)
 	w := newLofWorld(ctx, pkgs, buildDir, env, excluded, goroot, time.Now().Add(lofBudgetTime))
-	w.modcache = lofModCache(ctx, buildDir, env)
+	w.modcache, w.goflags, w.goflagsOK = lofGoEnv(ctx, buildDir, env)
+	asm := w.asmSession()
+	defer asm.close()
 	in := &lofInterner{ids: map[string]int32{}}
-	e := &lofEngine{FailStd: failStd, files: map[string]*lofFacts{}}
+	e := &lofEngine{FailStd: failStd, AsmToolchain: asm.version(), files: map[string]*lofFacts{}}
 
 	// The closures and the build's SSA program are independent; build them side by side.
 	var sp *ssaProgram
@@ -427,6 +435,7 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		}
 		e.files[c.path] = f
 	}
+	e.StdGaps = asm.stdGapCount()
 
 	if err := ssaDone(); err != nil {
 		return nil, err

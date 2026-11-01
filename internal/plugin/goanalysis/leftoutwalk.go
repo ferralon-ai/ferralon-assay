@@ -70,6 +70,12 @@ type lofWorld struct {
 	excluded func(constraint.Expr) bool
 	// goroot is the toolchain's root the compiler's intrinsic table is read from; "" reads none.
 	goroot string
+	// goflags is the GOFLAGS the build's go command runs with, from env or its go env file
+	// (lofGoEnv); goflagsOK is false when the go command cannot report it.
+	goflags   string
+	goflagsOK bool
+	// asm reads assembly through the toolchain's own assembler; nil until first asked (asmSession).
+	asm *lofAsmSession
 	// modcache is the module cache's root, whose module source the build compiles as it was
 	// downloaded; "" when not known.
 	modcache string
@@ -112,7 +118,7 @@ type lofWorld struct {
 
 func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string, env []string, excluded func(constraint.Expr) bool, goroot string, deadline time.Time) *lofWorld {
 	w := &lofWorld{
-		ctx: ctx, buildDir: buildDir, env: env, excluded: excluded, goroot: goroot, deadline: deadline,
+		ctx: ctx, buildDir: buildDir, env: env, excluded: excluded, goroot: goroot, deadline: deadline, goflagsOK: true,
 		loaded: map[string]*packages.Package{}, modules: map[string]bool{},
 		dirs: map[string]string{}, names: map[string]string{}, modDirs: map[string]string{}, std: map[string]bool{}, pkgs: map[string]*lofPkg{},
 		pushes: map[string][][2]string{}, dropped: map[string]bool{},
@@ -127,6 +133,14 @@ func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string,
 		}
 	})
 	return w
+}
+
+// asmSession returns the world's assembly session, started on first use.
+func (w *lofWorld) asmSession() *lofAsmSession {
+	if w.asm == nil {
+		w.asm = newLofAsmSession(w.ctx, w.deadline, w.goroot, w.buildDir, w.env, w.goflags, w.goflagsOK, w.excluded)
+	}
+	return w.asm
 }
 
 // lofPkg is one package's source: for a package the build loaded, only the files it left out;
@@ -156,6 +170,9 @@ type lofPkg struct {
 	asmData map[string]bool
 	// asmNames holds the names under this package's path among asmText's and asmData's symbols.
 	asmNames map[string]bool
+	// asmFailed is set when an assembly file of the package could not be read (lofAsmObj): any
+	// symbol of the package may be one it defines, with any body.
+	asmFailed bool
 }
 
 // lofFile is one parsed Go file of a lofPkg.
@@ -216,10 +233,7 @@ type lofAsm struct {
 	file    string
 	refs    []string
 	dynamic bool
-	// opaque is set when the file includes a header no search finds: its macros may reference
-	// anything.
-	opaque bool
-	// set holds the refs and opacity every body of the file shares, so a walk follows them once.
+	// set holds the refs every body of the file shares, so a walk follows them once.
 	set *lofAsm
 }
 
@@ -488,6 +502,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 		}
 		w.index(p, full, af)
 	}
+	var items []lofAsmItem
 	for _, full := range asmFiles {
 		src, err := os.ReadFile(full)
 		if err != nil {
@@ -502,7 +517,11 @@ func (w *lofWorld) parse(p *lofPkg) {
 		if w.excluded(x) {
 			continue
 		}
-		parseAsm(p, full, src, w.goroot)
+		items = append(items, lofAsmItem{pkg: p.path, dir: p.dir, file: full, std: p.std})
+	}
+	w.asmSession().prefetch(items)
+	for _, it := range items {
+		w.parseAsm(p, it)
 	}
 	slices.Sort(p.imports)
 	p.imports = slices.Compact(p.imports)
@@ -1443,6 +1462,10 @@ func (k *lofWalk) resolveIn(p *lofPkg, name string) bool {
 		k.push(d)
 		found = true
 	}
+	if p.asmFailed && (!found || p.asmNames[name]) {
+		k.fail(p, lofAsmSymbol)
+		found = true
+	}
 	if !p.asmNames[name] {
 		return found
 	}
@@ -1680,8 +1703,12 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 		k.out.dyn = true
 		return
 	}
+	// An assembly file that could not be read may hold the body.
+	found := p.asmFailed
+	if found {
+		k.fail(p, lofAsmSymbol)
+	}
 	sym := p.path + "." + d.name
-	found := false
 	for _, b := range p.asmText[sym] {
 		k.walkAsm(p, b)
 		found = true
@@ -1800,9 +1827,6 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 		k.asmDone[body.set] = true
 		body = body.set
 	}
-	if body.opaque {
-		k.fail(p, lofAsmSymbol)
-	}
 	for _, ref := range body.refs {
 		switch {
 		case strings.HasSuffix(ref, "<>"):
@@ -1833,6 +1857,9 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 				}
 			}
 		default:
+			if p.asmFailed {
+				k.fail(p, lofAsmSymbol)
+			}
 			for _, b := range p.asmText[ref] {
 				k.walkAsm(p, b)
 			}
@@ -1855,118 +1882,25 @@ func (p *lofPkg) asmName(sym string) {
 	}
 }
 
-// parseAsm records an assembly file's TEXT bodies and its data symbols. A symbol is "pkgpath.name"
-// for the Go-visible form ("·name", "pkg∕path·name"), "file:name<>" for a file-local one, and the
-// bare name otherwise. Every reference asmScan finds in the file's raw text, or in a header it
-// includes (asmInclude), counts for every body of the file: comments, macros, statements beside a
-// TEXT and DATA initializers are not told apart, which only adds references. An include no search
-// finds, or text asmScan cannot account for, makes every body opaque. A call or jump through a
-// register is a dynamic call. goroot is the toolchain's root, "" when unknown.
-func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
-	norm := func(sym string) string {
-		if i := strings.IndexByte(sym, '<'); i >= 0 && !strings.HasSuffix(sym, "<>") {
-			sym = sym[:i]
-		}
-		if strings.HasSuffix(sym, "<>") {
-			return path + ":" + strings.TrimPrefix(sym, "·")
-		}
-		pkg, name, ok := strings.Cut(sym, "·")
-		if !ok {
-			return sym
-		}
-		if pkg == "" {
-			pkg = p.path
-		}
-		return strings.ReplaceAll(pkg, "∕", "/") + "." + name
+// parseAsm records what the toolchain's assembler emits for one of p's assembly files (lofAsmObj):
+// its TEXT bodies, with whether each calls or jumps through a register, its data symbols, and the
+// references its objects' relocations make, which every body of the file shares. A file the
+// session cannot read marks p asmFailed.
+func (w *lofWorld) parseAsm(p *lofPkg, it lofAsmItem) {
+	path := it.file
+	o := w.asmSession().object(it)
+	if !o.ok {
+		p.asmFailed = true
+		return
 	}
-	var refs []string
-	seen := map[string]bool{}
-	var bodies []*lofAsm
-	var cur *lofAsm
-	opaque := false
-	scan := func(text []byte, funcdata bool) {
-		rs, o := asmScan(string(text))
-		opaque = opaque || o
-		for _, ref := range rs {
-			if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
-				continue
-			}
-			if r := norm(ref); !seen[r] {
-				seen[r] = true
-				refs = append(refs, r)
-			}
-		}
+	set := &lofAsm{file: path, refs: o.refs}
+	for _, sym := range slices.Sorted(maps.Keys(o.text)) {
+		p.asmText[sym] = append(p.asmText[sym], &lofAsm{file: path, refs: o.refs, dynamic: o.text[sym], set: set})
+		p.asmName(sym)
 	}
-	read := map[string]bool{}
-	var include func(text []byte)
-	include = func(text []byte) {
-		for _, name := range asmIncludes(text) {
-			h, ok := p.asmInclude(name, goroot)
-			if !ok {
-				opaque = true
-				continue
-			}
-			if h == "" || read[h] {
-				continue
-			}
-			read[h] = true
-			hs, err := os.ReadFile(h)
-			if err != nil {
-				opaque = true
-				continue
-			}
-			// The assembler renames these FUNCDATA operands (obj/plist.go); the toolchain fixes std's use.
-			funcdata := p.std && goroot != "" && (h == filepath.Join(goroot, "src", "runtime", "funcdata.h") ||
-				h == filepath.Join(goroot, "pkg", "include", "funcdata.h"))
-			scan(hs, funcdata)
-			include(hs)
-		}
-	}
-	scan(src, false)
-	include(src)
-	for _, line := range strings.Split(string(src), "\n") {
-		if i := strings.Index(line, "//"); i >= 0 {
-			line = line[:i]
-		}
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "#define") || strings.HasSuffix(t, "\\") {
-			continue
-		}
-		fields := strings.Fields(t)
-		if len(fields) == 0 {
-			continue
-		}
-		op := fields[0]
-		if strings.HasSuffix(op, ":") && len(fields) > 1 {
-			op = fields[1]
-		}
-		switch op {
-		case "TEXT":
-			defs := asmRefs(t)
-			if len(defs) == 0 {
-				cur = nil
-				continue
-			}
-			cur = &lofAsm{file: path}
-			sym := norm(defs[0])
-			p.asmText[sym] = append(p.asmText[sym], cur)
-			p.asmName(sym)
-			bodies = append(bodies, cur)
-			continue
-		case "GLOBL", "DATA":
-			for _, ref := range asmRefs(t) {
-				p.asmData[norm(ref)] = true
-				p.asmName(norm(ref))
-			}
-			continue
-		}
-		if cur != nil && asmIndirect(fields) {
-			cur.dynamic = true
-		}
-	}
-	set := &lofAsm{file: path, refs: refs, opaque: opaque}
-	for _, b := range bodies {
-		b.refs, b.opaque, b.set = refs, opaque, set
+	for sym := range o.data {
+		p.asmData[sym] = true
+		p.asmName(sym)
 	}
 }
 
@@ -1976,9 +1910,9 @@ var lofAsmIncludeDirective = regexp.MustCompile(`#(?:\s|/\*(?s:.*?)\*/)*include\
 
 // asmIncludes returns the names text's #include directives give, "" for one cmd/asm cannot read
 // a name from. Directives are found in the raw text, comments and strings included: cmd/asm's lexer
-// is not modelled, and reading a header it skips only adds references, while an include read from a
-// comment that resolves to nothing fails closed. cmd/asm takes only a quoted name; <name> includes
-// nothing, and another form fails the assembly when it is not skipped by an #ifdef.
+// is not modelled, and reading a header it skips only widens the go_asm.h enumeration gate. cmd/asm
+// takes only a quoted name; <name> includes nothing, and another form fails the assembly when it is
+// not skipped by an #ifdef.
 func asmIncludes(text []byte) []string {
 	var out []string
 	for _, m := range lofAsmIncludeDirective.FindAllIndex(text, -1) {
@@ -2002,172 +1936,9 @@ func asmIncludes(text []byte) []string {
 	return out
 }
 
-// asmInclude finds the header an #include of name in p's assembly reads, as cmd/asm does
-// (lex.NewInput, Input.include): the name itself, from the working directory cmd/go runs it in (p's
-// directory), then from the .s file's directory (p's again) and the -I directories cmd/go passes
-// (asmArgs): the build's object directory, holding only the generated go_asm.h, and
-// $GOROOT/pkg/include. A name leaving p.root resolves to nothing. It returns "" and true for the
-// generated go_asm.h, whose #defines are literal constants, field offsets and sizes.
-func (p *lofPkg) asmInclude(name, goroot string) (string, bool) {
-	if name == "" {
-		return "", false
-	}
-	c := name
-	if !filepath.IsAbs(c) {
-		c = filepath.Join(p.dir, c)
-	}
-	c = filepath.Clean(c)
-	if !lofUnder(c, p.root) {
-		return "", false
-	}
-	if lofRegular(c) {
-		return c, true
-	}
-	if name == "go_asm.h" {
-		return "", true
-	}
-	if goroot == "" || filepath.IsAbs(name) {
-		return "", false
-	}
-	if c := filepath.Join(goroot, "pkg", "include", name); lofRegular(c) {
-		return c, true
-	}
-	return "", false
-}
-
 func lofRegular(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.Mode().IsRegular()
-}
-
-var (
-	// lofAsmRef matches a reference name(SB): the name, then an offset that may hold parentheses,
-	// then space and block comments before the (SB). Submatch 1 is the name and 2 the SB.
-	lofAsmRef = regexp.MustCompile(`([\p{L}_·∕][\p{L}\p{N}_·∕.]*(?:<[\p{L}\p{N}_]*>)?)` +
-		`(?:[ \t]*[+-](?:[\p{L}\p{N}_ \t*/<>&|^~+-]|\([^()\n]*\))*?)?` +
-		`(?:[ \t]|/\*(?s:.*?)\*/)*\([ \t]*(SB)[ \t]*\)`)
-	// lofAsmSB matches an SB after an opening parenthesis, past space and block comments.
-	lofAsmSB      = regexp.MustCompile(`\((?:[ \t]|/\*(?s:.*?)\*/)*(SB)\b`)
-	lofAsmBareSB  = regexp.MustCompile(`\bSB\b`)
-	lofAsmDefine  = regexp.MustCompile(`#(?:[ \t]|/\*(?s:.*?)\*/)*define\b`)
-	lofAsmDefHead = regexp.MustCompile(`^(?:[ \t]|/\*(?s:.*?)\*/)*([\p{L}_][\p{L}\p{N}_]*)(\([^)\n]*\))?`)
-)
-
-// asmRefs returns the symbols text references as name(SB).
-func asmRefs(text string) []string {
-	refs, _ := asmRefsAt(text)
-	return refs
-}
-
-// asmRefsAt returns asmRefs and the offset of the SB each reference accounts for.
-func asmRefsAt(text string) ([]string, map[int]bool) {
-	var refs []string
-	at := map[int]bool{}
-	for _, m := range lofAsmRef.FindAllStringSubmatchIndex(text, -1) {
-		refs = append(refs, text[m[2]:m[3]])
-		at[m[4]] = true
-	}
-	return refs, at
-}
-
-// asmScan returns the symbols the raw text of an assembly file or header references, comments
-// included, and reports it opaque when it may reference a symbol the scan does not name: an SB after
-// "(" no reference accounts for, or a #define whose replacement holds an SB none accounts for or
-// whose reference names a parameter of the macro. cmd/asm's lexer is not modelled; a shape the scan
-// misses fails closed rather than dropping a reference.
-func asmScan(text string) ([]string, bool) {
-	refs, at := asmRefsAt(text)
-	opaque := false
-	for _, m := range lofAsmSB.FindAllStringSubmatchIndex(text, -1) {
-		if !at[m[2]] {
-			opaque = true
-		}
-	}
-	for _, m := range lofAsmDefine.FindAllStringIndex(text, -1) {
-		if asmDefineOpaque(asmLogicalLine(text[m[1]:])) {
-			opaque = true
-		}
-	}
-	return refs, opaque
-}
-
-// asmLogicalLine returns text up to the first newline no backslash continues.
-func asmLogicalLine(text string) string {
-	for i := 0; i < len(text); i++ {
-		if text[i] != '\n' {
-			continue
-		}
-		j := i
-		if j > 0 && text[j-1] == '\r' {
-			j--
-		}
-		if j == 0 || text[j-1] != '\\' {
-			return text[:i]
-		}
-	}
-	return text
-}
-
-// asmDefineOpaque reports whether a #define, from its name on, may produce a reference its
-// replacement does not spell as name(SB): an SB outside every reference, or a reference whose name
-// a parameter of a function-like macro supplies.
-func asmDefineOpaque(def string) bool {
-	head := lofAsmDefHead.FindStringSubmatchIndex(def)
-	if head == nil {
-		return lofAsmBareSB.MatchString(def)
-	}
-	body := def[head[1]:]
-	refs, at := asmRefsAt(body)
-	for _, m := range lofAsmBareSB.FindAllStringIndex(body, -1) {
-		if !at[m[0]] {
-			return true
-		}
-	}
-	if head[4] < 0 {
-		return false
-	}
-	params := map[string]bool{}
-	for _, p := range strings.Split(def[head[4]+1:head[5]-1], ",") {
-		p = strings.TrimSpace(p)
-		if p == "..." {
-			p = "__VA_ARGS__"
-		}
-		params[p] = true
-	}
-	for _, ref := range refs {
-		for _, id := range lofAsmIdent.FindAllString(ref, -1) {
-			if params[id] {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// asmIndirect reports whether an instruction is a call or jump to an address held in a register.
-func asmIndirect(fields []string) bool {
-	if strings.HasSuffix(fields[0], ":") {
-		fields = fields[1:]
-	}
-	if len(fields) < 2 {
-		return false
-	}
-	switch strings.ToUpper(fields[0]) {
-	case "CALL", "JMP", "BL", "B", "BR", "BLR", "JAL", "JALR", "BCTRL", "BCTR":
-	default:
-		return false
-	}
-	target := strings.Join(fields[1:], " ")
-	if strings.Contains(target, "(SB)") || strings.Contains(target, "(PC)") {
-		return false
-	}
-	for _, r := range target {
-		if r >= 'a' && r <= 'z' {
-			// A label: registers are spelled in upper case.
-			return strings.ContainsAny(target, "()*")
-		}
-	}
-	return true
 }
 
 // lofToolchain finds the standard library source the release's go command builds from, which must
@@ -2199,17 +1970,23 @@ func lofToolchain(ctx context.Context, buildDir string, env []string, release *g
 	return root, ""
 }
 
-// lofModCache returns the module cache's root the build's go command reads modules from, or "".
-func lofModCache(ctx context.Context, buildDir string, env []string) string {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE")
+// lofGoEnv returns the module cache's root the build's go command reads modules from, or "", and
+// the GOFLAGS it builds with, from env or the go env files it reads, with whether the go command
+// reported them. Flags a build's own command line passes are not seen.
+func lofGoEnv(ctx context.Context, buildDir string, env []string) (root, goflags string, ok bool) {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE", "GOFLAGS")
 	cmd.Dir = buildDir
 	cmd.Env = env
 	out, err := cmd.Output()
-	root := strings.TrimSpace(string(out))
-	if err != nil || !filepath.IsAbs(root) {
-		return ""
+	if err != nil {
+		return "", "", false
 	}
-	return root
+	root, goflags, _ = strings.Cut(string(out), "\n")
+	goflags = strings.TrimSpace(goflags)
+	if root = strings.TrimSpace(root); !filepath.IsAbs(root) {
+		root = ""
+	}
+	return root, goflags, true
 }
 
 // links returns the packages the build did not load that a file in dir can link, over every build

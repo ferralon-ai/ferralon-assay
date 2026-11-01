@@ -907,7 +907,7 @@ func (v *Veto) valueText(text string, shell bool) (int, string) {
 func (v *Veto) segments(segs []segment) string { return v.segmentsAt(segs, false) }
 
 // segmentsAt gates each command of segs; recipe strips a make recipe prefix. A command piped
-// into an interpreter or shell, directly or through tee, keeps its URL words: what it fetches
+// into an interpreter or shell, directly or through other commands, keeps its URL words: what it fetches
 // runs. So does an interpreter or shell that runs a process substitution
 // (python3 <(curl -sS https://bootstrap.pypa.io/get-pip.py) x), which splits as one command.
 func (v *Veto) segmentsAt(segs []segment, recipe bool) string {
@@ -921,26 +921,17 @@ func (v *Veto) segmentsAt(segs []segment, recipe bool) string {
 }
 
 // feedsInput reports whether segs[k] pipes into an interpreter or shell (runsInput), directly
-// or through tee commands, each of which passes its input on.
+// or through later commands of the same pipeline: a filter between them (tee, sed, grep)
+// passes what was fetched on.
 func feedsInput(segs []segment, k int) bool {
 	for j := k; segs[j].end == "|" && j+1 < len(segs); j++ {
-		next := segs[j+1]
-		if runsInput(next) {
+		if runsInput(segs[j+1]) {
 			return true
-		}
-		i := programAt(next.words)
-		if i >= len(next.words) {
-			return false
-		}
-		if name, ok := CommandName(next.words[i]); !ok || name != "tee" {
-			return false
 		}
 	}
 	return false
 }
 
-// runsInput reports whether seg's program is an interpreter or shell, which runs what a pipe
-// feeds it: curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - x.
 func runsInput(seg segment) bool {
 	i := programAt(seg.words)
 	if i >= len(seg.words) {

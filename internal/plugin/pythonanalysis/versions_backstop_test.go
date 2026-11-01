@@ -30,6 +30,7 @@ func TestResolveVersions_UnrecognisedInstallSurface(t *testing.T) {
 		{"pip under bash -c", "ci/steps.yml", "steps:\n  - command: bash -c \"pip install PyJWT==1.0.0\"\n", true, "ci/steps.yml:2"},
 		{"pip by a venv path", "ci/steps.yml", "steps:\n  - command: ./venv/bin/pip install PyJWT==1.0.0\n", true, "ci/steps.yml:2"},
 		{"get-pip piped into python", "ci/steps.yml", "steps:\n  - command: curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - PyJWT==1.0.0\n", true, "ci/steps.yml:2"},
+		{"get-pip through a filter", "ci/steps.yml", "steps:\n  - command: curl -sS https://bootstrap.pypa.io/get-pip.py | sed 's/a/b/' | python3 - PyJWT==1.0.0\n", true, "ci/steps.yml:2"},
 		{"get-pip through tee", "ci/steps.yml", "steps:\n  - command: curl -sS https://bootstrap.pypa.io/get-pip.py | tee g.py | python3 - PyJWT==1.0.0\n", true, "ci/steps.yml:2"},
 		{"get-pip in a process substitution", "ci/steps.yml", "steps:\n  - command: python3 <(curl -sS https://bootstrap.pypa.io/get-pip.py) PyJWT==1.0.0\n", true, "ci/steps.yml:2"},
 		{"single-quoted YAML continuation", "ci/steps.yml", "steps:\n  - command: 'echo start &&\n      pip install PyJWT==1.0.0'\n", true, "ci/steps.yml:2"},

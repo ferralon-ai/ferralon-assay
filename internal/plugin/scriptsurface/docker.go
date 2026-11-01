@@ -333,8 +333,9 @@ const dockerReadingsMax = 64
 // dockerfile applies the rule to a Dockerfile, stage by stage. CMD and ENTRYPOINT run after
 // every RUN, so they are checked against the stage as it ends.
 //
-// dockerHeredocs reads a line as BuildKit does only where it holds no $, backslash or
-// backtick; elsewhere it may open a heredoc BuildKit doesn't, whose body would then hide
+// dockerHeredocs takes a line's instruction as BuildKit's splitCommand does and splits its
+// words at Unicode blanks as BuildKit's lexer does, but reads those words as BuildKit does
+// only where the line holds no $, backslash or backtick; elsewhere it may open a heredoc BuildKit doesn't, whose body would then hide
 // instructions BuildKit runs. Where both open heredocs, they agree on how many and on their
 // names, except on a line with a ${name<op>word} expansion, which is withheld (dockerUnsure).
 // So the file is read once for each way the heredocs on such lines may go, open or not, and

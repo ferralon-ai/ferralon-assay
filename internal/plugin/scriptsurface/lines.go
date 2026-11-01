@@ -251,8 +251,9 @@ func dockerLines(src string, open func(start int, line string) bool) (lines []st
 
 var (
 	dockerHeredocRE     = regexp.MustCompile(`^(\d*)<<(-?)([^<]*)$`)
-	dockerHeredocInstrs = map[string]bool{"RUN": true, "COPY": true, "ADD": true}
+	dockerHeredocInstrs = map[string]bool{"run": true, "copy": true, "add": true}
 	dockerOpExpandRE    = regexp.MustCompile(`\$\{[^}]*[:+\-?#%/]`)
+	dockerBlankRE       = regexp.MustCompile(`[\t\v\f\r ]+`)
 )
 
 // dockerUnsure reports a RUN, COPY or ADD instruction, ONBUILD or not, that holds both a <<
@@ -263,11 +264,76 @@ func dockerUnsure(line string) bool {
 	if !strings.Contains(line, "<<") || !dockerOpExpandRE.MatchString(line) {
 		return false
 	}
-	words := strings.Fields(line)
-	if len(words) > 0 && strings.EqualFold(words[0], "ONBUILD") {
-		words = words[1:]
+	name, _ := dockerInstr(line)
+	return dockerHeredocInstrs[name]
+}
+
+// dockerInstr returns the instruction a line gives, in lower case, or for ONBUILD the one it
+// triggers, and that instruction's arguments after its --flag words, taken as BuildKit's
+// splitCommand takes them: the name ends at an ASCII blank, and the flags at a word that does
+// not start with -- or after a bare --.
+func dockerInstr(line string) (name, args string) {
+	name, args = dockerSplit(line)
+	if strings.ToLower(name) == "onbuild" {
+		name, args = dockerSplit(args)
 	}
-	return len(words) > 0 && dockerHeredocInstrs[strings.ToUpper(words[0])]
+	return strings.ToLower(name), args
+}
+
+func dockerSplit(line string) (name, args string) {
+	cmd := dockerBlankRE.Split(strings.TrimSpace(line), 2)
+	if len(cmd) == 2 {
+		args = strings.TrimSpace(dockerFlagsEnd(cmd[1]))
+	}
+	return cmd[0], args
+}
+
+// dockerFlagsEnd returns what is left of line after its leading --flag words, a port of
+// BuildKit's extractBuilderFlags, which reads it a byte at a time.
+func dockerFlagsEnd(line string) string {
+	const (
+		spaces = iota
+		inWord
+		inQuote
+	)
+	phase, quote := spaces, byte(0)
+	var word strings.Builder
+	for pos := 0; pos < len(line); pos++ {
+		ch := line[pos]
+		if phase == spaces {
+			if unicode.IsSpace(rune(ch)) {
+				continue
+			}
+			if ch != '-' || pos+1 == len(line) || line[pos+1] != '-' {
+				return line[pos:]
+			}
+			phase = inWord
+		}
+		switch {
+		case phase == inWord && unicode.IsSpace(rune(ch)):
+			if word.String() == "--" {
+				return line[pos:]
+			}
+			word.Reset()
+			phase = spaces
+			continue
+		case phase == inWord && (ch == '\'' || ch == '"'):
+			quote, phase = ch, inQuote
+			continue
+		case phase == inQuote && ch == quote:
+			phase = inWord
+			continue
+		case ch == '\\':
+			if pos+1 == len(line) {
+				phase = inWord
+				continue
+			}
+			pos++
+			ch = line[pos]
+		}
+		word.WriteByte(ch)
+	}
+	return ""
 }
 
 // dockerHeredocs returns the heredocs a RUN, COPY or ADD instruction, ONBUILD or not, opens in
@@ -276,20 +342,12 @@ func dockerUnsure(line string) bool {
 // and the name, unquoted, is its terminator. A line BuildKit can't split, for an unterminated
 // quote, opens none.
 func dockerHeredocs(line string) []heredoc {
-	words := dockerWords(line)
-	if len(words) > 0 && strings.EqualFold(words[0], "ONBUILD") {
-		words = words[1:]
-	}
-	if len(words) < 2 || !dockerHeredocInstrs[strings.ToUpper(words[0])] {
-		return nil
-	}
 	var form []string
-	// words[0] is verbatim, so it locates the rest of the line.
-	if rest := strings.TrimSpace(line[strings.Index(line, words[0])+len(words[0]):]); json.Unmarshal([]byte(rest), &form) == nil {
+	if name, args := dockerInstr(line); !dockerHeredocInstrs[name] || json.Unmarshal([]byte(args), &form) == nil {
 		return nil
 	}
 	var docs []heredoc
-	for _, w := range words {
+	for _, w := range dockerWords(line) {
 		if m := dockerHeredocRE.FindStringSubmatch(w); m != nil {
 			if name := dockerWords(m[3]); len(name) == 1 && unquoteWord(name[0]) != "" {
 				docs = append(docs, heredoc{word: unquoteWord(name[0]), dash: m[2] == "-"})

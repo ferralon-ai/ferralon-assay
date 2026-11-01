@@ -350,6 +350,7 @@ func TestResolveDependencySymbolsFromCachedIndex(t *testing.T) {
 // TestComputeTaintFromCachedIngresses pins that every advisory's taint run from the cached
 // ingresses gets exactly what it gets from a fresh ingress search, and that the search runs once.
 func TestComputeTaintFromCachedIngresses(t *testing.T) {
+	t.Parallel()
 	sinks := [][]string{
 		{sinkSCIPIn(t, taintFixtureDir, "/Sink().")},
 		{"scip-go gomod example.com/absent . example.com/absent/Nowhere()."},

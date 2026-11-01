@@ -35,7 +35,18 @@ type lofResult struct {
 // prepare, when set, runs between the load and the gate.
 func lofRun(t *testing.T, dir, module string, symbols map[string][]string, unknown bool, prepare func(*LoadResult)) lofResult {
 	t.Helper()
-	load, err := LoadProgram(context.Background(), dir)
+	return lofRunCtx(t, context.Background(), dir, module, symbols, unknown, prepare)
+}
+
+// lofRunNarrow is lofRun with module assembly on lofAsmNarrowPorts' two ports.
+func lofRunNarrow(t *testing.T, dir, module string, symbols map[string][]string, unknown bool, prepare func(*LoadResult)) lofResult {
+	t.Helper()
+	return lofRunCtx(t, lofAsmNarrowPorts(context.Background()), dir, module, symbols, unknown, prepare)
+}
+
+func lofRunCtx(t *testing.T, base context.Context, dir, module string, symbols map[string][]string, unknown bool, prepare func(*LoadResult)) lofResult {
+	t.Helper()
+	load, err := LoadProgram(base, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +72,7 @@ func lofRun(t *testing.T, dir, module string, symbols map[string][]string, unkno
 	}
 	scanned := vulnScan{imports: map[string][]string{module: vulnerable}, symbols: symbols}
 	// One scan's run cache, as the host gives it: the gate and the engine read below share one build.
-	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	ctx := WithRunCacheDir(base, t.TempDir())
 	res := withholdForLeftOutFiles(ctx, refuted, scanned, load.Packages, release, dir, env)
 	withheld := res.Refutation == nil
 	if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != withheld {
@@ -91,7 +102,7 @@ func lofRun(t *testing.T, dir, module string, symbols map[string][]string, unkno
 // thing its declaration closure cannot follow. The module example.com/v holds the vulnerable package
 // example.com/v/vuln; a file built only under the lofalt tag is left out.
 func TestLeftOutEngine_Constructs(t *testing.T) {
-	lofAsmNarrowPorts(t)
+	t.Parallel()
 	base := map[string]string{
 		// The go directive binds the toolchain (directivesBindToolchain): goDirectiveFloor is 22.
 		"go.mod":    "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
@@ -347,12 +358,13 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			symbols := tc.symbols
 			if symbols == nil {
 				symbols = bad
 			}
 			dir := writeTree(t, merge(base, tc.files))
-			got := lofRun(t, dir, "example.com/v", symbols, tc.unknown, nil)
+			got := lofRunNarrow(t, dir, "example.com/v", symbols, tc.unknown, nil)
 			if got.withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
 			}
@@ -502,6 +514,10 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.modcache == "" && !tc.cached {
+				// The rest set GOMODCACHE, and so run alone.
+				t.Parallel()
+			}
 			tree := merge(base, tc.files)
 			if tc.cached {
 				tree = relocate(merge(merge(base, cachedBase), tc.files))
@@ -567,6 +583,7 @@ func TestLeftOutEngine_Uncompilable(t *testing.T) {
 // TestLeftOutEngine_LoadedValues: a left-out file hands its own value to loaded code through a value
 // loaded code made, which loaded code the build runs (lib.Fire) later calls the symbol through.
 func TestLeftOutEngine_LoadedValues(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport (\n\t\"example.com/m/lib\"\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { vuln.Safe(); lib.Fire() }\n",
@@ -703,7 +720,6 @@ func TestLofFixedSource(t *testing.T) {
 
 // TestLeftOutEngine_FailClosed: what the engine cannot bound, build or establish withholds.
 func TestLeftOutEngine_FailClosed(t *testing.T) {
-	lofAsmNarrowPorts(t)
 	tree := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -714,7 +730,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 	bad := map[string][]string{"example.com/v/vuln": {"Bad"}}
 
 	t.Run("within budget the file releases", func(t *testing.T) {
-		if got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, nil); got.withheld {
+		if got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, nil); got.withheld {
 			t.Fatalf("withheld, want released (facts %s)", lofDescribe(got))
 		}
 	})
@@ -722,7 +738,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		saved := lofBudgetDecls
 		lofBudgetDecls = 0
 		t.Cleanup(func() { lofBudgetDecls = saved })
-		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, nil)
+		got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -731,7 +747,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		saved := lofBudgetTime
 		lofBudgetTime = 0
 		t.Cleanup(func() { lofBudgetTime = saved })
-		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, nil)
+		got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -745,7 +761,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}))
 		blocked := filepath.Join(dir, "_dep", "d", "d.go")
 		t.Cleanup(func() { _ = os.Chmod(blocked, 0o644) })
-		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+		got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 			if err := os.Chmod(blocked, 0); err != nil {
 				t.Fatal(err)
 			}
@@ -761,7 +777,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		load.buildGoVersion = load.goVersion
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(lofAsmNarrowPorts(context.Background()))
 		cancel()
 		e := loadLofEngine(ctx, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
 		got := lofResult{engine: e, facts: map[string]*lofFacts{}}
@@ -784,7 +800,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			dir := writeTree(t, tree)
 			path := filepath.Join(dir, "x.go")
 			t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
-			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 				var err error
 				if tc.src == "" {
 					err = os.Chmod(path, 0)
@@ -830,7 +846,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			dir := writeTree(t, dep(tc.imp, tc.body))
 			blocked := filepath.Join(dir, tc.blocked)
 			t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
-			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 				if err := os.Chmod(blocked, tc.mode); err != nil {
 					t.Fatal(err)
 				}
@@ -874,7 +890,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 					_ = os.Chmod(filepath.Join(dir, p), 0o755)
 				}
 			})
-			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 				for p, mode := range tc.blocked {
 					if err := os.Chmod(filepath.Join(dir, p), mode); err != nil {
 						t.Fatal(err)
@@ -897,7 +913,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}))
 		blocked := filepath.Join(dir, "_dep", "go.mod")
 		t.Cleanup(func() { _ = os.Chmod(blocked, 0o644) })
-		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+		got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 			if err := os.Chmod(blocked, 0); err != nil {
 				t.Fatal(err)
 			}
@@ -914,7 +930,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}))
 		vdir := filepath.Join(dir, "_v", "vuln")
 		t.Cleanup(func() { _ = os.Chmod(vdir, 0o755) })
-		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+		got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 			if err := os.Chmod(vdir, 0o311); err != nil {
 				t.Fatal(err)
 			}
@@ -938,7 +954,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"main.go": strs,
 			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName(); vuln.Bad() }\n\nfunc other() {}\n",
 		}))
-		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -951,7 +967,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"main.go":   strs,
 			"tool/a.go": "//go:build lofalt\n\npackage tool\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName() }\n\nfunc init() { vuln.Safe() }\n",
 		}))
-		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -970,7 +986,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"_v/u/u_other.go": "//go:build !lofalt\n\npackage u\n\nfunc Helper() {}\n",
 			"_v/w2/w2.go":     "package w2\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
 		}))
-		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
 		if got.withheld {
 			t.Fatalf("withheld, want released (facts %s)", lofDescribe(got))
 		}
@@ -982,7 +998,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"a/a.go": "//go:build lofalt\n\npackage a\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
 			"b/b.go": "//go:build lofalt\n\npackage b\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Safe() }\n",
 		}))
-		got := lofRun(t, dir, "example.com/v", bad, false, nil)
+		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
 		reaches := func(path string) bool {
 			f := got.facts[path]
 			if f == nil {
@@ -995,7 +1011,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}
 	})
 	t.Run("the call graphs cannot be built", func(t *testing.T) {
-		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, func(load *LoadResult) {
+		got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, func(load *LoadResult) {
 			// A package with syntax but no type information for it: SSA cannot build it.
 			fset := token.NewFileSet()
 			f, err := parser.ParseFile(fset, "broken.go", "package broken\n\nfunc F() { F() }\n", 0)
@@ -1016,7 +1032,6 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 // TestLeftOutEngine_StandardLibrary: against a standard-library refutation the engine judges the
 // toolchain's own left-out files, and only the release the build runs on.
 func TestLeftOutEngine_StandardLibrary(t *testing.T) {
-	lofAsmNarrowPorts(t)
 	// The scan is for linux/amd64: crypto/x509's darwin files are left out.
 	t.Setenv("GOOS", "linux")
 	t.Setenv("GOARCH", "amd64")
@@ -1072,7 +1087,7 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 			if tc.goflags != "" {
 				prepare = func(*LoadResult) { t.Setenv("GOFLAGS", tc.goflags) }
 			}
-			got := lofRun(t, writeTree(t, tc.tree), "stdlib", tc.symbols, tc.unknown, prepare)
+			got := lofRunNarrow(t, writeTree(t, tc.tree), "stdlib", tc.symbols, tc.unknown, prepare)
 			if got.withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
 			}
@@ -1105,7 +1120,7 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 		{"the GOROOT is another release's", "go1.20\n", lofGorootMismatch, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := lofRun(t, writeTree(t, useStd("os", "_, _ = os.Open(\"x\")")), "stdlib", map[string][]string{"os": {"Root.Open"}}, false, func(*LoadResult) {
+			got := lofRunNarrow(t, writeTree(t, useStd("os", "_, _ = os.Open(\"x\")")), "stdlib", map[string][]string{"os": {"Root.Open"}}, false, func(*LoadResult) {
 				root := t.TempDir()
 				switch {
 				case tc.absent:
@@ -1226,7 +1241,7 @@ func TestLofUnder(t *testing.T) {
 // file y_alt.go, left out and built under another tag, is the only importer of the packages holding
 // definers, so x.go's closure never enters them.
 func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
-	lofAsmNarrowPorts(t)
+	t.Parallel()
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1300,7 +1315,7 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTree(t, merge(base, tc.files))
-			got := lofRun(t, dir, "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+			got := lofRunNarrow(t, dir, "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
 			f := got.facts["x.go"]
 			if f == nil {
 				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
@@ -1340,7 +1355,7 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 // spelling that assembles them as an operand of a call or a data move follows that definer, and
 // one some build cannot assemble fails the file closed.
 func TestLeftOutEngine_AsmFuncdata(t *testing.T) {
-	lofAsmNarrowPorts(t)
+	t.Parallel()
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1393,7 +1408,7 @@ func TestLeftOutEngine_AsmFuncdata(t *testing.T) {
 	bad := symKey("example.com/v/vuln", "Bad")
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := lofRun(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+			got := lofRunNarrow(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
 			f := got.facts["x.go"]
 			if f == nil {
 				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
@@ -1421,7 +1436,6 @@ func TestLeftOutEngine_AsmFuncdata(t *testing.T) {
 // build cannot assemble, or that GOFLAGS passes assembler flags to, fails its bodies closed. The
 // module sits one directory below the tree, beside a header outside it.
 func TestLeftOutEngine_AsmInclude(t *testing.T) {
-	lofAsmNarrowPorts(t)
 	base := map[string]string{
 		"m/go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"m/main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1537,7 +1551,7 @@ func TestLeftOutEngine_AsmInclude(t *testing.T) {
 		if goflags != "" {
 			prepare = func(*LoadResult) { t.Setenv("GOFLAGS", goflags) }
 		}
-		got := lofRun(t, filepath.Join(dir, "m"), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, prepare)
+		got := lofRunNarrow(t, filepath.Join(dir, "m"), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, prepare)
 		f := got.facts["app/x.go"]
 		if f == nil {
 			t.Fatalf("the engine holds no app/x.go (facts %s)", lofDescribe(got))
@@ -1557,7 +1571,10 @@ func TestLeftOutEngine_AsmInclude(t *testing.T) {
 		}
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) { check(t, tc.files, "", tc.reach, tc.item) })
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			check(t, tc.files, "", tc.reach, tc.item)
+		})
 	}
 	// GOFLAGS that change what the assembler emits or runs (assembler flags, a -toolexec wrapper, an
 	// overlay) leave the build's objects unreproducible, so the file fails closed.
@@ -1581,7 +1598,7 @@ func TestLeftOutEngine_AsmInclude(t *testing.T) {
 // link may keep another package's DUPOK definition over a non-DUPOK one in either load order, and the
 // own definition may sit in a file another build leaves out.
 func TestLeftOutEngine_AsmLinkOwnDefiner(t *testing.T) {
-	lofAsmNarrowPorts(t)
+	t.Parallel()
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1641,7 +1658,7 @@ func TestLeftOutEngine_AsmLinkOwnDefiner(t *testing.T) {
 	bad := symKey("example.com/v/vuln", "Bad")
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := lofRun(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+			got := lofRunNarrow(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
 			f := got.facts["x.go"]
 			if f == nil {
 				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
@@ -1669,7 +1686,7 @@ func TestLeftOutEngine_AsmLinkOwnDefiner(t *testing.T) {
 // TestLeftOutEngine_AsmLinkDefinerOrder: the definer of a bare symbol sits in a package no closure
 // has parsed yet; whether another closure parsed it first changes nothing.
 func TestLeftOutEngine_AsmLinkDefinerOrder(t *testing.T) {
-	lofAsmNarrowPorts(t)
+	t.Parallel()
 	dir := writeTree(t, map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1681,7 +1698,7 @@ func TestLeftOutEngine_AsmLinkDefinerOrder(t *testing.T) {
 		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
 		"x_lofalt.s":      "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n",
 	})
-	ctx := context.Background()
+	ctx := lofAsmNarrowPorts(context.Background())
 	load, err := LoadProgram(ctx, dir)
 	if err != nil {
 		t.Fatal(err)
@@ -1783,7 +1800,7 @@ func lofELFObject(names ...string) []byte {
 // inside the toolchain fails closed for a standard-library refutation only, and one of a module
 // for every refutation.
 func TestLeftOutEngine_AsmLinkDefinerStd(t *testing.T) {
-	lofAsmNarrowPorts(t)
+	t.Parallel()
 	base := map[string]string{
 		"go.mod":     "module example.com/m\n\ngo 1.22.0\n",
 		"main.go":    "package main\n\nfunc main() {}\n",
@@ -1803,7 +1820,7 @@ func TestLeftOutEngine_AsmLinkDefinerStd(t *testing.T) {
 		}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := lofRun(t, writeTree(t, merge(base, tc.files)), "stdlib", map[string][]string{"strings": {"Index"}}, false, nil)
+			got := lofRunNarrow(t, writeTree(t, merge(base, tc.files)), "stdlib", map[string][]string{"strings": {"Index"}}, false, nil)
 			f := got.facts["x.go"]
 			if f == nil {
 				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))

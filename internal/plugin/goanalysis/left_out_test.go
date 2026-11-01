@@ -142,6 +142,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 // through other packages, loaded or not. A file reaching only other standard-library packages
 // does not count, so another platform's file importing syscall leaves the refutation standing.
 func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/webdep v0.0.0\n\texample.com/other v0.0.0\n\texample.com/tagdep v0.0.0\n\tlocalx v0.0.0\n\tgolang.org/x/net v0.0.0\n)\n\n" +
 			"replace (\n\texample.com/webdep => ./_webdep\n\texample.com/other => ./_other\n\texample.com/tagdep => ./_tagdep\n\tlocalx => ./_localx\n\tgolang.org/x/net => ./_xnet\n)\n",
@@ -207,6 +208,7 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := writeTree(t, merge(base, tc.files))
 			load, err := LoadProgram(context.Background(), dir)
 			if err != nil {

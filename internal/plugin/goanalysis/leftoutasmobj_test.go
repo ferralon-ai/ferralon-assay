@@ -39,12 +39,10 @@ func lofAsmTestPorts(p lofPort) bool {
 	return p == lofPort{"linux", "amd64"} || p == lofPort{"darwin", "arm64"}
 }
 
-// lofAsmNarrowPorts assembles the test's module files on lofAsmTestPorts' two ports only: for
-// fixtures that exercise no port enumeration, port collapse, non-gc exclusion or cap.
-func lofAsmNarrowPorts(t *testing.T) {
-	t.Helper()
-	lofAsmModPorts = lofAsmTestPorts
-	t.Cleanup(func() { lofAsmModPorts = nil })
+// lofAsmNarrowPorts returns ctx, under which sessions assemble module files on lofAsmTestPorts' two
+// ports only: for fixtures that exercise no port enumeration, port collapse, non-gc exclusion or cap.
+func lofAsmNarrowPorts(ctx context.Context) context.Context {
+	return context.WithValue(ctx, lofAsmModPortsKey{}, lofAsmTestPorts)
 }
 
 // lofAsmTestSession returns a session for the module tree files, whose GOFLAGS are goflags, and the
@@ -84,6 +82,7 @@ func lofEnvLast(env []string, key string) (string, bool) {
 // over every gc port, from go tool dist list, that some build of it admits; a file some such build
 // cannot assemble, or whose generated go_asm.h cannot be reproduced, is not known (ok is false).
 func TestLofAsmObj(t *testing.T) {
+	t.Parallel()
 	mod := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n", "p/p.go": "package p\n"}
 	// hdrConst declares decl in b.go, left out under t0, for a text that includes go_asm.h.
 	hdrConst := func(decl, body string) map[string]string {
@@ -424,7 +423,7 @@ func TestLofAsmObjHeaderNoFetch(t *testing.T) {
 		if len(c.Args) > 1 && c.Args[1] == "build" {
 			mu.Lock()
 			builds = append(builds, c)
-			c.Stderr = io.MultiWriter(c.Stderr, &stderr)
+			c.Stderr = io.MultiWriter(c.Stderr, lofLockedWriter{&mu, &stderr})
 			mu.Unlock()
 		}
 	})
@@ -482,7 +481,13 @@ func TestLofAsmObjGoflags(t *testing.T) {
 	t.Run("the nonce avoids text of the user's GOFLAGS", func(t *testing.T) {
 		n := 0
 		old := lofAsmNonce
-		lofAsmNonce = func() string { n++; return "FERRALON_ASMHDR_" + string(rune('0'+n-1)) }
+		var nmu sync.Mutex
+		lofAsmNonce = func() string {
+			nmu.Lock()
+			defer nmu.Unlock()
+			n++
+			return "FERRALON_ASMHDR_" + string(rune('0'+n-1))
+		}
 		t.Cleanup(func() { lofAsmNonce = old })
 		var mu sync.Mutex
 		var args []string
@@ -641,6 +646,10 @@ func TestLeftOutEngine_AsmListing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.setup == nil && tc.goflags == "" {
+				// The rest set the environment or a hook, and so run alone.
+				t.Parallel()
+			}
 			if tc.setup != nil {
 				tc.setup(t)
 			}
@@ -675,6 +684,49 @@ func TestLeftOutEngine_AsmListing(t *testing.T) {
 			}
 			if got.engine.AsmToolchain != want {
 				t.Errorf("run record: assembler toolchain %q, want %q", got.engine.AsmToolchain, want)
+			}
+		})
+	}
+}
+
+// lofLockedWriter serializes writes from builds the session runs concurrently.
+type lofLockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l lofLockedWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(b)
+}
+
+// TestLofMemoShared: a failure computed under a session whose context is done is not kept for a
+// session whose context is live; a failure under a live context is.
+func TestLofMemoShared(t *testing.T) {
+	t.Parallel()
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	live := context.Background()
+	for _, tc := range []struct {
+		name  string
+		first context.Context
+		want  string
+		calls int
+	}{
+		{"failure under a done context", done, "ok", 2},
+		{"failure under a live context", live, "", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			m := map[string]*lofOnce[string]{}
+			calls := 0
+			if v := lofMemoShared(tc.first, &mu, m, "k", func() string { calls++; return "" }); v != "" {
+				t.Fatalf("first = %q", v)
+			}
+			v := lofMemoShared(live, &mu, m, "k", func() string { calls++; return "ok" })
+			if v != tc.want || calls != tc.calls {
+				t.Errorf("second = %q after %d calls, want %q after %d", v, calls, tc.want, tc.calls)
 			}
 		})
 	}

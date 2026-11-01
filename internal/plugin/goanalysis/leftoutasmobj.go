@@ -74,11 +74,14 @@ var lofAsmNonce = func() string {
 // lofAsmExecHook, when set, sees every command the session runs before it runs.
 var lofAsmExecHook func(*exec.Cmd)
 
-// lofAsmStdPorts and lofAsmModPorts, when set, keep only the ports they hold for of those a
-// standard-library file, or any other, is assembled on. They are a test seam: tests whose reads stand
-// in for the real thing, rather than exercise port enumeration, set them (lofAsmStdPorts with
-// lofAsmCacheDir to a cache of their own).
-var lofAsmStdPorts, lofAsmModPorts func(lofPort) bool
+// lofAsmStdPorts, when set, keeps only the ports it holds for of those a standard-library file is
+// assembled on; a filter a session's context carries under lofAsmModPortsKey does the same for any
+// other file. They are a test seam: tests whose reads stand in for the real thing, rather than
+// exercise port enumeration, set them (lofAsmStdPorts once, with lofAsmCacheDir to a cache of their
+// own). The context carries the module filter so that tests narrowing it can run in parallel.
+var lofAsmStdPorts func(lofPort) bool
+
+type lofAsmModPortsKey struct{}
 
 // lofAsmSession reads one engine's assembly through the toolchain: tool is the assembler's, nil when
 // none can be run faithfully (off), in which case every file fails closed.
@@ -91,6 +94,7 @@ type lofAsmSession struct {
 	goflags  string
 	vendor   bool
 	excluded func(constraint.Expr) bool
+	modPorts func(lofPort) bool
 	tmp      string
 	sem      chan struct{}
 
@@ -109,6 +113,8 @@ type lofAsmSession struct {
 type lofOnce[T any] struct {
 	once sync.Once
 	v    T
+	// cut marks a zero v that its session's cancellation or deadline may have caused.
+	cut bool
 }
 
 func lofMemo[T any](mu *sync.Mutex, m map[string]*lofOnce[T], key string, f func() T) T {
@@ -121,6 +127,35 @@ func lofMemo[T any](mu *sync.Mutex, m map[string]*lofOnce[T], key string, f func
 	mu.Unlock()
 	e.once.Do(func() { e.v = f() })
 	return e.v
+}
+
+// lofMemoShared is lofMemo for what sessions share, computed under the context of the session that
+// asks first. A failure that session's context was done for is not kept, and a session whose own
+// context is live computes again rather than take it.
+func lofMemoShared[T comparable](ctx context.Context, mu *sync.Mutex, m map[string]*lofOnce[T], key string, f func() T) T {
+	for {
+		mu.Lock()
+		e := m[key]
+		if e == nil {
+			e = &lofOnce[T]{}
+			m[key] = e
+		}
+		mu.Unlock()
+		e.once.Do(func() {
+			var zero T
+			if e.v = f(); e.v == zero && ctx.Err() != nil {
+				e.cut = true
+				mu.Lock()
+				if m[key] == e {
+					delete(m, key)
+				}
+				mu.Unlock()
+			}
+		})
+		if !e.cut || ctx.Err() != nil {
+			return e.v
+		}
+	}
 }
 
 // newLofAsmSession returns the session for a build whose go command runs in buildDir with env, and
@@ -139,6 +174,7 @@ func newLofAsmSession(ctx context.Context, deadline time.Time, root, buildDir st
 		stdGaps: map[string]bool{},
 		deps:    map[string]*lofOnce[*lofDepPkg]{}, depPaths: map[string]string{}, closures: map[string]*lofOnce[lofDepFacts]{},
 	}
+	s.modPorts, _ = ctx.Value(lofAsmModPortsKey{}).(func(lofPort) bool)
 	if deadline.IsZero() {
 		s.ctx, s.cancel = context.WithCancel(ctx)
 	} else {
@@ -270,37 +306,37 @@ type lofAsmObjWire struct {
 	Text, Data map[string]bool
 }
 
-// stdObject reads a standard-library file through the toolchain's memory and the cache. Only a
-// file read whole is kept.
+// stdObject reads a standard-library file through the toolchain's memory and the cache, once for
+// the sessions that ask at the same time. Only a file read whole is kept.
 func (s *lofAsmSession) stdObject(it lofAsmItem) *lofAsmObj {
 	t := s.tool
-	t.mu.Lock()
-	o := t.std[it.pkg+"\x00"+it.file]
-	t.mu.Unlock()
-	if o != nil {
-		return o
-	}
-	cache := t.stdCache(it)
-	if cache != "" {
-		var w lofAsmObjWire
-		if b, err := os.ReadFile(cache); err == nil && json.Unmarshal(b, &w) == nil && w.Text != nil && w.Data != nil {
-			o = &lofAsmObj{ok: true, refs: w.Refs, text: w.Text, data: w.Data}
-		}
-	}
-	if o == nil {
-		if o = s.read(it); o == nil {
-			return &lofAsmObj{}
-		}
-		if b, err := json.Marshal(lofAsmObjWire{o.refs, o.text, o.data}); err == nil && cache != "" && os.MkdirAll(filepath.Dir(cache), 0o755) == nil {
-			tmp := cache + "." + strconv.Itoa(os.Getpid()) + ".tmp"
-			if os.WriteFile(tmp, b, 0o644) == nil {
-				_ = os.Rename(tmp, cache)
+	key := it.pkg + "\x00" + it.file
+	o := lofMemoShared(s.ctx, &t.mu, t.std, key, func() *lofAsmObj {
+		cache := t.stdCache(it)
+		if cache != "" {
+			var w lofAsmObjWire
+			if b, err := os.ReadFile(cache); err == nil && json.Unmarshal(b, &w) == nil && w.Text != nil && w.Data != nil {
+				return &lofAsmObj{ok: true, refs: w.Refs, text: w.Text, data: w.Data}
 			}
 		}
+		o := s.read(it)
+		if o == nil {
+			return nil
+		}
+		if b, err := json.Marshal(lofAsmObjWire{o.refs, o.text, o.data}); err == nil && cache != "" && os.MkdirAll(filepath.Dir(cache), 0o755) == nil {
+			lofCacheWrite(cache, b)
+		}
+		return o
+	})
+	if o == nil {
+		// A later session reads the file again.
+		t.mu.Lock()
+		if e := t.std[key]; e != nil && e.v == nil {
+			delete(t.std, key)
+		}
+		t.mu.Unlock()
+		return &lofAsmObj{}
 	}
-	t.mu.Lock()
-	t.std[it.pkg+"\x00"+it.file] = o
-	t.mu.Unlock()
 	return o
 }
 
@@ -332,7 +368,7 @@ func (s *lofAsmSession) read(it lofAsmItem) *lofAsmObj {
 		return nil
 	}
 	ports := t.admit(filepath.Base(it.file), x)
-	keep := lofAsmModPorts
+	keep := s.modPorts
 	if it.std {
 		keep = lofAsmStdPorts
 	}
@@ -542,9 +578,9 @@ type lofAsmTool struct {
 	mu     sync.Mutex
 	tags   map[string]*lofOnce[map[lofPort]bool]
 	cals   map[string]*lofOnce[*lofAsmCal]
-	nmPath *lofOnce[string]
+	nmPath map[string]*lofOnce[string]
 	// std holds the standard-library files read whole, by file, for every session of the tool.
-	std map[string]*lofAsmObj
+	std map[string]*lofOnce[*lofAsmObj]
 	// arches holds the ports' GOARCH values; deps the standard-library packages leftoutasmdeps.go
 	// read, by directory.
 	arches map[string]bool
@@ -564,7 +600,7 @@ var lofAsmTools = struct {
 // nil when it cannot be found or asked its ports.
 func lofAsmToolFor(ctx context.Context, root string, env []string) *lofAsmTool {
 	key := root + "\x00" + envOr(env, "GOEXPERIMENT", "") + "\x00" + envOr(env, "GOENV", "")
-	t := lofMemo(&lofAsmTools.mu, lofAsmTools.m, key, func() *lofAsmTool {
+	t := lofMemoShared(ctx, &lofAsmTools.mu, lofAsmTools.m, key, func() *lofAsmTool {
 		t, err := newLofAsmTool(ctx, root, env)
 		if err != nil {
 			return nil
@@ -611,7 +647,7 @@ func newLofAsmTool(ctx context.Context, root string, env []string) (*lofAsmTool,
 	t := &lofAsmTool{
 		root: root, version: strings.TrimSpace(lines[0]), experiment: strings.TrimSpace(lines[2]),
 		asm: filepath.Join(strings.TrimSpace(lines[1]), "asm"), hdrSem: make(chan struct{}, 2),
-		tags: map[string]*lofOnce[map[lofPort]bool]{}, cals: map[string]*lofOnce[*lofAsmCal]{}, nmPath: &lofOnce[string]{}, std: map[string]*lofAsmObj{},
+		tags: map[string]*lofOnce[map[lofPort]bool]{}, cals: map[string]*lofOnce[*lofAsmCal]{}, nmPath: map[string]*lofOnce[string]{}, std: map[string]*lofOnce[*lofAsmObj]{},
 	}
 	r, ok := parseGoRelease(t.version)
 	if !ok || r.major != 1 {
@@ -695,18 +731,19 @@ func lofAsmExperiments(root string) []string {
 
 // nm returns the path of the toolchain's nm, "" when it cannot be had.
 func (t *lofAsmTool) nm(ctx context.Context) string {
-	t.nmPath.once.Do(func() {
+	return lofMemoShared(ctx, &t.mu, t.nmPath, "", func() string {
 		cmd := exec.CommandContext(ctx, filepath.Join(t.root, "bin", "go"), "tool", "-n", "nm")
 		cmd.Env = append(slices.Clone(t.env), "GOTOOLCHAIN=local", "GOFLAGS=", "GOWORK=off")
 		cmd.Dir = t.root
 		if lofAsmExecHook != nil {
 			lofAsmExecHook(cmd)
 		}
-		if out, err := cmd.Output(); err == nil {
-			t.nmPath.v = strings.TrimSpace(string(out))
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
 		}
+		return strings.TrimSpace(string(out))
 	})
-	return t.nmPath.v
 }
 
 // tagValue returns, for a tag go/build knows as a GOOS or GOARCH value or unix, the ports it holds
@@ -1378,7 +1415,7 @@ func lofAsmFlavour(s *lofListSym) [2]bool {
 func (s *lofAsmSession) calibrate(tu lofAsmTuple, pkg string) (*lofAsmCal, error) {
 	t := s.tool
 	var cerr error
-	c := lofMemo(&t.mu, t.cals, tu.String()+"\x00"+pkg, func() *lofAsmCal {
+	c := lofMemoShared(s.ctx, &t.mu, t.cals, tu.String()+"\x00"+pkg, func() *lofAsmCal {
 		d, err := s.tempDir("cal")
 		if err != nil {
 			return nil
@@ -2086,13 +2123,25 @@ func (s *lofAsmSession) header(it lofAsmItem, tu lofAsmTuple, tags, files []stri
 			b = lofAsmHdrEncode(h)
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
-			tmp := path + "." + strconv.Itoa(os.Getpid()) + ".tmp"
-			if os.WriteFile(tmp, b, 0o644) == nil {
-				_ = os.Rename(tmp, path)
-			}
+			lofCacheWrite(path, b)
 		}
 		return h
 	})
+}
+
+// lofCacheWrite puts b at path whole or not at all: through a temporary file of its own, which
+// concurrent writers of the same path, in this process or another, never share.
+func lofCacheWrite(path string, b []byte) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return
+	}
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if werr != nil || cerr != nil || os.Chmod(tmp, 0o644) != nil || os.Rename(tmp, path) != nil {
+		_ = os.Remove(tmp)
+	}
 }
 
 func lofAsmHdrEncode(h lofAsmHdr) []byte {

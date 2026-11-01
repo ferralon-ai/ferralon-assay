@@ -13,6 +13,7 @@ import (
 // picks at run time through reflect or a template is never declared run-wide: Reachability bounds it
 // per advisory (withholdForReflectReach). The reflection itself stays declared as an inherent limit.
 func TestCallGraph_RunTimeCalls(t *testing.T) {
+	t.Parallel()
 	const head = "package main\n\nimport (\n\thtmltemplate \"html/template\"\n\t\"os\"\n\t\"plugin\"\n\t\"reflect\"\n\t\"text/template\"\n)\n\n" +
 		"var _, _, _, _, _ = htmltemplate.New, os.Stdout, plugin.Open, reflect.TypeOf, template.New\n\n"
 	const lib = "package lib\n\nimport \"plugin\"\n\n"

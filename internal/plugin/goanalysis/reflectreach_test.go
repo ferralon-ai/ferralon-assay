@@ -74,6 +74,7 @@ func TestReconciledResult_WithholdsForReflectReach(t *testing.T) {
 // used as a value is reached once reflect's Call is live or a dynamic call matches its signature, and
 // an exported method once reflect's MethodByName is live; neither is reached without them.
 func TestReflectReachOf(t *testing.T) {
+	t.Parallel()
 	const hidden = "func hidden(n int8) string { vulnmod.Bad(); return \"\" }\n\n"
 	const hook = "type S struct{}\n\nfunc (S) Hook() { vulnmod.Bad() }\n\n"
 	main := func(imports, body string) string {
@@ -253,6 +254,7 @@ func reconcileFor(t *testing.T, files map[string]string, scanned vulnScan, entry
 // refutation stands and nothing declares reflection:call, so a program that runs templates or
 // reflection and never calls the vulnerable symbol keeps its not_exploitable ground.
 func TestReconciledResult_ReflectAdmission(t *testing.T) {
+	t.Parallel()
 	const imports = "package main\n\nimport (\n\t\"os\"\n\t\"reflect\"\n\t\"text/template\"\n\n\t\"example.com/vulnmod\"\n)\n\nvar _, _, _ = os.Stdout, reflect.TypeOf, template.New\n\n"
 	cases := []struct{ name, main string }{
 		{"a value reflect builds from an interface method's parameter type",
@@ -298,6 +300,7 @@ func TestReconciledResult_ReflectAdmission(t *testing.T) {
 		for _, callee := range []string{"Bad", "Safe"} {
 			withheld := callee == "Bad"
 			t.Run(tc.name+"/"+callee, func(t *testing.T) {
+				t.Parallel()
 				_, res := reconcileFor(t, map[string]string{"main.go": strings.ReplaceAll(tc.main, "CALLEE", callee)}, vulnmodFinding, plugin.LibraryEntrypoints{})
 				if got := res.Refutation == nil; got != withheld {
 					t.Fatalf("refutation withheld = %v, want %v (result %+v)", got, withheld, res)

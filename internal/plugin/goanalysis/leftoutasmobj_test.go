@@ -358,6 +358,8 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 		{"D2: a dependency's tag sets an integer only, under four own tags", merge(tagged("1", "0", "const M = 1 + R", movK), own(4)), true, nil},
 		{"D2 counter: the tag sets a float the integer arithmetic takes", tagged("1", "1.5", "const M = 1 + R", ifdefK), true,
 			[]string{"example.com/v/p.sym"}},
+		{"D2 counter: the tagged file's integer arithmetic takes a float", tagged("1", "F", "const M = 1 + R\n\nconst F = 1.5", ifdefK), true,
+			[]string{"example.com/v/p.sym"}},
 		{"D2 counter: only the tagged file declares the integer", merge(mod, map[string]string{
 			"d/on.go": "//go:build t0\n\npackage d\n\nconst R = 1\n",
 			"d/d.go":  "package d\n",
@@ -371,6 +373,7 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 			"p/p.go":       "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.R\n",
 			"p/p.s":        strings.Replace(ifdefK, "linux && amd64", "darwin && arm64", 1),
 		}), true, []string{"example.com/v/p.sym"}},
+		// A bool value reads as either, so a comparison on the tagged integer releases its tags too.
 		{"D2 counter: integer arithmetic on the tagged integer feeds a comparison", tagged("1", "0", "const M = R > 0", text("\tCALL const_K(SB)\n")), true,
 			[]string{"true", "false"}},
 	}

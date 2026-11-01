@@ -417,29 +417,27 @@ func (s *lofAsmSession) levelDep(it lofAsmItem) bool {
 // the whole closure of the file's imports.
 func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 	var out lofDepFacts
-	// ints marks a name reached only through integer arithmetic (lofDepFile.ints) from a go_asm.h name.
-	type node struct {
-		dir, name string
-		ints      bool
-	}
+	type node struct{ dir, name string }
 	seen := map[node]bool{}
 	var queue []node
-	push := func(d, n string, ints bool) {
-		if k := (node{d, n, ints}); !seen[k] {
+	push := func(d, n string) {
+		if k := (node{d, n}); !seen[k] {
 			seen[k] = true
 			queue = append(queue, k)
 		}
 	}
 	for _, n := range names {
-		push(dir, n, true)
+		push(dir, n)
 	}
 	// allInt reports whether every declaration of name in d is integer arithmetic on names that are
-	// all so in turn: which files declare them can change the constant's value, never its kind. Only
-	// a kind, or a bool or string value, changes the symbols a listing references.
+	// all so in turn: which files declare them can change the constant's value, never its kind. No
+	// value changes the symbols a listing references: a go_asm.h name's presence and kind do not
+	// depend on one, a bool reads as either (lofAsmObj refs), and a string fails closed
+	// (lofAsmHdrString). Only a kind does.
 	memo := map[node]bool{}
 	var allInt func(d, name string) bool
 	allInt = func(d, name string) bool {
-		k := node{d, name, true}
+		k := node{d, name}
 		if v, ok := memo[k]; ok {
 			return v
 		}
@@ -507,9 +505,8 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 			if !ok {
 				continue
 			}
-			ints := n.ints && f.ints[n.name]
 			facts := f.lofDepFacts
-			if n.dir == dir || (ints && allInt(n.dir, n.name) && s.declaredAlways(pkg, n.name)) {
+			if n.dir == dir || (allInt(n.dir, n.name) && s.declaredAlways(pkg, n.name)) {
 				// The package's own files are enumerated as its own, and lofAsmHdrStable judges them.
 				// A file that can change only an integer's value changes no symbol, so long as some
 				// file declares the name whatever the tags: where none does, the build that compiles
@@ -527,7 +524,7 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 				q, x, qualified := strings.Cut(r, ".")
 				if !qualified {
 					if pkg.decls[r] {
-						push(n.dir, r, ints)
+						push(n.dir, r)
 					} else if len(dots) > 0 {
 						whole(n.dir, dots)
 					}
@@ -549,12 +546,12 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 					if im.name == "" && !slices.Contains(s.depPkg(c).names, q) {
 						continue
 					}
-					push(c, x, ints)
+					push(c, x)
 					placed = true
 				}
 				if pkg.decls[q] {
 					// A selector on a local name: a field or method of it.
-					push(n.dir, q, false)
+					push(n.dir, q)
 					placed = true
 				}
 				if !placed {

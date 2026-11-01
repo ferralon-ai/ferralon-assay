@@ -119,11 +119,13 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 		deps     []plugin.ResolvedDependency
 		origins  []manifestOrigin
 		readable = true
+		locks    = projectLocksIn(dir)
 	)
 	addSpec := func(spec string) {
 		d, o, keep, ok := pep508Entry(spec, dir)
 		readable = readable && ok && !setuptoolsJoins(spec)
 		if keep {
+			o.lockedBy = locks
 			deps = append(deps, d)
 			origins = append(origins, o)
 		}

@@ -872,17 +872,17 @@ func taskSteps(table, key string) bool {
 	return i > 0 && taskTableRE.MatchString(table[:i]) && !strings.HasPrefix(table, "project.") && (k == "sequence" || k == "composite")
 }
 
-// jsonDoc returns src as JSON the decoder accepts: src itself, or, for a document whose
-// comments or trailing commas it rejects (deno.jsonc, a tsconfig-style file), src with those
-// blanked in place, so offsets and lines still match src.
+// jsonDoc returns src as JSON the decoder accepts: src itself, or, for an object or array whose
+// comments or trailing commas the decoder rejects (deno.jsonc, a tsconfig-style file, either
+// led by a comment), src with those blanked in place, so offsets and lines still match src.
 func jsonDoc(src string) (string, bool) {
 	if json.Valid([]byte(src)) {
 		return src, true
 	}
-	if t := strings.TrimSpace(src); !strings.HasPrefix(t, "{") && !strings.HasPrefix(t, "[") {
+	doc := stripJSONC(src)
+	if t := strings.TrimSpace(doc); !strings.HasPrefix(t, "{") && !strings.HasPrefix(t, "[") {
 		return "", false
 	}
-	doc := stripJSONC(src)
 	return doc, json.Valid([]byte(doc))
 }
 
@@ -953,8 +953,7 @@ func stripJSONC(src string) string {
 // than hides one. It returns the 1-based line of that string, and why.
 func (v *Veto) backstopStrings(src string) (int, string) {
 	for _, lit := range literals(src, false, true) {
-		segs := backstopSegments(lit.text)
-		if why := v.segments(append(segs, listCommands(segs)...)); why != "" {
+		if why := v.segments(backstopSegments(lit.text)); why != "" {
 			return strings.Count(src[:lit.off], "\n") + 1, why
 		}
 	}
@@ -1219,8 +1218,9 @@ var stdinShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash":
 
 // backstopSegments splits shell text into its simple commands, or, when it does not split
 // (a brace group, an unclosed quote, a process substitution), returns its words as one command
-// per stage of a pipeline, cut at each | or |& word outside parentheses, so a name in it still
-// reaches the rule and feedsInput still follows the pipe past a tee >(sha256sum).
+// per stage of a pipeline, cut at each | or |& word, inside a process substitution too, so a
+// name in it still reaches the rule and feedsInput still follows the pipe past a
+// tee >(sha256sum) or into tee >(cat | python3 -).
 func backstopSegments(text string) []segment {
 	if segs, ok, _ := shellSegments(text); ok {
 		return segs
@@ -1228,14 +1228,12 @@ func backstopSegments(text string) []segment {
 	expands := strings.ContainsAny(text, "$`")
 	var segs []segment
 	var words []string
-	depth := 0
 	for _, w := range strings.Fields(text) {
-		if depth == 0 && (w == "|" || w == "|&") {
+		if w == "|" || w == "|&" {
 			segs = append(segs, segment{words: words, expands: expands, end: "|"})
 			words = nil
 			continue
 		}
-		depth = max(0, depth+strings.Count(w, "(")-strings.Count(w, ")"))
 		words = append(words, w)
 	}
 	return append(segs, segment{words: words, expands: expands})

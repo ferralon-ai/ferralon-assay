@@ -256,6 +256,11 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile heredoc name keeps a backslash inside double quotes", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<\"E\\xF\"\nE\\xF\nRUN in\\\n# c\nst add x\n"}), true, ""},
 		{"Dockerfile marker inside nested quotes opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN echo \"${x:-\"a <<EOF b\"}\"\nRUN in\\\n# c\nst add x\n"}), true, ""},
 		{"Dockerfile marker after a form feed", tree(map[string]string{"Dockerfile": "FROM x\nRUN sh -c sh x\f<<EOF\ninst add x\nEOF\n"}), true, ""},
+		{"Dockerfile marker inside nested quotes, backtick escape", tree(map[string]string{"Dockerfile": "# escape=`\nFROM x\nRUN echo \"${x:-\"a <<EOF b\"}\"\nRUN in`\nst add x\n"}), true, ""},
+		{"Dockerfile marker after an open ${ in a comment, backtick escape", tree(map[string]string{"Dockerfile": "# escape=`\nFROM x\nRUN true # ${ <<EOF\nRUN in`\nst add x\n"}), true, ""},
+		{"Dockerfile heredoc name ending in a backslash, backtick escape", tree(map[string]string{"Dockerfile": "# escape=`\nFROM x\nRUN <<EOF\\\ntrue\nEOF\nRUN in`\n# c\nst add x\n"}), true, ""},
+		{"Dockerfile wrong heredoc ends on the continued line", tree(map[string]string{"Dockerfile": "FROM x\nRUN true # ${ <<\"st add x\"\nRUN in\\\nst add x\n"}), true, ""},
+		{"Dockerfile wrong heredoc in nested quotes ends on the continued line", tree(map[string]string{"Dockerfile": "FROM x\nRUN echo \"${x:-\" <<'st add x' \"}\"\nRUN in\\\nst add x\n"}), true, ""},
 		{"justfile recipe continuation inside a word", tree(map[string]string{"justfile": "all:\n\tin\\\n\t\tst add x\n"}), true, ""},
 		{"shell comment continued after a quote read wrongly", tree(map[string]string{"install.sh": "x=\"$(echo \"it's\")\"\n# c \\\ninst install -r reqs.txt \\\n  other\n"}), true, ""},
 

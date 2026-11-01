@@ -188,11 +188,11 @@ var (
 // dockerLines splits a Dockerfile into instructions the way BuildKit's parser does. A line
 // whose last character other than blanks is the escape character, not after another,
 // continues onto the next with nothing between, quoted or not; comment and blank lines
-// inside a continuation are dropped; and the body lines of a RUN, COPY or ADD heredoc, and
-// its terminator, are kept as they are. The escape character is \ unless an escape
-// directive at the top sets a backtick. joined is false when the last instruction still
-// continues.
-func dockerLines(src string) (lines []string, joined bool) {
+// inside a continuation are dropped; and, with heredocs, the body lines of a RUN, COPY or ADD
+// heredoc, and its terminator, are kept as they are. The escape character is \ unless an
+// escape directive at the top sets a backtick. joined is false when the last instruction
+// still continues.
+func dockerLines(src string, heredocs bool) (lines []string, joined bool) {
 	raw := strings.Split(strings.TrimPrefix(src, "\ufeff"), "\n")
 	cont, directives := dockerContinues[`\`], true
 	for i := 0; i < len(raw); i++ {
@@ -220,7 +220,11 @@ func dockerLines(src string) (lines []string, joined bool) {
 			b.WriteString(cont.ReplaceAllString(l, "$1"))
 		}
 		lines = append(lines, b.String())
-		for _, d := range dockerHeredocs(b.String()) {
+		var docs []heredoc
+		if heredocs {
+			docs = dockerHeredocs(b.String())
+		}
+		for _, d := range docs {
 			for i++; i < len(raw); i++ {
 				l := strings.TrimRight(raw[i], "\r")
 				lines = append(lines, l)

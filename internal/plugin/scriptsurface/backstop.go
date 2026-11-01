@@ -429,8 +429,10 @@ var fromImportRE = regexp.MustCompile(`\bfrom[ \t]+([\w.]+)[ \t]+import[ \t]*(\(
 // (build.py, whatever path, separator, quoting or join comes before it, so cd pkg && python
 // build.py counts), by its tail, the identifier pair <package>.<module>, <package>/<module> or
 // <package>\<module>, or by a from-import of the module from its package, each compared whole
-// (build_utils is not build). A module whose stem is not one identifier (build.local.py) cannot
-// be matched that way, so it counts as mentioned.
+// (build_utils is not build). A relative from-import (from . import build, from .build import
+// main, from .. import build) is resolved against the importing file's directory first. A module
+// whose stem is not one identifier (build.local.py) cannot be matched that way, so it counts as
+// mentioned.
 func (b *buildFiles) mentions(v *Veto, texts []string) {
 	pairs := map[string]map[string][]string{}
 	leaves := map[string][]string{}
@@ -465,7 +467,12 @@ func (b *buildFiles) mentions(v *Veto, texts []string) {
 		})
 		identPairs(data, mark)
 		for _, g := range fromImportRE.FindAllSubmatch(data, -1) {
-			mod := g[1][bytes.LastIndexByte(g[1], '.')+1:]
+			from := g[1]
+			if n := len(from) - len(bytes.TrimLeft(from, ".")); n > 0 {
+				from = relativeImport(t, n, from[n:])
+				identPairs(from, mark)
+			}
+			mod := from[bytes.LastIndexByte(from, '.')+1:]
 			if pairs[string(mod)] == nil {
 				continue
 			}
@@ -474,6 +481,20 @@ func (b *buildFiles) mentions(v *Veto, texts []string) {
 			}
 		}
 	}
+}
+
+// relativeImport returns the dotted tail a from-import with n leading dots and the rest
+// names, in the file at path: the package directory n-1 levels above the file's own, then rest.
+func relativeImport(path string, n int, rest []byte) []byte {
+	dir := filepath.Dir(path)
+	for i := 1; i < n; i++ {
+		dir = filepath.Dir(dir)
+	}
+	tail := []byte(filepath.Base(dir))
+	if len(rest) == 0 {
+		return tail
+	}
+	return append(append(tail, '.'), rest...)
 }
 
 var identRE = regexp.MustCompile(`\w+`)

@@ -97,6 +97,8 @@ func TestResolveVersions_PackageModuleMentioned(t *testing.T) {
 		{"CMake runs it", map[string]string{"CMakeLists.txt": "project(x)\nadd_custom_target(deps ALL COMMAND python -m mypkg.build)\n"}, true},
 		{"workflow runs a longer-named sibling", map[string]string{"mypkg/build_utils.py": "", ".github/workflows/ci.yml": wf("python -m mypkg.build_utils")}, false},
 		{"workflow runs a tool-directory module that imports it", map[string]string{"scripts/__init__.py": "", "scripts/ci_setup.py": "from mypkg import build\nbuild.main()\n", ".github/workflows/ci.yml": wf("python -m scripts.ci_setup")}, true},
+		{"a module with a shebang in its package imports it relatively", map[string]string{"mypkg/run.py": "#!/usr/bin/env python3\nfrom . import build\n"}, true},
+		{"only an unmentioned module of its package imports it relatively", map[string]string{"mypkg/helper.py": "from .build import main\n"}, false},
 		{"only an unmentioned module of its package imports it", map[string]string{"mypkg/__main__.py": "from mypkg import build\n"}, false},
 	}
 	for _, tt := range tests {

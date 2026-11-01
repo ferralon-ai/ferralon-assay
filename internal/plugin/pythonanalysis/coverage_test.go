@@ -201,6 +201,7 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"environment variable after an escaped value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i x\\ -i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"environment variable after a single-quoted value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--trusted-host 'h -C' ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"environment variable in an unquoted value, after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --index-url https://${TOKEN}@host/simple\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"environment variable after a non-ASCII space", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i x\u00a0-i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 

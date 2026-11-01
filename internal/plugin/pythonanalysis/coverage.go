@@ -179,13 +179,14 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 // "--pre ${R} x.txt"): pip expands it before parsing, so it may name an install option. A
 // variable in an option's value ("--index-url=https://${TOKEN}@host/simple") is left alone; one
 // whose expansion itself carries whitespace and options is out of reach of a static read. pip
-// splits the line shell-style, so with any quote or backslash a value can hide an option word
-// ("-i \"x -i\" ${R}") and the line fails closed; without them the fields are pip's.
+// splits the line shell-style on ASCII whitespace, so with any quote, backslash or non-ASCII
+// byte a value can hide an option word ("-i \"x -i\" ${R}") and the line fails closed;
+// without them the fields are pip's.
 func envOptionName(line string) bool {
 	if !strings.Contains(line, "${") {
 		return false
 	}
-	if strings.ContainsAny(line, `"'\`) {
+	if strings.ContainsAny(line, `"'\`) || !isASCII(line) {
 		return true
 	}
 	value := false
@@ -211,6 +212,15 @@ func envOptionName(line string) bool {
 		}
 	}
 	return false
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // takesValue reports a requirements-file option, in any shortened spelling, that consumes the

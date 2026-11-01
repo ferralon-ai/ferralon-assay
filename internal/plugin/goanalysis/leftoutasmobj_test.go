@@ -267,6 +267,49 @@ func TestLofAsmObjHeader(t *testing.T) {
 	}
 }
 
+// TestLofAsmObjHeaderDeps: a macro dumpasmhdr spells for a type a and field b_c reads as type a_b
+// and field c too.
+func TestLofAsmObjHeaderDeps(t *testing.T) {
+	mod := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n"}
+	text := func(body string) string {
+		return "//go:build linux && amd64\n\n#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n" + body + "\tRET\n"
+	}
+	fieldtrack := map[string]string{
+		"d/on.go":  "//go:build goexperiment.fieldtrack\n\npackage d\n\ntype S struct{ c int }\n",
+		"d/off.go": "//go:build !goexperiment.fieldtrack\n\npackage d\n\ntype S int\n",
+	}
+	cases := []struct {
+		name  string
+		files map[string]string
+		ok    bool
+		refs  []string
+	}{
+		{"R1: type a_b with field c, beside a type a", merge(merge(mod, fieldtrack), map[string]string{
+			"p/p.go": "package p\n\nimport \"example.com/v/d\"\n\ntype a struct{ x int }\n\ntype a_b d.S\n",
+			"p/p.s":  text("#ifdef a_b_c\n\tCALL ·sym(SB)\n#endif\n"),
+		}), true, []string{"example.com/v/p.sym"}},
+		{"R1 control: type a_b with field c alone", merge(merge(mod, fieldtrack), map[string]string{
+			"p/p.go": "package p\n\nimport \"example.com/v/d\"\n\ntype a_b d.S\n",
+			"p/p.s":  text("#ifdef a_b_c\n\tCALL ·sym(SB)\n#endif\n"),
+		}), true, []string{"example.com/v/p.sym"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, it := lofAsmTestSession(t, tc.files, "p/p.s", nil, "")
+			o := s.read(it)
+			if (o != nil) != tc.ok {
+				t.Fatalf("read = %v, want ok %v", o, tc.ok)
+			}
+			for _, r := range tc.refs {
+				if !slices.Contains(o.refs, r) {
+					t.Errorf("refs %v lack %s", o.refs, r)
+				}
+			}
+		})
+	}
+}
+
 // TestLofAsmObjExperiments: a GOEXPERIMENT_ macro the file or a header it includes tests is defined
 // by cmd/asm, for the packages it allows ABI selectors in, in builds whose GOEXPERIMENT sets the
 // experiment, whatever the session's: the file is assembled with each experiment it tests set on and

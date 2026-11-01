@@ -1050,9 +1050,7 @@ func (s *lofAsmSession) gate(it lofAsmItem, src []byte) *lofAsmGate {
 		} else {
 			var names []string
 			for id := range g.idents {
-				if n := lofAsmHdrCandidate(src, id); n != "" {
-					names = append(names, n)
-				}
+				names = append(names, lofAsmHdrCandidates(src, id)...)
 			}
 			f = s.slice(it.dir, names)
 		}
@@ -1823,7 +1821,7 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 	}
 	relevant := g.badIfdef || g.unresolved
 	for _, d := range g.ifdefs {
-		relevant = relevant || lofAsmHdrCandidate(src, d) != ""
+		relevant = relevant || len(lofAsmHdrCandidates(src, d)) > 0
 	}
 	if n := strings.Count(tu.exp, ",") + 1; tu.exp != "" && len(free)+n > maxFreeTags {
 		// The experiments the build enumerates count among its free tags, and are never cut short.
@@ -1838,7 +1836,7 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 			return nil, errLofAsmHdrCap
 		}
 		for id := range g.idents {
-			if lofAsmHdrCandidate(src, id) != "" {
+			if len(lofAsmHdrCandidates(src, id)) > 0 {
 				return nil, errLofAsmHdrCap
 			}
 		}
@@ -1975,18 +1973,19 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 	return out, nil
 }
 
-// lofAsmHdrCandidate returns the package-level constant or type a go_asm.h macro name may come from,
-// "" for none.
-func lofAsmHdrCandidate(src *lofGoSrc, id string) string {
+// lofAsmHdrCandidates returns every package-level constant or type a go_asm.h macro name may come
+// from: dumpasmhdr spells type a field b_c and type a_b field c alike.
+func lofAsmHdrCandidates(src *lofGoSrc, id string) []string {
+	var out []string
 	if c, ok := strings.CutPrefix(id, "const_"); ok && len(src.consts[c]) > 0 {
-		return c
+		out = append(out, c)
 	}
 	for i := 1; i < len(id); i++ {
 		if id[i] == '_' && len(src.types[id[:i]]) > 0 {
-			return id[:i]
+			out = append(out, id[:i])
 		}
 	}
-	return ""
+	return out
 }
 
 // lofAsmHdrStable reports whether every go_asm.h name the text spells is declared alike in every
@@ -2024,7 +2023,7 @@ func lofAsmHdrStable(src *lofGoSrc, g *lofAsmGate, first []bool, variants func(f
 		}
 	}
 	for id := range g.idents {
-		if c := lofAsmHdrCandidate(src, id); c != "" && moved[c] {
+		if slices.ContainsFunc(lofAsmHdrCandidates(src, id), func(c string) bool { return moved[c] }) {
 			return false
 		}
 	}

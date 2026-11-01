@@ -357,40 +357,45 @@ func TestLeftOutEngine_AsmListing(t *testing.T) {
 		setup   func(*testing.T)
 		reach   bool   // x.go's closure reaches Bad
 		item    string // what x.go's closure fails closed on, when set
+		stdGaps bool   // the run records standard-library assembly it could not read
 	}{
 		// (i) funcdata.h's comment words are no definer; a module's TEXT of the name is.
 		{"(i) funcdata.h's comment word open", merge(asm("", "CALL open(SB)"), map[string]string{
-			"_v/def/fd.s": "#include \"funcdata.h\"\n\nTEXT ·f(SB),0,$0\n\tNO_LOCAL_POINTERS\n\tRET\n", "_v/def/def.go": "package def\n\nfunc f()\n"}), "", nil, false, ""},
-		{"(i) control: a module TEXT open", merge(asm("", "CALL open(SB)"), definer("open")), "", nil, true, ""},
+			"_v/def/fd.s": "#include \"funcdata.h\"\n\nTEXT ·f(SB),0,$0\n\tNO_LOCAL_POINTERS\n\tRET\n", "_v/def/def.go": "package def\n\nfunc f()\n"}), "", nil, false, "", false},
+		{"(i) control: a module TEXT open", merge(asm("", "CALL open(SB)"), definer("open")), "", nil, true, "", false},
 		// (ii) a bare symbol only the standard library defines, from a module package.
-		{"(ii) a definer only the standard library holds", sys, "", nil, false, ""},
-		{"(ii) a definer only the standard library holds, whose assembly fails", sys, "", failNistecAsm, false, lofAsmSymbol},
+		{"(ii) a definer only the standard library holds", sys, "", nil, false, "", false},
+		{"(ii) a definer only the standard library holds, whose assembly fails", sys, "", failNistecAsm, false, lofAsmSymbol, true},
 		// Review 113.
-		{"A: a macro supplying (", merge(asm("#define LP (\n\n", "CALL ext LP SB)"), ext), "", nil, true, ""},
-		{"G: a macro supplying name(", merge(asm("#define E ext(\n\n", "CALL E SB)"), ext), "", nil, true, ""},
-		{"D: a macro taking the name and SB", merge(asm("#define F(a,b) CALL a(b)\n\n", "F(ext, SB)"), ext), "", nil, true, ""},
-		{"C: a macro taking SB", merge(asm("#define F(r) CALL ext(r)\n\n", "F(SB)"), ext), "", nil, true, ""},
-		{"B: a macro naming the symbol", merge(asm("#define LOFN ext\n\n", "CALL LOFN(SB)"), ext), "", nil, true, ""},
-		{"Bh: B's macro in a header", merge(asm("#include \"x.h\"\n\n", "CALL LOFN(SB)"), hdr("#define LOFN ext\n"), ext), "", nil, true, ""},
-		{"Ch: C's macro in a header", merge(asm("#include \"x.h\"\n\n", "F(SB)"), hdr("#define F(r) CALL ext(r)\n"), ext), "", nil, true, ""},
+		{"A: a macro supplying (", merge(asm("#define LP (\n\n", "CALL ext LP SB)"), ext), "", nil, true, "", false},
+		{"G: a macro supplying name(", merge(asm("#define E ext(\n\n", "CALL E SB)"), ext), "", nil, true, "", false},
+		{"D: a macro taking the name and SB", merge(asm("#define F(a,b) CALL a(b)\n\n", "F(ext, SB)"), ext), "", nil, true, "", false},
+		{"C: a macro taking SB", merge(asm("#define F(r) CALL ext(r)\n\n", "F(SB)"), ext), "", nil, true, "", false},
+		{"B: a macro naming the symbol", merge(asm("#define LOFN ext\n\n", "CALL LOFN(SB)"), ext), "", nil, true, "", false},
+		{"Bh: B's macro in a header", merge(asm("#include \"x.h\"\n\n", "CALL LOFN(SB)"), hdr("#define LOFN ext\n"), ext), "", nil, true, "", false},
+		{"Ch: C's macro in a header", merge(asm("#include \"x.h\"\n\n", "F(SB)"), hdr("#define F(r) CALL ext(r)\n"), ext), "", nil, true, "", false},
 		{"Udef: a macro naming a definer's TEXT", merge(asm("", "CALL ext(SB)"), map[string]string{
-			"_v/def/def.s": "#define LOFN ext\nTEXT LOFN(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}), "", nil, true, ""},
-		{"E (residue): CALL ext(S) without -D S=SB does not assemble", merge(asm("", "CALL ext(S)"), ext), "", nil, false, lofAsmSymbol},
-		{"H (residue): CALL LOFN(SB) without -D LOFN=ext calls LOFN", merge(asm("", "CALL LOFN(SB)"), ext), "", nil, false, ""},
-		{"Hdef (residue): TEXT LOFN(SB) without -D LOFN=ext defines LOFN", merge(asm("", "CALL ext(SB)"), definer("LOFN")), "", nil, false, ""},
-		{"M: the dotted path spelling", asm("", "CALL example·com∕v∕vuln·Bad(SB)"), "", nil, true, ""},
+			"_v/def/def.s": "#define LOFN ext\nTEXT LOFN(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}), "", nil, true, "", false},
+		{"E (residue): CALL ext(S) without -D S=SB does not assemble", merge(asm("", "CALL ext(S)"), ext), "", nil, false, lofAsmSymbol, false},
+		{"H (residue): CALL LOFN(SB) without -D LOFN=ext calls LOFN", merge(asm("", "CALL LOFN(SB)"), ext), "", nil, false, "", false},
+		{"Hdef (residue): TEXT LOFN(SB) without -D LOFN=ext defines LOFN", merge(asm("", "CALL ext(SB)"), definer("LOFN")), "", nil, false, "", false},
+		{"M: the dotted path spelling", asm("", "CALL example·com∕v∕vuln·Bad(SB)"), "", nil, true, "", false},
 		// Review 117.
-		{"P1: a macro closing the operand and adding a CALL", merge(asm64("#define X 0(FP), AX; CALL ext+0\n\n", "MOVQ ·asm+X(SB)"), ext), "", nil, true, ""},
-		{"P1h: P1's macro in a header", merge(asm64("#include \"x.h\"\n\n", "MOVQ ·asm+X(SB)"), hdr("#define X 0(FP), AX; CALL ext+0\n"), ext), "", nil, true, ""},
-		{"P2: a comment inside the offset", merge(asm("", "CALL /* ·asm+ */ ext(SB)"), ext), "", nil, true, ""},
-		{"P2b: a comment glued to the name", merge(asm("", "CALL /* ·asm-0 */ext(SB)"), ext), "", nil, true, ""},
-		{"P7: go_asm.h's bool constant", merge(p7, definer("true")), "", nil, true, ""},
-		{"P7: the other bool's definer", merge(p7, definer("false")), "", nil, true, ""},
+		{"P1: a macro closing the operand and adding a CALL", merge(asm64("#define X 0(FP), AX; CALL ext+0\n\n", "MOVQ ·asm+X(SB)"), ext), "", nil, true, "", false},
+		{"P1h: P1's macro in a header", merge(asm64("#include \"x.h\"\n\n", "MOVQ ·asm+X(SB)"), hdr("#define X 0(FP), AX; CALL ext+0\n"), ext), "", nil, true, "", false},
+		{"P2: a comment inside the offset", merge(asm("", "CALL /* ·asm+ */ ext(SB)"), ext), "", nil, true, "", false},
+		{"P2b: a comment glued to the name", merge(asm("", "CALL /* ·asm-0 */ext(SB)"), ext), "", nil, true, "", false},
+		{"P7: go_asm.h's bool constant", merge(p7, definer("true")), "", nil, true, "", false},
+		{"P7: the other bool's definer", merge(p7, definer("false")), "", nil, true, "", false},
 		// A main package's go_asm.h on a port that links only externally (android but arm64, ios/arm64)
 		// cannot be generated with cgo off: the go command refuses the build before compiling.
 		{"P7 (residue): a main package's go_asm.h on a port that links only externally", merge(asm("#include \"go_asm.h\"\n\n", "CALL const_B(SB)"), definer("true"), map[string]string{
-			"b.go": "package main\n\nconst B = true\n"}), "", nil, false, lofAsmSymbol},
-		{"GOFLAGS passing a -toolexec wrapper", merge(asm("", "CALL ext(SB)"), ext), "-toolexec=/usr/bin/env", nil, false, lofAsmSymbol},
+			"b.go": "package main\n\nconst B = true\n"}), "", nil, false, lofAsmSymbol, false},
+		{"GOFLAGS passing a -toolexec wrapper", merge(asm("", "CALL ext(SB)"), ext), "-toolexec=/usr/bin/env", nil, false, lofAsmSymbol, false},
+	}
+	goVersion, err := exec.Command("go", "env", "GOVERSION").Output()
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -418,6 +423,16 @@ func TestLeftOutEngine_AsmListing(t *testing.T) {
 			}
 			if want := tc.reach || tc.item != ""; got.withheld != want {
 				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, want, lofDescribe(got))
+			}
+			if (got.engine.StdGaps > 0) != tc.stdGaps {
+				t.Errorf("run record: %d standard-library gaps, want any = %v", got.engine.StdGaps, tc.stdGaps)
+			}
+			want := strings.TrimSpace(string(goVersion))
+			if tc.goflags != "" {
+				want = ""
+			}
+			if got.engine.AsmToolchain != want {
+				t.Errorf("run record: assembler toolchain %q, want %q", got.engine.AsmToolchain, want)
 			}
 		})
 	}

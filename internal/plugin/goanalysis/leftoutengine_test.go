@@ -619,13 +619,15 @@ func TestLeftOutEngine_LoadedValues(t *testing.T) {
 // TestLofFixedSource: only the toolchain's source and a module-cache module version are fixed.
 func TestLofEngineEncoding(t *testing.T) {
 	e := &lofEngine{
-		Strs:    []string{"", "p", "p\x00F", "M", "héllo"},
-		Nodes:   []lofNode{{Pkg: 1, Name: 2, Sym: 2, M1: -1, M2: -1, F0: true}, {Pkg: 1, Name: 3, Sym: 4, M1: 3, M2: -1, Addr: true, FT: true, Synth: true}},
-		In0:     [][]int32{{1}, nil},
-		InT:     [][]int32{{1, 0}},
-		Decls:   [][4]int32{{1, 2, 2, -1}, {1, 4, 4, 3}},
-		FailStd: lofUnknownToolchain,
-		Facts:   map[string][]byte{"x.go": {1, 2, 3}},
+		Strs:         []string{"", "p", "p\x00F", "M", "héllo"},
+		Nodes:        []lofNode{{Pkg: 1, Name: 2, Sym: 2, M1: -1, M2: -1, F0: true}, {Pkg: 1, Name: 3, Sym: 4, M1: 3, M2: -1, Addr: true, FT: true, Synth: true}},
+		In0:          [][]int32{{1}, nil},
+		InT:          [][]int32{{1, 0}},
+		Decls:        [][4]int32{{1, 2, 2, -1}, {1, 4, 4, 3}},
+		FailStd:      lofUnknownToolchain,
+		AsmToolchain: "go1.26.3",
+		StdGaps:      2,
+		Facts:        map[string][]byte{"x.go": {1, 2, 3}},
 	}
 	b, err := e.encode()
 	if err != nil {
@@ -636,7 +638,7 @@ func TestLofEngineEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Equal(got.Strs, e.Strs) || !slices.Equal(got.Nodes, e.Nodes) || !slices.Equal(got.Decls, e.Decls) ||
-		got.Fail != e.Fail || got.FailStd != e.FailStd || !slices.Equal(got.Facts["x.go"], e.Facts["x.go"]) || len(got.Facts) != 1 {
+		got.Fail != e.Fail || got.FailStd != e.FailStd || got.AsmToolchain != e.AsmToolchain || got.StdGaps != e.StdGaps || !slices.Equal(got.Facts["x.go"], e.Facts["x.go"]) || len(got.Facts) != 1 {
 		t.Fatalf("decoded %+v, want %+v", got, e)
 	}
 	for _, in := range [][2][][]int32{{got.In0, e.In0}, {got.InT, e.InT}} {

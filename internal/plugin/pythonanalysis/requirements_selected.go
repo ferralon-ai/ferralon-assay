@@ -154,8 +154,14 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 			}
 			switch {
 			case ok && target != "" && kind == reqEditable:
-				spec, _ := splitMarker(target)
-				f.addSource(spec, spec, kind, hashes, env, selection)
+				// pip takes the whole word as the editable, so a glued marker makes it an
+				// editable pip rejects rather than a marked one.
+				if strings.Contains(target, ";") {
+					f.skipped = true
+					continue
+				}
+				spec, _ := splitMarker(line)
+				f.addSource(spec, target, kind, hashes, env, selection)
 			case ok && target != "" && !isConstraintFlag(words[0]):
 				f.includes = append(f.includes, target)
 			default:

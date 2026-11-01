@@ -32,6 +32,7 @@ func TestRequirementsLineShapes(t *testing.T) {
 		includes []string
 		locals   []string
 		unnamed  bool
+		wantRaw  string // the node's Raw, checked when set
 	}{
 		{name: "pinned", line: "requests==2.31.0", wantNode: "requests", wantKind: reqNormal},
 		{name: "parenthesized", line: "requests (>=2)", wantNode: "requests", wantKind: reqNormal},
@@ -55,7 +56,7 @@ func TestRequirementsLineShapes(t *testing.T) {
 		{name: "wheel url", line: "https://example.com/w/Foo-2.0-py3-none-any.whl", wantNode: "foo", wantKind: reqURL},
 		{name: "vcs no egg", line: "git+https://github.com/o/r.git@main", unnamed: true},
 		{name: "vcs egg", line: "git+https://github.com/o/r.git#egg=Foo_Bar", wantNode: "foo-bar", wantKind: reqVCS},
-		{name: "editable vcs egg", line: "-e git+https://github.com/o/r.git#egg=foo", wantNode: "foo", wantKind: reqEditable},
+		{name: "editable vcs egg", line: "-e git+https://github.com/o/r.git#egg=foo", wantNode: "foo", wantKind: reqEditable, wantRaw: "-e git+https://github.com/o/r.git#egg=foo"},
 		{name: "editable vcs no egg", line: "-e git+https://github.com/o/r.git", unnamed: true},
 		{name: "direct ref vcs", line: "auto-gpt-plugin-template @ git+https://github.com/o/r@0.1", wantNode: "auto-gpt-plugin-template", wantKind: reqVCS},
 		{name: "direct ref url", line: "en_core_web_sm[x] @ https://h/en_core_web_sm-3.7.1.tar.gz", wantNode: "en-core-web-sm", wantKind: reqURL},
@@ -91,6 +92,9 @@ func TestRequirementsLineShapes(t *testing.T) {
 				t.Errorf("nodes = %+v, want one %q of kind %d", got, tc.wantNode, tc.wantKind)
 			case tc.wantNode != "" && tc.wantKind != reqNormal && !containsString(got[0].Partial, plugin.PartialReasonSourceUnpinned):
 				t.Errorf("%q: partial = %v, want source_unpinned", tc.wantNode, got[0].Partial)
+			}
+			if tc.wantRaw != "" && len(got) == 1 && got[0].Raw != tc.wantRaw {
+				t.Errorf("raw = %q, want %q", got[0].Raw, tc.wantRaw)
 			}
 			if !reflect.DeepEqual(rf.includes, tc.includes) {
 				t.Errorf("includes = %q, want %q", rf.includes, tc.includes)
@@ -544,6 +548,23 @@ func TestInventoryIndexNames(t *testing.T) {
 			name:      "backslash kept inside double quotes",
 			files:     map[string]string{"requirements.txt": "-c \"sub\\c.txt\"\nrequests==2.31.0\n", "sub\\c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
 			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "quoted double space in a constraint name with a hash",
+			files:     map[string]string{"requirements.txt": "-c \"a  b.txt\" --hash=sha256:x\nrequests==2.31.0\n", "a  b.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:         "marker glued to an editable",
+			files:        map[string]string{"pyproject.toml": project, "requirements.txt": "-e .;python_version<\"3\"\n"},
+			wantPURLs:    []string{"pkg:pypi/click@8.1.7"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "marker inside a quoted editable",
+			files:        map[string]string{"pyproject.toml": project, "requirements.txt": "-e \".; python_version<\\\"3\\\"\"\n"},
+			wantPURLs:    []string{"pkg:pypi/click@8.1.7"},
+			wantUnpinned: true,
 		},
 		{
 			name:      "constraint inside a quoted option value",

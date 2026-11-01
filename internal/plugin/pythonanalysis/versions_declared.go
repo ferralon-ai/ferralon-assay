@@ -355,10 +355,11 @@ func dependencyGroupSpecs(groups map[string]any) ([]string, bool) {
 // exact "==" pin resolves. A "name @ url" direct reference is UNRESOLVED and no lock covers
 // it. A file: URL other than the project's own directory makes ok false; the project's own
 // directory is dropped (keep false). Name and specifier come from parsePEP508, and a string
-// it rejects makes ok false.
+// it rejects makes ok false. The origin names no lock that resolves the entry; the caller
+// sets lockedBy for the table it reads.
 func pep508Entry(spec, dir string) (d plugin.ResolvedDependency, o manifestOrigin, keep, ok bool) {
 	s := strings.TrimSpace(spec)
-	o = manifestOrigin{dir: dir, lockedBy: projectLocks}
+	o = manifestOrigin{dir: dir}
 	if loc, isFile := fileURLPath(s); isFile {
 		return d, o, false, isProjectDir(loc, dir)
 	}

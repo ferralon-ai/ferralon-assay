@@ -677,6 +677,7 @@ type reqInstalls struct {
 	decls    map[string]*pyDecls // requirements file → what it reads as; nil when it does not
 	includer map[string][]string // requirements file → the requirements files that -r it
 	directed map[string]bool     // files a pyproject.toml or setup.cfg names in a file directive
+	sls      *slsNames           // memoized serverlessNames
 	memo     map[string]bool
 	visiting map[string]bool
 	hashOff  *bool // memoized hashesDisabled
@@ -825,7 +826,8 @@ func pipConfigMatches(root string, match func([]byte) bool) bool {
 // is installed at least once, and every install of it (by a script surface, or through a
 // requirements file that -r's it) passes --no-deps or --require-hashes, or is through a file
 // pip refuses for. A file named requirements.txt, which Python buildpacks install on their own
-// whenever it is there, or named in a file directive, which installs it with the project and
+// whenever it is there, named in a file directive, which installs it with the project and its
+// dependencies, or named in a Serverless config's pythonRequirements, which installs it with
 // its dependencies, is installed some way this does not see.
 func (r *reqInstalls) refused(f string) bool {
 	f = filepath.Clean(f)
@@ -842,8 +844,16 @@ func (r *reqInstalls) refused(f string) bool {
 	return v
 }
 
+// serverlessNamed reports whether a Serverless config may name f, walking the tree once.
+func (r *reqInstalls) serverlessNamed(f string) bool {
+	if r.sls == nil {
+		r.sls = serverlessNames(r.root)
+	}
+	return r.sls.named(f)
+}
+
 func (r *reqInstalls) narrowed(f string) bool {
-	if filepath.Base(f) == "requirements.txt" || r.directed[f] || r.decls[f] == nil {
+	if filepath.Base(f) == "requirements.txt" || r.directed[f] || r.decls[f] == nil || r.serverlessNamed(f) {
 		return false
 	}
 	paths := 0

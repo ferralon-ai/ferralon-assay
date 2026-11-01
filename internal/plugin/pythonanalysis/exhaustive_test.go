@@ -314,6 +314,105 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 	}
 }
 
+// serverless-python-requirements installs the file custom.pythonRequirements.fileName names,
+// joined to the service directory and to each function module, with its dependencies, so a
+// --no-deps install elsewhere no longer narrows that file. A config this cannot resolve may name
+// any file.
+func TestResolveVersions_ExhaustiveServerlessFileName(t *testing.T) {
+	const docker = "FROM python:3.12\nWORKDIR /app\nCOPY . .\n"
+	sls := func(fileName string) string {
+		return "service: app\nplugins:\n  - serverless-python-requirements\ncustom:\n  pythonRequirements:\n    fileName: " + fileName + "\n"
+	}
+	tree := func(req string, extra map[string]string) map[string]string {
+		files := map[string]string{"pyproject.toml": exPyproject, "uv.lock": exUVLock, req: "flask==3.0.0\n",
+			"Dockerfile": docker + "RUN pip install --no-deps -r " + req + "\n"}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	const prod = "requirements-prod.txt"
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"no Serverless config", tree(prod, nil), true},
+		{"serverless.yml names the file", tree(prod, map[string]string{"serverless.yml": sls(prod)}), false},
+		{"serverless.yml names it with a leading ./", tree(prod, map[string]string{"serverless.yml": sls("./" + prod)}), false},
+		{"serverless.yml names another file", tree(prod, map[string]string{"serverless.yml": sls("requirements-lambda.txt")}), true},
+		{"serverless.yml names a file the name ends with", tree(prod, map[string]string{"serverless.yml": sls("prod.txt")}), true},
+		{"serverless.yml without custom", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\n"}), true},
+		{"pythonRequirements without fileName", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements:\n    dockerizePip: true\n"}), true},
+		{"a function module holds the named file", tree("svc/"+prod, map[string]string{"serverless.yml": sls(prod)}), false},
+		{"the file is outside the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls(prod)}), true},
+		{"a --config file under another name", tree(prod, map[string]string{"lambda.yaml": sls(prod)}), false},
+		{"serverless.json names the file", tree(prod, map[string]string{"serverless.json": `{"custom": {"pythonRequirements": {"fileName": "` + prod + `"}}}`}), false},
+		{"serverless.ts sets pythonRequirements", tree(prod, map[string]string{"serverless.ts": "export default { custom: { pythonRequirements: { fileName: f } } };\n"}), false},
+		{"serverless.js without pythonRequirements", tree(prod, map[string]string{"serverless.js": "module.exports = { service: 'app' };\n"}), true},
+		{"fileName is a variable", tree(prod, map[string]string{"serverless.yml": sls("${opt:reqs, 'requirements.txt'}")}), false},
+		{"fileName is not a string", tree(prod, map[string]string{"serverless.yml": sls("[a, b]")}), false},
+		{"fileName leaves the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls("../" + prod)}), false},
+		{"custom is a variable", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.yml)}\n# pythonRequirements\n"}), false},
+		{"pythonRequirements is a variable", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements: ${file(./reqs.yml)}\n"}), false},
+		{"YAML that does not parse", tree(prod, map[string]string{"serverless.yml": "custom:\n  pythonRequirements: [\n"}), false},
+		{"YAML that mentions pythonRequirements outside custom", tree(prod, map[string]string{".github/workflows/ci.yml": "on: push\n# pythonRequirements\n"}), true},
+		{"a config inside the root .git directory", tree(prod, map[string]string{".git/serverless.yml": sls(prod)}), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "PyJWT")
+			if r.Found {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
+// A Serverless config this cannot read, or a directory it cannot walk, may name any file. The
+// Exhaustive rows cannot pin this: an unreadable entry withholds there on its own, so the walk
+// runs directly.
+func TestServerlessNames_Unreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files whatever their mode")
+	}
+	tests := []struct {
+		name string
+		path string // the entry made unreadable
+		file bool
+	}{
+		{"config that cannot be read", "serverless.yml", true},
+		{"directory that cannot be walked", "svc", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			p := filepath.Join(root, tt.path)
+			if tt.file {
+				if err := os.WriteFile(p, []byte("service: app\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f := filepath.Join(root, "requirements-prod.txt")
+			if serverlessNames(root).named(f) {
+				t.Fatal("readable tree reported as naming the file")
+			}
+			if err := os.Chmod(p, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
+			if !serverlessNames(root).named(f) {
+				t.Fatal("unreadable entry not counted as naming the file")
+			}
+		})
+	}
+}
+
 // A file installed only with --no-deps is refused only while every file that -r's it is refused
 // too. The Exhaustive rows cannot pin this: an includer that is not refused withholds on its own
 // check, so the includer test runs directly.

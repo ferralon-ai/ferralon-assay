@@ -1325,10 +1325,11 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 	}
 }
 
-// TestLeftOutEngine_AsmFuncdataPlaceholder: a FUNCDATA operand go_args_stackmap or
+// TestLeftOutEngine_AsmFuncdataPlaceholder: a FUNCDATA symbol operand go_args_stackmap or
 // no_pointers_stackmap, written directly, through a macro the file defines, or through one an
-// included header defines, is no symbol the link binds; either name anywhere else still follows its
-// definers, here an unloaded package's header that mentions it.
+// included header defines, is no symbol the link binds; either name anywhere else, including text a
+// comment turns into another instruction's operand, or where FUNCDATA is itself a macro, still
+// follows its definers, here an unloaded package's header that mentions it.
 func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
@@ -1362,6 +1363,18 @@ func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
 			{c.name + ": a FUNCDATA macro of an included header", merge(body("#include \"fd.h\"\n\n", c.macro), map[string]string{"fd.h": def}), false},
 			{c.name + ": a CALL", body("", "CALL "+c.name+"(SB)"), true},
 			{c.name + ": an address operand", body("", "MOVQ $"+c.name+"(SB), AX"), true},
+			{c.name + ": a labelled FUNCDATA statement", body("", "L1: FUNCDATA $"+c.slot+", "+c.name+"(SB)"), false},
+			{c.name + ": a FUNCDATA macro with parameters", body("#define M(a, b) FUNCDATA $"+c.slot+", "+c.name+"(SB)\n\n", "M(1, 2)"), false},
+			{c.name + ": a header FUNCDATA macro with a comment", merge(body("#include \"fd.h\"\n\n", c.macro), map[string]string{"fd.h": "#define " + c.macro + " FUNCDATA $" + c.slot + ", " + c.name + "(SB) // not */\n"}), false},
+			{c.name + ": the first FUNCDATA operand", body("", "FUNCDATA $"+c.name+"(SB), ·asm(SB)"), true},
+			{c.name + ": a CALL commented FUNCDATA", body("", "CALL "+c.name+"(SB) /* FUNCDATA */"), true},
+			{c.name + ": a header CALL macro commented FUNCDATA", merge(body("#include \"fd.h\"\n\n", "M"), map[string]string{"fd.h": "#define M CALL " + c.name + "(SB) // FUNCDATA\n"}), true},
+			{c.name + ": a FUNCDATA statement inside a comment", body("", "CALL /* ; FUNCDATA $"+c.slot+", */ "+c.name+"(SB)"), true},
+			{c.name + ": a comment opened on an earlier line", body("", "CALL /*\n; FUNCDATA $"+c.slot+", */ "+c.name+"(SB)"), true},
+			{c.name + ": FUNCDATA defined as a macro", body("#define FUNCDATA CALL\n\n", "FUNCDATA "+c.name+"(SB)"), true},
+			{c.name + ": FUNCDATA defined as a store", body("#define FUNCDATA MOVQ\n\n", "FUNCDATA $"+c.slot+", "+c.name+"(SB)"), true},
+			{c.name + ": FUNCDATA defined with parameters", body("#define FUNCDATA(x) MOVQ x\n\n", "FUNCDATA ($"+c.slot+"), "+c.name+"(SB)"), true},
+			{c.name + ": FUNCDATA defined by a header", merge(body("#include \"fd.h\"\n\n", "FUNCDATA $"+c.slot+", "+c.name+"(SB)"), map[string]string{"fd.h": "#define FUNCDATA MOVQ\n"}), true},
 		}...)
 	}
 	for _, tc := range cases {

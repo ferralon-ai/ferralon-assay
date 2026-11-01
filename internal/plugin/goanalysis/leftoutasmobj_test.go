@@ -222,6 +222,8 @@ func TestLofAsmObjHeader(t *testing.T) {
 		{"F2: a truncated enumeration builds no header", many("linux && amd64", "", 17, "wNN_windows.go", map[string]string{"p/p.go": "package p\n\nvar _ = undefined\n"}),
 			errLofAsmHdrCap, nil},
 		{"variants over the cap", tagged(5), errLofAsmHdrCap, nil},
+		{"N1: an experiment the text tests counts among the free tags", many("linux && amd64", "#ifdef GOEXPERIMENT_fieldtrack\n\tCALL x(SB)\n#endif\n", 16, "cNN.go", nil),
+			errLofAsmHdrCap, nil},
 		{"an integer constant the text names", str("1"), nil, []string{"s"}},
 		{"a string constant the text names", str(`"x"`), errLofAsmHdrString, nil},
 	}
@@ -234,7 +236,7 @@ func TestLofAsmObjHeader(t *testing.T) {
 			}
 			x, _ := fileConstraint(src)
 			g := s.gate(it, src)
-			tu := lofAsmTuple{lofPort{"linux", "amd64"}, s.tool.levels["amd64"][0]}
+			tu := s.tool.tuples([]lofPort{{"linux", "amd64"}}, g)[0]
 			if _, err := s.headers(it, tu, g, x); !errors.Is(err, tc.err) {
 				t.Errorf("headers: %v, want %v", err, tc.err)
 			}
@@ -248,6 +250,79 @@ func TestLofAsmObjHeader(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLofAsmObjExperiments: a GOEXPERIMENT_ macro the file or a header it includes tests is defined
+// by cmd/asm, for the packages it allows ABI selectors in, in builds whose GOEXPERIMENT sets the
+// experiment, whatever the session's: the file is assembled with each experiment it tests set on and
+// off. A file testing more experiments than maxFreeTags is not known.
+func TestLofAsmObjExperiments(t *testing.T) {
+	const exp = "fieldtrack"
+	mod := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n", "p/p.go": "package p\n"}
+	body := func(text string) string {
+		return "//go:build linux && amd64\n\n" + text + "TEXT ·f(SB),0,$0\n\tCALLX\n\tRET\n"
+	}
+	ifdef := "#ifdef GOEXPERIMENT_" + exp + "\n#define CALLX CALL ·sym(SB)\n#else\n#define CALLX\n#endif\n"
+	probe, _ := lofAsmTestSession(t, mod, "p/p.go", nil, "")
+	if !slices.Contains(probe.tool.exps, exp) {
+		t.Fatalf("experiments %v lack %s", probe.tool.exps, exp)
+	}
+	if v, _ := lofEnvLast(probe.tool.env, "GOEXPERIMENT"); strings.Contains(","+v+",", ","+exp+",") {
+		t.Fatalf("the session sets %s", exp)
+	}
+	var many strings.Builder
+	for _, x := range probe.tool.exps[:maxFreeTags+1] {
+		many.WriteString("#ifdef GOEXPERIMENT_" + x + "\n#endif\n")
+	}
+	cases := []struct {
+		name  string
+		files map[string]string
+		ok    bool
+		refs  []string
+	}{
+		{"N1: the file tests an experiment the session leaves unset", merge(mod, map[string]string{"p/p.s": body(ifdef)}), true,
+			[]string{"internal/runtime/startlinetest.sym"}},
+		{"N1: a header the file includes tests it", merge(mod, map[string]string{"p/x.h": ifdef, "p/p.s": body("#include \"x.h\"\n\n")}), true,
+			[]string{"internal/runtime/startlinetest.sym"}},
+		{"N1: the file tests more experiments than the cap", merge(mod, map[string]string{"p/p.s": body(many.String() + "#define CALLX\n")}), false, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, it := lofAsmTestSession(t, tc.files, "p/p.s", nil, "")
+			// cmd/asm defines GOEXPERIMENT_ macros only for the packages objabi allows ABI selectors in.
+			it.pkg = "internal/runtime/startlinetest"
+			o := s.read(it)
+			if (o != nil) != tc.ok {
+				t.Fatalf("read = %v, want ok %v", o, tc.ok)
+			}
+			for _, r := range tc.refs {
+				if !slices.Contains(o.refs, r) {
+					t.Errorf("refs %v lack %s", o.refs, r)
+				}
+			}
+		})
+	}
+}
+
+// TestLofAsmHdrKey: a go_asm.h is keyed by the toolchain root, the architecture level and the
+// experiments the build sets, so builds that differ in any share no entry.
+func TestLofAsmHdrKey(t *testing.T) {
+	a := &lofAsmTool{root: "/a", version: "go1.26.3"}
+	b := &lofAsmTool{root: "/b", version: "go1.26.3"}
+	it := lofAsmItem{pkg: "runtime", std: true}
+	tu := lofAsmTuple{lofPort{"linux", "amd64"}, "v1", ""}
+	v3, on := tu, tu
+	v3.level, on.exp = "v3", "fieldtrack"
+	k := a.hdrKey(it, tu, nil, []string{"a.go"})
+	for name, other := range map[string]string{
+		"N2: another root":       b.hdrKey(it, tu, nil, []string{"a.go"}),
+		"N2: another level":      a.hdrKey(it, v3, nil, []string{"a.go"}),
+		"N1: another experiment": a.hdrKey(it, on, nil, []string{"a.go"}),
+	} {
+		if other == k {
+			t.Errorf("%s shares the key", name)
+		}
 	}
 }
 

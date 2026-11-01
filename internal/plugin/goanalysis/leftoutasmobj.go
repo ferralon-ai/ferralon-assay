@@ -48,8 +48,9 @@ type lofAsmObj struct {
 const lofAsmHdrCap = 16
 
 // lofAsmCacheDir holds what the standard library's assembly reads across runs: its generated
-// go_asm.h headers, keyed by toolchain release, package, port and Go file set, and what each file
-// assembles to, keyed by toolchain release and root, package, file and content; "" keeps none.
+// go_asm.h headers, keyed by toolchain release and root, package, build tuple and Go file set, and
+// what each file assembles to, keyed by toolchain release and root, package, file and content; ""
+// keeps none.
 var lofAsmCacheDir = func() string {
 	d, err := os.UserCacheDir()
 	if err != nil {
@@ -57,6 +58,10 @@ var lofAsmCacheDir = func() string {
 	}
 	return filepath.Join(d, "ferralon-assay", "goasmh")
 }()
+
+// lofAsmCacheGen names what this code reads a standard-library file and its go_asm.h to; a change
+// to either moves it, so the cache never serves a read made under other rules.
+const lofAsmCacheGen = "2"
 
 // lofAsmNonce returns the -D macro a go_asm.h build passes the assembler, which no build defines, so
 // the go command cannot reuse a cached build of the package and skip generating its header.
@@ -299,7 +304,7 @@ func (t *lofAsmTool) stdCache(it lofAsmItem) string {
 		return ""
 	}
 	c := sha256.Sum256(src)
-	sum := sha256.Sum256([]byte(strings.Join([]string{t.version, t.experiment, t.root, it.pkg, it.file, hex.EncodeToString(c[:])}, "\x01")))
+	sum := sha256.Sum256([]byte(strings.Join([]string{lofAsmCacheGen, t.version, t.experiment, t.root, it.pkg, it.file, hex.EncodeToString(c[:])}, "\x01")))
 	key := hex.EncodeToString(sum[:])
 	return filepath.Join(lofAsmCacheDir, "obj", key[:2], key+".json")
 }
@@ -328,6 +333,9 @@ func (s *lofAsmSession) read(it lofAsmItem) *lofAsmObj {
 		return out
 	}
 	g := s.gate(it, src)
+	if g.badExp || len(g.exps) > maxFreeTags {
+		return nil
+	}
 	tuples := t.tuples(ports, g)
 	type result struct {
 		l   []*lofListing
@@ -376,11 +384,13 @@ func (s *lofAsmSession) read(it lofAsmItem) *lofAsmObj {
 // lofPort is a gc port, as go tool dist list names it.
 type lofPort struct{ goos, goarch string }
 
-// lofAsmTuple is one build an assembly file is assembled for: a port and the architecture level
-// cmd/go passes the assembler macros for.
+// lofAsmTuple is one build an assembly file is assembled for: a port, the architecture level cmd/go
+// passes the assembler macros for, and the experiments the build sets on or off over the session's
+// GOEXPERIMENT ("x,noy", "" for none), which cmd/asm defines GOEXPERIMENT_ macros for.
 type lofAsmTuple struct {
 	lofPort
 	level string
+	exp   string
 }
 
 // lofAsmLevels holds, by GOARCH, the variable naming its level and the level macro family cmd/go
@@ -457,7 +467,38 @@ func (tu lofAsmTuple) envVars() []string {
 	return e
 }
 
-func (tu lofAsmTuple) String() string { return tu.goos + "/" + tu.goarch + "/" + tu.level }
+func (tu lofAsmTuple) String() string {
+	return tu.goos + "/" + tu.goarch + "/" + tu.level + "/" + tu.exp
+}
+
+// goexperiment returns the GOEXPERIMENT the tuple's tools run under: the session's, then the tuple's
+// settings, which the toolchain applies in order.
+func (tu lofAsmTuple) goexperiment(session string) string {
+	switch {
+	case tu.exp == "":
+		return session
+	case session == "":
+		return tu.exp
+	}
+	return session + "," + tu.exp
+}
+
+// expTag returns, for a goexperiment.x build tag of an experiment the tuple sets, its value.
+func (tu lofAsmTuple) expTag(tag string) (bool, bool) {
+	name, ok := strings.CutPrefix(tag, "goexperiment.")
+	if !ok || tu.exp == "" {
+		return false, false
+	}
+	for _, e := range strings.Split(tu.exp, ",") {
+		if e == name {
+			return true, true
+		}
+		if e == "no"+name {
+			return false, true
+		}
+	}
+	return false, false
+}
 
 // lofAsmTargetVars are the variables a tool's environment takes from the tuple or the session alone.
 var lofAsmTargetVars = []string{"GOOS", "GOARCH", "GO386", "GOAMD64", "GOARM", "GOARM64", "GOMIPS", "GOMIPS64", "GOPPC64",
@@ -481,8 +522,11 @@ type lofAsmTool struct {
 	minor                          int
 	ports                          []lofPort
 	levels                         map[string][]string
-	env                            []string
-	hdrSem                         chan struct{}
+	// exps holds the release's experiment names, as GOEXPERIMENT and the GOEXPERIMENT_ macros spell
+	// them; nil when they could not be read.
+	exps   []string
+	env    []string
+	hdrSem chan struct{}
 
 	mu     sync.Mutex
 	tags   map[string]*lofOnce[map[lofPort]bool]
@@ -591,7 +635,38 @@ func newLofAsmTool(ctx context.Context, root string, env []string) (*lofAsmTool,
 			}
 		}
 	}
+	t.exps = lofAsmExperiments(root)
 	return t, nil
+}
+
+// lofAsmExperiments returns the experiment names of the toolchain at root: the fields of
+// goexperiment.Flags, lowercased, as internal/buildcfg (exp.go, ParseGOEXPERIMENT) names them; nil
+// when they cannot be read.
+func lofAsmExperiments(root string) []string {
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, "src", "internal", "goexperiment", "flags.go"), nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			ts := sp.(*ast.TypeSpec)
+			st, ok := ts.Type.(*ast.StructType)
+			if ts.Name.Name != "Flags" || !ok {
+				continue
+			}
+			for _, fl := range st.Fields.List {
+				for _, n := range fl.Names {
+					out = append(out, strings.ToLower(n.Name))
+				}
+			}
+		}
+	}
+	return out
 }
 
 // nm returns the path of the toolchain's nm, "" when it cannot be had.
@@ -734,7 +809,8 @@ func (t *lofAsmTool) admit(name string, x constraint.Expr) []lofPort {
 // one port per GOARCH, and a level to the lowest, unless the file or a header it may include names
 // that macro family, may include a header that was not read, or includes go_asm.h, whose Go file
 // set may vary with either; GOARM always varies, as the assembler itself rewrites float
-// instructions by it.
+// instructions by it. Each build then runs once per assignment of the experiments the file or a
+// header it may include tests a GOEXPERIMENT_ macro of.
 func (t *lofAsmTool) tuples(ports []lofPort, g *lofAsmGate) []lofAsmTuple {
 	wide := g.unresolved || g.needsHdr
 	byArch := map[string][]lofPort{}
@@ -765,7 +841,16 @@ func (t *lofAsmTool) tuples(ports []lofPort, g *lofAsmGate) []lofAsmTuple {
 		}
 		for _, p := range ps {
 			for _, l := range levels {
-				out = append(out, lofAsmTuple{p, l})
+				for mask := 0; mask < 1<<len(g.exps); mask++ {
+					var exp []string
+					for i, x := range g.exps {
+						if mask&(1<<i) == 0 {
+							x = "no" + x
+						}
+						exp = append(exp, x)
+					}
+					out = append(out, lofAsmTuple{p, l, strings.Join(exp, ",")})
+				}
 			}
 		}
 	}
@@ -776,11 +861,15 @@ func (t *lofAsmTool) tuples(ports []lofPort, g *lofAsmGate) []lofAsmTuple {
 // macro families named, the identifiers, the names #ifdef and #ifndef test, and whether some
 // include could not be read or is the generated go_asm.h.
 type lofAsmGate struct {
-	goos       bool
-	families   map[string]bool
-	idents     map[string]bool
-	ifdefs     []string
-	badIfdef   bool
+	goos     bool
+	families map[string]bool
+	idents   map[string]bool
+	ifdefs   []string
+	badIfdef bool
+	// exps holds the experiments of the release whose GOEXPERIMENT_ macro an #ifdef or #ifndef tests;
+	// badExp is set when one is tested and the release's experiments could not be read.
+	exps       []string
+	badExp     bool
 	unresolved bool
 	needsHdr   bool
 	// hfiles holds the package's headers cmd/go copies into the build's object directory under
@@ -872,6 +961,17 @@ func (s *lofAsmSession) gate(it lofAsmItem, src []byte) *lofAsmGate {
 		}
 	}
 	scan(src)
+	for _, d := range g.ifdefs {
+		x, ok := strings.CutPrefix(d, "GOEXPERIMENT_")
+		switch {
+		case !ok:
+		case s.tool.exps == nil:
+			g.badExp = true
+		case slices.Contains(s.tool.exps, x) && !slices.Contains(g.exps, x):
+			g.exps = append(g.exps, x)
+		}
+	}
+	slices.Sort(g.exps)
 	return g
 }
 
@@ -976,6 +1076,9 @@ func (s *lofAsmSession) asm(dir, file, pkg string, tu lofAsmTuple, objdir string
 	cmd := exec.CommandContext(s.ctx, t.asm, args...)
 	cmd.Dir = dir
 	cmd.Env = append(slices.Clone(t.env), tu.envVars()...)
+	if tu.exp != "" {
+		cmd.Env = append(cmd.Env, "GOEXPERIMENT="+tu.goexperiment(t.experiment))
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if lofAsmExecHook != nil {
@@ -1598,6 +1701,10 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 		if _, ok := bit[tag]; ok {
 			return
 		}
+		if v, ok := tu.expTag(tag); ok {
+			fixed[tag] = v
+			return
+		}
 		if v, ok := t.tagFixed(tag, tu.lofPort); ok {
 			fixed[tag] = v
 			return
@@ -1627,6 +1734,10 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 	relevant := g.badIfdef || g.unresolved
 	for _, d := range g.ifdefs {
 		relevant = relevant || lofAsmHdrCandidate(src, d) != ""
+	}
+	if n := strings.Count(tu.exp, ",") + 1; tu.exp != "" && len(free)+n > maxFreeTags {
+		// The experiments the build enumerates count among its free tags, and are never cut short.
+		return nil, errLofAsmHdrCap
 	}
 	over := len(free) > maxFreeTags
 	if over {
@@ -1866,21 +1977,22 @@ func lofAsmHdrValue(v string) bool {
 // of the package with a nonce assembler macro, which makes the go command rebuild it rather than
 // reuse a cached build. It never fetches: modules come from the module cache or vendor directory
 // only. The standard library's headers are cached across runs.
+// hdrKey returns the key of the go_asm.h a build of the package with tags compiles on the tuple. The
+// level and experiments are in it: the file set covers the package's own files, not a dependency's
+// level- or experiment-tagged files a constant may take its value from.
+func (t *lofAsmTool) hdrKey(it lofAsmItem, tu lofAsmTuple, tags, files []string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{lofAsmCacheGen, t.version, t.experiment, t.root, it.pkg, tu.goos, tu.goarch, tu.level, tu.exp,
+		strings.Join(files, "\x00"), strings.Join(tags, ",")}, "\x01")))
+	return hex.EncodeToString(sum[:])
+}
+
 func (s *lofAsmSession) header(it lofAsmItem, tu lofAsmTuple, tags, files []string) lofAsmHdr {
-	t := s.tool
-	sum := sha256.Sum256([]byte(strings.Join([]string{t.version, t.experiment, it.pkg, tu.goos, tu.goarch, strings.Join(files, "\x00"), strings.Join(tags, ",")}, "\x01")))
-	key := hex.EncodeToString(sum[:])
+	key := s.tool.hdrKey(it, tu, tags, files)
 	cache := ""
 	if it.std && lofAsmCacheDir != "" {
 		cache = filepath.Join(lofAsmCacheDir, key[:2], key+".h")
 	}
-	memo := key + "\x00" + it.dir
-	if cache == "" {
-		memo += "\x00" + tu.level
-	}
-	// The cache keeps a standard-library header for every level of the port, so one session builds it
-	// once for them all, not once per level, racing the cache.
-	return lofMemo(&s.mu, s.hdrs, memo, func() lofAsmHdr {
+	return lofMemo(&s.mu, s.hdrs, key+"\x00"+it.dir, func() lofAsmHdr {
 		if cache != "" {
 			if b, err := os.ReadFile(cache); err == nil {
 				return lofAsmHdrDecode(b)
@@ -1962,8 +2074,8 @@ func (s *lofAsmSession) runHeaderBuild(it lofAsmItem, tu lofAsmTuple, tags []str
 	cmd := exec.CommandContext(s.ctx, filepath.Join(t.root, "bin", "go"), args...)
 	env := append(lofAsmBaseEnv(s.env), tu.envVars()...)
 	env = append(env, "GOPROXY=off", "GONOPROXY=none.invalid", "GOVCS=*:off", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOTMPDIR="+gotmp)
-	if t.experiment != "" {
-		env = append(env, "GOEXPERIMENT="+t.experiment)
+	if x := tu.goexperiment(t.experiment); x != "" {
+		env = append(env, "GOEXPERIMENT="+x)
 	}
 	if it.std {
 		cmd.Dir = gotmp

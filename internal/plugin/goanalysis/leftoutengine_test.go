@@ -60,12 +60,14 @@ func lofRun(t *testing.T, dir, module string, symbols map[string][]string, unkno
 		Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/" + module},
 	}
 	scanned := vulnScan{imports: map[string][]string{module: vulnerable}, symbols: symbols}
-	res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, release, dir, env)
+	// One scan's run cache, as the host gives it: the gate and the engine read below share one build.
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	res := withholdForLeftOutFiles(ctx, refuted, scanned, load.Packages, release, dir, env)
 	withheld := res.Refutation == nil
 	if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != withheld {
 		t.Errorf("excluded_files declared = %v, withheld = %v (partiality %+v)", declared, withheld, res.Partiality)
 	}
-	e := loadLofEngine(context.Background(), load.Packages, release, dir, env)
+	e := loadLofEngine(ctx, load.Packages, release, dir, env)
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -14,6 +15,25 @@ import (
 	"testing"
 	"time"
 )
+
+// TestMain gives the package's standard-library assembly reads a cache of their own, shared by
+// every test, and assembles that assembly on two ports: those tests read the standard library to
+// reach its definers and gaps, while module fixtures, which keep every port, exercise the port
+// enumeration.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "lofasmcache")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	lofAsmCacheDir = dir
+	lofAsmStdPorts = func(p lofPort) bool {
+		return p == lofPort{"linux", "amd64"} || p == lofPort{"darwin", "arm64"}
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // lofAsmTestSession returns a session for the module tree files, whose GOFLAGS are goflags, and the
 // item for its assembly file file.
@@ -330,8 +350,8 @@ func TestLeftOutEngine_AsmListing(t *testing.T) {
 		"_v/sys/sys.go": "package sys\n\nfunc Raw()\n",
 		"_v/sys/sys.s":  "TEXT ·Raw(SB),0,$0\n\tCALL p256IsZero(SB)\n\tRET\n",
 	})
-	// failNistecAsm makes every assembly of nistec's files fail, on a fresh assembler with no cache
-	// to answer from.
+	// failNistecAsm makes every assembly of nistec's files fail, on a fresh assembler whose cache
+	// holds nothing of nistec's to answer from.
 	// p7 is x.go's assembly calling go_asm.h's bool constant, on every port a main package builds on
 	// with cgo off.
 	p7 := map[string]string{
@@ -341,9 +361,37 @@ func TestLeftOutEngine_AsmListing(t *testing.T) {
 	}
 	failNistecAsm := func(t *testing.T) {
 		t.Setenv("GOENV", "off")
-		old := lofAsmCacheDir
-		lofAsmCacheDir = ""
-		t.Cleanup(func() { lofAsmCacheDir = old })
+		goroot, err := exec.Command("go", "env", "GOROOT").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tool := lofAsmToolFor(context.Background(), strings.TrimSpace(string(goroot)), os.Environ())
+		if tool == nil {
+			t.Fatal("no assembler")
+		}
+		dir := filepath.Join(tool.root, "src", "crypto", "internal", "fips140", "nistec")
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const pkg = "crypto/internal/fips140/nistec"
+		tool.mu.Lock()
+		for k := range tool.std {
+			if strings.HasPrefix(k, pkg+"\x00") {
+				delete(tool.std, k)
+			}
+		}
+		tool.mu.Unlock()
+		for _, e := range ents {
+			if !strings.HasSuffix(e.Name(), ".s") {
+				continue
+			}
+			if c := tool.stdCache(lofAsmItem{pkg: pkg, dir: dir, file: filepath.Join(dir, e.Name()), std: true}); c != "" {
+				if err := os.Remove(c); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
+			}
+		}
 		lofAsmHook(t, func(c *exec.Cmd) {
 			if filepath.Base(c.Path) == "asm" && strings.HasSuffix(filepath.ToSlash(c.Dir), "/fips140/nistec") {
 				c.Path, c.Args[0] = "/usr/bin/false", "/usr/bin/false"

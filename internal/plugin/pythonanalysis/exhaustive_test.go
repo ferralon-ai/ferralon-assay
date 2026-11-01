@@ -307,6 +307,7 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"copied from a stage to ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg /out/ /root/.pip/\n"}), false},
 		{"copied to ProgramData/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/ProgramData/pip/\n"}), false},
 		{"copied to AppData\\Roaming\\pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ C:\\Users\\app\\AppData\\Roaming\\pip\n"}), false},
+		{"a secret mounted at ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN --mount=type=secret,id=pip,target=/root/.pip,required pip --version\n"}), false},
 		{"copied to the legacy per-user pip folder", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/Users/ContainerUser/pip/\n"}), false},
 		{"copied to Application Support/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ \"/Users/app/Library/Application Support/pip/\"\n"}), false},
 		{"XDG_CONFIG_HOME moved", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ENV XDG_CONFIG_HOME=/cfg\nCOPY ci/ /cfg/\n"}), false},

@@ -1090,7 +1090,7 @@ func venvMade(seg segment, cur cursor) string {
 
 // interpHeld reports whether the interpreter a venv creation copies may be a file of the build:
 // its command is a path the build holds; a -p/--python value is missing, is a path the build
-// holds, or is not a version request; or it is uv venv without -p/--python, which reads a
+// holds, or has no / and is not a version request; or it is uv venv without -p/--python, which reads a
 // request, perhaps a path, from a .python-version or .python-versions in the working
 // directory or above it.
 func interpHeld(head string, words, args []string, cur cursor) bool {

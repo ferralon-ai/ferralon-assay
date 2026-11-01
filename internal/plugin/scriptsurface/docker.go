@@ -74,8 +74,11 @@ func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 // holdsDir reports whether the stage holds a directory at the container path f: something was
 // written under it, or a directory copy put a directory there.
 func (st *dockerStage) holdsDir(v *Veto, f string) bool {
+	if f == "/" {
+		return len(st.events) > 0
+	}
 	for _, e := range st.events {
-		if f == "/" || strings.HasPrefix(e.dst, f+"/") {
+		if strings.HasPrefix(e.dst, f+"/") {
 			return true
 		}
 		if !e.dir || !e.covers(f) {
@@ -83,7 +86,7 @@ func (st *dockerStage) holdsDir(v *Veto, f string) bool {
 		}
 		rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(f, e.dst), "/"))
 		for _, h := range e.hosts {
-			if _, _, known := v.stat(filepath.Join(h, rel)); !known || isDir(filepath.Join(h, rel)) {
+			if regular, there, known := v.stat(filepath.Join(h, rel)); !known || there && !regular {
 				return true
 			}
 		}
@@ -326,14 +329,22 @@ func (c *dockerCursor) at(p string) (string, bool) {
 }
 
 // present is true for a path the stage has bound or tainted, a file copied in or one a
-// command may have written, or a directory it holds.
+// command may have written, a directory it holds, or a path a mount of the RUN covers or
+// lies under.
 func (c *dockerCursor) present(p string) bool {
 	f, ok := c.at(p)
 	if !ok {
 		return true
 	}
-	_, state := c.st.lookup(c.v, f)
-	return state != pathAbsent || c.st.holdsDir(c.v, f)
+	if _, state := c.st.lookup(c.v, f); state != pathAbsent || c.st.holdsDir(c.v, f) || c.mounted(f) {
+		return true
+	}
+	for _, t := range c.mounts {
+		if f == "/" || strings.HasPrefix(t, f+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *dockerCursor) venv() *venvMark { return &c.mark }

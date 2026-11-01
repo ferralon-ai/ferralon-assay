@@ -4,6 +4,7 @@ import (
 	"errors"
 	"go/ast"
 	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"os"
@@ -64,6 +65,11 @@ type lofDepFile struct {
 	// ints holds the constants of the file whose value is integer arithmetic on literals and names
 	// (lofDepIntExpr).
 	ints map[string]bool
+	// name is the file's base name, expr its build constraint (nil for none), and cgo whether it
+	// imports "C".
+	name string
+	expr constraint.Expr
+	cgo  bool
 }
 
 // lofDepImport is one import of a file; name is "" when the import gives none.
@@ -117,7 +123,7 @@ func lofDepRead(dir string, arches map[string]bool) *lofDepPkg {
 }
 
 func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bool) {
-	f := lofDepFile{refs: map[string][]string{}, ints: map[string]bool{}}
+	f := lofDepFile{refs: map[string][]string{}, ints: map[string]bool{}, name: filepath.Base(path)}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return f, "", false
@@ -126,6 +132,7 @@ func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bo
 	if err != nil {
 		return f, "", false
 	}
+	f.expr = x
 	for _, tag := range lofExprTags(x, nil) {
 		if e, ok := strings.CutPrefix(tag, "goexperiment."); ok {
 			if !slices.Contains(f.exps, e) {
@@ -152,8 +159,11 @@ func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bo
 			name = im.Name.Name
 		}
 		f.imports = append(f.imports, lofDepImport{name, p})
-		if p == "C" && !slices.Contains(f.tags, "cgo") {
-			f.tags = append(f.tags, "cgo")
+		if p == "C" {
+			f.cgo = true
+			if !slices.Contains(f.tags, "cgo") {
+				f.tags = append(f.tags, "cgo")
+			}
 		}
 	}
 	for _, d := range af.Decls {
@@ -499,9 +509,11 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 			}
 			ints := n.ints && f.ints[n.name]
 			facts := f.lofDepFacts
-			if n.dir == dir || (ints && allInt(n.dir, n.name)) {
+			if n.dir == dir || (ints && allInt(n.dir, n.name) && s.declaredAlways(pkg, n.name)) {
 				// The package's own files are enumerated as its own, and lofAsmHdrStable judges them.
-				// A file that can change only an integer's value changes no symbol.
+				// A file that can change only an integer's value changes no symbol, so long as some
+				// file declares the name whatever the tags: where none does, the build that compiles
+				// is not the one a single variant would make.
 				facts.tags = nil
 			}
 			out.add(facts)
@@ -622,4 +634,42 @@ func (t *lofAsmTool) effective(tu lofAsmTuple) string {
 		slices.Sort(on)
 		return "on:" + strings.Join(on, ",")
 	})
+}
+
+// declaredAlways reports whether every assignment of the build tags the files of pkg declaring name
+// are constrained on, and of cgo where one imports "C", selects one of them. A file go/build's name
+// rules exclude on some port is taken to be selected by none.
+func (s *lofAsmSession) declaredAlways(pkg *lofDepPkg, name string) bool {
+	var files []lofDepFile
+	var tags []string
+	for _, f := range pkg.files {
+		if _, ok := f.refs[name]; !ok {
+			continue
+		}
+		if slices.ContainsFunc(s.tool.ports, func(p lofPort) bool { return !lofMatchName(p, f.name) }) {
+			continue
+		}
+		files = append(files, f)
+		if f.expr != nil {
+			tags = lofExprTags(f.expr, tags)
+		}
+		if f.cgo && !slices.Contains(tags, "cgo") {
+			tags = append(tags, "cgo")
+		}
+	}
+	if len(files) == 0 || len(tags) > 16 {
+		return false
+	}
+	for mask := uint32(0); mask < 1<<len(tags); mask++ {
+		on := func(tag string) bool {
+			i := slices.Index(tags, tag)
+			return i >= 0 && mask&(1<<i) != 0
+		}
+		if !slices.ContainsFunc(files, func(f lofDepFile) bool {
+			return (f.expr == nil || f.expr.Eval(on)) && (!f.cgo || on("cgo"))
+		}) {
+			return false
+		}
+	}
+	return true
 }

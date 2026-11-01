@@ -341,6 +341,12 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 			"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
 			"p/p.s":    strings.Replace(ifdefK, "linux && amd64", runtime.GOOS+" && "+runtime.GOARCH, 1),
 		}), true, []string{"example.com/v/p.sym"}},
+		{"R2b: the dependency declares the name only in a file importing C", merge(mod, map[string]string{
+			"d/c.go": "package d\n\nimport \"C\"\n\nconst K = 1\n",
+			"d/d.go": "package d\n",
+			"p/p.go": "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
+			"p/p.s":  strings.Replace(ifdefK, "linux && amd64", runtime.GOOS+" && "+runtime.GOARCH, 1),
+		}), true, []string{"example.com/v/p.sym"}},
 		// D1: the package's own tags are its own files' to enumerate; a file the build never
 		// compiles (//go:build ignore) adds no variant through the dependency slice.
 		{"D1: an ignored file of the package declares the name, under four own tags", merge(merge(mod, own(4)), map[string]string{
@@ -352,6 +358,19 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 		{"D2: a dependency's tag sets an integer only, under four own tags", merge(tagged("1", "0", "const M = 1 + R", movK), own(4)), true, nil},
 		{"D2 counter: the tag sets a float the integer arithmetic takes", tagged("1", "1.5", "const M = 1 + R", ifdefK), true,
 			[]string{"example.com/v/p.sym"}},
+		{"D2 counter: only the tagged file declares the integer", merge(mod, map[string]string{
+			"d/on.go": "//go:build t0\n\npackage d\n\nconst R = 1\n",
+			"d/d.go":  "package d\n",
+			"p/p.go":  "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.R\n",
+			"p/p.s":   ifdefK,
+		}), true, []string{"example.com/v/p.sym"}},
+		{"D2 counter: a file only some ports compile declares the integer", merge(mod, map[string]string{
+			"d/k.go":       "//go:build t0\n\npackage d\n\nconst R = 1\n",
+			"d/k_linux.go": "//go:build !t0\n\npackage d\n\nconst R = 1\n",
+			"d/d.go":       "package d\n",
+			"p/p.go":       "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.R\n",
+			"p/p.s":        strings.Replace(ifdefK, "linux && amd64", "darwin && arm64", 1),
+		}), true, []string{"example.com/v/p.sym"}},
 		{"D2 counter: integer arithmetic on the tagged integer feeds a comparison", tagged("1", "0", "const M = R > 0", text("\tCALL const_K(SB)\n")), true,
 			[]string{"true", "false"}},
 	}

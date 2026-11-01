@@ -311,6 +311,8 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"copied to AppData\\Roaming\\pip in a JSON-array COPY", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + `COPY ["ci/", "C:\\Users\\app\\AppData\\Roaming\\pip\\"]` + "\n"}), false},
 		{"copied to /etc/xdg/pip/ through a doubled slash", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /etc//xdg//pip/\n"}), false},
 		{"copied to the legacy per-user pip folder", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/Users/ContainerUser/pip/\n"}), false},
+		{"copied into the legacy per-user pip folder, named through %USERPROFILE% as the WORKDIR", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "WORKDIR %USERPROFILE%\\pip\nCOPY ci/settings.cfg .\n"}), false},
+		{"copied to the legacy per-user pip folder through ~", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / ~/pip/\n"}), false},
 		{"copied to Application Support/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ \"/Users/app/Library/Application Support/pip/\"\n"}), false},
 		{"XDG_CONFIG_HOME moved", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ENV XDG_CONFIG_HOME=/cfg\nCOPY ci/ /cfg/\n"}), false},
 		{"pip config set", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "install.sh": "pip config set install.no-require-hashes true\n"}), false},

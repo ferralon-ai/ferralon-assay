@@ -943,6 +943,16 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		}
 		return ""
 	}
+	if at, text, fork, ok := nestedShell(words); ok {
+		if why := v.reread(words, text, fork, cur, depth); why != "" {
+			return why
+		}
+		if at == 0 {
+			// The shell or eval runs the text and nothing else, so the text is what is checked.
+			v.mention(words[1:])
+			return ""
+		}
+	}
 	if expandedInstall(words) {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
@@ -997,6 +1007,94 @@ func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 	}
 	return ""
 }
+
+// shells are the programs whose -c argument is shell text they read again.
+var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ksh": true, "ash": true, "mksh": true}
+
+// shellArgOptions are the shell options that take the next word as their argument.
+var shellArgOptions = map[string]bool{"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true}
+
+// nestedShell finds in a command's words shell text that is read a second time, with its
+// quotes removed again: the argument of a shell's -c, or the words after eval joined by
+// spaces. at is the index of the shell or eval word, and fork is true when the text runs in a
+// shell of its own.
+func nestedShell(words []string) (at int, text string, fork, ok bool) {
+	for i, w := range words {
+		name, named := CommandName(w)
+		switch {
+		case !named:
+		case name == "eval":
+			if i == 0 || words[i-1] == "command" || words[i-1] == "builtin" {
+				return i, strings.Join(words[i+1:], " "), false, true
+			}
+		case shells[name]:
+			c := false
+			for j := i + 1; j < len(words); j++ {
+				a := words[j]
+				switch {
+				case a == "--" || a == "-":
+					if c && j+1 < len(words) {
+						return i, words[j+1], true, true
+					}
+				case shellArgOptions[a]:
+					j++
+					continue
+				case strings.HasPrefix(a, "--"):
+					continue
+				case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
+					c = c || a[0] == '-' && strings.ContainsRune(a, 'c')
+					continue
+				case c:
+					return i, a, true, true
+				}
+				break
+			}
+		}
+	}
+	return 0, "", false, false
+}
+
+// reread applies the rule to shell text a command reads a second time, from cur or, when
+// fork, from a shell of its own. Text nested too deep withholds. Text that expands, or does
+// not split into whole commands, withholds when it names a token once its quotes are gone
+// and its expansions are either dropped or split apart, since either may be what runs.
+func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth int) string {
+	why := "install command in shell text read again: " + strings.Join(words, " ")
+	if depth >= maxRunDepth {
+		return why
+	}
+	segs, ok, dangles := shellSegments(text)
+	if !ok || strings.ContainsAny(text, "$`") {
+		if v.hasToken(unquote.Replace(expansionRE.ReplaceAllString(text, ""))) || v.hasToken(splitExpansions.Replace(text)) {
+			return why
+		}
+		if !ok {
+			return ""
+		}
+	}
+	if dangles {
+		return why
+	}
+	sh := cur
+	if fork {
+		sh = cur.fork()
+	}
+	for _, seg := range segs {
+		if w := v.command(seg, sh, depth+1); w != "" {
+			return w
+		}
+	}
+	return ""
+}
+
+var (
+	// expansionRE matches a parameter expansion, or a command substitution holding no other.
+	expansionRE = regexp.MustCompile(`\$(?:\{[^{}]*\}|\([^()]*\)|[A-Za-z0-9_@*#?!$-]+)|` + "`[^`]*`")
+	// unquote drops quotes and escapes; splitExpansions does too, and splits text at the
+	// marks of an expansion, so the text inside a command substitution is kept.
+	unquote         = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
+	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, "", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+)
 
 // pathOnlyScripts are the version-manager init scripts, as written after . or source, that
 // only set PATH and functions when sourced and install nothing.

@@ -93,13 +93,15 @@ func (st *dockerStage) mountTarget(flag string) (string, bool) {
 	if !ok || strings.ContainsAny(opts, `"'$`) {
 		return "", false
 	}
+	target := ""
 	for _, kv := range strings.Split(opts, ",") {
+		// the last target an option list names is the one BuildKit mounts at
 		k, val, _ := strings.Cut(kv, "=")
 		if k = strings.ToLower(k); k == "target" || k == "dst" || k == "destination" {
-			return st.resolve(val)
+			target = val
 		}
 	}
-	return "", false
+	return st.resolve(target)
 }
 
 // copyInstr records a COPY or ADD. Only a plain COPY of existing build-context paths maps
@@ -235,6 +237,20 @@ func (c *dockerCursor) other() { c.st.taintAll() }
 func (c *dockerCursor) wrote(key string, venv bool) {
 	venv = venv && !c.mounted(path.Join(key, "bin", "activate"))
 	c.st.events = append(c.st.events, dockerEvent{dst: key, dir: true, taint: true, venv: venv})
+}
+
+func (c *dockerCursor) pinsPython() bool {
+	if !c.known {
+		return true
+	}
+	for d := c.dir; ; d = path.Dir(d) {
+		if c.present(path.Join(d, ".python-version")) || c.present(path.Join(d, ".python-versions")) {
+			return true
+		}
+		if d == "/" {
+			return false
+		}
+	}
 }
 
 // mounted reports whether a mount of the RUN covers the container path f.
@@ -467,8 +483,11 @@ func (v *Veto) dockerfile(file, src string) string {
 				flag, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
 				if strings.HasPrefix(flag, "--mount") {
-					t, ok := st.mountTarget(flag)
-					mounts, mountAll = append(mounts, t), mountAll || !ok
+					if t, ok := st.mountTarget(flag); ok {
+						mounts = append(mounts, t)
+					} else {
+						mountAll = true
+					}
 				}
 			}
 			var segs []segment

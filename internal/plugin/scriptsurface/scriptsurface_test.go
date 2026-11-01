@@ -367,6 +367,9 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile activates a venv a relative copied interpreter created", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ tools/\nRUN tools/python3 -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
 		{"Dockerfile activates a uv venv made with a copied -p interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ tools/\nRUN uv venv -p /app/tools/python3 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
 		{"Dockerfile activates a virtualenv made with a copied --python= interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ tools/\nRUN virtualenv --python=tools/python3 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile activates a virtualenv made with a copied -p interpreter named without a /", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY mypy ./\nRUN virtualenv -p mypy /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "mypy": ""}), true, ""},
+		{"Dockerfile activates a uv venv made with a copied -p directory named without a /", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ ./tools/\nRUN uv venv -p tools /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile activates a venv under the last of two RUN mount targets", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=bind,source=v,target=/tmp/c,target=/opt/venv . /opt/venv/bin/activate && inst sync\n"}), true, ""},
 		{"Dockerfile activates a virtualenv whose -p has no value", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN virtualenv /opt/venv -p\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
 		{"Dockerfile activates a uv venv a copied .python-version picks for", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app/sub\nCOPY .python-version /app/\nRUN uv venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", ".python-version": "3.12\n"}), true, ""},
 		{"uv venv then activate the default under a .python-version", tree(map[string]string{"install.sh": "uv venv --seed\n. ./.venv/bin/activate\ninst sync\n", ".python-version": "3.12\n"}), true, ""},
@@ -437,6 +440,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile activates a venv a RUN that mounts a cache elsewhere created", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN --mount=type=cache,target=/root/.cache/pip python -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
 		{"Dockerfile activates a venv an absolute system interpreter created", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN /usr/bin/python3 -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
 		{"Dockerfile activates a uv venv made with -p past a copied .python-version", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY .python-version ./\nRUN uv venv -p 3.12 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", ".python-version": "3.12\n"}), false, ""},
+		{"Dockerfile activates a uv venv made with -p cpython@3.12", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN uv venv -p cpython@3.12 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a virtualenv made with --python=pypy3", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN virtualenv --python=pypy3 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
 		{"Dockerfile activates a uv venv made with no .python-version", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN uv venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
 		{"activate in a Dockerfile RUN", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN python -m venv .venv && . /app/.venv/bin/activate\n"}), false, ""},
 		{"venv created and activated in a run block", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          . .venv/bin/activate\n          inst install -r reqs.txt\n")}), false, ""},
@@ -655,6 +660,19 @@ func TestVeto_SampleHooks(t *testing.T) {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A .python-version above the build root is not the build's, so it does not withhold uv venv.
+func TestVeto_PythonPinAboveRoot(t *testing.T) {
+	outer := writeTree(t, map[string]string{
+		".python-version": "3.12\n",
+		"repo/inst.toml":  "[deps]\n",
+		"repo/inst.lock":  "lock\n",
+		"repo/install.sh": "uv venv --seed\n. ./.venv/bin/activate\ninst sync\n",
+	})
+	if withheld(filepath.Join(outer, "repo"), testSpec) {
+		t.Fatal("withheld = true, want false")
 	}
 }
 

@@ -1108,28 +1108,17 @@ func interpHeld(head string, words, args []string, cur cursor) bool {
 			}
 			val = args[i]
 		}
-		if named = true; strings.Contains(val, "/") && cur.present(val) {
+		// virtualenv and uv read a value that is not a version request as a path
+		if named = true; !pyRequestRE.MatchString(val) || cur.present(val) {
 			return true
 		}
 	}
-	return head == "uv" && !named && pinsPython(cur)
+	return head == "uv" && !named && cur.pinsPython()
 }
 
-// pinsPython reports whether the build may hold a .python-version or .python-versions in the
-// working directory or a directory above it.
-func pinsPython(cur cursor) bool {
-	up, last := "", ""
-	for {
-		key, ok := cur.at(up + ".python-version")
-		if !ok || cur.present(up+".python-version") || cur.present(up+".python-versions") {
-			return true
-		}
-		if key == last {
-			return false
-		}
-		up, last = "../"+up, key
-	}
-}
+// pyRequestRE matches an interpreter request that names a version or implementation, never a
+// path: 3.12, python3, pypy3.10, cpython@3.12.
+var pyRequestRE = regexp.MustCompile(`^(?:(?:c?python|pypy|graalpy)[-@]?)?[0-9]+(?:\.[0-9]+)*$|^(?:c?python|pypy|graalpy)$`)
 
 // venvFlags are, per creator, the flags venvWrites accepts, each mapped to whether it takes
 // the next word: none makes the creator write outside its directory.

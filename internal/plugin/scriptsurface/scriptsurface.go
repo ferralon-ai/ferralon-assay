@@ -1082,10 +1082,53 @@ func venvMade(seg segment, cur cursor) string {
 		return ""
 	}
 	key, ok := cur.at(dirs[0])
-	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) {
+	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) || interpHeld(head, words, args, cur) {
 		return ""
 	}
 	return key
+}
+
+// interpHeld reports whether the interpreter a venv creation copies may be a file of the build:
+// its command or -p/--python value is a path the build holds, or it is uv venv without
+// -p/--python, which reads a request, perhaps a path, from a .python-version or
+// .python-versions in the working directory or above it.
+func interpHeld(head string, words, args []string, cur cursor) bool {
+	if strings.Contains(words[0], "/") && cur.present(words[0]) {
+		return true
+	}
+	named := false
+	for i := 0; i < len(args); i++ {
+		name, val, inline := strings.Cut(args[i], "=")
+		if name != "-p" && name != "--python" {
+			continue
+		}
+		if !inline {
+			if i++; i == len(args) {
+				return true
+			}
+			val = args[i]
+		}
+		if named = true; strings.Contains(val, "/") && cur.present(val) {
+			return true
+		}
+	}
+	return head == "uv" && !named && pinsPython(cur)
+}
+
+// pinsPython reports whether the build may hold a .python-version or .python-versions in the
+// working directory or a directory above it.
+func pinsPython(cur cursor) bool {
+	up, last := "", ""
+	for {
+		key, ok := cur.at(up + ".python-version")
+		if !ok || cur.present(up+".python-version") || cur.present(up+".python-versions") {
+			return true
+		}
+		if key == last {
+			return false
+		}
+		up, last = "../"+up, key
+	}
 }
 
 // venvFlags are, per creator, the flags venvWrites accepts, each mapped to whether it takes
@@ -1151,26 +1194,37 @@ func venvWrites(seg segment, cur cursor) (string, bool) {
 			i++
 		}
 	}
-	if len(dirs) != 1 {
+	if len(dirs) != 1 || interpHeld(head, words, args, cur) {
 		return "", false
 	}
 	return cur.at(dirs[0])
 }
 
 // nvmOnly reports whether a command is nvm use or nvm install, which change PATH and write
-// only under NVM_DIR, never the build tree; its other words may expand only as plain
-// variable references.
+// only under NVM_DIR, never the build tree. Its other words are versions, which may expand
+// only as plain variable references, or flags from nvmFlags.
 func nvmOnly(seg segment) bool {
 	w := seg.words
 	if len(w) < 2 || w[0] != "nvm" || w[1] != "use" && w[1] != "install" || hasRedirect(w) {
 		return false
 	}
 	for _, a := range w[2:] {
-		if strings.ContainsAny(a, "$`") && !plainVarRE.MatchString(a) {
+		switch {
+		case strings.HasPrefix(a, "-"):
+			if name, val, _ := strings.Cut(a, "="); !nvmFlags[name] || strings.ContainsAny(val, "$`") {
+				return false
+			}
+		case strings.ContainsAny(a, "$`") && !plainVarRE.MatchString(a):
 			return false
 		}
 	}
 	return true
+}
+
+// nvmFlags are the flags of nvm use and nvm install that write nothing outside NVM_DIR.
+var nvmFlags = map[string]bool{
+	"--lts": true, "--latest-npm": true, "--no-progress": true, "--silent": true, "-s": true,
+	"-b": true, "--default": true,
 }
 
 // plainVarRE matches a word that is one variable reference and nothing else.

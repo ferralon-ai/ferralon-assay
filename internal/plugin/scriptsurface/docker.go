@@ -31,6 +31,7 @@ type dockerStage struct {
 	wd      string
 	wdKnown bool
 	shell   bool // a SHELL instruction changed what runs a RUN's command line
+	volume  bool // a VOLUME instruction may discard what a later RUN writes under it
 }
 
 const (
@@ -81,6 +82,22 @@ func (st *dockerStage) resolve(p string) (string, bool) {
 		return path.Clean(p), true
 	case st.wdKnown:
 		return path.Join(st.wd, p), true
+	}
+	return "", false
+}
+
+// mountTarget returns the container path a RUN --mount=<options> flag mounts at, false when
+// that is not one literal place.
+func (st *dockerStage) mountTarget(flag string) (string, bool) {
+	opts, ok := strings.CutPrefix(flag, "--mount=")
+	if !ok || strings.ContainsAny(opts, `"'$`) {
+		return "", false
+	}
+	for _, kv := range strings.Split(opts, ",") {
+		k, val, _ := strings.Cut(kv, "=")
+		if k = strings.ToLower(k); k == "target" || k == "dst" || k == "destination" {
+			return st.resolve(val)
+		}
 	}
 	return "", false
 }
@@ -189,8 +206,10 @@ type dockerCursor struct {
 	st     *dockerStage
 	dir    string
 	known  bool
-	mounts bool // the RUN mounts something, which may cover a venv the stage made
-	mark   venvMark
+	mounts []string // the container paths the RUN mounts something at
+	// mountAll is true when the RUN mounts something at a place not known.
+	mountAll bool
+	mark     venvMark
 }
 
 func (c *dockerCursor) cd(words []string) {
@@ -211,18 +230,30 @@ func (c *dockerCursor) cd(words []string) {
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintAll() }
 
-// wrote taints only what is under the container path key.
+// wrote taints only what is under the container path key. A venv created into a mount is
+// not one a later RUN sees.
 func (c *dockerCursor) wrote(key string, venv bool) {
+	venv = venv && !c.mounted(path.Join(key, "bin", "activate"))
 	c.st.events = append(c.st.events, dockerEvent{dst: key, dir: true, taint: true, venv: venv})
 }
 
+// mounted reports whether a mount of the RUN covers the container path f.
+func (c *dockerCursor) mounted(f string) bool {
+	for _, t := range c.mounts {
+		if t == "/" || f == t || strings.HasPrefix(f, t+"/") {
+			return true
+		}
+	}
+	return c.mountAll
+}
+
 // madeVenv is true when the newest change to key/bin/activate is the creation of a venv at
-// key, and no SHELL or mount of this RUN changes what a . of it runs.
+// key, and no SHELL, VOLUME or mount of this RUN over it changes what a . of it runs.
 func (c *dockerCursor) madeVenv(key string) bool {
-	if c.mounts || c.st.shell {
+	f := path.Join(key, "bin", "activate")
+	if c.st.shell || c.st.volume || c.mounted(f) {
 		return false
 	}
-	f := path.Join(key, "bin", "activate")
 	for i := len(c.st.events) - 1; i >= 0; i-- {
 		if e := c.st.events[i]; e.covers(f) {
 			return e.venv && e.dst == key
@@ -417,6 +448,8 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 		case instr == "SHELL":
 			st.shell = true
+		case instr == "VOLUME":
+			st.volume = true
 		case instr == "WORKDIR":
 			p := strings.Trim(rest, `"`)
 			if c, ok := st.resolve(p); ok {
@@ -427,11 +460,16 @@ func (v *Veto) dockerfile(file, src string) string {
 		case instr == "COPY" || instr == "ADD":
 			st.copyInstr(v, ctxs, rest, instr == "ADD")
 		case instr == "RUN" || instr == "CMD" || instr == "ENTRYPOINT":
-			mounts := false
+			var mounts []string
+			mountAll := false
 			for instr == "RUN" && strings.HasPrefix(rest, "--") {
-				mounts = mounts || strings.HasPrefix(rest, "--mount")
-				_, rest, _ = strings.Cut(rest, " ")
+				var flag string
+				flag, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
+				if strings.HasPrefix(flag, "--mount") {
+					t, ok := st.mountTarget(flag)
+					mounts, mountAll = append(mounts, t), mountAll || !ok
+				}
 			}
 			var segs []segment
 			ok := true
@@ -454,7 +492,7 @@ func (v *Veto) dockerfile(file, src string) string {
 				deferred = append(deferred, segs...)
 				continue
 			}
-			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mounts: mounts}
+			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mounts: mounts, mountAll: mountAll}
 			for _, seg := range segs {
 				if why := v.command(seg, cur, 0); why != "" {
 					return why

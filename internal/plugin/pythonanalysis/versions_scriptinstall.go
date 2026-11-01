@@ -155,7 +155,7 @@ func pipSelfUpgrade(args []string) bool {
 // PIP_CONFIG_FILE, an XDG variable that moves where pip looks, or a pip config subcommand.
 // A directory ends at a character that cannot continue its name, so .pip-cache is not .pip.
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip|` +
-	`(?:[/\\]\.|\busers[/\\][^/\\\s"']+[/\\]|userprofile%?[/\\]|~[/\\]|appdata[^/\\\s]*[/\\](?:roaming[/\\])?|programdata%?[/\\]|application support[/\\])pip(?:[^\w.-]|$)|` +
+	`(?:[/\\]+\.|\busers[/\\]+[^/\\\s"']+[/\\]+|userprofile%?[/\\]+|~[/\\]+|appdata[^/\\\s]*[/\\]+(?:roaming[/\\]+)?|programdata%?[/\\]+|application support[/\\]+)pip(?:[^\w.-]|$)|` +
 	`xdg_config_(?:dirs|home)`)
 
 // laneFlags are the flags every allowed form may carry.

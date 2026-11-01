@@ -1015,8 +1015,15 @@ var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true
 // shellArgOptions are the shell options that take the next word as their argument.
 var shellArgOptions = map[string]bool{"--rcfile": true, "--init-file": true}
 
-// suArgOptions are the su and runuser options that take the next word as their argument.
-var suArgOptions = map[string]bool{"-s": true, "--shell": true, "-g": true, "--group": true, "-G": true, "--supp-group": true, "-w": true, "--whitelist-environment": true}
+// suArgOptions are the su and runuser long options that take the next word as their argument.
+var suArgOptions = map[string]bool{"--shell": true, "--group": true, "--supp-group": true, "--whitelist-environment": true}
+
+// suFlags are the su and runuser short options that take no argument, and suArgFlags those
+// that take one, attached or as the next word.
+var (
+	suFlags    = "lmpfP"
+	suArgFlags = "sgGw"
+)
 
 // nestedShell finds in a command's words shell text that is read a second time, with its
 // quotes removed again: the argument of a shell's or su's -c, or the words after eval joined
@@ -1037,7 +1044,7 @@ func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 				return i, text, true, sure, true
 			}
 		case shells[name]:
-			c, want := false, 0
+			c, want, sure := false, 0, true
 			for j := i + 1; j < len(words); j++ {
 				a := words[j]
 				switch {
@@ -1047,7 +1054,7 @@ func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 					continue
 				case a == "--" || a == "-":
 					if c && j+1 < len(words) {
-						return i, words[j+1], true, true, true
+						return i, words[j+1], true, sure, true
 					}
 				case shellArgOptions[a]:
 					j++
@@ -1056,10 +1063,13 @@ func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 					continue
 				case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
 					c = c || a[0] == '-' && strings.ContainsRune(a, 'c')
+					// Each -o or -O is taken to have the next word as its argument, but zsh's
+					// -O takes none and zsh and ksh take -oNAME, so the text may be another word.
 					want = strings.Count(a, "o") + strings.Count(a, "O")
+					sure = sure && want == 0
 					continue
 				case c:
-					return i, a, true, true, true
+					return i, a, true, sure, true
 				}
 				break
 			}
@@ -1071,31 +1081,54 @@ func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 // suCommand finds the text su or runuser runs in the user's shell, the argument of its -c or
 // --command, among the words after it. The scan stops at --, and at runuser's -u, past which
 // the words are a command run without a shell. sure is false when -c comes after the user,
-// where it is passed to the shell, or is given more than once.
+// where it is passed to the shell, is given more than once, or follows an option not known.
 func suCommand(args []string) (text string, sure, ok bool) {
-	user, n := false, 0
+	user, known, n := false, true, 0
+	take := func(t string) {
+		text, n, sure = t, n+1, !user
+	}
 	for j := 0; j < len(args); j++ {
 		a := args[j]
 		switch {
-		case a == "--" || a == "-u" || a == "--user":
+		case a == "--" || a == "--user" || strings.HasPrefix(a, "--user="):
 			j = len(args)
 		case suArgOptions[a]:
 			j++
 		case strings.HasPrefix(a, "--command=") || strings.HasPrefix(a, "--session-command="):
-			text, n = a[strings.IndexByte(a, '=')+1:], n+1
-			sure = !user
-		case a == "--command" || a == "--session-command" || len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.HasSuffix(a, "c"):
+			take(a[strings.IndexByte(a, '=')+1:])
+		case a == "--command" || a == "--session-command":
 			if j+1 < len(args) {
 				j++
-				text, n = args[j], n+1
-				sure = !user
+				take(args[j])
 			}
+		case strings.HasPrefix(a, "--") || a == "-":
 		case strings.HasPrefix(a, "-"):
+			// A short-option cluster: its letters are read as getopt reads them.
+		letters:
+			for k := 1; k < len(a); k++ {
+				switch l := a[k]; {
+				case l == 'u':
+					j = len(args)
+					break letters
+				case l == 'c' || strings.IndexByte(suArgFlags, l) >= 0:
+					arg := a[k+1:]
+					if arg == "" && j+1 < len(args) {
+						j++
+						arg = args[j]
+					}
+					if l == 'c' {
+						take(arg)
+					}
+					break letters
+				case strings.IndexByte(suFlags, l) < 0:
+					known = false
+				}
+			}
 		default:
 			user = true
 		}
 	}
-	return text, sure && n == 1, n > 0
+	return text, sure && known && n == 1, n > 0
 }
 
 // reread applies the rule to shell text a command reads a second time, from cur or, when
@@ -1135,17 +1168,19 @@ func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth 
 var (
 	// expansionRE matches a parameter expansion, or a command substitution holding no other.
 	expansionRE = regexp.MustCompile(`\$(?:\{[^{}]*\}|\([^()]*\)|[A-Za-z0-9_@*#?!$-]+)|` + "`[^`]*`")
-	// unquote drops quotes and escapes; splitExpansions drops quotes too, and splits text at
-	// escapes and at the marks of an expansion, so the text inside a command substitution, or
-	// before a $'…' escape, is kept.
+	// unquote drops quotes and escapes. splitExpansions does too, and splits text at the marks
+	// of an expansion, so the text inside a command substitution is kept; splitEscapes splits
+	// at escapes as well, so a $'…' escape does not join a token to what follows it.
 	unquote         = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
-	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, " ", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, "", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+	splitEscapes    = strings.NewReplacer(`'`, "", `"`, "", `\`, " ", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
 )
 
 // hidesToken reports whether shell text names a token once its quotes and escapes are
 // gone, with its expansions either dropped or split apart: what a shell reading it may run.
 func (v *Veto) hidesToken(text string) bool {
-	return v.hasToken(unquote.Replace(expansionRE.ReplaceAllString(text, ""))) || v.hasToken(splitExpansions.Replace(text))
+	return v.hasToken(unquote.Replace(expansionRE.ReplaceAllString(text, ""))) || v.hasToken(splitExpansions.Replace(text)) ||
+		v.hasToken(splitEscapes.Replace(text))
 }
 
 // pathOnlyScripts are the version-manager init scripts, as written after . or source, that

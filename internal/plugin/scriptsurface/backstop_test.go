@@ -106,11 +106,25 @@ func TestVeto_Backstop(t *testing.T) {
 		{"hatch post-install-commands", tree(map[string]string{"pyproject.toml": "[tool.hatch.envs.default]\npost-install-commands = [\"inst add x\"]\n"}), true, "pyproject.toml:2"},
 		{"Husky hook without #!", tree(map[string]string{".husky/pre-commit": "echo hi\ninst add x\n"}), true, ".husky/pre-commit:2"},
 		{"Buildkite agent hook", tree(map[string]string{".buildkite/hooks/pre-command": "inst add x\n"}), true, ".buildkite/hooks/pre-command:1"},
+		{"installer through a variable", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: $INST add x\n"}), true, "ci/pipeline.yml:2"},
+		{"bound install in an unknown directory", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: inst sync\n"}), true, "ci/pipeline.yml:2"},
+		{"read-only verb with an expansion", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: inst list $PKGS\n"}), true, "ci/pipeline.yml:2"},
+		{"read-only verb after another program", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: mytool list inst add x\n"}), true, "ci/pipeline.yml:2"},
+		{"audit fix is not read-only", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: inst audit fix\n"}), true, "ci/pipeline.yml:2"},
+		{"Dockerfile-like binds the build root", tree(map[string]string{"docker/app.df": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), false, ""},
+		{"JSON task table", tree(map[string]string{"ci/tasks.json": "{\"tasks\":{\"deps\":\"inst add x\"}}\n"}), true, "ci/tasks.json:1"},
+		{"JSON shell key", tree(map[string]string{"ci/steps.json": "{\"shell\":\"inst add x\"}\n"}), true, "ci/steps.json:1"},
+		{"SQL FROM is not a Dockerfile", tree(map[string]string{"sql/q.sql": "SELECT a\nFROM t\nJOIN u ON t.id = u.id\n"}), false, ""},
+		{"Dockerfile-like with a lowercase run", tree(map[string]string{"docker/app.df": "from base\nrun inst add x\n"}), true, "docker/app.df:2"},
+		{"Dockerfile-like with a continued RUN", tree(map[string]string{"docker/app.df": "FROM base\nRUN\\\n  inst add x\n"}), true, "-"},
+		{"URL naming a token is an argument", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: curl -fsSL https://example.com/inst-cache/tool\n"}), false, ""},
+		{"URL beside an installer", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: inst add https://example.com/x.tgz\n"}), true, "ci/pipeline.yml:2"},
+		{"content key outside Bitrise is data", tree(map[string]string{"docs/page.yml": "content: inst add x\n"}), false, ""},
 		// More build scripts and the ways they run an installer.
 		{"zx script", tree(map[string]string{"deps": "#!/usr/bin/env zx\nawait $`inst add x`\n"}), true, "deps:2"},
 		{"bundler config execSync", tree(map[string]string{"vite.config.ts": "import { execSync } from 'child_process'\nexecSync('inst add x')\nexport default {}\n"}), true, "vite.config.ts:2"},
 		{"installer driven through its API", tree(map[string]string{"tasks.py": "import inst\ninst.main([\"add\", \"x\"])\n"}), true, "tasks.py:2"},
-		{"nox session helper", tree(map[string]string{"tools/nox_helpers.py": "def deps(session):\n    session.install(\"x\")\n"}), true, "tools/nox_helpers.py:2"},
+		{"nox session helper outside a pip lane", tree(map[string]string{"tools/nox_helpers.py": "def deps(session):\n    session.install(\"x\")\n"}), false, ""},
 
 		// Install.sh parity: what a surface allows only by binding a manifest still withholds,
 		// because the backstop does not know the directory it runs in.
@@ -181,6 +195,23 @@ func TestVeto_BackstopOversized(t *testing.T) {
 				t.Fatalf("withheld = %v at %q, want %v at %q", got, at, tt.want, tt.at)
 			}
 		})
+	}
+}
+
+// A nox session's install helper installs with pip, so it withholds in a lane pip installs
+// for and nowhere else.
+func TestVeto_BackstopNoxLane(t *testing.T) {
+	root := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "tools/nox_helpers.py": "def deps(session):\n    session.install(\"x\")\n"})
+	spec := testSpec
+	spec.Token = func(w string) bool { return testSpec.Token(w) || w == "pip" }
+	v := New(root, testRead(root), spec)
+	none := func(string, []byte) (string, bool) { return "", false }
+	withheld := false
+	for _, c := range buildtree.Candidates(root, v.Classify(none), v.FullyRead) {
+		withheld = withheld || !c.FullyRead
+	}
+	if !withheld || v.Unrecognised() != "tools/nox_helpers.py:2" {
+		t.Fatalf("withheld = %v at %q, want true at tools/nox_helpers.py:2", withheld, v.Unrecognised())
 	}
 }
 

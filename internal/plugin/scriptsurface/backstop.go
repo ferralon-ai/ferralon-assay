@@ -332,11 +332,17 @@ var (
 	// fromAnyRE finds a FROM line in any case shaped as one: an image after its flags, an
 	// optional stage name, and nothing after but a comment.
 	fromAnyRE = regexp.MustCompile(`(?im)^[ \t]*from[ \t]+(?:--\S+[ \t]+)*\S+(?:[ \t]+as[ \t]+\S+)?[ \t]*(?:#.*)?\r?$`)
+	// runsRE finds an instruction that runs a command or sets the environment one runs in.
+	runsRE = regexp.MustCompile(`(?im)^[ \t]*(?:run|cmd|entrypoint|onbuild|shell|env|arg)(?:[ \t\\\[]|\r?$)`)
 )
 
 // dockerLike reports whether a file that is not source code holds a Dockerfile-style FROM
-// line, so the Dockerfile rule reads it.
-func dockerLike(src string) bool { return fromRE.MatchString(src) || fromAnyRE.MatchString(src) }
+// line and an instruction that runs a command or sets its environment, so the Dockerfile rule
+// reads it. A FROM line alone, as SQL has, installs nothing as a Dockerfile and leaves the
+// file to the line rules.
+func dockerLike(src string) bool {
+	return (fromRE.MatchString(src) || fromAnyRE.MatchString(src)) && runsRE.MatchString(src)
+}
 
 // backstopDocker applies the Dockerfile rule to a file with a FROM line that surfaceOf does
 // not recognise, as classify applies it to a Dockerfile, and returns the 1-based line it
@@ -741,11 +747,15 @@ func (v *Veto) installAt(seg segment, recipe bool) string {
 			seg.words = words
 		}
 	}
-	if !v.segmentHasToken(words) && !expandedInstall(words) || v.readOnly(seg) {
+	if !v.segmentHasToken(slices.DeleteFunc(slices.Clone(words), urlRE.MatchString)) && !expandedInstall(words) || v.readOnly(seg) {
 		return ""
 	}
 	return v.command(seg, &hostCursor{v: v, unknown: true}, 0)
 }
+
+// urlRE matches a word that is only a URL. A URL is an argument, never what a command runs,
+// and its host and path name things (grafana-build-pipeline) that read as installer tokens.
+var urlRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://\S*$`)
 
 // readOnlyVerbs are installer subcommands that read or report, run no package script and
 // change no installed package. pack and publish are not among them: npm runs a package's
@@ -986,7 +996,7 @@ func (v *Veto) backstopLiterals(src string, hash, slash bool) (int, string) {
 		m := callerRE.FindStringSubmatch(before)
 		var api string
 		if m != nil {
-			if noxInstall(m[1]) {
+			if v.spec.Token("pip") && noxInstall(m[1]) {
 				return lineOf(l.off), "installs through a nox session: " + m[1]
 			}
 			api = v.apiToken(m[1])

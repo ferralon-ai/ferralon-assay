@@ -303,6 +303,12 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"copied to a user pip.ini", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/settings /root/AppData/Roaming/pip/pip.ini\n"}), false},
 		{"copied to /etc/xdg/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /etc/xdg/pip/\n"}), false},
 		{"copied to ~/.config/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /root/.config/pip/\n"}), false},
+		{"ADD from a URL to ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ADD https://github.com/org/pipcfg.git /root/.pip/\n"}), false},
+		{"copied from a stage to ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg /out/ /root/.pip/\n"}), false},
+		{"copied to ProgramData/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/ProgramData/pip/\n"}), false},
+		{"copied to %APPDATA%\\pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ C:\\Users\\app\\AppData\\Roaming\\pip\\\n"}), false},
+		{"copied to Application Support/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ \"/Users/app/Library/Application Support/pip/\"\n"}), false},
+		{"XDG_CONFIG_HOME moved", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ENV XDG_CONFIG_HOME=/cfg\nCOPY ci/ /cfg/\n"}), false},
 		{"pip config set", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "install.sh": "pip config set install.no-require-hashes true\n"}), false},
 		{"a Dockerfile naming no pip config", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/settings.cfg /etc/app.conf\n"}), true},
 	}

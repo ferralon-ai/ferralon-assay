@@ -373,6 +373,8 @@ func TestResolveVersions_ExhaustiveServerlessFileName(t *testing.T) {
 		{"the plugin with custom from outside the tree", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\ncustom: ${file(../shared/custom.yml)}\n"}), false},
 		{"plugins and custom from fragments outside the tree", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins: ${file(../shared/plugins.yml)}\ncustom: ${file(../shared/custom.yml)}\n"}), false},
 		{"plugins and custom from one base file", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins: ${file(./base.yml):plugins}\ncustom: ${file(./base.yml):custom}\n", "base.yml": "plugins: []\ncustom: {}\n"}), false},
+		{"a config with a key that is not a string", tree(prod, map[string]string{"serverless.yml": "service: app\n1: x\ncustom: ${file(../shared/custom.yml)}\n"}), false},
+		{"a minified config that does not parse", tree(prod, map[string]string{"serverless.json": `{"service":"app","custom":"${file(../c.yml)}","service":"app"}`}), false},
 		{"a config that does not parse", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: [\n"}), false},
 		{"pythonRequirements is a variable", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements: ${file(./reqs.yml)}\n"}), false},
 		{"YAML that does not parse", tree(prod, map[string]string{"serverless.yml": "custom:\n  pythonRequirements: [\n"}), false},

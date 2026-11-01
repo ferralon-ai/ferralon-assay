@@ -130,7 +130,8 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 		// requirement — is recorded, never silently omitted. A pure option line (e.g.
 		// --index-url) carries no dependency and is skipped.
 		if strings.HasPrefix(line, "-") {
-			spec, marker := splitMarker(line)
+			// pip ignores a marker on an option line: "; python_version < '3'" is leftover words.
+			spec, _ := splitMarker(line)
 			kind := reqInclude
 			target, ok := includeTarget(spec)
 			if !ok {
@@ -141,12 +142,9 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 				f.skipped = true
 				continue
 			}
-			if !markerMaySelect(marker, env, selection) {
-				continue
-			}
 			switch {
 			case ok && target != "" && kind == reqEditable:
-				f.addSource(line, target, kind, hashes, env, selection)
+				f.addSource(spec, target, kind, hashes, env, selection)
 			case ok && target != "" && !isConstraintFlag(spec):
 				f.includes = append(f.includes, target)
 			default:
@@ -312,7 +310,7 @@ func laterInstallOption(line string) bool {
 func constraintTarget(line string) (string, bool) {
 	fields := strings.Fields(line)
 	for i := 0; i < len(fields); i++ {
-		f := strings.Trim(fields[i], `'"`)
+		f := shellUnquote.Replace(fields[i])
 		name, val, attached := strings.Cut(f, "=")
 		long := strings.HasPrefix(f, "--")
 		switch {
@@ -331,12 +329,15 @@ func constraintTarget(line string) (string, bool) {
 			continue
 		}
 		if i+1 < len(fields) {
-			return strings.Trim(fields[i+1], `'"`), true
+			return shellUnquote.Replace(fields[i+1]), true
 		}
 		return "", false
 	}
 	return "", false
 }
+
+// shellUnquote drops the quotes and backslashes pip's shell-style split removes from a field.
+var shellUnquote = strings.NewReplacer(`"`, "", `'`, "", `\`, "")
 
 func isConstraintFlag(spec string) bool {
 	return strings.HasPrefix(spec, "-c") || strings.HasPrefix(spec, "--constraint")

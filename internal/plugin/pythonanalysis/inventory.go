@@ -154,10 +154,9 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 	}
 
 	// A "-r" include that the walk did not already inventory is read in place, as pip would
-	// read it; one that cannot be read leaves the graph incomplete. A "-c" constraint file is
-	// read too: its pins install nothing, but pip installs the "-r" includes it names. One that
-	// cannot be read (a URL, a file generated later) is passed over; the coverage reader does
-	// not count such a file as covered.
+	// read it. A "-c" constraint file is read too: its pins install nothing, but pip installs
+	// the "-r" includes it names. Either one that cannot be read (a URL, a file generated later)
+	// leaves the graph incomplete.
 	buildReal, err := filepath.EvalSymlinks(req.BuildDir)
 	if err != nil {
 		buildReal = req.BuildDir
@@ -180,7 +179,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		}
 		path, key, read := includePath(buildReal, inc, walkedReal, followed)
 		if path == "" {
-			if !read && !constraint {
+			if !read {
 				unpinned = true
 			}
 			continue
@@ -195,7 +194,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		}
 		data, err := readRegular(path)
 		if err != nil {
-			unpinned = unpinned || !constraint
+			unpinned = true
 			continue
 		}
 		rf := parseRequirementsFile(data, req.TargetEnv, req.Selection)

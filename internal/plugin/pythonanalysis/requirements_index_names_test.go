@@ -67,7 +67,8 @@ func TestRequirementsLineShapes(t *testing.T) {
 		{name: "egg after another fragment param", line: "git+https://github.com/o/r#subdirectory=x&egg=r", wantNode: "r", wantKind: reqVCS},
 		{name: "constraint", line: "-c constraints.txt"},
 		{name: "marker false local", line: `. ; sys_platform == "nope"`},
-		{name: "marker false include", line: `-r base.txt ; sys_platform == "nope"`},
+		{name: "marker on an include is ignored", line: `-r base.txt ; sys_platform == "nope"`, includes: []string{"base.txt"}},
+		{name: "marker on an editable is ignored", line: `-e ./pkg ; sys_platform == "nope"`, locals: []string{"./pkg"}},
 		{name: "marker false unnamed", line: `https://h/a.zip ; sys_platform == "nope"`},
 		{name: "marker unresolved local", line: `. ; extra_var == "x"`, locals: []string{"."}},
 		{name: "index option", line: "--index-url https://example.com/simple"},
@@ -148,6 +149,7 @@ func TestInventoryIndexNames(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		files        map[string]string
+		env          map[string]string
 		wantPURLs    []string
 		wantUnpinned bool
 	}{
@@ -403,9 +405,10 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantUnpinned: true,
 		},
 		{
-			name:      "constraint after another option adds nothing",
-			files:     map[string]string{"requirements.txt": "--pre -c c.txt\nsix==1.16.0\n"},
-			wantPURLs: []string{"pkg:pypi/six@1.16.0"},
+			name:         "missing constraint after another option",
+			files:        map[string]string{"requirements.txt": "--pre -c c.txt\nsix==1.16.0\n"},
+			wantPURLs:    []string{"pkg:pypi/six@1.16.0"},
+			wantUnpinned: true,
 		},
 		{
 			name:      "plain options",
@@ -443,9 +446,27 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantUnpinned: true,
 		},
 		{
+			name:         "missing constraint",
+			files:        map[string]string{"requirements.txt": "-c missing-constraints.txt\nrequests==2.31.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
 			name:      "constraint is not an install",
-			files:     map[string]string{"requirements.txt": "-c missing-constraints.txt\nrequests==2.31.0\n"},
+			files:     map[string]string{"requirements.txt": "-c c.txt\nrequests==2.31.0\n", "c.txt": "idna==3.7\n"},
 			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:         "unreadable constraint",
+			files:        map[string]string{"requirements.txt": "-c sub\nrequests==2.31.0\n", "sub/x.txt": "idna==3.7\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "constraint outside the build dir",
+			files:        map[string]string{"requirements.txt": "-c ../outside.txt\nrequests==2.31.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
 		},
 		{
 			name:      "constraint include installs",
@@ -483,8 +504,25 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantPURLs: []string{"pkg:pypi/idna@3.7", "pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
 		},
 		{
-			name:      "constraint loop",
+			name:      "constraint loop terminates",
 			files:     map[string]string{"requirements.txt": "-c c.txt\nrequests==2.31.0\n", "c.txt": "-c c.txt\n-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "constraint read before an include of it",
+			files:     map[string]string{"requirements.txt": "-c p.txt\n-c d.txt\nrequests==2.31.0\n", "p.txt": "idna==3.7\n", "d.txt": "-r p.txt\n"},
+			wantPURLs: []string{"pkg:pypi/idna@3.7", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "marker on a constraint line is ignored",
+			files:     map[string]string{"requirements.txt": "-c c.txt ; python_version < \"3\"\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			env:       map[string]string{"python_version": "3.11"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "marker on an include line is ignored",
+			files:     map[string]string{"requirements.txt": "-r dev.txt ; python_version < \"3\"\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
+			env:       map[string]string{"python_version": "3.11"},
 			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
 		},
 		{
@@ -501,7 +539,7 @@ func TestInventoryIndexNames(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTree(t, tc.files)
-			inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+			inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir, TargetEnv: tc.env})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -622,6 +660,9 @@ func TestConstraintTarget(t *testing.T) {
 		{"-cc.txt", "c.txt", true},
 		{"-c=c.txt", "=c.txt", true},
 		{"-c \"c.txt\"", "c.txt", true},
+		{"--constraint=\"c.txt\"", "c.txt", true},
+		{"-c'c.txt'", "c.txt", true},
+		{`-c c\inc.txt`, "cinc.txt", true},
 		{"--constraint c.txt", "c.txt", true},
 		{"--constraint=c.txt", "c.txt", true},
 		{"--cons=c.txt", "c.txt", true},

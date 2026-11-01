@@ -413,7 +413,12 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 			if !ok {
 				continue
 			}
-			out.add(f.lofDepFacts)
+			facts := f.lofDepFacts
+			if n.dir == dir {
+				// The package's own files are enumerated as its own, and lofAsmHdrStable judges them.
+				facts.tags = nil
+			}
+			out.add(facts)
 			var dots []lofDepImport
 			for _, im := range f.imports {
 				if im.name == "." {

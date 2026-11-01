@@ -268,14 +268,25 @@ func TestLofAsmObjHeader(t *testing.T) {
 }
 
 // TestLofAsmObjHeaderDeps: a go_asm.h name a dependency's tagged files may change is assembled
-// against each assignment of those tags, as a name the package's own tagged files may change is; and
-// a macro dumpasmhdr spells for a type a and field b_c reads as type a_b and field c too.
+// against each assignment of those tags, as a name the package's own tagged files may change is; a
+// macro dumpasmhdr spells for a type a and field b_c reads as type a_b and field c too; and the
+// package's own files the build never compiles enumerate nothing.
 func TestLofAsmObjHeaderDeps(t *testing.T) {
 	mod := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n"}
 	text := func(body string) string {
 		return "//go:build linux && amd64\n\n#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n" + body + "\tRET\n"
 	}
 	ifdefK := text("#ifdef const_K\n\tCALL ·sym(SB)\n#endif\n")
+	movK := text("\tMOVQ $const_K, AX\n")
+	// own returns n Go files of p under tags t1 to tn, none declaring a name the text spells.
+	own := func(n int) map[string]string {
+		m := map[string]string{}
+		for i := 1; i <= n; i++ {
+			d := string(rune('0' + i))
+			m["p/c"+d+".go"] = "//go:build t" + d + "\n\npackage p\n\nconst C" + d + " = 1\n"
+		}
+		return m
+	}
 	fieldtrack := map[string]string{
 		"d/on.go":  "//go:build goexperiment.fieldtrack\n\npackage d\n\ntype S struct{ c int }\n",
 		"d/off.go": "//go:build !goexperiment.fieldtrack\n\npackage d\n\ntype S int\n",
@@ -311,6 +322,13 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 			"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
 			"p/p.s":    ifdefK,
 		}), true, []string{"example.com/v/p.sym"}},
+		// D1: the package's own tags are its own files' to enumerate; a file the build never
+		// compiles (//go:build ignore) adds no variant through the dependency slice.
+		{"D1: an ignored file of the package declares the name, under four own tags", merge(merge(mod, own(4)), map[string]string{
+			"p/p.go":    "package p\n\nconst K = 1\n",
+			"p/defs.go": "//go:build ignore\n\npackage p\n\nimport \"C\"\n\nconst K = C.K\n",
+			"p/p.s":     movK,
+		}), true, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

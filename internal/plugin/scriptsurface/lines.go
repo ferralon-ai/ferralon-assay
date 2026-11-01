@@ -19,12 +19,15 @@ import (
 // body is the input of whatever reads it; and a Makefile line outside a recipe and a data
 // surface's lines pass through make, YAML or TOML before any shell. Those keep the two sides
 // apart: by a space, or, after a comment and in a heredoc body, by not joining. hidden
-// returns the word the two sides would make joined with nothing, for the caller to check.
+// returns, for the caller to check, the text a reader may run that lines does not show: the
+// word the two sides would make joined with nothing, where a join is not one of a shell's, or
+// where it is a recipe's, as just takes all the blanks off the next line; and each line of a
+// logical line that starts with # yet continues, which only a quote read wrongly lets happen.
 func logicalLinesAt(src, kind string) (lines []string, starts []int, hidden []string, joined bool) {
 	var cur strings.Builder
 	var docs []heredoc
 	sh := shellQuote{prev: '\n'}
-	start, open, recipe, left := 0, false, false, ""
+	start, open, recipe, lead, left := 0, false, false, false, ""
 	for i, l := range strings.Split(src, "\n") {
 		l = strings.TrimSuffix(l, "\r")
 		if w := boundaryWord(left, l); w != "" {
@@ -35,7 +38,7 @@ func logicalLinesAt(src, kind string) (lines []string, starts []int, hidden []st
 			if n := len(l) - len(strings.TrimRight(l, `\`)); n%2 == 1 {
 				left = l[:len(l)-1]
 			}
-			if d := docs[0]; l == d.word || d.dash && strings.TrimLeft(l, "\t") == d.word {
+			if docs[0].ends(l) {
 				docs = docs[1:]
 			}
 			lines, starts = append(lines, l), append(starts, i)
@@ -44,6 +47,7 @@ func logicalLinesAt(src, kind string) (lines []string, starts []int, hidden []st
 		if !open {
 			start, open = i, true
 			recipe = kind == kindMakefile && strings.HasPrefix(l, "\t")
+			lead = strings.HasPrefix(strings.TrimLeft(l, " \t"), "#")
 			if kind != kindShell {
 				sh = shellQuote{prev: '\n'}
 			}
@@ -58,10 +62,16 @@ func logicalLinesAt(src, kind string) (lines []string, starts []int, hidden []st
 		if n := len(l) - len(strings.TrimRight(l, `\`)); n%2 == 1 {
 			body := l[:len(l)-1]
 			comment := sh.feed(body)
+			if lead && !comment {
+				hidden = append(hidden, body)
+			}
 			switch {
 			case comment:
 				left = body
 			case shell && (sh.q == 0 || sh.q == '"'):
+				if recipe {
+					left = body
+				}
 				cur.WriteString(body)
 				continue
 			default:
@@ -72,6 +82,9 @@ func logicalLinesAt(src, kind string) (lines []string, starts []int, hidden []st
 			}
 		} else {
 			sh.feed(l)
+			if lead && cur.Len() > 0 {
+				hidden = append(hidden, l)
+			}
 		}
 		sh.prev = '\n'
 		cur.WriteString(l)
@@ -101,6 +114,11 @@ type shellQuote struct {
 type heredoc struct {
 	word string
 	dash bool
+}
+
+// ends reports whether l is the heredoc's terminator line.
+func (d heredoc) ends(l string) bool {
+	return l == d.word || d.dash && strings.TrimLeft(l, "\t") == d.word
 }
 
 var shellHeredocRE = regexp.MustCompile(`^<<(-?)[ \t]*(?:\\|'|")?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
@@ -201,11 +219,11 @@ func dockerLines(src string) (lines []string, joined bool) {
 			b.WriteString(cont.ReplaceAllString(l, "$1"))
 		}
 		lines = append(lines, b.String())
-		for _, m := range dockerHeredocs(b.String()) {
+		for _, d := range dockerHeredocs(b.String()) {
 			for i++; i < len(raw); i++ {
 				l := strings.TrimRight(raw[i], "\r")
 				lines = append(lines, l)
-				if strings.TrimSpace(l) == m[1] {
+				if d.ends(l) {
 					break
 				}
 			}
@@ -217,14 +235,89 @@ func dockerLines(src string) (lines []string, joined bool) {
 	return lines, true
 }
 
-// dockerHeredocs returns the heredocs a RUN, COPY or ADD instruction opens.
-func dockerHeredocs(line string) [][]string {
-	word, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
-	switch strings.ToUpper(word) {
-	case "RUN", "COPY", "ADD":
-		return heredocRE.FindAllStringSubmatch(strings.TrimSpace(rest), -1)
+var (
+	dockerHeredocRE     = regexp.MustCompile(`^(\d*)<<(-?)([^<]*)$`)
+	dockerHeredocInstrs = map[string]bool{"RUN": true, "COPY": true, "ADD": true}
+)
+
+// dockerHeredocs returns the heredocs a RUN, COPY or ADD instruction, ONBUILD or not, opens in
+// shell form, read the way BuildKit does: each word of the line, split the way a shell does but
+// with its quotes and backslashes kept, that is all of <<, <<- or n<< and a name opens one,
+// and the name, unquoted, is its terminator.
+func dockerHeredocs(line string) []heredoc {
+	words := dockerWords(line)
+	if len(words) > 0 && strings.EqualFold(words[0], "ONBUILD") {
+		words = words[1:]
 	}
-	return nil
+	if len(words) < 2 || !dockerHeredocInstrs[strings.ToUpper(words[0])] {
+		return nil
+	}
+	var form []string
+	if rest := strings.TrimSpace(line[strings.Index(line, words[0])+len(words[0]):]); json.Unmarshal([]byte(rest), &form) == nil {
+		return nil
+	}
+	var docs []heredoc
+	for _, w := range words {
+		if m := dockerHeredocRE.FindStringSubmatch(w); m != nil {
+			if name := dockerWords(m[3]); len(name) == 1 {
+				docs = append(docs, heredoc{word: unquoteWord(name[0]), dash: m[2] == "-"})
+			}
+		}
+	}
+	return docs
+}
+
+// dockerWords splits line into words at blanks outside quotes, keeping the quotes and the
+// backslashes.
+func dockerWords(line string) []string {
+	var words []string
+	var cur strings.Builder
+	var q byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case q == 0 && (c == ' ' || c == '\t'):
+			if cur.Len() > 0 {
+				words = append(words, cur.String())
+				cur.Reset()
+			}
+			continue
+		case c == '\\' && q != '\'' && i+1 < len(line):
+			cur.WriteByte(c)
+			i++
+			c = line[i]
+		case q == 0 && (c == '\'' || c == '"'):
+			q = c
+		case c == q:
+			q = 0
+		}
+		cur.WriteByte(c)
+	}
+	if cur.Len() > 0 {
+		words = append(words, cur.String())
+	}
+	return words
+}
+
+// unquoteWord removes a word's quotes and backslashes.
+func unquoteWord(w string) string {
+	var b strings.Builder
+	var q byte
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		switch {
+		case c == '\\' && q != '\'' && i+1 < len(w):
+			i++
+			b.WriteByte(w[i])
+		case q == 0 && (c == '\'' || c == '"'):
+			q = c
+		case c == q:
+			q = 0
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // segment is one simple command: its words, unquoted, and whether its text holds a $ or

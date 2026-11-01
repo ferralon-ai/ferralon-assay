@@ -244,6 +244,14 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"package.json script continuation inside a word", tree(map[string]string{"package.json": `{"scripts":{"build":"in\\\nst add x"}}`}), true, ""},
 		{"batch continuation inside a word", tree(map[string]string{"setup.bat": "in^\nst add x\n"}), true, ""},
 		{"PowerShell continuation inside a word", tree(map[string]string{"setup.ps1": "in`\nst add x\n"}), true, ""},
+		{"Dockerfile heredoc body continuation inside a word", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<EOF\nin\\\nst add x\nEOF\n"}), true, ""},
+		{"Dockerfile quoted heredoc marker opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN echo \"<<EOF\"\nRUN in\\\nst add x\n"}), true, ""},
+		{"Dockerfile heredoc marker inside a word opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN echo a<<EOF\nRUN in\\\nst add x\n"}), true, ""},
+		{"Dockerfile exec form opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN [\"sh\", \"-c\", \"cat <<EOF\"]\nRUN in\\\nst add x\n"}), true, ""},
+		{"Dockerfile heredoc ends only at its exact terminator", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<EOF\n  EOF\nin\\\nst add x\nEOF\n"}), true, ""},
+		{"Dockerfile heredoc name with a dash", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<EOF-X\nEOF\nin\\\nst add x\nEOF-X\n"}), true, ""},
+		{"justfile recipe continuation inside a word", tree(map[string]string{"justfile": "all:\n\tin\\\n\t\tst add x\n"}), true, ""},
+		{"shell comment continued after a quote read wrongly", tree(map[string]string{"install.sh": "x=\"$(echo \"it's\")\"\n# c \\\ninst install -r reqs.txt \\\n  other\n"}), true, ""},
 
 		// Run wrappers.
 		{"run wrapper argv gated", tree(map[string]string{"install.sh": "instw run inst add x\n"}), true, ""},

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -321,7 +320,6 @@ func (c *dockerCursor) lockAbove(dir string, locks []string) bool {
 }
 
 var (
-	heredocRE   = regexp.MustCompile(`<<-?\s*["']?([A-Za-z_][A-Za-z0-9_]*)`)
 	dockerPlain = map[string]bool{
 		"ENV": true, "ARG": true, "LABEL": true, "EXPOSE": true, "USER": true, "VOLUME": true,
 		"STOPSIGNAL": true, "MAINTAINER": true, "SHELL": true,
@@ -360,13 +358,16 @@ func (v *Veto) dockerfile(file, src string) string {
 		word, rest, _ := strings.Cut(line, " ")
 		instr, rest := strings.ToUpper(word), strings.TrimSpace(rest)
 		if hd := dockerHeredocs(line); hd != nil {
-			body := line
-			for _, m := range hd {
-				for i++; i < len(lines) && strings.TrimSpace(lines[i]) != m[1]; i++ {
+			body, hidden := line, false
+			for _, d := range hd {
+				var text []string
+				for i++; i < len(lines) && !d.ends(lines[i]); i++ {
 					body += "\n" + lines[i]
+					text = append(text, lines[i])
 				}
+				hidden = hidden || v.shellHides(strings.Join(text, "\n"))
 			}
-			if v.hasToken(body) {
+			if v.hasToken(body) || hidden {
 				return "install command in a heredoc"
 			}
 			v.mention(strings.Fields(body))
@@ -439,4 +440,16 @@ func (v *Veto) dockerfile(file, src string) string {
 		}
 	}
 	return flush()
+}
+
+// shellHides reports whether text, read as a shell script, holds an installer that only its
+// line continuations show.
+func (v *Veto) shellHides(text string) bool {
+	lines, _, hidden, _ := logicalLinesAt(text, kindShell)
+	for _, l := range append(lines, hidden...) {
+		if v.hasToken(l) {
+			return true
+		}
+	}
+	return false
 }

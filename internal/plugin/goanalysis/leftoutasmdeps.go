@@ -61,6 +61,9 @@ type lofDepFile struct {
 	// refs maps each package-level declaration of the file to the names it mentions: a local name
 	// bare, a qualified one as "q.X".
 	refs map[string][]string
+	// ints holds the constants of the file whose value is integer arithmetic on literals and names
+	// (lofDepIntExpr).
+	ints map[string]bool
 }
 
 // lofDepImport is one import of a file; name is "" when the import gives none.
@@ -114,7 +117,7 @@ func lofDepRead(dir string, arches map[string]bool) *lofDepPkg {
 }
 
 func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bool) {
-	f := lofDepFile{refs: map[string][]string{}}
+	f := lofDepFile{refs: map[string][]string{}, ints: map[string]bool{}}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return f, "", false
@@ -161,9 +164,11 @@ func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bo
 			}
 		case *ast.GenDecl:
 			var last []string
+			lastInt := false
 			for _, spec := range d.Specs {
 				switch sp := spec.(type) {
 				case *ast.TypeSpec:
+					f.ints[sp.Name.Name] = false
 					var refs []string
 					if _, ok := sp.Type.(*ast.StructType); !ok || sp.Assign.IsValid() || sp.TypeParams != nil {
 						// As in goSrc: a struct literal is a struct whatever its field types are.
@@ -175,20 +180,50 @@ func lofDepReadFile(path string, arches map[string]bool) (lofDepFile, string, bo
 					for _, v := range sp.Values {
 						refs = append(refs, lofDepIdents(v)...)
 					}
+					isInt := false
 					if d.Tok == token.CONST {
+						isInt = sp.Type == nil && len(sp.Values) == len(sp.Names) && !slices.ContainsFunc(sp.Values, func(v ast.Expr) bool { return !lofDepIntExpr(v) })
 						if len(sp.Values) == 0 && sp.Type == nil {
-							refs = last
+							refs, isInt = last, lastInt
 						}
-						last = refs
+						last, lastInt = refs, isInt
 					}
 					for _, nm := range sp.Names {
 						f.refs[nm.Name] = append(f.refs[nm.Name], refs...)
+						if v, ok := f.ints[nm.Name]; !ok || v {
+							f.ints[nm.Name] = isInt
+						}
 					}
 				}
 			}
 		}
 	}
 	return f, af.Name.Name, true
+}
+
+// lofDepIntExpr reports whether e is integer arithmetic: integer and rune literals, names, and the
+// arithmetic and bitwise operators. Its value is an integer whenever every name it mentions is one;
+// a comparison, conversion, call, or any other literal may yield another kind.
+func lofDepIntExpr(e ast.Expr) bool {
+	switch e := e.(type) {
+	case *ast.BasicLit:
+		return e.Kind == token.INT || e.Kind == token.CHAR
+	case *ast.Ident:
+		return e.Name != "true" && e.Name != "false" && e.Name != "nil"
+	case *ast.SelectorExpr:
+		_, ok := e.X.(*ast.Ident)
+		return ok
+	case *ast.ParenExpr:
+		return lofDepIntExpr(e.X)
+	case *ast.UnaryExpr:
+		return (e.Op == token.ADD || e.Op == token.SUB || e.Op == token.XOR) && lofDepIntExpr(e.X)
+	case *ast.BinaryExpr:
+		switch e.Op {
+		case token.ADD, token.SUB, token.MUL, token.QUO, token.REM, token.AND, token.OR, token.XOR, token.AND_NOT, token.SHL, token.SHR:
+			return lofDepIntExpr(e.X) && lofDepIntExpr(e.Y)
+		}
+	}
+	return false
 }
 
 // lofDepLevelName reports whether a file name carries an architecture-level element, as
@@ -377,17 +412,71 @@ func (s *lofAsmSession) levelDep(it lofAsmItem) bool {
 // the whole closure of the file's imports.
 func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 	var out lofDepFacts
-	type node struct{ dir, name string }
+	// ints marks a name reached only through integer arithmetic (lofDepFile.ints) from a go_asm.h name.
+	type node struct {
+		dir, name string
+		ints      bool
+	}
 	seen := map[node]bool{}
 	var queue []node
-	push := func(d, n string) {
-		if k := (node{d, n}); !seen[k] {
+	push := func(d, n string, ints bool) {
+		if k := (node{d, n, ints}); !seen[k] {
 			seen[k] = true
 			queue = append(queue, k)
 		}
 	}
 	for _, n := range names {
-		push(dir, n)
+		push(dir, n, true)
+	}
+	// allInt reports whether every declaration of name in d is integer arithmetic on names that are
+	// all so in turn: which files declare them can change the constant's value, never its kind. Only
+	// a kind, or a bool or string value, changes the symbols a listing references.
+	memo := map[node]bool{}
+	var allInt func(d, name string) bool
+	allInt = func(d, name string) bool {
+		k := node{d, name, true}
+		if v, ok := memo[k]; ok {
+			return v
+		}
+		memo[k] = false
+		pkg := s.depPkg(d)
+		ok := !pkg.bad
+		for _, f := range pkg.files {
+			refs, declared := f.refs[name]
+			if !ok || !declared {
+				continue
+			}
+			ok = f.ints[name]
+			for _, r := range refs {
+				if !ok {
+					break
+				}
+				q, x, qualified := strings.Cut(r, ".")
+				if !qualified {
+					// A name no file of d declares is predeclared (iota) or a package's.
+					ok = !pkg.decls[r] || allInt(d, r)
+					if ok && !pkg.decls[r] {
+						ok = !slices.ContainsFunc(f.imports, func(im lofDepImport) bool { return im.name == "." })
+					}
+					continue
+				}
+				if pkg.decls[q] {
+					ok = false
+					continue
+				}
+				found := false
+				for _, im := range f.imports {
+					if im.name == q || (im.name == "" && slices.Contains(s.depPkg(s.depDirs(s.depStd(d), []string{im.path})[im.path]).names, q)) {
+						c := s.depDirs(s.depStd(d), []string{im.path})[im.path]
+						found = c != "" && allInt(c, x)
+						break
+					}
+				}
+				ok = found
+			}
+		}
+		memo[k] = ok
+		return ok
 	}
 	whole := func(d string, imps []lofDepImport) {
 		var paths []string
@@ -413,9 +502,11 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 			if !ok {
 				continue
 			}
+			ints := n.ints && f.ints[n.name]
 			facts := f.lofDepFacts
-			if n.dir == dir {
+			if n.dir == dir || (ints && allInt(n.dir, n.name)) {
 				// The package's own files are enumerated as its own, and lofAsmHdrStable judges them.
+				// A file that can change only an integer's value changes no symbol.
 				facts.tags = nil
 			}
 			out.add(facts)
@@ -429,7 +520,7 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 				q, x, qualified := strings.Cut(r, ".")
 				if !qualified {
 					if pkg.decls[r] {
-						push(n.dir, r)
+						push(n.dir, r, ints)
 					} else if len(dots) > 0 {
 						whole(n.dir, dots)
 					}
@@ -451,12 +542,12 @@ func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
 					if im.name == "" && !slices.Contains(s.depPkg(c).names, q) {
 						continue
 					}
-					push(c, x)
+					push(c, x, ints)
 					placed = true
 				}
 				if pkg.decls[q] {
 					// A selector on a local name: a field or method of it.
-					push(n.dir, q)
+					push(n.dir, q, false)
 					placed = true
 				}
 				if !placed {

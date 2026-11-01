@@ -269,8 +269,9 @@ func TestLofAsmObjHeader(t *testing.T) {
 
 // TestLofAsmObjHeaderDeps: a go_asm.h name a dependency's tagged files may change is assembled
 // against each assignment of those tags, as a name the package's own tagged files may change is; a
-// macro dumpasmhdr spells for a type a and field b_c reads as type a_b and field c too; and the
-// package's own files the build never compiles enumerate nothing.
+// macro dumpasmhdr spells for a type a and field b_c reads as type a_b and field c too; and a
+// dependency file that can change only an integer's value, or the package's own files the
+// build never compiles, enumerate nothing.
 func TestLofAsmObjHeaderDeps(t *testing.T) {
 	mod := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n"}
 	text := func(body string) string {
@@ -290,6 +291,16 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 	fieldtrack := map[string]string{
 		"d/on.go":  "//go:build goexperiment.fieldtrack\n\npackage d\n\ntype S struct{ c int }\n",
 		"d/off.go": "//go:build !goexperiment.fieldtrack\n\npackage d\n\ntype S int\n",
+	}
+	// tagged returns d with R set by tag t0 to on or off, and p taking K from d.
+	tagged := func(on, off, decl, text string) map[string]string {
+		return merge(mod, map[string]string{
+			"d/on.go":  "//go:build t0\n\npackage d\n\nconst R = " + on + "\n",
+			"d/off.go": "//go:build !t0\n\npackage d\n\nconst R = " + off + "\n",
+			"d/d.go":   "package d\n\n" + decl + "\n",
+			"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.M\n",
+			"p/p.s":    text,
+		})
 	}
 	cases := []struct {
 		name  string
@@ -329,6 +340,12 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 			"p/defs.go": "//go:build ignore\n\npackage p\n\nimport \"C\"\n\nconst K = C.K\n",
 			"p/p.s":     movK,
 		}), true, nil},
+		// D2: R changes M's value, not its kind: header variants differ in operands only.
+		{"D2: a dependency's tag sets an integer only, under four own tags", merge(tagged("1", "0", "const M = 1 + R", movK), own(4)), true, nil},
+		{"D2 counter: the tag sets a float the integer arithmetic takes", tagged("1", "1.5", "const M = 1 + R", ifdefK), true,
+			[]string{"example.com/v/p.sym"}},
+		{"D2 counter: integer arithmetic on the tagged integer feeds a comparison", tagged("1", "0", "const M = R > 0", text("\tCALL const_K(SB)\n")), true,
+			[]string{"true", "false"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

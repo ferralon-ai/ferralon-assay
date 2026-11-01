@@ -357,3 +357,164 @@ func (s *lofAsmSession) levelDep(it lofAsmItem) bool {
 	c := s.closure(it.dir)
 	return c.level || c.bad
 }
+
+// slice returns the facts of the files declaring names in the package in dir and, transitively, of
+// those declaring what their declarations mention, here and in the packages they qualify a name
+// with. A name a file cannot place (a qualifier no import of it gives, or a dot import) brings in
+// the whole closure of the file's imports.
+func (s *lofAsmSession) slice(dir string, names []string) lofDepFacts {
+	var out lofDepFacts
+	type node struct{ dir, name string }
+	seen := map[node]bool{}
+	var queue []node
+	push := func(d, n string) {
+		if k := (node{d, n}); !seen[k] {
+			seen[k] = true
+			queue = append(queue, k)
+		}
+	}
+	for _, n := range names {
+		push(dir, n)
+	}
+	whole := func(d string, imps []lofDepImport) {
+		var paths []string
+		for _, im := range imps {
+			paths = append(paths, im.path)
+		}
+		for _, c := range s.depDirs(s.depStd(d), paths) {
+			if c == "" {
+				out.bad = true
+				continue
+			}
+			out.add(s.closure(c))
+		}
+	}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		pkg := s.depPkg(n.dir)
+		out.bad = out.bad || pkg.bad
+		std := s.depStd(n.dir)
+		for _, f := range pkg.files {
+			refs, ok := f.refs[n.name]
+			if !ok {
+				continue
+			}
+			out.add(f.lofDepFacts)
+			var dots []lofDepImport
+			for _, im := range f.imports {
+				if im.name == "." {
+					dots = append(dots, im)
+				}
+			}
+			for _, r := range refs {
+				q, x, qualified := strings.Cut(r, ".")
+				if !qualified {
+					if pkg.decls[r] {
+						push(n.dir, r)
+					} else if len(dots) > 0 {
+						whole(n.dir, dots)
+					}
+					continue
+				}
+				placed := false
+				for _, im := range f.imports {
+					if im.name == "_" || im.name == "." || (im.name != "" && im.name != q) {
+						continue
+					}
+					c := s.depDirs(std, []string{im.path})[im.path]
+					if c == "" {
+						if im.name == q {
+							out.bad = true
+							placed = true
+						}
+						continue
+					}
+					if im.name == "" && !slices.Contains(s.depPkg(c).names, q) {
+						continue
+					}
+					push(c, x)
+					placed = true
+				}
+				if pkg.decls[q] {
+					// A selector on a local name: a field or method of it.
+					push(n.dir, q)
+					placed = true
+				}
+				if !placed {
+					whole(n.dir, f.imports)
+				}
+			}
+		}
+	}
+	slices.Sort(out.exps)
+	return out
+}
+
+// lofAsmABIPkgs returns the packages the toolchain at root lets assembly use ABI selectors in, for
+// which cmd/asm defines a GOEXPERIMENT_ macro per enabled experiment (cmd/asm/main.go): the
+// allowAsmABIPkgs of cmd/internal/objabi/pkgspecial.go. nil when they cannot be read.
+func lofAsmABIPkgs(root string) []string {
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, "src", "cmd", "internal", "objabi", "pkgspecial.go"), nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			vs := sp.(*ast.ValueSpec)
+			if len(vs.Names) != 1 || vs.Names[0].Name != "allowAsmABIPkgs" || len(vs.Values) != 1 {
+				continue
+			}
+			cl, ok := vs.Values[0].(*ast.CompositeLit)
+			if !ok {
+				return nil
+			}
+			for _, e := range cl.Elts {
+				bl, ok := e.(*ast.BasicLit)
+				if !ok || bl.Kind != token.STRING {
+					return nil
+				}
+				p, err := strconv.Unquote(bl.Value)
+				if err != nil {
+					return nil
+				}
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// effective returns the experiments a build of the tuple runs with, as the toolchain resolves its
+// GOEXPERIMENT over the port's defaults (go list's context.ToolTags, internal/buildcfg): two
+// tuples that resolve alike build alike. The GOEXPERIMENT itself, marked apart, when the toolchain
+// cannot resolve it.
+func (t *lofAsmTool) effective(tu lofAsmTuple) string {
+	x := tu.goexperiment(t.experiment)
+	vars := append(tu.envVars(), "GOEXPERIMENT="+x)
+	return lofMemo(&t.mu, t.effs, strings.Join(vars, "\x00"), func() string {
+		cmd := exec.Command(filepath.Join(t.root, "bin", "go"), "list", "-find", "-f", "{{join context.ToolTags \" \"}}", "unsafe")
+		cmd.Dir = t.root
+		cmd.Env = append(append(lofAsmBaseEnv(t.env), vars...), "GOTOOLCHAIN=local", "GOFLAGS=", "GOWORK=off")
+		if lofAsmExecHook != nil {
+			lofAsmExecHook(cmd)
+		}
+		b, err := cmd.Output()
+		if err != nil {
+			return "raw:" + x
+		}
+		var on []string
+		for _, tag := range strings.Fields(string(b)) {
+			if e, ok := strings.CutPrefix(tag, "goexperiment."); ok {
+				on = append(on, e)
+			}
+		}
+		slices.Sort(on)
+		return "on:" + strings.Join(on, ",")
+	})
+}

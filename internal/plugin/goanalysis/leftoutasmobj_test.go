@@ -234,6 +234,10 @@ func TestLofAsmObjHeader(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if bytes.Contains(src, []byte("GOEXPERIMENT_")) {
+				// cmd/asm defines GOEXPERIMENT_ macros only for the packages objabi allows ABI selectors in.
+				it.pkg = "internal/runtime/startlinetest"
+			}
 			x, _ := fileConstraint(src)
 			g := s.gate(it, src)
 			tu := s.tool.tuples([]lofPort{{"linux", "amd64"}}, g)[0]
@@ -275,23 +279,38 @@ func TestLofAsmObjExperiments(t *testing.T) {
 	for _, x := range probe.tool.exps[:maxFreeTags+1] {
 		many.WriteString("#ifdef GOEXPERIMENT_" + x + "\n#endif\n")
 	}
+	dep := merge(mod, map[string]string{
+		"d/on.go":  "//go:build goexperiment." + exp + "\n\npackage d\n\nconst K = 1\n",
+		"d/off.go": "//go:build !goexperiment." + exp + "\n\npackage d\n\nconst K = 1.5\n",
+		"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
+		"p/p.s":    body("#include \"go_asm.h\"\n\n#ifdef const_K\n#define CALLX CALL ·sym(SB)\n#else\n#define CALLX\n#endif\n"),
+	})
 	cases := []struct {
 		name  string
 		files map[string]string
-		ok    bool
-		refs  []string
+		// pkg is the package the file is assembled for, when not one objabi allows ABI selectors in.
+		pkg  string
+		ok   bool
+		refs []string
 	}{
-		{"N1: the file tests an experiment the session leaves unset", merge(mod, map[string]string{"p/p.s": body(ifdef)}), true,
+		{"N1: the file tests an experiment the session leaves unset", merge(mod, map[string]string{"p/p.s": body(ifdef)}), "", true,
 			[]string{"internal/runtime/startlinetest.sym"}},
-		{"N1: a header the file includes tests it", merge(mod, map[string]string{"p/x.h": ifdef, "p/p.s": body("#include \"x.h\"\n\n")}), true,
+		{"N1: a header the file includes tests it", merge(mod, map[string]string{"p/x.h": ifdef, "p/p.s": body("#include \"x.h\"\n\n")}), "", true,
 			[]string{"internal/runtime/startlinetest.sym"}},
-		{"N1: the file tests more experiments than the cap", merge(mod, map[string]string{"p/p.s": body(many.String() + "#define CALLX\n")}), false, nil},
+		{"N1: the file tests more experiments than the cap", merge(mod, map[string]string{"p/p.s": body(many.String() + "#define CALLX\n")}), "", false, nil},
+		// go_asm.h emits const_K only where K is an integer: with the experiment on, which the
+		// session leaves off.
+		{"a go_asm.h constant a dependency's experiment-tagged file sets, outside the ABI packages", dep, "example.com/v/p", true,
+			[]string{"example.com/v/p.sym"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s, it := lofAsmTestSession(t, tc.files, "p/p.s", nil, "")
 			// cmd/asm defines GOEXPERIMENT_ macros only for the packages objabi allows ABI selectors in.
 			it.pkg = "internal/runtime/startlinetest"
+			if tc.pkg != "" {
+				it.pkg = tc.pkg
+			}
 			o := s.read(it)
 			if (o != nil) != tc.ok {
 				t.Fatalf("read = %v, want ok %v", o, tc.ok)
@@ -302,6 +321,19 @@ func TestLofAsmObjExperiments(t *testing.T) {
 				}
 			}
 		})
+	}
+	// Outside those packages an #ifdef GOEXPERIMENT_ tests a name never defined: no experiment is
+	// enumerated for it.
+	for _, pkg := range []string{"internal/runtime/startlinetest", "example.com/v/p"} {
+		s, it := lofAsmTestSession(t, merge(mod, map[string]string{"p/p.s": body(ifdef)}), "p/p.s", nil, "")
+		it.pkg = pkg
+		src, err := os.ReadFile(it.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, abi := s.gate(it, src).exps, pkg != "example.com/v/p"; slices.Contains(got, exp) != abi {
+			t.Errorf("%s: experiments enumerated %v", pkg, got)
+		}
 	}
 }
 
@@ -315,16 +347,10 @@ func TestLofAsmHdrKey(t *testing.T) {
 	b := &lofAsmTool{root: "/b", version: "go1.26.3"}
 	it := lofAsmItem{pkg: "runtime", std: true}
 	tu := lofAsmTuple{lofPort{"linux", "amd64"}, "v1", ""}
-	v3, on := tu, tu
-	v3.level, on.exp = "v3", "fieldtrack"
-	k := a.hdrKey(it, tu, "v1", nil, []string{"a.go"})
-	for name, other := range map[string]string{
-		"N2: another root":       b.hdrKey(it, tu, "v1", nil, []string{"a.go"}),
-		"N1: another experiment": a.hdrKey(it, on, "v1", nil, []string{"a.go"}),
-	} {
-		if other == k {
-			t.Errorf("%s shares the key", name)
-		}
+	v3, on, off := tu, tu, tu
+	v3.level, on.exp, off.exp = "v3", "fieldtrack", "nofieldtrack"
+	if a.hdrKey(it, tu, "v1", "on:", nil, []string{"a.go"}) == b.hdrKey(it, tu, "v1", "on:", nil, []string{"a.go"}) {
+		t.Errorf("N2: another root shares the key")
 	}
 
 	mod := map[string]string{
@@ -352,6 +378,17 @@ func TestLofAsmHdrKey(t *testing.T) {
 			k3 := s.hdrKey(it, v3, nil, []string{"p.go"})
 			if split := k1 != k3; split != c.split {
 				t.Errorf("v1 and v3 keys differ: %v, want %v", split, c.split)
+			}
+			if c.split {
+				return
+			}
+			// The experiments: GOEXPERIMENT spellings the toolchain resolves to one experiment set share
+			// an entry, and only those.
+			if k := s.hdrKey(it, off, nil, []string{"p.go"}); k != k1 {
+				t.Errorf("nofieldtrack, which the session's experiments already leave unset, keys apart")
+			}
+			if k := s.hdrKey(it, on, nil, []string{"p.go"}); k == k1 {
+				t.Errorf("fieldtrack shares the key of a build without it")
 			}
 		})
 	}

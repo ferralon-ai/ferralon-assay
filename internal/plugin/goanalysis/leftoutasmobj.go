@@ -544,6 +544,10 @@ type lofAsmTool struct {
 	// read, by directory.
 	arches map[string]bool
 	deps   map[string]*lofOnce[*lofDepPkg]
+	// abiPkgs holds the packages cmd/asm defines GOEXPERIMENT_ macros for (lofAsmABIPkgs), nil when
+	// they could not be read; effs the effective experiments of a tuple's build, by its variables.
+	abiPkgs []string
+	effs    map[string]*lofOnce[string]
 }
 
 var lofAsmTools = struct {
@@ -650,6 +654,7 @@ func newLofAsmTool(ctx context.Context, root string, env []string) (*lofAsmTool,
 		}
 	}
 	t.exps = lofAsmExperiments(root)
+	t.abiPkgs, t.effs = lofAsmABIPkgs(root), map[string]*lofOnce[string]{}
 	return t, nil
 }
 
@@ -975,14 +980,43 @@ func (s *lofAsmSession) gate(it lofAsmItem, src []byte) *lofAsmGate {
 		}
 	}
 	scan(src)
-	for _, d := range g.ifdefs {
-		x, ok := strings.CutPrefix(d, "GOEXPERIMENT_")
+	addExp := func(x string) {
 		switch {
-		case !ok:
 		case s.tool.exps == nil:
 			g.badExp = true
 		case slices.Contains(s.tool.exps, x) && !slices.Contains(g.exps, x):
 			g.exps = append(g.exps, x)
+		}
+	}
+	// cmd/asm defines a GOEXPERIMENT_ macro per enabled experiment only in the packages
+	// allowAsmABIPkgs lists (cmd/internal/objabi/pkgspecial.go; cmd/asm/main.go): elsewhere an
+	// #ifdef of one tests a name never defined.
+	if s.tool.abiPkgs == nil || slices.Contains(s.tool.abiPkgs, it.pkg) {
+		for _, d := range g.ifdefs {
+			if x, ok := strings.CutPrefix(d, "GOEXPERIMENT_"); ok {
+				addExp(x)
+			}
+		}
+	}
+	// A go_asm.h name may take its value from a file an experiment selects, in the package or a
+	// package it imports: each experiment a file declaring one, or what its declaration mentions,
+	// is constrained on is enumerated.
+	if g.needsHdr || g.unresolved {
+		var f lofDepFacts
+		if src := s.goSrc(it.dir); g.unresolved || g.badIfdef || src.err {
+			f = s.closure(it.dir)
+		} else {
+			var names []string
+			for id := range g.idents {
+				if n := lofAsmHdrCandidate(src, id); n != "" {
+					names = append(names, n)
+				}
+			}
+			f = s.slice(it.dir, names)
+		}
+		g.badExp = g.badExp || f.bad
+		for _, x := range f.exps {
+			addExp(x)
 		}
 	}
 	slices.Sort(g.exps)
@@ -1988,11 +2022,12 @@ func lofAsmHdrValue(v string) bool {
 }
 
 // hdrKey returns the key of the go_asm.h a build of the package with tags compiles on the port at
-// level. The file set covers the package's own files, not a dependency's level- or experiment-tagged
-// files a constant may take its value from: level is "" only where no file the package's import
-// closure holds is level-specific (hdrLevel), and the experiments are in the key.
-func (t *lofAsmTool) hdrKey(it lofAsmItem, tu lofAsmTuple, level string, tags, files []string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{lofAsmCacheGen, t.version, t.experiment, t.root, it.pkg, tu.goos, tu.goarch, level, tu.exp,
+// level with the effective experiments exp. The file set covers the package's own files, not a
+// dependency's level- or experiment-tagged files a constant may take its value from: level is ""
+// only where no file the package's import closure holds is level-specific (hdrLevel), and exp is
+// the experiment set the build resolves (effective), so only builds that resolve alike share a key.
+func (t *lofAsmTool) hdrKey(it lofAsmItem, tu lofAsmTuple, level, exp string, tags, files []string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{lofAsmCacheGen, t.version, t.experiment, t.root, it.pkg, tu.goos, tu.goarch, level, exp,
 		strings.Join(files, "\x00"), strings.Join(tags, ",")}, "\x01")))
 	return hex.EncodeToString(sum[:])
 }
@@ -2013,7 +2048,7 @@ func (s *lofAsmSession) hdrLevel(it lofAsmItem, tu lofAsmTuple) string {
 // only. The standard library's headers are cached across runs.
 // hdrKey returns the key of the go_asm.h a build of the package with tags compiles on the tuple.
 func (s *lofAsmSession) hdrKey(it lofAsmItem, tu lofAsmTuple, tags, files []string) string {
-	return s.tool.hdrKey(it, tu, s.hdrLevel(it, tu), tags, files)
+	return s.tool.hdrKey(it, tu, s.hdrLevel(it, tu), s.tool.effective(tu), tags, files)
 }
 
 func (s *lofAsmSession) header(it lofAsmItem, tu lofAsmTuple, tags, files []string) lofAsmHdr {

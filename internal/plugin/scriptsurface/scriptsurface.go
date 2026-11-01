@@ -768,7 +768,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		base, unknown = append(base, dirs...), !ok
 	}
 	included := yaml && gitlabIncluded(path, units)
-	script := s.kind == kindShell && !shadowsData(units)
+	script := s.kind == kindShell && posixRun(path, units) && !shadowsData(units)
 	for _, u := range units {
 		carry := &hostCursor{v: v, dirs: append([]string(nil), base...), unknown: unknown}
 		if u.bad {
@@ -1030,17 +1030,24 @@ func dataOnly(seg segment) bool {
 	return !strings.HasSuffix(head, "grep") || grepQuiet(seg.words[1:])
 }
 
-// dataShadowRE finds what in a shell script may make a dataCommands name run another program:
-// a function by that name (name() or function name), an alias, enable or hash, any use of PATH,
-// a sourced file or eval, which may define either, and a heredoc, whose body another
-// interpreter may read and which this reads as shell lines.
-var dataShadowRE = regexp.MustCompile(`<<|(?:^|[^A-Za-z0-9_])PATH(?:[^A-Za-z0-9_]|$)|(?:^|[\s;&|({])(?:alias|enable|hash|source|eval|\.)(?:\s|$)|(?:^|[\s;&|({])(?:e?grep|fgrep|test|true|false|\[)\s*\(|\bfunction\s+(?:e?grep|fgrep|test|true|false|\[)`)
+// dataShadowRE finds what in a shell script's own text may make a dataCommands name run another
+// program, or run a command's text: a function by that name (name() or function name), an
+// alias, enable or hash, any use of PATH, a sourced file or eval, which may define either, a
+// trap, and a heredoc, whose body another interpreter may read and which this reads as shell
+// lines. The repo is the owner's own: what a caller's environment brings (PATH,
+// BASH_ENV, exported functions), or a name an expansion builds, is out of its reach.
+var dataShadowRE = regexp.MustCompile(`<<|(?:^|[^A-Za-z0-9_])PATH(?:[^A-Za-z0-9_]|$)|(?:^|[\s;&|({])(?:alias|enable|hash|source|eval|trap|\.)(?:\s|$)|(?:^|[\s;&|({])(?:e?grep|fgrep|test|true|false|\[)\s*\(|\bfunction\s+(?:e?grep|fgrep|test|true|false|\[)`)
+
+// shadowText joins continued lines and drops quotes and backslashes, as the shell does before it
+// reads a word, so that a name written with quotes in it, or continued onto the next line, is
+// the word it runs as.
+var shadowText = strings.NewReplacer("\\\r\n", "", "\\\n", "", `\`, "", "'", "", `"`, "")
 
 // shadowsData reports whether a shell script's units hold anything dataShadowRE finds, so that
 // none of its commands is read as data.
 func shadowsData(units []unit) bool {
 	for _, u := range units {
-		if dataShadowRE.MatchString(u.text) {
+		if dataShadowRE.MatchString(shadowText.Replace(u.text)) {
 			return true
 		}
 	}
@@ -1053,14 +1060,14 @@ const grepFlags = "abcEFGHhiILlnoPrRsTUvVwxyzZ"
 
 // grepQuiet reports whether grep's leading options include -q, --quiet or --silent, so that it
 // prints nothing. It reads options only up to the first word that is not a cluster of grepFlags
-// or one of those, and a cluster only up to a letter that is not one of grepFlags, since what
+// or one of those (any other long option among them), and a cluster only up to a letter that is not one of grepFlags, since what
 // follows may be that option's argument (-eq matches q).
 func grepQuiet(args []string) bool {
 	for _, w := range args {
 		if w == "--quiet" || w == "--silent" {
 			return true
 		}
-		if len(w) < 2 || w[0] != '-' || w[1] == '-' {
+		if len(w) < 2 || w[0] != '-' {
 			return false
 		}
 		for _, c := range w[1:] {
@@ -1276,4 +1283,19 @@ func (v *Veto) segmentHasToken(words []string) bool {
 		}
 	}
 	return false
+}
+
+// posixRun reports whether a shell script is one a POSIX-family shell other than zsh runs: no
+// .zsh name, and no #! line or one naming such a shell. zsh ties path to PATH and lets a script
+// set functions[grep] or commands[grep], and a .sh file whose #! names ruby or perl is not
+// shell at all.
+func posixRun(path string, units []unit) bool {
+	if strings.EqualFold(filepath.Ext(path), ".zsh") || len(units) == 0 {
+		return false
+	}
+	first, _, _ := strings.Cut(units[0].text, "\n")
+	if !strings.HasPrefix(first, "#!") {
+		return true
+	}
+	return shellShebang([]byte(first)) && !strings.Contains(first, "zsh")
 }

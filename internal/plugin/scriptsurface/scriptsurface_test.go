@@ -159,6 +159,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"installer variable set by ${^[1]:=}", tree(map[string]string{"install.sh": ": ${^INST_INDEX[1]:=https://x}\ninst sync\n"}), true, ""},
 		{"installer variable set by ${(s.:.)~::=}", tree(map[string]string{"install.sh": ": ${(s.:.)~INST_INDEX::=https://x}\ninst sync\n"}), true, ""},
 		{"installer variable set by ${:=} inside a word", tree(map[string]string{"install.sh": "echo a${INST_INDEX:=https://x}\ninst sync\n"}), true, ""},
+		{"installer variable read by ${[0]}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX[0]}\"\ninst sync\n"}), false, ""},
+		{"installer variable read by ${[0]} above a line that assigns another", tree(map[string]string{"install.sh": "echo \"${INST_INDEX[0]}\"\n: ${OTHER[1]:=y}\ninst sync\n"}), false, ""},
 		{"installer variable read by ${}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX}\"\ninst sync\n"}), false, ""},
 		{"installer variable read by ${:-}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX:-https://x}\"\ninst sync\n"}), false, ""},
 		{"installer variable read by ${-}", tree(map[string]string{"install.sh": "echo \"${INST_INDEX-https://x}\"\ninst sync\n"}), false, ""},

@@ -1032,15 +1032,15 @@ func dataOnly(seg segment) bool {
 
 // dataShadowRE finds what in a shell script's own text may make a dataCommands name run another
 // program, or run a command's text: a function by that name (name() or function name), an
-// alias, enable or hash, any use of PATH, a sourced file or eval, which may define either, a
-// trap, and a heredoc, whose body another interpreter may read and which this reads as shell
-// lines. The repo is the owner's own: what a caller's environment brings (PATH,
-// BASH_ENV, exported functions), or a name an expansion builds, is out of its reach.
-var dataShadowRE = regexp.MustCompile(`<<|(?:^|[^A-Za-z0-9_])PATH(?:[^A-Za-z0-9_]|$)|(?:^|[\s;&|({])(?:alias|enable|hash|source|eval|trap|\.)(?:\s|$)|(?:^|[\s;&|({])(?:e?grep|fgrep|test|true|false|\[)\s*\(|\bfunction\s+(?:e?grep|fgrep|test|true|false|\[)`)
+// alias, enable or hash, any use of PATH, a sourced file or eval, which may define either,
+// BASH_COMMAND, through which a trap runs a command's text, and a heredoc, whose body another
+// interpreter may read and which this reads as shell lines. The repo is the owner's own: what a
+// caller's environment brings (PATH, BASH_ENV, exported functions), or a name an expansion
+// builds, is out of its reach.
+var dataShadowRE = regexp.MustCompile(`<<|(?:^|[^A-Za-z0-9_])PATH(?:[^A-Za-z0-9_]|$)|(?:^|[\s;&|({])(?:alias|enable|hash|source|eval|\.)(?:\s|$)|(?:^|[\s;&|({])(?:e?grep|fgrep|test|true|false|\[)\s*\(\s*\)|BASH_COMMAND|\bfunction\s+(?:e?grep|fgrep|test|true|false|\[)`)
 
-// shadowText joins continued lines and drops quotes and backslashes, as the shell does before it
-// reads a word, so that a name written with quotes in it, or continued onto the next line, is
-// the word it runs as.
+// shadowText joins continued lines and drops quotes and backslashes, so that a name with a
+// quote, a backslash or a continuation in it reads as the word the shell runs.
 var shadowText = strings.NewReplacer("\\\r\n", "", "\\\n", "", `\`, "", "'", "", `"`, "")
 
 // shadowsData reports whether a shell script's units hold anything dataShadowRE finds, so that
@@ -1060,8 +1060,8 @@ const grepFlags = "abcEFGHhiILlnoPrRsTUvVwxyzZ"
 
 // grepQuiet reports whether grep's leading options include -q, --quiet or --silent, so that it
 // prints nothing. It reads options only up to the first word that is not a cluster of grepFlags
-// or one of those (any other long option among them), and a cluster only up to a letter that is not one of grepFlags, since what
-// follows may be that option's argument (-eq matches q).
+// (a long option other than those two ends it), and a cluster only up to a letter that is not
+// one of grepFlags, since what follows may be that option's argument (-eq matches q).
 func grepQuiet(args []string) bool {
 	for _, w := range args {
 		if w == "--quiet" || w == "--silent" {

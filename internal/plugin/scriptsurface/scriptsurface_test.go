@@ -296,6 +296,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"true in a .sh file perl runs", tree(map[string]string{"setup.sh": "#!/usr/bin/perl\ntrue and system 'inst add x';\n"}), true, ""},
 		{"grep in a script bash runs", tree(map[string]string{"guard.sh": "#!/usr/bin/env bash\ngrep -q inst notes.txt\n"}), false, ""},
 		{"grep in a script sh runs", tree(map[string]string{"guard": "#!/bin/sh\ngrep -q inst notes.txt\n"}), false, ""},
+		{"grep beside a cleanup trap", tree(map[string]string{"guard.sh": "trap 'rm -f \"$tmp\"' EXIT\ngrep -q inst notes.txt\n"}), false, ""},
+		{"grep beside test grouping parens", tree(map[string]string{"guard.sh": "[ \\( -f a \\) -o -f b ] && test \"(\" -f a \")\"\ngrep -q inst notes.txt\n"}), false, ""},
 		{"grep of a relative path, and a word that starts like eval", tree(map[string]string{"guard.sh": "grep -q inst ./notes.txt\ntest -n evaluated\n"}), false, ""},
 		{"grep beside a word that only contains eval and PATH", tree(map[string]string{"guard.sh": "P='(^|/)eval/|MYPATH'\ngrep -q inst notes.txt\n"}), false, ""},
 		{"unterminated quote", tree(map[string]string{"install.sh": "echo 'x && inst sync\n"}), true, ""},

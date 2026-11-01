@@ -19,8 +19,8 @@ import (
 
 // TestMain gives the package's standard-library assembly reads a cache of their own, shared by
 // every test, and assembles that assembly on two ports: those tests read the standard library to
-// reach its definers and gaps, while module fixtures, which keep every port, exercise the port
-// enumeration.
+// reach its definers and gaps. Module fixtures keep every port, and exercise the port enumeration,
+// unless they call lofAsmNarrowPorts.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "lofasmcache")
 	if err != nil {
@@ -28,12 +28,23 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	lofAsmCacheDir = dir
-	lofAsmStdPorts = func(p lofPort) bool {
-		return p == lofPort{"linux", "amd64"} || p == lofPort{"darwin", "arm64"}
-	}
+	lofAsmStdPorts = lofAsmTestPorts
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// lofAsmTestPorts holds for the two ports narrowed reads assemble on.
+func lofAsmTestPorts(p lofPort) bool {
+	return p == lofPort{"linux", "amd64"} || p == lofPort{"darwin", "arm64"}
+}
+
+// lofAsmNarrowPorts assembles the test's module files on lofAsmTestPorts' two ports only: for
+// fixtures that exercise no port enumeration, port collapse, non-gc exclusion or cap.
+func lofAsmNarrowPorts(t *testing.T) {
+	t.Helper()
+	lofAsmModPorts = lofAsmTestPorts
+	t.Cleanup(func() { lofAsmModPorts = nil })
 }
 
 // lofAsmTestSession returns a session for the module tree files, whose GOFLAGS are goflags, and the

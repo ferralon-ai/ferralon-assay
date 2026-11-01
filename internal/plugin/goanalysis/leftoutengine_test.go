@@ -91,6 +91,7 @@ func lofRun(t *testing.T, dir, module string, symbols map[string][]string, unkno
 // thing its declaration closure cannot follow. The module example.com/v holds the vulnerable package
 // example.com/v/vuln; a file built only under the lofalt tag is left out.
 func TestLeftOutEngine_Constructs(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	base := map[string]string{
 		// The go directive binds the toolchain (directivesBindToolchain): goDirectiveFloor is 22.
 		"go.mod":    "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
@@ -702,6 +703,7 @@ func TestLofFixedSource(t *testing.T) {
 
 // TestLeftOutEngine_FailClosed: what the engine cannot bound, build or establish withholds.
 func TestLeftOutEngine_FailClosed(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	tree := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1014,6 +1016,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 // TestLeftOutEngine_StandardLibrary: against a standard-library refutation the engine judges the
 // toolchain's own left-out files, and only the release the build runs on.
 func TestLeftOutEngine_StandardLibrary(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	// The scan is for linux/amd64: crypto/x509's darwin files are left out.
 	t.Setenv("GOOS", "linux")
 	t.Setenv("GOARCH", "amd64")
@@ -1223,6 +1226,7 @@ func TestLofUnder(t *testing.T) {
 // file y_alt.go, left out and built under another tag, is the only importer of the packages holding
 // definers, so x.go's closure never enters them.
 func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1336,6 +1340,7 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 // spelling that assembles them as an operand of a call or a data move follows that definer, and
 // one some build cannot assemble fails the file closed.
 func TestLeftOutEngine_AsmFuncdata(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1416,6 +1421,7 @@ func TestLeftOutEngine_AsmFuncdata(t *testing.T) {
 // build cannot assemble, or that GOFLAGS passes assembler flags to, fails its bodies closed. The
 // module sits one directory below the tree, beside a header outside it.
 func TestLeftOutEngine_AsmInclude(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	base := map[string]string{
 		"m/go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"m/main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1575,6 +1581,7 @@ func TestLeftOutEngine_AsmInclude(t *testing.T) {
 // link may keep another package's DUPOK definition over a non-DUPOK one in either load order, and the
 // own definition may sit in a file another build leaves out.
 func TestLeftOutEngine_AsmLinkOwnDefiner(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1662,6 +1669,7 @@ func TestLeftOutEngine_AsmLinkOwnDefiner(t *testing.T) {
 // TestLeftOutEngine_AsmLinkDefinerOrder: the definer of a bare symbol sits in a package no closure
 // has parsed yet; whether another closure parsed it first changes nothing.
 func TestLeftOutEngine_AsmLinkDefinerOrder(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	dir := writeTree(t, map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
 		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
@@ -1775,6 +1783,7 @@ func lofELFObject(names ...string) []byte {
 // inside the toolchain fails closed for a standard-library refutation only, and one of a module
 // for every refutation.
 func TestLeftOutEngine_AsmLinkDefinerStd(t *testing.T) {
+	lofAsmNarrowPorts(t)
 	base := map[string]string{
 		"go.mod":     "module example.com/m\n\ngo 1.22.0\n",
 		"main.go":    "package main\n\nfunc main() {}\n",

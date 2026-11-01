@@ -74,10 +74,11 @@ var lofAsmNonce = func() string {
 // lofAsmExecHook, when set, sees every command the session runs before it runs.
 var lofAsmExecHook func(*exec.Cmd)
 
-// lofAsmStdPorts, when set, keeps only the ports it holds for of those a standard-library file is
-// assembled on. It is a test seam: tests whose standard-library reads stand in for the real thing,
-// rather than exercise port enumeration, set it with lofAsmCacheDir to a cache of their own.
-var lofAsmStdPorts func(lofPort) bool
+// lofAsmStdPorts and lofAsmModPorts, when set, keep only the ports they hold for of those a
+// standard-library file, or any other, is assembled on. They are a test seam: tests whose reads stand
+// in for the real thing, rather than exercise port enumeration, set them (lofAsmStdPorts with
+// lofAsmCacheDir to a cache of their own).
+var lofAsmStdPorts, lofAsmModPorts func(lofPort) bool
 
 // lofAsmSession reads one engine's assembly through the toolchain: tool is the assembler's, nil when
 // none can be run faithfully (off), in which case every file fails closed.
@@ -331,8 +332,12 @@ func (s *lofAsmSession) read(it lofAsmItem) *lofAsmObj {
 		return nil
 	}
 	ports := t.admit(filepath.Base(it.file), x)
-	if it.std && lofAsmStdPorts != nil {
-		ports = slices.DeleteFunc(ports, func(p lofPort) bool { return !lofAsmStdPorts(p) })
+	keep := lofAsmModPorts
+	if it.std {
+		keep = lofAsmStdPorts
+	}
+	if keep != nil {
+		ports = slices.DeleteFunc(ports, func(p lofPort) bool { return !keep(p) })
 	}
 	out := &lofAsmObj{ok: true, text: map[string]bool{}, data: map[string]bool{}}
 	if len(ports) == 0 {

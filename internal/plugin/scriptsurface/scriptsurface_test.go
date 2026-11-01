@@ -195,6 +195,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"su with --command abbreviated and attached", tree(map[string]string{"install.sh": "su -c 'inst sync' --comm='inst add x' root\n"}), true, ""},
 		{"su -s naming a program that is not a shell", tree(map[string]string{"install.sh": "su -s /usr/bin/inst -c 'add x' root\n"}), true, ""},
 		{"su -s with a program attached that is not a shell", tree(map[string]string{"install.sh": "su -s/usr/bin/inst -c 'add x' root\n"}), true, ""},
+		{"su --shell naming a program that is not a shell", tree(map[string]string{"install.sh": "su --shell /usr/bin/inst -c 'add x' root\n"}), true, ""},
+		{"su -s naming a shell without its path", tree(map[string]string{"install.sh": "su -s sh -c 'inst sync' root\n"}), true, ""},
 		{"su --shell= naming a program that is not a shell", tree(map[string]string{"install.sh": "su --shell=/usr/bin/inst -c 'add x' root\n"}), true, ""},
 		{"zsh -b ends its options", tree(map[string]string{"install.sh": "zsh -bc '-e;inst add x' echo\n"}), true, ""},
 		{"sh +c text read again", tree(map[string]string{"install.sh": "sh +c 'i\"n\"st add x'\n"}), true, ""},

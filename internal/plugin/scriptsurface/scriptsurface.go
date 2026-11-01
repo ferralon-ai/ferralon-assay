@@ -1087,14 +1087,15 @@ func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 // --command, among the words after it. The scan stops at --, and at runuser's -u, past which
 // the words are a command run without a shell. sure is false when -c comes after the user,
 // where it is passed to the shell, is given more than once, or beside an option not known,
-// such as a long option abbreviated, or when -s names a program that is not a shell.
+// such as a long option abbreviated, or when -s names a program that is not a shell by its
+// absolute path, since su runs a bare name from the working directory.
 func suCommand(args []string) (text string, sure, ok bool) {
 	user, known, n := false, true, 0
 	take := func(t string) {
 		text, n, sure = t, n+1, !user
 	}
 	shell := func(s string) {
-		if name, named := CommandName(s); !named || !shells[name] {
+		if name, named := CommandName(s); !named || !shells[name] || !path.IsAbs(s) {
 			known = false
 		}
 	}

@@ -132,10 +132,27 @@ func (v *Veto) backstopSkips(path string, head []byte) bool {
 		// The hooks a repository publishes for others: pre-commit runs them only in a
 		// repository whose .pre-commit-config.yaml names this one.
 		return true
+	case mcpConfig(path):
+		// An MCP client, an editor or agent host, starts the servers these name, never the
+		// build.
+		return true
 	case lower == "action.yml", lower == "action.yaml":
 		// An action a repository publishes for others runs in their workflows, and in its
 		// own only when one of them uses an action from the tree.
 		return !v.localActions()
+	}
+	return false
+}
+
+// mcpConfig reports whether the file at path is an MCP client's server configuration: a
+// .mcp.json (Claude Code, VS Code), .vscode/mcp.json, .cursor/mcp.json, or Claude Desktop's
+// claude_desktop_config.json.
+func mcpConfig(path string) bool {
+	p := strings.ToLower(filepath.ToSlash(path))
+	switch {
+	case strings.HasSuffix(p, "/.mcp.json"), strings.HasSuffix(p, "/claude_desktop_config.json"),
+		strings.HasSuffix(p, "/.vscode/mcp.json"), strings.HasSuffix(p, "/.cursor/mcp.json"):
+		return true
 	}
 	return false
 }
@@ -205,18 +222,14 @@ func sourceKind(path string, head []byte) (source, hash bool) {
 // name.
 func (v *Veto) buildScript(path string, head []byte) bool {
 	lower := strings.ToLower(filepath.Base(path))
-	rel, err := filepath.Rel(v.root, filepath.Dir(path))
-	if err != nil {
-		rel = "."
-	}
-	dirs := strings.Split(strings.ToLower(filepath.ToSlash(rel)), "/")
+	dirs := v.dirsOf(path)
 	if testFile(lower, dirs) {
 		return false
 	}
 	if bytes.HasPrefix(head, []byte("#!")) {
 		return true
 	}
-	if i := strings.IndexByte(lower, '.'); i > 0 && buildScriptStems[lower[:i]] || buildScriptStems[lower] {
+	if i := strings.IndexByte(lower, '.'); (i > 0 && buildScriptStems[lower[:i]] || buildScriptStems[lower]) && !v.packageModule(path) {
 		return true
 	}
 	if strings.Contains(lower, ".config.") {
@@ -228,6 +241,58 @@ func (v *Veto) buildScript(path string, head []byte) bool {
 		}
 	}
 	return false
+}
+
+// dirsOf returns the lowercased names of the directories above the file at path, inside the
+// build.
+func (v *Veto) dirsOf(path string) []string {
+	rel, err := filepath.Rel(v.root, filepath.Dir(path))
+	if err != nil {
+		rel = "."
+	}
+	return strings.Split(strings.ToLower(filepath.ToSlash(rel)), "/")
+}
+
+// packageModule reports whether the file at path is a module of an importable Python package:
+// a .py file beside an __init__.py, which the application imports (mindsdb's
+// integrations/utilities/install.py, poetry's console/commands/build.py), unless the build
+// root's pyproject.toml, setup.py or setup.cfg names it, as an in-tree build backend or hook is
+// named. Its build-script stem then says nothing about the build running it.
+func (v *Veto) packageModule(path string) bool {
+	if !strings.EqualFold(filepath.Ext(path), ".py") {
+		return false
+	}
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py")); err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(v.root, path)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	mod := strings.ReplaceAll(strings.TrimSuffix(rel, filepath.Ext(rel)), "/", ".")
+	names := []string{rel, mod, strings.TrimPrefix(mod, "src.")}
+	for _, f := range []string{"pyproject.toml", "setup.py", "setup.cfg"} {
+		data, err := v.spec.ReadRegular(filepath.Join(v.root, f))
+		if err != nil {
+			if !v.spec.Absent(err) {
+				return false
+			}
+			continue
+		}
+		for _, n := range names {
+			if bytes.Contains(data, []byte(n)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// dataExts are the extensions of data files: under a testDirs directory they are a test's
+// inputs, not the build's.
+var dataExts = map[string]bool{
+	".json": true, ".jsonc": true, ".json5": true, ".yaml": true, ".yml": true, ".toml": true,
 }
 
 // testDirs are directory names that hold tests and their fixtures.
@@ -264,6 +329,9 @@ func (v *Veto) backstop(path string, head []byte) (string, bool) {
 	}
 	source, hash := sourceKind(path, head)
 	if source && !v.buildScript(path, head) {
+		return "", false
+	}
+	if !source && dataExts[strings.ToLower(filepath.Ext(path))] && slices.ContainsFunc(v.dirsOf(path), func(d string) bool { return testDirs[d] }) {
 		return "", false
 	}
 	src := string(head)
@@ -463,7 +531,7 @@ func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 			return i + 1, "sets an installer variable"
 		}
 		inTable := taskTableRE.MatchString(table) && !strings.HasPrefix(table, "project.") && indentOf(raw) == 0
-		if !cmdKey(strings.ToLower(name)) && !inTable && !(bitrise && strings.EqualFold(name, "content")) {
+		if !cmdKey(strings.ToLower(name)) && !inTable && !(bitrise && strings.EqualFold(name, "content")) && !taskSteps(table, name) {
 			continue
 		}
 		val := strings.TrimSpace(item[len(m[0]):])
@@ -492,14 +560,45 @@ func (v *Veto) backstopLines(src string, bitrise bool) (int, string) {
 				j = min(j, len(lines)-1)
 			}
 			text = strings.Trim(strings.Join(append([]string{val}, lines[i+1:j+1]...), "\n"), `"'`)
-		case strings.HasPrefix(val, `"`), strings.HasPrefix(val, "'"), strings.HasPrefix(val, "{"):
+		case strings.HasPrefix(val, `"`):
+			text, shell = continued(lines, i, ind, val, false), false
+		case strings.HasPrefix(val, "'"), strings.HasPrefix(val, "{"):
 			shell = false
+		default:
+			text = continued(lines, i, ind, val, true)
 		}
 		if line, why := v.valueText(text, shell); why != "" {
 			return start + line + 1, why
 		}
 	}
 	return 0, ""
+}
+
+// continued returns the scalar val that starts on lines[i] with its continuation lines, those
+// after it indented past ind, joined on with spaces as YAML folds a plain or double-quoted
+// scalar. A comment line ends a plain scalar.
+func continued(lines []string, i, ind int, val string, plain bool) string {
+	parts := []string{val}
+	for j := i + 1; j < len(lines); j++ {
+		t := strings.TrimSpace(lines[j])
+		if t == "" {
+			continue
+		}
+		if indentOf(lines[j]) <= ind || plain && strings.HasPrefix(t, "#") {
+			break
+		}
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, " ")
+}
+
+// taskSteps reports whether key, in the TOML table named table, lists a task's steps: the
+// sequence of a poe task or the composite of a pdm script given its own table
+// ([tool.poe.tasks.setup]), each step a command or a task name.
+func taskSteps(table, key string) bool {
+	i := strings.LastIndexByte(table, '.')
+	k := strings.ToLower(key)
+	return i > 0 && taskTableRE.MatchString(table[:i]) && !strings.HasPrefix(table, "project.") && (k == "sequence" || k == "composite")
 }
 
 // backstopJSON reads a decodable JSON file for the command positions backstopLines reads in
@@ -658,12 +757,7 @@ func (v *Veto) shellText(text string, recipe bool) string {
 	if v.setsEnv(text) {
 		return "sets an installer variable"
 	}
-	for _, seg := range backstopSegments(text) {
-		if why := v.installAt(seg, recipe); why != "" {
-			return why
-		}
-	}
-	return ""
+	return v.segmentsAt(backstopSegments(text), recipe)
 }
 
 // valueText gates a command key's value, and returns the 0-based line within text and why it
@@ -700,14 +794,32 @@ func (v *Veto) valueText(text string, shell bool) (int, string) {
 	return 0, ""
 }
 
-func (v *Veto) segments(segs []segment) string {
-	for _, seg := range segs {
-		if why := v.installAt(seg, false); why != "" {
+func (v *Veto) segments(segs []segment) string { return v.segmentsAt(segs, false) }
+
+// segmentsAt gates each command of segs; recipe strips a make recipe prefix. A command piped
+// into an interpreter or shell keeps its URL words: what it fetches runs.
+func (v *Veto) segmentsAt(segs []segment, recipe bool) string {
+	for k, seg := range segs {
+		piped := seg.end == "|" && k+1 < len(segs) && runsInput(segs[k+1])
+		if why := v.installAt(seg, recipe, piped); why != "" {
 			return why
 		}
 	}
 	return ""
 }
+
+// runsInput reports whether seg's program is an interpreter or shell, which runs what a pipe
+// feeds it: curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - x.
+func runsInput(seg segment) bool {
+	i := programAt(seg.words)
+	if i >= len(seg.words) {
+		return false
+	}
+	name, ok := CommandName(seg.words[i])
+	return ok && (sourceShebangs.MatchString(name) || stdinShells[name])
+}
+
+var stdinShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ash": true, "mksh": true}
 
 // backstopSegments splits shell text into its simple commands, or, when it does not split
 // (a brace group, an unclosed quote), returns its words as one command, so a name in it still
@@ -739,7 +851,7 @@ func listCommands(segs []segment) []segment {
 // that runs an install verb after an expansion, goes to v.command from a directory it does not
 // know, as the same line in install.sh would, unless it only reports (readOnly). recipe strips
 // a make recipe prefix (@, - or +) from the program.
-func (v *Veto) installAt(seg segment, recipe bool) string {
+func (v *Veto) installAt(seg segment, recipe, piped bool) string {
 	words := seg.words
 	if len(words) > 0 && recipe {
 		if w := strings.TrimLeft(words[0], "@-+"); w != words[0] && w != "" {
@@ -747,7 +859,11 @@ func (v *Veto) installAt(seg segment, recipe bool) string {
 			seg.words = words
 		}
 	}
-	if !v.segmentHasToken(slices.DeleteFunc(slices.Clone(words), urlRE.MatchString)) && !expandedInstall(words) || v.readOnly(seg) {
+	named := words
+	if !piped {
+		named = slices.DeleteFunc(slices.Clone(words), urlRE.MatchString)
+	}
+	if !v.segmentHasToken(named) && !expandedInstall(words) || v.readOnly(seg) {
 		return ""
 	}
 	return v.command(seg, &hostCursor{v: v, unknown: true}, 0)
@@ -803,11 +919,11 @@ func (v *Veto) readOnly(seg segment) bool {
 	if len(rest) == 0 {
 		return false
 	}
-	verb := operand(rest, 0)
+	verb := verbAt(rest, 0)
 	if verb >= 0 && (rest[verb] == "pip" || rest[verb] == "tool") {
-		verb = operand(rest, verb+1)
+		verb = verbAt(rest, verb+1)
 	}
-	if verb >= 0 && readOnlyVerbs[rest[verb]] && !(rest[verb] == "audit" && slices.Contains(rest, "fix")) {
+	if verb >= 0 && readOnlyVerbs[rest[verb]] && !(rest[verb] == "audit" && slices.ContainsFunc(rest, auditFix)) {
 		return true
 	}
 	for _, a := range rest {
@@ -828,6 +944,35 @@ func operand(words []string, from int) int {
 	}
 	return -1
 }
+
+// verbAt returns the index of the first word of words at or after from that is not a flag,
+// past only flags that take no value (bareFlags) or carry theirs (--cache-dir=x), or -1: a
+// flag that may take the next word as its value hides which word is the verb.
+func verbAt(words []string, from int) int {
+	for k := from; k < len(words); k++ {
+		w := words[k]
+		if !strings.HasPrefix(w, "-") {
+			return k
+		}
+		if !bareFlags[w] && !strings.Contains(w, "=") {
+			return -1
+		}
+	}
+	return -1
+}
+
+// bareFlags are installer flags that take no value.
+var bareFlags = map[string]bool{
+	"-q": true, "-qq": true, "--quiet": true, "-v": true, "-vv": true, "--verbose": true,
+	"-s": true, "--silent": true, "--json": true, "--long": true, "--no-color": true,
+	"--no-input": true, "--isolated": true, "--disable-pip-version-check": true,
+	"--offline": true, "--frozen": true, "--locked": true, "--no-cache": true, "-g": true,
+	"--global": true, "-y": true, "--yes": true, "--all": true,
+}
+
+// auditFix reports whether w asks an audit to fix what it finds: npm audit fix, pnpm audit
+// --fix.
+func auditFix(w string) bool { return w == "fix" || w == "--fix" || strings.HasPrefix(w, "--fix=") }
 
 // programAt returns the index of the program words run, past leading environment
 // assignments and launchers and their flags.
@@ -1046,14 +1191,13 @@ func noxInstall(name string) bool {
 	return ok && strings.HasSuffix(recv, "session") && (method == "install" || method == "run_install")
 }
 
-// apiToken returns the lane token a dotted call's receiver names, a package manager driven
-// through its own API (pip.main, npm.commands.install), or "".
+// apiToken returns the lane token a dotted call's leading receiver names, a package manager
+// driven through its own API (pip.main, npm.commands.install), or "". A token later in the
+// chain is an attribute (self.poetry.pyproject.data.get), not the module called.
 func (v *Veto) apiToken(name string) string {
 	parts := strings.Split(name, ".")
-	for _, p := range parts[:len(parts)-1] {
-		if p = strings.Trim(p, "_"); v.spec.Token(p) {
-			return p
-		}
+	if p := strings.Trim(parts[0], "_"); len(parts) > 1 && v.spec.Token(p) {
+		return p
 	}
 	return ""
 }

@@ -943,11 +943,12 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		}
 		return ""
 	}
-	if at, text, fork, ok := nestedShell(words); ok {
-		if why := v.reread(words, text, fork, cur, depth); why != "" {
+	if at, text, fork, sure, ok := nestedShell(words); ok {
+		why, whole := v.reread(words, text, fork, cur, depth)
+		if why != "" {
 			return why
 		}
-		if at == 0 {
+		if at == 0 && sure && whole {
 			// The shell or eval runs the text and nothing else, so the text is what is checked.
 			v.mention(words[1:])
 			return ""
@@ -1012,42 +1013,41 @@ func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ksh": true, "ash": true, "mksh": true}
 
 // shellArgOptions are the shell options that take the next word as their argument.
-var shellArgOptions = map[string]bool{"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true}
+var shellArgOptions = map[string]bool{"--rcfile": true, "--init-file": true}
+
+// suArgOptions are the su and runuser options that take the next word as their argument.
+var suArgOptions = map[string]bool{"-s": true, "--shell": true, "-g": true, "--group": true, "-G": true, "--supp-group": true, "-w": true, "--whitelist-environment": true}
 
 // nestedShell finds in a command's words shell text that is read a second time, with its
 // quotes removed again: the argument of a shell's or su's -c, or the words after eval joined
 // by spaces. at is the index of the shell or eval word, and fork is true when the text runs in a
-// shell of its own.
-func nestedShell(words []string) (at int, text string, fork, ok bool) {
+// shell of its own. sure is false when other words may run beside the text, or a word other than
+// the one found may be what runs, so the command is also checked as it is.
+func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 	for i, w := range words {
 		name, named := CommandName(w)
 		switch {
 		case !named:
 		case name == "eval":
 			if i == 0 || words[i-1] == "command" || words[i-1] == "builtin" {
-				return i, strings.Join(words[i+1:], " "), false, true
+				return i, strings.Join(words[i+1:], " "), false, true, true
 			}
 		case name == "su" || name == "runuser":
-			// su runs the argument of its -c in the user's shell.
-			for j := i + 1; j < len(words); j++ {
-				a := words[j]
-				switch {
-				case strings.HasPrefix(a, "--command="):
-					return i, strings.TrimPrefix(a, "--command="), true, true
-				case a == "--command" || len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.HasSuffix(a, "c"):
-					if j+1 < len(words) {
-						return i, words[j+1], true, true
-					}
-				}
+			if text, sure, ok := suCommand(words[i+1:]); ok {
+				return i, text, true, sure, true
 			}
 		case shells[name]:
-			c := false
+			c, want := false, 0
 			for j := i + 1; j < len(words); j++ {
 				a := words[j]
 				switch {
+				case want > 0:
+					// The argument of an -o or -O in an earlier cluster.
+					want--
+					continue
 				case a == "--" || a == "-":
 					if c && j+1 < len(words) {
-						return i, words[j+1], true, true
+						return i, words[j+1], true, true, true
 					}
 				case shellArgOptions[a]:
 					j++
@@ -1056,37 +1056,69 @@ func nestedShell(words []string) (at int, text string, fork, ok bool) {
 					continue
 				case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
 					c = c || a[0] == '-' && strings.ContainsRune(a, 'c')
+					want = strings.Count(a, "o") + strings.Count(a, "O")
 					continue
 				case c:
-					return i, a, true, true
+					return i, a, true, true, true
 				}
 				break
 			}
 		}
 	}
-	return 0, "", false, false
+	return 0, "", false, false, false
+}
+
+// suCommand finds the text su or runuser runs in the user's shell, the argument of its -c or
+// --command, among the words after it. The scan stops at --, and at runuser's -u, past which
+// the words are a command run without a shell. sure is false when -c comes after the user,
+// where it is passed to the shell, or is given more than once.
+func suCommand(args []string) (text string, sure, ok bool) {
+	user, n := false, 0
+	for j := 0; j < len(args); j++ {
+		a := args[j]
+		switch {
+		case a == "--" || a == "-u" || a == "--user":
+			j = len(args)
+		case suArgOptions[a]:
+			j++
+		case strings.HasPrefix(a, "--command=") || strings.HasPrefix(a, "--session-command="):
+			text, n = a[strings.IndexByte(a, '=')+1:], n+1
+			sure = !user
+		case a == "--command" || a == "--session-command" || len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.HasSuffix(a, "c"):
+			if j+1 < len(args) {
+				j++
+				text, n = args[j], n+1
+				sure = !user
+			}
+		case strings.HasPrefix(a, "-"):
+		default:
+			user = true
+		}
+	}
+	return text, sure && n == 1, n > 0
 }
 
 // reread applies the rule to shell text a command reads a second time, from cur or, when
 // fork, from a shell of its own. Text nested too deep withholds. Text that expands, or does
 // not split into whole commands, withholds when it names a token once its quotes are gone
-// and its expansions are either dropped or split apart, since either may be what runs.
-func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth int) string {
+// and its expansions are either dropped or split apart, since either may be what runs. whole
+// is false when the text does not split into whole commands, so they are not all checked.
+func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth int) (string, bool) {
 	why := "install command in shell text read again: " + strings.Join(words, " ")
 	if depth >= maxRunDepth {
-		return why
+		return why, false
 	}
 	segs, ok, dangles := shellSegments(text)
 	if !ok || strings.ContainsAny(text, "$`") {
 		if v.hidesToken(text) {
-			return why
+			return why, false
 		}
 		if !ok {
-			return ""
+			return "", false
 		}
 	}
 	if dangles {
-		return why
+		return why, false
 	}
 	sh := cur
 	if fork {
@@ -1094,19 +1126,20 @@ func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth 
 	}
 	for _, seg := range segs {
 		if w := v.command(seg, sh, depth+1); w != "" {
-			return w
+			return w, false
 		}
 	}
-	return ""
+	return "", true
 }
 
 var (
 	// expansionRE matches a parameter expansion, or a command substitution holding no other.
 	expansionRE = regexp.MustCompile(`\$(?:\{[^{}]*\}|\([^()]*\)|[A-Za-z0-9_@*#?!$-]+)|` + "`[^`]*`")
-	// unquote drops quotes and escapes; splitExpansions does too, and splits text at the
-	// marks of an expansion, so the text inside a command substitution is kept.
+	// unquote drops quotes and escapes; splitExpansions drops quotes too, and splits text at
+	// escapes and at the marks of an expansion, so the text inside a command substitution, or
+	// before a $'…' escape, is kept.
 	unquote         = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
-	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, "", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, " ", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
 )
 
 // hidesToken reports whether shell text names a token once its quotes and escapes are

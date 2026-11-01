@@ -141,7 +141,7 @@ func TestVeto_Backstop(t *testing.T) {
 		{"prose extension", tree(map[string]string{"notes.txt": "run: inst add x\n", "guide.ipynb": "{\"cells\": [{\"source\": [\"!inst add x\"]}]}\n"}), false, ""},
 		{"comment in a build file", tree(map[string]string{".buildkite/pipeline.yml": "# command: inst add x\nsteps:\n  - command: make # inst add x\n"}), false, ""},
 		{"comment in a build script", tree(map[string]string{"tasks.py": "# c.run(\"inst add x\")\n\"\"\"Run `inst add x` first.\"\"\"\nprint('inst add x')\n"}), false, ""},
-		{"commented-out command keys", tree(map[string]string{"ci/pipeline.yml": "steps:\n#- command: inst add x\n#command: inst add x\n  - command: make\n", "ci/tasks.jsonc": "{\n  // \"command\": \"inst add x\",\n  \"command\": \"make\"\n}\n", "ci/tool.ini": ";command=inst add x\n", "ci/steps.cfg": "//command: inst add x\n//run = inst add x\n"}), false, ""},
+		{"commented-out command keys", tree(map[string]string{"ci/pipeline.yml": "steps:\n#- command: inst add x\n#command: inst add x\n  - command: make\n", "ci/tasks.jsonc": "{\n  // \"command\": \"inst add x\",\n  \"command\": \"make\"\n}\n", "ci/tool.ini": ";command=inst add x\n", "ci/steps.cfg": "//command: inst add x\n//run = inst add x\n", "ci/tasks.cfg": "[tasks]\n//deps = inst add x\n"}), false, ""},
 		{"tab-indented continuation under no rule", tree(map[string]string{"ci/tool.cfg": "help = run this first\n\tinst add x\n"}), false, ""},
 		{"usage example in a docstring", tree(map[string]string{"tasks.py": "def deps(c):\n    \"\"\"Install deps.\n\n    c.run(\"inst add x\")\n    \"\"\"\n"}), false, ""},
 		{"test directory under scripts", tree(map[string]string{"scripts/tests/run_setup.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"}), false, ""},

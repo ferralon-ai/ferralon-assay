@@ -12,7 +12,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -99,10 +98,37 @@ func (w *lofWorld) linkIndex() *lofLinkIndex {
 		}
 	}
 	slices.Sort(all)
+	w.asmSession().prefetch(w.asmItems(all))
 	for _, ip := range all {
 		w.scanDefiners(ix, ip)
 	}
 	return ix
+}
+
+// asmItems returns the assembly files of the packages ips that some described build compiles.
+func (w *lofWorld) asmItems(ips []string) []lofAsmItem {
+	var items []lofAsmItem
+	for _, ip := range ips {
+		dir := w.dirs[ip]
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".s") {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+			text, err := os.ReadFile(full)
+			if err != nil {
+				continue
+			}
+			if x, err := fileConstraint(text); err == nil && !w.excluded(x) {
+				items = append(items, lofAsmItem{pkg: ip, dir: dir, file: full, std: w.std[ip]})
+			}
+		}
+	}
+	return items
 }
 
 func (w *lofWorld) defSrc(ip string) lofDefSrc {
@@ -168,8 +194,21 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 		if strings.HasSuffix(n, ".s") {
 			// A cgo package's assembly goes to the C compiler in a cgo build, but is Go assembly
 			// in a build with cgo disabled, which the refutation describes too.
-			s := &lofAsmScan{w: w, ix: ix, ip: ip, dir: dir, src: src, macros: map[string]bool{}, read: map[string]bool{full: true}}
-			s.file(full, text, true)
+			o := w.asmSession().object(lofAsmItem{pkg: ip, dir: dir, file: full, std: w.std[ip]})
+			if !o.ok {
+				ix.gap |= src
+				continue
+			}
+			for sym := range o.text {
+				if name, ok := lofBareAsm(sym); ok {
+					ix.asmText[name] = lofAppendPath(ix.asmText[name], ip)
+				}
+			}
+			for sym := range o.data {
+				if name, ok := lofBareAsm(sym); ok {
+					ix.asmData[name] = lofAppendPath(ix.asmData[name], ip)
+				}
+			}
 			continue
 		}
 		goFiles = append(goFiles, goFile{full, text})
@@ -229,176 +268,6 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 	for _, p := range pushes {
 		if defined[[2]string{p.clause, p.local}] {
 			ix.goDefs[p.remote] = append(ix.goDefs[p.remote], lofGoDef{ip, p.clause, p.local})
-		}
-	}
-}
-
-// lofAsmScan reads one Go assembly file of U, and the headers it includes, for the bare symbols it
-// defines. A TEXT, DATA or GLOBL statement of the file itself defines one the walk can follow; one
-// a macro or a header may produce counts as an opaque definer of every name the macro or header
-// mentions, and of every name a statement invoking a macro mentions. A definition whose SB or name
-// the scan cannot read as name(SB), or whose name a macro supplies, may define any name: a gap.
-type lofAsmScan struct {
-	w      *lofWorld
-	ix     *lofLinkIndex
-	ip     string
-	dir    string
-	src    lofDefSrc
-	macros map[string]bool
-	read   map[string]bool
-}
-
-var (
-	lofAsmComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
-	lofAsmIdent   = regexp.MustCompile(`[\p{L}_][\p{L}\p{N}_]*`)
-)
-
-func (s *lofAsmScan) mention(text string) {
-	for _, id := range lofAsmIdent.FindAllString(text, -1) {
-		s.ix.opaque[id] |= s.src
-	}
-}
-
-// file reads text twice, once with block comments stripped and once raw: a stray "/*" in a line
-// comment or a string makes the strip swallow statements, and a "//" in a block comment makes the
-// raw read cut them. Reading both only adds definers.
-func (s *lofAsmScan) file(path string, text []byte, top bool) {
-	// cmd/asm reads a block comment as a space, a newline in it ending no statement.
-	stripped := lofAsmComment.ReplaceAllString(string(text), " ")
-	s.lines(path, stripped, top)
-	s.lines(path, string(text), top)
-}
-
-func (s *lofAsmScan) lines(path, src string, top bool) {
-	lines := strings.Split(src, "\n")
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		if j := strings.Index(line, "//"); j >= 0 {
-			line = line[:j]
-		}
-		for strings.HasSuffix(strings.TrimSpace(line), `\`) && i+1 < len(lines) {
-			i++
-			next := lines[i]
-			if j := strings.Index(next, "//"); j >= 0 {
-				next = next[:j]
-			}
-			line = strings.TrimSuffix(strings.TrimSpace(line), `\`) + " " + next
-		}
-		t := strings.TrimSpace(line)
-		if !top {
-			// Whatever a header holds may become a definition in the file including it.
-			s.mention(t)
-		}
-		if d, ok := strings.CutPrefix(t, "#"); ok {
-			s.directive(path, strings.TrimSpace(d))
-			continue
-		}
-		for _, stmt := range strings.Split(t, ";") {
-			s.statement(stmt, top)
-		}
-	}
-}
-
-func (s *lofAsmScan) directive(path, d string) {
-	switch {
-	case strings.HasPrefix(d, "define"):
-		rest := strings.TrimLeft(strings.TrimPrefix(d, "define"), " \t")
-		name := lofAsmName.FindString(rest)
-		if name == "" || !strings.HasPrefix(rest, name) {
-			return
-		}
-		body := rest[len(name):]
-		// A function-like macro pastes its arguments; an object-like one whose body names
-		// anything may expand to another macro's name.
-		s.macros[name] = strings.HasPrefix(body, "(") || lofAsmIdent.MatchString(body)
-		s.mention(body)
-	case strings.HasPrefix(d, "include"):
-		arg := strings.TrimSpace(strings.TrimPrefix(d, "include"))
-		name, ok := strings.CutPrefix(arg, `"`)
-		if !ok {
-			// cmd/asm accepts only a quoted name: anything else includes nothing.
-			return
-		}
-		name, _, ok = strings.Cut(name, `"`)
-		if !ok || name == "" {
-			s.ix.gap |= s.src
-			return
-		}
-		var cands []string
-		if filepath.IsAbs(name) {
-			cands = []string{name}
-		} else {
-			// cmd/asm opens the name from the package's directory, then the including file's,
-			// then its -I directories: the build's own (go_asm.h) and $GOROOT/pkg/include.
-			cands = []string{filepath.Join(s.dir, name), filepath.Join(filepath.Dir(path), name)}
-			if s.w.goroot != "" {
-				cands = append(cands, filepath.Join(s.w.goroot, "pkg", "include", name))
-			}
-		}
-		for _, c := range cands {
-			text, err := os.ReadFile(c)
-			if err != nil {
-				continue
-			}
-			if !s.read[c] {
-				s.read[c] = true
-				s.file(c, text, false)
-			}
-			return
-		}
-		if name != "go_asm.h" {
-			// go_asm.h is the build's own, holding the package's Go constants and layouts.
-			s.ix.gap |= s.src
-		}
-	}
-}
-
-func (s *lofAsmScan) statement(stmt string, top bool) {
-	fields := strings.Fields(stmt)
-	if len(fields) == 0 {
-		return
-	}
-	op := fields[0]
-	if strings.HasSuffix(op, ":") && len(fields) > 1 {
-		op = fields[1]
-	}
-	switch op {
-	case "TEXT", "DATA", "GLOBL":
-		refs, at := asmRefsAt(stmt)
-		for _, m := range lofAsmBareSB.FindAllStringIndex(stmt, -1) {
-			if !at[m[0]] {
-				// A definition this scan cannot name: any name may lack its definer.
-				s.ix.gap |= s.src
-			}
-		}
-		for _, r := range refs {
-			for _, tok := range asmRefTokens(r) {
-				if _, ok := s.macros[tok]; ok {
-					// A macro names the definition, whatever its replacement spells.
-					s.ix.gap |= s.src
-				}
-			}
-		}
-		if op == "TEXT" && len(refs) > 1 {
-			refs = refs[:1]
-		}
-		for _, r := range refs {
-			name, ok := lofBareAsm(r)
-			switch {
-			case !ok:
-			case !top:
-				s.ix.opaque[name] |= s.src
-			case op == "TEXT":
-				s.ix.asmText[name] = lofAppendPath(s.ix.asmText[name], s.ip)
-			default:
-				s.ix.asmData[name] = lofAppendPath(s.ix.asmData[name], s.ip)
-			}
-		}
-	}
-	for _, id := range lofAsmIdent.FindAllString(stmt, -1) {
-		if s.macros[id] {
-			s.mention(stmt)
-			return
 		}
 	}
 }

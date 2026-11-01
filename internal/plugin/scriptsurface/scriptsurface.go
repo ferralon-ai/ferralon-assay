@@ -444,8 +444,9 @@ func (v *Veto) gitHooksFile(p string) bool {
 
 // assignDefaultRE matches an expansion that assigns its variable when unset or empty:
 // ${NAME:=…}, ${NAME=…} and zsh's ${NAME::=…}, with or without a subscript (${NAME[0]:=…}).
-// ${NAME}, ${NAME:-…} and ${NAME-…} only read it.
-var assignDefaultRE = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?:{0,2}=`)
+// A subscript runs to the first ] on its line that an assignment follows, so it may nest
+// (${NAME[a[1]]:=…}). ${NAME}, ${NAME:-…} and ${NAME-…} only read it.
+var assignDefaultRE = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\n]*?\])?:{0,2}=`)
 
 // setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep,
 // by assignment or by an assigning expansion. Env does not match inside ${…}, so the name an

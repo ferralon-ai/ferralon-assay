@@ -1420,7 +1420,8 @@ func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
 // TestLeftOutEngine_AsmInclude: a header a left-out file's assembly includes is found as cmd/asm finds
 // it, from the package's directory within its module, then in $GOROOT/pkg/include, and its macros'
 // references are followed like the file's own. Every reference in the raw text of the file or a
-// header counts for each of the file's bodies, and an SB the scan cannot name fails them closed. An include found nowhere, or only by leaving the
+// header counts for each of the file's bodies, and an SB the scan cannot name, a reference or
+// definer a macro names, or assembler flags in GOFLAGS fail them closed. An include found nowhere, or only by leaving the
 // module, fails the file's bodies closed; the go command's generated go_asm.h does not. The module
 // sits one directory below the tree, beside a header outside it.
 func TestLeftOutEngine_AsmInclude(t *testing.T) {
@@ -1499,6 +1500,27 @@ func TestLeftOutEngine_AsmInclude(t *testing.T) {
 		// from the left-out file alone, and its parameter's name is one no std macro mentions.
 		{"a macro whose parameter names the symbol, in a package outside the link", merge(asm("", "CALL example.com∕v∕extra·g(SB)"), map[string]string{
 			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define F(lofsym) lofsym(SB)\n\nTEXT ·g(SB),0,$0\n\tCALL F(nope)\n\tRET\n"}), false, lofAsmSymbol},
+		// Any SB a reference does not account for may pair with a name and "(" a macro supplies, and a
+		// reference or definer a macro names may stand for any symbol.
+		{"a macro supplying (", merge(asm("#define LP (\n\n", "CALL ext LP SB)"), definer), false, lofAsmSymbol},
+		{"a macro supplying name(", merge(asm("#define E ext(\n\n", "CALL E SB)"), definer), false, lofAsmSymbol},
+		{"a macro taking the name and SB as arguments", merge(asm("#define F(a,b) CALL a(b)\n\n", "F(ext, SB)"), definer), false, lofAsmSymbol},
+		{"a macro naming the symbol", merge(asm("#define LOFN ext\n\n", "CALL LOFN(SB)"), definer), false, lofAsmSymbol},
+		{"a macro taking SB as its argument", merge(asm("#define F(r) CALL ext(r)\n\n", "F(SB)"), definer), false, lofAsmSymbol},
+		{"a macro naming the symbol, in a package outside the link", merge(asm("", "CALL example.com∕v∕extra·g(SB)"), map[string]string{
+			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define LOFN example.com∕v∕vuln·Bad\n\nTEXT ·g(SB),0,$0\n\tCALL LOFN(SB)\n\tRET\n"}), false, lofAsmSymbol},
+		{"a macro taking SB as its argument, in a package outside the link", merge(asm("", "CALL example.com∕v∕extra·g(SB)"), map[string]string{
+			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define F(r) CALL example.com∕v∕vuln·Bad(r)\n\nTEXT ·g(SB),0,$0\n\tF(SB)\n\tRET\n"}), false, lofAsmSymbol},
+		{"a macro naming a definer's TEXT", merge(asm("", "CALL ext(SB)"), map[string]string{
+			"m/_v/def/def.s": "#define LOFN ext\nTEXT LOFN(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n"}), false, lofAsmSymbol},
+		// cmd/asm reads ∕ as an identifier: LOFN defines the symbol "/", and the macro's replacement
+		// mentions no name the link index can hold as a definer.
+		{"a macro naming a definer's TEXT with no letter", merge(asm("", "CALL ∕(SB)"), map[string]string{
+			"m/_v/def/def.s": "#define LOFN ∕\nTEXT LOFN(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n"}), false, lofAsmSymbol},
+		{"a macro named ∕ naming a definer's TEXT", merge(asm("", "CALL ext(SB)"), map[string]string{
+			"m/_v/def/def.s": "#define ∕ ext\nTEXT ∕(SB),0,$0\n\tCALL example.com∕v∕vuln·Bad(SB)\n\tRET\n"}), false, lofAsmSymbol},
+		{"a macro named ∕ naming the symbol, in a package outside the link", merge(asm("", "CALL example.com∕v∕extra·g(SB)"), map[string]string{
+			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define ∕ example.com∕v∕vuln·Bad\n\nTEXT ·g(SB),0,$0\n\tCALL ∕(SB)\n\tRET\n"}), false, lofAsmSymbol},
 		{"a macro whose parameter is only an offset", merge(asm("#define L(off) MOVQ ext+off(SB), AX\n\n", "L(8)\n\tCALL AX"), definer), true, lofAsmSymbol},
 		// The definer scan reads the raw text as well as the comment-stripped text.
 		{"a definer's TEXT after a line comment holding /*", merge(asm("", "CALL ext(SB)"), map[string]string{
@@ -1520,34 +1542,50 @@ func TestLeftOutEngine_AsmInclude(t *testing.T) {
 			map[string]string{"m/app/go_asm.h": "#define M CALL ext(SB)\n"}), false, lofAsmSymbol},
 		{"textflag.h from $GOROOT/pkg/include", asm("#include \"textflag.h\"\n\n", "NOP"), false, ""},
 	}
+	check := func(t *testing.T, files map[string]string, goflags string, reach bool, item string) {
+		dir := writeTree(t, merge(base, files))
+		if files == nil {
+			out := filepath.Join(dir, "outside.h")
+			if err := os.WriteFile(filepath.Join(dir, "m", "app", "x_lofalt.s"), []byte("//go:build lofalt\n\n#include \""+out+"\"\n\nTEXT ·asm(SB),0,$0\n\tRET\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var prepare func(*LoadResult)
+		if goflags != "" {
+			prepare = func(*LoadResult) { t.Setenv("GOFLAGS", goflags) }
+		}
+		got := lofRun(t, filepath.Join(dir, "m"), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, prepare)
+		f := got.facts["app/x.go"]
+		if f == nil {
+			t.Fatalf("the engine holds no app/x.go (facts %s)", lofDescribe(got))
+		}
+		var fc []string
+		if item != "" {
+			fc = []string{item}
+		}
+		if !slices.Equal(f.FC, fc) || len(f.FCStd) > 0 {
+			t.Errorf("x.go fails closed on %v (standard library %v), want %v", f.FC, f.FCStd, fc)
+		}
+		if reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == bad }); reached != reach {
+			t.Errorf("x.go reaches Bad = %v, want %v", reached, reach)
+		}
+		if want := reach || item != ""; got.withheld != want {
+			t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, want, lofDescribe(got))
+		}
+	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := writeTree(t, merge(base, tc.files))
-			if tc.files == nil {
-				out := filepath.Join(dir, "outside.h")
-				if err := os.WriteFile(filepath.Join(dir, "m", "app", "x_lofalt.s"), []byte("//go:build lofalt\n\n#include \""+out+"\"\n\nTEXT ·asm(SB),0,$0\n\tRET\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			got := lofRun(t, filepath.Join(dir, "m"), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
-			f := got.facts["app/x.go"]
-			if f == nil {
-				t.Fatalf("the engine holds no app/x.go (facts %s)", lofDescribe(got))
-			}
-			var fc []string
-			if tc.item != "" {
-				fc = []string{tc.item}
-			}
-			if !slices.Equal(f.FC, fc) || len(f.FCStd) > 0 {
-				t.Errorf("x.go fails closed on %v (standard library %v), want %v", f.FC, f.FCStd, fc)
-			}
-			if reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == bad }); reached != tc.reach {
-				t.Errorf("x.go reaches Bad = %v, want %v", reached, tc.reach)
-			}
-			if want := tc.reach || tc.item != ""; got.withheld != want {
-				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, want, lofDescribe(got))
-			}
-		})
+		t.Run(tc.name, func(t *testing.T) { check(t, tc.files, "", tc.reach, tc.item) })
+	}
+	// A -D in GOFLAGS' assembler flags may define any macro: S here supplies the SB. Without the flag
+	// the file does not assemble.
+	for _, tc := range []struct {
+		name, goflags string
+		item          string
+	}{
+		{"GOFLAGS passing assembler flags", "-asmflags=-D=S=SB", lofAsmSymbol},
+		{"GOFLAGS passing no assembler flags", "-trimpath", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) { check(t, merge(asm("", "CALL ext(S)"), definer), tc.goflags, false, tc.item) })
 	}
 }
 
@@ -1560,7 +1598,7 @@ func TestLofParseAsmFuncdataNoGoroot(t *testing.T) {
 		kept   bool
 	}{{"", true}, {".", false}} {
 		p := &lofPkg{path: "runtime", dir: filepath.Join("src", "runtime"), root: ".", std: true, asmText: map[string][]*lofAsm{}, asmData: map[string]bool{}}
-		parseAsm(p, filepath.Join("src", "runtime", "a.s"), []byte("#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tGO_ARGS\n\tRET\n"), tc.goroot)
+		parseAsm(p, filepath.Join("src", "runtime", "a.s"), []byte("#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tGO_ARGS\n\tRET\n"), tc.goroot, false)
 		bodies := p.asmText["runtime.f"]
 		if len(bodies) != 1 {
 			t.Fatalf("goroot %q: bodies of runtime.f = %d, want 1", tc.goroot, len(bodies))

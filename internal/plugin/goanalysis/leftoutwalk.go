@@ -70,6 +70,8 @@ type lofWorld struct {
 	excluded func(constraint.Expr) bool
 	// goroot is the toolchain's root the compiler's intrinsic table is read from; "" reads none.
 	goroot string
+	// asmflags is set when the go command's GOFLAGS may pass assembler flags (lofGoEnv).
+	asmflags bool
 	// modcache is the module cache's root, whose module source the build compiles as it was
 	// downloaded; "" when not known.
 	modcache string
@@ -500,7 +502,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 		if w.excluded(x) {
 			continue
 		}
-		parseAsm(p, full, src, w.goroot)
+		parseAsm(p, full, src, w.goroot, w.asmflags)
 	}
 	slices.Sort(p.imports)
 	p.imports = slices.Compact(p.imports)
@@ -1819,9 +1821,11 @@ func (p *lofPkg) asmName(sym string) {
 // bare name otherwise. Every reference asmScan finds in the file's raw text, or in a header it
 // includes (asmInclude), counts for every body of the file: comments, macros, statements beside a
 // TEXT and DATA initializers are not told apart, which only adds references. An include no search
-// finds, or text asmScan cannot account for, makes every body opaque. A call or jump through a
-// register is a dynamic call. goroot is the toolchain's root, "" when unknown.
-func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
+// finds, text asmScan cannot account for, or a reference or definer whose name is a macro the file
+// or a header defines, makes every body opaque, as does asmflags: the build passes the assembler
+// flags the scan cannot see, whose -D may define any macro. A call or jump through a register is a
+// dynamic call. goroot is the toolchain's root, "" when unknown.
+func parseAsm(p *lofPkg, path string, src []byte, goroot string, asmflags bool) {
 	norm := func(sym string) string {
 		if i := strings.IndexByte(sym, '<'); i >= 0 && !strings.HasSuffix(sym, "<>") {
 			sym = sym[:i]
@@ -1838,14 +1842,19 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 		}
 		return strings.ReplaceAll(pkg, "∕", "/") + "." + name
 	}
-	var refs []string
+	var refs, named []string
 	seen := map[string]bool{}
+	macros := map[string]bool{}
 	var bodies []*lofAsm
 	var cur *lofAsm
-	opaque := false
+	opaque := asmflags
 	scan := func(text []byte, funcdata bool) {
-		rs, o := asmScan(string(text))
+		rs, ms, o := asmScan(string(text))
 		opaque = opaque || o
+		named = append(named, rs...)
+		for _, m := range ms {
+			macros[m] = true
+		}
 		for _, ref := range rs {
 			if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
 				continue
@@ -1883,6 +1892,11 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 	}
 	scan(src, false)
 	include(src)
+	for _, ref := range named {
+		if slices.ContainsFunc(asmRefTokens(ref), func(tok string) bool { return macros[tok] }) {
+			opaque = true
+		}
+	}
 	for _, line := range strings.Split(string(src), "\n") {
 		if i := strings.Index(line, "//"); i >= 0 {
 			line = line[:i]
@@ -2005,12 +2019,18 @@ var (
 	lofAsmRef = regexp.MustCompile(`([\p{L}_·∕][\p{L}\p{N}_·∕.]*(?:<[\p{L}\p{N}_]*>)?)` +
 		`(?:[ \t]*[+-](?:[\p{L}\p{N}_ \t*/<>&|^~+-]|\([^()\n]*\))*?)?` +
 		`(?:[ \t]|/\*(?s:.*?)\*/)*\([ \t]*(SB)[ \t]*\)`)
-	// lofAsmSB matches an SB after an opening parenthesis, past space and block comments.
-	lofAsmSB      = regexp.MustCompile(`\((?:[ \t]|/\*(?s:.*?)\*/)*(SB)\b`)
-	lofAsmBareSB  = regexp.MustCompile(`\bSB\b`)
-	lofAsmDefine  = regexp.MustCompile(`#(?:[ \t]|/\*(?s:.*?)\*/)*define\b`)
-	lofAsmDefHead = regexp.MustCompile(`^(?:[ \t]|/\*(?s:.*?)\*/)*([\p{L}_][\p{L}\p{N}_]*)(\([^)\n]*\))?`)
+	lofAsmBareSB = regexp.MustCompile(`\bSB\b`)
+	lofAsmDefine = regexp.MustCompile(`#(?:[ \t]|/\*(?s:.*?)\*/)*define\b`)
+	// lofAsmName matches an identifier as cmd/asm's tokenizer reads one (lex.isIdentRune).
+	lofAsmName    = regexp.MustCompile(`[\p{L}_·∕][\p{L}\p{N}_·∕]*`)
+	lofAsmDefHead = regexp.MustCompile(`^(?:[ \t]|/\*(?s:.*?)\*/)*(` + lofAsmName.String() + `)(\([^)\n]*\))?`)
 )
+
+// asmRefTokens returns the identifiers cmd/asm reads a reference's name as, any of which a macro
+// may replace: the name splits at "." and at its ABI selector's brackets.
+func asmRefTokens(ref string) []string {
+	return strings.FieldsFunc(ref, func(r rune) bool { return r == '.' || r == '<' || r == '>' })
+}
 
 // asmRefs returns the symbols text references as name(SB).
 func asmRefs(text string) []string {
@@ -2030,24 +2050,26 @@ func asmRefsAt(text string) ([]string, map[int]bool) {
 }
 
 // asmScan returns the symbols the raw text of an assembly file or header references, comments
-// included, and reports it opaque when it may reference a symbol the scan does not name: an SB after
-// "(" no reference accounts for, or a #define whose replacement holds an SB none accounts for or
-// whose reference names a parameter of the macro. cmd/asm's lexer is not modelled; a shape the scan
-// misses fails closed rather than dropping a reference.
-func asmScan(text string) ([]string, bool) {
+// included, and the macros it defines. It reports the text opaque when it may reference a symbol
+// the scan does not name: an SB token no reference accounts for, wherever it sits, since a macro
+// may supply a reference's name, its "(" or its SB; or a function-like #define whose reference
+// names one of its parameters. cmd/asm's lexer is not modelled; a shape the scan misses fails
+// closed rather than dropping a reference.
+func asmScan(text string) (refs, macros []string, opaque bool) {
 	refs, at := asmRefsAt(text)
-	opaque := false
-	for _, m := range lofAsmSB.FindAllStringSubmatchIndex(text, -1) {
-		if !at[m[2]] {
+	for _, m := range lofAsmBareSB.FindAllStringIndex(text, -1) {
+		if !at[m[0]] {
 			opaque = true
 		}
 	}
 	for _, m := range lofAsmDefine.FindAllStringIndex(text, -1) {
-		if asmDefineOpaque(asmLogicalLine(text[m[1]:])) {
-			opaque = true
+		name, o := asmDefine(asmLogicalLine(text[m[1]:]))
+		if name != "" {
+			macros = append(macros, name)
 		}
+		opaque = opaque || o
 	}
-	return refs, opaque
+	return refs, macros, opaque
 }
 
 // asmLogicalLine returns text up to the first newline no backslash continues.
@@ -2067,24 +2089,18 @@ func asmLogicalLine(text string) string {
 	return text
 }
 
-// asmDefineOpaque reports whether a #define, from its name on, may produce a reference its
-// replacement does not spell as name(SB): an SB outside every reference, or a reference whose name
-// a parameter of a function-like macro supplies.
-func asmDefineOpaque(def string) bool {
+// asmDefine returns the name a #define, from its name on, defines, and reports whether a parameter
+// of the function-like macro supplies the name of a reference its replacement spells.
+func asmDefine(def string) (string, bool) {
 	head := lofAsmDefHead.FindStringSubmatchIndex(def)
 	if head == nil {
-		return lofAsmBareSB.MatchString(def)
+		return "", false
 	}
-	body := def[head[1]:]
-	refs, at := asmRefsAt(body)
-	for _, m := range lofAsmBareSB.FindAllStringIndex(body, -1) {
-		if !at[m[0]] {
-			return true
-		}
-	}
+	name := def[head[2]:head[3]]
 	if head[4] < 0 {
-		return false
+		return name, false
 	}
+	refs := asmRefs(def[head[1]:])
 	params := map[string]bool{}
 	for _, p := range strings.Split(def[head[4]+1:head[5]-1], ",") {
 		p = strings.TrimSpace(p)
@@ -2096,11 +2112,11 @@ func asmDefineOpaque(def string) bool {
 	for _, ref := range refs {
 		for _, id := range lofAsmIdent.FindAllString(ref, -1) {
 			if params[id] {
-				return true
+				return name, true
 			}
 		}
 	}
-	return false
+	return name, false
 }
 
 // asmIndirect reports whether an instruction is a call or jump to an address held in a register.
@@ -2158,17 +2174,21 @@ func lofToolchain(ctx context.Context, buildDir string, env []string, release *g
 	return root, ""
 }
 
-// lofModCache returns the module cache's root the build's go command reads modules from, or "".
-func lofModCache(ctx context.Context, buildDir string, env []string) string {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE")
+// lofGoEnv returns the module cache's root the build's go command reads modules from, or "", and
+// whether the GOFLAGS it builds with, from env or the go env files it reads, may pass assembler
+// flags: a -D there defines a macro no source shows, which may name any symbol or supply an SB. A
+// GOFLAGS the go command cannot report counts. Flags a build's own command line passes are not seen.
+func lofGoEnv(ctx context.Context, buildDir string, env []string) (string, bool) {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE", "GOFLAGS")
 	cmd.Dir = buildDir
 	cmd.Env = env
 	out, err := cmd.Output()
-	root := strings.TrimSpace(string(out))
-	if err != nil || !filepath.IsAbs(root) {
-		return ""
+	root, flags, _ := strings.Cut(string(out), "\n")
+	asmflags := err != nil || strings.Contains(flags, "-asmflags")
+	if root = strings.TrimSpace(root); err != nil || !filepath.IsAbs(root) {
+		return "", asmflags
 	}
-	return root
+	return root, asmflags
 }
 
 // links returns the packages the build did not load that a file in dir can link, over every build

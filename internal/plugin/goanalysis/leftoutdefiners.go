@@ -236,7 +236,8 @@ func (w *lofWorld) scanDefiners(ix *lofLinkIndex, ip string) {
 // lofAsmScan reads one Go assembly file of U, and the headers it includes, for the bare symbols it
 // defines. A TEXT, DATA or GLOBL statement of the file itself defines one the walk can follow; one
 // a macro or a header may produce counts as an opaque definer of every name the macro or header
-// mentions, and of every name a statement invoking a macro mentions.
+// mentions, and of every name a statement invoking a macro mentions. A definition whose SB or name
+// the scan cannot read as name(SB), or whose name a macro supplies, may define any name: a gap.
 type lofAsmScan struct {
 	w      *lofWorld
 	ix     *lofLinkIndex
@@ -302,7 +303,7 @@ func (s *lofAsmScan) directive(path, d string) {
 	switch {
 	case strings.HasPrefix(d, "define"):
 		rest := strings.TrimLeft(strings.TrimPrefix(d, "define"), " \t")
-		name := lofAsmIdent.FindString(rest)
+		name := lofAsmName.FindString(rest)
 		if name == "" || !strings.HasPrefix(rest, name) {
 			return
 		}
@@ -364,10 +365,18 @@ func (s *lofAsmScan) statement(stmt string, top bool) {
 	switch op {
 	case "TEXT", "DATA", "GLOBL":
 		refs, at := asmRefsAt(stmt)
-		for _, m := range lofAsmSB.FindAllStringSubmatchIndex(stmt, -1) {
-			if !at[m[2]] {
+		for _, m := range lofAsmBareSB.FindAllStringIndex(stmt, -1) {
+			if !at[m[0]] {
 				// A definition this scan cannot name: any name may lack its definer.
 				s.ix.gap |= s.src
+			}
+		}
+		for _, r := range refs {
+			for _, tok := range asmRefTokens(r) {
+				if _, ok := s.macros[tok]; ok {
+					// A macro names the definition, whatever its replacement spells.
+					s.ix.gap |= s.src
+				}
 			}
 		}
 		if op == "TEXT" && len(refs) > 1 {

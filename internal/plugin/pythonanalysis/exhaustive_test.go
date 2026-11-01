@@ -306,10 +306,12 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"ADD from a URL to ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ADD https://github.com/org/pipcfg.git /root/.pip/\n"}), false},
 		{"copied from a stage to ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg /out/ /root/.pip/\n"}), false},
 		{"copied to ProgramData/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/ProgramData/pip/\n"}), false},
-		{"copied to %APPDATA%\\pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ C:\\Users\\app\\AppData\\Roaming\\pip\\\n"}), false},
+		{"copied to AppData\\Roaming\\pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ C:\\Users\\app\\AppData\\Roaming\\pip\n"}), false},
+		{"copied to the legacy per-user pip folder", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/Users/ContainerUser/pip/\n"}), false},
 		{"copied to Application Support/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ \"/Users/app/Library/Application Support/pip/\"\n"}), false},
 		{"XDG_CONFIG_HOME moved", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ENV XDG_CONFIG_HOME=/cfg\nCOPY ci/ /cfg/\n"}), false},
 		{"pip config set", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "install.sh": "pip config set install.no-require-hashes true\n"}), false},
+		{"a cache mount at .pip-cache", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN --mount=type=cache,target=/root/.pip-cache true\n"}), true},
 		{"a Dockerfile naming no pip config", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/settings.cfg /etc/app.conf\n"}), true},
 	}
 	for _, tt := range tests {

@@ -150,11 +150,14 @@ func pipSelfUpgrade(args []string) bool {
 }
 
 // pipConfigNamedRE matches, in a script surface's text, a pip config file or directory
-// (pip.conf, pip.ini, /etc/pip..., /etc/xdg/pip, .config/pip, ~/.pip, AppData/Roaming/pip,
-// ProgramData/pip, Application Support/pip), PIP_CONFIG_FILE, an XDG variable that moves
-// where pip looks, or a pip config subcommand.
+// (pip.conf, pip.ini, /etc/pip..., /etc/xdg/pip, .config/pip, ~/.pip, Windows' legacy
+// per-user pip folder, AppData/Roaming/pip, ProgramData/pip, Application Support/pip),
+// PIP_CONFIG_FILE, an XDG variable that moves where pip looks, or a pip config subcommand.
+// A directory ends at a separator, a quote, a space or the end of the text, so .pip-cache
+// is not .pip.
 var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_file|\bpip[0-9.]*\s+config\b|/etc/xdg/pip|\.config/pip|/etc/pip|` +
-	`[/\\]\.pip\b|appdata[^/\\\s]*[/\\](?:roaming[/\\])?pip\b|programdata[/\\]pip\b|application support[/\\]pip\b|xdg_config_(?:dirs|home)`)
+	`(?:[/\\]\.|\busers[/\\][^/\\\s"']+[/\\]|userprofile%?[/\\]|~[/\\]|appdata[^/\\\s]*[/\\](?:roaming[/\\])?|programdata%?[/\\]|application support[/\\])pip(?:[/\\"'\s]|$)|` +
+	`xdg_config_(?:dirs|home)`)
 
 // laneFlags are the flags every allowed form may carry.
 var laneFlags = map[string]bool{"--no-cache-dir": true, "--user": true, "-q": true}

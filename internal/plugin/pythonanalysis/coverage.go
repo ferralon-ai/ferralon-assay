@@ -142,8 +142,16 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 				return out, false
 			}
 			// pip parses every option on a line it does not recurse into, and accepts any
-			// unambiguous prefix of a long option; --no-r is the shortest for this one.
+			// unambiguous prefix of a long option; --no-r is the shortest for this one. A
+			// word another option takes as its value is not an option.
+			value := false
 			for _, f := range words {
+				if value {
+					value = false
+					continue
+				}
+				name, _, attached := strings.Cut(f, "=")
+				value = !attached && takesValue(name)
 				switch {
 				case f == "--require-hashes":
 					out.hashed = true

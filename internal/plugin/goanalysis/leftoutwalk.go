@@ -217,6 +217,8 @@ type lofAsm struct {
 	// opaque is set when the file includes a header no search finds: its macros may reference
 	// anything.
 	opaque bool
+	// set holds the refs and opacity every body of the file shares, so a walk follows them once.
+	set *lofAsm
 }
 
 // lofClosure is what one left-out file's declaration closure touches: the loaded declarations it
@@ -1750,6 +1752,13 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 	}
 	k.asmDone[body] = true
 	k.out.dyn = k.out.dyn || body.dynamic
+	if body.set != nil {
+		if k.asmDone[body.set] {
+			return
+		}
+		k.asmDone[body.set] = true
+		body = body.set
+	}
 	if body.opaque {
 		k.fail(p, lofAsmSymbol)
 	}
@@ -1805,12 +1814,13 @@ func (p *lofPkg) asmName(sym string) {
 	}
 }
 
-// parseAsm records an assembly file's TEXT bodies, with the symbols each references, and its data
-// symbols. A symbol is "pkgpath.name" for the Go-visible form ("·name", "pkg∕path·name"),
-// "file:name<>" for a file-local one, and the bare name otherwise. A reference made by a macro the
-// file defines or a header it includes (asmInclude) counts for every body of the file, and an
-// include no search finds makes every body opaque. A call or jump through a register is a dynamic
-// call. goroot is the toolchain's root, "" when unknown.
+// parseAsm records an assembly file's TEXT bodies and its data symbols. A symbol is "pkgpath.name"
+// for the Go-visible form ("·name", "pkg∕path·name"), "file:name<>" for a file-local one, and the
+// bare name otherwise. Every reference asmScan finds in the file's raw text, or in a header it
+// includes (asmInclude), counts for every body of the file: comments, macros, statements beside a
+// TEXT and DATA initializers are not told apart, which only adds references. An include no search
+// finds, or text asmScan cannot account for, makes every body opaque. A call or jump through a
+// register is a dynamic call. goroot is the toolchain's root, "" when unknown.
 func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 	norm := func(sym string) string {
 		if i := strings.IndexByte(sym, '<'); i >= 0 && !strings.HasSuffix(sym, "<>") {
@@ -1828,10 +1838,24 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 		}
 		return strings.ReplaceAll(pkg, "∕", "/") + "." + name
 	}
-	var shared []string
+	var refs []string
+	seen := map[string]bool{}
 	var bodies []*lofAsm
 	var cur *lofAsm
 	opaque := false
+	scan := func(text []byte, funcdata bool) {
+		rs, o := asmScan(string(text))
+		opaque = opaque || o
+		for _, ref := range rs {
+			if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
+				continue
+			}
+			if r := norm(ref); !seen[r] {
+				seen[r] = true
+				refs = append(refs, r)
+			}
+		}
+	}
 	read := map[string]bool{}
 	var include func(text []byte)
 	include = func(text []byte) {
@@ -1853,17 +1877,11 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 			// The assembler renames these FUNCDATA operands (obj/plist.go); the toolchain fixes std's use.
 			funcdata := p.std && goroot != "" && (h == filepath.Join(goroot, "src", "runtime", "funcdata.h") ||
 				h == filepath.Join(goroot, "pkg", "include", "funcdata.h"))
-			for _, l := range strings.Split(string(hs), "\n") {
-				for _, ref := range asmRefs(l) {
-					if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
-						continue
-					}
-					shared = append(shared, norm(ref))
-				}
-			}
+			scan(hs, funcdata)
 			include(hs)
 		}
 	}
+	scan(src, false)
 	include(src)
 	for _, line := range strings.Split(string(src), "\n") {
 		if i := strings.Index(line, "//"); i >= 0 {
@@ -1871,9 +1889,6 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 		}
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "#define") || strings.HasSuffix(t, "\\") {
-			for _, ref := range asmRefs(t) {
-				shared = append(shared, norm(ref))
-			}
 			continue
 		}
 		fields := strings.Fields(t)
@@ -1886,13 +1901,13 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 		}
 		switch op {
 		case "TEXT":
-			refs := asmRefs(t)
-			if len(refs) == 0 {
+			defs := asmRefs(t)
+			if len(defs) == 0 {
 				cur = nil
 				continue
 			}
 			cur = &lofAsm{file: path}
-			sym := norm(refs[0])
+			sym := norm(defs[0])
 			p.asmText[sym] = append(p.asmText[sym], cur)
 			p.asmName(sym)
 			bodies = append(bodies, cur)
@@ -1904,23 +1919,19 @@ func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 			}
 			continue
 		}
-		if cur == nil {
-			continue
-		}
-		for _, ref := range asmRefs(t) {
-			cur.refs = append(cur.refs, norm(ref))
-		}
-		if asmIndirect(fields) {
+		if cur != nil && asmIndirect(fields) {
 			cur.dynamic = true
 		}
 	}
+	set := &lofAsm{file: path, refs: refs, opaque: opaque}
 	for _, b := range bodies {
-		b.refs = append(b.refs, shared...)
-		b.opaque = opaque
+		b.refs, b.opaque, b.set = refs, opaque, set
 	}
 }
 
-var lofAsmIncludeDirective = regexp.MustCompile(`#\s*include\b`)
+// A directive's name may follow its # past space and block comments, as cmd/asm's tokenizer skips
+// comments.
+var lofAsmIncludeDirective = regexp.MustCompile(`#(?:\s|/\*(?s:.*?)\*/)*include\b`)
 
 // asmIncludes returns the names text's #include directives give, "" for one cmd/asm cannot read
 // a name from. Directives are found in the raw text, comments and strings included: cmd/asm's lexer
@@ -1988,28 +1999,108 @@ func lofRegular(path string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// asmRefs returns the symbols a line of assembly references as name(SB).
-func asmRefs(line string) []string {
-	var out []string
-	for rest := line; ; {
-		i := strings.Index(rest, "(SB)")
-		if i < 0 {
-			return out
+var (
+	// lofAsmRef matches a reference name(SB): the name, then an offset that may hold parentheses,
+	// then space and block comments before the (SB). Submatch 1 is the name and 2 the SB.
+	lofAsmRef = regexp.MustCompile(`([\p{L}_·∕][\p{L}\p{N}_·∕.]*(?:<[\p{L}\p{N}_]*>)?)` +
+		`(?:[ \t]*[+-](?:[\p{L}\p{N}_ \t*/<>&|^~+-]|\([^()\n]*\))*?)?` +
+		`(?:[ \t]|/\*(?s:.*?)\*/)*\([ \t]*(SB)[ \t]*\)`)
+	// lofAsmSB matches an SB after an opening parenthesis, past space and block comments.
+	lofAsmSB      = regexp.MustCompile(`\((?:[ \t]|/\*(?s:.*?)\*/)*(SB)\b`)
+	lofAsmBareSB  = regexp.MustCompile(`\bSB\b`)
+	lofAsmDefine  = regexp.MustCompile(`#(?:[ \t]|/\*(?s:.*?)\*/)*define\b`)
+	lofAsmDefHead = regexp.MustCompile(`^(?:[ \t]|/\*(?s:.*?)\*/)*([\p{L}_][\p{L}\p{N}_]*)(\([^)\n]*\))?`)
+)
+
+// asmRefs returns the symbols text references as name(SB).
+func asmRefs(text string) []string {
+	refs, _ := asmRefsAt(text)
+	return refs
+}
+
+// asmRefsAt returns asmRefs and the offset of the SB each reference accounts for.
+func asmRefsAt(text string) ([]string, map[int]bool) {
+	var refs []string
+	at := map[int]bool{}
+	for _, m := range lofAsmRef.FindAllStringSubmatchIndex(text, -1) {
+		refs = append(refs, text[m[2]:m[3]])
+		at[m[4]] = true
+	}
+	return refs, at
+}
+
+// asmScan returns the symbols the raw text of an assembly file or header references, comments
+// included, and reports it opaque when it may reference a symbol the scan does not name: an SB after
+// "(" no reference accounts for, or a #define whose replacement holds an SB none accounts for or
+// whose reference names a parameter of the macro. cmd/asm's lexer is not modelled; a shape the scan
+// misses fails closed rather than dropping a reference.
+func asmScan(text string) ([]string, bool) {
+	refs, at := asmRefsAt(text)
+	opaque := false
+	for _, m := range lofAsmSB.FindAllStringSubmatchIndex(text, -1) {
+		if !at[m[2]] {
+			opaque = true
+		}
+	}
+	for _, m := range lofAsmDefine.FindAllStringIndex(text, -1) {
+		if asmDefineOpaque(asmLogicalLine(text[m[1]:])) {
+			opaque = true
+		}
+	}
+	return refs, opaque
+}
+
+// asmLogicalLine returns text up to the first newline no backslash continues.
+func asmLogicalLine(text string) string {
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\n' {
+			continue
 		}
 		j := i
-		for j > 0 && !strings.ContainsRune(" \t,$*()", rune(rest[j-1])) {
+		if j > 0 && text[j-1] == '\r' {
 			j--
 		}
-		sym := rest[j:i]
-		// An offset, numeric or a constant's name, follows the symbol.
-		if k := strings.IndexAny(sym, "+-"); k > 0 {
-			sym = sym[:k]
+		if j == 0 || text[j-1] != '\\' {
+			return text[:i]
 		}
-		if sym != "" {
-			out = append(out, sym)
-		}
-		rest = rest[i+4:]
 	}
+	return text
+}
+
+// asmDefineOpaque reports whether a #define, from its name on, may produce a reference its
+// replacement does not spell as name(SB): an SB outside every reference, or a reference whose name
+// a parameter of a function-like macro supplies.
+func asmDefineOpaque(def string) bool {
+	head := lofAsmDefHead.FindStringSubmatchIndex(def)
+	if head == nil {
+		return lofAsmBareSB.MatchString(def)
+	}
+	body := def[head[1]:]
+	refs, at := asmRefsAt(body)
+	for _, m := range lofAsmBareSB.FindAllStringIndex(body, -1) {
+		if !at[m[0]] {
+			return true
+		}
+	}
+	if head[4] < 0 {
+		return false
+	}
+	params := map[string]bool{}
+	for _, p := range strings.Split(def[head[4]+1:head[5]-1], ",") {
+		p = strings.TrimSpace(p)
+		if p == "..." {
+			p = "__VA_ARGS__"
+		}
+		params[p] = true
+	}
+	for _, ref := range refs {
+		for _, id := range lofAsmIdent.FindAllString(ref, -1) {
+			if params[id] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // asmIndirect reports whether an instruction is a call or jump to an address held in a register.

@@ -258,10 +258,17 @@ func (s *lofAsmScan) mention(text string) {
 	}
 }
 
+// file reads text twice, once with block comments stripped and once raw: a stray "/*" in a line
+// comment or a string makes the strip swallow statements, and a "//" in a block comment makes the
+// raw read cut them. Reading both only adds definers.
 func (s *lofAsmScan) file(path string, text []byte, top bool) {
-	src := lofAsmComment.ReplaceAllStringFunc(string(text), func(c string) string {
-		return strings.Repeat("\n", strings.Count(c, "\n"))
-	})
+	// cmd/asm reads a block comment as a space, a newline in it ending no statement.
+	stripped := lofAsmComment.ReplaceAllString(string(text), " ")
+	s.lines(path, stripped, top)
+	s.lines(path, string(text), top)
+}
+
+func (s *lofAsmScan) lines(path, src string, top bool) {
 	lines := strings.Split(src, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -356,7 +363,13 @@ func (s *lofAsmScan) statement(stmt string, top bool) {
 	}
 	switch op {
 	case "TEXT", "DATA", "GLOBL":
-		refs := asmRefs(stmt)
+		refs, at := asmRefsAt(stmt)
+		for _, m := range lofAsmSB.FindAllStringSubmatchIndex(stmt, -1) {
+			if !at[m[2]] {
+				// A definition this scan cannot name: any name may lack its definer.
+				s.ix.gap |= s.src
+			}
+		}
 		if op == "TEXT" && len(refs) > 1 {
 			refs = refs[:1]
 		}

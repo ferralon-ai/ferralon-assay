@@ -1326,6 +1326,66 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 	}
 }
 
+// TestLeftOutEngine_AsmFuncdataPlaceholder: a FUNCDATA operand go_args_stackmap or
+// no_pointers_stackmap, written directly, through a macro the file defines, or through one an
+// included header defines, is no symbol the link binds; either name anywhere else still follows its
+// definers, here an unloaded package's header that mentions it.
+func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
+	base := map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
+		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
+		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
+		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
+		"lib/lib.go":      "package lib\n",
+		"lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/fd\"\n",
+		"_v/fd/fd.go":     "package fd\n",
+		"_v/fd/fd.h":      "#define GO_ARGS FUNCDATA $0, go_args_stackmap(SB)\n#define NO_LOCAL_POINTERS FUNCDATA $1, no_pointers_stackmap(SB)\n",
+		"_v/fd/fd.s":      "#include \"fd.h\"\n",
+		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
+	}
+	body := func(pre, stmt string) map[string]string {
+		return map[string]string{"x_lofalt.s": "//go:build lofalt\n\n" + pre + "TEXT ·asm(SB),0,$0\n\t" + stmt + "\n\tRET\n"}
+	}
+	type row struct {
+		name  string
+		files map[string]string
+		held  bool // x.go's closure fails closed on the symbol
+	}
+	var cases []row
+	for _, c := range []struct{ name, macro, slot string }{
+		{"go_args_stackmap", "GO_ARGS", "0"},
+		{"no_pointers_stackmap", "NO_LOCAL_POINTERS", "1"},
+	} {
+		def := "#define " + c.macro + " FUNCDATA $" + c.slot + ", " + c.name + "(SB)\n"
+		cases = append(cases, []row{
+			{c.name + ": a FUNCDATA statement", body("", "FUNCDATA $"+c.slot+", "+c.name+"(SB)"), false},
+			{c.name + ": a FUNCDATA macro of the file", body(def+"\n", c.macro), false},
+			{c.name + ": a FUNCDATA macro of an included header", merge(body("#include \"fd.h\"\n\n", c.macro), map[string]string{"fd.h": def}), false},
+			{c.name + ": a CALL", body("", "CALL "+c.name+"(SB)"), true},
+			{c.name + ": an address operand", body("", "MOVQ $"+c.name+"(SB), AX"), true},
+		}...)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lofRun(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+			f := got.facts["x.go"]
+			if f == nil {
+				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
+			}
+			var fc []string
+			if tc.held {
+				fc = []string{lofAsmSymbol}
+			}
+			if !slices.Equal(f.FC, fc) {
+				t.Errorf("x.go fails closed on %v, want %v", f.FC, fc)
+			}
+			if got.withheld != tc.held {
+				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.held, lofDescribe(got))
+			}
+		})
+	}
+}
+
 // TestLeftOutEngine_AsmLinkOwnDefiner: a bare symbol x.go's own assembly defines still follows every
 // other definer of it in the link, and a build that links no definition binds it to foreign code. The
 // link may keep another package's DUPOK definition over a non-DUPOK one in either load order, and the

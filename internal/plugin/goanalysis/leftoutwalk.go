@@ -1844,7 +1844,7 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 		if bytes.Contains(src, []byte(filepath.Base(h))) {
 			if hs, err := os.ReadFile(h); err == nil {
 				for _, l := range strings.Split(string(hs), "\n") {
-					for _, ref := range asmRefs(l) {
+					for _, ref := range asmLineRefs(l) {
 						shared = append(shared, norm(ref))
 					}
 				}
@@ -1857,7 +1857,7 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 		}
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "#define") || strings.HasSuffix(t, "\\") {
-			for _, ref := range asmRefs(t) {
+			for _, ref := range asmLineRefs(t) {
 				shared = append(shared, norm(ref))
 			}
 			continue
@@ -1893,7 +1893,7 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 		if cur == nil {
 			continue
 		}
-		for _, ref := range asmRefs(t) {
+		for _, ref := range asmLineRefs(t) {
 			cur.refs = append(cur.refs, norm(ref))
 		}
 		if asmIndirect(fields) {
@@ -1903,6 +1903,23 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 	for _, b := range bodies {
 		b.refs = append(b.refs, shared...)
 	}
+}
+
+// asmLineRefs returns the symbols each ;-separated statement of a line of assembly, or of a macro
+// body, references, less the funcdata.h placeholders a FUNCDATA statement names.
+func asmLineRefs(line string) []string {
+	var out []string
+	for _, stmt := range strings.Split(line, ";") {
+		funcdata := slices.Contains(strings.Fields(stmt), "FUNCDATA")
+		for _, ref := range asmRefs(stmt) {
+			// As a FUNCDATA operand the assembler renames it (cmd/internal/obj plist.go): no link binds it.
+			if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
+				continue
+			}
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // asmRefs returns the symbols a line of assembly references as name(SB).

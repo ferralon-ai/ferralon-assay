@@ -192,8 +192,9 @@ var (
 // its terminator, are kept as they are. A heredoc opens where open, given its instruction's
 // first source line, from 0, and text, says so; docs holds, by index in lines, the heredocs
 // each instruction opens. The escape character is \ unless an escape directive at the top
-// sets a backtick. joined is false when the last instruction still continues.
-func dockerLines(src string, open func(start int, line string) bool) (lines []string, docs map[int][]heredoc, joined bool) {
+// sets a backtick. joined is false when the last instruction still continues. unsure is true,
+// and lines end, at an instruction whose heredocs can't be read (dockerUnsure).
+func dockerLines(src string, open func(start int, line string) bool) (lines []string, docs map[int][]heredoc, joined, unsure bool) {
 	raw := strings.Split(strings.TrimPrefix(src, "\ufeff"), "\n")
 	cont, directives := dockerContinues[`\`], true
 	docs = map[int][]heredoc{}
@@ -223,6 +224,9 @@ func dockerLines(src string, open func(start int, line string) bool) (lines []st
 			b.WriteString(cont.ReplaceAllString(l, "$1"))
 		}
 		lines = append(lines, b.String())
+		if dockerUnsure(b.String()) {
+			return lines, docs, !more, true
+		}
 		hd := dockerHeredocs(b.String())
 		if hd == nil || !open(start, b.String()) {
 			hd = nil
@@ -239,16 +243,32 @@ func dockerLines(src string, open func(start int, line string) bool) (lines []st
 			}
 		}
 		if more {
-			return lines, docs, false
+			return lines, docs, false, false
 		}
 	}
-	return lines, docs, true
+	return lines, docs, true, false
 }
 
 var (
 	dockerHeredocRE     = regexp.MustCompile(`^(\d*)<<(-?)([^<]*)$`)
 	dockerHeredocInstrs = map[string]bool{"RUN": true, "COPY": true, "ADD": true}
+	dockerOpExpandRE    = regexp.MustCompile(`\$\{[^}]*[:+\-?#%/]`)
 )
+
+// dockerUnsure reports a RUN, COPY or ADD instruction, ONBUILD or not, that holds both a <<
+// and a ${name<op>word} expansion. BuildKit splits such an expansion's text into words at
+// every blank, quoted or escaped or not, and a word holding one is no heredoc there, so the
+// heredocs the line opens are not ones dockerHeredocs can read.
+func dockerUnsure(line string) bool {
+	if !strings.Contains(line, "<<") || !dockerOpExpandRE.MatchString(line) {
+		return false
+	}
+	words := strings.Fields(line)
+	if len(words) > 0 && strings.EqualFold(words[0], "ONBUILD") {
+		words = words[1:]
+	}
+	return len(words) > 0 && dockerHeredocInstrs[strings.ToUpper(words[0])]
+}
 
 // dockerHeredocs returns the heredocs a RUN, COPY or ADD instruction, ONBUILD or not, opens in
 // shell form, read the way BuildKit does: each word of the line, split the way a shell does but

@@ -336,8 +336,9 @@ const dockerReadingsMax = 64
 // dockerHeredocs reads a line as BuildKit does only where it holds no $, backslash or
 // backtick; elsewhere it may open a heredoc BuildKit doesn't, whose body would then hide
 // instructions BuildKit runs. Where both open heredocs, they agree on how many and on their
-// names. So the file is read once for each way the heredocs on such lines
-// may go, open or not, and checked in every reading.
+// names, except on a line with a ${name<op>word} expansion, which is withheld (dockerUnsure).
+// So the file is read once for each way the heredocs on such lines may go, open or not, and
+// checked in every reading.
 func (v *Veto) dockerfile(file, src string) string {
 	readings := []map[int]bool{{}}
 	for n := 0; n < len(readings); n++ {
@@ -345,7 +346,7 @@ func (v *Veto) dockerfile(file, src string) string {
 			return "Dockerfile heredocs too many to read each way"
 		}
 		opens := readings[n]
-		lines, docs, joined := dockerLines(src, func(start int, line string) bool {
+		lines, docs, joined, unsure := dockerLines(src, func(start int, line string) bool {
 			if !strings.ContainsAny(line, "$\\`") {
 				return true
 			}
@@ -357,6 +358,9 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 			return opens[start]
 		})
+		if unsure {
+			return "Dockerfile heredoc beside a ${name<op>word} expansion"
+		}
 		if why := v.dockerReading(file, lines, docs, joined); why != "" {
 			return why
 		}

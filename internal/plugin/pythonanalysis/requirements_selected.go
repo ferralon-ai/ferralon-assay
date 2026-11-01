@@ -129,8 +129,10 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 
 		// E3: a line the old parser dropped — an editable/include option or a VCS/URL
 		// requirement — is recorded, never silently omitted. A pure option line (e.g.
-		// --index-url) carries no dependency and is skipped.
-		if strings.HasPrefix(line, "-") {
+		// --index-url) carries no dependency and is skipped. pip decides whether a line is an
+		// option line before it reads hashes, so a requirement after a leading --hash is one of
+		// its ignored positionals.
+		if strings.HasPrefix(options, "-") {
 			// pip splits an option line shell-style and parses every word as an option or,
 			// a marker included, an ignored positional. A line shlex cannot split fails the
 			// whole file in pip.

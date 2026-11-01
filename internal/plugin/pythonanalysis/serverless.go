@@ -47,8 +47,8 @@ func (s *slsNames) named(f string) bool {
 // code, which this does not evaluate.
 var slsScriptExts = map[string]bool{".js": true, ".cjs": true, ".mjs": true, ".ts": true}
 
-// slsServiceKey finds a service key in a YAML or JSON document this cannot read as a map with
-// string keys: at the start of a line, or after a { or , as in minified JSON.
+// slsServiceKey finds a service key in a YAML or JSON document that does not parse: at the
+// start of a line, or after a { or , as in minified JSON.
 var slsServiceKey = regexp.MustCompile(`(?m)(?:^["']?service["']?|^\s*"service"|[{,]\s*"service")\s*:`)
 
 // serverlessNames walks root (all but its own .git and every node_modules and .serverless
@@ -126,7 +126,12 @@ func slsFileName(data []byte, mentioned, plugin bool) (string, bool) {
 	}
 	doc, ok := v.(map[string]any)
 	if !ok {
-		return "", !mentioned && !slsServiceKey.Match(data)
+		m, ok := v.(map[any]any) // a key that is not a string
+		if !ok {
+			return "", !mentioned
+		}
+		_, svc := m["service"]
+		return "", !mentioned && !plugin && !svc
 	}
 	if _, ok := doc["service"]; !ok && !mentioned && !plugin {
 		return "", true

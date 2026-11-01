@@ -259,9 +259,9 @@ func (v *Veto) dirsOf(path string) []string {
 // that nothing outside Python source mentions: a .py file beside an __init__.py, below the build
 // root, which the application imports (mindsdb's integrations/utilities/install.py, poetry's
 // console/commands/build.py). Its build-script stem then says nothing about the build running
-// it. Any other mention of it, in any text file that is not Python source (mentionSource), by
-// its package-qualified tail at any anchor (pkg/build.py, pkg/build, pkg.build, from pkg
-// import build), makes it a build script: a module counts unless the walk shows otherwise.
+// it. Any mention of it in a file the backstop reads (mentionSource), by its base name alone
+// (build.py) or its package-qualified tail (pkg/build, pkg.build, from pkg import build), makes
+// it a build script: a module counts unless the walk shows otherwise.
 func (v *Veto) packageModule(path string) bool {
 	if !strings.EqualFold(filepath.Ext(path), ".py") || filepath.Dir(path) == v.root {
 		return false
@@ -337,7 +337,9 @@ func (v *Veto) buildRead() *buildFiles {
 		if v.stemModule(e.Path, lower) {
 			b.modules[e.Path] = true
 		}
-		if head != nil && v.mentionSource(e.Path, lower, head) {
+		if count, ok := v.mentionSource(e.Path, lower, head); !ok {
+			b.whole = false
+		} else if count {
 			texts = append(texts, e.Path)
 		}
 		if !named {
@@ -373,33 +375,38 @@ func (v *Veto) stemModule(path, lower string) bool {
 }
 
 // mentionSource reports whether a text file may mention a package module to run it: every
-// file but prose, lockfiles and stubs, Python source included only for a launcherNames file or a
-// build script outside any package (buildScript; packageModule never asks about a file without
-// an __init__.py beside it, so the walk does not recurse).
-func (v *Veto) mentionSource(path, lower string, head []byte) bool {
-	ext := filepath.Ext(lower)
-	switch {
-	case inertName(path, head), proseExts[ext], proseNames[lower], ext == ".lock", lower == "go.sum", ext == ".pyi":
-		return false
-	case ext != ".py", launcherNames[lower]:
-		return true
+// file the backstop reads (backstopSkips), Python source included only for a launcherNames file
+// or a build script outside any package (buildScript; packageModule never asks about a file
+// without an __init__.py beside it, so the walk does not recurse). ok is false when the check
+// for that __init__.py fails other than by its absence.
+func (v *Veto) mentionSource(path, lower string, head []byte) (count, ok bool) {
+	if v.backstopSkips(path, head) {
+		return false, true
 	}
-	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py")); !errors.Is(err, fs.ErrNotExist) {
-		return false
+	if filepath.Ext(lower) != ".py" || launcherNames[lower] {
+		return true, true
 	}
-	return v.buildScript(path, head)
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py")); err == nil {
+		return false, true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, false
+	}
+	return v.buildScript(path, head), true
 }
 
 // fromImportRE matches a from-import with its names, on one line or across a parenthesised
 // group (from pkg import (\n    build,\n)).
 var fromImportRE = regexp.MustCompile(`\bfrom[ \t]+([\w.]+)[ \t]+import[ \t]*(\([^)]*\)|[^\n]*)`)
 
-// mentions marks every module in b.modules that one of texts mentions by its tail, the
-// identifier pair <package>.<module> or <package>/<module>, compared whole (build_utils is not
-// build), or by a from-import of the module from its package. A module whose stem is not one
-// identifier (build.local.py) cannot be matched that way, so it counts as mentioned.
+// mentions marks every module in b.modules that one of texts mentions: by its base name alone
+// (build.py, whatever path, separator, quoting or join comes before it, so cd pkg && python
+// build.py counts), by its tail, the identifier pair <package>.<module>, <package>/<module> or
+// <package>\<module>, or by a from-import of the module from its package, each compared whole
+// (build_utils is not build). A module whose stem is not one identifier (build.local.py) cannot
+// be matched that way, so it counts as mentioned.
 func (b *buildFiles) mentions(v *Veto, texts []string) {
 	pairs := map[string]map[string][]string{}
+	leaves := map[string][]string{}
 	for m := range b.modules {
 		leaf := strings.TrimSuffix(filepath.Base(m), filepath.Ext(m))
 		parent := filepath.Base(filepath.Dir(m))
@@ -407,6 +414,7 @@ func (b *buildFiles) mentions(v *Veto, texts []string) {
 			b.mentioned[m] = true
 			continue
 		}
+		leaves[strings.ToLower(leaf)] = append(leaves[strings.ToLower(leaf)], m)
 		if pairs[parent] == nil {
 			pairs[parent] = map[string][]string{}
 		}
@@ -423,6 +431,11 @@ func (b *buildFiles) mentions(v *Veto, texts []string) {
 			b.whole = false
 			return
 		}
+		pyBasenames(data, func(stem []byte) {
+			for _, m := range leaves[string(stem)] {
+				b.mentioned[m] = true
+			}
+		})
 		identPairs(data, mark)
 		for _, g := range fromImportRE.FindAllSubmatch(data, -1) {
 			mod := g[1][bytes.LastIndexByte(g[1], '.')+1:]
@@ -442,7 +455,32 @@ func identRune(r rune) bool {
 	return r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
 }
 
-// identPairs calls visit for every two identifiers in data joined by exactly one '.' or '/'.
+// pyBasenames calls visit with the lowercased stem of every <identifier>.py in data whose
+// identifier starts after a non-identifier byte and whose extension ends before one.
+func pyBasenames(data []byte, visit func(stem []byte)) {
+	lower := bytes.ToLower(data)
+	for off := 0; ; {
+		i := bytes.Index(lower[off:], []byte(".py"))
+		if i < 0 {
+			return
+		}
+		at := off + i
+		off = at + 3
+		if off < len(lower) && identRune(rune(lower[off])) {
+			continue
+		}
+		s := at
+		for s > 0 && identRune(rune(lower[s-1])) {
+			s--
+		}
+		if s < at {
+			visit(lower[s:at])
+		}
+	}
+}
+
+// identPairs calls visit for every two identifiers in data joined by exactly one '.', '/' or
+// '\'.
 func identPairs(data []byte, visit func(a, b []byte)) {
 	var prev []byte
 	prevEnd := -2
@@ -455,7 +493,7 @@ func identPairs(data []byte, visit func(a, b []byte)) {
 		for j < len(data) && identRune(rune(data[j])) {
 			j++
 		}
-		if prev != nil && i == prevEnd+1 && (data[prevEnd] == '.' || data[prevEnd] == '/') {
+		if prev != nil && i == prevEnd+1 && (data[prevEnd] == '.' || data[prevEnd] == '/' || data[prevEnd] == '\\') {
 			visit(prev, data[i:j])
 		}
 		prev, prevEnd, i = data[i:j], j, j
@@ -490,9 +528,17 @@ func (v *Veto) namedByBuild(path string) bool {
 // build's (testFixture).
 var fixtureExts = map[string]bool{".json": true, ".jsonc": true, ".json5": true}
 
-// taskFiles are the base names of JSON files a task runner reads as its tasks wherever they
-// sit: Nx project.json, Deno deno.json(c), turbo.json. testFixture never skips one.
-var taskFiles = map[string]bool{"project.json": true, "deno.json": true, "deno.jsonc": true, "turbo.json": true}
+// taskStems are the stems of JSON files a task runner reads as its tasks wherever they sit:
+// Nx project.json, Deno deno.json(c), turbo.json.
+var taskStems = map[string]bool{"project": true, "deno": true, "turbo": true}
+
+// taskJSON reports whether the file at path is one a task runner reads as its tasks: a
+// taskStems name with a fixtureExts extension. testFixture never skips one.
+func taskJSON(path string) bool {
+	lower := strings.ToLower(filepath.Base(path))
+	ext := filepath.Ext(lower)
+	return fixtureExts[ext] && taskStems[strings.TrimSuffix(lower, ext)]
+}
 
 // testDirs are directory names that hold tests and their fixtures.
 var testDirs = map[string]bool{
@@ -501,11 +547,11 @@ var testDirs = map[string]bool{
 }
 
 // testFixture reports whether the file at path, not source code, is a test's JSON input: a
-// fixtureExts file, not a taskFiles one, under a testDirs directory, whose own directory holds
+// fixtureExts file, not a taskJSON one, under a testDirs directory, whose own directory holds
 // no package.json or pyproject.toml (a workspace package the build installs), and which no file
 // the build reads names (namedByBuild), as a CI file that uploads or includes it would.
 func (v *Veto) testFixture(path string) bool {
-	if taskFiles[strings.ToLower(filepath.Base(path))] {
+	if taskJSON(path) {
 		return false
 	}
 	if !fixtureExts[strings.ToLower(filepath.Ext(path))] || !slices.ContainsFunc(v.dirsOf(path), func(d string) bool { return testDirs[d] }) {
@@ -578,8 +624,12 @@ func (v *Veto) backstop(path string, head []byte) (string, bool) {
 		if dockerLike(src) {
 			line, why = v.backstopDocker(path, src)
 		}
-		if why == "" && json.Valid([]byte(src)) {
-			line, why = v.backstopJSON(src)
+		if why == "" {
+			if doc, ok := jsonDoc(src); ok {
+				line, why = v.backstopJSON(doc)
+			} else if taskJSON(path) || strings.EqualFold(filepath.Ext(path), ".json5") {
+				line, why = v.backstopStrings(src)
+			}
 		}
 		if why == "" {
 			lower := strings.ToLower(filepath.Base(path))
@@ -822,6 +872,95 @@ func taskSteps(table, key string) bool {
 	return i > 0 && taskTableRE.MatchString(table[:i]) && !strings.HasPrefix(table, "project.") && (k == "sequence" || k == "composite")
 }
 
+// jsonDoc returns src as JSON the decoder accepts: src itself, or, for a document whose
+// comments or trailing commas it rejects (deno.jsonc, a tsconfig-style file), src with those
+// blanked in place, so offsets and lines still match src.
+func jsonDoc(src string) (string, bool) {
+	if json.Valid([]byte(src)) {
+		return src, true
+	}
+	if t := strings.TrimSpace(src); !strings.HasPrefix(t, "{") && !strings.HasPrefix(t, "[") {
+		return "", false
+	}
+	doc := stripJSONC(src)
+	return doc, json.Valid([]byte(doc))
+}
+
+// stripJSONC blanks, outside strings, every // and /* */ comment and every comma that only
+// whitespace separates from a closing } or ], keeping newlines.
+func stripJSONC(src string) string {
+	b := []byte(src)
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			if b[k] != '\n' {
+				b[k] = ' '
+			}
+		}
+	}
+	str := false
+	for i := 0; i < len(b); i++ {
+		switch c := b[i]; {
+		case str:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				str = false
+			}
+		case c == '"':
+			str = true
+		case c == '/' && i+1 < len(b) && b[i+1] == '/':
+			end := bytes.IndexByte(b[i:], '\n')
+			if end < 0 {
+				end = len(b) - i
+			}
+			blank(i, i+end)
+			i += end - 1
+		case c == '/' && i+1 < len(b) && b[i+1] == '*':
+			end := len(b)
+			if j := bytes.Index(b[i+2:], []byte("*/")); j >= 0 {
+				end = i + 2 + j + 2
+			}
+			blank(i, end)
+			i = end - 1
+		}
+	}
+	str = false
+	for i := 0; i < len(b); i++ {
+		switch c := b[i]; {
+		case str:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				str = false
+			}
+		case c == '"':
+			str = true
+		case c == ',':
+			j := i + 1
+			for j < len(b) && (b[j] == ' ' || b[j] == '\t' || b[j] == '\n' || b[j] == '\r') {
+				j++
+			}
+			if j < len(b) && (b[j] == '}' || b[j] == ']') {
+				b[i] = ' '
+			}
+		}
+	}
+	return string(b)
+}
+
+// backstopStrings reads a task runner's JSON or a JSON5 file that does not decode for
+// any string that, read as shell text, runs an installer, so a parse failure withholds rather
+// than hides one. It returns the 1-based line of that string, and why.
+func (v *Veto) backstopStrings(src string) (int, string) {
+	for _, lit := range literals(src, false, true) {
+		segs := backstopSegments(lit.text)
+		if why := v.segments(append(segs, listCommands(segs)...)); why != "" {
+			return strings.Count(src[:lit.off], "\n") + 1, why
+		}
+	}
+	return 0, ""
+}
+
 // backstopJSON reads a decodable JSON file for the command positions backstopLines reads in
 // text, whatever its layout, so one written on a single line is read too: every string under a
 // cmdKey key or a tasks map is shell text, every array of strings there an argv whose items may
@@ -1033,22 +1172,34 @@ func (v *Veto) segmentsAt(segs []segment, recipe bool) string {
 }
 
 // outputSubst reports whether seg writes into an output process substitution that runs an
-// interpreter or shell (tee >(python3 -), > >(sh)), which splits as one command.
+// interpreter or shell (tee >(python3 -), > >(sh), tee >( python3 - )), which splits as one
+// command.
 func outputSubst(seg segment) bool {
 	for i, w := range seg.words {
-		if rest, ok := strings.CutPrefix(w, ">("); ok && runsInput(segment{words: append([]string{rest}, seg.words[i+1:]...)}) {
+		rest, ok := strings.CutPrefix(w, ">(")
+		if !ok {
+			continue
+		}
+		words := append([]string{rest}, seg.words[i+1:]...)
+		if rest == "" {
+			words = words[1:]
+		}
+		if len(words) > 0 {
+			words[0] = strings.TrimRight(words[0], ")")
+		}
+		if runsInput(segment{words: words}) {
 			return true
 		}
 	}
 	return false
 }
 
-// feedsInput reports whether segs[k] pipes into an interpreter or shell (runsInput), directly
-// or through later commands of the same pipeline: a filter between them (tee, sed, grep)
-// passes what was fetched on.
+// feedsInput reports whether segs[k] pipes into an interpreter or shell (runsInput), or into a
+// command that writes into one (outputSubst), directly or through later commands of the same
+// pipeline: a filter between them (tee, sed, grep) passes what was fetched on.
 func feedsInput(segs []segment, k int) bool {
 	for j := k; segs[j].end == "|" && j+1 < len(segs); j++ {
-		if runsInput(segs[j+1]) {
+		if runsInput(segs[j+1]) || outputSubst(segs[j+1]) {
 			return true
 		}
 	}
@@ -1067,13 +1218,27 @@ func runsInput(seg segment) bool {
 var stdinShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ash": true, "mksh": true}
 
 // backstopSegments splits shell text into its simple commands, or, when it does not split
-// (a brace group, an unclosed quote), returns its words as one command, so a name in it still
-// reaches the rule.
+// (a brace group, an unclosed quote, a process substitution), returns its words as one command
+// per stage of a pipeline, cut at each | or |& word outside parentheses, so a name in it still
+// reaches the rule and feedsInput still follows the pipe past a tee >(sha256sum).
 func backstopSegments(text string) []segment {
 	if segs, ok, _ := shellSegments(text); ok {
 		return segs
 	}
-	return []segment{{words: strings.Fields(text), expands: strings.ContainsAny(text, "$`")}}
+	expands := strings.ContainsAny(text, "$`")
+	var segs []segment
+	var words []string
+	depth := 0
+	for _, w := range strings.Fields(text) {
+		if depth == 0 && (w == "|" || w == "|&") {
+			segs = append(segs, segment{words: words, expands: expands, end: "|"})
+			words = nil
+			continue
+		}
+		depth = max(0, depth+strings.Count(w, "(")-strings.Count(w, ")"))
+		words = append(words, w)
+	}
+	return append(segs, segment{words: words, expands: expands})
 }
 
 // listCommands returns the commands a list value holds when its items are shell text, not one

@@ -92,6 +92,9 @@ func TestResolveVersions_PackageModuleMentioned(t *testing.T) {
 		{"pre-commit hook runs it", map[string]string{".pre-commit-config.yaml": "repos:\n  - repo: local\n    hooks:\n      - id: deps\n        entry: python -m mypkg.build\n        language: system\n"}, true},
 		{"workflow runs it after cd", map[string]string{".github/workflows/ci.yml": wf("cd src && python -m mypkg.build")}, true},
 		{"setup.py imports it in a parenthesised group", map[string]string{"setup.py": "from setuptools import setup\nfrom mypkg import (\n    build,\n)\nsetup(name=\"app\")\n"}, true},
+		{"workflow runs it after cd into its package", map[string]string{".github/workflows/ci.yml": wf("cd mypkg && python build.py")}, true},
+		{"batch file runs it by backslashed path", map[string]string{"make.bat": "@echo off\r\npython mypkg\\build.py\r\n"}, true},
+		{"CMake runs it", map[string]string{"CMakeLists.txt": "project(x)\nadd_custom_target(deps ALL COMMAND python -m mypkg.build)\n"}, true},
 		{"workflow runs a longer-named sibling", map[string]string{"mypkg/build_utils.py": "", ".github/workflows/ci.yml": wf("python -m mypkg.build_utils")}, false},
 	}
 	for _, tt := range tests {

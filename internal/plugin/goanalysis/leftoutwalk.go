@@ -78,6 +78,8 @@ type lofWorld struct {
 	modules  map[string]bool
 	dirs     map[string]string
 	names    map[string]string
+	// modDirs holds the root of the module providing each resolved import path, "" when unknown.
+	modDirs map[string]string
 	// std records whether each resolved import path is a standard-library package, as go list
 	// reports it, so an unloaded module whose path has no dot is not taken for one.
 	std  map[string]bool
@@ -112,7 +114,7 @@ func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string,
 	w := &lofWorld{
 		ctx: ctx, buildDir: buildDir, env: env, excluded: excluded, goroot: goroot, deadline: deadline,
 		loaded: map[string]*packages.Package{}, modules: map[string]bool{},
-		dirs: map[string]string{}, names: map[string]string{}, std: map[string]bool{}, pkgs: map[string]*lofPkg{},
+		dirs: map[string]string{}, names: map[string]string{}, modDirs: map[string]string{}, std: map[string]bool{}, pkgs: map[string]*lofPkg{},
 		pushes: map[string][][2]string{}, dropped: map[string]bool{},
 		linkMemo: map[string]lofLinks{}, importMemo: map[string]lofDirImports{}, stdNames: map[string]map[string]bool{},
 	}
@@ -131,8 +133,11 @@ func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string,
 // for any other, every non-test Go file some build compiles. Declarations of every variant are
 // indexed together.
 type lofPkg struct {
-	path   string
-	dir    string
+	path string
+	dir  string
+	// root is the tree an assembly #include may reach: $GOROOT for the standard library, else
+	// the package's module root, or its directory when neither is known.
+	root   string
 	name   string
 	std    bool
 	loaded *packages.Package
@@ -209,6 +214,9 @@ type lofAsm struct {
 	file    string
 	refs    []string
 	dynamic bool
+	// opaque is set when the file includes a header no search finds: its macros may reference
+	// anything.
+	opaque bool
 }
 
 // lofClosure is what one left-out file's declaration closure touches: the loaded declarations it
@@ -287,6 +295,7 @@ func (w *lofWorld) resolve(paths []string) {
 			if dir := lofLoadedDir(lp); dir != "" {
 				w.dirs[p], w.names[p] = dir, lp.Name
 				w.std[p] = lp.Module == nil && isStdlibPath(p, w.modules)
+				w.modDirs[p] = lofModuleDir(lp.Module)
 				continue
 			}
 		}
@@ -296,17 +305,18 @@ func (w *lofWorld) resolve(paths []string) {
 	need = slices.Compact(need)
 	for i := 0; i < len(need); i += 400 {
 		batch := need[i:min(i+400, len(need))]
-		cmd := exec.CommandContext(w.ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Dir}}\t{{.Name}}\t{{.Standard}}"}, batch...)...)
+		cmd := exec.CommandContext(w.ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Dir}}\t{{.Name}}\t{{.Standard}}\t{{with .Module}}{{.Dir}}{{end}}"}, batch...)...)
 		cmd.Dir = w.buildDir
 		cmd.Env = w.env
 		out, _ := cmd.Output()
 		for _, line := range strings.Split(string(out), "\n") {
 			f := strings.Split(line, "\t")
-			if len(f) != 4 || f[1] == "" {
+			if len(f) != 5 || f[1] == "" {
 				continue
 			}
 			w.dirs[f[0]] = f[1]
 			w.std[f[0]] = f[3] == "true"
+			w.modDirs[f[0]] = f[4]
 			if f[2] != "" {
 				w.names[f[0]] = f[2]
 			}
@@ -321,6 +331,17 @@ func (w *lofWorld) resolve(paths []string) {
 			w.names[p] = w.clauseName(w.dirs[p])
 		}
 	}
+}
+
+// lofModuleDir returns the directory holding m's files, "" when none is known.
+func lofModuleDir(m *packages.Module) string {
+	switch {
+	case m == nil:
+		return ""
+	case m.Dir == "" && m.Replace != nil:
+		return m.Replace.Dir
+	}
+	return m.Dir
 }
 
 func lofLoadedDir(lp *packages.Package) string {
@@ -384,6 +405,16 @@ func (w *lofWorld) pkgVariant(path, name string) *lofPkg {
 	} else if name != "" {
 		p.name = name
 	}
+	switch {
+	case p.std && w.goroot != "":
+		p.root = w.goroot
+	case !p.std && w.modDirs[path] != "":
+		p.root = w.modDirs[path]
+	case !p.std && w.loaded[path] != nil && lofModuleDir(w.loaded[path].Module) != "":
+		p.root = lofModuleDir(w.loaded[path].Module)
+	default:
+		p.root = p.dir
+	}
 	w.pkgs[key] = p
 	if p.dir == "" {
 		p.missing = lofUnresolvedImport
@@ -409,7 +440,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 		}
 	}
 	fset := token.NewFileSet()
-	var asmFiles, headers []string
+	var asmFiles []string
 	for _, e := range ents {
 		n := e.Name()
 		if e.IsDir() {
@@ -419,9 +450,6 @@ func (w *lofWorld) parse(p *lofPkg) {
 		switch {
 		case strings.HasSuffix(n, ".s"):
 			asmFiles = append(asmFiles, full)
-			continue
-		case strings.HasSuffix(n, ".h"):
-			headers = append(headers, full)
 			continue
 		case !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") || compiled[full] || w.dropped[full]:
 			continue
@@ -470,7 +498,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 		if w.excluded(x) {
 			continue
 		}
-		parseAsm(p, full, src, headers, w.goroot)
+		parseAsm(p, full, src, w.goroot)
 	}
 	slices.Sort(p.imports)
 	p.imports = slices.Compact(p.imports)
@@ -1722,6 +1750,9 @@ func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
 	}
 	k.asmDone[body] = true
 	k.out.dyn = k.out.dyn || body.dynamic
+	if body.opaque {
+		k.fail(p, lofAsmSymbol)
+	}
 	for _, ref := range body.refs {
 		switch {
 		case strings.HasSuffix(ref, "<>"):
@@ -1777,9 +1808,10 @@ func (p *lofPkg) asmName(sym string) {
 // parseAsm records an assembly file's TEXT bodies, with the symbols each references, and its data
 // symbols. A symbol is "pkgpath.name" for the Go-visible form ("·name", "pkg∕path·name"),
 // "file:name<>" for a file-local one, and the bare name otherwise. A reference made by a macro the
-// file defines or includes from its own directory counts for every body of the file. A call or
-// jump through a register is a dynamic call. goroot is the toolchain's root, "" when unknown.
-func parseAsm(p *lofPkg, path string, src []byte, headers []string, goroot string) {
+// file defines or a header it includes (asmInclude) counts for every body of the file, and an
+// include no search finds makes every body opaque. A call or jump through a register is a dynamic
+// call. goroot is the toolchain's root, "" when unknown.
+func parseAsm(p *lofPkg, path string, src []byte, goroot string) {
 	norm := func(sym string) string {
 		if i := strings.IndexByte(sym, '<'); i >= 0 && !strings.HasSuffix(sym, "<>") {
 			sym = sym[:i]
@@ -1799,23 +1831,40 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string, goroot strin
 	var shared []string
 	var bodies []*lofAsm
 	var cur *lofAsm
-	for _, h := range headers {
-		if bytes.Contains(src, []byte(filepath.Base(h))) {
-			if hs, err := os.ReadFile(h); err == nil {
-				// The assembler renames these FUNCDATA operands (obj/plist.go); the toolchain fixes std's use.
-				funcdata := p.std && goroot != "" && (filepath.Clean(h) == filepath.Join(goroot, "src", "runtime", "funcdata.h") ||
-					filepath.Clean(h) == filepath.Join(goroot, "pkg", "include", "funcdata.h"))
-				for _, l := range strings.Split(string(hs), "\n") {
-					for _, ref := range asmRefs(l) {
-						if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
-							continue
-						}
-						shared = append(shared, norm(ref))
+	opaque := false
+	read := map[string]bool{}
+	var include func(text []byte)
+	include = func(text []byte) {
+		for _, name := range asmIncludes(text) {
+			h, ok := p.asmInclude(name, goroot)
+			if !ok {
+				opaque = true
+				continue
+			}
+			if h == "" || read[h] {
+				continue
+			}
+			read[h] = true
+			hs, err := os.ReadFile(h)
+			if err != nil {
+				opaque = true
+				continue
+			}
+			// The assembler renames these FUNCDATA operands (obj/plist.go); the toolchain fixes std's use.
+			funcdata := p.std && goroot != "" && (h == filepath.Join(goroot, "src", "runtime", "funcdata.h") ||
+				h == filepath.Join(goroot, "pkg", "include", "funcdata.h"))
+			for _, l := range strings.Split(string(hs), "\n") {
+				for _, ref := range asmRefs(l) {
+					if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
+						continue
 					}
+					shared = append(shared, norm(ref))
 				}
 			}
+			include(hs)
 		}
 	}
+	include(src)
 	for _, line := range strings.Split(string(src), "\n") {
 		if i := strings.Index(line, "//"); i >= 0 {
 			line = line[:i]
@@ -1867,7 +1916,79 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string, goroot strin
 	}
 	for _, b := range bodies {
 		b.refs = append(b.refs, shared...)
+		b.opaque = opaque
 	}
+}
+
+// asmIncludes returns the names text's #include directives give, "" for one cmd/asm cannot read
+// a name from. cmd/asm takes only a quoted name: another form fails the assembly when it is not
+// skipped by an #ifdef, so it includes nothing.
+func asmIncludes(text []byte) []string {
+	src := lofAsmComment.ReplaceAllStringFunc(string(text), func(c string) string {
+		return strings.Repeat("\n", strings.Count(c, "\n"))
+	})
+	var out []string
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		d, ok := strings.CutPrefix(strings.TrimSpace(line), "#")
+		if !ok {
+			continue
+		}
+		arg, ok := strings.CutPrefix(strings.TrimSpace(d), "include")
+		if !ok {
+			continue
+		}
+		name, ok := strings.CutPrefix(strings.TrimSpace(arg), `"`)
+		if !ok {
+			continue
+		}
+		name, _, ok = strings.Cut(name, `"`)
+		if !ok {
+			name = ""
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// asmInclude finds the header an #include of name in p's assembly reads, as cmd/asm does
+// (lex.NewInput, Input.include): the name itself, from the working directory cmd/go runs it in (p's
+// directory), then from the .s file's directory (p's again) and the -I directories cmd/go passes
+// (asmArgs): the build's object directory, holding only the generated go_asm.h, and
+// $GOROOT/pkg/include. A name leaving p.root resolves to nothing. It returns "" and true for the
+// generated go_asm.h, whose #defines are literal constants, field offsets and sizes.
+func (p *lofPkg) asmInclude(name, goroot string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	c := name
+	if !filepath.IsAbs(c) {
+		c = filepath.Join(p.dir, c)
+	}
+	c = filepath.Clean(c)
+	if !lofUnder(c, p.root) {
+		return "", false
+	}
+	if lofRegular(c) {
+		return c, true
+	}
+	if name == "go_asm.h" {
+		return "", true
+	}
+	if goroot == "" || filepath.IsAbs(name) {
+		return "", false
+	}
+	if c := filepath.Join(goroot, "pkg", "include", name); lofRegular(c) {
+		return c, true
+	}
+	return "", false
+}
+
+func lofRegular(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // asmRefs returns the symbols a line of assembly references as name(SB).

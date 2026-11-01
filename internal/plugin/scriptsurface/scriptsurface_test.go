@@ -261,6 +261,7 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile heredoc name ending in a backslash, backtick escape", tree(map[string]string{"Dockerfile": "# escape=`\nFROM x\nRUN <<EOF\\\ntrue\nEOF\nRUN in`\n# c\nst add x\n"}), true, ""},
 		{"Dockerfile wrong heredoc ends on the continued line", tree(map[string]string{"Dockerfile": "FROM x\nRUN true # ${ <<\"st add x\"\nRUN in\\\nst add x\n"}), true, ""},
 		{"Dockerfile wrong heredoc in nested quotes ends on the continued line", tree(map[string]string{"Dockerfile": "FROM x\nRUN echo \"${x:-\" <<'st add x' \"}\"\nRUN in\\\nst add x\n"}), true, ""},
+		{"Dockerfile wrong heredoc's terminator is the hidden instruction", tree(map[string]string{"Dockerfile": "FROM x\nRUN true # ${ <<\"RUN in\"st\" add x\"\nRUN inst add x\n"}), true, ""},
 		{"justfile recipe continuation inside a word", tree(map[string]string{"justfile": "all:\n\tin\\\n\t\tst add x\n"}), true, ""},
 		{"shell comment continued after a quote read wrongly", tree(map[string]string{"install.sh": "x=\"$(echo \"it's\")\"\n# c \\\ninst install -r reqs.txt \\\n  other\n"}), true, ""},
 
@@ -385,6 +386,7 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		// Binding in a Dockerfile.
 		{"Dockerfile without WORKDIR", tree(map[string]string{"Dockerfile": "FROM base\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), true, ""},
 		{"Dockerfile RUN between COPY and install", tree(map[string]string{"Dockerfile": docker + "tool rewrite\nRUN inst sync\n"}), true, ""},
+		{"Dockerfile wrong heredoc hides a repeat of an allowed install", tree(map[string]string{"Dockerfile": docker + "inst sync\nRUN tool rewrite # ${ <<\"st sync\"\nRUN in\\\nst sync\n"}), true, ""},
 		{"Dockerfile fetches over the file then installs", tree(map[string]string{"Dockerfile": docker + "curl -fsSL https://example.com/x -o inst.toml && inst sync\n"}), true, ""},
 		{"Dockerfile installs a file it fetched", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN curl -fsSL https://example.com/r.txt -o /tmp/r.txt\nRUN inst install -r /tmp/r.txt\n"}), true, ""},
 		{"Dockerfile COPY --from over the file", tree(map[string]string{"Dockerfile": "FROM base AS builder\nRUN true\nFROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nCOPY --from=builder /x/inst.toml ./\nRUN inst sync\n"}), true, ""},

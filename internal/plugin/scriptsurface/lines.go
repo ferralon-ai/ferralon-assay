@@ -193,6 +193,13 @@ var (
 // escape directive at the top sets a backtick. joined is false when the last instruction
 // still continues.
 func dockerLines(src string, heredocs bool) (lines []string, joined bool) {
+	lines, _, joined = dockerLinesAt(src, heredocs)
+	return lines, joined
+}
+
+// dockerLinesAt is dockerLines, and also returns the source line, from 0, each instruction
+// starts on, or -1 for a heredoc's body and terminator lines.
+func dockerLinesAt(src string, heredocs bool) (lines []string, at []int, joined bool) {
 	raw := strings.Split(strings.TrimPrefix(src, "\ufeff"), "\n")
 	cont, directives := dockerContinues[`\`], true
 	for i := 0; i < len(raw); i++ {
@@ -207,6 +214,7 @@ func dockerLines(src string, heredocs bool) (lines []string, joined bool) {
 		if l == "" || l[0] == '#' {
 			continue
 		}
+		start := i
 		var b strings.Builder
 		more := cont.MatchString(l)
 		b.WriteString(cont.ReplaceAllString(l, "$1"))
@@ -219,7 +227,7 @@ func dockerLines(src string, heredocs bool) (lines []string, joined bool) {
 			more = cont.MatchString(l)
 			b.WriteString(cont.ReplaceAllString(l, "$1"))
 		}
-		lines = append(lines, b.String())
+		lines, at = append(lines, b.String()), append(at, start)
 		var docs []heredoc
 		if heredocs {
 			docs = dockerHeredocs(b.String())
@@ -227,17 +235,17 @@ func dockerLines(src string, heredocs bool) (lines []string, joined bool) {
 		for _, d := range docs {
 			for i++; i < len(raw); i++ {
 				l := strings.TrimRight(raw[i], "\r")
-				lines = append(lines, l)
+				lines, at = append(lines, l), append(at, -1)
 				if d.ends(l) {
 					break
 				}
 			}
 		}
 		if more {
-			return lines, false
+			return lines, at, false
 		}
 	}
-	return lines, true
+	return lines, at, true
 }
 
 var (

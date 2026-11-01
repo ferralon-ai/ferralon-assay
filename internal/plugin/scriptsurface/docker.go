@@ -337,16 +337,20 @@ func (v *Veto) dockerfile(file, src string) string {
 	if !joined && v.hasToken(lines[len(lines)-1]) {
 		return "install command in an unjoined continuation"
 	}
-	// dockerHeredocs can open a heredoc BuildKit doesn't, whose body would then hide
-	// instructions. Read without heredocs, the file gives every instruction BuildKit reads
-	// there, so one that reads differently is checked here.
-	read := map[string]bool{}
-	for _, l := range lines {
-		read[l] = true
+	// dockerHeredocs can open a heredoc BuildKit doesn't, whose body and terminator would
+	// then hide instructions. Outside a real heredoc, the file read without heredocs gives the
+	// instructions BuildKit reads, so one that doesn't start as the same instruction on the
+	// same line in the heredoc reading is checked here.
+	hd, hdAt, _ := dockerLinesAt(src, true)
+	instrAt := map[int]string{}
+	for k, l := range hd {
+		if hdAt[k] >= 0 {
+			instrAt[hdAt[k]] = l
+		}
 	}
-	plain, _ := dockerLines(src, false)
-	for _, l := range plain {
-		if !read[l] && v.hasToken(l) {
+	plain, plainAt, _ := dockerLinesAt(src, false)
+	for k, l := range plain {
+		if r, ok := instrAt[plainAt[k]]; (!ok || r != l) && v.hasToken(l) {
 			return "install command in a heredoc"
 		}
 	}

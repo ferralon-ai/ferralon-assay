@@ -119,6 +119,9 @@ func TestVeto_Backstop(t *testing.T) {
 		{"Dockerfile-like with a continued RUN", tree(map[string]string{"docker/app.df": "FROM base\nRUN\\\n  inst add x\n"}), true, "-"},
 		{"URL naming a token is an argument", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: curl -fsSL https://example.com/inst-cache/tool\n"}), false, ""},
 		{"URL beside an installer", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: inst add https://example.com/x.tgz\n"}), true, "ci/pipeline.yml:2"},
+		{"SQL JOIN naming a token is not a Dockerfile", tree(map[string]string{"sql/q.sql": "SELECT a\nFROM t\nJOIN inst ON t.id = inst.id\n"}), false, ""},
+		{"scheme-less word naming a token", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: tool --from=inst://x add y\n"}), true, "ci/pipeline.yml:2"},
+		{"quoted URL and installer in one word", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: tool \"https://example.com/x inst add y\"\n"}), true, "ci/pipeline.yml:2"},
 		{"content key outside Bitrise is data", tree(map[string]string{"docs/page.yml": "content: inst add x\n"}), false, ""},
 		// More build scripts and the ways they run an installer.
 		{"zx script", tree(map[string]string{"deps": "#!/usr/bin/env zx\nawait $`inst add x`\n"}), true, "deps:2"},

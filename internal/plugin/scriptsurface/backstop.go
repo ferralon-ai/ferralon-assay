@@ -24,9 +24,9 @@ import (
 //
 // A command position is one of these:
 //
-//   - every line of a file with a Dockerfile-style FROM line, in any case, which the
-//     Dockerfile rule reads as it reads a Dockerfile (dockerfileAt), binding what its COPY and
-//     ADD bring in;
+//   - every line of a file with a Dockerfile-style FROM line, in any case, and an instruction
+//     that runs a command or sets its environment, which the Dockerfile rule reads as it reads
+//     a Dockerfile (dockerfileAt), binding what its COPY and ADD bring in;
 //   - in any other text file, the value of a key that holds commands (cmdKey: run, script,
 //     command, commands, cmd, entry, shell, before_install, post-install-commands, *_script,
 //     and content in a Bitrise config, ...) as a scalar, a block scalar, a list or an array,

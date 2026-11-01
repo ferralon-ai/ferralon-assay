@@ -62,8 +62,8 @@ import (
 // read, so the lockfiles enumerate every package an install from them creates. Exhaustive adds
 // installedCopyPresent(root, coord, true). perFile maps each manifest path to what
 // parseManifestCoverage returned for it. The cheap manifest checks run before the walk of the
-// build dir.
-func manifestSetCovers(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool, installs pipInstalls) bool {
+// build dir. configNamed reports whether a script surface names a pip config (pipConfigNamedRE).
+func manifestSetCovers(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool, installs pipInstalls, configNamed bool) bool {
 	if parseFailed || len(manifests) == 0 {
 		return false
 	}
@@ -88,7 +88,7 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 	if len(locks) == 0 {
 		return false
 	}
-	reqs := newReqInstalls(root, manifests, installs)
+	reqs := newReqInstalls(root, manifests, installs, configNamed)
 	for _, m := range manifests {
 		if completeLockfiles[filepath.Base(m)] {
 			continue

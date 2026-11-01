@@ -294,7 +294,17 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"PIP.CONF names no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/PIP.CONF": "[install]\nno-require-hashes = 1\n"}), false},
 		{"pip.conf inside a nested .git directory", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "vendor/.git/pip.conf": "[install]\nno-require-hashes = 1\n"}), false},
 		{"option line --require-hashes with unhashed pins", uv(map[string]string{"requirements.txt": "--require-hashes\nflask==3.0.0\n"}), true},
-		{"pip.conf that leaves hash mode alone", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), true},
+		{"pip.conf that leaves hash mode alone", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n"}), true},
+		// A script surface that names a pip config may put any file where pip reads it.
+		{"pip.conf that leaves hash mode alone, copied to /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), false},
+		{"another name copied to /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "ci/pip-settings.cfg": "[install]\nno-require-hashes = true\n", "Dockerfile": docker + "COPY ci/pip-settings.cfg /etc/pip.conf\n"}), false},
+		{"ADD from a URL to /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ADD https://example.com/pip.cfg /etc/pip.conf\n"}), false},
+		{"secret mounted at /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN --mount=type=secret,id=pip,target=/etc/pip.conf pip install -r requirements.txt\n"}), false},
+		{"copied to a user pip.ini", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/settings /root/AppData/Roaming/pip/pip.ini\n"}), false},
+		{"copied to /etc/xdg/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /etc/xdg/pip/\n"}), false},
+		{"copied to ~/.config/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /root/.config/pip/\n"}), false},
+		{"pip config set", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "install.sh": "pip config set install.no-require-hashes true\n"}), false},
+		{"a Dockerfile naming no pip config", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/settings.cfg /etc/app.conf\n"}), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -334,7 +344,7 @@ func TestReqInstalls_RefusedNeedsEveryIncluder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			installs := pipInstalls{base: {{noDeps: true}}, dev: {tt.devInstl}}
-			r := newReqInstalls(root, []string{base, dev}, installs)
+			r := newReqInstalls(root, []string{base, dev}, installs, false)
 			if got := r.refused(base); got != tt.want {
 				t.Fatalf("refused(base) = %v, want %v", got, tt.want)
 			}

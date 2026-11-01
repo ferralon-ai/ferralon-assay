@@ -1413,6 +1413,26 @@ func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
 	}
 }
 
+// TestLofParseAsmFuncdataNoGoroot: with no toolchain root known, no header is the toolchain's
+// funcdata.h, even one at the path a root of "." would give it.
+func TestLofParseAsmFuncdataNoGoroot(t *testing.T) {
+	t.Chdir(writeTree(t, map[string]string{"src/runtime/funcdata.h": "#define GO_ARGS FUNCDATA $0, go_args_stackmap(SB)\n"}))
+	for _, tc := range []struct {
+		goroot string
+		kept   bool
+	}{{"", true}, {".", false}} {
+		p := &lofPkg{path: "runtime", std: true, asmText: map[string][]*lofAsm{}, asmData: map[string]bool{}}
+		parseAsm(p, "a.s", []byte("#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tGO_ARGS\n\tRET\n"), []string{filepath.Join("src", "runtime", "funcdata.h")}, tc.goroot)
+		bodies := p.asmText["runtime.f"]
+		if len(bodies) != 1 {
+			t.Fatalf("goroot %q: bodies of runtime.f = %d, want 1", tc.goroot, len(bodies))
+		}
+		if kept := slices.Contains(bodies[0].refs, "go_args_stackmap"); kept != tc.kept {
+			t.Errorf("goroot %q: go_args_stackmap kept = %v, want %v (refs %v)", tc.goroot, kept, tc.kept, bodies[0].refs)
+		}
+	}
+}
+
 // lofStdRootClosure lays files out as module example.com/m at root under a stand-in GOROOT, marks
 // the package standard when std, and returns what x.go's closure fails closed on, and fails closed on
 // for the standard library.

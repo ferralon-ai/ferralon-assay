@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -332,6 +333,13 @@ func TestLofAsmObjHeaderDeps(t *testing.T) {
 			"d/off.go": "//go:build !cgo\n\npackage d\n\nconst K = 1.5\n",
 			"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
 			"p/p.s":    ifdefK,
+		}), true, []string{"example.com/v/p.sym"}},
+		// cgo compiles the C file, so the row builds for the host's port, whose C compiler is at hand.
+		{"R2b: a dependency file importing C sets the constant's kind", merge(mod, map[string]string{
+			"d/on.go":  "package d\n\nimport \"C\"\n\nconst K = 1\n",
+			"d/off.go": "//go:build !cgo\n\npackage d\n\nconst K = 1.5\n",
+			"p/p.go":   "package p\n\nimport \"example.com/v/d\"\n\nconst K = d.K\n",
+			"p/p.s":    strings.Replace(ifdefK, "linux && amd64", runtime.GOOS+" && "+runtime.GOARCH, 1),
 		}), true, []string{"example.com/v/p.sym"}},
 		// D1: the package's own tags are its own files' to enumerate; a file the build never
 		// compiles (//go:build ignore) adds no variant through the dependency slice.

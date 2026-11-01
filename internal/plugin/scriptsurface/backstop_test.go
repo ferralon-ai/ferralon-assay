@@ -200,6 +200,7 @@ func TestVeto_Backstop(t *testing.T) {
 		{"URL in a process substitution another command reads", tree(map[string]string{"ci/x.yml": "steps:\n  - run: diff <(curl -sS https://example.com/get-inst) x\n"}), false, ""},
 		{"single-quoted YAML continuation", tree(map[string]string{"ci/x.yml": "steps:\n  - command: 'echo start &&\n      inst add x'\n"}), true, "ci/x.yml:2"},
 		{"audit that fixes with a value", tree(map[string]string{"ci/x.yml": "steps:\n  - run: inst audit --fix=all\n"}), true, "ci/x.yml:2"},
+		{"entry point in project.scripts", tree(map[string]string{"pyproject.toml": "[project.scripts]\nsetup = \"inst add x\"\n"}), false, ""},
 		{"sequence in a project table", tree(map[string]string{"pyproject.toml": "[project.scripts.x]\nsequence = [\"inst add x\"]\n"}), false, ""},
 		{"CUE fields under a rule-shaped line", tree(map[string]string{"schema/x.cue": "kind: x: {\n\tinst add x\n}\n"}), false, ""},
 		{"the same lines read as a make recipe", tree(map[string]string{"schema/x.cfg": "kind: x: {\n\tinst add x\n}\n"}), true, "schema/x.cfg:2"},
@@ -306,27 +307,53 @@ func TestVeto_BackstopUnreadable(t *testing.T) {
 }
 
 func TestVeto_BackstopPackageModuleFailsClosed(t *testing.T) {
-	root := writeTree(t, map[string]string{
-		"inst.toml":       "[deps]\n",
-		"inst.lock":       "lock\n",
-		"pkg/__init__.py": "",
-		"pkg/build.py":    "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n",
-		"Makefile":        "all:\n\techo ok\n",
-	})
 	tests := []struct {
-		name string
-		fail string
-		want bool
+		name  string
+		setup func(t *testing.T, root string) func(string) bool // returns which paths fail to read
+		want  bool
 	}{
-		{"every build file readable", "", false},
-		{"a build file unreadable", "Makefile", true},
+		{"every build file readable", func(*testing.T, string) func(string) bool { return func(string) bool { return false } }, false},
+		{"a build file unreadable", func(*testing.T, string) func(string) bool {
+			return func(p string) bool { return filepath.Base(p) == "Makefile" }
+		}, true},
+		{"a build file behind a symlink", func(t *testing.T, root string) func(string) bool {
+			if err := os.Symlink("Makefile", filepath.Join(root, "GNUmakefile")); err != nil {
+				t.Fatal(err)
+			}
+			return func(string) bool { return false }
+		}, true},
+		{"a project file behind a symlink", func(t *testing.T, root string) func(string) bool {
+			if err := os.Symlink("Makefile", filepath.Join(root, "setup.cfg")); err != nil {
+				t.Fatal(err)
+			}
+			return func(string) bool { return false }
+		}, true},
+		{"a directory unreadable", func(t *testing.T, root string) func(string) bool {
+			d := filepath.Join(root, "ci")
+			if err := os.Mkdir(d, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(d, 0o755) })
+			if _, err := os.ReadDir(d); err == nil {
+				t.Skip("directory permissions not enforced")
+			}
+			return func(string) bool { return false }
+		}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{
+				"inst.toml":       "[deps]\n",
+				"inst.lock":       "lock\n",
+				"pkg/__init__.py": "",
+				"pkg/build.py":    "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n",
+				"Makefile":        "all:\n\techo ok\n",
+			})
+			fail := tt.setup(t, root)
 			spec := testSpec
 			read := spec.ReadRegular
 			spec.ReadRegular = func(p string) ([]byte, error) {
-				if tt.fail != "" && filepath.Base(p) == tt.fail {
+				if fail(p) {
 					return nil, errors.New("unreadable")
 				}
 				return read(p)

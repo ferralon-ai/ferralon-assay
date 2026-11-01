@@ -447,6 +447,57 @@ func TestInventoryIndexNames(t *testing.T) {
 			files:     map[string]string{"requirements.txt": "-c missing-constraints.txt\nrequests==2.31.0\n"},
 			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
 		},
+		{
+			name:      "constraint include installs",
+			files:     map[string]string{"requirements.txt": "-c c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\nidna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "constraint after another option includes",
+			files:     map[string]string{"requirements.txt": "--pre -c c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\nidna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "shortened constraint includes",
+			files:     map[string]string{"requirements.txt": "--cons c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\nidna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "attached constraint after another option includes",
+			files:     map[string]string{"requirements.txt": "--pre -cc.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\nidna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "nested constraint include installs",
+			files:     map[string]string{"requirements.txt": "-c cc.txt\nrequests==2.31.0\n", "cc.txt": "-c c.txt\nsix==1.16.0\n", "c.txt": "-r dev.txt\nidna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "constraint include installs the whole file",
+			files:     map[string]string{"requirements.txt": "-c rinc.txt\nrequests==2.31.0\n", "rinc.txt": "-r c.txt\n", "c.txt": "-r dev.txt\nidna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/idna@3.7", "pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "constraint and include of one file",
+			files:     map[string]string{"requirements.txt": "-c c.txt\n-r c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\nidna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/idna@3.7", "pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "constraint loop",
+			files:     map[string]string{"requirements.txt": "-c c.txt\nrequests==2.31.0\n", "c.txt": "-c c.txt\n-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "constraint pins, editables and urls install nothing",
+			files:     map[string]string{"requirements.txt": "-c c.txt\nrequests==2.31.0\n", "c.txt": "idna==3.7\n-e ./pkg\nhttps://x/y-1.0.tar.gz\n./pkg\n"},
+			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:         "unfollowed include in a constraint",
+			files:        map[string]string{"requirements.txt": "-c c.txt\nrequests==2.31.0\n", "c.txt": "--pre -r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTree(t, tc.files)
@@ -558,5 +609,35 @@ func TestInventoryIncludeResolvedPath(t *testing.T) {
 				t.Errorf("graph partiality = %+v, want source_unpinned=%v", inv.Partiality, tc.wantUnpinned)
 			}
 		})
+	}
+}
+
+func TestConstraintTarget(t *testing.T) {
+	for _, tt := range []struct {
+		line   string
+		want   string
+		wantOK bool
+	}{
+		{"-c c.txt", "c.txt", true},
+		{"-cc.txt", "c.txt", true},
+		{"-c=c.txt", "=c.txt", true},
+		{"-c \"c.txt\"", "c.txt", true},
+		{"--constraint c.txt", "c.txt", true},
+		{"--constraint=c.txt", "c.txt", true},
+		{"--cons=c.txt", "c.txt", true},
+		{"--pre -c c.txt", "c.txt", true},
+		{"-i x -c c.txt", "c.txt", true},
+		{"--index-url=x -c c.txt", "c.txt", true},
+		{"-c a.txt -c b.txt", "a.txt", true},
+		{"-i -c c.txt", "", false},
+		{"--trusted-host -c c.txt", "", false},
+		{"--con c.txt", "", false},
+		{"--pre -c", "", false},
+		{"--pre", "", false},
+	} {
+		got, ok := constraintTarget(tt.line)
+		if got != tt.want || ok != tt.wantOK {
+			t.Errorf("constraintTarget(%q) = %q, %v, want %q, %v", tt.line, got, ok, tt.want, tt.wantOK)
+		}
 	}
 }

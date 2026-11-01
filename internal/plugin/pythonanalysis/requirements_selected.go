@@ -100,10 +100,12 @@ func resolveRequirements(data []byte, env map[string]string, selection []string)
 // (a node named after a path or URL is not a package), so the caller decides from them
 // whether the graph is complete.
 type reqFile struct {
-	reqs     []pyReq
-	includes []string // "-r" targets as written; a "-c" constraint installs nothing
-	locals   []string // local directory installs (".", "-e ./pkg"), extras stripped
-	unnamed  bool     // an archive, URL or VCS install whose project the line does not name
+	reqs        []pyReq
+	includes    []string // "-r" targets as written
+	constraints []string // "-c" targets: pip installs the "-r" includes inside one, never its pins
+	locals      []string // local directory installs (".", "-e ./pkg"), extras stripped
+	unnamed     bool     // an archive, URL or VCS install whose project the line does not name
+	skipped     bool     // an include or editable option this reader does not follow
 }
 
 // parseRequirementsFile is resolveRequirements with the non-node lines kept. A line that is
@@ -136,17 +138,21 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 				target, ok = editableTarget(spec)
 			}
 			if (!ok && abbreviatesInstallOption(spec)) || laterInstallOption(spec) {
-				f.unnamed = true // an install this reader does not follow
+				f.skipped = true
 				continue
 			}
-			if !ok || target == "" || !markerMaySelect(marker, env, selection) {
+			if !markerMaySelect(marker, env, selection) {
 				continue
 			}
 			switch {
-			case kind == reqEditable:
+			case ok && target != "" && kind == reqEditable:
 				f.addSource(line, target, kind, hashes, env, selection)
-			case !isConstraintFlag(spec):
+			case ok && target != "" && !isConstraintFlag(spec):
 				f.includes = append(f.includes, target)
+			default:
+				if c, ok := constraintTarget(spec); ok {
+					f.constraints = append(f.constraints, c)
+				}
 			}
 			continue
 		}
@@ -298,6 +304,38 @@ func laterInstallOption(line string) bool {
 		}
 	}
 	return false
+}
+
+// constraintTarget returns the file named by the first constraint option on an option line, in
+// any of pip's spellings ("-c c.txt", "-cc.txt", "--pre --cons=c.txt"); pip reads only the
+// first. A field another option consumes as its value ("-i -c") is not an option.
+func constraintTarget(line string) (string, bool) {
+	fields := strings.Fields(line)
+	for i := 0; i < len(fields); i++ {
+		f := strings.Trim(fields[i], `'"`)
+		name, val, attached := strings.Cut(f, "=")
+		long := strings.HasPrefix(f, "--")
+		switch {
+		case long && len(name) >= len("--cons") && strings.HasPrefix("--constraint", name):
+			if attached {
+				return val, val != ""
+			}
+		case !long && strings.HasPrefix(f, "-c"):
+			if len(f) > 2 {
+				return f[2:], true
+			}
+		case long && !attached && takesValue(name), !long && takesValue(f):
+			i++
+			continue
+		default:
+			continue
+		}
+		if i+1 < len(fields) {
+			return strings.Trim(fields[i+1], `'"`), true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 func isConstraintFlag(spec string) bool {

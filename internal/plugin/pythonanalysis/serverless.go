@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -46,12 +47,16 @@ func (s *slsNames) named(f string) bool {
 // code, which this does not evaluate.
 var slsScriptExts = map[string]bool{".js": true, ".cjs": true, ".mjs": true, ".ts": true}
 
-// serverlessNames walks root (all but its own .git and .serverless output and every
-// node_modules) for the fileNames Serverless configs set. A config passed with --config may have
-// any name, and custom or any part of it may be a ${file()} fragment, so every YAML, JSON or code
-// file that mentions pythonRequirements or the plugin is read. A YAML or JSON file names what its
-// custom.pythonRequirements.fileName holds; any other file that mentions either, or a walk or
-// read error, makes any file named.
+// slsServiceKey finds a top-level service key in a YAML or JSON document that does not parse.
+var slsServiceKey = regexp.MustCompile(`(?m)^(?:["']?service["']?|\s*"service")\s*:`)
+
+// serverlessNames walks root (all but its own .git and every node_modules and .serverless
+// output) for the fileNames Serverless configs set. A config passed with --config may have any
+// name, and its plugins, custom or any part of them may be ${file()} fragments, so every YAML or
+// JSON file that is a config (it has a top-level service) or mentions pythonRequirements or the
+// plugin is read, and every code file that mentions either or is named like a config. A YAML or
+// JSON file names what its custom.pythonRequirements.fileName holds; a code file this reads, or
+// a walk or read error, makes any file named.
 func serverlessNames(root string) *slsNames {
 	s := &slsNames{root: root}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -60,7 +65,7 @@ func serverlessNames(root string) *slsNames {
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
-			if d.Name() == "node_modules" || (d.Name() == ".git" || d.Name() == ".serverless") && filepath.Dir(path) == filepath.Clean(root) {
+			if d.Name() == "node_modules" || d.Name() == ".serverless" || d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -76,11 +81,19 @@ func serverlessNames(root string) *slsNames {
 			return filepath.SkipAll
 		}
 		mentioned := bytes.Contains(data, []byte("pythonRequirements"))
-		if !mentioned && !bytes.Contains(data, []byte("serverless-python-requirements")) {
+		plugin := bytes.Contains(data, []byte("serverless-python-requirements"))
+		if script {
+			if mentioned || plugin || strings.HasPrefix(d.Name(), "serverless.") {
+				s.any = true
+				return filepath.SkipAll
+			}
 			return nil
 		}
-		name, ok := slsFileName(data, mentioned)
-		if script || !ok {
+		if !mentioned && !plugin && !bytes.Contains(data, []byte("service")) {
+			return nil
+		}
+		name, ok := slsFileName(data, mentioned, plugin)
+		if !ok {
 			s.any = true
 			return filepath.SkipAll
 		}
@@ -102,11 +115,20 @@ func serverlessNames(root string) *slsNames {
 // when the value cannot be resolved here: a custom or custom.pythonRequirements that is not a
 // map (a variable), a variable, or a fileName that is not a string. A document that mentions
 // pythonRequirements (mentioned) without holding it under custom is a fragment, or a reference
-// to one, and cannot be resolved either; one that only loads the plugin sets none.
-func slsFileName(data []byte, mentioned bool) (string, bool) {
-	var doc map[string]any
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return "", false
+// to one, and cannot be resolved either; a config, or one that mentions the plugin (plugin),
+// without them sets none. A document that is none of these, or does not parse and is not one,
+// sets none.
+func slsFileName(data []byte, mentioned, plugin bool) (string, bool) {
+	var v any
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		return "", !mentioned && !plugin && !slsServiceKey.Match(data)
+	}
+	doc, ok := v.(map[string]any)
+	if !ok {
+		return "", !mentioned
+	}
+	if _, ok := doc["service"]; !ok && !mentioned && !plugin {
+		return "", true
 	}
 	c, ok := doc["custom"]
 	if !ok || c == nil {
@@ -127,11 +149,11 @@ func slsFileName(data []byte, mentioned bool) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	v, ok := pr["fileName"]
-	if !ok || v == nil {
+	fn, ok := pr["fileName"]
+	if !ok || fn == nil {
 		return "", true
 	}
-	name, ok := v.(string)
+	name, ok := fn.(string)
 	if !ok || strings.Contains(name, "${") {
 		return "", false
 	}

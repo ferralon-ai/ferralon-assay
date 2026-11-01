@@ -130,7 +130,8 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 		// requirement — is recorded, never silently omitted. A pure option line (e.g.
 		// --index-url) carries no dependency and is skipped.
 		if strings.HasPrefix(line, "-") {
-			// pip ignores a marker on an option line: "; python_version < '3'" is leftover words.
+			// pip ignores a marker on an option line, but reads any option after the ";":
+			// the first option's target comes from spec, every later option from line.
 			spec, _ := splitMarker(line)
 			kind := reqInclude
 			target, ok := includeTarget(spec)
@@ -138,7 +139,7 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 				kind = reqEditable
 				target, ok = editableTarget(spec)
 			}
-			if (!ok && abbreviatesInstallOption(spec)) || laterInstallOption(spec) {
+			if (!ok && abbreviatesInstallOption(spec)) || laterInstallOption(line) {
 				f.skipped = true
 				continue
 			}
@@ -148,7 +149,7 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 			case ok && target != "" && !isConstraintFlag(spec):
 				f.includes = append(f.includes, target)
 			default:
-				if c, ok := constraintTarget(spec); ok {
+				if c, ok := constraintTarget(line); ok {
 					f.constraints = append(f.constraints, c)
 				}
 			}

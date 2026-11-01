@@ -526,6 +526,29 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
 		},
 		{
+			name:         "include after a marker separator",
+			files:        map[string]string{"requirements.txt": "--pre ; -r dev.txt\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "include after a constraint and a marker separator",
+			files:        map[string]string{"requirements.txt": "-c p.txt ; -r dev.txt\nrequests==2.31.0\n", "p.txt": "idna==3.7\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:      "constraint after a marker separator",
+			files:     map[string]string{"requirements.txt": "--pre ; -c c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "marker on a named editable is ignored",
+			files:     map[string]string{"requirements.txt": "-e git+https://example.com/o/foo.git#egg=foo ; python_version < \"3\"\nrequests==2.31.0\n"},
+			env:       map[string]string{"python_version": "3.11"},
+			wantPURLs: []string{"pkg:pypi/foo", "pkg:pypi/requests@2.31.0"},
+		},
+		{
 			name:      "constraint pins, editables and urls install nothing",
 			files:     map[string]string{"requirements.txt": "-c c.txt\nrequests==2.31.0\n", "c.txt": "idna==3.7\n-e ./pkg\nhttps://x/y-1.0.tar.gz\n./pkg\n"},
 			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},

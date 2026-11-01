@@ -71,6 +71,26 @@ func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 	return nil, pathAbsent
 }
 
+// holdsDir reports whether the stage holds a directory at the container path f: something was
+// written under it, or a directory copy put a directory there.
+func (st *dockerStage) holdsDir(v *Veto, f string) bool {
+	for _, e := range st.events {
+		if f == "/" || strings.HasPrefix(e.dst, f+"/") {
+			return true
+		}
+		if !e.dir || !e.covers(f) {
+			continue
+		}
+		rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(f, e.dst), "/"))
+		for _, h := range e.hosts {
+			if _, _, known := v.stat(filepath.Join(h, rel)); !known || isDir(filepath.Join(h, rel)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (st *dockerStage) taintAll() { st.events = append(st.events, dockerEvent{all: true}) }
 
 // resolve returns a container path for p, from the WORKDIR when relative.
@@ -240,10 +260,11 @@ func (c *dockerCursor) wrote(key string, venv bool) {
 }
 
 func (c *dockerCursor) pinsPython() bool {
-	if !c.known {
+	dir, ok := c.at(".")
+	if !ok {
 		return true
 	}
-	for d := c.dir; ; d = path.Dir(d) {
+	for d := dir; ; d = path.Dir(d) {
 		if c.present(path.Join(d, ".python-version")) || c.present(path.Join(d, ".python-versions")) {
 			return true
 		}
@@ -304,15 +325,15 @@ func (c *dockerCursor) at(p string) (string, bool) {
 	return path.Join(c.dir, p), true
 }
 
-// present is true for a path the stage has bound or tainted: a file copied in, or one a
-// command may have written.
+// present is true for a path the stage has bound or tainted, a file copied in or one a
+// command may have written, or a directory it holds.
 func (c *dockerCursor) present(p string) bool {
 	f, ok := c.at(p)
 	if !ok {
 		return true
 	}
 	_, state := c.st.lookup(c.v, f)
-	return state != pathAbsent
+	return state != pathAbsent || c.st.holdsDir(c.v, f)
 }
 
 func (c *dockerCursor) venv() *venvMark { return &c.mark }

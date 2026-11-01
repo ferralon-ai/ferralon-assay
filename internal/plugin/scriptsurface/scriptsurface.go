@@ -1089,9 +1089,10 @@ func venvMade(seg segment, cur cursor) string {
 }
 
 // interpHeld reports whether the interpreter a venv creation copies may be a file of the build:
-// its command or -p/--python value is a path the build holds, or it is uv venv without
-// -p/--python, which reads a request, perhaps a path, from a .python-version or
-// .python-versions in the working directory or above it.
+// its command is a path the build holds; a -p/--python value is missing, is a path the build
+// holds, or is not a version request; or it is uv venv without -p/--python, which reads a
+// request, perhaps a path, from a .python-version or .python-versions in the working
+// directory or above it.
 func interpHeld(head string, words, args []string, cur cursor) bool {
 	if strings.Contains(words[0], "/") && cur.present(words[0]) {
 		return true
@@ -1108,16 +1109,18 @@ func interpHeld(head string, words, args []string, cur cursor) bool {
 			}
 			val = args[i]
 		}
-		// virtualenv and uv read a value that is not a version request as a path
-		if named = true; !pyRequestRE.MatchString(val) || cur.present(val) {
+		// uv reads even a version request as a path when the working directory holds that
+		// name, and virtualenv and uv read any other value as a path or a name on PATH
+		named = true
+		if cur.present(val) || !strings.Contains(val, "/") && !pyRequestRE.MatchString(val) {
 			return true
 		}
 	}
 	return head == "uv" && !named && cur.pinsPython()
 }
 
-// pyRequestRE matches an interpreter request that names a version or implementation, never a
-// path: 3.12, python3, pypy3.10, cpython@3.12.
+// pyRequestRE matches an interpreter request that names a version or implementation: 3.12,
+// python3, pypy3.10, cpython@3.12.
 var pyRequestRE = regexp.MustCompile(`^(?:(?:c?python|pypy|graalpy)[-@]?)?[0-9]+(?:\.[0-9]+)*$|^(?:c?python|pypy|graalpy)$`)
 
 // venvFlags are, per creator, the flags venvWrites accepts, each mapped to whether it takes

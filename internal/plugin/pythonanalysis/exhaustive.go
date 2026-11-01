@@ -380,28 +380,33 @@ func archiveNames(file, coord string) bool {
 	return false
 }
 
-// includeTarget returns the file an include line names, in any of pip's spellings
-// (-r f, -rf, -r=f, --requirement f, --requirement=f, and the -c/--constraint equivalents).
-func includeTarget(line string) (string, bool) {
-	return optionValue(line, "--requirement", "--constraint", "-r", "-c")
+// includeTarget returns the file named by an include or constraint option at words[i], in any
+// of pip's spellings (-r f, -rf, -r=f, --requirement f, --requirement=f, and the
+// -c/--constraint equivalents).
+func includeTarget(words []string, i int) (string, bool) {
+	return optionValue(words, i, "--requirement", "--constraint", "-r", "-c")
 }
 
-// optionValue returns the value of the first of flags (long ones first) that line starts with,
-// in any of pip's spellings: "-x v", "-xv", "--long v", "--long=v". After a short flag an "="
-// is part of the value, as pip's option parser reads it.
-func optionValue(line string, flags ...string) (string, bool) {
+// optionValue returns the value of words[i] when it is one of flags, in any of pip's
+// spellings: "-x v", "-xv", "--long v", "--long=v". After a short flag an "=" is part of the
+// value, as pip's option parser reads it. A flag with nothing after it has an empty value.
+func optionValue(words []string, i int, flags ...string) (string, bool) {
 	for _, flag := range flags {
-		rest, ok := strings.CutPrefix(line, flag)
+		rest, ok := strings.CutPrefix(words[i], flag)
 		if !ok {
 			continue
 		}
-		if strings.HasPrefix(flag, "--") && rest != "" && rest[0] != '=' && rest[0] != ' ' && rest[0] != '\t' {
-			continue // a longer option sharing the prefix
+		long := strings.HasPrefix(flag, "--")
+		switch {
+		case rest == "" && i+1 < len(words):
+			return words[i+1], true
+		case rest == "":
+			return "", true
+		case !long:
+			return rest, true
+		case rest[0] == '=':
+			return rest[1:], true
 		}
-		if strings.HasPrefix(flag, "--") {
-			rest = strings.TrimPrefix(strings.TrimSpace(rest), "=")
-		}
-		return strings.TrimSpace(rest), true
 	}
 	return "", false
 }

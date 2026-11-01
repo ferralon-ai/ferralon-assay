@@ -113,7 +113,13 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			continue
 		}
 		if strings.HasPrefix(line, "-") {
-			if target, isInclude := includeTarget(line); isInclude {
+			// pip splits the line shell-style before parsing it, and rejects a file with a
+			// line shlex cannot split.
+			words, ok := shellSplit(line)
+			if !ok {
+				return out, false
+			}
+			if target, isInclude := includeTarget(words, 0); isInclude {
 				if target == "" || strings.Contains(target, "://") {
 					return out, false
 				}
@@ -121,28 +127,20 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 					target = filepath.Join(filepath.Dir(path), target)
 				}
 				out.includes = append(out.includes, filepath.Clean(target))
-				if !strings.HasPrefix(line, "-c") && !strings.HasPrefix(line, "--constraint") {
+				if !isConstraintFlag(words[0]) {
 					out.nested = append(out.nested, filepath.Clean(target))
 				}
 				continue
 			}
-			if kind, ok := optionKind(line); ok && kind == reqEditable {
+			if _, ok := editableTarget(words, 0); ok {
 				return out, false
 			}
-			// pip unquotes the option string first (--"requirement", -\r), so test the unquoted line.
-			unq := strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(line)
-			if _, isInclude := includeTarget(unq); isInclude {
-				return out, false
-			}
-			if kind, ok := optionKind(unq); ok && kind == reqEditable {
-				return out, false
-			}
-			if abbreviatesInstallOption(unq) || laterInstallOption(unq) || untrackedConstraint(unq) || envOptionName(line) {
+			if abbreviatesInstallOption(words[0]) || laterInstallOption(words) || untrackedConstraint(words) || envOptionName(words) {
 				return out, false
 			}
 			// pip parses every option on the line, not just the first, and accepts any
 			// unambiguous prefix of a long option; --no-r is the shortest for this one.
-			for _, f := range strings.Fields(line) {
+			for _, f := range words {
 				switch {
 				case f == "--require-hashes":
 					out.hashed = true
@@ -178,49 +176,31 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 // envOptionName reports an option name that comes from an environment variable ("-${R} x.txt",
 // "--pre ${R} x.txt"): pip expands it before parsing, so it may name an install option. A
 // variable in an option's value ("--index-url=https://${TOKEN}@host/simple") is left alone; one
-// whose expansion itself carries whitespace and options is out of reach of a static read. pip
-// splits the line shell-style on ASCII whitespace, so with any quote, backslash or non-ASCII
-// byte a value can hide an option word ("-i \"x -i\" ${R}") and the line fails closed;
-// without them the fields are pip's.
-func envOptionName(line string) bool {
-	if !strings.Contains(line, "${") {
-		return false
-	}
-	if strings.ContainsAny(line, `"'\`) || !isASCII(line) {
-		return true
-	}
+// whose expansion itself carries whitespace, quotes or options is out of reach of a static read.
+func envOptionName(words []string) bool {
 	value := false
-	for _, f := range strings.Fields(line) {
+	for _, w := range words {
 		if value {
 			value = false
 			continue
 		}
 		switch {
-		case strings.HasPrefix(f, "--"):
-			name, _, attached := strings.Cut(f, "=")
+		case strings.HasPrefix(w, "--"):
+			name, _, attached := strings.Cut(w, "=")
 			if strings.Contains(name, "${") {
 				return true
 			}
 			value = !attached && takesValue(name)
-		case strings.HasPrefix(f, "-"):
-			if strings.HasPrefix(f[1:], "${") {
+		case strings.HasPrefix(w, "-"):
+			if strings.HasPrefix(w[1:], "${") {
 				return true
 			}
-			value = takesValue(f)
-		case strings.HasPrefix(f, "${"):
+			value = takesValue(w)
+		case strings.HasPrefix(w, "${"):
 			return true
 		}
 	}
 	return false
-}
-
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
 }
 
 // takesValue reports a requirements-file option, in any shortened spelling, that consumes the
@@ -244,8 +224,8 @@ func takesValue(f string) bool {
 // untrackedConstraint reports a constraint option that includeTarget does not record: shortened
 // ("--cons c.txt") or after another option ("--pre -c c.txt"). A constraint file can itself
 // include a requirement file, so pip may install from it.
-func untrackedConstraint(line string) bool {
-	for i, f := range strings.Fields(line) {
+func untrackedConstraint(words []string) bool {
+	for i, f := range words {
 		word, _, _ := strings.Cut(f, "=")
 		if len(word) > 2 && strings.HasPrefix("--constraint", word) && (i > 0 || word != "--constraint") {
 			return true

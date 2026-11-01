@@ -526,6 +526,65 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
 		},
 		{
+			name:      "quoted space in a constraint name",
+			files:     map[string]string{"requirements.txt": "-c \"a b.txt\"\nrequests==2.31.0\n", "a b.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "quoted space in an include name",
+			files:     map[string]string{"requirements.txt": "-r \"a b.txt\"\nrequests==2.31.0\n", "a b.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "escaped quote in a constraint name",
+			files:     map[string]string{"requirements.txt": "-c c\\\".txt\nrequests==2.31.0\n", "c\".txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "backslash kept inside double quotes",
+			files:     map[string]string{"requirements.txt": "-c \"sub\\c.txt\"\nrequests==2.31.0\n", "sub\\c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "constraint inside a quoted option value",
+			files:     map[string]string{"requirements.txt": "-i \"x -c c.txt\"\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "quoted value before a constraint",
+			files:     map[string]string{"requirements.txt": "--pre -i \"x y\" -c c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "words after an include are ignored",
+			files:     map[string]string{"requirements.txt": "-r dev.txt extra\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:         "marker glued to an include name",
+			files:        map[string]string{"requirements.txt": "-r dev.txt;python_version<\"3\"\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
+			env:          map[string]string{"python_version": "3.11"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "unclosed double quote",
+			files:        map[string]string{"requirements.txt": "-c \"c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "unclosed single quote",
+			files:        map[string]string{"requirements.txt": "--pre -i 'x\nrequests==2.31.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:      "trailing backslash continues into nothing",
+			files:     map[string]string{"requirements.txt": "requests==2.31.0\n-c c.txt\\", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
 			name:         "include after a marker separator",
 			files:        map[string]string{"requirements.txt": "--pre ; -r dev.txt\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
 			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
@@ -698,8 +757,14 @@ func TestConstraintTarget(t *testing.T) {
 		{"--con c.txt", "", false},
 		{"--pre -c", "", false},
 		{"--pre", "", false},
+		{`-c "a b.txt"`, "a b.txt", true},
+		{`-c c\".txt`, `c".txt`, true},
+		{`-c "sub\c.txt"`, `sub\c.txt`, true},
+		{`-i "x -c c.txt"`, "", false},
+		{`--pre "-c" c.txt`, "c.txt", true},
 	} {
-		got, ok := constraintTarget(tt.line)
+		words, _ := shellSplit(tt.line)
+		got, ok := constraintTarget(words)
 		if got != tt.want || ok != tt.wantOK {
 			t.Errorf("constraintTarget(%q) = %q, %v, want %q, %v", tt.line, got, ok, tt.want, tt.wantOK)
 		}

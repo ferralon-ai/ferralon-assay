@@ -204,6 +204,10 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"environment variable after a non-ASCII space", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i x\u00a0-i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"constraint inside a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"x -c c.txt\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"include inside a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"x -r extra.txt\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"environment variable in a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--index-url \"https://${TOKEN}@host/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"unclosed quote", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -i 'x\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 
 		// Nested project definitions.
 		{"nested pyproject the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, false},
@@ -401,7 +405,8 @@ func TestUntrackedConstraint(t *testing.T) {
 		{"--pre -cc.txt", true},
 		{"--pre --constraint=c.txt", true},
 	} {
-		if got := untrackedConstraint(tt.line); got != tt.want {
+		words, _ := shellSplit(tt.line)
+		if got := untrackedConstraint(words); got != tt.want {
 			t.Errorf("untrackedConstraint(%q) = %v, want %v", tt.line, got, tt.want)
 		}
 	}

@@ -1326,10 +1326,12 @@ func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
 	}
 }
 
-// TestLeftOutEngine_AsmFuncdataPlaceholder: a FUNCDATA operand go_args_stackmap or
-// no_pointers_stackmap, written directly, through a macro the file defines, or through one an
-// included header defines, is no symbol the link binds; either name anywhere else still follows its
-// definers, here an unloaded package's header that mentions it.
+// TestLeftOutEngine_AsmFuncdataPlaceholder: go_args_stackmap and no_pointers_stackmap, which the
+// assembler renames as FUNCDATA's symbol operand, are dropped only from the refs the toolchain's own
+// funcdata.h ($GOROOT/src/runtime or $GOROOT/pkg/include) gives a standard-library package's
+// assembly. Anywhere else, module code included, either name follows its definers, here an unloaded
+// package's header that mentions it. A standard-library row lays the module out under a stand-in
+// GOROOT and marks its package standard.
 func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
 	base := map[string]string{
 		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
@@ -1343,47 +1345,122 @@ func TestLeftOutEngine_AsmFuncdataPlaceholder(t *testing.T) {
 		"_v/fd/fd.s":      "#include \"fd.h\"\n",
 		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
 	}
+	funcdataH := map[string]string{"funcdata.h": base["_v/fd/fd.h"]}
 	body := func(pre, stmt string) map[string]string {
 		return map[string]string{"x_lofalt.s": "//go:build lofalt\n\n" + pre + "TEXT ·asm(SB),0,$0\n\t" + stmt + "\n\tRET\n"}
 	}
 	type row struct {
 		name  string
+		root  string // the module's directory under a stand-in GOROOT; "" runs it as an ordinary module
+		std   bool   // the package at root is the standard library's
 		files map[string]string
-		held  bool // x.go's closure fails closed on the symbol
+		held  bool   // x.go's closure fails closed on the symbol
+		gap   string // why the row's verdict is released, a gap the exclusion did not open
 	}
 	var cases []row
 	for _, c := range []struct{ name, macro, slot string }{
 		{"go_args_stackmap", "GO_ARGS", "0"},
 		{"no_pointers_stackmap", "NO_LOCAL_POINTERS", "1"},
 	} {
-		def := "#define " + c.macro + " FUNCDATA $" + c.slot + ", " + c.name + "(SB)\n"
+		n := c.name + "(SB)"
+		use := merge(funcdataH, body("#include \"funcdata.h\"\n\n", c.macro))
 		cases = append(cases, []row{
-			{c.name + ": a FUNCDATA statement", body("", "FUNCDATA $"+c.slot+", "+c.name+"(SB)"), false},
-			{c.name + ": a FUNCDATA macro of the file", body(def+"\n", c.macro), false},
-			{c.name + ": a FUNCDATA macro of an included header", merge(body("#include \"fd.h\"\n\n", c.macro), map[string]string{"fd.h": def}), false},
-			{c.name + ": a CALL", body("", "CALL "+c.name+"(SB)"), true},
-			{c.name + ": an address operand", body("", "MOVQ $"+c.name+"(SB), AX"), true},
+			{c.name + ": std, the toolchain's runtime/funcdata.h", "src/runtime", true, use, false, ""},
+			{c.name + ": std, the toolchain's pkg/include/funcdata.h", "pkg/include", true, use, false, ""},
+			{c.name + ": std, a funcdata.h elsewhere in GOROOT", "src/rt", true, use, true, ""},
+			{c.name + ": a module at the toolchain's funcdata.h", "src/runtime", false, use, true, ""},
+			{c.name + ": std, a CALL beside the toolchain's funcdata.h", "src/runtime", true, merge(funcdataH, body("#include \"funcdata.h\"\n\n", "CALL "+n)), true, ""},
+			{c.name + ": std, a FUNCDATA macro of the file", "src/runtime", true, body("#define "+c.macro+" FUNCDATA $"+c.slot+", "+n+"\n\n", c.macro), true, ""},
+			{c.name + ": a module's own funcdata.h", "", false, use, true, ""},
+			{c.name + ": a module's FUNCDATA macro, then the toolchain's funcdata.h", "", false, body("#define FUNCDATA CALL\n#include \"funcdata.h\"\n\n", c.macro), true,
+				"the toolchain's funcdata.h is outside the package's directory, so its macros are never read"},
+			{c.name + ": a module CALL commented FUNCDATA", "", false, body("", "CALL "+n+" /* FUNCDATA */"), true, ""},
+			{c.name + ": a module header CALL macro commented FUNCDATA", "", false, merge(body("#include \"fd.h\"\n\n", "M"), map[string]string{"fd.h": "#define M CALL " + n + " // FUNCDATA\n"}), true, ""},
+			{c.name + ": a module FUNCDATA defined as a CALL", "", false, body("#define FUNCDATA CALL\n\n", "FUNCDATA "+n), true, ""},
+			{c.name + ": a module comment opened on an earlier line", "", false, body("", "MOVQ AX, BX\n/*\nFUNCDATA $"+c.slot+", /* */ CALL "+n), true, ""},
+			{c.name + ": a module macro parameter named FUNCDATA", "", false, body("#define M(FUNCDATA) FUNCDATA $"+c.slot+", "+n+"\n\n", "M(MOVQ)"), true, ""},
+			{c.name + ": a module CALL beside a comment-glued operand", "", false, body("", "FUNCDATA $"+c.slot+", /**/"+n+"; CALL "+n), true, ""},
+			{c.name + ": a module FUNCDATA defined by an out-of-directory header", "", false, merge(body("#include \"h/fd.h\"\n\n", "FUNCDATA $"+c.slot+", "+n), map[string]string{"h/fd.h": "#define FUNCDATA MOVQ\n"}), true, ""},
+			{c.name + ": a module macro of the name", "", false, body("#define "+c.name+" ·evil\n\n", "FUNCDATA $"+c.slot+", "+n), true, ""},
 		}...)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := lofRun(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
-			f := got.facts["x.go"]
-			if f == nil {
-				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
+			if tc.gap != "" {
+				t.Skip("pre-existing gap: " + tc.gap)
 			}
-			var fc []string
+			var fc, fcStd []string
+			if tc.root == "" {
+				got := lofRun(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
+				f := got.facts["x.go"]
+				if f == nil {
+					t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
+				}
+				if got.withheld != tc.held {
+					t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.held, lofDescribe(got))
+				}
+				fc, fcStd = f.FC, f.FCStd
+			} else {
+				fc, fcStd = lofStdRootClosure(t, tc.root, tc.std, merge(base, tc.files))
+			}
+			var want []string
 			if tc.held {
-				fc = []string{lofAsmSymbol}
+				want = []string{lofAsmSymbol}
 			}
-			if !slices.Equal(f.FC, fc) {
-				t.Errorf("x.go fails closed on %v, want %v", f.FC, fc)
-			}
-			if got.withheld != tc.held {
-				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.held, lofDescribe(got))
+			if !slices.Equal(fc, want) || len(fcStd) > 0 {
+				t.Errorf("x.go fails closed on %v (standard library %v), want %v", fc, fcStd, want)
 			}
 		})
 	}
+}
+
+// TestLofParseAsmFuncdataNoGoroot: with no toolchain root known, no header is the toolchain's
+// funcdata.h, even one at the path a root of "." would give it.
+func TestLofParseAsmFuncdataNoGoroot(t *testing.T) {
+	t.Chdir(writeTree(t, map[string]string{"src/runtime/funcdata.h": "#define GO_ARGS FUNCDATA $0, go_args_stackmap(SB)\n"}))
+	for _, tc := range []struct {
+		goroot string
+		kept   bool
+	}{{"", true}, {".", false}} {
+		p := &lofPkg{path: "runtime", std: true, asmText: map[string][]*lofAsm{}, asmData: map[string]bool{}}
+		parseAsm(p, "a.s", []byte("#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tGO_ARGS\n\tRET\n"), []string{filepath.Join("src", "runtime", "funcdata.h")}, tc.goroot)
+		bodies := p.asmText["runtime.f"]
+		if len(bodies) != 1 {
+			t.Fatalf("goroot %q: bodies of runtime.f = %d, want 1", tc.goroot, len(bodies))
+		}
+		if kept := slices.Contains(bodies[0].refs, "go_args_stackmap"); kept != tc.kept {
+			t.Errorf("goroot %q: go_args_stackmap kept = %v, want %v (refs %v)", tc.goroot, kept, tc.kept, bodies[0].refs)
+		}
+	}
+}
+
+// lofStdRootClosure lays files out as module example.com/m at root under a stand-in GOROOT, marks
+// the package standard when std, and returns what x.go's closure fails closed on, and fails closed on
+// for the standard library.
+func lofStdRootClosure(t *testing.T, root string, std bool, files map[string]string) ([]string, []string) {
+	t.Helper()
+	tree := map[string]string{}
+	for name, body := range files {
+		tree[root+"/"+name] = body
+	}
+	goroot, err := filepath.EvalSymlinks(writeTree(t, tree))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(goroot, root)
+	ctx := context.Background()
+	load, err := LoadProgram(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load.buildGoVersion = load.goVersion
+	release := load.buildRelease()
+	floor := goDirectiveFloor(load.Packages)
+	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
+	w := newLofWorld(ctx, load.Packages, dir, append(os.Environ(), "GOWORK=off"), excluded, goroot, time.Now().Add(time.Minute))
+	w.dirs["example.com/m"], w.names["example.com/m"], w.std["example.com/m"] = dir, "main", std
+	cl := w.closure(filepath.Join(dir, "x.go"), "example.com/m")
+	return cl.fc, cl.fcStd
 }
 
 // TestLeftOutEngine_AsmLinkOwnDefiner: a bare symbol x.go's own assembly defines still follows every

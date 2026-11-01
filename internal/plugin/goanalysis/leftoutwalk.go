@@ -472,7 +472,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 		if w.excluded(x) {
 			continue
 		}
-		parseAsm(p, full, src, headers)
+		parseAsm(p, full, src, headers, w.goroot)
 	}
 	slices.Sort(p.imports)
 	p.imports = slices.Compact(p.imports)
@@ -1819,8 +1819,8 @@ func (p *lofPkg) asmName(sym string) {
 // symbols. A symbol is "pkgpath.name" for the Go-visible form ("·name", "pkg∕path·name"),
 // "file:name<>" for a file-local one, and the bare name otherwise. A reference made by a macro the
 // file defines or includes from its own directory counts for every body of the file. A call or
-// jump through a register is a dynamic call.
-func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
+// jump through a register is a dynamic call. goroot is the toolchain's root, "" when unknown.
+func parseAsm(p *lofPkg, path string, src []byte, headers []string, goroot string) {
 	norm := func(sym string) string {
 		if i := strings.IndexByte(sym, '<'); i >= 0 && !strings.HasSuffix(sym, "<>") {
 			sym = sym[:i]
@@ -1843,8 +1843,14 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 	for _, h := range headers {
 		if bytes.Contains(src, []byte(filepath.Base(h))) {
 			if hs, err := os.ReadFile(h); err == nil {
+				// The assembler renames these FUNCDATA operands (obj/plist.go); the toolchain fixes std's use.
+				funcdata := p.std && goroot != "" && (filepath.Clean(h) == filepath.Join(goroot, "src", "runtime", "funcdata.h") ||
+					filepath.Clean(h) == filepath.Join(goroot, "pkg", "include", "funcdata.h"))
 				for _, l := range strings.Split(string(hs), "\n") {
-					for _, ref := range asmLineRefs(l) {
+					for _, ref := range asmRefs(l) {
+						if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
+							continue
+						}
 						shared = append(shared, norm(ref))
 					}
 				}
@@ -1857,7 +1863,7 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 		}
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "#define") || strings.HasSuffix(t, "\\") {
-			for _, ref := range asmLineRefs(t) {
+			for _, ref := range asmRefs(t) {
 				shared = append(shared, norm(ref))
 			}
 			continue
@@ -1893,7 +1899,7 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 		if cur == nil {
 			continue
 		}
-		for _, ref := range asmLineRefs(t) {
+		for _, ref := range asmRefs(t) {
 			cur.refs = append(cur.refs, norm(ref))
 		}
 		if asmIndirect(fields) {
@@ -1903,23 +1909,6 @@ func parseAsm(p *lofPkg, path string, src []byte, headers []string) {
 	for _, b := range bodies {
 		b.refs = append(b.refs, shared...)
 	}
-}
-
-// asmLineRefs returns the symbols each ;-separated statement of a line of assembly, or of a macro
-// body, references, less the funcdata.h placeholders a FUNCDATA statement names.
-func asmLineRefs(line string) []string {
-	var out []string
-	for _, stmt := range strings.Split(line, ";") {
-		funcdata := slices.Contains(strings.Fields(stmt), "FUNCDATA")
-		for _, ref := range asmRefs(stmt) {
-			// As a FUNCDATA operand the assembler renames it (cmd/internal/obj plist.go): no link binds it.
-			if funcdata && (ref == "go_args_stackmap" || ref == "no_pointers_stackmap") {
-				continue
-			}
-			out = append(out, ref)
-		}
-	}
-	return out
 }
 
 // asmRefs returns the symbols a line of assembly references as name(SB).

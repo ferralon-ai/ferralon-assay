@@ -143,12 +143,16 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			}
 			// pip parses every option on a line it does not recurse into, and accepts any
 			// unambiguous prefix of a long option; --no-r is the shortest for this one. A
-			// word another option takes as its value is not an option.
+			// word another option takes as its value is not an option, and a bare -- ends
+			// the options.
 			value := false
 			for _, f := range words {
 				if value {
 					value = false
 					continue
+				}
+				if f == "--" {
+					break
 				}
 				name, _, attached := strings.Cut(f, "=")
 				value = !attached && takesValue(name)

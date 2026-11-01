@@ -1015,8 +1015,12 @@ var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true
 // shellArgOptions are the shell options that take the next word as their argument.
 var shellArgOptions = map[string]bool{"--rcfile": true, "--init-file": true}
 
-// suArgOptions are the su and runuser long options that take the next word as their argument.
-var suArgOptions = map[string]bool{"--shell": true, "--group": true, "--supp-group": true, "--whitelist-environment": true}
+// suArgOptions are the su and runuser long options that take the next word as their argument,
+// and suLongFlags those that take none.
+var (
+	suArgOptions = map[string]bool{"--shell": true, "--group": true, "--supp-group": true, "--whitelist-environment": true}
+	suLongFlags  = map[string]bool{"--login": true, "--pty": true, "--preserve-environment": true, "--fast": true}
+)
 
 // suFlags are the su and runuser short options that take no argument, and suArgFlags those
 // that take one, attached or as the next word.
@@ -1062,11 +1066,12 @@ func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 				case strings.HasPrefix(a, "--"):
 					continue
 				case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
-					c = c || a[0] == '-' && strings.ContainsRune(a, 'c')
+					c = c || strings.ContainsRune(a, 'c')
 					// Each -o or -O is taken to have the next word as its argument, but zsh's
-					// -O takes none and zsh and ksh take -oNAME, so the text may be another word.
+					// -O takes none and zsh and ksh take -oNAME, and zsh's -b ends the options,
+					// so the text may be another word.
 					want = strings.Count(a, "o") + strings.Count(a, "O")
-					sure = sure && want == 0
+					sure = sure && want == 0 && !strings.ContainsRune(a, 'b')
 					continue
 				case c:
 					return i, a, true, sure, true
@@ -1081,11 +1086,17 @@ func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
 // suCommand finds the text su or runuser runs in the user's shell, the argument of its -c or
 // --command, among the words after it. The scan stops at --, and at runuser's -u, past which
 // the words are a command run without a shell. sure is false when -c comes after the user,
-// where it is passed to the shell, is given more than once, or follows an option not known.
+// where it is passed to the shell, is given more than once, or beside an option not known,
+// such as a long option abbreviated, or when -s names a program that is not a shell.
 func suCommand(args []string) (text string, sure, ok bool) {
 	user, known, n := false, true, 0
 	take := func(t string) {
 		text, n, sure = t, n+1, !user
+	}
+	shell := func(s string) {
+		if name, named := CommandName(s); !named || !shells[name] {
+			known = false
+		}
 	}
 	for j := 0; j < len(args); j++ {
 		a := args[j]
@@ -1094,6 +1105,9 @@ func suCommand(args []string) (text string, sure, ok bool) {
 			j = len(args)
 		case suArgOptions[a]:
 			j++
+			if a == "--shell" && j < len(args) {
+				shell(args[j])
+			}
 		case strings.HasPrefix(a, "--command=") || strings.HasPrefix(a, "--session-command="):
 			take(a[strings.IndexByte(a, '=')+1:])
 		case a == "--command" || a == "--session-command":
@@ -1101,7 +1115,16 @@ func suCommand(args []string) (text string, sure, ok bool) {
 				j++
 				take(args[j])
 			}
-		case strings.HasPrefix(a, "--") || a == "-":
+		case strings.HasPrefix(a, "--"):
+			opt, val, _ := strings.Cut(a, "=")
+			switch {
+			case opt == "--shell":
+				shell(val)
+			case suArgOptions[opt] || suLongFlags[a]:
+			default:
+				known = false
+			}
+		case a == "-":
 		case strings.HasPrefix(a, "-"):
 			// A short-option cluster: its letters are read as getopt reads them.
 		letters:
@@ -1116,8 +1139,11 @@ func suCommand(args []string) (text string, sure, ok bool) {
 						j++
 						arg = args[j]
 					}
-					if l == 'c' {
+					switch l {
+					case 'c':
 						take(arg)
+					case 's':
+						shell(arg)
 					}
 					break letters
 				case strings.IndexByte(suFlags, l) < 0:

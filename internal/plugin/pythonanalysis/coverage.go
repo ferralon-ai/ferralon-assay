@@ -137,7 +137,7 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(unq); ok && kind == reqEditable {
 				return out, false
 			}
-			if abbreviatesInstallOption(unq) || laterInstallOption(unq) || untrackedConstraint(unq) || envOptionName(unq) {
+			if abbreviatesInstallOption(unq) || laterInstallOption(unq) || untrackedConstraint(unq) || envOptionName(line) {
 				return out, false
 			}
 			// pip parses every option on the line, not just the first, and accepts any
@@ -178,20 +178,30 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 // envOptionName reports an option name that comes from an environment variable ("-${R} x.txt",
 // "--pre ${R} x.txt"): pip expands it before parsing, so it may name an install option. A
 // variable in an option's value ("--index-url=https://${TOKEN}@host/simple") is left alone; one
-// whose expansion itself carries whitespace and options is out of reach of a static read.
+// whose expansion itself carries whitespace and options is out of reach of a static read. Each
+// field is unquoted on its own, so an empty value ("-i \"\"") still occupies its place.
 func envOptionName(line string) bool {
-	fields := strings.Fields(line)
-	for i, f := range fields {
+	unquote := strings.NewReplacer(`"`, "", `'`, "", `\`, "")
+	value := false
+	for _, f := range strings.Fields(line) {
+		f = unquote.Replace(f)
+		if value {
+			value = false
+			continue
+		}
 		switch {
 		case strings.HasPrefix(f, "--"):
-			if name, _, _ := strings.Cut(f, "="); strings.Contains(name, "${") {
+			name, _, attached := strings.Cut(f, "=")
+			if strings.Contains(name, "${") {
 				return true
 			}
+			value = !attached && takesValue(name)
 		case strings.HasPrefix(f, "-"):
 			if strings.HasPrefix(f[1:], "${") {
 				return true
 			}
-		case strings.HasPrefix(f, "${") && i > 0 && !takesValue(fields[i-1]):
+			value = takesValue(f)
+		case strings.HasPrefix(f, "${"):
 			return true
 		}
 	}
@@ -202,13 +212,13 @@ func envOptionName(line string) bool {
 // next field as its value.
 func takesValue(f string) bool {
 	switch f {
-	case "-i", "-f", "-c", "-r", "-e":
+	case "-i", "-f", "-c", "-r", "-e", "-C":
 		return true
 	}
-	if len(f) <= 2 || !strings.HasPrefix(f, "--") || strings.Contains(f, "=") {
+	if len(f) <= 2 || !strings.HasPrefix(f, "--") {
 		return false
 	}
-	for _, opt := range []string{"--index-url", "--extra-index-url", "--find-links", "--trusted-host", "--no-binary", "--only-binary", "--use-feature", "--constraint", "--requirement", "--editable", "--hash", "--config-settings", "--global-option"} {
+	for _, opt := range []string{"--index-url", "--pypi-url", "--extra-index-url", "--find-links", "--trusted-host", "--no-binary", "--only-binary", "--all-releases", "--only-final", "--use-feature", "--constraint", "--requirement", "--editable", "--hash", "--config-settings"} {
 		if strings.HasPrefix(opt, f) {
 			return true
 		}

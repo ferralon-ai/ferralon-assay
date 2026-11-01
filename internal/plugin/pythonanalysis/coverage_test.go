@@ -191,6 +191,10 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"attached option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--index-url=https://${TOKEN}@host/simple\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"short option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"shortened option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra ${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"short option value from an environment variable, spaced", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i ${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"option name after a consumed value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i -i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"option name after an empty quoted value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"\" ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"config setting from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-C ${X}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 

@@ -97,7 +97,9 @@ func TestVeto_Backstop(t *testing.T) {
 		{"poe tasks in a pyproject under a test directory", tree(map[string]string{"tests/pyproject.toml": "[tool.poe.tasks]\nsetup = \"inst add x\"\n"}), true, "tests/pyproject.toml:2"},
 		{"JSON under a test directory that a pipeline uploads", tree(map[string]string{"ci/tests/steps.json": mcp, ".buildkite/pipeline.yml": "steps:\n  - command: buildkite-agent pipeline upload ci/tests/steps.json\n"}), true, "ci/tests/steps.json:1"},
 		{"JSON under src/ a pipeline uploads from its package root", tree(map[string]string{"src/tests/steps.json": mcp, ".buildkite/pipeline.yml": "steps:\n  - command: buildkite-agent pipeline upload tests/steps.json\n"}), true, "src/tests/steps.json:1"},
-		{"JSON in a package under a test directory", tree(map[string]string{"tests/app/turbo.json": mcp, "tests/app/package.json": "{\"name\": \"app\"}\n"}), true, "tests/app/turbo.json:1"},
+		{"JSON in a package under a test directory", tree(map[string]string{"tests/app/steps.json": mcp, "tests/app/package.json": "{\"name\": \"app\"}\n"}), true, "tests/app/steps.json:1"},
+		{"JSON under a test directory a sub-project names from its own directory", tree(map[string]string{"pkg/tests/steps.json": mcp, "pkg/pyproject.toml": "[tool.ci]\nsteps = \"tests/steps.json\"\n"}), true, "pkg/tests/steps.json:1"},
+		{"JSON under a test directory setup.py names", tree(map[string]string{"tests/steps.json": mcp, "setup.py": "from setuptools import setup\nsetup(data_files=[(\"ci\", [\"tests/steps.json\"])])\n"}), true, "tests/steps.json:1"},
 		{"JSON in a Python project under a test directory", tree(map[string]string{"tests/app/tasks.json": mcp, "tests/app/pyproject.toml": "[project]\nname = \"app\"\n"}), true, "tests/app/tasks.json:1"},
 		{"non-data file under a test directory", tree(map[string]string{"tests/ci.cfg": "[x]\ncommand = inst add x\n"}), true, "tests/ci.cfg:2"},
 		{"workflow named for tests", tree(map[string]string{".github/workflows/tests.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: inst add x\n"}), true, "-"},
@@ -441,6 +443,47 @@ func TestVeto_BackstopPackageModuleFailsClosed(t *testing.T) {
 			}
 			v := New(root, testRead(root), spec)
 			p := filepath.Join(root, "pkg", "build.py")
+			head, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, ok := v.Classify(func(string, []byte) (string, bool) { return "", false })(p, head)
+			if ok != tt.want {
+				t.Fatalf("Classify withheld = %v, want %v", ok, tt.want)
+			}
+		})
+	}
+}
+
+// A JSON file under a test directory is read when a file the build reads could not be read,
+// since that file may name it.
+func TestVeto_BackstopFixtureFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		fail string
+		want bool
+	}{
+		{"every build file readable", "", false},
+		{"a build file unreadable", "Makefile", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{
+				"inst.toml":        "[deps]\n",
+				"inst.lock":        "lock\n",
+				"Makefile":         "all:\n\techo ok\n",
+				"tests/steps.json": `{"mcpServers": {"a": {"command": "inst", "args": ["add", "x"]}}}`,
+			})
+			spec := testSpec
+			read := spec.ReadRegular
+			spec.ReadRegular = func(p string) ([]byte, error) {
+				if tt.fail != "" && filepath.Base(p) == tt.fail {
+					return nil, errors.New("unreadable")
+				}
+				return read(p)
+			}
+			v := New(root, testRead(root), spec)
+			p := filepath.Join(root, "tests", "steps.json")
 			head, err := os.ReadFile(p)
 			if err != nil {
 				t.Fatal(err)

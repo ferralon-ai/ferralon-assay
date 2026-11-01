@@ -768,6 +768,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		base, unknown = append(base, dirs...), !ok
 	}
 	included := yaml && gitlabIncluded(path, units)
+	script := s.kind == kindShell && !shadowsData(units)
 	for _, u := range units {
 		carry := &hostCursor{v: v, dirs: append([]string(nil), base...), unknown: unknown}
 		if u.bad {
@@ -835,7 +836,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {
-				seg.script = s.kind == kindShell
+				seg.script = script
 				if why := v.command(seg, cur, 0); why != "" {
 					return why
 				}
@@ -1019,13 +1020,31 @@ var dataCommands = map[string]bool{
 // that prints nothing and is not piped on. Only a command split from a line of a shell script
 // is one (segment.script): a value in a CI file or manifest may be an input an action splices
 // into its own command (${{ inputs.cmd }} | sh), and a command a run wrapper or concurrently
-// runs is never one.
+// runs is never one. A $ or backtick even inside single quotes rules one out, since bash's
+// test -v and ksh's arithmetic tests evaluate a subscript such as 'a[$(cmd)]'.
 func dataOnly(seg segment) bool {
 	head, ok := CommandName(seg.words[0])
-	if !seg.script || !ok || !dataCommands[head] || seg.end == "|" {
+	if !seg.script || !ok || !dataCommands[head] || seg.end == "|" || hasExpansion(seg.words) {
 		return false
 	}
 	return !strings.HasSuffix(head, "grep") || grepQuiet(seg.words[1:])
+}
+
+// dataShadowRE finds what in a shell script may make a dataCommands name run another program:
+// a function by that name (name() or function name), an alias, enable or hash, any use of PATH,
+// a sourced file or eval, which may define either, and a heredoc, whose body another
+// interpreter may read and which this reads as shell lines.
+var dataShadowRE = regexp.MustCompile(`<<|(?:^|[^A-Za-z0-9_])PATH(?:[^A-Za-z0-9_]|$)|(?:^|[\s;&|({])(?:alias|enable|hash|source|eval|\.)(?:\s|$)|(?:^|[\s;&|({])(?:e?grep|fgrep|test|true|false|\[)\s*\(|\bfunction\s+(?:e?grep|fgrep|test|true|false|\[)`)
+
+// shadowsData reports whether a shell script's units hold anything dataShadowRE finds, so that
+// none of its commands is read as data.
+func shadowsData(units []unit) bool {
+	for _, u := range units {
+		if dataShadowRE.MatchString(u.text) {
+			return true
+		}
+	}
+	return false
 }
 
 // grepFlags are the short grep options that take no argument, so a cluster of them may go on to

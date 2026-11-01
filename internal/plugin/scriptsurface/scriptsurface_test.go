@@ -198,6 +198,19 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Procfile command behind a leading redirect", tree(map[string]string{"Procfile": "web: >/dev/null inst add x\n"}), true, ""},
 		{"Procfile command behind a spaced redirect", tree(map[string]string{"Procfile": "web: > /dev/null inst add x\n"}), true, ""},
 		{"Procfile command behind an append", tree(map[string]string{"Procfile": "web: >>log inst add x\n"}), true, ""},
+		{"Procfile command behind a spaced append", tree(map[string]string{"Procfile": "web: >> log inst add x\n"}), true, ""},
+		{"Procfile command behind a stderr redirect", tree(map[string]string{"Procfile": "web: 2>/dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind a spaced stderr redirect", tree(map[string]string{"Procfile": "web: 2> /dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind a descriptor duplicate", tree(map[string]string{"Procfile": "web: 2>&1 inst add x\n"}), true, ""},
+		{"Procfile command behind an all-output redirect", tree(map[string]string{"Procfile": "web: &>/dev/null inst add x\n"}), true, ""},
+		{"Procfile command behind an input redirect", tree(map[string]string{"Procfile": "web: <in inst add x\n"}), true, ""},
+		{"Procfile command behind a spaced input redirect", tree(map[string]string{"Procfile": "web: < in inst add x\n"}), true, ""},
+		{"Procfile command behind a leading pipe", tree(map[string]string{"Procfile": "web: |inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a name starting -", tree(map[string]string{"Procfile": "web: >-#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a numeric name", tree(map[string]string{"Procfile": "web: >2#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a name starting +", tree(map[string]string{"Procfile": "web: >+#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect to a name starting -1", tree(map[string]string{"Procfile": "web: >-1#x inst add x\n"}), true, ""},
+		{"Procfile command behind a redirect, no installer", tree(map[string]string{"Procfile": "web: >/dev/null serve\n"}), false, ""},
 
 		// Commands that only print, match or test their arguments.
 		{"echo of an install piped into a shell", tree(map[string]string{"install.sh": "echo inst add x | sh\n"}), true, ""},
@@ -253,19 +266,21 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"test and [ naming the installer", tree(map[string]string{"install.sh": "test -n inst && [ inst = inst ]\n"}), false, ""},
 		{"true and false with an installer argument", tree(map[string]string{"install.sh": "true inst add x; false inst\n"}), false, ""},
 		{"grep after an allowed install", tree(map[string]string{"install.sh": "inst sync && grep -q inst log.txt\n"}), false, ""},
-		{"Procfile command behind a spaced append", tree(map[string]string{"Procfile": "web: >> log inst add x\n"}), true, ""},
-		{"Procfile command behind a stderr redirect", tree(map[string]string{"Procfile": "web: 2>/dev/null inst add x\n"}), true, ""},
-		{"Procfile command behind a spaced stderr redirect", tree(map[string]string{"Procfile": "web: 2> /dev/null inst add x\n"}), true, ""},
-		{"Procfile command behind a descriptor duplicate", tree(map[string]string{"Procfile": "web: 2>&1 inst add x\n"}), true, ""},
-		{"Procfile command behind an all-output redirect", tree(map[string]string{"Procfile": "web: &>/dev/null inst add x\n"}), true, ""},
-		{"Procfile command behind an input redirect", tree(map[string]string{"Procfile": "web: <in inst add x\n"}), true, ""},
-		{"Procfile command behind a spaced input redirect", tree(map[string]string{"Procfile": "web: < in inst add x\n"}), true, ""},
-		{"Procfile command behind a leading pipe", tree(map[string]string{"Procfile": "web: |inst add x\n"}), true, ""},
-		{"Procfile command behind a redirect to a name starting -", tree(map[string]string{"Procfile": "web: >-#x inst add x\n"}), true, ""},
-		{"Procfile command behind a redirect to a numeric name", tree(map[string]string{"Procfile": "web: >2#x inst add x\n"}), true, ""},
-		{"Procfile command behind a redirect to a name starting +", tree(map[string]string{"Procfile": "web: >+#x inst add x\n"}), true, ""},
-		{"Procfile command behind a redirect to a name starting -1", tree(map[string]string{"Procfile": "web: >-1#x inst add x\n"}), true, ""},
-		{"Procfile command behind a redirect, no installer", tree(map[string]string{"Procfile": "web: >/dev/null serve\n"}), false, ""},
+		{"test -v evaluating a single-quoted substitution", tree(map[string]string{"install.sh": "test -v 'a[$(inst add x)]'\n"}), true, ""},
+		{"[ -v evaluating a single-quoted substitution", tree(map[string]string{"install.sh": "[ -v 'a[$(inst add x)]' ]\n"}), true, ""},
+		{"arithmetic test evaluating a single-quoted backtick substitution", tree(map[string]string{"install.sh": "test 'a[`inst add x`]' -eq 0\n"}), true, ""},
+		{"grep shadowed by a function", tree(map[string]string{"install.sh": "grep() { shift; \"$@\"; }\ngrep -q inst add x\n"}), true, ""},
+		{"test shadowed by a function over lines", tree(map[string]string{"install.sh": "test()\n{\n  \"$@\"\n}\ntest inst add x\n"}), true, ""},
+		{"grep shadowed by a function keyword", tree(map[string]string{"install.sh": "function grep { shift; \"$@\"; }\ngrep -q inst add x\n"}), true, ""},
+		{"grep found on a changed PATH", tree(map[string]string{"install.sh": "export PATH=./tools:/usr/bin\ngrep -q inst add x\n"}), true, ""},
+		{"grep hashed to another program", tree(map[string]string{"install.sh": "hash -p ./tools/run grep\ngrep -q inst add x\n"}), true, ""},
+		{"test builtin disabled", tree(map[string]string{"install.sh": "enable -n test\ntest inst add x\n"}), true, ""},
+		{"grep after an alias", tree(map[string]string{"install.sh": "shopt -s expand_aliases\nalias grep=run\ngrep -q inst add x\n"}), true, ""},
+		{"grep after a sourced file", tree(map[string]string{"lib.sh": "grep() { \"$@\"; }\n", "install.sh": "source ./lib.sh\ngrep -q inst add x\n"}), true, ""},
+		{"grep after a dot-sourced file", tree(map[string]string{"lib.sh": "grep() { \"$@\"; }\n", "install.sh": ". ./lib.sh\ngrep -q inst add x\n"}), true, ""},
+		{"grep after an eval", tree(map[string]string{"install.sh": "eval \"$DEFS\"\ngrep -q inst add x\n"}), true, ""},
+		{"grep line in a heredoc another interpreter reads", tree(map[string]string{"install.sh": "perl <<'EOF'\ngrep -q, system 'inst add x';\nEOF\n"}), true, ""},
+		{"grep beside a word that only contains eval and PATH", tree(map[string]string{"guard.sh": "P='(^|/)eval/|MYPATH'\ngrep -q inst notes.txt\n"}), false, ""},
 		{"unterminated quote", tree(map[string]string{"install.sh": "echo 'x && inst sync\n"}), true, ""},
 		{"unjoined continuation", tree(map[string]string{"install.sh": "inst sync \\"}), true, ""},
 
@@ -634,6 +649,34 @@ func TestVeto_SampleHooks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := withheld(writeTree(t, tt.files), testSpec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A command a concurrent runner starts is never data, though the same command on its own line
+// of the script is.
+func TestVeto_DataOnlyUnderConcurrent(t *testing.T) {
+	conc := testSpec
+	conc.Concurrent = func(words []string) ([]string, bool) {
+		if words[0] == "conc" {
+			return words[1:], true
+		}
+		return nil, false
+	}
+	tests := []struct {
+		name   string
+		script string
+		want   bool // withheld
+	}{
+		{"quiet grep a concurrent runner starts", "conc \"grep -q inst x\"\n", true},
+		{"quiet grep on its own", "grep -q inst x\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "install.sh": tt.script}
+			if got := withheld(writeTree(t, files), conc); got != tt.want {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
 			}
 		})

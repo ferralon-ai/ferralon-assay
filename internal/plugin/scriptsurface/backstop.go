@@ -223,18 +223,26 @@ func sourceKind(path string, head []byte) (source, hash bool) {
 // (vite.config.ts, webpack.config.js), or a directory above it, inside the build, is a toolDirs
 // name.
 func (v *Veto) buildScript(path string, head []byte) bool {
+	if v.placedScript(path, head) {
+		return true
+	}
+	lower := strings.ToLower(filepath.Base(path))
+	if testFile(lower, v.dirsOf(path)) {
+		return false
+	}
+	i := strings.IndexByte(lower, '.')
+	return (i > 0 && buildScriptStems[lower[:i]] || buildScriptStems[lower]) && !v.packageModule(path)
+}
+
+// placedScript reports whether buildScript holds for the file at path by any rule but its
+// stem: the one rule that asks packageModule, and so the walk (buildRead).
+func (v *Veto) placedScript(path string, head []byte) bool {
 	lower := strings.ToLower(filepath.Base(path))
 	dirs := v.dirsOf(path)
 	if testFile(lower, dirs) {
 		return false
 	}
-	if bytes.HasPrefix(head, []byte("#!")) {
-		return true
-	}
-	if i := strings.IndexByte(lower, '.'); (i > 0 && buildScriptStems[lower[:i]] || buildScriptStems[lower]) && !v.packageModule(path) {
-		return true
-	}
-	if strings.Contains(lower, ".config.") {
+	if bytes.HasPrefix(head, []byte("#!")) || strings.Contains(lower, ".config.") {
 		return true
 	}
 	for _, d := range dirs {
@@ -261,7 +269,9 @@ func (v *Veto) dirsOf(path string) []string {
 // console/commands/build.py). Its build-script stem then says nothing about the build running
 // it. Any mention of it in a file the backstop reads (mentionSource), by its base name alone
 // (build.py) or its package-qualified tail (pkg/build, pkg.build, from pkg import build), makes
-// it a build script: a module counts unless the walk shows otherwise.
+// it a build script, and so does a mention in a module already counted that way, until none is
+// left: a module counts unless the walk shows otherwise. What stays exempt is a module that only
+// modules nobody mentions import.
 func (v *Veto) packageModule(path string) bool {
 	if !strings.EqualFold(filepath.Ext(path), ".py") || filepath.Dir(path) == v.root {
 		return false
@@ -355,8 +365,23 @@ func (v *Veto) buildRead() *buildFiles {
 		b.files = append(b.files, buildFile{dir: filepath.Dir(e.Path), data: data})
 		return nil
 	})
-	if b.whole && len(b.modules) > 0 {
+	// Each module a pass finds mentioned is itself a build script, so its text is the next
+	// pass's source, until a pass finds none new.
+	read := map[string]bool{}
+	for b.whole && len(b.modules) > 0 {
 		b.mentions(v, texts)
+		for _, t := range texts {
+			read[t] = true
+		}
+		texts = nil
+		for m := range b.mentioned {
+			if !read[m] {
+				texts = append(texts, m)
+			}
+		}
+		if len(texts) == 0 {
+			break
+		}
 	}
 	v.build = b
 	return b
@@ -374,11 +399,13 @@ func (v *Veto) stemModule(path, lower string) bool {
 	return err == nil
 }
 
-// mentionSource reports whether a text file may mention a package module to run it: every
-// file the backstop reads (backstopSkips), Python source included only for a launcherNames file
-// or a build script outside any package (buildScript; packageModule never asks about a file
-// without an __init__.py beside it, so the walk does not recurse). ok is false when the check
-// for that __init__.py fails other than by its absence.
+// mentionSource reports whether a text file may mention a package module to run it, before any
+// module counts: every file the backstop reads (backstopSkips), Python source included only for
+// a launcherNames file, a build script outside any package (buildScript; packageModule never
+// asks about a file without an __init__.py beside it, so the walk does not recurse), or a module
+// inside one that is a build script by its place or shebang (placedScript). A module with a
+// build-script stem joins once a mention counts it (buildRead). ok is false when the check for
+// that __init__.py fails other than by its absence.
 func (v *Veto) mentionSource(path, lower string, head []byte) (count, ok bool) {
 	if v.backstopSkips(path, head) {
 		return false, true
@@ -387,7 +414,7 @@ func (v *Veto) mentionSource(path, lower string, head []byte) (count, ok bool) {
 		return true, true
 	}
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "__init__.py")); err == nil {
-		return false, true
+		return v.placedScript(path, head), true
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, false
 	}
@@ -1218,9 +1245,9 @@ var stdinShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash":
 
 // backstopSegments splits shell text into its simple commands, or, when it does not split
 // (a brace group, an unclosed quote, a process substitution), returns its words as one command
-// per stage of a pipeline, cut at each | or |& word, inside a process substitution too, so a
-// name in it still reaches the rule and feedsInput still follows the pipe past a
-// tee >(sha256sum) or into tee >(cat | python3 -).
+// per stage of a pipeline, cut at each | or |&, spaced or not (get-pip.py|python3 -) but never
+// within ||, inside a process substitution too, so a name in it still reaches the rule and
+// feedsInput still follows the pipe past a tee >(sha256sum) or into tee >(cat | python3 -).
 func backstopSegments(text string) []segment {
 	if segs, ok, _ := shellSegments(text); ok {
 		return segs
@@ -1229,14 +1256,39 @@ func backstopSegments(text string) []segment {
 	var segs []segment
 	var words []string
 	for _, w := range strings.Fields(text) {
-		if w == "|" || w == "|&" {
+		for w != "" {
+			i := pipeAt(w)
+			if i < 0 {
+				words = append(words, w)
+				break
+			}
+			if i > 0 {
+				words = append(words, w[:i])
+			}
 			segs = append(segs, segment{words: words, expands: expands, end: "|"})
 			words = nil
-			continue
+			w = strings.TrimPrefix(w[i+1:], "&")
 		}
-		words = append(words, w)
 	}
 	return append(segs, segment{words: words, expands: expands})
+}
+
+// pipeAt returns the index in w of the first | that no other | adjoins, or -1.
+func pipeAt(w string) int {
+	for i := 0; i < len(w); i++ {
+		if w[i] != '|' {
+			continue
+		}
+		j := i + 1
+		for j < len(w) && w[j] == '|' {
+			j++
+		}
+		if j == i+1 {
+			return i
+		}
+		i = j
+	}
+	return -1
 }
 
 // listCommands returns the commands a list value holds when its items are shell text, not one

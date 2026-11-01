@@ -96,6 +96,8 @@ func TestResolveVersions_PackageModuleMentioned(t *testing.T) {
 		{"batch file runs it by backslashed path", map[string]string{"make.bat": "@echo off\r\npython mypkg\\build.py\r\n"}, true},
 		{"CMake runs it", map[string]string{"CMakeLists.txt": "project(x)\nadd_custom_target(deps ALL COMMAND python -m mypkg.build)\n"}, true},
 		{"workflow runs a longer-named sibling", map[string]string{"mypkg/build_utils.py": "", ".github/workflows/ci.yml": wf("python -m mypkg.build_utils")}, false},
+		{"workflow runs a tool-directory module that imports it", map[string]string{"scripts/__init__.py": "", "scripts/ci_setup.py": "from mypkg import build\nbuild.main()\n", ".github/workflows/ci.yml": wf("python -m scripts.ci_setup")}, true},
+		{"only an unmentioned module of its package imports it", map[string]string{"mypkg/__main__.py": "from mypkg import build\n"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

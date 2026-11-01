@@ -206,6 +206,11 @@ func (c *dockerCursor) cd(words []string) {
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintAll() }
 
+// wrote taints only what is under the container path key.
+func (c *dockerCursor) wrote(key string) {
+	c.st.events = append(c.st.events, dockerEvent{dst: key, dir: true, taint: true})
+}
+
 func (c *dockerCursor) fork() cursor {
 	f := *c
 	return &f

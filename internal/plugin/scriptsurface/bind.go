@@ -31,6 +31,9 @@ type cursor interface {
 	Binder
 	cd(words []string) // nil when the target is not literal
 	other()            // a command that runs no installer and may change files
+	// wrote is a command that runs no installer and writes only under the place key, from at,
+	// names.
+	wrote(key string)
 	// fork returns a cursor for a command started from here in a shell of its own, whose
 	// directory changes do not reach this one.
 	fork() cursor
@@ -97,6 +100,8 @@ func (c *hostCursor) cd(words []string) {
 }
 
 func (c *hostCursor) other() {}
+
+func (c *hostCursor) wrote(string) {}
 
 func (c *hostCursor) fork() cursor {
 	f := *c

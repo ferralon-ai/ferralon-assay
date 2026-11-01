@@ -31,7 +31,10 @@
 // directory is the stage's literal WORKDIR, and a container path binds only to a file COPY'd
 // into it from the build context (the Dockerfile's directory, or the build root) earlier in
 // the stage, with nothing since that could have changed it: a COPY --from, ADD, heredoc or
-// unresolvable COPY over it, or any RUN command that is not itself an allowed form.
+// unresolvable COPY over it, or any RUN command that is not itself an allowed form. Two
+// kinds of command change less: one that creates a virtual environment at one literal place
+// (venvWrites) changes only what is under that place, and nvm use or nvm install (nvmOnly)
+// changes nothing the stage holds.
 //
 // A file run with . or source runs its commands in place, so it withholds unless it is a
 // literal in-tree script surface the walk checks on its own, or only sets PATH: a
@@ -948,7 +951,12 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	if !v.segmentHasToken(words) {
 		v.mention(words[1:])
-		cur.other()
+		switch dir, ok := venvWrites(seg, cur); {
+		case ok:
+			cur.wrote(dir)
+		case !nvmOnly(seg):
+			cur.other()
+		}
 		return ""
 	}
 	if seg.expands || hasRedirect(words) {
@@ -1079,6 +1087,94 @@ func venvMade(seg segment, cur cursor) string {
 	}
 	return key
 }
+
+// venvFlags are, per creator, the flags venvWrites accepts, each mapped to whether it takes
+// the next word: none makes the creator write outside its directory.
+var venvFlags = map[string]map[string]bool{
+	"venv": {
+		"--system-site-packages": false, "--symlinks": false, "--copies": false, "--clear": false,
+		"--upgrade": false, "--without-pip": false, "--upgrade-deps": false,
+		"--without-scm-ignore-files": false, "--prompt": true,
+	},
+	"virtualenv": {
+		"--system-site-packages": false, "--symlinks": false, "--copies": false, "--clear": false,
+		"--no-pip": false, "--no-setuptools": false, "--no-wheel": false, "--no-download": false,
+		"--download": false, "--no-vcs-ignore": false, "--no-periodic-update": false, "-q": false,
+		"--quiet": false, "-v": false, "--verbose": false, "-p": true, "--python": true,
+		"--prompt": true,
+	},
+	"uv": {
+		"--seed": false, "--clear": false, "--allow-existing": false, "--system-site-packages": false,
+		"--relocatable": false, "-q": false, "--quiet": false, "-v": false, "--verbose": false,
+		"--no-progress": false, "-p": true, "--python": true, "--prompt": true,
+	},
+}
+
+// venvWrites returns the one place a command that creates a virtual environment writes in the
+// build tree: <dir> of python -m venv <dir>, virtualenv <dir> or uv venv <dir>, with only
+// flags from venvFlags. Each creator also writes its own cache and data directories (pip's,
+// virtualenv's app data, uv's cache and interpreters), which hold only files it names itself.
+// false when the command is none of these, when it expands or redirects, or when its
+// directory is not one place. uv venv with no <dir> picks a project root above the working
+// directory, or wherever UV_PROJECT_ENVIRONMENT points, so it is not one place either.
+func venvWrites(seg segment, cur cursor) (string, bool) {
+	words := seg.words
+	head, ok := CommandName(words[0])
+	if seg.expands || !ok || hasRedirect(words) {
+		return "", false
+	}
+	var tool string
+	var args []string
+	switch {
+	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
+		tool, args = "venv", words[3:]
+	case head == "virtualenv":
+		tool, args = head, words[1:]
+	case head == "uv" && len(words) >= 2 && words[1] == "venv":
+		tool, args = head, words[2:]
+	default:
+		return "", false
+	}
+	var dirs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			dirs = append(dirs, a)
+			continue
+		}
+		name, _, inline := strings.Cut(a, "=")
+		next, known := venvFlags[tool][name]
+		switch {
+		case !known || inline && !next:
+			return "", false
+		case next && !inline:
+			i++
+		}
+	}
+	if len(dirs) != 1 {
+		return "", false
+	}
+	return cur.at(dirs[0])
+}
+
+// nvmOnly reports whether a command is nvm use or nvm install, which change PATH and write
+// only under NVM_DIR, never the build tree; its other words may expand only as plain
+// variable references.
+func nvmOnly(seg segment) bool {
+	w := seg.words
+	if len(w) < 2 || w[0] != "nvm" || w[1] != "use" && w[1] != "install" || hasRedirect(w) {
+		return false
+	}
+	for _, a := range w[2:] {
+		if strings.ContainsAny(a, "$`") && !plainVarRE.MatchString(a) {
+			return false
+		}
+	}
+	return true
+}
+
+// plainVarRE matches a word that is one variable reference and nothing else.
+var plainVarRE = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$`)
 
 // installVerbs are the subcommands with which a package manager installs or re-locks.
 var installVerbs = map[string]bool{

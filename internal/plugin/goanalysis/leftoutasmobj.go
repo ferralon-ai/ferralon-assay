@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // lofAsmObj is what the toolchain's own assembler emits for one Go assembly file, over every gc
@@ -787,12 +788,18 @@ type lofAsmGate struct {
 	hfiles []string
 }
 
-var (
-	lofAsmIfdef     = regexp.MustCompile(`#(?:[ \t]|/\*(?s:.*?)\*/)*(?:ifdef|ifndef)\b`)
-	lofAsmIdentRune = func(r rune) bool {
-		return r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+var lofAsmIfdef = regexp.MustCompile(`#(?:[ \t]|/\*(?s:.*?)\*/)*(?:ifdef|ifndef)\b`)
+
+// lofAsmIdentRune reports whether r continues (i > 0) or starts (i == 0) an identifier as cmd/asm's
+// tokenizer reads one (isIdentRune, cmd/asm/internal/lex/tokenizer.go): a letter, '_', the middle
+// dot and the division slash, and a digit after the first rune.
+func lofAsmIdentRune(r rune, i int) bool {
+	switch {
+	case unicode.IsLetter(r), r == '_', r == '\u00B7', r == '\u2215':
+		return true
 	}
-)
+	return i > 0 && unicode.IsDigit(r)
+}
 
 // gate reads the file's text and, transitively, every header an #include in it may name, as cmd/asm
 // resolves one: from the package directory, then the build's object directory (go_asm.h and the
@@ -817,8 +824,11 @@ func (s *lofAsmSession) gate(it lofAsmItem, src []byte) *lofAsmGate {
 				g.families[l.family] = true
 			}
 		}
-		for _, id := range strings.FieldsFunc(ts, func(r rune) bool { return !lofAsmIdentRune(r) }) {
-			g.idents[id] = true
+		for _, id := range strings.FieldsFunc(ts, func(r rune) bool { return !lofAsmIdentRune(r, 1) }) {
+			// A run that starts with digits is a number, then an identifier.
+			if id = strings.TrimLeftFunc(id, unicode.IsDigit); id != "" {
+				g.idents[id] = true
+			}
 		}
 		for _, m := range lofAsmIfdef.FindAllStringIndex(ts, -1) {
 			rest := ts[m[1]:]
@@ -833,9 +843,12 @@ func (s *lofAsmSession) gate(it lofAsmItem, src []byte) *lofAsmGate {
 				rest = t
 				break
 			}
-			n := strings.IndexFunc(rest, func(r rune) bool { return !lofAsmIdentRune(r) })
-			if n < 0 {
-				n = len(rest)
+			n := len(rest)
+			for i, r := range rest {
+				if !lofAsmIdentRune(r, i) {
+					n = i
+					break
+				}
 			}
 			if n == 0 {
 				g.badIfdef = true
@@ -1561,7 +1574,11 @@ const lofAsmHdrFailedLine = "// lofasm rejected:"
 // something some variant may define (const_C for a package-level constant C, T_… for a type T), or
 // cannot be read, an include cannot be read, or a name the text spells is declared by different
 // files, or through declarations that differ, across variants. More than lofAsmHdrCap variants
-// then fail closed. Otherwise one variant stands for all: every one differs only in values.
+// then fail closed. Otherwise one variant stands for all: every one differs only in values. Past
+// maxFreeTags free tags the enumeration is cut short, and one variant stands for all only when the
+// text spells no name the header may define and no constraint that can select the file or a Go file
+// of the port names a tag beyond the cut; else, and when the cut enumeration builds no header, the
+// file fails closed.
 func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x constraint.Expr) ([]lofAsmHdr, error) {
 	src := s.goSrc(it.dir)
 	if src.err || len(src.files) == 0 {
@@ -1611,11 +1628,33 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 	for _, d := range g.ifdefs {
 		relevant = relevant || lofAsmHdrCandidate(src, d) != ""
 	}
-	if len(free) > maxFreeTags {
+	over := len(free) > maxFreeTags
+	if over {
+		// Too many tags to enumerate: the first variant found stands for all, which holds only when no
+		// name the text spells may come from the header and no constraint that selects the file or a
+		// Go file of the port names a tag left out of the enumeration.
 		if relevant {
 			return nil, errLofAsmHdrCap
 		}
-		// Too many tags to enumerate: one variant stands for all, so any valid one will do.
+		for id := range g.idents {
+			if lofAsmHdrCandidate(src, id) != "" {
+				return nil, errLofAsmHdrCap
+			}
+		}
+		beyond := func(e constraint.Expr) bool {
+			return slices.ContainsFunc(lofExprTags(e, nil), func(tag string) bool {
+				i, ok := bit[tag]
+				return ok && i >= maxFreeTags
+			})
+		}
+		if beyond(x) {
+			return nil, errLofAsmHdrCap
+		}
+		for i, f := range src.files {
+			if named[i] && beyond(f.expr) {
+				return nil, errLofAsmHdrCap
+			}
+		}
 	}
 	eval := func(e constraint.Expr, mask uint64) bool {
 		return e == nil || e.Eval(func(tag string) bool {
@@ -1662,16 +1701,15 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 		}
 		variants = append(variants, variant{mask, sel})
 		groups[key.String()] = true
-		if len(free) > maxFreeTags {
-			// Too many tags to enumerate, and none relevant: any valid variant stands for all.
+		if over {
 			break
 		}
 	}
-	if len(variants) == 0 {
+	if len(variants) == 0 && !over {
 		// No build of the port assembles the file against a go_asm.h: none compiles it.
 		return nil, nil
 	}
-	if !relevant && len(free) <= maxFreeTags {
+	if !relevant && !over && len(variants) > 0 {
 		relevant = !lofAsmHdrStable(src, g, variants[0].sel, func(yield func([]bool) bool) {
 			for _, v := range variants {
 				if !yield(v.sel) {
@@ -1700,7 +1738,7 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 			}
 		}
 	} else {
-		pick = variants[:1]
+		pick = variants[:min(1, len(variants))]
 	}
 	var out []lofAsmHdr
 	for _, v := range pick {
@@ -1727,6 +1765,11 @@ func (s *lofAsmSession) headers(it lofAsmItem, tu lofAsmTuple, g *lofAsmGate, x 
 			return nil, errLofAsmHdrString
 		}
 		out = append(out, h)
+	}
+	if over && len(out) == 0 {
+		// A truncated enumeration that found no compiling build proves none exists only for the tags
+		// it tried.
+		return nil, errLofAsmHdrCap
 	}
 	return out, nil
 }

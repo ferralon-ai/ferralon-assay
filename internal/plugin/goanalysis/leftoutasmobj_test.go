@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,6 +74,11 @@ func lofEnvLast(env []string, key string) (string, bool) {
 // cannot assemble, or whose generated go_asm.h cannot be reproduced, is not known (ok is false).
 func TestLofAsmObj(t *testing.T) {
 	mod := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n", "p/p.go": "package p\n"}
+	// hdrConst declares decl in b.go, left out under t0, for a text that includes go_asm.h.
+	hdrConst := func(decl, body string) map[string]string {
+		return merge(mod, map[string]string{"p/b.go": "//go:build !t0\n\npackage p\n\n" + decl + "\n",
+			"p/p.s": "#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n" + body + "\tRET\n"})
+	}
 	text := func(body string) map[string]string {
 		return merge(mod, map[string]string{"p/p.s": "TEXT ·f(SB),0,$0\n" + body + "\tRET\n"})
 	}
@@ -101,6 +107,18 @@ func TestLofAsmObj(t *testing.T) {
 		{"P7: a bool constant of go_asm.h spells either bool", merge(mod, map[string]string{
 			"p/p.go": "package p\n\nconst B = true\n", "p/p.s": "#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n\tCALL const_B(SB)\n\tRET\n"}), true,
 			[]string{"true", "false"}, nil},
+		// F1: go_asm.h names are read as cmd/asm's tokenizer reads identifiers; a constant some build
+		// leaves out (b.go under !t0) is undefined there, so each row's reference is in some build.
+		{"F1: an #ifndef of a constant named with a non-ASCII letter", hdrConst("const Bä = 1", "#ifndef const_Bä\n\tCALL ext(SB)\n#endif\n"), true,
+			[]string{"ext"}, nil},
+		{"F1: a bool constant named with a non-ASCII letter", hdrConst("const Bä = true", "\tCALL const_Bä(SB)\n"), true,
+			[]string{"const_Bä", "true", "false"}, nil},
+		{"F1: an #ifndef of a constant named with a non-ASCII digit", hdrConst("const B٣ = 1", "#ifndef const_B٣\n\tCALL ext(SB)\n#endif\n"), true,
+			[]string{"ext"}, nil},
+		{"F1: a middle dot joins the constant's name into a symbol", hdrConst("const B = true", "\tCALL ·const_B(SB)\n"), true,
+			[]string{"example.com/v/p.const_B"}, nil},
+		{"F1: a division slash joins the constant's name into a symbol", hdrConst("const B = true", "\tCALL x∕const_B(SB)\n"), true,
+			[]string{"x/const_B"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,6 +192,19 @@ func TestLofAsmObjHeader(t *testing.T) {
 		return map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n", "p/p.go": "package p\n\nconst S = " + v + "\n",
 			"p/p.s": "//go:build linux && amd64\n\n#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n#ifdef const_S\n\tCALL s(SB)\n#endif\n\tRET\n"}
 	}
+	// many returns a package whose text includes go_asm.h under constraint x, with Go files
+	// fileNN.go for NN below n, each under its own free tag tNN, and files besides.
+	many := func(x, text string, n int, file string, files map[string]string) map[string]string {
+		m := map[string]string{"go.mod": "module example.com/v\n\ngo 1.22\n", "p/p.go": "package p\n",
+			"p/p.s": "//go:build " + x + "\n\n#include \"go_asm.h\"\n\nTEXT ·f(SB),0,$0\n" + text + "\tRET\n"}
+		for i := range n {
+			d := fmt.Sprintf("%02d", i)
+			m["p/"+strings.ReplaceAll(file, "NN", d)] = "//go:build t" + d + "\n\npackage p\n\nconst C" + d + " = 1\n"
+		}
+		maps.Copy(m, files)
+		return m
+	}
+	boolB := map[string]string{"p/b.go": "//go:build !b0\n\npackage p\n\nconst B = true\n"}
 	cases := []struct {
 		name  string
 		files map[string]string
@@ -181,6 +212,15 @@ func TestLofAsmObjHeader(t *testing.T) {
 		refs  []string
 	}{
 		{"variants up to the cap", tagged(4), nil, []string{"c0"}},
+		{"F2 control: a bool constant some variant leaves out, tags up to the cap", many("linux && amd64", "\tCALL const_B(SB)\n", 15, "wNN_windows.go", boolB),
+			nil, []string{"const_B", "true"}},
+		{"F2: a bool constant some variant leaves out, tags over the cap", many("linux && amd64", "\tCALL const_B(SB)\n", 16, "wNN_windows.go", boolB),
+			errLofAsmHdrCap, nil},
+		{"F2: a Go file of the port under a tag past the cap", many("linux && amd64", "", 17, "cNN.go", nil), errLofAsmHdrCap, nil},
+		{"F2b: the file under a tag past the cap", many("linux && amd64 && t16", "", 16, "cNN.go", nil), errLofAsmHdrCap, nil},
+		{"F2b: the file under a tag past the cap some variant holds", many("linux && amd64 && !t16", "", 16, "cNN.go", nil), errLofAsmHdrCap, nil},
+		{"F2: a truncated enumeration builds no header", many("linux && amd64", "", 17, "wNN_windows.go", map[string]string{"p/p.go": "package p\n\nvar _ = undefined\n"}),
+			errLofAsmHdrCap, nil},
 		{"variants over the cap", tagged(5), errLofAsmHdrCap, nil},
 		{"an integer constant the text names", str("1"), nil, []string{"s"}},
 		{"a string constant the text names", str(`"x"`), errLofAsmHdrString, nil},

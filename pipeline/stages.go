@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strings"
 
+	gover "go/version"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
@@ -2467,7 +2468,51 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 			return true, true
 		}
 	}
-	return false, true
+	for _, r := range mf.Replace {
+		if r.Old.Path == module || strings.HasPrefix(module, r.Old.Path+"/") {
+			return true, true
+		}
+	}
+	// From go 1.17 go.mod lists every module that provides a package to the build, so a missing
+	// require is a proof. Before that it omits indirect dependencies and says nothing: the
+	// build list is what go.sum recorded as downloaded.
+	if mf.Go != nil && goVersionAtLeast(mf.Go.Version, "1.17") {
+		return false, true
+	}
+	return goSumBuilds(buildDir, module)
+}
+
+// goVersionAtLeast reports whether the go directive version v is at least min; an unparseable v
+// reads as below it, which sends the caller to the go.sum check and its own fail-open.
+func goVersionAtLeast(v, min string) bool {
+	return gover.IsValid("go"+v) && gover.Compare("go"+v, "go"+min) >= 0
+}
+
+// goSumBuilds answers membership for a module whose go.mod is not a complete record: it is
+// present when go.sum holds a module-zip (non-/go.mod) h1: line for it or for a module its path
+// sits under, at any version. Without a go.sum, or with one that does not parse, the build list is
+// unknown and manifestKnown is false (inv.5).
+func goSumBuilds(buildDir, module string) (present bool, manifestKnown bool) {
+	data, err := os.ReadFile(filepath.Join(buildDir, "go.sum"))
+	if err != nil {
+		return false, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 3 || !strings.HasPrefix(f[2], "h1:") {
+			return false, false
+		}
+		if strings.HasSuffix(f[1], "/go.mod") {
+			continue
+		}
+		if f[0] == module || strings.HasPrefix(module, f[0]+"/") {
+			present = true
+		}
+	}
+	return present, true
 }
 
 // disqualify records a not-affected determination ONLY when provably not-affected; every

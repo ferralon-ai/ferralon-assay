@@ -250,6 +250,12 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile exec form opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN [\"sh\", \"-c\", \"cat <<EOF\"]\nRUN in\\\nst add x\n"}), true, ""},
 		{"Dockerfile heredoc ends only at its exact terminator", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<EOF\n  EOF\nin\\\nst add x\nEOF\n"}), true, ""},
 		{"Dockerfile heredoc name with a dash", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<EOF-X\nEOF\nin\\\nst add x\nEOF-X\n"}), true, ""},
+		{"Dockerfile tab-indented <<- heredoc body continuation", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<-EOF\n\tin\\\n\tst add x\n\tEOF\n"}), true, ""},
+		{"Dockerfile marker after an unterminated quote opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN true # <<EOF don't\nRUN in\\\n# c\nst add x\n"}), true, ""},
+		{"Dockerfile empty heredoc name opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN true <<\"\"\nRUN in\\\n# c\nst add x\n"}), true, ""},
+		{"Dockerfile heredoc name keeps a backslash inside double quotes", tree(map[string]string{"Dockerfile": "FROM x\nRUN <<\"E\\xF\"\nE\\xF\nRUN in\\\n# c\nst add x\n"}), true, ""},
+		{"Dockerfile marker inside nested quotes opens no heredoc", tree(map[string]string{"Dockerfile": "FROM x\nRUN echo \"${x:-\"a <<EOF b\"}\"\nRUN in\\\n# c\nst add x\n"}), true, ""},
+		{"Dockerfile marker after a form feed", tree(map[string]string{"Dockerfile": "FROM x\nRUN sh -c sh x\f<<EOF\ninst add x\nEOF\n"}), true, ""},
 		{"justfile recipe continuation inside a word", tree(map[string]string{"justfile": "all:\n\tin\\\n\t\tst add x\n"}), true, ""},
 		{"shell comment continued after a quote read wrongly", tree(map[string]string{"install.sh": "x=\"$(echo \"it's\")\"\n# c \\\ninst install -r reqs.txt \\\n  other\n"}), true, ""},
 

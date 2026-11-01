@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // logicalLinesAt splits src into logical lines, joining a line that ends in an odd run of
@@ -243,7 +244,8 @@ var (
 // dockerHeredocs returns the heredocs a RUN, COPY or ADD instruction, ONBUILD or not, opens in
 // shell form, read the way BuildKit does: each word of the line, split the way a shell does but
 // with its quotes and backslashes kept, that is all of <<, <<- or n<< and a name opens one,
-// and the name, unquoted, is its terminator.
+// and the name, unquoted, is its terminator. A line BuildKit can't split, for an unterminated
+// quote, opens none.
 func dockerHeredocs(line string) []heredoc {
 	words := dockerWords(line)
 	if len(words) > 0 && strings.EqualFold(words[0], "ONBUILD") {
@@ -253,13 +255,14 @@ func dockerHeredocs(line string) []heredoc {
 		return nil
 	}
 	var form []string
+	// words[0] is verbatim, so it locates the rest of the line.
 	if rest := strings.TrimSpace(line[strings.Index(line, words[0])+len(words[0]):]); json.Unmarshal([]byte(rest), &form) == nil {
 		return nil
 	}
 	var docs []heredoc
 	for _, w := range words {
 		if m := dockerHeredocRE.FindStringSubmatch(w); m != nil {
-			if name := dockerWords(m[3]); len(name) == 1 {
+			if name := dockerWords(m[3]); len(name) == 1 && unquoteWord(name[0]) != "" {
 				docs = append(docs, heredoc{word: unquoteWord(name[0]), dash: m[2] == "-"})
 			}
 		}
@@ -268,15 +271,17 @@ func dockerHeredocs(line string) []heredoc {
 }
 
 // dockerWords splits line into words at blanks outside quotes, keeping the quotes and the
-// backslashes.
+// backslashes, or returns nil when a quote is left open.
 func dockerWords(line string) []string {
 	var words []string
 	var cur strings.Builder
 	var q byte
 	for i := 0; i < len(line); i++ {
 		c := line[i]
+		r, n := utf8.DecodeRuneInString(line[i:])
 		switch {
-		case q == 0 && (c == ' ' || c == '\t'):
+		case q == 0 && unicode.IsSpace(r):
+			i += n - 1
 			if cur.Len() > 0 {
 				words = append(words, cur.String())
 				cur.Reset()
@@ -293,20 +298,24 @@ func dockerWords(line string) []string {
 		}
 		cur.WriteByte(c)
 	}
+	if q != 0 {
+		return nil
+	}
 	if cur.Len() > 0 {
 		words = append(words, cur.String())
 	}
 	return words
 }
 
-// unquoteWord removes a word's quotes and backslashes.
+// unquoteWord removes a word's quotes and backslashes as BuildKit does, which inside double
+// quotes takes a backslash off only before ", $ or another backslash.
 func unquoteWord(w string) string {
 	var b strings.Builder
 	var q byte
 	for i := 0; i < len(w); i++ {
 		c := w[i]
 		switch {
-		case c == '\\' && q != '\'' && i+1 < len(w):
+		case c == '\\' && i+1 < len(w) && (q == 0 || q == '"' && strings.IndexByte(`"$\\`, w[i+1]) >= 0):
 			i++
 			b.WriteByte(w[i])
 		case q == 0 && (c == '\'' || c == '"'):

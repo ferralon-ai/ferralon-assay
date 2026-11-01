@@ -363,9 +363,18 @@ func (v *Veto) dockerfile(file, src string) string {
 				var text []string
 				for i++; i < len(lines) && !d.ends(lines[i]); i++ {
 					body += "\n" + lines[i]
-					text = append(text, lines[i])
+					l := lines[i]
+					if d.dash {
+						l = strings.TrimLeft(l, "\t")
+					}
+					text = append(text, l)
 				}
 				hidden = hidden || v.shellHides(strings.Join(text, "\n"))
+				if as, _ := dockerLines(strings.Join(text, "\n")); !hidden {
+					for _, l := range as {
+						hidden = hidden || v.hasToken(l)
+					}
+				}
 			}
 			if v.hasToken(body) || hidden {
 				return "install command in a heredoc"
@@ -434,7 +443,7 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 		case dockerPlain[instr]:
 		default: // ONBUILD, HEALTHCHECK and anything unknown run elsewhere or not at all
-			if hasTok {
+			if v.hasToken(line) {
 				return "install command in " + instr
 			}
 		}

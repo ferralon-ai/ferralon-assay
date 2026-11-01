@@ -561,6 +561,12 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantUnpinned: true,
 		},
 		{
+			name:         "semicolon inside a quoted vcs editable",
+			files:        map[string]string{"requirements.txt": "-e \"git+https://h/p@v;x#egg=pp\"\nrequests==2.31.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
 			name:         "marker inside a quoted editable",
 			files:        map[string]string{"pyproject.toml": project, "requirements.txt": "-e \".; python_version<\\\"3\\\"\"\n"},
 			wantPURLs:    []string{"pkg:pypi/click@8.1.7"},

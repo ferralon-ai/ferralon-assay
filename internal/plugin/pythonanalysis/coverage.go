@@ -122,16 +122,6 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if laterInstallOption(words) || untrackedConstraint(words) || envOptionName(words) {
 				return out, false
 			}
-			// pip parses every option on the line, not just the first, and accepts any
-			// unambiguous prefix of a long option; --no-r is the shortest for this one.
-			for _, f := range words {
-				switch {
-				case f == "--require-hashes":
-					out.hashed = true
-				case len(f) >= len("--no-r") && strings.HasPrefix("--no-require-hashes", f):
-					out.hashOff = true
-				}
-			}
 			if target, isInclude := includeTarget(words, 0); isInclude {
 				if target == "" || strings.Contains(target, "://") {
 					return out, false
@@ -150,6 +140,16 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			}
 			if abbreviatesInstallOption(words[0]) {
 				return out, false
+			}
+			// pip parses every option on a line it does not recurse into, and accepts any
+			// unambiguous prefix of a long option; --no-r is the shortest for this one.
+			for _, f := range words {
+				switch {
+				case f == "--require-hashes":
+					out.hashed = true
+				case len(f) >= len("--no-r") && strings.HasPrefix("--no-require-hashes", f):
+					out.hashOff = true
+				}
 			}
 			continue
 		}

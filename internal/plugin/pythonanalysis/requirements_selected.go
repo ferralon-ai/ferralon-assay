@@ -154,8 +154,8 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 			}
 			switch {
 			case ok && target != "" && kind == reqEditable:
-				// pip takes the whole word as the editable, so a glued marker makes it an
-				// editable pip rejects rather than a marked one.
+				// pip takes the whole word as the editable, so a glued marker is part of
+				// the path or URL, not a marker; leave it unread.
 				if strings.Contains(target, ";") {
 					f.skipped = true
 					continue

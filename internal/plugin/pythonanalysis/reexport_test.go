@@ -65,6 +65,9 @@ func TestCallGraph_ReexportRebinding(t *testing.T) {
 			extra: map[string]string{"pkg/sub/__init__.py": "from . import a\nfrom .y import *\n", "pkg/sub/a.py": "from ..impl import f as g\n", "pkg/sub/y.py": "from . import x as a\n", "pkg/sub/x.py": "from ..v import vuln as g\n"}},
 		{name: "qualified through a package that binds the module to another module's attribute", c: "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n", callee: "pkg.sub.a.g", listed: true, edgeless: true, vulnWins: true,
 			extra: map[string]string{"pkg/sub/__init__.py": "from . import a\nfrom .x import mod as a\n", "pkg/sub/a.py": "from ..impl import f as g\n", "pkg/sub/x.py": "from .. import w as mod\n", "pkg/w.py": "from .v import vuln as g\n"}},
+		{name: "qualified through a package that import-as binds the module through a rebound ancestor", c: "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n", callee: "pkg.sub.a.g", listed: true, edgeless: true, vulnWins: true,
+			extra: map[string]string{"pkg/__init__.py": "from . import q\nfrom . import alt as q\n", "pkg/sub/__init__.py": "from . import a\nimport pkg.q.x as a\n", "pkg/sub/a.py": "from ..impl import f as g\n",
+				"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n", "pkg/alt/__init__.py": "from . import x\n", "pkg/alt/x.py": "from ..v import vuln as g\n"}},
 		{name: "names computed in the module", a: reexport + "from .v import vuln\nglobals().update(g=vuln)\n", c: bare, callee: "g", listed: true},
 		{name: "class defined after the re-export", a: reexport + "class g:\n    pass\n", c: bare, callee: "g", listed: true, edgeless: true},
 		{name: "namespace stored through from another module", a: reexport, c: bare, callee: "g", listed: true,
@@ -174,6 +177,29 @@ func TestCallGraph_SubmoduleBoundToItsOwnAttribute(t *testing.T) {
 		goC, load := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/config", nil, "load", 1)
 		if !hasEdge(res.Edges, goC, load) && !symbolSet(res.Escaped)[load] {
 			t.Fatalf("%q: %s unreachable; edges %v, escaped %v", c, load, res.Edges, res.Escaped)
+		}
+	}
+}
+
+// TestCallGraph_ImportAsBindingThroughItself: a package that binds a submodule's name by a
+// dotted import-as through that same name (import pkg.c.c as c) rewrites a path through it
+// once, as the statement runs once; a site through the submodule completes and still reaches
+// the function.
+func TestCallGraph_ImportAsBindingThroughItself(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{"self", map[string]string{"pkg/__init__.py": "import pkg.c.c as c\n", "pkg/c/__init__.py": "from . import c\n"}},
+		{"mutual", map[string]string{"pkg/__init__.py": "import pkg.d.c as c\nimport pkg.c.d as d\n", "pkg/c/__init__.py": "from . import c, d\n",
+			"pkg/c/d.py": "", "pkg/d/__init__.py": "from . import c\n", "pkg/d/c.py": "def load(x):\n    return x\n"}},
+	} {
+		files := map[string]string{"pkg/c/c.py": "def load(x):\n    return x\n", "c.py": "import pkg.c.c\n\ndef go():\n    return pkg.c.c.load(1)\n"}
+		maps.Copy(files, tc.files)
+		res := mustCallGraph(t, files)
+		goC, load := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/c/c", nil, "load", 1)
+		if !hasEdge(res.Edges, goC, load) && !symbolSet(res.Escaped)[load] {
+			t.Fatalf("%s: %s unreachable; edges %v, escaped %v", tc.name, load, res.Edges, res.Escaped)
 		}
 	}
 }

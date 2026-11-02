@@ -52,6 +52,8 @@ type program struct {
 	// attrTargets.
 	leafMemo    map[string][]string
 	reboundMemo map[string]bool
+	// chainPaths holds the first-party paths some dotted `import a.b as c` binds.
+	chainPaths map[string]bool
 	// launchers are the entry points the build's manifests declare (launchers.go);
 	// launchersUnread records a manifest whose entry points could not be read in full, so
 	// ingress discovery may miss a script; launchersUnsupported one that declares entry
@@ -419,19 +421,30 @@ func (p *program) withAliases(leaves, paths []string) []string {
 // import itself, the path that import names is followed in turn. When a package on the path
 // binds its submodule's name to another path by first-party import, itself or through its star
 // imports, the path through that binding is followed too: the attribute holds whichever binding
-// ran last. A path an import names is a module and its attribute, which an import finds in
-// sys.modules whatever a package binds, so lookups resume at that attribute. The names left to
-// look up never grow and are drawn from the bindings' leaves and the path's own tail, and each
-// path is visited once per lookup start, so the walk ends.
+// ran last. A from-import finds its module in sys.modules whatever a package binds, so lookups
+// through a path it names resume at the attribute it names. A dotted `import a.b as c` binds
+// an attribute chain from the top package instead, so lookups through its path start over at
+// the top, one level deep: within that walk a further such path resumes at its attribute. The
+// names left to look up never grow and are drawn from the bindings' leaves and the path's own
+// tail, and each path is visited once per lookup start and level, so the walk ends.
 func (p *program) aliasLeaves(path string) []string {
 	if out, ok := p.leafMemo[path]; ok {
 		return out
 	}
 	visited := map[string]bool{}
 	var out []string
-	var walk func(path string, from int)
-	walk = func(path string, from int) {
-		key := path + "\x00" + strconv.Itoa(from)
+	var walk func(path string, from int, chained bool)
+	// follow walks b+suffix, starting over at the top when b is an import-as chain met
+	// outside another one.
+	follow := func(b, suffix string, chained bool) {
+		if p.chainPaths[b] && !chained {
+			walk(b+suffix, 1, true)
+		} else {
+			walk(b+suffix, strings.Count(b, "/"), chained)
+		}
+	}
+	walk = func(path string, from int, chained bool) {
+		key := path + "\x00" + strconv.Itoa(from) + "\x00" + strconv.FormatBool(chained)
 		if visited[key] {
 			return
 		}
@@ -442,7 +455,7 @@ func (p *program) aliasLeaves(path string) []string {
 		}
 		for _, i := range p.byModule[mod] {
 			for _, next := range p.files[i].fpBinds[""][leaf] {
-				walk(next, strings.Count(next, "/"))
+				follow(next, "", chained)
 			}
 		}
 		segs := strings.Split(path, "/")
@@ -450,12 +463,12 @@ func (p *program) aliasLeaves(path string) []string {
 			pkg, sub, rest := strings.Join(segs[:j], "/"), segs[j], strings.Join(segs[j+1:], "/")
 			for _, i := range p.byModule[pkg] {
 				for _, b := range p.subBinds(&p.files[i], pkg, sub) {
-					walk(b+"/"+rest, strings.Count(b, "/"))
+					follow(b, "/"+rest, chained)
 				}
 			}
 		}
 	}
-	walk(path, 1)
+	walk(path, 1, false)
 	p.leafMemo[path] = out
 	return out
 }
@@ -818,7 +831,7 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
 	}
 
-	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}, reboundMemo: map[string]bool{}, attrMemo: map[attrKey][]string{}}
+	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}, chainPaths: map[string]bool{}, reboundMemo: map[string]bool{}, attrMemo: map[attrKey][]string{}}
 	var rawBindings [][]scopedBinding
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
@@ -1034,6 +1047,9 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 		}
 		if !slices.Contains(m[b.local], path) {
 			m[b.local] = append(m[b.local], path)
+		}
+		if b.chain {
+			prog.chainPaths[path] = true
 		}
 		if b.global && !slices.Contains(f.globalBinds[b.local], path) {
 			f.globalBinds[b.local] = append(f.globalBinds[b.local], path)

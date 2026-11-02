@@ -101,6 +101,9 @@ type scopedBinding struct {
 	// attribute. classBody marks an import in a class body: a class attribute, reachable
 	// wherever the class or an instance goes.
 	global, classBody bool
+	// chain marks a dotted `import a.b as c`: c holds getattr(a, "b"), an attribute chain
+	// from the top package, not sys.modules["a.b"].
+	chain bool
 }
 
 // scopeKey identifies a def's body as a binding scope within one file.
@@ -412,7 +415,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			o := owner()
 			classBody := o != nil && o.className != ""
 			for _, ib := range parseImportStatement(st) {
-				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody})
+				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody, chain: kw == "import" && strings.Contains(ib.target, ".")})
 				imported = append(imported, ib.local)
 			}
 			for _, ib := range parseRelativeImport(st) {

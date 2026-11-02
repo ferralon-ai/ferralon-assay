@@ -1542,12 +1542,17 @@ func lookupTarget(target string) string {
 	return target
 }
 
-func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values, packages []string, mvals []moduleValue, opaque, computed bool) {
+func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values, packages []string, mvals []moduleValue, opaque, computed bool, own ownStores) {
 	r := statementBreaks(clean)
+	inModule := moduleScope(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
 	names := map[string]lookupKind{}
+	builtinsNames := map[string]bool{"__builtins__": true}
 	for _, b := range bindings {
+		if lookupTarget(b.target) == "builtins" || strings.HasSuffix("."+b.target, ".__builtins__") {
+			builtinsNames[b.local] = true
+		}
 		switch lookupTarget(b.target) {
 		case "sys":
 			names[b.local] = lookupSys
@@ -1570,6 +1575,42 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	if stars["sys"] {
 		names["modules"] = lookupModules
 	}
+	// shadowed reports whether the file may rebind a builtin's name where it is called: a star
+	// import, the name anywhere but called (a def, class, import, assignment or parameter), or
+	// the file's __builtins__ used anywhere but called, since a store there rebinds every builtin.
+	// A def or class written directly in a class body binds only there, and its methods do not
+	// see it.
+	rebinds := map[string]bool{}
+	classAt := classScope(clean)
+	classBinds := map[string][]int{}
+	for i := 0; i < n; i++ {
+		if !isIdentStartRune(r[i]) || i > 0 && isIdentPart(r[i-1]) {
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if pj := skipSpaceBack(r, i-1); pj < 0 || r[pj] != '.' {
+			switch q := skipAllSpace(r, end); {
+			case precededByDef(r, i) || precededByWord(r, i, "class"):
+				if c := classAt(i); c >= 0 {
+					classBinds[w] = append(classBinds[w], c)
+				} else {
+					rebinds[w] = true
+				}
+			case q >= n || r[q] != '(':
+				rebinds[w] = true
+			}
+		}
+		i = end - 1
+	}
+	// A builtin trusted where it is called is recorded, since a store elsewhere may still
+	// rebind it (see markModuleStores).
+	shadowed := func(w string, at int) bool {
+		if len(stars) > 0 || rebinds[w] || rebinds["__builtins__"] || slices.Contains(classBinds[w], classAt(at)) {
+			return true
+		}
+		own.trusted = append(own.trusted, w)
+		return false
+	}
 	kindOf := func(w string, dotted bool) lookupKind {
 		switch w {
 		case "import_module":
@@ -1589,6 +1630,34 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		return names[w]
 	}
+	// typing reports whether a name is the typing or typing_extensions module: every import
+	// binding of it is one, and the file uses it nowhere else but as typing.<attr>.
+	typingMods := map[string]bool{}
+	for _, b := range bindings {
+		if _, ok := typingMods[b.local]; !ok || typingMods[b.local] {
+			typingMods[b.local] = b.target == "typing" || b.target == "typing_extensions"
+		}
+	}
+	for i, si := 0, 0; i < n; {
+		if si < len(spans) && i >= spans[si][0] {
+			i = max(i, spans[si][1])
+			si++
+			continue
+		}
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if pj := skipSpaceBack(r, i-1); typingMods[w] && (pj < 0 || r[pj] != '.') {
+			if q := skipAllSpace(r, end); q >= n || r[q] != '.' {
+				typingMods[w] = false
+			}
+		}
+		i = end
+	}
+	typing := func(w string) bool { return len(stars) == 0 && typingMods[w] }
+	var builtin, foreign ownStores
 	si := 0
 	for i := 0; i < n; {
 		if si < len(spans) && i >= spans[si][0] {
@@ -1603,6 +1672,35 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		w, end := readWordRunes(r, i)
 		pj := skipSpaceBack(r, i-1)
 		dotted := pj >= 0 && r[pj] == '.'
+		if !dotted && (w == "globals" || (w == "vars" || w == "locals") && inModule(i)) && !precededByDef(r, i) {
+			switch q := skipAllSpace(r, end); {
+			case q < n && r[q] == '(':
+				if c := skipAllSpace(r, q+1); c < n && r[c] == ')' {
+					own.use(r, i, c+1, lits, false, shadowed, typing)
+				}
+			case !assignedTo(r, end):
+				// The builtin itself handed on, called wherever it goes.
+				own.any = true
+			}
+		}
+		// A store through the builtins module rebinds a builtin for every module, read as a
+		// store through the file's own module is.
+		if !dotted && builtinsNames[w] && !precededByDef(r, i) && !assignedTo(r, end) {
+			builtin.use(r, i, end, lits, true, shadowed, typing)
+		}
+		// Another module's __builtins__ is its builtins, as a module or a dict, and so is a
+		// frame's f_builtins.
+		if dotted && (w == "__builtins__" || w == "f_builtins") {
+			builtin.any = true
+		}
+		// A frame's or function's globals, and a module-scope frame's locals, are a
+		// namespace dict: the file's own for its own frames and defs, another module's for a
+		// caller's frame or a function handed in.
+		if dotted && (w == "f_globals" || w == "__globals__" || w == "f_locals" && inModule(i)) {
+			start := dottedStart(r, i)
+			own.use(r, start, end, lits, false, shadowed, typing)
+			foreign.use(r, start, end, lits, false, shadowed, typing)
+		}
 		kind := kindOf(w, dotted)
 		if kind == lookupNone || precededByDef(r, i) || assignedTo(r, end) {
 			i = end
@@ -1614,6 +1712,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			switch {
 			case !ok:
 				opaque = true
+				if o := skipAllSpace(r, end); o < n && r[o] == '(' && ownModuleArg(r, o+1, "),") {
+					own.any = true
+				}
 			case kind == lookupDunder:
 				roots = append(roots, name)
 				// Past its module, an __import__ call may take a fromlist, which loads the
@@ -1644,7 +1745,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			case strings.HasPrefix(attr, "__") && !plainDunders[attr]:
 				opaque = true
 			case kind == lookupNamespace && namerAttrs[attr]:
-				computed = true
+				computed, own.any = true, true
 			case kind == lookupSys && attr == "modules":
 				name, ok := modulesUse(r, i, aend, lits)
 				switch {
@@ -1652,6 +1753,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 					opaque = true
 				case name == "":
 					computed = true
+					if e := ownModuleEnd(r, aend); e > 0 {
+						own.use(r, dottedStart(r, i), e, lits, true, shadowed, typing)
+					}
 				default:
 					values = append(values, name)
 					if e := modulesEnd(r, aend); e > 0 {
@@ -1663,7 +1767,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		case lookupLoader:
 			opaque = true
 		case lookupNamer:
-			computed = true
+			computed, own.any = true, true
 		case lookupModules:
 			name, ok := modulesUse(r, i, end, lits)
 			switch {
@@ -1671,6 +1775,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				opaque = true
 			case name == "":
 				computed = true
+				if e := ownModuleEnd(r, end); e > 0 {
+					own.use(r, i, e, lits, true, shadowed, typing)
+				}
 			default:
 				values = append(values, name)
 				if e := modulesEnd(r, end); e > 0 {
@@ -1680,7 +1787,46 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		i = end
 	}
-	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed
+	// So is any value spelled "__builtins__" or "builtins", whatever reads it, other than a
+	// dict display's key or a comparison operand.
+	for at, l := range lits {
+		if l.body != "__builtins__" && l.body != "builtins" {
+			continue
+		}
+		j, k := skipSpaceBack(r, at-1), skipAllSpace(r, l.end)
+		if j >= 0 && (r[j] == '{' || r[j] == ',') && k < n && r[k] == ':' && enclosingOpen(r, at) >= 0 && r[enclosingOpen(r, at)] == '{' {
+			continue
+		}
+		if comparedAt(r, j, k) {
+			continue
+		}
+		builtin.any = true
+	}
+	own.names = sortedDedup(own.names)
+	own.trusted = sortedDedup(own.trusted)
+	own.builtinNames = sortedDedup(builtin.names)
+	own.builtinAny = builtin.any
+	own.foreignNames = sortedDedup(foreign.names)
+	own.foreignAny = foreign.any
+	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed, own
+}
+
+// comparedAt reports whether the operand ending before r[k] and starting after r[j] is
+// compared by ==, != or in.
+func comparedAt(r []rune, j, k int) bool {
+	n := len(r)
+	if k+1 < n && (r[k] == '=' || r[k] == '!') && r[k+1] == '=' {
+		return true
+	}
+	if k < n && isIdentStartRune(r[k]) {
+		if w, _ := readWordRunes(r, k); w == "in" || w == "not" {
+			return true
+		}
+	}
+	if j >= 1 && r[j] == '=' && (r[j-1] == '=' || r[j-1] == '!') {
+		return true
+	}
+	return false
 }
 
 // dunderImported returns the modules an __import__ of name, whose '(' is r[open], may
@@ -2172,10 +2318,13 @@ func precededByWord(r []rune, i int, w string) bool {
 	return string(r[j+1:end]) == w
 }
 
-// ownModuleArg reports whether the argument at r[i] is exactly __name__, closed by one of
-// closers.
+// ownModuleArg reports whether the argument at r[i] is exactly __name__ or __spec__.name,
+// closed by one of closers.
 func ownModuleArg(r []rune, i int, closers string) bool {
 	w, e := readWordRunes(r, skipAllSpace(r, i))
+	if a, ae, ok := attributeAfter(r, e); w == "__spec__" && ok && a == "name" {
+		w, e = "__name__", ae
+	}
 	e = skipAllSpace(r, e)
 	return w == "__name__" && e < len(r) && strings.ContainsRune(closers, r[e])
 }

@@ -264,15 +264,18 @@ var readOnlyMethods = map[string]bool{
 // literal-named attribute store on the module or a setattr of it by literal name, a
 // literal-key store into the dict, a .update of keyword arguments or a .setdefault by literal
 // key, bind those names; an attribute or subscript read, a getattr, hasattr or delattr, a
-// del, a membership test, a ** unpacking, readOnlyWrappers and readOnlyMethods bind none.
-// Any other use may bind any name: a store by a key the scanner cannot read, a dunder of the
-// module, the module replaced in sys.modules, or the namespace handed on as a value.
+// del, a membership test, a ** unpacking, an argument to __import__, readOnlyWrappers and
+// readOnlyMethods bind none. Any other use may bind any name: a store by a key the scanner
+// cannot read, a dunder of the module, the module replaced in sys.modules, or the namespace
+// handed on as a value.
 func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool) {
 	n := len(r)
 	p := skipAllSpace(r, end)
 	j := skipSpaceBack(r, start-1)
 	switch {
 	case j >= 1 && r[j] == '*' && r[j-1] == '*', precededByWord(r, start, "in"):
+		return
+	case j >= 0 && (r[j] == '(' || r[j] == ',') && p < n && (r[p] == ',' || r[p] == ')') && importArg(r, start):
 		return
 	case j >= 0 && r[j] == '(' && p < n && (r[p] == ',' || r[p] == ')'):
 		k := skipSpaceBack(r, j-1)
@@ -349,6 +352,18 @@ func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, modul
 		}
 	}
 	s.any = true
+}
+
+// importArg reports whether the argument starting at r[start] is passed to a bare
+// __import__ call, which reads the globals and locals it is handed only for the importing
+// package's name.
+func importArg(r []rune, start int) bool {
+	open := enclosingOpen(r, start)
+	if open < 0 || r[open] != '(' {
+		return false
+	}
+	w, k := wordBefore(r, open)
+	return w == "__import__" && (k < 0 || r[k] != '.')
 }
 
 // rebound reports whether the target ending at r[end] is assigned or augmented.

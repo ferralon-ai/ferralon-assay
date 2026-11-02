@@ -247,6 +247,8 @@ func TestCallGraph_ImportAsChainUnderOneDotChain(t *testing.T) {
 	}
 }
 
+// A site through a module attribute that holds another module (pkg.sub.a.g.h, where a.py
+// binds g to pkg.alt.y) reaches what that module binds h to, a re-export as well as a def.
 func TestCallGraph_ModuleAttributeHoldingAModule(t *testing.T) {
 	site := "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"
 	subRebound := map[string]string{"pkg/sub/__init__.py": "from . import a\nfrom pkg import x as a\n", "pkg/alt/__init__.py": "from . import y\n"}
@@ -294,5 +296,14 @@ func TestCallGraph_ModuleAttributeHoldingAModule(t *testing.T) {
 	res := mustCallGraph(t, files)
 	if vuln := funcSCIP("pkg/v", nil, "vuln", 1); !symbolSet(res.Escaped)[vuln] {
 		t.Errorf("binding in another scope: %s not escaped; escaped %v", vuln, res.Escaped)
+	}
+	// A star import in the caller leaves the head undecided, so the edge comes from the
+	// site's own leaves: the re-export's source, not only an escape.
+	files = map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n", "pkg/util.py": "X = 1\n",
+		"pkg/sub/a.py": "from pkg.alt import y as g\n", "pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y.py": "from ..v import vuln as h\n",
+		"c.py": "from pkg.util import *\nimport pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"}
+	res = mustCallGraph(t, files)
+	if goC, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/v", nil, "vuln", 1); !hasEdge(res.Edges, goC, vuln) {
+		t.Errorf("head undecided: no edge to %s; edges %v", vuln, res.Edges)
 	}
 }

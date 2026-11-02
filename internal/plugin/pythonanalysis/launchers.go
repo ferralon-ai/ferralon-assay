@@ -540,7 +540,7 @@ func (prog *program) launchTargets() []launchTarget {
 				continue
 			}
 			var bases [][]string
-			if paths := f.fpBinds[""][v.chain[0]]; len(paths) > 0 {
+			if paths := f.attrBinds(v.chain[0]); len(paths) > 0 {
 				for _, p := range paths {
 					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
 				}

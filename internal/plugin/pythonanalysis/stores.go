@@ -382,8 +382,9 @@ func rebound(r []rune, end int) bool {
 }
 
 // moduleScope reports, for each rune index of a cleaned source, whether the code there runs
-// in the module's own frame rather than a def or class body. A def or class header line, and
-// a line its brackets or a backslash continue, belong to the enclosing scope.
+// in the module's own frame rather than a def or class body. Lines are read logically, a line
+// its brackets or a backslash continue joined to the one it continues, and a def or class
+// header belongs to the enclosing scope.
 func moduleScope(clean string) func(i int) bool {
 	r := []rune(clean)
 	var bodies [][2]int
@@ -399,9 +400,14 @@ func moduleScope(clean string) func(i int) bool {
 			}
 			continue
 		}
+		if i < len(r) && (depth > 0 || continuedBreak(r, i)) {
+			continue
+		}
 		line := r[start:i]
-		logical := depth <= 0 && (start == 0 || !continuedBreak(r, start-1))
-		if t := strings.TrimLeft(string(line), " \t"); logical && t != "" {
+		if nl := slices.Index(line, '\n'); nl >= 0 {
+			line = line[:nl]
+		}
+		if t := strings.TrimLeft(string(line), " \t"); t != "" {
 			indent := len(line) - len([]rune(t))
 			for len(stack) > 0 && indent <= stack[len(stack)-1] {
 				stack = stack[:len(stack)-1]

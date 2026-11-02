@@ -763,6 +763,25 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
+			name: "script a literal vars key assigned across lines after a def",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup():\n    return 0\n\nvars()[\"main\"] = make(\n)\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal vars key assigned in a def whose header spans lines",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup(a=0,\n          b=0):\n    vars()[\"main\"] = make()\n\nsetup()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script its own namespace only read",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

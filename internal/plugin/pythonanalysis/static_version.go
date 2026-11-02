@@ -150,10 +150,11 @@ var setuptoolsBytes, _ = pep440.Parse("65.4.1")
 // of whose clauses sets a floor (>=, >, ==, ~=, ===) at that release or past it. The build's
 // own environment installs it from that requirement. A build without isolation uses another,
 // and each way the tree asks for one withholds before this is read: an installer flag
-// (laneFlags), a tool table (uvSettingsClean, the pdm case of rootBuildClean), a config file a
-// script names (uvConfigNamedRE, pdmConfigNamedRE) or the tree holds (lockToolConfigInTree),
-// or an environment variable (laneEnvRE). A config the base image already holds is not
-// observed, as for pip (pipConfigMatches).
+// (laneFlags), a tool table (uvSettingsClean, the pdm case of rootBuildClean), a config file
+// in the tree (a uv.toml, an install surface nothing reads; a poetry or pdm config, read by
+// toolConfigClean) or one a script names (uvConfigNamedRE, toolConfigNamedRE), or an
+// environment variable (laneEnvRE). A config the base image already holds is not observed, as
+// for pip (pipConfigMatches).
 func setuptoolsReadsBytes(doc rootProject) bool {
 	if doc.BuildSystem == nil {
 		return false

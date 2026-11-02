@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,10 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/tools/go/packages"
+	"golang.org/x/vuln/scan"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -98,7 +103,7 @@ func TestRunGovulncheckSlicesCachedStream(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: tt.vulnID}, env)
+			got, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: tt.vulnID}, env, true)
 			if err != nil {
 				t.Fatalf("runGovulncheck: %v", err)
 			}
@@ -211,7 +216,7 @@ func TestRunCacheKeys(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				got, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: "GO-2024-0001"}, tt.env)
+				got, err := runGovulncheck(ctx, plugin.ReachabilityRequest{BuildDir: buildDir, VulnID: "GO-2024-0001"}, tt.env, true)
 				if hit := err == nil && len(got.findings) == 1; hit != tt.wantHit {
 					t.Errorf("served from the seed = %v, want %v (err %v)", hit, tt.wantHit, err)
 				}
@@ -386,4 +391,271 @@ func TestComputeTaintFromCachedIngresses(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestGovulncheckCachedSettlesFailure pins that a settled govulncheck failure runs once per tree and
+// environment and every later call gets the same error, while a failure that is not settled, a run
+// the caller may retry (the switched toolchain's), or a scan without a run cache runs every time.
+// A successful stream is cached exactly as before whether or not the caller lets failures settle.
+func TestGovulncheckCachedSettlesFailure(t *testing.T) {
+	const buildDir = "/src"
+	env := []string{"GOWORK=off"}
+	key := append([]string{buildDir}, env...)
+	cause := fmt.Errorf("govulncheck: %w", errors.New("loading packages: olm/olm.h file not found"))
+	tests := []struct {
+		name       string
+		cacheDir   bool
+		settle     bool
+		outcome    string // "stream", "settled", "unsettled"
+		wantRuns   int
+		wantRecord bool
+	}{
+		{name: "settled failure runs once and replays", cacheDir: true, settle: true, outcome: "settled", wantRuns: 1, wantRecord: true},
+		{name: "unsettled failure runs every time", cacheDir: true, settle: true, outcome: "unsettled", wantRuns: 3},
+		{name: "retryable run never settles", cacheDir: true, settle: false, outcome: "settled", wantRuns: 3},
+		{name: "no cache dir", cacheDir: false, settle: true, outcome: "settled", wantRuns: 3},
+		{name: "stream cached", cacheDir: true, settle: true, outcome: "stream", wantRuns: 1},
+		{name: "stream cached on a retryable run", cacheDir: true, settle: false, outcome: "stream", wantRuns: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := ""
+			if tt.cacheDir {
+				dir = t.TempDir()
+			}
+			ctx := WithRunCacheDir(context.Background(), dir)
+			runs := 0
+			stream := func() ([]byte, error) {
+				runs++
+				switch tt.outcome {
+				case "stream":
+					return []byte(`{"config":{}}` + "\n"), nil
+				default:
+					return nil, &govulncheckError{buildDir: buildDir, cause: cause, stderr: "stderr text", settled: tt.outcome == "settled"}
+				}
+			}
+			var first error
+			var firstOut []byte
+			for i := range 3 {
+				out, err := govulncheckCached(ctx, buildDir, env, tt.settle, stream)
+				if i == 0 {
+					first, firstOut = err, out
+					continue
+				}
+				if !bytes.Equal(out, firstOut) {
+					t.Errorf("call %d: stream %q, want %q", i, out, firstOut)
+				}
+				if (err == nil) != (first == nil) {
+					t.Fatalf("call %d: err %v, first call's %v", i, err, first)
+				}
+				if err == nil {
+					continue
+				}
+				if err.Error() != first.Error() {
+					t.Errorf("call %d: error %q, want the first call's %q", i, err, first)
+				}
+				var got, want *govulncheckError
+				if !errors.As(err, &got) || !errors.As(first, &want) {
+					t.Fatalf("call %d: error %T, first %T, want *govulncheckError", i, err, first)
+				}
+				if got.buildDir != want.buildDir || got.stderr != want.stderr || got.settled != want.settled || errors.Unwrap(err).Error() != errors.Unwrap(first).Error() {
+					t.Errorf("call %d: replay %+v differs from the first call's %+v", i, got, want)
+				}
+			}
+			if tt.outcome != "stream" && first == nil {
+				t.Fatal("failure became a stream")
+			}
+			if runs != tt.wantRuns {
+				t.Errorf("govulncheck ran %d times, want %d", runs, tt.wantRuns)
+			}
+			if tt.cacheDir {
+				_, statErr := os.Stat(runCachePath(dir, govulncheckFailureKind, key))
+				if recorded := statErr == nil; recorded != tt.wantRecord {
+					t.Errorf("failure recorded = %v, want %v", recorded, tt.wantRecord)
+				}
+			}
+		})
+	}
+}
+
+// TestGovulncheckErrorMessage pins the failure message every caller sees, fresh or replayed.
+func TestGovulncheckErrorMessage(t *testing.T) {
+	cause := errors.New("govulncheck: loading packages: boom")
+	want := fmt.Errorf("govulncheck failed (%q): %w: %s", "/src", cause, "err text").Error()
+	fresh := &govulncheckError{buildDir: "/src", cause: cause, stderr: "err text"}
+	if got := fresh.Error(); got != want {
+		t.Errorf("fresh = %q, want %q", got, want)
+	}
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	key := []string{"/src", "GOWORK=off"}
+	recordGovulncheckFailure(ctx, key, fresh)
+	replayed := replayGovulncheckFailure(ctx, "/src", key)
+	if replayed == nil || replayed.Error() != want || !errors.Is(fresh, cause) || errors.Unwrap(replayed).Error() != cause.Error() {
+		t.Errorf("replayed = %v, want %q wrapping %q", replayed, want, cause)
+	}
+}
+
+// fakeVulnPackageError has the shape of the error x/vuln returns for a load whose packages carry
+// errors.
+type fakeVulnPackageError struct{ Errors []packages.Error }
+
+func (e *fakeVulnPackageError) Error() string {
+	return "There are errors with the provided package patterns"
+}
+
+type exitCoded struct {
+	code int
+	err  error
+}
+
+func (e *exitCoded) Error() string { return e.err.Error() }
+func (e *exitCoded) ExitCode() int { return e.code }
+func (e *exitCoded) Unwrap() error { return e.err }
+
+// TestSettledLoadFailure pins which govulncheck failures settle: a completed load whose packages
+// carry errors, and nothing cancelled, timed out, killed by a signal, failed outright, or past the
+// load.
+func TestSettledLoadFailure(t *testing.T) {
+	asVuln := func(err error) error { return fmt.Errorf("govulncheck: %w", fmt.Errorf("loading packages: %w", err)) }
+	cgo := &fakeVulnPackageError{Errors: []packages.Error{
+		{Msg: "# example.com/libolm\nerror.go:4:11: fatal error: 'olm/olm.h' file not found", Kind: packages.ListError},
+		{Pos: "account.go:5:8", Msg: "could not import C (no metadata for C)", Kind: packages.TypeError},
+	}}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancelExpired()
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{name: "package errors", ctx: context.Background(), err: asVuln(cgo), want: true},
+		{name: "ctx cancelled", ctx: cancelled, err: asVuln(cgo), want: false},
+		{name: "ctx timed out", ctx: expired, err: asVuln(cgo), want: false},
+		{name: "a subprocess killed by a signal", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: signal: killed", Kind: packages.ListError}}}), want: false},
+		{name: "a fork that ran out of processes", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: fork/exec /usr/bin/cc: resource temporarily unavailable", Kind: packages.ListError}}}), want: false},
+		{name: "a full disk", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: write /cache/ab/cd: no space left on device", Kind: packages.ListError}}}), want: false},
+		{name: "out of file descriptors", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: open /tmp/x.c: too many open files", Kind: packages.ListError}}}), want: false},
+		{name: "out of memory", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncgo: fork/exec /usr/bin/cc: cannot allocate memory", Kind: packages.ListError}}}), want: false},
+		{name: "cc reporting errno in libc's form", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncc1: error: Resource temporarily unavailable", Kind: packages.ListError}}}), want: false},
+		{name: "cc out of memory", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{Errors: []packages.Error{{Msg: "# example.com/libolm\ncc1: out of memory allocating 65536 bytes", Kind: packages.ListError}}}), want: false},
+		{name: "exit code -1", ctx: context.Background(), err: &exitCoded{code: -1, err: asVuln(cgo)}, want: false},
+		{name: "go command failed outright", ctx: context.Background(), err: asVuln(errors.New("err: signal: killed: stderr: ")), want: false},
+		{name: "vulnerability database unreachable", ctx: context.Background(), err: fmt.Errorf("govulncheck: %w", errors.New(`fetching vulnerabilities: Get "https://vuln.go.dev/index/modules.json.gz": dial tcp: i/o timeout`)), want: false},
+		{name: "usage error", ctx: context.Background(), err: &exitCoded{code: 2, err: errors.New("invalid usage")}, want: false},
+		{name: "no package errors", ctx: context.Background(), err: asVuln(&fakeVulnPackageError{}), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := settledLoadFailure(tt.ctx, tt.err); got != tt.want {
+				t.Errorf("settledLoadFailure = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoadPackageErrorsFindsVulnPackageErrors is the tripwire on x/vuln's unexported package-error
+// shape. It runs a real govulncheck load against a local, empty vulnerability database with
+// GOPROXY=off, so it needs no network, and asserts loadPackageErrors still finds the load's package
+// errors. If it fails after an x/vuln bump, the reflected Errors []packages.Error field moved or
+// changed type: re-verify loadPackageErrors against the new x/vuln before taking the bump, or every
+// deterministic load failure goes back to costing one full source load per advisory.
+func TestLoadPackageErrorsFindsVulnPackageErrors(t *testing.T) {
+	db := writeTree(t, map[string]string{"index/modules.json": "[]", "index/db.json": `{"modified":"2024-01-01T00:00:00Z"}`})
+	dir := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n",
+	})
+	var stderr bytes.Buffer
+	cmd := scan.Command(context.Background(), "-db", "file://"+filepath.ToSlash(db), "-C", dir, "-json", "-mode=source", "-scan=symbol", "./...")
+	cmd.Stdout = &bytes.Buffer{}
+	cmd.Stderr = &stderr
+	cmd.Env = append(reachBaseEnv(), "GOPROXY=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	err := cmd.Wait()
+	if err == nil {
+		t.Fatal("govulncheck succeeded on a tree with a type error")
+	}
+	if len(loadPackageErrors(err)) == 0 {
+		t.Fatalf("loadPackageErrors found no package errors in %v (stderr %q); x/vuln's packageError shape changed — re-verify loadPackageErrors before bumping golang.org/x/vuln", err, stderr.String())
+	}
+}
+
+// TestPackagesResolveOffline pins that a tree whose packages need a module fetch never counts as
+// resolving locally, while one whose only faults are cgo or type errors does.
+func TestPackagesResolveOffline(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{name: "clean", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n", "main.go": "package main\n\nfunc main() {}\n"}, want: true},
+		{name: "type error", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n", "main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n"}, want: true},
+		{name: "missing cgo header", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n", "main.go": "package main\n\n// #include <assay/absent.h>\nimport \"C\"\n\nfunc main() {}\n"}, want: true},
+		{name: "needs a module fetch", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire example.com/absent v1.0.0\n", "main.go": "package main\n\nimport _ \"example.com/absent\"\n\nfunc main() {}\n"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, tt.files)
+			if got := packagesResolveOffline(context.Background(), dir, reachBaseEnv()); got != tt.want {
+				t.Errorf("packagesResolveOffline = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGovulncheckFailureEntryIsolation pins that a stored failure and a stored stream are never read
+// as each other, and that a stream stored under the key wins over a failure record.
+func TestGovulncheckFailureEntryIsolation(t *testing.T) {
+	const buildDir = "/src"
+	env := []string{"GOWORK=off"}
+	key := append([]string{buildDir}, env...)
+	const stream = `{"config":{"protocol_version":"v1.0.0"}}` + "\n"
+	record := &govulncheckError{buildDir: buildDir, cause: errors.New("loading packages: x"), stderr: "", settled: true}
+
+	t.Run("failure not read as a stream", func(t *testing.T) {
+		ctx := WithRunCacheDir(context.Background(), t.TempDir())
+		recordGovulncheckFailure(ctx, key, record)
+		computed := false
+		if _, err := runCached(ctx, "govulncheck", key, func() ([]byte, error) {
+			computed = true
+			return []byte(stream), nil
+		}); err != nil || !computed {
+			t.Fatalf("stream lookup: err %v, computed %v; want a miss", err, computed)
+		}
+	})
+	for _, tc := range []struct{ name, body string }{
+		{"stream", stream},
+		{"record without the marker", `{"cause":"loading packages: x","stderr":""}`},
+		{"truncated record", `{"marker":"` + govulncheckFailureMarker},
+	} {
+		t.Run(tc.name+" at the failure entry not read as a failure", func(t *testing.T) {
+			dir := t.TempDir()
+			ctx := WithRunCacheDir(context.Background(), dir)
+			if err := os.WriteFile(runCachePath(dir, govulncheckFailureKind, key), []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := replayGovulncheckFailure(ctx, buildDir, key); err != nil {
+				t.Errorf("replayed %v from %q", err, tc.body)
+			}
+		})
+	}
+	t.Run("stream wins over a failure record", func(t *testing.T) {
+		ctx := WithRunCacheDir(context.Background(), t.TempDir())
+		recordGovulncheckFailure(ctx, key, record)
+		if _, err := runCached(ctx, "govulncheck", key, func() ([]byte, error) { return []byte(stream), nil }); err != nil {
+			t.Fatal(err)
+		}
+		out, err := govulncheckCached(ctx, buildDir, env, true, func() ([]byte, error) {
+			t.Fatal("govulncheck ran")
+			return nil, nil
+		})
+		if err != nil || string(out) != stream {
+			t.Errorf("got %q, %v; want the stored stream", out, err)
+		}
+	})
 }

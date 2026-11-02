@@ -145,17 +145,18 @@ func TestPartialRunRetry(t *testing.T) {
 		wantPartials int
 		wantRun      []bool // per call; the last repeats
 		wantSpent    bool   // the failures after the bound says the retries are spent
+		refusedFrom  int    // the first call whose failure says an earlier run refused the partial run; 0 when none
 	}{
 		{name: "a transient fault is retried by the next advisory", partials: []string{"transient", "ok"},
 			wantStreams: 1, wantPartials: 2, wantRun: []bool{false, true}},
 		{name: "a refusal is never retried", partials: []string{"refused"},
-			wantStreams: 1, wantPartials: 1, wantRun: []bool{false}},
+			wantStreams: 1, wantPartials: 1, wantRun: []bool{false}, refusedFrom: 1},
 		{name: "a refusal after a transient fault stops the retries", partials: []string{"transient", "refused"},
-			wantStreams: 1, wantPartials: 2, wantRun: []bool{false}},
+			wantStreams: 1, wantPartials: 2, wantRun: []bool{false}, refusedFrom: 2},
 		{name: "a sustained transient fault stops at the bound", partials: []string{"transient"},
 			wantStreams: 1, wantPartials: 1 + maxPartialRunRetries, wantRun: []bool{false}, wantSpent: true},
 		{name: "a partial run record that does not decode is a refusal", partials: []string{"garbled"},
-			wantStreams: 1, wantPartials: 1, wantRun: []bool{false}},
+			wantStreams: 1, wantPartials: 1, wantRun: []bool{false}, refusedFrom: 1},
 		{name: "a failure record from before package errors were recorded is run again", partials: []string{"ok"}, oldRecord: true,
 			wantStreams: 1, wantPartials: 1, wantRun: []bool{true}},
 		{name: "a partial run the cache could not keep is made again by each advisory within the bound", partials: []string{"ok"}, blockWrite: true,
@@ -214,6 +215,9 @@ func TestPartialRunRetry(t *testing.T) {
 					if spent := strings.Contains(err.Error(), errPartialRetriesSpent.Error()); spent != (tt.wantSpent && i > maxPartialRunRetries) {
 						t.Errorf("call %d: retries spent = %v in %v", i, spent, err)
 					}
+					if refused := strings.Contains(err.Error(), errPartialRunRefused.Error()); refused != (tt.refusedFrom > 0 && i >= tt.refusedFrom) {
+						t.Errorf("call %d: earlier refusal named = %v in %v", i, refused, err)
+					}
 				}
 			}
 			if streams != tt.wantStreams || partials != tt.wantPartials {
@@ -223,6 +227,40 @@ func TestPartialRunRetry(t *testing.T) {
 				t.Error("the failure was not recorded again in the current format")
 			}
 		})
+	}
+}
+
+// TestPartialRunRetrySlotError pins that a retry slot the run cache cannot create is reported as
+// the create error, not as spent retries.
+func TestPartialRunRetrySlotError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only run cache")
+	}
+	const buildDir = "/src"
+	env := []string{"GOWORK=off"}
+	perrs := []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}
+	cause := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: perrs})
+	dir := t.TempDir()
+	ctx := WithRunCacheDir(context.Background(), dir)
+	stream := func() ([]byte, error) {
+		return nil, &govulncheckError{buildDir: buildDir, cause: cause, settled: true}
+	}
+	partial := func(error) ([]byte, error) {
+		return nil, errors.New("fetching vulnerabilities: dial tcp: i/o timeout")
+	}
+	if _, _, err := govulncheckOrPartial(ctx, buildDir, env, true, stream, partial); err == nil {
+		t.Fatal("the first advisory's run succeeded, want the govulncheck failure")
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	_, run, err := govulncheckOrPartial(ctx, buildDir, env, true, stream, partial)
+	if err == nil || run != nil {
+		t.Fatalf("run %v, err %v; want the govulncheck failure", run, err)
+	}
+	if strings.Contains(err.Error(), errPartialRetriesSpent.Error()) || !strings.Contains(err.Error(), "claim a partial run retry") || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("%v does not carry the retry slot's create error", err)
 	}
 }
 

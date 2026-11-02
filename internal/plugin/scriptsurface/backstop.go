@@ -1171,7 +1171,16 @@ func (v *Veto) shellText(text string, recipe bool) string {
 // withholds. shell reads each line as shell text (a scalar, a block scalar); otherwise each
 // line is a data line (a list item, an array element, a quoted scalar, an inline table).
 func (v *Veto) valueText(text string, shell bool) (int, string) {
-	lines, starts, _, _ := logicalLinesAt(text, kindData)
+	lines, starts, hidden, _ := logicalLinesAt(text, kindData)
+	if shell {
+		// A shell joins a backslash and newline with nothing, where the lines here keep the
+		// two sides apart; the word they make is the hidden text.
+		for _, w := range hidden {
+			if v.hasToken(w) {
+				return 0, "install command across a line continuation"
+			}
+		}
+	}
 	for k, l := range lines {
 		t := strings.TrimSpace(l)
 		if t == "" || strings.HasPrefix(t, "#") {

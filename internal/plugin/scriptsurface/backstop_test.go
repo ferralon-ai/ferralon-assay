@@ -96,6 +96,7 @@ func TestVeto_Backstop(t *testing.T) {
 		{"JSON data under a test directory", tree(map[string]string{"tests/fixtures/mcp_configs/uvx.json": mcp}), false, ""},
 		{"JSONC data under a test directory", tree(map[string]string{"testdata/cfg.jsonc": mcp}), false, ""},
 		{"JSON5 data under a test directory", tree(map[string]string{"__fixtures__/cfg.json5": mcp}), false, ""},
+		{"shell continuation in a block scalar", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: |\n      in\\\n      st add x\n"}), true, "ci/pipeline.yml:3"},
 		{"YAML under a test directory", tree(map[string]string{"e2e/ci.yml": "steps:\n  - command: inst add x\n"}), true, "e2e/ci.yml:2"},
 		{"poe tasks in a pyproject under a test directory", tree(map[string]string{"tests/pyproject.toml": "[tool.poe.tasks]\nsetup = \"inst add x\"\n"}), true, "tests/pyproject.toml:2"},
 		{"JSON under a test directory that a pipeline uploads", tree(map[string]string{"ci/tests/steps.json": mcp, ".buildkite/pipeline.yml": "steps:\n  - command: buildkite-agent pipeline upload ci/tests/steps.json\n"}), true, "ci/tests/steps.json:1"},

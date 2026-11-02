@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -179,9 +180,14 @@ func runBaseline(args []string) error {
 	budget := startScanBudget(timeout)
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
-	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+	stages, clock := startRunClock(budget.analysis)
+	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
+	var missing *analyzerMissingError
+	if errors.As(err, &missing) {
+		return f.publishAnalyzerMissing(ctx, "baseline", missing)
+	}
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}
@@ -236,7 +242,7 @@ func runBaseline(args []string) error {
 
 	rescan := rescanFromEnv()
 	publishStart := time.Now()
-	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph, f.depRun.forLanguage(acq.language)); err != nil {
+	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph, f.depRun.forLanguage(acq.language), clock); err != nil {
 		return err
 	}
 	logPhase(os.Stderr, "publish", time.Since(publishStart))

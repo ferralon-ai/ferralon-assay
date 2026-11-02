@@ -4,10 +4,9 @@ import (
 	"cmp"
 	"go/token"
 	"sort"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
-
-	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // taintAnalysis is a variable-level, inter-procedural value-flow taint engine
@@ -19,7 +18,7 @@ import (
 // only ever non-Partial on a fully-resolved, clean flow (inv.5).
 type taintAnalysis struct {
 	sp    *ssaProgram
-	sinks map[string]bool // sink SCIP id -> wanted
+	sinks map[string]bool // sink SCIP id -> wanted; nil wants every callee
 
 	tainted map[ssa.Value]bool // values reached by taint
 	// origin records, for a tainted value, the source ingress SCIP id and the
@@ -38,9 +37,10 @@ type taintOrigin struct {
 }
 
 // runTaint seeds sources from ingress functions and propagates taint to a
-// fixpoint, returning the discovered source->sink paths and the path-scoped
-// partiality. ingresses maps an ingress SCIP id to its SSA function.
-func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[string]bool) ([]plugin.ReachPath, map[string]bool) {
+// fixpoint, returning each sink reached mapped to its attributed ingress, and the
+// path-scoped partiality. ingresses maps an ingress SCIP id to its SSA function;
+// a nil sinks records every static callee a tainted argument reaches.
+func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[string]bool) (map[string]string, map[string]bool) {
 	ta := &taintAnalysis{
 		sp:      sp,
 		sinks:   sinks,
@@ -92,21 +92,7 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		classifyFuncPartiality(fn, reasons)
 	}
 
-	var paths []plugin.ReachPath
-	for sink, ingress := range ta.hits {
-		paths = append(paths, plugin.ReachPath{
-			Sink:    sym(sink),
-			Ingress: sym(ingress),
-			Trace:   []plugin.Symbol{sym(ingress), sym(sink)},
-		})
-	}
-	sort.Slice(paths, func(i, j int) bool {
-		if paths[i].Sink.SCIP != paths[j].Sink.SCIP {
-			return paths[i].Sink.SCIP < paths[j].Sink.SCIP
-		}
-		return paths[i].Ingress.SCIP < paths[j].Ingress.SCIP
-	})
-	return paths, reasons
+	return ta.hits, reasons
 }
 
 // ingressOrder returns the SCIP ids of the ingresses with a function, ordered by the
@@ -319,7 +305,7 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	// a finding. The sink identity is the callee's SCIP id.
 	if callee != nil {
 		sym := ta.sp.scipFunc(callee)
-		if ta.sinks[sym] && argContains(common.Args, v) {
+		if (ta.sinks == nil || ta.sinks[sym]) && argContains(common.Args, v) {
 			if _, seen := ta.hits[sym]; !seen {
 				ta.hits[sym] = o.ingress
 			}
@@ -361,7 +347,16 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// is tainted, never its other parameters, so the same holds for every call
 		// it makes with ctx, down the call tree. Like the field-base seed, this
 		// only affects trace and entry-point selection, never a verdict.
-		if forwardsUnbuilt(common, callee, v) {
+		// A request accessor called on a tainted router context is modeled instead:
+		// its result is the request data it reads, and a binder's target is the
+		// request data it decodes. contextAccess alone decides a call on the router
+		// context, so a method that reads no request data (FullPath, GetString)
+		// leaves its result clean.
+		target, read := contextAccess(common, callee, v)
+		if target != nil {
+			seed(target, o)
+		}
+		if read || (!onRouterContext(common, callee, v) && forwardsUnbuilt(common, callee, v)) {
 			if val, ok := in.(ssa.Value); ok {
 				seed(val, o)
 			}
@@ -430,4 +425,102 @@ func argContains(args []ssa.Value, v ssa.Value) bool {
 		}
 	}
 	return false
+}
+
+// ginContextAccessors are the *gin.Context methods that return attacker-controlled
+// request data. A gin handler's *gin.Context parameter is seeded like every ingress
+// parameter, and its Request field carries taint through the ordinary field and load
+// edges; these accessors are the reads that go through a method instead. FullPath is
+// not one: it returns the matched route's registered template ("/user/:id"), which
+// the application wrote, not anything the request carries.
+var ginContextAccessors = map[string]bool{
+	"Param": true, "Query": true, "PostForm": true,
+	"DefaultQuery": true, "GetQuery": true, "QueryArray": true, "QueryMap": true,
+	"GetPostForm": true, "PostFormArray": true, "GetHeader": true, "Cookie": true,
+	"GetRawData": true,
+}
+
+// isGinBinder reports whether name is one of *gin.Context's Bind / ShouldBind* family
+// (Bind, BindJSON, BindQuery, BindUri, ..., MustBindWith, ShouldBind, ShouldBindJSON,
+// ShouldBindBodyWith, ...), each of which decodes the request into the pointer it is
+// given as its first argument.
+func isGinBinder(name string) bool {
+	return strings.HasPrefix(name, "Bind") || strings.HasPrefix(name, "ShouldBind") || name == "MustBindWith"
+}
+
+// echoContextAccessors are the echo.Context methods that return attacker-controlled
+// request data: path, query and form values, the request itself and its cookies.
+// echo.Context is an INTERFACE, so these are invoke calls with the context as the
+// receiver, never a static callee.
+var echoContextAccessors = map[string]bool{
+	"Param": true, "QueryParam": true, "QueryParams": true, "FormValue": true,
+	"FormParams": true, "Request": true, "Cookie": true,
+}
+
+// echoContextBinders are the echo.Context methods that decode the request into the
+// pointer they are given.
+var echoContextBinders = map[string]bool{"Bind": true}
+
+// contextAccess models a call on the tainted router context v whose body is not
+// built: read is true when the call's result is request data (an accessor), and
+// target is the value a binder decodes the request into (the pointer it is given,
+// unboxed), nil otherwise. Both contexts are identified by the import path of the
+// package declaring them: gin's *Context receiver of a static call, and echo's
+// Context interface an invoke call is made on.
+func contextAccess(common *ssa.CallCommon, callee *ssa.Function, v ssa.Value) (target ssa.Value, read bool) {
+	var name string
+	var args []ssa.Value
+	switch {
+	case common.IsInvoke():
+		if common.Value != v || common.Method == nil || !isNamed(v.Type(), "github.com/labstack/echo/v4", "Context") {
+			return nil, false
+		}
+		name, args = common.Method.Name(), common.Args
+		if echoContextBinders[name] && len(args) > 0 {
+			return boundTarget(args[0]), false
+		}
+		return nil, echoContextAccessors[name]
+	case callee != nil:
+		recv := callee.Signature.Recv()
+		if recv == nil || !isPointerToNamed(recv.Type(), "github.com/gin-gonic/gin", "Context") ||
+			len(common.Args) == 0 || common.Args[0] != v {
+			return nil, false
+		}
+		name, args = callee.Name(), common.Args[1:]
+		if isGinBinder(name) && len(args) > 0 {
+			return boundTarget(args[0]), false
+		}
+		return nil, ginContextAccessors[name]
+	}
+	return nil, false
+}
+
+// onRouterContext reports whether the call is one contextAccess models: a static call
+// with gin's *Context receiver v, or an invoke call on echo's Context v.
+func onRouterContext(common *ssa.CallCommon, callee *ssa.Function, v ssa.Value) bool {
+	if common.IsInvoke() {
+		return common.Value == v && common.Method != nil && isNamed(v.Type(), "github.com/labstack/echo/v4", "Context")
+	}
+	if callee == nil {
+		return false
+	}
+	recv := callee.Signature.Recv()
+	return recv != nil && isPointerToNamed(recv.Type(), "github.com/gin-gonic/gin", "Context") &&
+		len(common.Args) > 0 && common.Args[0] == v
+}
+
+// boundTarget unboxes the pointer a binder is handed as an interface{} argument.
+func boundTarget(v ssa.Value) ssa.Value {
+	for {
+		switch x := v.(type) {
+		case *ssa.MakeInterface:
+			v = x.X
+		case *ssa.ChangeInterface:
+			v = x.X
+		case *ssa.ChangeType:
+			v = x.X
+		default:
+			return v
+		}
+	}
 }

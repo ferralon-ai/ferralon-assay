@@ -143,13 +143,9 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 		ids[r.sink] = sp.scipFunc(fn)
 		sinks[ids[r.sink]] = true
 	}
-	paths, _ := runTaint(sp, map[string]*ssa.Function{"flows": app.Func("flows")}, sinks)
-	hit := map[string]bool{}
-	for _, p := range paths {
-		hit[p.Sink.SCIP] = true
-	}
+	hits, _ := runTaint(sp, map[string]*ssa.Function{"flows": app.Func("flows")}, sinks)
 	for _, r := range rows {
-		if got := hit[ids[r.sink]]; got != r.tainted {
+		if _, got := hits[ids[r.sink]]; got != r.tainted {
 			t.Errorf("%s: tainted = %v, want %v", r.shape, got, r.tainted)
 		}
 	}

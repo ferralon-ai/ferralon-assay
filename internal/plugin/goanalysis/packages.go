@@ -73,25 +73,36 @@ type LoadResult struct {
 	// cgoUnresolved: `go env CGO_ENABLED` failed, so which variant of the build was loaded is unknown.
 	cgoUnresolved bool
 	// goVersion is the Go release the load ran under; buildGoVersion is the subject's toolchain when
-	// the caller established it (loadForBuild), else "". buildRelease compares them.
+	// the caller established it (loadForBuild), else "". buildGoFloor is the subject's binding go.mod
+	// floor when the caller holds one, else "". buildRelease reads them.
 	goVersion      string
 	buildGoVersion string
+	buildGoFloor   string
 }
 
-// buildRelease returns the Go release the load ran under when it is established as the build's:
-// the subject's toolchain is known and names the same minor, which alone decides the goN.M build
-// tags a build satisfies. Otherwise it returns nil. The go command on the analyzer's PATH never
-// establishes it: in a dedicated scan job that is the runner's Go, not the build's.
-func (l *LoadResult) buildRelease() *goRelease {
-	loaded, ok := parseGoRelease(l.goVersion)
-	if !ok {
-		return nil
+// releaseBound is what is established about the Go release a build compiles under: exactly release,
+// or, when exact is false, release or any later one.
+type releaseBound struct {
+	release goRelease
+	exact   bool
+}
+
+// buildRelease returns what is established about the Go release the build compiles under, or nil
+// when nothing is. The load's release is the build's exactly when the subject's toolchain is known
+// and names the same minor, which alone decides the goN.M build tags a build satisfies. Otherwise
+// the subject's binding floor, when the caller holds one, bounds it from below. The go command on the
+// analyzer's PATH establishes neither: in a dedicated scan job that is the runner's Go, not the
+// build's.
+func (l *LoadResult) buildRelease() *releaseBound {
+	loaded, okLoaded := parseGoRelease(l.goVersion)
+	build, okBuild := parseGoRelease(l.buildGoVersion)
+	if okLoaded && okBuild && build.major == loaded.major && build.minor == loaded.minor {
+		return &releaseBound{release: loaded, exact: true}
 	}
-	build, ok := parseGoRelease(l.buildGoVersion)
-	if !ok || build.major != loaded.major || build.minor != loaded.minor {
-		return nil
+	if floor, ok := parseGoRelease(l.buildGoFloor); ok {
+		return &releaseBound{release: floor}
 	}
-	return &loaded
+	return nil
 }
 
 // LoadProgram loads the buildable module rooted at buildDir with full type and
@@ -105,31 +116,10 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		Context: ctx,
 		Dir:     buildDir,
 		Tests:   false,
-		// The analyzed target is the buildDir's own module — NEVER a member of any
-		// workspace the analyzer process itself happens to run inside (e.g. an
-		// enclosing repository's go.work during development). Force GOWORK=off so the load resolves the
-		// target module standalone; an ambient go.work would otherwise make
-		// packages.Load try to resolve the target against the wrong module graph and
-		// return an empty/garbled program.
-		Env: append(os.Environ(), "GOWORK=off"),
 	}
-	// The build loaded is the one `go build` ships from this environment: cgo is on or off as the go
-	// command resolves it here (CGO_ENABLED and CC inherited, else on when the default C compiler is
-	// found), pinned so every load reads that one variant. The files the other variant compiles are
-	// the dropped limit below.
-	pinned, cgoErr := cgoPinned(ctx, buildDir, cfg.Env)
-	if cgoErr == nil {
-		cfg.Env = pinned
-	}
-	// The toolchain is the one the go command resolves here from GOTOOLCHAIN and the go.mod go and
-	// toolchain lines, pinned so every load runs under that one release. It is not the build's: a
-	// caller that knows the subject's toolchain sets buildGoVersion.
-	goVersion := goEnvVersion(ctx, buildDir, cfg.Env)
-	if r, ok := parseGoRelease(goVersion); ok {
-		cfg.Env = append(cfg.Env, "GOTOOLCHAIN="+r.toolchain())
-	} else {
-		goVersion = ""
-	}
+	var goVersion string
+	var cgoErr error
+	cfg.Env, goVersion, cgoErr = programEnv(ctx, buildDir)
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go/packages load %q: %w", buildDir, err)
@@ -179,6 +169,36 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil,
 		goVersion: goVersion,
 	}, nil
+}
+
+// programEnv returns the environment LoadProgram loads buildDir under, the release it pins there
+// ("" when the go command resolves none) and why cgo could not be pinned (nil when it was).
+func programEnv(ctx context.Context, buildDir string) (env []string, goVersion string, cgoErr error) {
+	// The analyzed target is the buildDir's own module — NEVER a member of any
+	// workspace the analyzer process itself happens to run inside (e.g. an
+	// enclosing repository's go.work during development). Force GOWORK=off so the load resolves the
+	// target module standalone; an ambient go.work would otherwise make
+	// packages.Load try to resolve the target against the wrong module graph and
+	// return an empty/garbled program.
+	env = append(os.Environ(), "GOWORK=off")
+	// The build loaded is the one `go build` ships from this environment: cgo is on or off as the go
+	// command resolves it here (CGO_ENABLED and CC inherited, else on when the default C compiler is
+	// found), pinned so every load reads that one variant. The files the other variant compiles are
+	// the dropped limit LoadProgram reports.
+	pinned, cgoErr := cgoPinned(ctx, buildDir, env)
+	if cgoErr == nil {
+		env = pinned
+	}
+	// The toolchain is the one the go command resolves here from GOTOOLCHAIN and the go.mod go and
+	// toolchain lines, pinned so every load runs under that one release. It is not the build's: a
+	// caller that knows the subject's toolchain sets buildGoVersion.
+	goVersion = goEnvVersion(ctx, buildDir, env)
+	if r, ok := parseGoRelease(goVersion); ok {
+		env = append(env, "GOTOOLCHAIN="+r.toolchain())
+	} else {
+		goVersion = ""
+	}
+	return env, goVersion, cgoErr
 }
 
 type buildEnvironKey struct{}
@@ -445,9 +465,11 @@ func goflagsTags(env []string) []string {
 // standard library's only when no module in the graph holds it. A file that cannot be read counts. A
 // file left out of a loaded package that reaches a package that counts through the load counts
 // whatever it imports, unless its package clause names another package. A file constrained by the
-// ignore tag is never built and does not count, nor, when release is the Go release the build
+// ignore tag is never built and does not count, nor, when release bounds the Go release the build
 // compiles under, is a file whose goN.M build tags alone exclude it from every build under that
-// release (releaseExcluded); the files of an unloaded import are read the same way.
+// bound (releaseBound.excludes); the files of an unloaded import are read the same way. failed reports
+// that the file that counts does so because a step of the check itself failed: the module graph, a
+// file or a directory could not be read, or `go list` failed.
 //
 // When module is the standard library, the packages that count are its vulnerable ones, or every
 // standard-library package when vulnerable is empty. Every unloaded import is followed, the standard
@@ -456,16 +478,16 @@ func goflagsTags(env []string) []string {
 // reaches. The golang.org/x packages the standard library imports resolve to its vendored copies.
 // Outside a standard-library refutation, the standard library's own files are not checked: it
 // imports no module.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *goRelease, buildDir string, env []string) bool {
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *releaseBound, buildDir string, env []string) (counts, failed bool) {
 	reach := newModuleReach(pkgs, module, vulnerable)
-	reach.vulnerableOnly = true
 	stdlib := module == "stdlib"
 	var graph modGraph
 	var graphErr error
 	graphRead := false
 	src := sourceImports{}
+	unread := map[string]bool{}
 	built := func(expr constraint.Expr) bool {
-		return !ignored(expr) && (release == nil || !releaseExcluded(expr, *release))
+		return !ignored(expr) && (release == nil || !release.excludes(expr))
 	}
 
 	// classify reports whether the import imp counts outright and, when it does not, whether it is a
@@ -486,6 +508,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 				graphRead = true
 			}
 			if graphErr != nil {
+				failed = true
 				return true, false
 			}
 		}
@@ -525,12 +548,15 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 			if v {
 				break
 			}
-			src.read(ctx, buildDir, env, follow, built)
+			for _, p := range src.read(ctx, buildDir, env, follow, built) {
+				unread[p] = true
+			}
 			frontier = nil
 			for _, p := range follow {
 				imports, ok := src[p]
 				if !ok {
 					v = true
+					failed = failed || unread[p]
 					break
 				}
 				for _, next := range imports {
@@ -555,6 +581,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		}
 		name, imports, expr, err := fileImports(path)
 		if err != nil {
+			failed = true
 			return true
 		}
 		if !built(expr) {
@@ -605,26 +632,24 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		return !found
 	}, nil)
 	if found {
-		return true
+		return true, failed
 	}
 	if mainDir == "" {
 		mainDir = buildDir
 	}
-	return firstPartyLeftOut(mainDir, loadedDirs, leftOut)
+	found, unreadable := firstPartyLeftOut(mainDir, loadedDirs, leftOut)
+	return found, failed || unreadable
 }
 
 // moduleReach answers, over the load's own import graph, whether a package is or imports one of a
-// refuted module's packages that count. For the standard library those are its vulnerable packages
-// (vulnerable, or every standard-library package when that is empty).
+// refuted module's packages that count: its vulnerable packages (vulnerable), or every package of the
+// module when that is empty.
 type moduleReach struct {
 	module     string
 	vulnerable []string
-	// vulnerableOnly narrows a module other than the standard library to its vulnerable packages too,
-	// when vulnerable names any.
-	vulnerableOnly bool
-	loaded         map[string]*packages.Package
-	modules        map[string]bool
-	reaches        map[*packages.Package]bool
+	loaded     map[string]*packages.Package
+	modules    map[string]bool
+	reaches    map[*packages.Package]bool
 }
 
 func newModuleReach(pkgs []*packages.Package, module string, vulnerable []string) *moduleReach {
@@ -651,7 +676,7 @@ func (r *moduleReach) inModule(path string, p *packages.Package) bool {
 		if !underModule(path, r.module) && (p == nil || p.Module == nil || p.Module.Path != r.module) {
 			return false
 		}
-		return !r.vulnerableOnly || len(r.vulnerable) == 0 || slices.Contains(r.vulnerable, path)
+		return len(r.vulnerable) == 0 || slices.Contains(r.vulnerable, path)
 	}
 	if (p != nil && p.Module != nil) || !isStdlibPath(path, r.modules) {
 		return false
@@ -684,8 +709,10 @@ type sourceImports map[string][]string
 // read adds the packages of paths not yet read. `go list` finds each one's directory the way the
 // build would (the selected module version, a replacement, the vendor directory) without building
 // it, so a package whose files the scan's own configuration excludes is still found. built reports
-// whether a file with that build constraint can compile at all.
-func (s sourceImports) read(ctx context.Context, buildDir string, env []string, paths []string, built func(constraint.Expr) bool) {
+// whether a file with that build constraint can compile at all. It returns the paths it could not read
+// because `go list` failed or their directory or one of its files could not be read; a path `go list`
+// places in no directory is absent without being one of them.
+func (s sourceImports) read(ctx context.Context, buildDir string, env []string, paths []string, built func(constraint.Expr) bool) (unread []string) {
 	var todo []string
 	for _, p := range paths {
 		if _, ok := s[p]; !ok && !strings.HasPrefix(p, "-") {
@@ -695,12 +722,20 @@ func (s sourceImports) read(ctx context.Context, buildDir string, env []string, 
 	if len(todo) == 0 {
 		return
 	}
-	cmd := exec.CommandContext(ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Standard}}\t{{.Dir}}"}, todo...)...)
-	cmd.Dir = buildDir
-	cmd.Env = env
-	out, err := cmd.Output()
+	// Every Reachability process of a scan asks this of the same tree, mostly for the same packages.
+	keyEnv := env
+	if keyEnv == nil {
+		keyEnv = os.Environ()
+	}
+	key := append(append([]string{buildDir, strconv.Itoa(len(keyEnv))}, keyEnv...), todo...)
+	out, err := runCached(ctx, "sourceimports", key, func() ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "go", append([]string{"list", "-e", "-f", "{{.ImportPath}}\t{{.Standard}}\t{{.Dir}}"}, todo...)...)
+		cmd.Dir = buildDir
+		cmd.Env = env
+		return cmd.Output()
+	})
 	if err != nil {
-		return
+		return todo
 	}
 	dirs := map[string]string{}
 	standard := map[string]bool{}
@@ -712,7 +747,10 @@ func (s sourceImports) read(ctx context.Context, buildDir string, env []string, 
 	}
 	for _, p := range todo {
 		if dir, ok := dirs[p]; ok {
-			if imports, ok := dirImports(dir, built); ok {
+			imports, ok := dirImports(dir, built)
+			if !ok {
+				unread = append(unread, p)
+			} else {
 				if standard[p] {
 					// The standard library resolves the golang.org/x packages it imports to its own vendor copies.
 					for i, imp := range imports {
@@ -725,6 +763,7 @@ func (s sourceImports) read(ctx context.Context, buildDir string, env []string, 
 			}
 		}
 	}
+	return unread
 }
 
 // dirImports returns the imports of every non-test Go file in dir that built admits, unioned, and
@@ -756,12 +795,11 @@ func dirImports(dir string, built func(constraint.Expr) bool) ([]string, bool) {
 // listed, which is one whose every file the build left out (a tool behind a tag, a package for
 // another platform), and reports whether one of its files is leftOut. It skips what the go command
 // skips (testdata, vendor, and directories whose names begin with "." or "_") and nested modules.
-// A directory that cannot be read counts.
-func firstPartyLeftOut(root string, loadedDirs map[string]bool, leftOut func(string) bool) bool {
-	found := false
+// A directory that cannot be read counts, and unreadable reports it.
+func firstPartyLeftOut(root string, loadedDirs map[string]bool, leftOut func(string) bool) (found, unreadable bool) {
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			found = true
+			found, unreadable = true, true
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
@@ -782,7 +820,7 @@ func firstPartyLeftOut(root string, loadedDirs map[string]bool, leftOut func(str
 		}
 		return nil
 	})
-	return found
+	return found, unreadable
 }
 
 // fileImports returns the package name, import paths and build constraint of the Go file at path.
@@ -950,6 +988,54 @@ func releaseExcluded(x constraint.Expr, r goRelease) bool {
 	}
 	all := slices.Sorted(maps.Keys(seen))
 	return satisfiable(all, nil) && !satisfiable(tags, release)
+}
+
+// excludes reports whether the build constraint x excludes a file from every build under b. Under an
+// exact release that is releaseExcluded at it. Under a floor 1.f it is releaseExcluded at every
+// release minor m >= f, judged at f and at each minor above f that x's release tags name. Under m,
+// a release tag go1.n holds exactly when n <= m, so the values of x's release tags, and with them
+// releaseExcluded, change with m only where m reaches a minor x names: every m in [f, inf) gives the
+// values of the largest judged minor at or below it, and above the highest minor x names every one
+// of its release tags holds for good. A floor with another major is not judged.
+func (b releaseBound) excludes(x constraint.Expr) bool {
+	if b.exact {
+		return releaseExcluded(x, b.release)
+	}
+	if b.release.major != 1 {
+		return false
+	}
+	for _, m := range releaseMinorsFrom(x, b.release.minor) {
+		if !releaseExcluded(x, goRelease{major: 1, minor: m}) {
+			return false
+		}
+	}
+	return true
+}
+
+// releaseMinorsFrom returns floor and every release minor above it that x's release tags name,
+// ascending and without repeats.
+func releaseMinorsFrom(x constraint.Expr, floor int) []int {
+	minors := []int{floor}
+	var walk func(constraint.Expr)
+	walk = func(x constraint.Expr) {
+		switch x := x.(type) {
+		case *constraint.TagExpr:
+			if n, ok := releaseTagMinor(x.Tag); ok && n > floor {
+				minors = append(minors, n)
+			}
+		case *constraint.NotExpr:
+			walk(x.X)
+		case *constraint.AndExpr:
+			walk(x.X)
+			walk(x.Y)
+		case *constraint.OrExpr:
+			walk(x.X)
+			walk(x.Y)
+		}
+	}
+	walk(x)
+	slices.Sort(minors)
+	return slices.Compact(minors)
 }
 
 // releaseTagMinor returns N for a release tag "go1.N" as the go command spells it (N >= 1, no

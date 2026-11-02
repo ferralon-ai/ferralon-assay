@@ -41,11 +41,11 @@ func TestRunTaint_CreditIsDeterministic(t *testing.T) {
 
 	credited := map[string]int{}
 	for range creditRuns {
-		paths, _ := runTaint(sp, ingresses, map[string]bool{sink: true})
-		if len(paths) != 1 {
-			t.Fatalf("paths = %+v, want one path to the sink", paths)
+		hits, _ := runTaint(sp, ingresses, map[string]bool{sink: true})
+		if len(hits) != 1 {
+			t.Fatalf("hits = %v, want one hit at the sink", hits)
 		}
-		credited[paths[0].Ingress.SCIP]++
+		credited[hits[sink]]++
 	}
 	if credited[ids[0]] != creditRuns {
 		t.Errorf("credit over %d runs = %v, want handlerA (%s) on every run", creditRuns, credited, ids[0])

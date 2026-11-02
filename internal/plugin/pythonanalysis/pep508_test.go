@@ -142,3 +142,47 @@ func TestParsePEP508_NormalizableSpellings(t *testing.T) {
 		t.Fatalf("declaredDependency = %+v ok %v, want pyjwt 2.8.0 resolved", d, ok)
 	}
 }
+
+// A requirement's specifier set takes one trailing comma, as packaging's Requirement does; any
+// other empty clause is invalid. Each row's expectation is packaging 26.3's result.
+func TestParsePEP508SpecifierCommas(t *testing.T) {
+	for _, tt := range []struct {
+		req, spec string
+		ok        bool
+	}{
+		{"foo>=1.0,", ">=1.0", true},
+		{"foo >= 1.0 ,", ">=1.0", true},
+		{"foo>=1.0,<2,", ">=1.0,<2", true},
+		{"foo (>=1.0,)", ">=1.0", true},
+		{`foo>=1.0,;python_version>"3"`, ">=1.0", true},
+		{"foo[x]>=1,", ">=1", true},
+		{"foo>=1,\t", ">=1", true},
+		{"foo (,)", "", false},
+		{"foo>=1.0,,", "", false},
+		{"foo>=1.0, ,", "", false},
+		{"foo>=1.0,,<2", "", false},
+		{"foo>=1.0, ,<2", "", false},
+		{"foo,>=1.0", "", false},
+		{"foo,", "", false},
+	} {
+		r, ok := parsePEP508(tt.req)
+		if ok != tt.ok || ok && r.Specifier != tt.spec {
+			t.Errorf("parsePEP508(%q) = %q, %v; want %q, %v", tt.req, r.Specifier, ok, tt.spec, tt.ok)
+		}
+	}
+	// The trailing-comma drop needs a clause before it: an empty set is not a specifier.
+	if norm, ok := normalizeSpecifier(" "); ok {
+		t.Errorf(`normalizeSpecifier(" ") = %q, true; want false`, norm)
+	}
+	if d, ok := declaredDependency("foo==2.8.0,", "requirements.txt"); !ok || d.Version != "2.8.0" || !d.Resolved {
+		t.Errorf(`declaredDependency("foo==2.8.0,") = %+v, %v; want 2.8.0 resolved`, d, ok)
+	}
+}
+
+// A requirement line ending in a trailing comma reads as a requirement file, so a file of
+// such lines is a manifest candidate.
+func TestPyCandidateTrailingCommaLine(t *testing.T) {
+	if _, ok := pyCandidate("svc/deps", []byte("foo >= 1.0,\n")); !ok {
+		t.Error(`pyCandidate("svc/deps", "foo >= 1.0,") is not a candidate; pip installs from it`)
+	}
+}

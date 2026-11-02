@@ -344,11 +344,19 @@ func reachPayloadMatrix(t *testing.T) []reachPayloadCase {
 func TestReachabilityPayloadBytes(t *testing.T) {
 	for _, tc := range reachPayloadMatrix(t) {
 		t.Run(tc.name, func(t *testing.T) {
+			counted := plugin.CountedCallGraph{
+				Partiality:      tc.cg.Partiality,
+				Algorithm:       tc.cg.Algorithm,
+				Edges:           tc.cg.Edges,
+				Roots:           tc.cg.Roots,
+				UnresolvedCount: len(tc.cg.Unresolved),
+				EscapedCount:    len(tc.cg.Escaped),
+			}
 			want := mustMarshal(t, struct {
 				Reachability  plugin.ReachabilityResult `json:"reachability"`
-				CallGraph     plugin.CallGraphResult    `json:"call_graph"`
+				CallGraph     plugin.CountedCallGraph   `json:"call_graph"`
 				ToolchainScan ToolchainScan             `json:"toolchain_scan"`
-			}{tc.reach, tc.cg, tc.ts})
+			}{tc.reach, counted, tc.ts})
 			got, err := reachabilityPayload(tc.reach, tc.view, tc.ts)
 			if err != nil {
 				t.Fatal(err)

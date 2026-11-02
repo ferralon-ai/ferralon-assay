@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -266,12 +267,40 @@ func TestCallGraphViewSurface(t *testing.T) {
 	for i := 0; i < typ.NumMethod(); i++ {
 		methods = append(methods, typ.Method(i).Name)
 	}
-	want := []string{"AppendJSON", "Callers", "EdgeCount", "Edges", "FromEncoding", "IsRoot", "MarshalJSON", "Partiality", "Roots", "Symbol"}
+	want := []string{"AppendCountedJSON", "AppendJSON", "Callers", "EdgeCount", "Edges", "FromEncoding", "IsRoot", "MarshalJSON", "Partiality", "Roots", "Symbol"}
 	if !slices.Equal(methods, want) {
 		t.Errorf("CallGraphView methods = %v, want %v", methods, want)
 	}
 	if n := reflect.PointerTo(typ).NumMethod(); n != len(want) {
 		t.Errorf("*CallGraphView has %d methods, want %d (no pointer-receiver methods)", n, len(want))
+	}
+}
+
+// TestAppendCountedJSONOwnsItsBytes pins that a memoized view's counted encoding, held once for
+// every view of the graph, is handed out as a copy: writing to one caller's bytes leaves the next
+// caller's unchanged.
+func TestAppendCountedJSONOwnsItsBytes(t *testing.T) {
+	cg := richGraph()
+	want, err := json.Marshal(CountedCallGraph{Partiality: cg.Partiality, Algorithm: cg.Algorithm, Edges: cg.Edges, Roots: cg.Roots, EscapedCount: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Memoize(richGraphPlugin{newCountingPlugin()})
+	for i := 0; i < 2; i++ {
+		v, err := SharedCallGraph(context.Background(), m, CallGraphRequest{BuildDir: "/src"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := v.AppendCountedJSON(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("view %d counted encoding = %s, want %s", i, got, want)
+		}
+		for j := range got {
+			got[j] = 'x'
+		}
 	}
 }
 

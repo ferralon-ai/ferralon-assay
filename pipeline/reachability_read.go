@@ -10,7 +10,7 @@ import (
 )
 
 // ReachabilityRecord reads the legs of an assessment's TypeReachability artifact. The resolved
-// payload embeds the whole call graph, and an assessment has several readers of it; through a
+// payload embeds the call graph, and an assessment has several readers of it; through a
 // store that keeps views (artifact.Viewer) they share one scan of the payload and one decode of
 // the graph.
 //
@@ -52,8 +52,10 @@ func Reachability(store artifact.Store, caseID string) (*ReachabilityRecord, boo
 
 // seededReachability is the record that decoding a resolved payload gives, built from what the
 // payload was encoded from: reach and ts are exactly the payload's reachability and toolchain_scan
-// values, owned by the record, and cg is the graph whose encoding is its call_graph value. cg must
-// be FromEncoding, so decoding that value would give an equal graph.
+// values, owned by the record, and cg is the full in-memory graph whose counted encoding is its
+// call_graph value. The record keeps cg's Unresolved and Escaped lists, which the payload reduces
+// to counts; a reader of the record sees only the partiality, edges and roots. cg must be
+// FromEncoding, so decoding those from the call_graph value gives values equal to cg's.
 func seededReachability(reach, ts []byte, cg plugin.CallGraphView) *ReachabilityRecord {
 	r := &ReachabilityRecord{}
 	r.legs.Reachability = reach

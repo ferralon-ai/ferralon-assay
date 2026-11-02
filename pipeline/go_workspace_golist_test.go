@@ -79,26 +79,26 @@ func TestGoWorkspace_BuildHoldsAModuleNoGoModLists(t *testing.T) {
 	if v, pinned, read := moduleVersionFromBuild(ctx, buildDir, ws, "example.com/n"); v != "v1.0.0" || !pinned || !read {
 		t.Fatalf("under the go.work: moduleVersionFromBuild = %q, %v, %v; want v1.0.0, true, true", v, pinned, read)
 	}
-	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n"); !present || !known {
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n", noNestedModules); !present || !known {
 		t.Fatalf("under the go.work: goModRequires = %v, %v; want true, true", present, known)
 	}
-	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n/sub"); !present || !known {
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n/sub", noNestedModules); !present || !known {
 		t.Fatalf("under the go.work, a package path: goModRequires = %v, %v; want true, true", present, known)
 	}
-	if present, known := goModRequires(ctx, buildDir, ws, "example.com/never"); present || !known {
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/never", noNestedModules); present || !known {
 		t.Fatalf("under the go.work, a module outside the build: goModRequires = %v, %v; want false, true", present, known)
 	}
 	if v, pinned, read := moduleVersionFromBuild(ctx, buildDir, GoWorkspace{}, "example.com/n"); v != "" || !pinned || !read {
 		t.Fatalf("with GOWORK=off: moduleVersionFromBuild = %q, %v, %v; want absent", v, pinned, read)
 	}
-	if present, known := goModRequires(ctx, buildDir, GoWorkspace{}, "example.com/n"); present || !known {
+	if present, known := goModRequires(ctx, buildDir, GoWorkspace{}, "example.com/n", noNestedModules); present || !known {
 		t.Fatalf("with GOWORK=off: goModRequires = %v, %v; want false, true", present, known)
 	}
 	coldCache(t)
 	if v, pinned, read := moduleVersionFromBuild(ctx, buildDir, ws, "example.com/never"); v != "" || pinned || !read {
 		t.Fatalf("with a cold module cache: moduleVersionFromBuild = %q, %v, %v; want unpinned", v, pinned, read)
 	}
-	if present, known := goModRequires(ctx, buildDir, ws, "example.com/never"); present || known {
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/never", noNestedModules); present || known {
 		t.Fatalf("with a cold module cache: goModRequires = %v, %v; want false, false", present, known)
 	}
 }
@@ -120,11 +120,11 @@ func TestWorkspaceBuildList_ReplaceTargetChange(t *testing.T) {
 	buildDir := filepath.Join(tree, "a")
 	ctx := context.Background()
 
-	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n"); present || !known {
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n", noNestedModules); present || !known {
 		t.Fatalf("before: goModRequires = %v, %v; want false, true", present, known)
 	}
 	writeProxyFile(t, filepath.Join(tree, "r"), "go.mod", "module example.com/r\n\ngo 1.21\n\nrequire example.com/n v1.0.0\n")
-	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n"); !present || !known {
+	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n", noNestedModules); !present || !known {
 		t.Fatalf("after the replace target requires n: goModRequires = %v, %v; want true, true", present, known)
 	}
 }

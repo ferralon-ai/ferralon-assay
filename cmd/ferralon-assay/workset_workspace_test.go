@@ -46,25 +46,43 @@ func goWorkFixture(t *testing.T, declared string) *acquired {
 }
 
 // TestGoInventory_Workspace: under a go.work the inventory is the workspace build's, not the
-// module's go.mod: a sibling member is a dependency held at no released version, and the standard
-// library is keyed to go.work's go line, the members' toolchain lines being ignored.
+// module's go.mod: a sibling member is a dependency held at no released version. The standard
+// library follows the toolchain fact over go.work's go and toolchain lines, the members' own being
+// ignored: only an exact bound is a query point, and a directive is never one, so a directive-only
+// workspace names stdlib with no version. With the workspace off the module's go.mod decides.
 func TestGoInventory_Workspace(t *testing.T) {
-	acq := goWorkFixture(t, "")
-	resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
-	if len(notes) != 0 {
-		t.Errorf("notes = %+v, want none", notes)
+	member := report.Package{Ecosystem: ecosystemGo, Name: "example.com/mono/b"}
+	stdlib := report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage}
+	at := func(v string) report.Package {
+		return report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: v}
 	}
-	if want := []report.Package{{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: "1.22.3"}}; !reflect.DeepEqual(resolved, want) {
-		t.Errorf("resolved = %+v, want %+v", resolved, want)
-	}
-	if want := []report.Package{{Ecosystem: ecosystemGo, Name: "example.com/mono/b"}}; !reflect.DeepEqual(unresolved, want) {
-		t.Errorf("unresolved = %+v, want %+v", unresolved, want)
-	}
-
-	acq.goWork = "off"
-	resolved, unresolved, _ = dependencyInventory(context.Background(), acq)
-	if want := []report.Package{{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: "1.24.3"}}; !reflect.DeepEqual(resolved, want) || len(unresolved) != 0 {
-		t.Errorf("GOWORK=off: resolved = %+v, unresolved = %+v; want %+v and none", resolved, unresolved, want)
+	for _, tc := range []struct {
+		name           string
+		declared       string // -subject-gowork
+		toolchain      string // declared subject toolchain
+		wantResolved   []report.Package
+		wantUnresolved []report.Package
+	}{
+		{name: "directives only", wantUnresolved: []report.Package{member, stdlib}},
+		{name: "declared exact", toolchain: "go1.23.1", wantResolved: []report.Package{at("1.23.1")}, wantUnresolved: []report.Package{member}},
+		{name: "declared below go.work's go line, above the module's", toolchain: "go1.22.1", wantUnresolved: []report.Package{member, stdlib}},
+		{name: "GOWORK=off, directives only", declared: "off", wantUnresolved: []report.Package{stdlib}},
+		{name: "GOWORK=off, declared above the module's go line", declared: "off", toolchain: "go1.22.1", wantResolved: []report.Package{at("1.22.1")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acq := goWorkFixture(t, tc.declared)
+			acq.goToolchain = subjectGoToolchain{declared: tc.toolchain}
+			resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
+			if len(notes) != 0 {
+				t.Errorf("notes = %+v, want none", notes)
+			}
+			if !reflect.DeepEqual(resolved, tc.wantResolved) {
+				t.Errorf("resolved = %+v, want %+v", resolved, tc.wantResolved)
+			}
+			if !reflect.DeepEqual(unresolved, tc.wantUnresolved) {
+				t.Errorf("unresolved = %+v, want %+v", unresolved, tc.wantUnresolved)
+			}
+		})
 	}
 }
 

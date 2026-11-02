@@ -77,6 +77,12 @@ func ClassifyPartialityReason(reason string) PartialityClass {
 	if reason == plugin.PartialReasonNativeLinkBoundary || strings.HasPrefix(reason, plugin.PartialReasonNativeLinkBoundary+":") {
 		return PartialityInherentLimit
 	}
+	// An assumption (plugin.Annotation) is a choice the analysis made and stated, not a step that
+	// did not run: the result it qualifies is complete under it. Each finding it qualifies carries
+	// it too (AdvisoryFinding.Annotations), which is where a surface shows it beside the verdict.
+	if strings.HasPrefix(reason, plugin.AnnotationAssumptionPrefix) {
+		return PartialityInherentLimit
+	}
 	return PartialityDidNotRun
 }
 

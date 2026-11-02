@@ -147,8 +147,13 @@ A finding is affected when it names the reason itself, as its `undetermined_reas
 package's `partial_reason`. A did-not-run partiality note whose reason is no finding's
 `undetermined_reason` keeps the run's refutations from standing, so it affects every finding left `undetermined` with
 `analysis_did_not_run`. The report doesn't say which limit held which of those findings, so each
-such caveat counts all of them. Read that number as an upper bound. A methodology note
-(`class: inherent_limit`) holds no verdict and affects no finding.
+such caveat counts all of them. Read that number as an upper bound. This holds for a note that
+names a `package` too. That package is where the blind spot is, not which findings it held: the
+analyzer also records the packages the hidden code could reach, and the trigger counts the limit
+against a finding on that package or any of those, or on every finding when the list is empty.
+`report.json` doesn't carry that list, so counting only the findings on the note's `package` could
+leave out findings the limit held. A methodology note (`class: inherent_limit`) holds no verdict
+and affects no finding.
 
 Under `caveats` at the top level, the summary rolls the tally up per language: for each caveat, how
 many of that language's targets it fired on (`repos`, `fired_on`) and the findings it affected

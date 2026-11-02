@@ -118,6 +118,12 @@ func TestRepoCaveats(t *testing.T) {
 			want: []CaveatHit{
 				{Caveat: "unmapped:relationship_unexpressed:uninspectable_package", Reasons: []string{"relationship_unexpressed:uninspectable_package"}},
 			}},
+		{name: "a note naming a package holds every did-not-run row too", language: "js",
+			advisories: dnrA + "," + dnrB, partiality: uninspectPkg,
+			want: []CaveatHit{
+				{Caveat: "unmapped:analysis_did_not_run", Findings: 2, Reasons: []string{"analysis_did_not_run"}},
+				{Caveat: "unmapped:relationship_unexpressed:uninspectable_package", Findings: 2, Reasons: []string{"relationship_unexpressed:uninspectable_package"}},
+			}},
 		{name: "mapped per-finding reason counts its rows once", language: "go",
 			advisories: neGrounded + "," + cutShort, partiality: cutShortNote,
 			want: []CaveatHit{

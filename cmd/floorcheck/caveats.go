@@ -162,8 +162,10 @@ type CaveatHit struct {
 // or as its package's partial_reason. A did-not-run partiality note whose reason is no row's
 // undetermined_reason is a limit that holds the run's refutations: it affects every row left undetermined with
 // analysis_did_not_run. The report does not say which limit held which of those rows, so each
-// such caveat counts all of them, an upper bound. An inherent-limit note holds no verdict and
-// affects none.
+// such caveat counts all of them, an upper bound. That includes a note naming a package: the package
+// holds the blind spot, while the trigger counts a scoped limit against every package its hidden
+// code could reach (scopedLimitCounts, trigger/assess.go), a list the report does not carry. An
+// inherent-limit note holds no verdict and affects none.
 func repoCaveats(c Caveats, language string, r report.Report) []CaveatHit {
 	type tally struct {
 		findings map[int]bool

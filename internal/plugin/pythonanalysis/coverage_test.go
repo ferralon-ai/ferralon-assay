@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,7 @@ source = { registry = "https://pypi.org/simple" }
 `
 	// covUVLockNoExtra locks requests without recording any extra.
 	covUVLockNoExtra = `version = 1
+requires-python = ">=3.8"
 [[package]]
 name = "app"
 version = "0.1.0"
@@ -167,10 +169,71 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"unmarked range must admit every locked version", map[string]string{"uv.lock": covUVLockForked, "pyproject.toml": covPyproject("requests>=2.32")}, false},
 		{"marked range needs one locked version", map[string]string{"uv.lock": covUVLockForked, "pyproject.toml": covPyproject(`requests>=2.32; python_version >= "3.12"`)}, true},
 
+		// Install options pip reads in shortened form, or after another option on the line.
+		{"abbreviated --requirement", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--requirem extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --requirement=", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--requirem=extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --editable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--edit ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"include after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -r extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"editable after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -e ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"constraint after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -c c.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--cons c.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"include after another option, with =", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --requirement=extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"abbreviated --editable=", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--edi=./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted option name", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--\"requirement\" extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted short option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\"r\" extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted editable after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -\"e\" ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"single-quoted short option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-'r' extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted editable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\"e\" ./pkg\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"escaped short option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\\r extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"escaped constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-\\c c.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"option name from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url ${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"later field from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"long option name from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--re${Q}=extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"attached option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--index-url=https://${TOKEN}@host/simple\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"short option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"shortened option value from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra ${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"short option value from an environment variable, spaced", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i ${URL}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"option name after a consumed value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i -i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"option name after an empty quoted value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"\" ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"config setting from an environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-C ${X}\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"environment variable after an attached option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--index-url=x ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted environment variable", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre \"${R}\" extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment variable after a quoted value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"x -i\" ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment variable after an escaped value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i x\\ -i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment variable after a single-quoted value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--trusted-host 'h -C' ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment variable in an unquoted value, after another option", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --index-url https://${TOKEN}@host/simple\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"environment variable after a non-ASCII space", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i x\u00a0-i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"constraint inside a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"x -c c.txt\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"include inside a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"x -r extra.txt\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"environment variable in a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--index-url \"https://${TOKEN}@host/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"URL include after an include", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -r https://h/x.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"absolute include after an include", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -r /opt/x.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"editable after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -e git+https://h/p#egg=p\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"editable after an include", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-r requirements-c.txt -e git+https://h/p#egg=p\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"shortened include after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt --requirem=https://h/x.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment option after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt ${R}\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment option name after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -${R}\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		// In the rows that start with a find-links line, the lock cannot close the set, so only
+		// whether the line puts the file in hash mode decides.
+		{"require-hashes on an include line", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-f wheels\n-r requirements-c.txt --require-hashes\nrequests==2.32.3\n", "requirements-c.txt": "requests==2.32.3\n"}, false},
+		{"require-hashes as a find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-f --require-hashes\nrequests==2.32.3\n"}, false},
+		{"require-hashes as a quoted find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--find-links \"--require-hashes\"\nrequests==2.32.3\n"}, false},
+		{"require-hashes as a trusted-host value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-f wheels\n--trusted-host --require-hashes\nrequests==2.32.3\n"}, false},
+		{"require-hashes after an attached find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--find-links=./w --require-hashes\nrequests==2.32.3\n"}, true},
+		{"require-hashes after the end of options", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-f wheels\n--pre -- --require-hashes\nrequests==2.32.3\n"}, false},
+		{"require-hashes after an end-of-options find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-f -- --require-hashes\nrequests==2.32.3\n"}, true},
+		{"require-hashes after a flag", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --require-hashes\nrequests==2.32.3\n"}, true},
+		{"constraint alone", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"unclosed quote", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -i 'x\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
+
 		// Nested project definitions.
 		{"nested pyproject the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, false},
 		{"nested pyproject that is a workspace member", map[string]string{"uv.lock": covUVLockMember, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, true},
-		{"nested requirements file", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3\n"}, false},
+		{"nested requirements file", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests>=2\n"}, false},
+		{"nested requirements file, closed under the lock", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3\n"}, true},
 		{"nested requirements file, hashed", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/requirements.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"nested setup.py the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"requests\"])\n"}, false},
 		{"nested project with its own lock", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n", "svc/uv.lock": covUVLockNoExtra}, true},
@@ -178,7 +241,7 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		// Per lock, never a union.
 		{"two locks, only one holds the name", map[string]string{"uv.lock": exUVLock, "poetry.lock": covPoetryLock, "pyproject.toml": covPyproject("flask", "requests")}, false},
 		{"two locks, both hold every name", map[string]string{"uv.lock": covUVLockNoExtra, "poetry.lock": covPoetryLock, "pyproject.toml": covPyproject("requests")}, true},
-		{"nested poetry.lock inconsistent", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, false},
+		{"nested poetry.lock keys without spaces", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, true},
 
 		// Build-time requirements install into an isolated build environment, not the runtime
 		// one, and no lockfile records them.
@@ -200,7 +263,8 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 
 // TestResolveVersions_ExhaustiveUnreadSurfaces: install formats the resolver never parses,
 // symlinks, and installed copies each withhold Exhaustive. Every row keeps the uv.lock and
-// pyproject that would otherwise prove PyJWT absent.
+// pyproject that would otherwise prove PyJWT absent. Pixi's PyPI tables are read for their names
+// (TestResolveVersions_PixiPyPINames), so the pixi rows declare PyJWT as a conda dependency.
 func TestResolveVersions_ExhaustiveUnreadSurfaces(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -211,8 +275,8 @@ func TestResolveVersions_ExhaustiveUnreadSurfaces(t *testing.T) {
 		{"pylock.<name>.toml", map[string]string{"pylock.dev.toml": "lock-version = \"1.0\"\n[[packages]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n"}, false},
 		{"rye requirements.lock", map[string]string{"requirements.lock": "pyjwt==2.8.0\n"}, false},
 		{"rye requirements-dev.lock", map[string]string{"requirements-dev.lock": "pyjwt==2.8.0\n"}, false},
-		{"pixi.toml pypi-dependencies", map[string]string{"pixi.toml": "[project]\nname = \"app\"\n[pypi-dependencies]\npyjwt = \">=2\"\n"}, false},
-		{"pyproject configuring pixi", map[string]string{"pyproject.toml": exPyproject + "[tool.pixi.pypi-dependencies]\npyjwt = \">=2\"\n"}, false},
+		{"pixi.toml conda dependencies", map[string]string{"pixi.toml": "[project]\nname = \"app\"\n[dependencies]\npyjwt = \">=2\"\n"}, false},
+		{"pyproject configuring pixi", map[string]string{"pyproject.toml": exPyproject + "[tool.pixi.dependencies]\npyjwt = \">=2\"\n"}, false},
 		{"conda-lock.yml", map[string]string{"conda-lock.yml": "package:\n- name: pyjwt\n  manager: pip\n"}, false},
 		{"requirement file under any name", map[string]string{"deploy/prod.pins": "pyjwt==2.8.0 --hash=sha256:abc\n"}, false},
 		{"requirement file template", map[string]string{"requirements.txt.j2": "flask=={{ flask_version }}\npyjwt>=2\n"}, false},
@@ -245,6 +309,59 @@ func TestResolveVersions_ExhaustiveUnreadSurfaces(t *testing.T) {
 				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
 			}
 		})
+	}
+}
+
+// TestResolveVersions_ExhaustiveHatchInstallsPast: a hatch environment that can install past
+// its dependency lists leaves the pyproject not fully read, so a name no manifest declares is
+// not proven absent. Every row keeps the uv.lock and pyproject that would otherwise prove PyJWT
+// absent, plus a hatch environment whose listed dependency the lock holds.
+func TestResolveVersions_ExhaustiveHatchInstallsPast(t *testing.T) {
+	const env = "[tool.hatch.envs.default]\ndependencies = [\"jinja2\"]\n"
+	tests := []struct {
+		name  string
+		extra string
+		want  bool
+	}{
+		{"quiet env", "type = \"virtual\"\npost-install-commands = [\"pre-commit install\"]\nenv-vars = { PYTHONWARNINGS = \"error\" }\n[tool.hatch.envs.default.scripts]\ntest = \"pytest {args}\"\n[[tool.hatch.envs.default.matrix]]\npython = [\"3.11\", \"3.12\"]\n[tool.hatch.envs.default.overrides]\nmatrix.python.scripts = [{ key = \"test\", value = \"pytest -x\" }]\n", true},
+		{"post-install pip", "post-install-commands = [\"pip install 'pyjwt<2'\"]\n", false},
+		{"pre-install python -m pip", "pre-install-commands = [\"python -m pip install pyjwt\"]\n", false},
+		{"script runs uv pip", "[tool.hatch.envs.default.scripts]\nsetup = \"uv pip install pyjwt\"\n", false},
+		{"extra-script runs pip", "[tool.hatch.envs.default.extra-scripts]\nsetup = \"pip install pyjwt\"\n", false},
+		{"PIP_* env-var", "env-vars = { PIP_INDEX_URL = \"https://mirror.example/simple\" }\n", false},
+		{"plugin env type", "type = \"conda\"\n", false},
+		{"override sets dependencies", "[tool.hatch.envs.default.overrides]\nplatform.linux.dependencies = [\"pyjwt\"]\n", false},
+		{"set- override", "[tool.hatch.envs.default.overrides]\nenv.CI.set-dependencies = [\"pyjwt\"]\n", false},
+		{"env sources", "sources = { jinja2 = { path = \"../jinja2\" } }\n", false},
+		{"env workspace", "workspace = { members = [\"libs/*\"] }\n", false},
+		{"top-level sources", "[tool.hatch.sources]\njinja2 = { path = \"../jinja2\" }\n", false},
+		{"custom collector", "[tool.hatch.env.collectors.custom]\n", false},
+		{"script override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.scripts]]\nkey = \"setup\"\nvalue = \"pip install pyjwt\"\n", false},
+		{"dependency override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.custom]]\ndependencies = [\"pyjwt<2\"]\n", false},
+		{"env-var override as an array of tables", "[[tool.hatch.envs.default.overrides.matrix.python.env-vars]]\nkey = \"PIP_INDEX_URL\"\nvalue = \"https://mirror.example/simple\"\n", false},
+		{"env dependencies not an array", "[tool.hatch.envs.lint]\ndependencies = \"ruff\"\n", false},
+		{"env extra-dependencies not an array", "[tool.hatch.envs.lint]\nextra-dependencies = \"ruff\"\n", false},
+		{"env dependency not a string", "[tool.hatch.envs.lint]\ndependencies = [1]\n", false},
+		{"env dependency the lock lacks", "[tool.hatch.envs.lint]\ndependencies = [\"ruff\"]\n", false},
+		{"env extra-dependency the lock lacks", "[tool.hatch.envs.lint]\nextra-dependencies = [\"ruff\"]\n", false},
+		{"does not decode", "[tool.hatch.envs.lint\n", false},
+	}
+	for _, tt := range tests {
+		// hatch.toml holds the same keys as [tool.hatch], at the top level.
+		for file, files := range map[string]map[string]string{
+			"pyproject.toml": {"uv.lock": exUVLock, "pyproject.toml": exPyproject + env + tt.extra},
+			"hatch.toml":     {"uv.lock": exUVLock, "pyproject.toml": exPyproject, "hatch.toml": strings.ReplaceAll(env+tt.extra, "tool.hatch.", "")},
+		} {
+			t.Run(file+"/"+tt.name, func(t *testing.T) {
+				r := resolveVersion(t, writeTree(t, files), "PyJWT")
+				if r.Found {
+					t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+				}
+				if r.Exhaustive != tt.want {
+					t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+				}
+			})
+		}
 	}
 }
 
@@ -340,6 +457,32 @@ func TestPoetrySpecifier(t *testing.T) {
 		got, ok := poetrySpecifier(tt.in)
 		if got != tt.want || ok != tt.ok {
 			t.Errorf("poetrySpecifier(%q) = %q, %v; want %q, %v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+// TestUntrackedConstraint: a constraint option that includeTarget records stays out; a shortened
+// or later one is reported, since the constraint file may include a requirement file.
+func TestUntrackedConstraint(t *testing.T) {
+	for _, tt := range []struct {
+		line string
+		want bool
+	}{
+		{"-c c.txt", false},
+		{"-cc.txt", false},
+		{"--constraint c.txt", false},
+		{"--constraint=c.txt", false},
+		{"--pre", false},
+		{"--extra-index-url https://x/simple", false},
+		{"--cons c.txt", true},
+		{"--constr=c.txt", true},
+		{"--pre -c c.txt", true},
+		{"--pre -cc.txt", true},
+		{"--pre --constraint=c.txt", true},
+	} {
+		words, _ := shellSplit(tt.line)
+		if got := untrackedConstraint(words); got != tt.want {
+			t.Errorf("untrackedConstraint(%q) = %v, want %v", tt.line, got, tt.want)
 		}
 	}
 }

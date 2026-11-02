@@ -39,8 +39,8 @@ func readForUpdate(ctx context.Context, store statestore.StateStore) (*statestor
 
 // packageSignature captures every axis of a package that can change which advisories
 // apply to it (§4.1 / §8 checkbox 12 "relevant dependency ... changes"): its exact
-// version, whether it is a direct or transitive dependency, and its immediate
-// neighbourhood in the selected graph. It is the relevance predicate this cycle makes
+// version, whether it is a direct or transitive dependency, whether the build installs
+// it, and its immediate neighbourhood in the selected graph. It is the relevance predicate this cycle makes
 // explicit — a change in any field is a relevant change that forces re-analysis of the
 // package's advisories; nothing else is.
 //
@@ -54,15 +54,16 @@ func readForUpdate(ctx context.Context, store statestore.StateStore) (*statestor
 // or removed edge, a direct/transitive flip, a version change — falls through to
 // "changed", so the rule's failure direction is re-analysis, never inheritance.
 type packageSignature struct {
-	version  string
-	direct   bool
-	parents  string // sorted \x00-joined ecosystem+name of immediate parents
-	children string // sorted \x00-joined ecosystem+name of immediate children
+	version      string
+	direct       bool
+	notInstalled bool
+	parents      string // sorted \x00-joined ecosystem+name of immediate parents
+	children     string // sorted \x00-joined ecosystem+name of immediate children
 }
 
 // changedPackages returns the ecosystem\x00name keys of packages whose signature
 // differs between the baseline and the candidate SBOM — added, removed, version-,
-// direct/transitive-, or parent/child-edge-changed. The result is sorted and
+// direct/transitive-, installed-, or parent/child-edge-changed. The result is sorted and
 // de-duplicated. An empty result is the PR-inherit fast-path condition (nothing
 // relevant changed). Relationship changes are now visible: before this cycle the
 // comparison was keyed on {ecosystem, name} → version alone and a package that became
@@ -125,10 +126,11 @@ func indexSignatures(s report.SBOM) map[string][]packageSignature {
 	for _, p := range s.Packages {
 		name := p.Ecosystem + "\x00" + p.Name
 		sigs[name] = append(sigs[name], packageSignature{
-			version:  p.Version,
-			direct:   p.Direct,
-			parents:  joinSortedUnique(parents[name]),
-			children: joinSortedUnique(children[name]),
+			version:      p.Version,
+			direct:       p.Direct,
+			notInstalled: p.NotInstalled,
+			parents:      joinSortedUnique(parents[name]),
+			children:     joinSortedUnique(children[name]),
 		})
 	}
 	for _, copies := range sigs {
@@ -136,6 +138,7 @@ func indexSignatures(s report.SBOM) map[string][]packageSignature {
 			return cmp.Or(
 				strings.Compare(a.version, b.version),
 				compareBool(a.direct, b.direct),
+				compareBool(a.notInstalled, b.notInstalled),
 				strings.Compare(a.parents, b.parents),
 				strings.Compare(a.children, b.children),
 			)
@@ -202,7 +205,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 		if _, ok := freshKeys[f.Advisory.ID+"\x00"+f.Advisory.Source]; ok || supersededByFresh(f, freshIDs) {
 			continue
 		}
-		rows = append(rows, withInventoryLimits(f, req.DiffLimits))
+		rows = append(rows, withInventoryLimits(f, inheritedLimits(req.DiffLimits, baseline), nil))
 	}
 	rows = append(rows, fresh...)
 	for _, f := range rows {
@@ -331,7 +334,7 @@ func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []asses
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			notes = append(notes, note)
 		}
@@ -393,7 +396,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
 		// REPLACES the baseline's row below. It has to be harvested ahead of the two skips: a
 		// toolchain advisory carries no SBOM package, so `pkg == nil` would drop it and leave
@@ -442,7 +445,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 			delete(reFindings, key)
 			continue
 		}
-		rows = append(rows, withInventoryLimits(f, req.DiffLimits))
+		rows = append(rows, withInventoryLimits(f, inheritedLimits(req.DiffLimits, baseline), nil))
 	}
 	for _, re := range reFindings {
 		rows = append(rows, re)
@@ -599,7 +602,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		pkg := a.Package
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality), pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather

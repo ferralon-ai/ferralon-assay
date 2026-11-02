@@ -8,12 +8,16 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
+	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -31,6 +35,9 @@ import (
 // pin, or a PEP 621 "==" pin) yields Resolved=true; a range, a prefix ("==1.4.*"), or an
 // unreadable entry is an UNRESOLVED marker (Resolved=false) the predicate fails OPEN on,
 // never fabricating a not-affected. A declared range is carried as Constraint (evidence only).
+// A poetry.lock pin resolves only for a package every poetry install a script surface runs
+// on that lock puts in place, or, when none runs on it, a bare poetry install would
+// (poetryInstalls.scope).
 //
 // Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go)
 // and no script surface may install a package outside them (versionSurfaces), so a coordinate
@@ -56,7 +63,9 @@ import (
 //     groups or tool dependency tables hold an entry that cannot be read.
 //     See versions_surfaces.go and versions_declared.go.
 //   - A script surface that runs a pip self-upgrade (pipSelfUpgrade) is treated the same way
-//     for the pip coordinate alone: it installs pip and nothing else.
+//     for the pip coordinate alone: it installs pip and nothing else. pip, setuptools and
+//     wheel are treated so in every build (seededDistributions): the interpreter it runs on,
+//     or a venv it creates, seeds them.
 //   - A distribution installed in a site-packages directory under the build dir is another
 //     copy of its project: it takes part in Match like a pin, without joining All.
 //
@@ -80,7 +89,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		origins []manifestOrigin
 	)
 	want := normalizePyCoordinate(req.Coordinate)
-	manifests, parseFailed, scriptWithheld, installs, tooling := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfaces(req.BuildDir)
 	if tooling[want] {
 		parseFailed, scriptWithheld = true, true
 	}
@@ -91,35 +100,66 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		if !ok {
 			parseFailed = true
 		}
+		deps = poetry.scope(m, deps)
 		all = append(all, deps...)
 		origins = append(origins, o...)
 	}
+	pixiDeps, pixiOrigins, pixiRead := pixiManifestDeps(req.BuildDir)
+	all, origins = append(all, pixiDeps...), append(origins, pixiOrigins...)
+	parseFailed = parseFailed || !pixiRead
 
 	part := plugin.Complete()
 	switch {
 	case len(manifests) == 0:
 		part = plugin.Partial(plugin.PartialReasonNoManifest)
+	case parseFailed && unrecognised != "":
+		part = plugin.Partial(plugin.PartialReasonToolFailure, plugin.PartialReasonUnrecognisedInstallSurface+":"+unrecognised)
 	case parseFailed:
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests, installs)
+	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests, installs, configNamed)
 	res := plugin.DependencyVersionResult{
-		Partiality: part,
-		All:        all,
-		Exhaustive: covers && !installedCopyPresent(req.BuildDir, want, true) && !scriptWithheld,
+		Partiality:  part,
+		All:         all,
+		Exhaustive:  covers && !installedCopyPresent(req.BuildDir, want, true) && !scriptWithheld,
+		Annotations: scriptsurface.Annotations(inactive),
 	}
 	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
 		append(origins[:len(origins):len(origins)], copyOrigins...), want)
-	if parseFailed && res.Found {
+	sourced := uvSourced(manifests, want)
+	if (parseFailed || sourced) && res.Found {
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
+	// A uv override or constraint only vetoes: it never makes a name Found. An override replaces
+	// the declarations, so a Match stands only when every override entry agrees with it; a
+	// constraint only narrows them, so a Match stands when every constraint admits it.
+	overrides, overrideOrigins, constraintOrigins := uvOverrideEntries(manifests, want)
+	if res.Found && len(overrides) > 0 {
+		m, _ := matchCoordinate(append(all[:len(all):len(all)], append(copies[:len(copies):len(copies)], overrides...)...),
+			append(origins[:len(origins):len(origins)], append(copyOrigins[:len(copyOrigins):len(copyOrigins)], overrideOrigins...)...), want)
+		if !m.Resolved {
+			res.Match.Version = ""
+			res.Match.Resolved = false
+		}
+	}
+	if res.Match.Resolved && !uvEntriesAdmit(constraintOrigins, []plugin.ResolvedDependency{res.Match}) {
 		res.Match.Version = ""
 		res.Match.Resolved = false
 	}
 	// Under coverage every other manifest's declaration is one its governing lock pins at a version
-	// the declaration admits, so the lock entries and the installed copies are every version.
+	// the declaration admits, so the lock entries and the installed copies are every version. A
+	// direct reference is the exception: whatever the lock pins, the build installs the reference.
+	directRef := false
 	for i, d := range all {
-		if want != "" && origins[i].lock != "" && normalizePyCoordinate(d.Coordinate) == want {
+		if want == "" || normalizePyCoordinate(d.Coordinate) != want {
+			continue
+		}
+		if origins[i].lock != "" {
 			res.Matches = append(res.Matches, d)
+		} else if origins[i].directRef {
+			directRef = true
 		}
 	}
 	for _, d := range copies {
@@ -127,8 +167,25 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			res.Matches = append(res.Matches, d)
 		}
 	}
-	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !installedCopyPresent(req.BuildDir, want, false)
+	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !sourced && !directRef &&
+		!installedCopyPresent(req.BuildDir, want, false) &&
+		uvEntriesAdmit(overrideOrigins, res.Matches) && uvEntriesAdmit(constraintOrigins, res.Matches)
 	return res, nil
+}
+
+// uvEntriesAdmit reports whether every version in matches satisfies every uv override and
+// constraint entry. A lock written before an entry was added still pins what the declarations
+// admitted, so its pins are every version only when each entry admits them all. An entry that
+// is a direct reference admits none.
+func uvEntriesAdmit(entries []manifestOrigin, matches []plugin.ResolvedDependency) bool {
+	for _, o := range entries {
+		for _, d := range matches {
+			if !lockPinSatisfies(o, d.Version) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // manifestOrigin records where an entry of All was read: its manifest's directory, the
@@ -143,8 +200,31 @@ type manifestOrigin struct {
 	directRef bool
 }
 
-// projectLocks are the locks that resolve a [project] declaration.
+// projectLocks are the locks that resolve a [project] declaration. poetry.lock is one only
+// when Poetry 2.0 or later wrote it (projectLocksIn): an earlier Poetry locks [tool.poetry]
+// and does not read [project].
 var projectLocks = []string{"poetry.lock", "pdm.lock", "uv.lock"}
+
+// projectLocksNoPoetry is projectLocks without poetry.lock.
+var projectLocksNoPoetry = []string{"pdm.lock", "uv.lock"}
+
+// poetryHeader is the first line of a poetry.lock written by Poetry 1.4 or later, which names
+// the Poetry that wrote it.
+var poetryHeader = regexp.MustCompile(`^# This file is automatically @generated by Poetry ([0-9]+)\.[0-9]+\.[0-9]+ and should not be changed by hand\.\r?\n`)
+
+// projectLocksIn is projectLocks for a [project] in dir, without poetry.lock unless the
+// poetry.lock there has the header of a Poetry 2.0 or later. A lock with no such header, or
+// one that cannot be read, may come from an earlier Poetry.
+func projectLocksIn(dir string) []string {
+	if data, err := readRegular(filepath.Join(dir, "poetry.lock")); err == nil {
+		if m := poetryHeader.FindSubmatch(data); m != nil {
+			if major, err := strconv.Atoi(string(m[1])); err == nil && major >= 2 {
+				return projectLocks
+			}
+		}
+	}
+	return projectLocksNoPoetry
+}
 
 // groupLocks are the locks that resolve a [dependency-groups] declaration. poetry.lock is not
 // one: Poetry reads PEP 735 groups only from 2.2.0, so a poetry.lock written by an earlier
@@ -303,12 +383,12 @@ func walkManifests(root string, match func(string) bool) (out []string, read boo
 
 // isManifest reports whether name is a recognized Python dependency manifest: the lockfiles,
 // the declared-specifier build definitions (pyproject.toml, setup.cfg, setup.py,
-// hatch_build.py), and the requirements*.txt family (requirements.txt, requirements-dev.txt,
+// hatch_build.py), hatch.toml, and the requirements*.txt family (requirements.txt, requirements-dev.txt,
 // ...), so split requirement files still resolve.
 func isManifest(name string) bool {
 	switch name {
 	case "poetry.lock", "Pipfile.lock", "pyproject.toml", "pdm.lock", "uv.lock",
-		"setup.cfg", "setup.py", "hatch_build.py":
+		"setup.cfg", "setup.py", "hatch_build.py", "hatch.toml":
 		return true
 	}
 	return isRequirementsName(name)
@@ -366,6 +446,13 @@ func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, [
 		// mentions dependencies still takes the parse-failure path.
 		deps, ok = parseHatchBuild(data)
 		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok && !bytes.Contains(data, []byte("dependencies"))
+	case "hatch.toml":
+		// hatch reads its environments from here as well as from pyproject.toml's [tool.hatch].
+		var h hatchConfig
+		if toml.Unmarshal(data, &h) != nil {
+			return nil, nil, false
+		}
+		return hatchEnvDeps(h, dir)
 	default: // requirements*.txt
 		deps, ok = parseRequirementLines(data, dir)
 		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
@@ -643,8 +730,9 @@ func isProjectNameRune(c rune) bool {
 }
 
 // parseRequirementSpec extracts (name, version, resolved, extras) from a single requirement
-// spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix); anything else
-// (range, compatible, bare name) is UNRESOLVED. The extras group "[a,b]" is CAPTURED (PLAN-170
+// spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix), or a "===X" whose X
+// is a PEP 440 version; anything else (range, compatible, bare name) is UNRESOLVED. The extras
+// group "[a,b]" is CAPTURED (PLAN-170
 // E2, replacing the old unconditional skip) and returned normalized; the advisory path
 // (parseRequirementLines, parsePyproject) ignores it, while the selected-set path resolves it
 // against the declared extras selection.
@@ -682,15 +770,34 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool, ext
 	if !strings.HasPrefix(rest, "==") {
 		return name, "", false, extras // not an exact pin → UNRESOLVED
 	}
-	ver := strings.TrimSpace(rest[2:])
+	op := "=="
+	if strings.HasPrefix(rest, "===") {
+		op = "==="
+	}
+	ver := strings.TrimSpace(rest[len(op):])
 	// A version with a further comma-clause or a "*" prefix is not a single exact pin.
 	if i := strings.IndexAny(ver, ", \t"); i >= 0 {
 		ver = ver[:i]
 	}
-	if ver == "" || strings.Contains(ver, "*") || containsJinja(ver) {
-		return name, "", false, extras // "*" prefix or a Jinja-templated version → UNRESOLVED
+	if op != "===" && ver != "" && (ver[0] == 'v' || ver[0] == 'V') {
+		ver = ver[1:] // PEP 440 normalizes one leading "v" away, as parsePEP508 does
+	}
+	if ver == "" || strings.HasPrefix(ver, "=") || strings.Contains(ver, "*") || containsJinja(ver) {
+		return name, "", false, extras // "== =1.0", a "*" prefix or a Jinja-templated version → UNRESOLVED
+	}
+	if op == "===" && !arbitraryPinIsVersion(ver) {
+		return name, "", false, extras
 	}
 	return name, ver, true, extras
+}
+
+// arbitraryPinIsVersion reports whether a "===" operand names a version. Arbitrary equality
+// matches the installed version string exactly, so it pins one only when that string is itself
+// a PEP 440 version; any other string ("1.0-custom") is not a version an advisory range can
+// place.
+func arbitraryPinIsVersion(v string) bool {
+	_, ok := pep440.Parse(v)
+	return ok
 }
 
 // containsJinja reports whether s carries a Jinja2 template delimiter, including a
@@ -792,59 +899,15 @@ func stripReqComment(line string) string {
 
 // --- poetry.lock (TOML) ------------------------------------------------------
 
-// parsePoetryLock parses poetry.lock lexically (no TOML library — pure-Go,
-// dependency-free, matching the scanner ethos). Each resolved package is a
-// "[[package]]" block carrying `name = "x"` and `version = "1.2.3"`. A block missing a
-// version is UNRESOLVED.
+// parsePoetryLock adapts parsePoetryLockSelected to the advisory path. A package poetry
+// installs from a git, URL, file or directory source is UNRESOLVED, as is a block missing a
+// version. A lock that does not decode is not read.
 func parsePoetryLock(data []byte) ([]plugin.ResolvedDependency, bool) {
-	var out []plugin.ResolvedDependency
-	var name, version string
-	inPackage := false
-
-	flush := func() {
-		if inPackage && name != "" {
-			out = append(out, pyResolved(name, version, version != "", "poetry.lock"))
-		}
-		name, version = "", ""
+	reqs, err := parsePoetryLockSelected(data, nil, nil)
+	if err != nil {
+		return nil, false
 	}
-
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
-		if line == "[[package]]" {
-			flush()
-			inPackage = true
-			continue
-		}
-		if strings.HasPrefix(line, "[") { // any other table closes the package block
-			flush()
-			inPackage = false
-			continue
-		}
-		if !inPackage {
-			continue
-		}
-		if v, ok := tomlString(line, "name"); ok {
-			name = v
-		}
-		if v, ok := tomlString(line, "version"); ok {
-			version = v
-		}
-	}
-	flush()
-	return out, true
-}
-
-// tomlString matches a `key = "value"` line for the given key and returns the unquoted
-// value. It is deliberately minimal (the only shape poetry.lock/pyproject use for these
-// scalar fields).
-func tomlString(line, key string) (string, bool) {
-	prefix := key + " ="
-	if !strings.HasPrefix(line, prefix) {
-		return "", false
-	}
-	rest := strings.TrimSpace(line[len(prefix):])
-	rest = strings.Trim(rest, `"'`)
-	return rest, rest != ""
+	return pyReqsToResolved(reqs), true
 }
 
 // --- Pipfile.lock (JSON) -----------------------------------------------------
@@ -1028,7 +1091,7 @@ func stringList(v any) ([]string, bool) {
 }
 
 // parsePyprojectLexical reads the "dependencies = [ ... ]" array under a "[project]" table
-// line by line, resolving only exact "==" pins. It is the fallback for a file the TOML decoder
+// line by line, resolving only exact pins (as parseRequirementSpec does). It is the fallback for a file the TOML decoder
 // rejects.
 func parsePyprojectLexical(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
@@ -1113,17 +1176,14 @@ func normalizePyCoordinate(c string) string {
 // resolution declines to read (a -r include) is one the coverage
 // check accounts for itself, through manifestDecls and the install-surface walk, so a version
 // left undecided must not withhold Exhaustive on its own.
-func coverageCovers(root, coordinate string, manifests []string, installs pipInstalls) bool {
-	perFile := make(map[string][]plugin.ResolvedDependency, len(manifests))
+func coverageCovers(root, coordinate string, manifests []string, installs pipInstalls, configNamed bool) bool {
 	failed := false
 	for _, m := range manifests {
-		deps, ok := parseManifestCoverage(m)
-		if !ok {
+		if _, ok := parseManifestCoverage(m); !ok {
 			failed = true
 		}
-		perFile[m] = deps
 	}
-	return manifestSetCovers(root, coordinate, manifests, perFile, failed, installs)
+	return manifestSetCovers(root, coordinate, manifests, failed, installs, configNamed)
 }
 
 // parseManifestCoverage reads one manifest's declared entries for the coverage check and the
@@ -1154,6 +1214,10 @@ func parseManifestCoverage(path string) ([]plugin.ResolvedDependency, bool) {
 		return append(deps, buildRequires(path, data)...), ok
 	case "hatch_build.py":
 		return parseHatchBuild(data)
+	case "hatch.toml":
+		// No declaration of its own here: manifestDecls reads its environments.
+		var h hatchConfig
+		return nil, toml.Unmarshal(data, &h) == nil
 	}
 	return parseRequirementsCoverage(data)
 }

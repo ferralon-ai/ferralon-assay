@@ -14,8 +14,13 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/checkout/gomodtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
+
+// noNestedModules is a complete walk that found no module outside the build root's graph, so a
+// goModRequires test reads only the manifests the build root's own graph names.
+func noNestedModules() gomodtree.Tree { return gomodtree.Tree{Complete: true} }
 
 func writeTree(t *testing.T, files map[string]string) string {
 	t.Helper()
@@ -514,7 +519,7 @@ func TestGoPathOwner_ModulesOutsideTheBuildDir(t *testing.T) {
 			if v, got := root.Matches(buildDir, tc.module, "", ""); got != tc.want || v != tc.wantVersion {
 				t.Errorf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
 			}
-			if present, known := goModRequires(buildDir, tc.module); !present || !known {
+			if present, known := goModRequires(buildDir, tc.module, noNestedModules); !present || !known {
 				t.Errorf("goModRequires = %v, %v; want present, known (a module outside the build never proves absence)", present, known)
 			}
 		})
@@ -591,7 +596,7 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 			if got := goPathOwner(buildDir, "example.com/mono", tc.module); got != tc.want {
 				t.Fatalf("goPathOwner = %v; want %v", got, tc.want)
 			}
-			if present, known := goModRequires(buildDir, tc.module); present != (tc.want != goOwnedElsewhere) || !known {
+			if present, known := goModRequires(buildDir, tc.module, noNestedModules); present != (tc.want != goOwnedElsewhere) || !known {
 				t.Errorf("goModRequires = %v, %v; want %v, true", present, known, tc.want != goOwnedElsewhere)
 			}
 		})
@@ -600,7 +605,8 @@ func TestGoPathOwner_DirectoriesTheGoCommandSkips(t *testing.T) {
 
 // TestGoModRequires_WorkspaceMembers: the go.work in force puts every module it uses, and what
 // each requires, in the build, so none of them is absent; a module only the root's own use claims,
-// that a nested module owns instead, still is, and a go.work that cannot be read proves nothing.
+// that a nested module owns instead, is not present but not proven absent either, since a go.work in
+// the build directory leaves the manifest short; and a go.work that cannot be read proves nothing.
 func TestGoModRequires_WorkspaceMembers(t *testing.T) {
 	workspace := map[string]string{
 		"go.work":  "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n",
@@ -624,7 +630,7 @@ func TestGoModRequires_WorkspaceMembers(t *testing.T) {
 		{"a package of a member module", workspace, "example.com/mono/b/pkg", true, true},
 		{"a module a member requires", workspace, "golang.org/x/text", true, true},
 		{"a module nothing in the workspace declares", workspace, "example.com/never", false, true},
-		{"a nested module the root's own use does not claim", rootOnly, "example.com/mono/sub", false, true},
+		{"a nested module the root's own use does not claim", rootOnly, "example.com/mono/sub", false, false},
 		{"a go.work that does not parse", map[string]string{
 			"go.work":  "go 1.22\n\nuse (\n",
 			"a/go.mod": "module example.com/mono\n\ngo 1.22\n",
@@ -642,7 +648,7 @@ func TestGoModRequires_WorkspaceMembers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			buildDir := filepath.Join(writeTree(t, tc.files), "a")
-			if present, known := goModRequires(buildDir, tc.module); present != tc.wantPresent || known != tc.wantKnown {
+			if present, known := goModRequires(buildDir, tc.module, noNestedModules); present != tc.wantPresent || known != tc.wantKnown {
 				t.Fatalf("goModRequires = %v, %v; want %v, %v", present, known, tc.wantPresent, tc.wantKnown)
 			}
 		})

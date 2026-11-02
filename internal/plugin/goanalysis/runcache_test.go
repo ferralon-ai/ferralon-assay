@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,8 @@ import (
 
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/vuln/scan"
+
+	"golang.org/x/tools/go/ssa"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -189,6 +192,50 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 	}
 }
 
+// TestReachabilityCarriesFloorToLoad pins that the request's GoToolchainFloor reaches the load that
+// judges left-out files: a !go1.22 file that imports the refuted module is ruled out under a go1.22.0
+// floor and withholds the refutation without one.
+func TestReachabilityCarriesFloorToLoad(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "local")
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"old.go":              "//go:build !go1.22\n\npackage main\n\nimport _ \"example.com/vulnmod\"\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	})
+	if r, ok := parseGoRelease(goEnvVersion(context.Background(), dir, reachBaseEnv())); !ok || r.major != 1 || r.minor < 23 {
+		t.Skipf("loader Go %v builds !go1.22 files", r)
+	}
+	const stream = `{"osv":{"id":"GO-2099-0001"}}
+{"finding":{"osv":"GO-2099-0001","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}
+`
+	for _, tc := range []struct {
+		floor    string
+		withheld bool
+	}{
+		{"go1.22.0", false},
+		{"go1.21.0", true},
+		{"", true},
+	} {
+		t.Run("floor "+tc.floor, func(t *testing.T) {
+			ctx := WithRunCacheDir(context.Background(), t.TempDir())
+			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv()...), func() ([]byte, error) {
+				return []byte(stream), nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-2099-0001", GoToolchainFloor: tc.floor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("withheld = %v, want %v (partiality %+v)", withheld, tc.withheld, res.Partiality)
+			}
+		})
+	}
+}
+
 // TestRunCacheKeys pins what each per-tree result is keyed on, so one environment's answer never
 // serves another: the govulncheck stream on the child's exact environment, toolchain included, and
 // the call graph on the process environment the program load reads. Every entry is seeded for a
@@ -230,7 +277,7 @@ func TestRunCacheKeys(t *testing.T) {
 			CallGraph:    plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}},
 			ReflectReach: map[string][]string{"example.com/m": {"F"}},
 		}
-		if _, err := runCached(ctx, "reconcile", reconcileCacheKey(buildDir, nil), func() ([]byte, error) {
+		if _, err := runCached(ctx, "reconcile", reconcileKey(buildDir, nil), func() ([]byte, error) {
 			return json.Marshal(seed)
 		}); err != nil {
 			t.Fatal(err)
@@ -265,7 +312,7 @@ func TestRunCacheKeys(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := WithRunCacheDir(context.Background(), t.TempDir())
-				if _, err := runCached(ctx, "reconcile", reconcileCacheKey(buildDir, nil), func() ([]byte, error) {
+				if _, err := runCached(ctx, "reconcile", reconcileKey(buildDir, nil), func() ([]byte, error) {
 					return json.Marshal(reconcileGraph{ReflectReach: tc.reach})
 				}); err != nil {
 					t.Fatal(err)
@@ -278,6 +325,73 @@ func TestRunCacheKeys(t *testing.T) {
 					t.Errorf("ReflectReach read back = %#v, want unknown = %v", got.ReflectReach, tc.unknown)
 				}
 			})
+		}
+	})
+}
+
+// TestLoadCacheKey pins that a result derived from the program load is shared only while every input
+// to the load stays the same: the process environment, the go command's environment file, whose
+// GOFLAGS can set build tags with no variable changing, and the analyzer binary.
+func TestLoadCacheKey(t *testing.T) {
+	buildDir := filepath.Join(t.TempDir(), "absent")
+	goenv := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(goenv, []byte("GOFLAGS=-tags=alpha\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goenv)
+
+	tests := []struct {
+		name    string
+		change  func(t *testing.T)
+		wantHit bool
+	}{
+		{name: "nothing changed", change: func(*testing.T) {}, wantHit: true},
+		{name: "environment", change: func(t *testing.T) { t.Setenv("ASSAY_RUN_CACHE_KEY_PROBE", "1") }},
+		{name: "go env file", change: func(t *testing.T) {
+			if err := os.WriteFile(goenv, []byte("GOFLAGS=-tags=beta\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "go env file removed", change: func(t *testing.T) {
+			if err := os.Remove(goenv); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "analyzer", change: func(t *testing.T) {
+			prev := analyzerIdentity
+			analyzerIdentity = func() string { return "analyzer:other" }
+			t.Cleanup(func() { analyzerIdentity = prev })
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(goenv, []byte("GOFLAGS=-tags=alpha\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithRunCacheDir(context.Background(), t.TempDir())
+			if _, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+				return []byte("seeded"), nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tt.change(t)
+			got, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+				return []byte("computed"), nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hit := string(got) == "seeded"; hit != tt.wantHit {
+				t.Errorf("served from the seed = %v, want %v", hit, tt.wantHit)
+			}
+		})
+	}
+
+	// An environment file that cannot be read shares nothing, not even with itself.
+	t.Run("go env file unreadable", func(t *testing.T) {
+		t.Setenv("GOENV", t.TempDir())
+		if a, b := loadCacheKey(buildDir), loadCacheKey(buildDir); slices.Equal(a, b) {
+			t.Errorf("two keys over an unreadable go env file are equal: %v", a)
 		}
 	})
 }
@@ -356,44 +470,129 @@ func TestResolveDependencySymbolsFromCachedIndex(t *testing.T) {
 	}
 }
 
-// TestComputeTaintFromCachedIngresses pins that every advisory's taint run from the cached
-// ingresses gets exactly what it gets from a fresh ingress search, and that the search runs once.
-func TestComputeTaintFromCachedIngresses(t *testing.T) {
-	sinks := [][]string{
-		{sinkSCIPIn(t, taintFixtureDir, "/Sink().")},
-		{"scip-go gomod example.com/absent . example.com/absent/Nowhere()."},
-	}
-	taint := func(ctx context.Context, s []string) string {
-		t.Helper()
-		res, err := ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: taintFixtureDir, Sinks: s})
-		if err != nil {
-			t.Fatalf("%v: %v", s, err)
-		}
-		b, err := json.Marshal(res)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(b)
-	}
-
-	want := make([]string, len(sinks))
-	for i, s := range sinks {
-		want[i] = taint(context.Background(), s)
-	}
-
-	ctx := WithRunCacheDir(context.Background(), t.TempDir())
-	for round := range 2 {
-		for i, s := range sinks {
-			if got := taint(ctx, s); got != want[i] {
-				t.Errorf("round %d, sinks %v: cached taint = %s, want %s", round, s, got, want[i])
+// TestComputeTaintFromCachedClosure pins that every advisory's taint result filtered from the cached
+// closure equals a taint pass run for that advisory's sinks alone: the same paths, each attributed
+// to the same ingress, and the same partiality. It checks every sink the closure reaches on its own
+// and in sets with sinks no flow reaches, empty and repeated, read uncached, computed into the
+// cache, and read back from it.
+func TestComputeTaintFromCachedClosure(t *testing.T) {
+	for _, dir := range []string{
+		"testdata/taintmod",
+		"testdata/taintmultimod",
+		"testdata/taintreflectmod",
+		"testdata/sanitizermod",
+		"testdata/fixturemod",
+		"testdata/chimod",
+	} {
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			ctx := context.Background()
+			sp, res, err := loadSSA(ctx, dir)
+			if err != nil {
+				t.Fatal(err)
 			}
+			ingresses := sp.resolveIngressFuncs(ingressesOf(sp, res).Ingresses)
+			reached, _ := runTaint(sp, ingresses, nil)
+			if len(reached) == 0 {
+				t.Fatal("no callee reached; the fixture proves nothing")
+			}
+			const absent = "scip-go gomod example.com/absent . example.com/absent/Nowhere()."
+			all := slices.Sorted(maps.Keys(reached))
+			sinkSets := [][]string{nil, {}, {""}, {absent}, all, append([]string{absent, "", all[0]}, all...)}
+			for _, s := range all {
+				sinkSets = append(sinkSets, []string{s})
+			}
+
+			cached := WithRunCacheDir(ctx, t.TempDir())
+			for _, sinks := range sinkSets {
+				want := taintForSinksAlone(sp, res, ingresses, sinks)
+				for _, c := range []struct {
+					name string
+					ctx  context.Context
+				}{{"uncached", ctx}, {"cached", cached}, {"cached again", cached}} {
+					got, err := ComputeTaint(c.ctx, plugin.ComputeTaintRequest{BuildDir: dir, Sinks: sinks})
+					if err != nil {
+						t.Fatalf("%s, sinks %q: %v", c.name, sinks, err)
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Errorf("%s, sinks %q:\n got %+v\nwant %+v", c.name, sinks, got, want)
+					}
+				}
+			}
+			if _, err := runCached(cached, "taint", loadCacheKey(dir), func() ([]byte, error) {
+				t.Fatal("taint closure was not cached")
+				return nil, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// taintForSinksAlone is the taint result of a pass that records hits at sinks only, folded as one
+// advisory's result: the reference the cached closure's filter must equal.
+func taintForSinksAlone(sp *ssaProgram, res *LoadResult, ingresses map[string]*ssa.Function, sinks []string) plugin.TaintResult {
+	want := map[string]bool{}
+	for _, s := range sinks {
+		if s != "" {
+			want[s] = true
 		}
 	}
-	if _, err := runCached(ctx, "ingresses", append([]string{taintFixtureDir}, os.Environ()...), func() ([]byte, error) {
-		t.Fatal("ingresses were not cached")
-		return nil, nil
-	}); err != nil {
+	hits, pathReasons := runTaint(sp, ingresses, want)
+	reasons := map[string]bool{}
+	for _, r := range res.Partiality.Reasons {
+		reasons[r] = true
+	}
+	for _, r := range res.Partiality.Scoped {
+		reasons[r.Reason] = true
+	}
+	for r := range pathReasons {
+		reasons[r] = true
+	}
+	var paths []plugin.ReachPath
+	for _, s := range slices.Sorted(maps.Keys(hits)) {
+		paths = append(paths, plugin.ReachPath{
+			Sink:    sym(s),
+			Ingress: sym(hits[s]),
+			Trace:   []plugin.Symbol{sym(hits[s]), sym(s)},
+		})
+	}
+	for s := range want {
+		if _, ok := hits[s]; !ok {
+			reasons[plugin.PartialReasonNoIngress] = true
+		}
+	}
+	part := plugin.Complete()
+	if len(reasons) > 0 {
+		part = plugin.Partial(sortedKeys(reasons)...)
+	}
+	return plugin.TaintResult{Partiality: part, Paths: paths, PrecisionNote: taintPrecisionNote}
+}
+
+// TestComputeTaintFirstCallsRace pins that advisories whose first taint calls race each get the
+// whole closure's answer, whichever of them computes it.
+func TestComputeTaintFirstCallsRace(t *testing.T) {
+	sinks := []string{sinkSCIPIn(t, taintFixtureDir, "/Sink().")}
+	want, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{BuildDir: taintFixtureDir, Sinks: sinks})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(want.Paths) == 0 {
+		t.Fatal("no taint path; the race proves nothing")
+	}
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	var wg sync.WaitGroup
+	got := make([]plugin.TaintResult, 4)
+	errs := make([]error, len(got))
+	for i := range got {
+		wg.Go(func() {
+			got[i], errs[i] = ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: taintFixtureDir, Sinks: sinks})
+		})
+	}
+	wg.Wait()
+	for i := range got {
+		if errs[i] != nil || !reflect.DeepEqual(got[i], want) {
+			t.Errorf("call %d: got %+v, %v, want %+v", i, got[i], errs[i], want)
+		}
 	}
 }
 
@@ -405,7 +604,7 @@ func TestGovulncheckCachedSettlesFailure(t *testing.T) {
 	const buildDir = "/src"
 	env := []string{"GOWORK=off"}
 	key := append([]string{buildDir}, env...)
-	cause := fmt.Errorf("govulncheck: %w", errors.New("loading packages: olm/olm.h file not found"))
+	cause := fmt.Errorf("govulncheck: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
 	tests := []struct {
 		name       string
 		cacheDir   bool
@@ -484,7 +683,7 @@ func TestGovulncheckCachedSettlesFailure(t *testing.T) {
 
 // TestGovulncheckErrorMessage pins the failure message every caller sees, fresh or replayed.
 func TestGovulncheckErrorMessage(t *testing.T) {
-	cause := errors.New("govulncheck: loading packages: boom")
+	cause := fmt.Errorf("govulncheck: loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/src/a.go:1:1", Msg: "boom"}}})
 	want := fmt.Errorf("govulncheck failed (%q): %w: %s", "/src", cause, "err text").Error()
 	fresh := &govulncheckError{buildDir: "/src", cause: cause, stderr: "err text"}
 	if got := fresh.Error(); got != want {
@@ -619,7 +818,7 @@ func TestGovulncheckFailureEntryIsolation(t *testing.T) {
 	env := []string{"GOWORK=off"}
 	key := append([]string{buildDir}, env...)
 	const stream = `{"config":{"protocol_version":"v1.0.0"}}` + "\n"
-	record := &govulncheckError{buildDir: buildDir, cause: errors.New("loading packages: x"), stderr: "", settled: true}
+	record := &govulncheckError{buildDir: buildDir, cause: fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/src/a.go:1:1", Msg: "x"}}}), stderr: "", settled: true}
 
 	t.Run("failure not read as a stream", func(t *testing.T) {
 		ctx := WithRunCacheDir(context.Background(), t.TempDir())
@@ -636,6 +835,9 @@ func TestGovulncheckFailureEntryIsolation(t *testing.T) {
 		{"stream", stream},
 		{"record without the marker", `{"cause":"loading packages: x","stderr":""}`},
 		{"truncated record", `{"marker":"` + govulncheckFailureMarker},
+		{"record under the earlier marker", `{"marker":"govulncheck-settled-failure/v1","cause":"loading packages: x","stderr":""}`},
+		{"record under the earlier marker with package errors", `{"marker":"govulncheck-settled-failure/v1","cause":"loading packages: x","stderr":"","package_errors":[{"pos":"/src/a.go:1:1","msg":"x"}]}`},
+		{"record without package errors", `{"marker":"` + govulncheckFailureMarker + `","cause":"loading packages: x","stderr":""}`},
 	} {
 		t.Run(tc.name+" at the failure entry not read as a failure", func(t *testing.T) {
 			dir := t.TempDir()

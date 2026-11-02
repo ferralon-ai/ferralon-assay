@@ -669,10 +669,14 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 //
 // It is a HARD error, not a warning, on the precedent this CLI already sets for a degraded advisory
 // input: advisoryCorpusOption hard-fails a wholly-unusable -advisory-corpus rather than silently
-// falling back to the built-in table (decisions.md #1), and a target whose language has no analyzer
-// hard-fails in selectPlugin. Both refuse to produce a Report the inputs cannot support. An empty
-// work set is the worst-consequence member of that family: the run succeeds, exits 0, and publishes
-// a findings-free Report a reader cannot distinguish from an assessed all-clear.
+// falling back to the built-in table (decisions.md #1), and a tree whose language is not recognized
+// is refused at checkout ("not a recognized source tree", checkout/vendored.go). Both refuse to
+// produce a Report the inputs cannot support. (A detected language whose analyzer is not installed
+// never gets here: acquireTarget stops first. Outside the release's languages the run publishes a
+// Report that says nothing was assessed — publishAnalyzerMissing; for a release language it fails as
+// an install fault.) An empty work set is the worst-consequence member of that family: the run
+// succeeds, exits 0, and publishes a findings-free Report a reader cannot distinguish from an
+// assessed all-clear.
 //
 // The condition is strictly THE SET IS EMPTY — never a language, never a source. An ecosystem that
 // resolves nothing today stops failing the moment anything populates its work set, with no code
@@ -682,6 +686,7 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 	if err != nil {
 		return workSet{}, err
 	}
+	acq.goToolchain = f.subjectGoToolchain()
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
 	if ctx.Err() != nil {
 		if len(ws.advisories) == 0 {
@@ -962,16 +967,28 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 // resolution, so a typo degrades to the go.mod floors rather than to a stronger claim than the
 // operator asserted.
 func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
+	tc := f.subjectGoToolchain()
+	if tc == (subjectGoToolchain{}) {
+		return nil
+	}
+	return pipeline.WithSubjectToolchain(tc.declared, tc.observed, tc.trustObserved)
+}
+
+// subjectGoToolchain is the caller's statement of the subject's Go toolchain, unvalidated.
+type subjectGoToolchain struct {
+	declared      string
+	observed      string
+	trustObserved bool
+}
+
+// subjectGoToolchain reads the declared value (-subject-go-version, then envSubjectGoVersion), the
+// observed value (envCIGoVersion) and the observation's trust (envTrustObservedGo).
+func (f *runFlags) subjectGoToolchain() subjectGoToolchain {
 	declared := *f.subjectGo
 	if declared == "" {
 		declared = os.Getenv(envSubjectGoVersion)
 	}
-	observed := os.Getenv(envCIGoVersion)
-	trust := trustObservedGo()
-	if declared == "" && observed == "" && !trust {
-		return nil
-	}
-	return pipeline.WithSubjectToolchain(declared, observed, trust)
+	return subjectGoToolchain{declared: declared, observed: os.Getenv(envCIGoVersion), trustObserved: trustObservedGo()}
 }
 
 // subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.
@@ -1214,6 +1231,10 @@ func runPRInherit(args []string) error {
 	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	cfg, err := f.resolve(analysis, true)
+	var missing *analyzerMissingError
+	if errors.As(err, &missing) {
+		return f.publishAnalyzerMissing(ctx, "pr-inherit", missing)
+	}
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}
@@ -1309,6 +1330,10 @@ func runCVEWatch(args []string) error {
 	// diffed against a cursor. That mechanism is the one the scan path now borrows; re-widening the
 	// acquisition here would query OSV twice and change a mode whose behaviour is deliberately fixed.
 	cfg, err := f.resolve(analysis, false)
+	var missing *analyzerMissingError
+	if errors.As(err, &missing) {
+		return f.publishAnalyzerMissing(ctx, "cve-watch", missing)
+	}
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}
@@ -1337,6 +1362,7 @@ func runCVEWatch(args []string) error {
 			fmt.Fprintf(os.Stdout, "  no new advisories affect the stored SBOM; cursor bumped, nothing republished\n")
 		}
 		warnNoInventory(os.Stderr, res)
+		warnUnqueried(os.Stdout, os.Stderr, res)
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.

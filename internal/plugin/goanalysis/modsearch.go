@@ -42,8 +42,9 @@ type listedModule struct {
 
 // searchBuildModules searches the source of every module in buildDir's build list for a
 // declaration named like one of symbols, for an advisory on pkgPath. It returns nil when the
-// search does not apply or cannot start: no symbols, a module in the build holds pkgPath, or the
-// build list cannot be listed (a vendored build, for one).
+// search does not apply or cannot start: no symbols, a module in the build holds pkgPath, GOFLAGS
+// may change the module list or the source the build compiles (goflagsBlock), or the build list
+// cannot be listed (a vendored build, for one).
 //
 // A module whose source is not in the module cache is downloaded the way the go command would,
 // honoring the caller's GOPROXY, GOPRIVATE, GONOSUMDB and GOFLAGS, and verified against go.sum
@@ -56,7 +57,7 @@ func searchBuildModules(ctx context.Context, buildDir, pkgPath string, symbols [
 	}
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
-	if modfileFlagSet(ctx, buildDir) {
+	if goflagsBlockSearch(ctx, buildDir) {
 		return nil
 	}
 	mods, err := listModules(ctx, buildDir)
@@ -109,6 +110,88 @@ func symbolNames(symbols []string) map[string]bool {
 	return names
 }
 
+// searchSafeGoflags are the go command flags GOFLAGS may set without changing what the module
+// search reads for the build: the module list `go list -m all` answers, and every .go file of
+// each module whatever its build constraints (declaresName). Build tags, platform, compiler,
+// instrumentation (-race, -cover, -asan, -msan), PGO and linker or compiler options pick among or
+// compile that source, and test flags only run what was built; neither changes the list or the
+// files. Every other flag blocks the search, so a flag the go command adds later fails closed.
+// Left out on purpose: -modfile (another module list), -overlay (other file contents), -toolexec
+// (a wrapper that can rewrite or add source as it compiles), -linkshared and -pkgdir (packages
+// built from source the build does not show), and -C. -mod is decided by its value (goflagsBlock).
+var searchSafeGoflags = map[string]bool{
+	// build
+	"a": true, "asan": true, "asmflags": true, "buildmode": true, "buildvcs": true,
+	"compiler": true, "cover": true, "covermode": true, "coverpkg": true, "gccgoflags": true,
+	"gcflags": true, "installsuffix": true, "json": true, "ldflags": true, "modcacherw": true,
+	"msan": true, "n": true, "p": true, "pgo": true, "race": true, "tags": true, "trimpath": true,
+	"v": true, "work": true, "x": true,
+	// test
+	"bench": true, "benchmem": true, "benchtime": true, "count": true, "cpu": true,
+	"failfast": true, "fullpath": true, "parallel": true, "run": true, "short": true,
+	"shuffle": true, "skip": true, "timeout": true, "vet": true,
+}
+
+// goflagsBlock reports whether goflags, a GOFLAGS value, may make the build compile a module list
+// or file contents the module search does not read: it names a flag searchSafeGoflags does not
+// list, or -mod with any value but readonly. -mod=mod lets the build add modules `go list -m all`
+// did not list, and -mod=vendor compiles vendor/, which the search does not read. GOFLAGS is split
+// as the go command splits it, quotes included; one it would reject (a value set apart from its
+// flag, as in "-mod mod", or an unterminated quote) blocks.
+func goflagsBlock(goflags string) bool {
+	fields, ok := splitGoflags(goflags)
+	if !ok {
+		return true
+	}
+	for _, f := range fields {
+		name, ok := strings.CutPrefix(f, "-")
+		if !ok {
+			return true
+		}
+		name = strings.TrimPrefix(name, "-")
+		name, value, hasValue := strings.Cut(name, "=")
+		if name == "mod" {
+			if !hasValue || value != "readonly" {
+				return true
+			}
+		} else if !searchSafeGoflags[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// splitGoflags splits GOFLAGS into fields the way the go command does (cmd/internal/quoted.Split):
+// on spaces, tabs and newlines, a field that opens with a single or double quote running to the
+// matching quote. It reports false for an unterminated quote.
+func splitGoflags(s string) ([]string, bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	var fields []string
+	for {
+		for len(s) > 0 && isSpace(s[0]) {
+			s = s[1:]
+		}
+		if len(s) == 0 {
+			return fields, true
+		}
+		if q := s[0]; q == '"' || q == '\'' {
+			i := strings.IndexByte(s[1:], q)
+			if i < 0 {
+				return nil, false
+			}
+			fields = append(fields, s[1:1+i])
+			s = s[2+i:]
+			continue
+		}
+		i := 0
+		for i < len(s) && !isSpace(s[i]) {
+			i++
+		}
+		fields = append(fields, s[:i])
+		s = s[i:]
+	}
+}
+
 // modsearchGo runs a go command and returns its standard output. Tests replace it to observe the
 // commands a module search issues.
 var modsearchGo = func(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
@@ -128,23 +211,23 @@ func buildKey(buildDir string, extra ...string) []string {
 	return append(append([]string{buildDir}, extra...), os.Environ()...)
 }
 
-// modfileFlagSet reports whether the GOFLAGS the go command uses in buildDir, from the
-// environment or the go env file, names a -modfile, which the download below replaces with its
-// own copy and so would not honor. GOFLAGS that cannot be read counts as naming one. It is read
-// once per build per scan.
-func modfileFlagSet(ctx context.Context, buildDir string) bool {
-	b, err := runCached(ctx, "modfileflag", buildKey(buildDir), func() ([]byte, error) {
-		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "GOFLAGS"))
+// goflagsBlockSearch reports whether the GOFLAGS the go command uses in buildDir, from the
+// environment or the go env file, may make the build compile a module list or file contents the
+// search does not read (goflagsBlock). GOFLAGS that cannot be read blocks the search. It is read
+// once per build per scan; a read cut short by ctx is not kept.
+func goflagsBlockSearch(ctx context.Context, buildDir string) bool {
+	b, err := runCached(ctx, "goflagsblock", buildKey(buildDir), func() ([]byte, error) {
+		// GOFLAGS applies to go env's own flags too: -u, -w or -json there would print nothing or
+		// something other than GOFLAGS, so they are set on the command line, which overrides it.
+		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "-json=false", "-u=false", "-w=false", "GOFLAGS"))
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, err
 			}
 			return []byte("true"), nil
 		}
-		for _, f := range strings.Fields(string(out)) {
-			if strings.HasPrefix(strings.TrimLeft(f, "-"), "modfile") {
-				return []byte("true"), nil
-			}
+		if goflagsBlock(string(out)) {
+			return []byte("true"), nil
 		}
 		return []byte("false"), nil
 	})
@@ -153,19 +236,25 @@ func modfileFlagSet(ctx context.Context, buildDir string) bool {
 
 // dependencyHolds reports whether a module of buildDir's build list other than the main module
 // holds import path p: the module holding it with the longest path, by its own path or its
-// replacement's, is not the main module. A vendored build, whose build list the go command does not
-// list, is read from vendor/modules.txt. A build list that cannot be read holds nothing.
+// replacement's, is not the main module. A build the go command reads from vendor/, whose build
+// list it does not list, is read from vendor/modules.txt; a vendor/ the go command does not read
+// is not. A build list that cannot be read holds nothing.
 func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
 	mods, err := listModules(ctx, buildDir)
-	if err != nil {
-		if mods, err = vendoredModules(buildDir); err != nil {
-			return false
-		}
+	vendored := errors.Is(err, errVendorMode)
+	if vendored {
+		mods, err = vendoredModules(buildDir)
 	}
-	held, main := 0, false
+	if err != nil {
+		return false
+	}
+	held, main, mainPath := 0, false, ""
 	for _, m := range mods {
+		if m.Main {
+			mainPath = m.Path
+		}
 		paths := []string{m.Path}
 		if m.Replace != nil {
 			paths = append(paths, m.Replace.Path)
@@ -176,7 +265,49 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 			}
 		}
 	}
-	return held > 0 && !main
+	// The go command does not check every vendor/modules.txt entry against go.mod, so a stale one
+	// can name a module whose path the main module has since absorbed. In vendor mode the go
+	// command still loads such a path from the main module's own tree.
+	return held > 0 && !main && !(vendored && mainTreeHolds(buildDir, mainPath, p))
+}
+
+// mainTreeHolds reports whether the main module mainPath, rooted at buildDir, has a directory for
+// import path p with no go.mod between them, as the go command requires of a path it loads from the
+// main module. A directory without Go files still holds p, so that a module path that is not itself
+// a package stays first-party, unless vendor/<p> has Go files: the go command then loads p from
+// vendor/.
+func mainTreeHolds(buildDir, mainPath, p string) bool {
+	if mainPath == "" || !pathHolds(mainPath, p) {
+		return false
+	}
+	buildDir = filepath.Clean(buildDir)
+	dir := filepath.Join(buildDir, filepath.FromSlash(strings.TrimPrefix(p[len(mainPath):], "/")))
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return false
+	}
+	if !hasGoFiles(dir) && hasGoFiles(filepath.Join(buildDir, "vendor", filepath.FromSlash(p))) {
+		return false
+	}
+	for d := dir; len(d) > len(buildDir); d = filepath.Dir(d) {
+		if fi, err := os.Stat(filepath.Join(d, "go.mod")); err == nil && !fi.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// hasGoFiles reports whether dir directly holds a .go file.
+func hasGoFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+			return true
+		}
+	}
+	return false
 }
 
 // vendoredModules reads a vendored build's module list: the main module from go.mod, and every
@@ -225,15 +356,29 @@ func pathHolds(mod, p string) bool {
 }
 
 // moduleListing is what `go list -m -json all` answered for a build: its modules, or why it
-// listed none.
+// listed none, and whether that was the go command's vendor-mode refusal.
 type moduleListing struct {
 	Modules []listedModule
 	Err     string
+	Vendor  bool
+}
+
+// errVendorMode is listModules' answer for a build the go command reads from vendor/: in vendor
+// mode it knows only the modules vendor/modules.txt records, so it refuses to compute 'all'.
+var errVendorMode = errors.New("go list -m all: the go command reads the build from vendor/")
+
+// vendorRefusal reports whether err is the go command refusing `go list -m all` because it is in
+// vendor mode, as it resolved that from -mod in GOFLAGS, the go.mod go version and vendor/
+// itself. Releases print the refusal prefixed "go list -m: " or "go: ".
+func vendorRefusal(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && bytes.Contains(ee.Stderr, []byte("can't compute 'all' using the vendor directory"))
 }
 
 // listModules lists buildDir's build list once per build per scan, through the run cache: every
 // advisory resolved against the build reads the same list. A listing the go command refused is
-// kept as that refusal; one cut short by ctx is not kept, so a later advisory lists again.
+// kept as that refusal, errVendorMode when it refused because it is in vendor mode; one cut short
+// by ctx is not kept, so a later advisory lists again.
 func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 	b, err := runCached(ctx, "modlist", buildKey(buildDir), func() ([]byte, error) {
 		var l moduleListing
@@ -245,7 +390,7 @@ func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			l.Err = err.Error()
+			l.Err, l.Vendor = err.Error(), vendorRefusal(err)
 		}
 		return json.Marshal(l)
 	})
@@ -255,6 +400,9 @@ func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
 	var l moduleListing
 	if err := json.Unmarshal(b, &l); err != nil {
 		return nil, fmt.Errorf("decode cached module list: %w", err)
+	}
+	if l.Vendor {
+		return nil, errVendorMode
 	}
 	if l.Err != "" {
 		return nil, errors.New(l.Err)

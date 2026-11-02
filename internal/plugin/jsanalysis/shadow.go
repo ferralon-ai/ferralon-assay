@@ -61,9 +61,10 @@ type reboundIndex struct {
 	gs       *globalScope
 	mb       moduleBindings
 	with     bool
-	scopes   map[string][]int // name → the blocks (≥0) that bind it
-	root     []int            // block → its outermost enclosing block
-	retarget map[string]bool  // names some for head or destructuring assignment rebinds
+	scopes   map[string][]int        // name → the blocks (≥0) that bind it
+	root     []int                   // block → its outermost enclosing block
+	retarget map[string]bool         // names some for head or destructuring assignment rebinds
+	nested   map[int]map[string]bool // outermost block → the names namesNested finds in it (lazy)
 }
 
 func newReboundIndex(clean []rune, gs *globalScope, mb moduleBindings, calls []callSite) *reboundIndex {
@@ -99,7 +100,7 @@ func newReboundIndex(clean []rune, gs *globalScope, mb moduleBindings, calls []c
 		}
 		word, next := readWord(clean, i)
 		// A declaration's own name (const { f } = o) is in scopes; rebound reads the rest.
-		if wanted[word] && !ri.retarget[word] && !gs.sites[i] && rebound(clean, i, next) {
+		if wanted[word] && !ri.retarget[word] && !gs.sites[i] && rebound(clean, gs.bracketsOf(clean), i, next) {
 			ri.retarget[word] = true
 		}
 		i = next
@@ -127,7 +128,7 @@ func (ri *reboundIndex) rebound(name string, at int) bool {
 			return true
 		}
 	}
-	if namesNested(ri.clean, tf.opens[outer], tf.closes[outer], name) {
+	if ri.namedNested(outer)[name] {
 		return true
 	}
 	// A function expression's own name binds inside its body.
@@ -168,32 +169,54 @@ func (ri *reboundIndex) topLevelRebinds(name string) bool {
 	return len(values) > allowed
 }
 
-// namesNested reports whether a class or function keyword in clean[from:to] names name.
-func namesNested(clean []rune, from, to int, name string) bool {
+// namedNested returns the names a class or function keyword in the outermost block outer
+// names, read once per block rather than once per name looked up in it.
+func (ri *reboundIndex) namedNested(outer int) map[string]bool {
+	if names, ok := ri.nested[outer]; ok {
+		return names
+	}
+	if ri.nested == nil {
+		ri.nested = map[int]map[string]bool{}
+	}
+	tf := ri.gs.tf
+	names := namesNested(ri.clean, tf.opens[outer], tf.closes[outer])
+	ri.nested[outer] = names
+	return names
+}
+
+// namesNested returns the names a class or function keyword in clean[from:to] names.
+func namesNested(clean []rune, from, to int) map[string]bool {
+	names := map[string]bool{}
 	for i := from; i < to && i < len(clean); {
 		if !isIdentStart(clean[i]) || i > 0 && isIdentPart(clean[i-1]) {
 			i++
 			continue
 		}
 		word, next := readWord(clean, i)
-		if (word == "class" || word == "function") && funcKeywordNames(clean, i, name) {
-			return true
+		if word == "class" || word == "function" {
+			names[funcKeywordName(clean, i)] = true
 		}
 		i = next
 	}
-	return false
+	return names
 }
 
 // funcKeywordNames reports whether the class or function keyword at kw is followed by name
 // (after a generator's '*').
 func funcKeywordNames(clean []rune, kw int, name string) bool {
+	return funcKeywordName(clean, kw) == name
+}
+
+// funcKeywordName returns the word that follows the class or function keyword at kw (after a
+// generator's '*').
+func funcKeywordName(clean []rune, kw int) string {
 	_, p := readWord(clean, kw)
 	p = skipSpace(clean, p)
 	if p < len(clean) && clean[p] == '*' {
 		p = skipSpace(clean, p+1)
 	}
 	w, _ := peekWord(clean, p)
-	return w == name
+	return w
 }
 
 // funcDeclaration reports whether the function keyword at kw starts a declaration statement,

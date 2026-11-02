@@ -1373,41 +1373,37 @@ func (prog *program) escapeFrames(out map[string]bool) {
 	}
 	modDone := map[string]bool{}
 	// escapeModule escapes every function of the modules an import path names: the module
-	// is a value, so any of its functions can be reached by attribute name.
-	escapeModule := func(path string) {
+	// is a value, so any of its functions can be reached by attribute name, and so can what
+	// its first-party imports and star imports bind as its attributes, and everything of a
+	// module so bound. A star import binds the same names, so it escapes the same set.
+	var escapeModule func(path string)
+	escapeModule = func(path string) {
 		if modDone[path] {
 			return
 		}
 		modDone[path] = true
-		for _, g := range prog.files {
-			if moduleNamedBy(g.module, path) {
-				for _, fd := range g.decls {
-					escape(fd)
-				}
-			}
-		}
-	}
-	// escapeStar escapes what a star import may bind: every function of the module, what its
-	// own first-party imports bind at module level, and what its star imports bind in turn.
-	starDone := map[string]bool{}
-	var escapeStar func(path string)
-	escapeStar = func(path string) {
-		if starDone[path] {
-			return
-		}
-		starDone[path] = true
-		escapeModule(path)
-		for _, i := range prog.byModule[path] {
+		for i := range prog.files {
 			g := &prog.files[i]
+			if !moduleNamedBy(g.module, path) {
+				continue
+			}
+			for _, fd := range g.decls {
+				escape(fd)
+			}
 			for _, binds := range []map[string][]string{g.fpBinds[""], g.globalBinds} {
 				for attr, paths := range binds {
 					for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
 						escape(fd)
 					}
+					for _, p := range paths {
+						if len(prog.byModule[p]) > 0 {
+							escapeModule(p)
+						}
+					}
 				}
 			}
 			for _, p := range g.starPaths {
-				escapeStar(p)
+				escapeModule(p)
 			}
 		}
 	}
@@ -1429,7 +1425,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 			escapeModule(path)
 		}
 		for _, path := range f.starPaths {
-			escapeStar(path)
+			escapeModule(path)
 		}
 		for name := range f.refs.names {
 			for _, fd := range prog.declsNamed(prog.withAliases([]string{name}, f.anyScopeBinds(name))) {

@@ -33,7 +33,8 @@ import (
 //     importlib.import_module, __import__ or sys.modules lookup, or read for an attribute
 //     the module does not define (handlers.__dict__). A dotted chain is matched to the
 //     module named by its longest prefix, so any of its functions can be reached by
-//     attribute name;
+//     attribute name, and so can what its first-party imports and star imports bind,
+//     followed on through each module so bound ("g = y" then "a.g.h" anywhere);
 //   - its file reaches names by computed access: getattr, globals(), vars(), locals(),
 //     __dict__, eval/exec, __import__, operator.attrgetter/methodcaller, inspect.getmembers,
 //     sys.modules, or an import whose module the scanner cannot name. Module lookups are

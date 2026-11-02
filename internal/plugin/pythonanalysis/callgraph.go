@@ -799,8 +799,8 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.refs.hidden = true
 		}
 		roots, opaque := dynamicImports(clean, lits)
-		lookupRoots, lookups, lookupPackages, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
-		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings)
+		lookupRoots, lookups, lookupPackages, moduleVals, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
+		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings, moduleVals)
 		roots = sortedDedup(append(append(roots, lookupRoots...), loaderRoots...))
 		opaque = opaque || lookupOpaque || loaderOpaque
 

@@ -30,9 +30,11 @@ import (
 // SCIP is the symbol's id emitted by the SAME emitter the call graph uses
 // (packages.go / callgraph.go), so a derived trace shares an identity space with
 // CallGraph edges by construction. IsEntry marks the frame as a recognized
-// program entry point (the top of a complete stack).
+// program entry point (the top of a complete stack). Package is the frame's import
+// path as govulncheck reports it, or "" when it reports none.
 type StackFrame struct {
 	SCIP    string
+	Package string
 	IsEntry bool
 }
 
@@ -44,9 +46,9 @@ type CallStack struct {
 }
 
 // stacksToReachPaths is the PURE derivation: each call stack -> one ReachPath.
-// Sink is the bottom frame, Ingress is the top frame ONLY when it is a
-// recognized entry (otherwise empty, feeding the nil-Ingress CandidatePair),
-// and Trace is the ordered SCIP ids ingress->sink. Empty stacks (module/package
+// Sink is the bottom frame, carrying its import path, Ingress is the top frame
+// ONLY when it is a recognized entry (otherwise empty, feeding the nil-Ingress
+// CandidatePair), and Trace is the ordered SCIP ids ingress->sink. Empty stacks (module/package
 // level findings with no symbol trace) produce no path. No I/O — hermetically
 // testable with synthetic stacks.
 func stacksToReachPaths(stacks []CallStack) []plugin.ReachPath {
@@ -64,8 +66,11 @@ func stacksToReachPaths(stacks []CallStack) []plugin.ReachPath {
 		if top.IsEntry {
 			ingress = sym(top.SCIP)
 		}
+		bottom := st.Frames[len(st.Frames)-1]
+		sink := sym(bottom.SCIP)
+		sink.Package = bottom.Package
 		paths = append(paths, plugin.ReachPath{
-			Sink:    sym(st.Frames[len(st.Frames)-1].SCIP),
+			Sink:    sink,
 			Ingress: ingress,
 			Trace:   trace,
 		})
@@ -1460,6 +1465,7 @@ func findingsToStacks(findings []vulnFinding) []CallStack {
 			}
 			frames = append(frames, StackFrame{
 				SCIP:    frameSCIP(fr),
+				Package: fr.Package,
 				IsEntry: i == len(f.Trace)-1,
 			})
 		}
@@ -1482,6 +1488,9 @@ func compareStacks(a, b CallStack) int {
 	for i := range a.Frames {
 		fa, fb := a.Frames[i], b.Frames[i]
 		if c := strings.Compare(fa.SCIP, fb.SCIP); c != 0 {
+			return c
+		}
+		if c := strings.Compare(fa.Package, fb.Package); c != 0 {
 			return c
 		}
 		if fa.IsEntry != fb.IsEntry {

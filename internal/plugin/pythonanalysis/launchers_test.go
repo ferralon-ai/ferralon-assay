@@ -1121,6 +1121,70 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script its own namespace handed to a builtin rebound through another module's __builtins__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\njson.__builtins__[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ key",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nglobals()[\"__builtins__\"][\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by getattr",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ngetattr(json, \"__builtins__\")[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through its module's __builtins__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nsys.modules[__name__].__builtins__[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin after __builtins__ is replaced",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\n__builtins__ = {**__builtins__, \"sorted\": ev}\n\ndef h():\n    sorted(globals())\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin after a __builtins__ key is stored",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nglobals()[\"__builtins__\"] = {**__builtins__, \"sorted\": ev}\n\ndef h():\n    sorted(globals())\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script an attribute stored on its module by __spec__.name",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

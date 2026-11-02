@@ -1576,7 +1576,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		names["modules"] = lookupModules
 	}
 	// shadowed reports whether the file may rebind a builtin's name where it is called: a star
-	// import, or the name anywhere but called (a def, class, import, assignment or parameter).
+	// import, the name anywhere but called (a def, class, import, assignment or parameter), or
+	// the file's __builtins__ used anywhere but called, since a store there rebinds every builtin.
 	// A def or class written directly in a class body binds only there, and its methods do not
 	// see it.
 	rebinds := map[string]bool{}
@@ -1604,7 +1605,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	// A builtin trusted where it is called is recorded, since a store elsewhere may still
 	// rebind it (see markModuleStores).
 	shadowed := func(w string, at int) bool {
-		if len(stars) > 0 || rebinds[w] || slices.Contains(classBinds[w], classAt(at)) {
+		if len(stars) > 0 || rebinds[w] || rebinds["__builtins__"] || slices.Contains(classBinds[w], classAt(at)) {
 			return true
 		}
 		own.trusted = append(own.trusted, w)
@@ -1659,6 +1660,10 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		// store through the file's own module is.
 		if !dotted && builtinsNames[w] && !precededByDef(r, i) && !assignedTo(r, end) {
 			builtin.use(r, i, end, lits, true, shadowed)
+		}
+		// Another module's __builtins__ is its builtins, as a module or a dict.
+		if dotted && w == "__builtins__" {
+			builtin.any = true
 		}
 		// A frame's or function's globals, and a module-scope frame's locals, are a
 		// namespace dict.
@@ -1750,6 +1755,23 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			}
 		}
 		i = end
+	}
+	// So is a namespace's "__builtins__" key, or getattr of that name.
+	for at, l := range lits {
+		if l.body != "__builtins__" {
+			continue
+		}
+		switch j := skipSpaceBack(r, at-1); {
+		case j < 0:
+		case r[j] == '[':
+			builtin.any = true
+		case r[j] == ',':
+			if o := enclosingOpen(r, j); o >= 0 && r[o] == '(' {
+				if fn, _ := wordBefore(r, o); fn == "getattr" {
+					builtin.any = true
+				}
+			}
+		}
 	}
 	own.names = sortedDedup(own.names)
 	own.trusted = sortedDedup(own.trusted)

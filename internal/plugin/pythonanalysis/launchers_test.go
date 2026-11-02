@@ -1039,6 +1039,16 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script beside a test module's literal store into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tests/test_cli.py": "from tool.fac import make\nfrom tool.impl import main\n\ndef fix(func):\n    func.__globals__[\"main\"] = make()\n    return func\n\n@fix\ndef test_h():\n    pass\n",
+				"tool/cli.py":       "from tool.impl import main\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script rebound by another module's computed store into a decorated function's globals",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

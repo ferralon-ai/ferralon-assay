@@ -342,7 +342,7 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete, re
 			}
 		}
 	}
-	manifests, unread, _, _, tooling := versionSurfaces(buildDir)
+	manifests, unread, _, _, _, tooling := versionSurfaces(buildDir)
 	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
 	for n := range tooling {
 		names[n] = true // the build may hold it as surely as if a manifest declared it

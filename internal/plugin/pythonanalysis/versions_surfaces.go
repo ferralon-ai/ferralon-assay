@@ -27,16 +27,16 @@ import (
 // versionSurfaces returns the manifests version resolution parses, whether any other install
 // surface under root goes unread, whether a script surface may install a package no manifest
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
-// surfaces run, and the distributions the build may hold at a version nothing read here
-// records, which a caller withholds as it would every pin: pip after an allowed self-upgrade
-// (pipSelfUpgrade), and in every build the distributions an interpreter or venv seeds
-// (seededDistributions). No self-upgrade is allowed when root holds a pip config file
-// (pipConfigInTree) or a script surface names one (pipConfigNamedRE). A script surface that
-// names a uv config (uvConfigNamedRE) withholds when an allowed uv sync runs, and one that names
-// a poetry or pdm config (toolConfigNamedRE) when an allowed poetry install or pdm sync runs. A
-// poetry or pdm config in the tree is read when it sets only that tool's settings
-// (toolConfigClean).
-func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
+// surfaces run, every poetry install they run with the groups it selects (poetryInstalls), and
+// the distributions the build may hold at a version nothing read here records, which a caller
+// withholds as it would every pin: pip after an allowed self-upgrade (pipSelfUpgrade), and in
+// every build the distributions an interpreter or venv seeds (seededDistributions). No
+// self-upgrade is allowed when root holds a pip config file (pipConfigInTree) or a script
+// surface names one (pipConfigNamedRE). A script surface that names a uv config
+// (uvConfigNamedRE) withholds when an allowed uv sync runs, and one that names a poetry or pdm
+// config (toolConfigNamedRE) when an allowed poetry install or pdm sync runs. A poetry or pdm
+// config in the tree is read when it sets only that tool's settings (toolConfigClean).
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -69,11 +69,11 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path) || toolConfigClean(path)
 	}
-	installs = pipInstalls{}
+	installs, poetry = pipInstalls{}, poetryInstalls{}
 	if !pipConfigInTree(root) {
 		tooling = map[string]bool{}
 	}
-	spec := newScriptSpec(installs, tooling)
+	spec := newScriptSpec(installs, poetry, tooling)
 	configNamed, mypyInstalls, uvConfigNamed, toolConfigNamed, uvSynced, toolSynced := false, false, false, false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
@@ -116,7 +116,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	for _, n := range seededDistributions {
 		tooling[n] = true
 	}
-	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
+	return manifests, unread || scriptWithheld, scriptWithheld, installs, poetry, tooling
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

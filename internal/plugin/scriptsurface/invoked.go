@@ -116,8 +116,9 @@ func runnerDefault(path string) bool {
 }
 
 // namedIn reports whether a file the build reads (buildRead's files) or one the backstop reads
-// (its texts), other than the file at path itself, names it (names). When an entry of the build
-// could not be read, or a file that may name it cannot be, every path counts as named.
+// (its texts), other than the file at path itself, names it at any path it is reached at
+// (pathsOf, names). When an entry of the build could not be read (buildRead's read), or a file
+// that may name it cannot be, every path counts as named.
 func (v *Veto) namedIn(path string) bool {
 	if named, ok := v.named[path]; ok {
 		return named
@@ -132,17 +133,21 @@ func (v *Veto) namedIn(path string) bool {
 
 func (v *Veto) namedInBuild(path string) bool {
 	b := v.buildRead()
-	if !b.whole {
+	if !b.read {
 		return true
 	}
-	match := names(path)
+	paths, ok := b.pathsOf(v.root, path)
+	if !ok {
+		return true
+	}
+	match := names(paths)
 	for _, f := range b.files {
-		if f.path != path && match(f.data) {
+		if !slices.Contains(paths, f.path) && match(f.data) {
 			return true
 		}
 	}
 	for _, t := range b.texts {
-		if t == path {
+		if slices.Contains(paths, t) {
 			continue
 		}
 		data, err := v.spec.ReadRegular(t)
@@ -156,7 +161,44 @@ func (v *Veto) namedInBuild(path string) bool {
 	return false
 }
 
-// names returns a matcher for text that may run the file at path by name: its base name
+// pathsOf returns every path the file at path, under root, is reached at: path itself, the path
+// the walk visits its target at when it is a symlink, and the paths of the symlinks to that
+// target or to the directory that holds it. A symlink to a directory further up changes no name
+// that names reads. ok is false when path does not resolve inside the build.
+func (b *buildFiles) pathsOf(root, path string) ([]string, bool) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, false
+	}
+	target, ok := b.walkPath(root, real)
+	if !ok {
+		return nil, false
+	}
+	out := []string{path}
+	if target != path {
+		out = append(out, target)
+	}
+	out = append(out, b.aliases[target]...)
+	for _, link := range b.aliases[filepath.Dir(target)] {
+		out = append(out, filepath.Join(link, filepath.Base(target)))
+	}
+	slices.Sort(out)
+	return slices.Compact(out), true
+}
+
+// names returns a matcher for text that may run the file at any of paths by name, as nameOf
+// reads each.
+func names(paths []string) func(data []byte) bool {
+	var matchers []func(data []byte) bool
+	for _, p := range paths {
+		matchers = append(matchers, nameOf(p))
+	}
+	return func(data []byte) bool {
+		return slices.ContainsFunc(matchers, func(match func([]byte) bool) bool { return match(data) })
+	}
+}
+
+// nameOf returns a matcher for text that may run the file at path by name: its base name
 // (install.py, whatever path, separator or quoting comes before it, so cd scripts && python
 // install.py and $(SCRIPTS)/install.py count); for source code, its stem after a path separator
 // and before a quote, as an import specifier names it (require("./install")); and for a Python
@@ -165,7 +207,7 @@ func (v *Veto) namedInBuild(path string) bool {
 // from-import of it from that directory or a relative one (from scripts import install, from
 // . import install, from .install import main). Each is compared whole: post_install.py and
 // install_deps are other names.
-func names(path string) func(data []byte) bool {
+func nameOf(path string) func(data []byte) bool {
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)

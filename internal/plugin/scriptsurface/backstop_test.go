@@ -507,9 +507,10 @@ func TestVeto_BackstopPackageModuleFailsClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// A hit withholds, or annotates when nothing invokes the file.
 			_, ok := v.Classify(func(string, []byte) (string, bool) { return "", false })(p, head)
-			if ok != tt.want {
-				t.Fatalf("Classify withheld = %v, want %v", ok, tt.want)
+			if hit := ok || len(v.Inactive()) > 0; hit != tt.want {
+				t.Fatalf("backstop hit = %v (withheld %v), want %v", hit, ok, tt.want)
 			}
 		})
 	}
@@ -605,33 +606,69 @@ func TestVeto_BackstopInvoked(t *testing.T) {
 		{"turbo tasks", map[string]string{"turbo.json": "{\"tasks\": {\"deps\": \"inst add x\"}}\n"}, true, "turbo.json:1"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
-			for k, v := range tt.files {
-				files[k] = v
-			}
-			root := writeTree(t, files)
-			v := New(root, testRead(root), testSpec)
-			none := func(string, []byte) (string, bool) { return "", false }
-			unread := false
-			for _, c := range buildtree.Candidates(root, v.Classify(none), v.FullyRead) {
-				unread = unread || !c.FullyRead
-			}
-			withheld := unread || v.Withheld()
-			inactive := v.Inactive()
-			if withheld != tt.withheld {
-				t.Fatalf("withheld = %v, want %v (Unrecognised %q, Inactive %v)", withheld, tt.withheld, v.Unrecognised(), inactive)
-			}
-			if tt.withheld {
-				if v.Unrecognised() != tt.at || len(inactive) != 0 {
-					t.Fatalf("Unrecognised() = %q, Inactive() = %v; want %q and none", v.Unrecognised(), inactive, tt.at)
-				}
-				return
-			}
-			if v.Unrecognised() != "" || len(inactive) != 1 || inactive[0].String() != tt.at || inactive[0].Why == "" {
-				t.Fatalf("Unrecognised() = %q, Inactive() = %v; want none and %q", v.Unrecognised(), inactive, tt.at)
-			}
-		})
+		t.Run(tt.name, func(t *testing.T) { checkInvoked(t, tt.files, nil, tt.withheld, tt.at) })
+	}
+}
+
+// A symlink inside the build leaves it read whole when the walk reads its target at its real
+// path, and a file that names the link names its target. Any other symlink withholds every hit.
+func TestVeto_BackstopInvokedThroughLinks(t *testing.T) {
+	const hit = "steps:\n  - run: inst add x\n"
+	const lit = "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"
+	wf := func(run string) string {
+		return "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: " + run + "\n"
+	}
+	tests := []struct {
+		name     string
+		files    map[string]string
+		withheld bool
+		at       string
+		links    map[string]string // link path to its target, relative to the link
+	}{{"a link to a directory the walk reads", map[string]string{"examples/provision.yml": hit, "shared/lib/a.txt": "a\n", "pkg/a.txt": "a\n"}, false, "examples/provision.yml:2", map[string]string{"pkg/lib": "../shared/lib"}},
+		{"named through a link to its directory", map[string]string{"tools/provision.py": lit, "setup.cfg": "[tool]\nhook = ops.provision:main\n"}, true, "tools/provision.py:2", map[string]string{"ops": "tools"}},
+		{"named through a link to it", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool bootstrap.yml")}, true, "bootstrap.yml:2", map[string]string{"bootstrap.yml": "ci/provision.yml"}},
+		{"named by the file it links to", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/provision.yml")}, true, "bootstrap.yml:2", map[string]string{"bootstrap.yml": "ci/provision.yml"}},
+		{"a link into a skipped directory", map[string]string{"examples/provision.yml": hit, "node_modules/pkg/a.txt": "a\n"}, true, "examples/provision.yml:2", map[string]string{"vendor": "node_modules/pkg"}},
+		{"a link into a git dir", map[string]string{"examples/provision.yml": hit, ".git/info/a.txt": "a\n"}, true, "examples/provision.yml:2", map[string]string{"meta": ".git/info"}},
+		{"a link to the git dir", map[string]string{"examples/provision.yml": hit, ".git/info/a.txt": "a\n"}, true, "examples/provision.yml:2", map[string]string{"meta": ".git"}},
+		{"a dangling link", map[string]string{"examples/provision.yml": hit}, true, "examples/provision.yml:2", map[string]string{"meta": "missing"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { checkInvoked(t, tt.files, tt.links, tt.withheld, tt.at) })
+	}
+}
+
+func checkInvoked(t *testing.T, tree, links map[string]string, wantWithheld bool, at string) {
+	t.Helper()
+	files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
+	for k, v := range tree {
+		files[k] = v
+	}
+	root := writeTree(t, files)
+	for link, target := range links {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v := New(root, testRead(root), testSpec)
+	none := func(string, []byte) (string, bool) { return "", false }
+	unread := false
+	for _, c := range buildtree.Candidates(root, v.Classify(none), v.FullyRead) {
+		unread = unread || !c.FullyRead
+	}
+	withheld := unread || v.Withheld()
+	inactive := v.Inactive()
+	if withheld != wantWithheld {
+		t.Fatalf("withheld = %v, want %v (Unrecognised %q, Inactive %v)", withheld, wantWithheld, v.Unrecognised(), inactive)
+	}
+	if wantWithheld {
+		if v.Unrecognised() != at || len(inactive) != 0 {
+			t.Fatalf("Unrecognised() = %q, Inactive() = %v; want %q and none", v.Unrecognised(), inactive, at)
+		}
+		return
+	}
+	if v.Unrecognised() != "" || len(inactive) != 1 || inactive[0].String() != at || inactive[0].Why == "" {
+		t.Fatalf("Unrecognised() = %q, Inactive() = %v; want none and %q", v.Unrecognised(), inactive, at)
 	}
 }
 

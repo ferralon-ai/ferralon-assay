@@ -287,13 +287,17 @@ func (v *Veto) packageModule(path string) bool {
 
 // buildFiles is what one walk of the build found: the files the build reads (for namedByBuild),
 // the package modules with a build-script stem (packageModule) and which of them a text file
-// mentions, and whether every entry the walk met was read.
+// mentions, and whether every entry the walk met was read: whole when it met no symlinked
+// directory, read when every symlinked directory it met is one whose target it reads itself.
 type buildFiles struct {
 	files     []buildFile
 	texts     []string // the files the backstop reads that may name another (mentionSource)
 	modules   map[string]bool
 	mentioned map[string]bool
 	whole     bool
+	read      bool
+	aliases   map[string][]string // a file's other paths, through a symlink to it or its directory
+	realRoot  string
 }
 
 type buildFile struct {
@@ -313,17 +317,32 @@ var launcherNames = map[string]bool{"setup.py": true, "noxfile.py": true, "tasks
 // buildNames file, and lists every package module with a build-script stem and every text file
 // that may mention one (mentionSource), then scans those for mentions (mentions). A directory or
 // file that cannot be read, a symlinked directory, or a symlink that leaves the build leaves
-// whole false, and then every module counts.
+// whole false, and then every module counts. A symlinked directory leaves read true, and the
+// link becomes an alias of its target (aliases), only when its target is inside the build and
+// the walk lists it at its real path outside a git dir: not a Skipped directory or anything
+// under one. A symlink to a file inside the build is an alias of that file.
 func (v *Veto) buildRead() *buildFiles {
 	if v.build != nil {
 		return v.build
 	}
-	b := &buildFiles{whole: true, modules: map[string]bool{}, mentioned: map[string]bool{}}
+	b := &buildFiles{whole: true, read: true, modules: map[string]bool{}, mentioned: map[string]bool{}, aliases: map[string][]string{}}
+	unread := func() { b.whole, b.read = false, false }
+	realRoot, err := filepath.EvalSymlinks(v.root)
+	if err != nil {
+		unread()
+	}
+	b.realRoot = realRoot
+	walkPath := func(real string) (string, bool) { return b.walkPath(v.root, real) }
+	walked := map[string]bool{}
+	var linked []string
 	var texts []string
 	_ = buildtree.Walk(v.root, func(e buildtree.Entry, err error) error {
 		if err != nil {
-			b.whole = false
+			unread()
 			return nil
+		}
+		if e.D.IsDir() && !e.Symlink && !e.Skipped && !v.inGitDir(filepath.Join(e.Path, "entry")) {
+			walked[e.Path] = true // the walk reads what this directory holds
 		}
 		if e.D.IsDir() || e.Skipped || v.inGitDir(e.Path) && !v.gitHooksFile(e.Path) || v.sampleHook(e.Path) {
 			return nil
@@ -332,10 +351,20 @@ func (v *Veto) buildRead() *buildFiles {
 		named := buildNames[lower]
 		if e.Symlink {
 			fi, err := os.Stat(e.Path)
-			if e.Escapes || err != nil || fi.IsDir() {
+			switch {
+			case e.Escapes || err != nil:
+				unread()
+			case fi.IsDir():
 				b.whole = false
-			} else if _, ok := surfaceOf(e.Path, nil); ok || named {
-				b.whole = false
+				linked = append(linked, e.Path)
+			default:
+				if _, ok := surfaceOf(e.Path, nil); ok || named {
+					unread()
+				} else if real, err := filepath.EvalSymlinks(e.Path); err != nil {
+					unread()
+				} else if target, ok := walkPath(real); ok {
+					b.aliases[target] = append(b.aliases[target], e.Path)
+				}
 			}
 			return nil
 		}
@@ -344,14 +373,14 @@ func (v *Veto) buildRead() *buildFiles {
 		}
 		head, err := buildtree.Head(e.Path)
 		if err != nil {
-			b.whole = false
+			unread()
 			return nil
 		}
 		if v.stemModule(e.Path, lower) {
 			b.modules[e.Path] = true
 		}
 		if count, ok := v.mentionSource(e.Path, lower, head); !ok {
-			b.whole = false
+			unread()
 		} else if count {
 			texts = append(texts, e.Path)
 		}
@@ -362,12 +391,21 @@ func (v *Veto) buildRead() *buildFiles {
 		}
 		data, err := v.spec.ReadRegular(e.Path)
 		if err != nil {
-			b.whole = false
+			unread()
 			return nil
 		}
 		b.files = append(b.files, buildFile{path: e.Path, dir: filepath.Dir(e.Path), data: data})
 		return nil
 	})
+	for _, link := range linked {
+		real, err := filepath.EvalSymlinks(link)
+		target, ok := walkPath(real)
+		if err != nil || !ok || !walked[target] {
+			b.read = false
+			continue
+		}
+		b.aliases[target] = append(b.aliases[target], link)
+	}
 	b.texts = slices.Clone(texts)
 	// Each module a pass finds mentioned is itself a build script, so its text is the next
 	// pass's source, until a pass finds none new.
@@ -389,6 +427,16 @@ func (v *Veto) buildRead() *buildFiles {
 	}
 	v.build = b
 	return b
+}
+
+// walkPath returns the path under root, the build root, at which the walk visits the real path
+// real. ok is false when real is outside the build.
+func (b *buildFiles) walkPath(root, real string) (string, bool) {
+	rel, err := filepath.Rel(b.realRoot, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.Join(root, rel), true
 }
 
 // stemModule reports whether the regular file at path, with lowercased base name lower, is

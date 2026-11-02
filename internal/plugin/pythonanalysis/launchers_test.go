@@ -1185,6 +1185,28 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script its own namespace handed to a builtin rebound through __builtins__ by another module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "from tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\n__builtins__[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin after __builtins__ is stored by setattr",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/fac.py": fac + "\ndef bt(f):\n    return {**len.__self__.__dict__, \"sorted\": f}\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make, bt\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nimport sys\nsetattr(sys.modules[__name__], \"__builtins__\", bt(ev))\n\ndef h():\n    sorted(globals())\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script an attribute stored on its module by __spec__.name",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

@@ -11,13 +11,19 @@
 // and pre<name> and post<name> of any script) pass the same gate as the rest; other decodable
 // JSON surfaces gate every string value outside dataKeys.
 //
+// A data surface's runner runs only the values under its command keys (commandKeys): a
+// workflow step's run:, a GitLab script:, a compose command:. Any other value, such as an
+// action input under with:, is a parameter, which an action or tool may still pass to a shell,
+// so it passes every gate a command does but one: a parameter whose whole value is . or
+// source alone, a path or a mode, sources nothing. A surface with no command keys listed runs every value.
+//
 // The package decides no installer itself. A lane passes a Spec: the words that name its
 // installers, the variables they read, and the few command forms it allows, each binding the
 // manifest and lock it installs. A command that names a token anywhere in its words withholds
 // unless it carries no $ or backtick and no redirect and the lane's Allowed accepts it; a run
 // wrapper the lane does not name, a surface that sets one of the lane's variables, and a line
 // that names a token and does not tokenise withhold too. A variable the lane's EnvKeeps names
-// only selects among the packages a lock read here records, so setting it does not. A Spec
+// installs nothing outside a lock read here, so setting it does not. A Spec
 // missing any required decision withholds on every surface it recognises.
 //
 // Binding follows the directory a command runs in. On the host it starts at the surface's
@@ -31,7 +37,10 @@
 // directory is the stage's literal WORKDIR, and a container path binds only to a file COPY'd
 // into it from the build context (the Dockerfile's directory, or the build root) earlier in
 // the stage, with nothing since that could have changed it: a COPY --from, ADD, heredoc or
-// unresolvable COPY over it, or any RUN command that is not itself an allowed form.
+// unresolvable COPY over it, or any RUN command that is not itself an allowed form. Two
+// kinds of command change less: one that creates a virtual environment at one literal place
+// (venvWrites) changes only what is under that place, and nvm use or nvm install (nvmOnly)
+// changes nothing the stage holds.
 //
 // A file run with . or source runs its commands in place, so it withholds unless it is a
 // literal in-tree script surface the walk checks on its own, or only sets PATH: a
@@ -85,9 +94,10 @@ type Spec struct {
 	Token func(word string) bool
 	// Env matches one of the lane's installer variables being set.
 	Env *regexp.Regexp
-	// EnvKeeps reports whether an installer variable Env matched, by its name, only selects
-	// which of the packages a lock read here records get installed, so setting it installs
-	// nothing outside that lock. nil means none does.
+	// EnvKeeps reports whether an installer variable Env matched, by its name, installs
+	// nothing outside the lock read here: it only selects which of the packages that lock
+	// records get installed, changes none of the packages, versions or environment an install
+	// has, or does only what a flag the lane already allows does. nil means none does.
 	EnvKeeps func(name string) bool
 	// Allowed reports whether a command naming a token, already free of expansions and
 	// redirects, is one of the lane's allowed forms and binds, through b, to the manifest and
@@ -120,6 +130,7 @@ func (s Spec) complete() bool {
 const (
 	kindShell      = "shell"
 	kindDockerfile = "dockerfile"
+	kindEarthfile  = "earthfile" // read as a Dockerfile once earthfileAsDockerfile adapts it
 	kindMakefile   = "makefile"
 	kindData       = "data"   // YAML, TOML, INI, JSON and Procfile lines: "key: command"
 	kindOpaque     = "opaque" // PowerShell and batch: not parsed, so a line naming a token withholds
@@ -145,6 +156,25 @@ var dataNames = map[string]string{
 	"package.json": baseDir, "tox.ini": baseDir, "noxfile.py": baseDir,
 }
 
+// dockerfileNamed reports whether a lowercased base name is "dockerfile" or "containerfile",
+// either of them followed by ".", "-" or "_" and more, or either of them preceded by more
+// and ".", "-" or "_" (Dockerfile.prod, Dockerfile-prod, Dockerfile_api, api.Dockerfile).
+// surfaceOf checks it after every other case, so a name, extension, shebang or path that
+// one of those claims is read as that kind.
+func dockerfileNamed(lower string) bool {
+	for _, n := range []string{"dockerfile", "containerfile"} {
+		if lower == n {
+			return true
+		}
+		for _, sep := range []string{".", "-", "_"} {
+			if strings.HasPrefix(lower, n+sep) || strings.HasSuffix(lower, sep+n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // surfaceOf reports whether the file at path, with its buildtree.Head, is one whose
 // lines a build runs as commands.
 func surfaceOf(path string, head []byte) (surfaceType, bool) {
@@ -153,9 +183,8 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 	ext := filepath.Ext(lower)
 	yaml := ext == ".yml" || ext == ".yaml"
 	switch {
-	case lower == "dockerfile", lower == "containerfile", strings.HasPrefix(lower, "dockerfile."),
-		strings.HasPrefix(lower, "containerfile."), ext == ".dockerfile", ext == ".containerfile":
-		return surfaceType{kindDockerfile, baseNone}, true
+	case lower == "earthfile":
+		return surfaceType{kindEarthfile, baseNone}, true
 	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", ext == ".make", lower == "justfile", lower == ".justfile":
 		return surfaceType{kindMakefile, baseDir}, true
 	case ext == ".ps1", ext == ".bat", ext == ".cmd":
@@ -166,18 +195,122 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		return surfaceType{kindData, baseDir}, true
 	case yaml && (strings.HasPrefix(lower, "docker-compose") || strings.HasPrefix(lower, "compose.")):
 		return surfaceType{kindData, baseNone}, true
-	case yaml && (strings.Contains(slash, "/.github/workflows/") || strings.Contains(slash, "/.circleci/") ||
+	case yaml && (actionsWorkflow(slash) || strings.Contains(slash, "/.circleci/") ||
+		strings.Contains(slash, "/.buildkite/") || lower == "buildkite.yml" || lower == "buildkite.yaml" ||
 		strings.Contains(slash, "/.woodpecker/") || strings.HasPrefix(lower, "azure-pipelines") ||
 		strings.HasPrefix(lower, "buildspec") || strings.HasPrefix(lower, "cloudbuild.") ||
 		strings.HasPrefix(lower, "taskfile.")),
 		strings.Contains(slash, "/.github/actions/") && (lower == "action.yml" || lower == "action.yaml"),
 		strings.HasPrefix(lower, "jenkinsfile"):
 		return surfaceType{kindData, baseRoot}, true
+	case dockerfileNamed(lower):
+		return surfaceType{kindDockerfile, baseNone}, true
 	}
 	if base, ok := dataNames[lower]; ok {
 		return surfaceType{kindData, base}, true
 	}
 	return surfaceType{}, false
+}
+
+// actionsWorkflow reports whether a file, by its lowercased slash path with a leading slash,
+// is a workflow in the GitHub Actions format: GitHub's own, and Gitea's and Forgejo's, which
+// run the same format.
+func actionsWorkflow(slash string) bool {
+	return strings.Contains(slash, "/.github/workflows/") || strings.Contains(slash, "/.gitea/workflows/") ||
+		strings.Contains(slash, "/.forgejo/workflows/")
+}
+
+// commandKeys are, by data surface, the lowercased keys whose values its runner runs as
+// commands. A value under one of them, nested at any depth, is a command; any other value is
+// a parameter (segment.param). Every value of a data surface commandKeysOf finds no set for is
+// a command: a Procfile, noxfile.py, Jenkinsfile, appveyor.yml, and JSON that does not decode.
+var commandKeys = map[string]map[string]bool{
+	"workflow":   keySet("run", "command", "entrypoint"),
+	"action":     keySet("run", "entrypoint", "pre-entrypoint", "post-entrypoint", "args"),
+	"circleci":   keySet("run", "command"),
+	"drone":      keySet("commands", "command", "entrypoint"),
+	"azure":      keySet("script", "bash", "pwsh", "powershell"),
+	"buildspec":  keySet("commands", "finally"),
+	"cloudbuild": keySet("args", "entrypoint", "script"),
+	"taskfile":   keySet("cmds", "cmd", "sh", "status", "preconditions", "defer"),
+	"compose":    keySet("command", "entrypoint", "test"),
+	"gitlab":     keySet("script", "before_script", "after_script", "pre_get_sources_script", "command", "entrypoint", "run"),
+	"bitbucket":  keySet("script", "after-script"),
+	"travis": keySet("before_install", "install", "before_script", "script", "after_script", "after_success",
+		"after_failure", "before_cache", "before_deploy", "after_deploy"),
+	"gitpod":       keySet("before", "init", "command"),
+	"render":       keySet("buildcommand", "startcommand", "predeploycommand", "dockercommand", "initialdeployhook"),
+	"netlify":      keySet("command", "ignore"),
+	"nixpacks":     keySet("cmds", "cmd"),
+	"vercel":       keySet("buildcommand", "installcommand", "devcommand", "ignorecommand"),
+	"app":          keySet("scripts"),
+	"devcontainer": keySet("initializecommand", "oncreatecommand", "updatecontentcommand", "postcreatecommand", "poststartcommand", "postattachcommand"),
+	"tox":          keySet("commands", "commands_pre", "commands_post", "install_command", "list_dependencies_command"),
+}
+
+func keySet(keys ...string) map[string]bool {
+	m := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		m[k] = true
+	}
+	return m
+}
+
+// commandKeysOf returns the command keys of the data surface at path, or nil when every value
+// it holds is a command.
+func commandKeysOf(path string) map[string]bool {
+	lower := strings.ToLower(filepath.Base(path))
+	slash := "/" + strings.ToLower(filepath.ToSlash(path))
+	family := ""
+	switch {
+	case strings.HasPrefix(lower, "docker-compose"), strings.HasPrefix(lower, "compose."):
+		family = "compose"
+	case actionsWorkflow(slash):
+		family = "workflow"
+	case strings.Contains(slash, "/.github/actions/") && (lower == "action.yml" || lower == "action.yaml"):
+		family = "action"
+	case strings.Contains(slash, "/.circleci/"):
+		family = "circleci"
+	case strings.Contains(slash, "/.woodpecker/"), lower == ".woodpecker.yml", lower == ".drone.yml":
+		family = "drone"
+	case strings.HasPrefix(lower, "azure-pipelines"):
+		family = "azure"
+	case strings.HasPrefix(lower, "buildspec"):
+		family = "buildspec"
+	case strings.HasPrefix(lower, "cloudbuild."):
+		family = "cloudbuild"
+	case strings.HasPrefix(lower, "taskfile."):
+		family = "taskfile"
+	case gitlabCI[lower]:
+		family = "gitlab"
+	case lower == "bitbucket-pipelines.yml":
+		family = "bitbucket"
+	case lower == ".travis.yml":
+		family = "travis"
+	case lower == ".gitpod.yml":
+		family = "gitpod"
+	case lower == "render.yaml":
+		family = "render"
+	case lower == "netlify.toml":
+		family = "netlify"
+	case lower == "nixpacks.toml":
+		family = "nixpacks"
+	case lower == "vercel.json":
+		family = "vercel"
+	case lower == "app.json":
+		family = "app"
+	case lower == "devcontainer.json", lower == ".devcontainer.json":
+		family = "devcontainer"
+	case lower == "tox.ini":
+		family = "tox"
+	}
+	return commandKeys[family]
+}
+
+// commandKey reports whether a value under key is a command, given a surface's command keys
+// (nil: every value is).
+func commandKey(keys map[string]bool, key string) bool {
+	return keys == nil || keys[strings.ToLower(strings.Trim(key, `"'`))]
 }
 
 // shellShebang reports whether head starts with a #! line naming a POSIX-family shell.
@@ -214,6 +347,10 @@ type Veto struct {
 	mentioned map[string]bool // lowercased base names other commands take as arguments
 	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
 	triggered bool            // a surface's text may reach a sample hook (trigger)
+	// unrecognisedAt is where the backstop first withheld (Unrecognised).
+	unrecognisedAt string
+	actions        *bool       // a workflow uses an action from the tree (localActions), once known
+	build          *buildFiles // the files the build reads (buildRead), once known
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
@@ -230,11 +367,18 @@ func New(root string, read func(string) bool, spec Spec) *Veto {
 		bound: map[string]bool{}, mentioned: map[string]bool{}}
 }
 
-// Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on is
-// a candidate FullyRead reports unread, and every other file is classified by match.
+// Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on, or
+// another file the backstop finds an installer in, is a candidate FullyRead reports unread, and
+// every other file is classified by match.
 func (v *Veto) Classify(match func(path string, head []byte) (string, bool)) func(string, []byte) (string, bool) {
 	return func(path string, head []byte) (string, bool) {
-		if why, ok := v.surface(path, head); ok {
+		why, ok := "", false
+		if _, surface := surfaceOf(path, head); surface {
+			why, ok = v.surface(path, head)
+		} else {
+			why, ok = v.backstop(path, head)
+		}
+		if ok {
 			v.vetoed[path] = true
 			return why, true
 		}
@@ -442,7 +586,9 @@ func (v *Veto) gitHooksFile(p string) bool {
 	return false
 }
 
-// setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep.
+// setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep,
+// by assignment or by an assigning expansion. Env does not match inside ${…}, so the name each
+// assigning expansion sets is checked as the assignment NAME=.
 func (v *Veto) setsEnv(src string) bool {
 	for _, m := range v.spec.Env.FindAllString(src, -1) {
 		name := strings.TrimLeftFunc(m, func(r rune) bool { return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) })
@@ -450,7 +596,52 @@ func (v *Veto) setsEnv(src string) bool {
 			return true
 		}
 	}
+	for _, name := range assignedByExpansion(src) {
+		if v.setsEnv(name + "=") {
+			return true
+		}
+	}
 	return false
+}
+
+// assignedByExpansion returns the name of each expansion in src that assigns its variable when
+// unset or empty: ${NAME:=…}, ${NAME=…} and zsh's ${NAME::=…}. A subscripted ${NAME[…] counts
+// when any ] later on its line is followed by one of those operators, so a subscript may hold
+// any text (${NAME[a[1]]:=…}, ${NAME["k}"]:=…}). Each ${ is read on its own, so an expansion
+// inside another one's subscript or operand is seen too. ${NAME}, ${NAME:-…} and ${NAME-…}
+// only read it.
+func assignedByExpansion(src string) []string {
+	assigns := func(i int) bool {
+		rest := strings.TrimPrefix(strings.TrimPrefix(src[i:], ":"), ":")
+		return strings.HasPrefix(rest, "=")
+	}
+	// closes[i] reports whether a ] followed by an assigning operator lies at or after i on i's line.
+	closes := make([]bool, len(src)+1)
+	for i := len(src) - 1; i >= 0; i-- {
+		switch {
+		case src[i] == '\n':
+		case src[i] == ']' && assigns(i+1):
+			closes[i] = true
+		default:
+			closes[i] = closes[i+1]
+		}
+	}
+	var names []string
+	for i := strings.Index(src, "${"); i >= 0; {
+		j := i + 2
+		for j < len(src) && (src[j] == '_' || src[j] >= 'A' && src[j] <= 'Z' || src[j] >= 'a' && src[j] <= 'z' || j > i+2 && src[j] >= '0' && src[j] <= '9') {
+			j++
+		}
+		if j > i+2 && (j < len(src) && src[j] == '[' && closes[j+1] || assigns(j)) {
+			names = append(names, src[i+2:j])
+		}
+		k := strings.Index(src[i+2:], "${")
+		if k < 0 {
+			break
+		}
+		i += 2 + k
+	}
+	return names
 }
 
 // inGitDir reports whether p lies inside a directory named .git.
@@ -465,7 +656,18 @@ func (v *Veto) inGitDir(p string) bool {
 
 func (v *Veto) bind(name string) { v.bound[strings.ToLower(filepath.Base(name))] = true }
 
-// mention records the base names of a command's arguments, a redirect's or an option's
+// bindRoot binds the first element of a relative path past its leading .. parts, which any
+// path a command names through it mentions.
+func (v *Veto) bindRoot(p string) {
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
+		if part != "" && part != "." && part != ".." {
+			v.bind(part)
+			return
+		}
+	}
+}
+
+// mention records every element of a command's arguments, a redirect's or an option's
 // target included.
 func (v *Veto) mention(args []string) {
 	for _, w := range args {
@@ -474,8 +676,10 @@ func (v *Veto) mention(args []string) {
 			w = trimShell(w[i+1:])
 		}
 		for _, a := range braces(filepath.ToSlash(w), 0) {
-			if b := strings.ToLower(path.Base(a)); b != "" && b != "." && b != "/" {
-				v.mentioned[b] = true
+			for _, b := range strings.Split(strings.ToLower(a), "/") {
+				if b != "" && b != "." {
+					v.mentioned[b] = true
+				}
 			}
 		}
 	}
@@ -630,13 +834,15 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 	units := []unit{{text: src}}
 	switch {
 	case s.kind == kindDockerfile:
-		why = v.dockerfile(path, src)
+		why, _ = v.dockerfileAt(path, src, false)
+	case s.kind == kindEarthfile:
+		why, _ = v.dockerfileAt(path, v.earthfileAsDockerfile(src), true)
 	case s.kind == kindOpaque:
 		why = v.opaque(src)
 	case strings.EqualFold(filepath.Ext(path), ".json"):
 		// A decodable JSON surface's text is its commands, so a dependency named like a
 		// trigger (eslint-plugin-react-hooks) is not one.
-		if u, ok := jsonUnits(path, src); ok {
+		if u, ok := jsonUnits(path, src, commandKeysOf(path)); ok {
 			units = u
 			why = v.host(s, kindShell, path, units)
 			break
@@ -664,9 +870,15 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 // opaque applies the rule to a surface this does not parse: any line naming a token, or an
 // install verb after an expansion, withholds.
 func (v *Veto) opaque(src string) string {
-	for _, line := range strings.Split(src, "\n") {
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
 		if v.hasToken(line) {
 			return "install command in a surface this does not parse"
+		}
+		// Batch continues a line that ends in ^, and PowerShell one that ends in a backtick.
+		if t := strings.TrimSuffix(line, "\r"); i+1 < len(lines) && (strings.HasSuffix(t, "^") || strings.HasSuffix(t, "`")) &&
+			v.hasToken(boundaryWord(t[:len(t)-1], lines[i+1])) {
+			return "install command across a line continuation"
 		}
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
@@ -679,15 +891,16 @@ func (v *Veto) opaque(src string) string {
 // unit is a run of shell text sharing a starting directory, or one exec-form command.
 // bad marks a command value that is neither.
 type unit struct {
-	text string
-	exec []string
-	bad  bool
+	text  string
+	exec  []string
+	bad   bool
+	param bool // a value under no command key (commandKeys)
 }
 
 // jsonUnits reads a decodable JSON surface's commands: a package.json's "scripts"
 // values, or every string value of any other outside dataKeys, an array of strings
-// being one exec-form command.
-func jsonUnits(path, src string) ([]unit, bool) {
+// being one exec-form command, and a param unless keys is nil or one of keys holds it.
+func jsonUnits(path, src string, keys map[string]bool) ([]unit, bool) {
 	var units []unit
 	if strings.EqualFold(filepath.Base(path), "package.json") {
 		var p struct {
@@ -710,11 +923,11 @@ func jsonUnits(path, src string) ([]unit, bool) {
 	if json.Unmarshal([]byte(src), &doc) != nil {
 		return nil, false
 	}
-	var walk func(any)
-	walk = func(x any) {
+	var walk func(x any, cmd bool)
+	walk = func(x any, cmd bool) {
 		switch t := x.(type) {
 		case string:
-			units = append(units, unit{text: t})
+			units = append(units, unit{text: t, param: !cmd})
 		case []any:
 			words := make([]string, 0, len(t))
 			for _, e := range t {
@@ -723,21 +936,21 @@ func jsonUnits(path, src string) ([]unit, bool) {
 				}
 			}
 			if len(words) == len(t) && len(t) > 0 {
-				units = append(units, unit{exec: words})
+				units = append(units, unit{exec: words, param: !cmd})
 				return
 			}
 			for _, e := range t {
-				walk(e)
+				walk(e, cmd)
 			}
 		case map[string]any:
 			for _, k := range sortedKeys(t) {
 				if !dataKeys[strings.ToLower(k)] {
-					walk(t[k])
+					walk(t[k], cmd || commandKey(keys, k))
 				}
 			}
 		}
 	}
-	walk(doc)
+	walk(doc, keys == nil)
 	return units, true
 }
 
@@ -757,6 +970,10 @@ var cdRE = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|popd)(?:$|[^A-Za
 func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	yaml := kind == kindData && (ext == ".yml" || ext == ".yaml")
+	var keys map[string]bool
+	if kind == kindData && ext != ".json" {
+		keys = commandKeysOf(path)
+	}
 	var base []string
 	unknown := s.base == baseNone
 	switch s.base {
@@ -768,6 +985,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		base, unknown = append(base, dirs...), !ok
 	}
 	included := yaml && gitlabIncluded(path, units)
+	script := s.kind == kindShell && posixRun(path, units) && !shadowsData(units)
 	for _, u := range units {
 		carry := &hostCursor{v: v, dirs: append([]string(nil), base...), unknown: unknown}
 		if u.bad {
@@ -777,22 +995,35 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			continue
 		}
 		if u.exec != nil {
-			if why := v.command(segment{words: u.exec, expands: hasExpansion(u.exec)}, carry, 0); why != "" {
+			if why := v.command(segment{words: u.exec, expands: hasExpansion(u.exec), param: u.param}, carry, 0); why != "" {
 				return why
 			}
 			continue
 		}
-		lines, starts, joined := logicalLinesAt(u.text)
+		lines, starts, hidden, joined := logicalLinesAt(u.text, kind)
 		if !joined && v.hasToken(lines[len(lines)-1]) {
 			return "install command in an unjoined continuation"
 		}
+		for _, w := range hidden {
+			if v.hasToken(w) {
+				return "install command across a line continuation"
+			}
+		}
+		// A line with no key of its own, such as a continuation, takes the mark of the last
+		// line with one. A keyed line holds its key's whole value unless the next line is
+		// indented under it, as an INI value's continuation is.
 		read := make([]yamlLine, len(lines))
+		cmd := true
 		for i, l := range lines {
-			read[i] = yamlLine{text: l, start: i}
+			m := keyRE.FindStringSubmatch(strings.TrimSpace(l))
+			if m != nil {
+				cmd = commandKey(keys, m[1])
+			}
+			read[i] = yamlLine{text: l, start: i, cmd: cmd, whole: m != nil && !indentContinued(lines, i)}
 		}
 		var shells map[int]shellUnit
 		if yaml {
-			read = foldYAML(lines)
+			read = foldYAML(lines, keys)
 			shells = v.shellUnits(path, u.text, included)
 		}
 		inUnit := map[int]*hostCursor{}
@@ -825,7 +1056,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.
 				cur.mark.made, cur.wd = "", ""
-				if v.hasToken(line) {
+				if v.hasToken(line) || v.hidesToken(line) {
 					return "install command that does not tokenise"
 				}
 				if expandedInstallLine(line) {
@@ -835,6 +1066,8 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
 			for _, seg := range segs {
+				seg.param = u.param && len(lines) == 1 || lineKind == kindData && !rl.cmd && rl.whole
+				seg.script = script
 				if why := v.command(seg, cur, 0); why != "" {
 					return why
 				}
@@ -852,6 +1085,18 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		}
 	}
 	return ""
+}
+
+func indent(line string) int { return len(line) - len(strings.TrimLeft(line, " \t")) }
+
+// indentContinued reports whether the next line that is not blank is indented past lines[i].
+func indentContinued(lines []string, i int) bool {
+	for _, l := range lines[i+1:] {
+		if strings.TrimSpace(l) != "" {
+			return indent(l) > indent(lines[i])
+		}
+	}
+	return false
 }
 
 // workingDirKeys are keys that set where a CI or platform file's commands run.
@@ -916,6 +1161,8 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	switch words[0] {
 	case "cd", "pushd", "popd":
 		mark.made = made // the venv's key was taken where it was made
+		// What runs after it names paths from where it went.
+		v.mention(words[1:])
 		if seg.expands {
 			cur.cd(nil)
 		} else {
@@ -937,22 +1184,48 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return ""
 	case ".", "source":
 		// The sourced file's commands run here; they are checked only when it is a surface
-		// the walk reads itself, or when it only sets PATH.
+		// the walk reads itself, or when it only sets PATH. A parameter whose whole value is the
+		// word alone (with: target: .) names a path or a mode, and sources nothing wherever it
+		// is run; a value that only starts with it may be joined to what follows.
+		if seg.param && len(words) == 1 {
+			return ""
+		}
 		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}
 		return ""
 	}
+	if at, text, fork, sure, ok := nestedShell(words); ok {
+		why, whole := v.reread(words, text, fork, cur, depth)
+		if why != "" {
+			return why
+		}
+		if at == 0 && sure && whole {
+			// The shell or eval runs the text and nothing else, so the text is what is checked.
+			v.mention(words[1:])
+			return ""
+		}
+	}
 	if expandedInstall(words) {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words[1:])
-		cur.other()
+		v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
+		switch dir, ok := venvWrites(seg, cur); {
+		case ok:
+			cur.wrote(dir, mark.made == dir)
+		case !nvmOnly(seg):
+			cur.other()
+		}
 		return ""
 	}
 	if seg.expands || hasRedirect(words) {
 		return "install command with an expansion or redirect: " + strings.Join(words, " ")
+	}
+	if dataOnly(seg) {
+		v.mention(words[1:])
+		cur.other()
+		return ""
 	}
 	if v.spec.Concurrent != nil {
 		if cmds, ok := v.spec.Concurrent(words); ok {
@@ -998,6 +1271,83 @@ func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 	return ""
 }
 
+// dataCommands are the programs that neither run nor install from their arguments, so an
+// installer token there is text: they match or test it. The set is closed; any other program
+// may run what it is given. What a command prints is the script's output, and a caller may run
+// that (./gen.sh | sh), from anywhere, under any name, inside the tree or out, so each is one
+// only while it prints nothing: test, [, true and false never do, and grep only when quiet.
+// echo and printf print their arguments, and are never one.
+var dataCommands = map[string]bool{
+	"grep": true, "egrep": true, "fgrep": true,
+	"test": true, "[": true, "true": true, "false": true,
+}
+
+// dataOnly reports whether a command, with no expansion or redirect, is one of dataCommands
+// that prints nothing and is not piped on. Only a command split from a line of a shell script
+// is one (segment.script): a value in a CI file or manifest may be an input an action splices
+// into its own command (${{ inputs.cmd }} | sh), and a command a run wrapper or concurrently
+// runs is never one. A $ or backtick even inside single quotes rules one out, since bash's
+// test -v and ksh's arithmetic tests evaluate a subscript such as 'a[$(cmd)]'.
+func dataOnly(seg segment) bool {
+	head, ok := CommandName(seg.words[0])
+	if !seg.script || !ok || !dataCommands[head] || seg.end == "|" || hasExpansion(seg.words) {
+		return false
+	}
+	return !strings.HasSuffix(head, "grep") || grepQuiet(seg.words[1:])
+}
+
+// dataShadowRE finds what in a shell script's own text may make a dataCommands name run another
+// program, or run a command's text: a function by that name (name() or function name), an
+// alias, enable or hash, any use of PATH, a sourced file or eval, which may define either,
+// BASH_COMMAND, through which a trap runs a command's text, and a heredoc, whose body another
+// interpreter may read and which this reads as shell lines. The repo is the owner's own: what a
+// caller's environment brings (PATH, BASH_ENV, exported functions), or a name an expansion
+// builds, is out of its reach.
+var dataShadowRE = regexp.MustCompile(`<<|(?:^|[^A-Za-z0-9_])PATH(?:[^A-Za-z0-9_]|$)|(?:^|[\s;&|({])(?:alias|enable|hash|source|eval|\.)(?:\s|$)|(?:^|[\s;&|({])(?:e?grep|fgrep|test|true|false|\[)\s*\(\s*\)|BASH_COMMAND|\bfunction\s+(?:e?grep|fgrep|test|true|false|\[)`)
+
+// shadowText joins continued lines and drops quotes and backslashes, so that a name with a
+// quote, a backslash or a continuation in it reads as the word the shell runs.
+var shadowText = strings.NewReplacer("\\\r\n", "", "\\\n", "", `\`, "", "'", "", `"`, "")
+
+// shadowsData reports whether a shell script's units hold anything dataShadowRE finds, so that
+// none of its commands is read as data.
+func shadowsData(units []unit) bool {
+	for _, u := range units {
+		if dataShadowRE.MatchString(shadowText.Replace(u.text)) {
+			return true
+		}
+	}
+	return false
+}
+
+// grepFlags are the short grep options that take no argument, so a cluster of them may go on to
+// another option.
+const grepFlags = "abcEFGHhiILlnoPrRsTUvVwxyzZ"
+
+// grepQuiet reports whether grep's leading options include -q, --quiet or --silent, so that it
+// prints nothing. It reads options only up to the first word that is not a cluster of grepFlags
+// (a long option other than those two ends it), and a cluster only up to a letter that is not
+// one of grepFlags, since what follows may be that option's argument (-eq matches q).
+func grepQuiet(args []string) bool {
+	for _, w := range args {
+		if w == "--quiet" || w == "--silent" {
+			return true
+		}
+		if len(w) < 2 || w[0] != '-' {
+			return false
+		}
+		for _, c := range w[1:] {
+			if c == 'q' {
+				return true
+			}
+			if !strings.ContainsRune(grepFlags, c) {
+				return false
+			}
+		}
+	}
+	return false
+}
+
 // pathOnlyScripts are the version-manager init scripts, as written after . or source, that
 // only set PATH and functions when sourced and install nothing.
 var pathOnlyScripts = map[string]bool{
@@ -1006,9 +1356,9 @@ var pathOnlyScripts = map[string]bool{
 }
 
 // pathOnly reports whether a . or source of a file the walk does not read only sets PATH: one
-// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate of the virtual
-// environment that made, the previous command but for directory changes, created at the same
-// place.
+// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate, // and ./ aside, of
+// the virtual environment that made, the previous command but for directory changes, created
+// at the same place, or of one an earlier shell made there (madeVenv).
 func pathOnly(seg segment, cur cursor, made string) bool {
 	if len(seg.words) != 2 {
 		return false
@@ -1017,12 +1367,12 @@ func pathOnly(seg segment, cur cursor, made string) bool {
 	if pathOnlyScripts[op] {
 		return seg.expands == strings.Contains(op, "$")
 	}
-	dir, ok := strings.CutSuffix(op, "/bin/activate")
-	if seg.expands || !ok {
+	bin, name := path.Split(path.Clean(op))
+	if seg.expands || name != "activate" || path.Base(bin) != "bin" {
 		return false
 	}
-	key, ok := cur.at(dir)
-	return ok && made != "" && key == made
+	key, ok := cur.at(path.Dir(path.Clean(bin)))
+	return ok && (made != "" && key == made || cur.madeVenv(key))
 }
 
 // blockDepth is how far each word opening or closing an if, case or loop moves a command into
@@ -1074,11 +1424,145 @@ func venvMade(seg segment, cur cursor) string {
 		return ""
 	}
 	key, ok := cur.at(dirs[0])
-	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) {
+	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) || interpHeld(head, words, args, cur) {
 		return ""
 	}
 	return key
 }
+
+// interpHeld reports whether the interpreter a venv creation copies may be a file of the build:
+// its command is a path the build holds; a -p/--python value is missing, is a path the build
+// holds, or has no / and is not a version request; or it is uv venv without -p/--python, which reads a
+// request, perhaps a path, from a .python-version or .python-versions in the working
+// directory or above it.
+func interpHeld(head string, words, args []string, cur cursor) bool {
+	if strings.Contains(words[0], "/") && cur.present(words[0]) {
+		return true
+	}
+	named := false
+	for i := 0; i < len(args); i++ {
+		name, val, inline := strings.Cut(args[i], "=")
+		if name != "-p" && name != "--python" {
+			continue
+		}
+		if !inline {
+			if i++; i == len(args) {
+				return true
+			}
+			val = args[i]
+		}
+		// uv reads even a version request as a path when the working directory holds that
+		// name, and virtualenv and uv read any other value as a path or a name on PATH
+		named = true
+		if cur.present(val) || !strings.Contains(val, "/") && !pyRequestRE.MatchString(val) {
+			return true
+		}
+	}
+	return head == "uv" && !named && cur.pinsPython()
+}
+
+// pyRequestRE matches an interpreter request that names a version or implementation: 3.12,
+// python3, pypy3.10, cpython@3.12.
+var pyRequestRE = regexp.MustCompile(`^(?:(?:c?python|pypy|graalpy)[-@]?)?[0-9]+(?:\.[0-9]+)*$|^(?:c?python|pypy|graalpy)$`)
+
+// venvFlags are, per creator, the flags venvWrites accepts, each mapped to whether it takes
+// the next word: none makes the creator write outside its directory.
+var venvFlags = map[string]map[string]bool{
+	"venv": {
+		"--system-site-packages": false, "--symlinks": false, "--copies": false, "--clear": false,
+		"--upgrade": false, "--without-pip": false, "--upgrade-deps": false,
+		"--without-scm-ignore-files": false, "--prompt": true,
+	},
+	"virtualenv": {
+		"--system-site-packages": false, "--symlinks": false, "--copies": false, "--clear": false,
+		"--no-pip": false, "--no-setuptools": false, "--no-wheel": false, "--no-download": false,
+		"--download": false, "--no-vcs-ignore": false, "--no-periodic-update": false, "-q": false,
+		"--quiet": false, "-v": false, "--verbose": false, "-p": true, "--python": true,
+		"--prompt": true,
+	},
+	"uv": {
+		"--seed": false, "--clear": false, "--allow-existing": false, "--system-site-packages": false,
+		"--relocatable": false, "-q": false, "--quiet": false, "-v": false, "--verbose": false,
+		"--no-progress": false, "-p": true, "--python": true, "--prompt": true,
+	},
+}
+
+// venvWrites returns the one place a command that creates a virtual environment writes in the
+// build tree: <dir> of python -m venv <dir>, virtualenv <dir> or uv venv <dir>, with only
+// flags from venvFlags. Each creator also writes its own cache and data directories (pip's,
+// virtualenv's app data, uv's cache and interpreters), which hold only files it names itself.
+// false when the command is none of these, when it expands or redirects, or when its
+// directory is not one place. uv venv with no <dir> picks a project root above the working
+// directory, or wherever UV_PROJECT_ENVIRONMENT points, so it is not one place either.
+func venvWrites(seg segment, cur cursor) (string, bool) {
+	words := seg.words
+	head, ok := CommandName(words[0])
+	if seg.expands || !ok || hasRedirect(words) {
+		return "", false
+	}
+	var tool string
+	var args []string
+	switch {
+	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
+		tool, args = "venv", words[3:]
+	case head == "virtualenv":
+		tool, args = head, words[1:]
+	case head == "uv" && len(words) >= 2 && words[1] == "venv":
+		tool, args = head, words[2:]
+	default:
+		return "", false
+	}
+	var dirs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			dirs = append(dirs, a)
+			continue
+		}
+		name, _, inline := strings.Cut(a, "=")
+		next, known := venvFlags[tool][name]
+		switch {
+		case !known || inline && !next:
+			return "", false
+		case next && !inline:
+			i++
+		}
+	}
+	if len(dirs) != 1 || interpHeld(head, words, args, cur) {
+		return "", false
+	}
+	return cur.at(dirs[0])
+}
+
+// nvmOnly reports whether a command is nvm use or nvm install, which change PATH and write
+// only under NVM_DIR, never the build tree. Its other words are versions, which may expand
+// only as plain variable references, or flags from nvmFlags.
+func nvmOnly(seg segment) bool {
+	w := seg.words
+	if len(w) < 2 || w[0] != "nvm" || w[1] != "use" && w[1] != "install" || hasRedirect(w) {
+		return false
+	}
+	for _, a := range w[2:] {
+		switch {
+		case strings.HasPrefix(a, "-"):
+			if name, val, _ := strings.Cut(a, "="); !nvmFlags[name] || strings.ContainsAny(val, "$`") {
+				return false
+			}
+		case strings.ContainsAny(a, "$`") && !plainVarRE.MatchString(a):
+			return false
+		}
+	}
+	return true
+}
+
+// nvmFlags are the flags of nvm use and nvm install that write nothing outside NVM_DIR.
+var nvmFlags = map[string]bool{
+	"--lts": true, "--latest-npm": true, "--no-progress": true, "--silent": true, "-s": true,
+	"-b": true, "--default": true,
+}
+
+// plainVarRE matches a word that is one variable reference and nothing else.
+var plainVarRE = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$`)
 
 // installVerbs are the subcommands with which a package manager installs or re-locks.
 var installVerbs = map[string]bool{
@@ -1166,15 +1650,18 @@ func FlagsOnly(args []string, allowed map[string]bool, need ...string) bool {
 // wordRE splits text into the words installer tokens are matched against.
 var wordRE = regexp.MustCompile(`[A-Za-z0-9_.+-]+`)
 
-// hasToken reports whether a word of text, or a part of one split at - or _, names a token,
-// so a hyphenated tool or action name (npm-install, setup-uv) names its installer too. A
-// variable the lane's EnvKeeps keeps (npm_config_production) names none.
-func (v *Veto) hasToken(text string) bool {
+// hasToken reports whether text names one of the lane's installer tokens (NamesToken).
+func (v *Veto) hasToken(text string) bool { return NamesToken(text, v.spec.Token, v.spec.EnvKeeps) }
+
+// NamesToken reports whether a word of text, or a part of one split at - or _, names a token,
+// so a hyphenated tool or action name (npm-install, setup-uv) names its installer too. A word
+// keeps reports (npm_config_production) names none; keeps may be nil.
+func NamesToken(text string, token, keeps func(string) bool) bool {
 	for _, w := range wordRE.FindAllString(text, -1) {
-		if v.spec.EnvKeeps != nil && v.spec.EnvKeeps(w) {
+		if keeps != nil && keeps(w) {
 			continue
 		}
-		if v.spec.Token(w) {
+		if token(w) {
 			return true
 		}
 		parts := strings.FieldsFunc(w, func(r rune) bool { return r == '-' || r == '_' })
@@ -1182,7 +1669,7 @@ func (v *Veto) hasToken(text string) bool {
 			continue
 		}
 		for _, p := range parts {
-			if v.spec.Token(p) {
+			if token(p) {
 				return true
 			}
 		}
@@ -1200,3 +1687,219 @@ func (v *Veto) segmentHasToken(words []string) bool {
 	}
 	return false
 }
+
+// posixRun reports whether a shell script is one a POSIX-family shell other than zsh runs: no
+// .zsh name, and no #! line or one naming such a shell. zsh ties path to PATH and lets a script
+// set functions[grep] or commands[grep], and a .sh file whose #! names ruby or perl is not
+// shell at all.
+func posixRun(path string, units []unit) bool {
+	if strings.EqualFold(filepath.Ext(path), ".zsh") || len(units) == 0 {
+		return false
+	}
+	first, _, _ := strings.Cut(units[0].text, "\n")
+	if !strings.HasPrefix(first, "#!") {
+		return true
+	}
+	return shellShebang([]byte(first)) && !strings.Contains(first, "zsh")
+}
+
+// shells are the programs whose -c argument is shell text they read again.
+var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ksh": true, "ash": true, "mksh": true}
+
+// shellArgOptions are the shell options that take the next word as their argument.
+var shellArgOptions = map[string]bool{"--rcfile": true, "--init-file": true}
+
+// nestedShell finds in a command's words shell text that is read a second time, with its
+// quotes removed again: the argument of a shell's or su's -c, or the words after eval joined
+// by spaces. at is the index of the shell or eval word, and fork is true when the text runs in a
+// shell of its own. sure is false when other words may run beside the text, or a word other than
+// the one found may be what runs, so the command is also checked as it is.
+func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
+	for i, w := range words {
+		name, named := CommandName(w)
+		switch {
+		case !named:
+		case name == "eval":
+			if i == 0 || words[i-1] == "command" || words[i-1] == "builtin" {
+				return i, strings.Join(words[i+1:], " "), false, true, true
+			}
+		case name == "su" || name == "runuser":
+			if text, sure, ok := suCommand(words[i+1:]); ok {
+				return i, text, true, sure, true
+			}
+		case shells[name]:
+			c, want, sure := false, 0, true
+			for j := i + 1; j < len(words); j++ {
+				a := words[j]
+				switch {
+				case want > 0:
+					// The argument of an -o or -O in an earlier cluster.
+					want--
+					continue
+				case a == "--" || a == "-":
+					if c && j+1 < len(words) {
+						return i, words[j+1], true, sure, true
+					}
+				case shellArgOptions[a]:
+					j++
+					continue
+				case strings.HasPrefix(a, "--"):
+					continue
+				case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
+					c = c || strings.ContainsRune(a, 'c')
+					// Each -o or -O is taken to have the next word as its argument, but zsh's
+					// -O takes none and zsh and ksh take -oNAME, and zsh's -b ends the options,
+					// so the text may be another word.
+					want = strings.Count(a, "o") + strings.Count(a, "O")
+					sure = sure && want == 0 && !strings.ContainsRune(a, 'b')
+					continue
+				case c:
+					return i, a, true, sure, true
+				}
+				break
+			}
+		}
+	}
+	return 0, "", false, false, false
+}
+
+// suCommand finds the text su or runuser runs in the user's shell, the argument of its -c or
+// --command, among the words after it. The scan stops at --, and at runuser's -u, past which
+// the words are a command run without a shell. sure is false when -c comes after the user,
+// where it is passed to the shell, is given more than once, or beside an option not known,
+// such as a long option abbreviated, or when -s names a program that is not a shell by its
+// absolute path, since su runs a bare name from the working directory.
+func suCommand(args []string) (text string, sure, ok bool) {
+	user, known, n := false, true, 0
+	take := func(t string) {
+		text, n, sure = t, n+1, !user
+	}
+	shell := func(s string) {
+		if name, named := CommandName(s); !named || !shells[name] || !path.IsAbs(s) {
+			known = false
+		}
+	}
+	for j := 0; j < len(args); j++ {
+		a := args[j]
+		switch {
+		case a == "--" || a == "--user" || strings.HasPrefix(a, "--user="):
+			j = len(args)
+		case suArgOptions[a]:
+			j++
+			if a == "--shell" && j < len(args) {
+				shell(args[j])
+			}
+		case strings.HasPrefix(a, "--command=") || strings.HasPrefix(a, "--session-command="):
+			take(a[strings.IndexByte(a, '=')+1:])
+		case a == "--command" || a == "--session-command":
+			if j+1 < len(args) {
+				j++
+				take(args[j])
+			}
+		case strings.HasPrefix(a, "--"):
+			opt, val, _ := strings.Cut(a, "=")
+			switch {
+			case opt == "--shell":
+				shell(val)
+			case suArgOptions[opt] || suLongFlags[a]:
+			default:
+				known = false
+			}
+		case a == "-":
+		case strings.HasPrefix(a, "-"):
+			// A short-option cluster: its letters are read as getopt reads them.
+		letters:
+			for k := 1; k < len(a); k++ {
+				switch l := a[k]; {
+				case l == 'u':
+					j = len(args)
+					break letters
+				case l == 'c' || strings.IndexByte(suArgFlags, l) >= 0:
+					arg := a[k+1:]
+					if arg == "" && j+1 < len(args) {
+						j++
+						arg = args[j]
+					}
+					switch l {
+					case 'c':
+						take(arg)
+					case 's':
+						shell(arg)
+					}
+					break letters
+				case strings.IndexByte(suFlags, l) < 0:
+					known = false
+				}
+			}
+		default:
+			user = true
+		}
+	}
+	return text, sure && known && n == 1, n > 0
+}
+
+// reread applies the rule to shell text a command reads a second time, from cur or, when
+// fork, from a shell of its own. Text nested too deep withholds. Text that expands, or does
+// not split into whole commands, withholds when it names a token once its quotes are gone
+// and its expansions are either dropped or split apart, since either may be what runs. whole
+// is false when the text does not split into whole commands, so they are not all checked.
+func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth int) (string, bool) {
+	why := "install command in shell text read again: " + strings.Join(words, " ")
+	if depth >= maxRunDepth {
+		return why, false
+	}
+	segs, ok, dangles := shellSegments(text)
+	if !ok || strings.ContainsAny(text, "$`") {
+		if v.hidesToken(text) {
+			return why, false
+		}
+		if !ok {
+			return "", false
+		}
+	}
+	if dangles {
+		return why, false
+	}
+	sh := cur
+	if fork {
+		sh = cur.fork()
+	}
+	for _, seg := range segs {
+		if w := v.command(seg, sh, depth+1); w != "" {
+			return w, false
+		}
+	}
+	return "", true
+}
+
+// hidesToken reports whether shell text names a token once its quotes and escapes are
+// gone, with its expansions either dropped or split apart: what a shell reading it may run.
+func (v *Veto) hidesToken(text string) bool {
+	return v.hasToken(unquote.Replace(expansionRE.ReplaceAllString(text, ""))) || v.hasToken(splitExpansions.Replace(text)) ||
+		v.hasToken(splitEscapes.Replace(text))
+}
+
+// suArgOptions are the su and runuser long options that take the next word as their argument,
+// and suLongFlags those that take none.
+var (
+	suArgOptions = map[string]bool{"--shell": true, "--group": true, "--supp-group": true, "--whitelist-environment": true}
+	suLongFlags  = map[string]bool{"--login": true, "--pty": true, "--preserve-environment": true, "--fast": true}
+)
+
+// suFlags are the su and runuser short options that take no argument, and suArgFlags those
+// that take one, attached or as the next word.
+var (
+	suFlags    = "lmpfP"
+	suArgFlags = "sgGw"
+)
+
+var (
+	// expansionRE matches a parameter expansion, or a command substitution holding no other.
+	expansionRE = regexp.MustCompile(`\$(?:\{[^{}]*\}|\([^()]*\)|[A-Za-z0-9_@*#?!$-]+)|` + "`[^`]*`")
+	// unquote drops quotes and escapes. splitExpansions does too, and splits text at the marks
+	// of an expansion, so the text inside a command substitution is kept; splitEscapes splits
+	// at escapes as well, so a $'…' escape does not join a token to what follows it.
+	unquote         = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
+	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, "", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+	splitEscapes    = strings.NewReplacer(`'`, "", `"`, "", `\`, " ", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+)

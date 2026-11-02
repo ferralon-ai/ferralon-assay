@@ -527,3 +527,30 @@ func TestCallGraph_ValueChainThroughBoundModule(t *testing.T) {
 		}
 	}
 }
+
+// TestCallGraph_AttributeOfAFunctionValue: a dotted value whose head an import binds to a
+// function rather than a module ("x.__call__" after "from pkg import vuln as x") hands the
+// function over, so it must escape.
+func TestCallGraph_AttributeOfAFunctionValue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		// unreached: the head is bound to another function, so vuln must not escape.
+		unreached bool
+	}{
+		{name: "alias of a package re-export", files: map[string]string{"pkg/__init__.py": "from .v import vuln\n", "c.py": "from pkg import vuln as x\n\ndef go():\n    return x.__call__\n"}},
+		{name: "alias of the defining module's function", files: map[string]string{"c.py": "from pkg.v import vuln as x\n\ndef go():\n    return x.__call__\n"}},
+		{name: "attribute two deep", files: map[string]string{"pkg/__init__.py": "from .v import vuln\n", "c.py": "from pkg import vuln as x\n\ndef go():\n    return x.__call__.__call__\n"}},
+		{name: "imported in a def", files: map[string]string{"pkg/__init__.py": "from .v import vuln\n", "c.py": "def go():\n    from pkg import vuln as x\n    return x.__call__\n"}},
+		{name: "re-exported under another name", files: map[string]string{"pkg/__init__.py": "from .v import vuln as h\n", "c.py": "from pkg import h as x\n\ndef go():\n    return x.__call__\n"}},
+		{name: "another function", unreached: true, files: map[string]string{"pkg/__init__.py": "from .v import other\n", "c.py": "from pkg import other as x\n\ndef go():\n    return x.__call__\n"}},
+	} {
+		files := map[string]string{"pkg/v.py": "def vuln(x):\n    return x\n\ndef other(x):\n    return x\n"}
+		maps.Copy(files, tc.files)
+		res := mustCallGraph(t, files)
+		goC, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/v", nil, "vuln", 1)
+		if reached := hasEdge(res.Edges, goC, vuln) || symbolSet(res.Escaped)[vuln]; reached == tc.unreached {
+			t.Errorf("%s: %s reached = %v, want %v; edges %v, escaped %v", tc.name, vuln, reached, !tc.unreached, res.Edges, res.Escaped)
+		}
+	}
+}

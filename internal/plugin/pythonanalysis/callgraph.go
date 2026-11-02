@@ -1456,8 +1456,9 @@ func (prog *program) escapeFrames(out map[string]bool) {
 // handed over by name, which the name scan covers; one the module binds by first-party
 // import is followed through the import, and the rest of the chain with it ("a.g.h" where a
 // binds g to a module); anything else ("handlers.__dict__", an attribute the scanner cannot
-// see) may reach any function of the module. done holds the chains already followed, so an
-// import cycle ends.
+// see) may reach any function of the module. A base that names no module names a function
+// or class ("x.__call__" where x is an imported function), and reading any attribute of it
+// hands it over. done holds the chains already followed, so an import cycle ends.
 func (prog *program) escapeChain(base string, rest []string, done map[string]bool, escape func(funcDecl), escapeModule func(string)) {
 	key := base + "\x00" + strings.Join(rest, "/")
 	if done[key] {
@@ -1496,6 +1497,12 @@ func (prog *program) escapeChain(base string, rest []string, done map[string]boo
 			escapeModule(path)
 		}
 		return
+	}
+	if base != "" {
+		leaf := base[strings.LastIndexByte(base, '/')+1:]
+		for _, fd := range prog.declsNamed(prog.withAliases([]string{leaf}, []string{base})) {
+			escape(fd)
+		}
 	}
 }
 

@@ -349,6 +349,14 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
 		},
 		{
+			name: "Django views module a global import in a def rebinds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n", "site/views2.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\n\ndef load():\n    global views\n    from site import views2 as views\n\nload()\nurlpatterns = [path(\"d/\", views.dash)]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}, {"http_route", funcSCIP("site/views2", nil, "dash", 1), "d/"}},
+		},
+		{
 			name: "Django class-based view on a base a global import in a def binds",
 			files: map[string]string{
 				"site/__init__.py": "", "site/base.py": "from django.views import View\n\nclass Base(View):\n    def get(self, request):\n        return None\n",

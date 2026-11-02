@@ -3,10 +3,8 @@ package goanalysis
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/gob"
 	"go/ast"
-	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -15,7 +13,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/tools/go/packages"
 
@@ -26,8 +23,16 @@ import (
 // and the engine's facts for each left-out file, by its path relative to the tree.
 type lofResult struct {
 	withheld bool
+	reasons  []string
 	engine   *lofEngine
 	facts    map[string]*lofFacts
+}
+
+// declaresExcluded reports whether reasons declare excluded_files or a localisation of it.
+func declaresExcluded(reasons []string) bool {
+	return slices.ContainsFunc(reasons, func(r string) bool {
+		return r == plugin.PartialReasonExcludedFiles || strings.HasPrefix(r, plugin.PartialReasonExcludedFiles+":")
+	})
 }
 
 // lofRun loads dir as the build, under the load's own toolchain unless unknown is set, and puts a
@@ -36,12 +41,6 @@ type lofResult struct {
 func lofRun(t *testing.T, dir, module string, symbols map[string][]string, unknown bool, prepare func(*LoadResult)) lofResult {
 	t.Helper()
 	return lofRunCtx(t, context.Background(), dir, module, symbols, unknown, prepare)
-}
-
-// lofRunNarrow is lofRun with module assembly on lofAsmNarrowPorts' two ports.
-func lofRunNarrow(t *testing.T, dir, module string, symbols map[string][]string, unknown bool, prepare func(*LoadResult)) lofResult {
-	t.Helper()
-	return lofRunCtx(t, lofAsmNarrowPorts(context.Background()), dir, module, symbols, unknown, prepare)
 }
 
 func lofRunCtx(t *testing.T, base context.Context, dir, module string, symbols map[string][]string, unknown bool, prepare func(*LoadResult)) lofResult {
@@ -75,7 +74,7 @@ func lofRunCtx(t *testing.T, base context.Context, dir, module string, symbols m
 	ctx := WithRunCacheDir(base, t.TempDir())
 	res := withholdForLeftOutFiles(ctx, refuted, scanned, load.Packages, release, dir, env)
 	withheld := res.Refutation == nil
-	if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != withheld {
+	if declared := declaresExcluded(res.Partiality.Reasons); declared != withheld {
 		t.Errorf("excluded_files declared = %v, withheld = %v (partiality %+v)", declared, withheld, res.Partiality)
 	}
 	e := loadLofEngine(ctx, load.Packages, release, dir, env)
@@ -95,7 +94,7 @@ func lofRunCtx(t *testing.T, base context.Context, dir, module string, symbols m
 		}
 		facts[path] = f
 	}
-	return lofResult{withheld: withheld, engine: e, facts: facts}
+	return lofResult{withheld: withheld, reasons: res.Partiality.Reasons, engine: e, facts: facts}
 }
 
 // TestLeftOutEngine_Constructs: each way code the build left out can run code of a module, and each
@@ -199,7 +198,12 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out init calls a variadic symbol with no arguments", x(vulnOnly, "func init() { vuln.Variadic() }\n"), nil, true, "", false},
 		// linkname
 		{"a left-out function pulls the symbol by linkname", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
-			"//go:linkname pulled example.com/v/vuln.Bad\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, "", false},
+			"//go:linkname pulled example.com/v/vuln.Bad\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, lofLinkname, false},
+		{"a left-out function pulls by linkname a function that does not reach the symbol", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
+			"//go:linkname pulled example.com/v/vuln.Safe\nfunc pulled()\n\nfunc init() { pulled() }\n"), badFunc, true, lofLinkname, false},
+		{"a left-out bodyless function's body is pushed by linkname from a function that does not reach the symbol", merge(x(vulnOnly, "func pushed()\n\nfunc init() { pushed(); vuln.Safe() }\n"), map[string]string{
+			"lib/push.go": "package lib\n\nimport _ \"unsafe\"\n\n//go:linkname push example.com/m.pushed\nfunc push() {}\n",
+		}), badFunc, true, lofLinkname, false},
 		{"a left-out function pulls by linkname a symbol nothing declares", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.Nowhere\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, lofLinkname, false},
 		// The linker takes the dynamic import only when no Go code or assembly defines the symbol.
@@ -208,16 +212,19 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out file links by linkname a bare symbol nothing imports", x("\t_ \"unsafe\"\n\t\"example.com/v/vuln\"",
 			"//go:linkname libc_puts libc_puts\nvar libc_puts byte\n\nfunc init() { vuln.Safe() }\n"), nil, true, lofLinkname, false},
 		// asm
-		{"a left-out bodyless function's assembly calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); _ = vuln.Safe }\n"), map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\n#include \"textflag.h\"\n\nTEXT ·asm(SB),NOSPLIT,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n",
-		}), nil, true, "", false},
+		{"a left-out bodyless function's package has assembly", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tRET\n",
+		}), badFunc, true, lofAssembly, false},
 		{"a left-out bodyless function has no body anywhere", x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), nil, true, lofBodyless, false},
-		{"left-out assembly references a symbol nothing declares", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL example·com∕v∕vuln·Nowhere(SB)\n\tRET\n",
-		}), nil, true, lofAsmSymbol, false},
+		{"a left-out bodyless function's package has assembly no build compiles", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build ignore\n\nTEXT ·asm(SB),0,$0\n\tRET\n",
+		}), badFunc, true, lofBodyless, false},
 		// cgo
 		{"a left-out cgo file's exported function calls the symbol", x("\t\"C\"\n\t\"example.com/v/vuln\"", "//export Exported\nfunc Exported() { vuln.Bad() }\n"), nil, true, "", false},
 		{"a left-out cgo file calls C and another function", x("\t\"C\"\n\t\"example.com/v/vuln\"", "func init() { C.puts(nil); vuln.Safe() }\n"), nil, false, "", false},
+		{"a left-out cgo file includes a C header", map[string]string{
+			"x.go": off("package main\n\n// #include <stdio.h>\nimport \"C\"\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Safe() }\n"),
+		}, badFunc, true, lofCgoInclude, false},
 		// reflection
 		{"a left-out init calls MethodByName", x("\t\"reflect\"\n\t\"example.com/m/lib\"", "func init() { reflect.ValueOf(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), nil, true, "", false},
 		{"a left-out init calls MethodByName on a value loaded code made, never importing reflect", merge(x(libOnly, "func init() { lib.Reflected(lib.MakeSafe()).MethodByName(\"Bad\").Call(nil) }\n"), map[string]string{
@@ -270,16 +277,16 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"x.go": "//go:build gc && !gc\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
 		}, nil, true, "", false},
 		{"a left-out function pulls the symbol's pointer method by linkname", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
-			"//go:linkname pulled example.com/v/vuln.(*P).Bad\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), nil, true, "", false},
+			"//go:linkname pulled example.com/v/vuln.(*P).Bad\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), nil, true, lofLinkname, false},
 		{"a left-out function pulls by linkname a method of an unloaded package that calls the symbol", merge(x("\t_ \"unsafe\"\n\t_ \"example.com/v/um\"",
-			"//go:linkname pulled example.com/v/um.(*T).Run\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), um), badFunc, true, "", false},
+			"//go:linkname pulled example.com/v/um.(*T).Run\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), um), badFunc, true, lofLinkname, false},
 		{"a left-out file holds a malformed linkname directive", x("\t_ \"unsafe\"\n"+vulnOnly,
 			"//go:linkname local remote extra\nvar local byte\n\nfunc init() { vuln.Safe() }\n"), badFunc, true, lofLinkname, false},
 		// a loaded method whose receiver can carry a func in, and a result whose methods return one
 		{"a left-out function pulls by linkname a loaded method whose receiver takes a func", merge(x("\t_ \"unsafe\"\n"+vulnOnly,
 			"//go:linkname pulled example.com/m/lib.H.Do\nfunc pulled()\n\nfunc init() { pulled(); vuln.Safe() }\n"), map[string]string{
 			"lib/h.go": "package lib\n\ntype H func(func())\n\nfunc (h H) Do() {}\n",
-		}), nil, true, "", false},
+		}), nil, true, lofLinkname, false},
 		{"a left-out init calls a loaded function whose interface result returns a func that takes one", merge(x(libOnly+"\n"+vulnOnly,
 			"func init() { _ = lib.Make2(); vuln.Safe() }\n"), map[string]string{
 			"lib/i2.go": "package lib\n\ntype I2 interface{ Get() func(func()) }\n\nfunc Make2() I2 { return nil }\n",
@@ -308,21 +315,11 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out init names an unloaded type whose method calls the symbol", merge(x("\t\"example.com/v/um\"", "func init() { var v um.T; _ = v }\n"), um), badFunc, true, "", false},
 		{"a left-out init calls by name a method of an unloaded package it entered", merge(x("\t_ \"example.com/v/um\"",
 			"type runner interface{ Run() }\n\nfunc init() { var v runner; v.Run() }\n"), um), badFunc, true, "", false},
-		{"left-out assembly enters an unloaded package after the file called its method's name", merge(x(vulnOnly,
-			"type runner interface{ Run() }\n\nfunc init() { var v runner; v.Run(); vuln.Safe() }\n\nfunc asm()\n"), um, map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL example·com∕v∕um·Nop(SB)\n\tRET\n",
-		}), badFunc, true, "", false},
 		// dynamic calls and reflection, while the symbol's address is taken
 		{"a left-out init calls a local function value while the symbol's address is taken", merge(x(libOnly,
 			"func init() { lib.Install(); f := lib.Install; f() }\n"), hook), badFunc, true, "", false},
 		{"a left-out init selects reflect's Call name while the symbol's address is taken", merge(x(libOnly,
 			"type s struct{}\n\nfunc (s) Call() {}\n\nfunc init() { lib.Install(); var v s; _ = v.Call }\n"), hook), badFunc, true, "", false},
-		{"left-out assembly calls a foreign symbol while the symbol's address is taken", merge(x(libOnly, "func asm()\n\nfunc init() { lib.Install(); asm() }\n"), hook, map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL foreign(SB)\n\tRET\n",
-		}), badFunc, true, "", false},
-		{"left-out assembly calls through a register while the symbol's address is taken", merge(x(libOnly, "func asm()\n\nfunc init() { lib.Install(); asm() }\n"), hook, map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL AX\n\tRET\n",
-		}), badFunc, true, "", false},
 		{"a left-out init reads a loaded variable while the symbol's address is taken", merge(x(libOnly, "func init() { lib.Install(); _ = lib.N }\n"), hook, map[string]string{
 			"lib/n.go": "package lib\n\nvar N int\n",
 		}), badFunc, true, "", false},
@@ -341,20 +338,6 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 				"func (b) m() { vuln.Bad() }\n\nfunc run(x i) { x.m() }\n\nvar sink any = b{}\n\nfunc main() { vuln.Safe(); run(a{}) }\n",
 			"x.go": off("package main\n\nfunc init() { var v b; _ = v }\n"),
 		}, badFunc, true, "", false},
-		// assembly bodies: of a function nothing calls, of a symbol only assembly declares, and file-local ones
-		{"a left-out bodyless function nothing calls has assembly that calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n",
-		}), badFunc, true, "", false},
-		{"left-out assembly calls an assembly-only symbol that calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL ·helper(SB)\n\tRET\n\nTEXT ·helper(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n",
-		}), badFunc, true, "", false},
-		{"left-out assembly calls a file-local symbol that calls the symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL helper<>(SB)\n\tRET\n\nTEXT helper<>(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n",
-		}), badFunc, true, "", false},
-		// No build links a file-local symbol nothing defines, so following it as the global name over-approximates.
-		{"left-out assembly calls a file-local symbol nothing declares", merge(x(vulnOnly, "func asm()\n\nfunc init() { vuln.Safe() }\n"), map[string]string{
-			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL helper<>(SB)\n\tRET\n",
-		}), badFunc, false, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -364,13 +347,16 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 				symbols = bad
 			}
 			dir := writeTree(t, merge(base, tc.files))
-			got := lofRunNarrow(t, dir, "example.com/v", symbols, tc.unknown, nil)
+			got := lofRun(t, dir, "example.com/v", symbols, tc.unknown, nil)
 			if got.withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
 			}
 			if tc.item != "" {
 				if f := lofFileWith(got, tc.item); f == "" {
 					t.Errorf("no left-out file fails closed on %s (facts %s)", tc.item, lofDescribe(got))
+				}
+				if code, ok := lofAnnotations[tc.item]; ok && !slices.Contains(got.reasons, code) {
+					t.Errorf("partiality %v does not declare %s", got.reasons, code)
 				}
 			}
 		})
@@ -639,15 +625,13 @@ func TestLeftOutEngine_LoadedValues(t *testing.T) {
 // TestLofFixedSource: only the toolchain's source and a module-cache module version are fixed.
 func TestLofEngineEncoding(t *testing.T) {
 	e := &lofEngine{
-		Strs:         []string{"", "p", "p\x00F", "M", "héllo"},
-		Nodes:        []lofNode{{Pkg: 1, Name: 2, Sym: 2, M1: -1, M2: -1, F0: true}, {Pkg: 1, Name: 3, Sym: 4, M1: 3, M2: -1, Addr: true, FT: true, Synth: true}},
-		In0:          [][]int32{{1}, nil},
-		InT:          [][]int32{{1, 0}},
-		Decls:        [][4]int32{{1, 2, 2, -1}, {1, 4, 4, 3}},
-		FailStd:      lofUnknownToolchain,
-		AsmToolchain: "go1.26.3",
-		StdGaps:      2,
-		Facts:        map[string][]byte{"x.go": {1, 2, 3}},
+		Strs:    []string{"", "p", "p\x00F", "M", "héllo"},
+		Nodes:   []lofNode{{Pkg: 1, Name: 2, Sym: 2, M1: -1, M2: -1, F0: true}, {Pkg: 1, Name: 3, Sym: 4, M1: 3, M2: -1, Addr: true, FT: true, Synth: true}},
+		In0:     [][]int32{{1}, nil},
+		InT:     [][]int32{{1, 0}},
+		Decls:   [][4]int32{{1, 2, 2, -1}, {1, 4, 4, 3}},
+		FailStd: lofUnknownToolchain,
+		Facts:   map[string][]byte{"x.go": {1, 2, 3}},
 	}
 	b, err := e.encode()
 	if err != nil {
@@ -658,7 +642,7 @@ func TestLofEngineEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Equal(got.Strs, e.Strs) || !slices.Equal(got.Nodes, e.Nodes) || !slices.Equal(got.Decls, e.Decls) ||
-		got.Fail != e.Fail || got.FailStd != e.FailStd || got.AsmToolchain != e.AsmToolchain || got.StdGaps != e.StdGaps || !slices.Equal(got.Facts["x.go"], e.Facts["x.go"]) || len(got.Facts) != 1 {
+		got.Fail != e.Fail || got.FailStd != e.FailStd || !slices.Equal(got.Facts["x.go"], e.Facts["x.go"]) || len(got.Facts) != 1 {
 		t.Fatalf("decoded %+v, want %+v", got, e)
 	}
 	for _, in := range [][2][][]int32{{got.In0, e.In0}, {got.InT, e.InT}} {
@@ -730,7 +714,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 	bad := map[string][]string{"example.com/v/vuln": {"Bad"}}
 
 	t.Run("within budget the file releases", func(t *testing.T) {
-		if got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, nil); got.withheld {
+		if got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, nil); got.withheld {
 			t.Fatalf("withheld, want released (facts %s)", lofDescribe(got))
 		}
 	})
@@ -738,7 +722,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		saved := lofBudgetDecls
 		lofBudgetDecls = 0
 		t.Cleanup(func() { lofBudgetDecls = saved })
-		got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, nil)
+		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -747,7 +731,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		saved := lofBudgetTime
 		lofBudgetTime = 0
 		t.Cleanup(func() { lofBudgetTime = saved })
-		got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, nil)
+		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -761,7 +745,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}))
 		blocked := filepath.Join(dir, "_dep", "d", "d.go")
 		t.Cleanup(func() { _ = os.Chmod(blocked, 0o644) })
-		got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 			if err := os.Chmod(blocked, 0); err != nil {
 				t.Fatal(err)
 			}
@@ -777,7 +761,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		load.buildGoVersion = load.goVersion
-		ctx, cancel := context.WithCancel(lofAsmNarrowPorts(context.Background()))
+		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		e := loadLofEngine(ctx, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
 		got := lofResult{engine: e, facts: map[string]*lofFacts{}}
@@ -800,7 +784,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			dir := writeTree(t, tree)
 			path := filepath.Join(dir, "x.go")
 			t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
-			got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 				var err error
 				if tc.src == "" {
 					err = os.Chmod(path, 0)
@@ -846,7 +830,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			dir := writeTree(t, dep(tc.imp, tc.body))
 			blocked := filepath.Join(dir, tc.blocked)
 			t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
-			got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 				if err := os.Chmod(blocked, tc.mode); err != nil {
 					t.Fatal(err)
 				}
@@ -890,7 +874,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 					_ = os.Chmod(filepath.Join(dir, p), 0o755)
 				}
 			})
-			got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 				for p, mode := range tc.blocked {
 					if err := os.Chmod(filepath.Join(dir, p), mode); err != nil {
 						t.Fatal(err)
@@ -913,7 +897,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}))
 		blocked := filepath.Join(dir, "_dep", "go.mod")
 		t.Cleanup(func() { _ = os.Chmod(blocked, 0o644) })
-		got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 			if err := os.Chmod(blocked, 0); err != nil {
 				t.Fatal(err)
 			}
@@ -930,7 +914,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}))
 		vdir := filepath.Join(dir, "_v", "vuln")
 		t.Cleanup(func() { _ = os.Chmod(vdir, 0o755) })
-		got := lofRunNarrow(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+		got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
 			if err := os.Chmod(vdir, 0o311); err != nil {
 				t.Fatal(err)
 			}
@@ -954,7 +938,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"main.go": strs,
 			"x.go":    "//go:build lofalt\n\npackage main\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName(); vuln.Bad() }\n\nfunc other() {}\n",
 		}))
-		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -967,7 +951,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"main.go":   strs,
 			"tool/a.go": "//go:build lofalt\n\npackage tool\n\nimport (\n\t\"strings\"\n\n\t\"example.com/v/vuln\"\n)\n\nfunc init() { strings.NoSuchName() }\n\nfunc init() { vuln.Safe() }\n",
 		}))
-		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
@@ -986,7 +970,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"_v/u/u_other.go": "//go:build !lofalt\n\npackage u\n\nfunc Helper() {}\n",
 			"_v/w2/w2.go":     "package w2\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
 		}))
-		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
 		if got.withheld {
 			t.Fatalf("withheld, want released (facts %s)", lofDescribe(got))
 		}
@@ -998,7 +982,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			"a/a.go": "//go:build lofalt\n\npackage a\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
 			"b/b.go": "//go:build lofalt\n\npackage b\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Safe() }\n",
 		}))
-		got := lofRunNarrow(t, dir, "example.com/v", bad, false, nil)
+		got := lofRun(t, dir, "example.com/v", bad, false, nil)
 		reaches := func(path string) bool {
 			f := got.facts[path]
 			if f == nil {
@@ -1011,7 +995,7 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}
 	})
 	t.Run("the call graphs cannot be built", func(t *testing.T) {
-		got := lofRunNarrow(t, writeTree(t, tree), "example.com/v", bad, false, func(load *LoadResult) {
+		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, func(load *LoadResult) {
 			// A package with syntax but no type information for it: SSA cannot build it.
 			fset := token.NewFileSet()
 			f, err := parser.ParseFile(fset, "broken.go", "package broken\n\nfunc F() { F() }\n", 0)
@@ -1077,8 +1061,11 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 		{"the toolchain is unknown and a left-out file links the vulnerable package without naming a symbol", merge(stringsMain, map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport _ \"container/list\"\n",
 		}), list, true, "", true, lofUnknownToolchain, ""},
-		{"a left-out file links the vulnerable package and names only declared symbols", merge(stringsMain, map[string]string{
+		{"a left-out file links the vulnerable package and pulls a declared symbol by linkname", merge(stringsMain, map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t_ \"unsafe\"\n)\n\n//go:linkname pulled strings.ToUpper\nfunc pulled(string) string\n\nfunc init() { pulled(\"x\") }\n",
+		}), list, false, "", true, "", ""},
+		{"a left-out file links the vulnerable package and names only declared symbols", merge(stringsMain, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t\"strings\"\n)\n\nfunc init() { _ = strings.ToUpper(\"x\") }\n",
 		}), list, false, "", false, "", ""},
 	}
 	for _, tc := range cases {
@@ -1087,7 +1074,7 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 			if tc.goflags != "" {
 				prepare = func(*LoadResult) { t.Setenv("GOFLAGS", tc.goflags) }
 			}
-			got := lofRunNarrow(t, writeTree(t, tc.tree), "stdlib", tc.symbols, tc.unknown, prepare)
+			got := lofRun(t, writeTree(t, tc.tree), "stdlib", tc.symbols, tc.unknown, prepare)
 			if got.withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
 			}
@@ -1120,7 +1107,7 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 		{"the GOROOT is another release's", "go1.20\n", lofGorootMismatch, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := lofRunNarrow(t, writeTree(t, useStd("os", "_, _ = os.Open(\"x\")")), "stdlib", map[string][]string{"os": {"Root.Open"}}, false, func(*LoadResult) {
+			got := lofRun(t, writeTree(t, useStd("os", "_, _ = os.Open(\"x\")")), "stdlib", map[string][]string{"os": {"Root.Open"}}, false, func(*LoadResult) {
 				root := t.TempDir()
 				switch {
 				case tc.absent:
@@ -1231,603 +1218,5 @@ func TestLofUnder(t *testing.T) {
 		if got := lofUnder(tc.path, tc.root); got != tc.want {
 			t.Errorf("lofUnder(%q, %q) = %v, want %v", tc.path, tc.root, got, tc.want)
 		}
-	}
-}
-
-// TestLeftOutEngine_AsmLinkDefiners: a bare symbol left-out assembly references and its own package
-// does not define binds, in some link, to whatever defines that name anywhere in the link: a Go
-// declaration a //go:linkname pushes to it or an //export function, followed; Go assembly, whose
-// body is followed; a .syso object, or a definer the index cannot see, which fails closed. lib's
-// file y_alt.go, left out and built under another tag, is the only importer of the packages holding
-// definers, so x.go's closure never enters them.
-func TestLeftOutEngine_AsmLinkDefiners(t *testing.T) {
-	t.Parallel()
-	base := map[string]string{
-		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
-		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
-		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
-		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
-		"lib/lib.go":      "package lib\n",
-		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
-		"x_lofalt.s":      "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n",
-	}
-	// importer links pkg into some build through a file the build leaves out.
-	importer := func(pkg string) map[string]string {
-		return map[string]string{"lib/y_alt.go": "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/" + pkg + "\"\n"}
-	}
-	sy := func(obj []byte) map[string]string {
-		return merge(importer("sy"), map[string]string{"_v/sy/sy.go": "package sy\n", "_v/sy/sy.syso": string(obj)})
-	}
-	bad := symKey("example.com/v/vuln", "Bad")
-	cases := []struct {
-		name     string
-		files    map[string]string
-		reach    string // a loaded function x.go's closure reaches, when set
-		sink     bool   // x.go's closure reaches a loaded variable holding a func
-		item     string // what x.go's closure fails closed on, when set
-		withheld bool
-	}{
-		{"nothing defines the symbol: foreign code", nil, "", false, "", false},
-		{"a loaded //go:linkname push of a function with a body", map[string]string{
-			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nfunc impl() { vuln.Bad() }\n",
-		}, symKey("example.com/m/lib", "impl"), false, "", true},
-		{"a loaded //go:linkname push of an initialized variable", map[string]string{
-			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nvar impl = vuln.Bad\n",
-		}, "", true, "", true},
-		{"a loaded //go:linkname push of an uninitialized variable", map[string]string{
-			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nvar impl func()\n\nfunc init() { impl = vuln.Bad }\n",
-		}, "", true, "", true},
-		{"an uninitialized variable an unloaded package pushes", merge(importer("def"), map[string]string{
-			"_v/def/def.go": "package def\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname v target\nvar v func()\n\nfunc init() { v = vuln.Bad }\n",
-		}), bad, false, lofLinkname, true},
-		{"a //go:linkname push of a bodyless function defines nothing", map[string]string{
-			"lib/def.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nfunc impl()\n\nfunc F() { vuln.Bad() }\n",
-		}, "", false, "", false},
-		{"an //export function of an unloaded cgo package", merge(importer("exp"), map[string]string{
-			"_v/exp/exp.go": "package exp\n\nimport \"C\"\n\nimport \"example.com/v/vuln\"\n\n//export target\nfunc target() { vuln.Bad() }\n",
-		}), bad, false, "", true},
-		{"an //export comment outside a cgo file defines nothing", merge(importer("exp"), map[string]string{
-			"_v/exp/exp.go": "package exp\n\nimport \"example.com/v/vuln\"\n\n//export target\nfunc target() { vuln.Bad() }\n",
-		}), "", false, "", false},
-		{"Go assembly data of an unloaded package links it", merge(importer("def"), map[string]string{
-			"_v/def/def.go": "package def\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
-			"_v/def/def.s":  "GLOBL target(SB),8,$8\n",
-		}), bad, false, "", true},
-		{"Go assembly of an unloaded package", merge(importer("def"), map[string]string{
-			"_v/def/def.go": "package def\n",
-			"_v/def/def.s":  "TEXT target(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n",
-		}), bad, false, "", true},
-		{"a macro of an included header defines it", merge(importer("mac"), map[string]string{
-			"_v/mac/mac.go": "package mac\n",
-			"_v/mac/mk.h":   "#define MK(n) TEXT n(SB),0,$0; CALL example·com∕v∕vuln·Bad(SB); RET\n",
-			"_v/mac/mac.s":  "#include \"mk.h\"\n\nMK(target)\n",
-		}), bad, false, "", true},
-		{"an included header that does not resolve may define anything", merge(importer("mac"), map[string]string{
-			"_v/mac/mac.go": "package mac\n",
-			"_v/mac/mac.s":  "#include \"missing.h\"\n",
-		}), "", false, lofAsmSymbol, true},
-		{"a .syso object defines it", sy(lofELFObject("target")), "", false, lofAsmSymbol, true},
-		{"a .syso object defines it with a leading underscore", sy(lofELFObject("_target")), "", false, lofAsmSymbol, true},
-		{"a .syso object defines other names", sy(lofELFObject("other")), "", false, "", false},
-		{"a .syso object of unknown format", sy([]byte("not an object")), "", false, lofAsmSymbol, true},
-		{"an import some build links does not resolve", importer("nowhere"), "", false, lofAsmSymbol, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := writeTree(t, merge(base, tc.files))
-			got := lofRunNarrow(t, dir, "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
-			f := got.facts["x.go"]
-			if f == nil {
-				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
-			}
-			if !f.Dyn {
-				t.Errorf("x.go: no dynamic call; a build without the definer binds the symbol to foreign code")
-			}
-			var fc []string
-			if tc.item != "" {
-				fc = []string{tc.item}
-			}
-			if !slices.Equal(f.FC, fc) {
-				t.Errorf("x.go fails closed on %v, want %v", f.FC, fc)
-			}
-			reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == tc.reach })
-			if tc.reach != "" && !reached {
-				t.Errorf("x.go does not reach %s", tc.reach)
-			}
-			for _, k := range []string{bad, symKey("example.com/m/lib", "impl"), symKey("example.com/v/exp", "target")} {
-				if tc.reach != k && slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == k }) {
-					t.Errorf("x.go reaches %s", k)
-				}
-			}
-			if f.Sink != tc.sink {
-				t.Errorf("x.go sink = %v, want %v", f.Sink, tc.sink)
-			}
-			if got.withheld != tc.withheld {
-				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
-			}
-		})
-	}
-}
-
-// TestLeftOutEngine_AsmFuncdata: a FUNCDATA operand is no reference: the assembler records it in
-// the function's metadata, never as a relocation, so go_args_stackmap and no_pointers_stackmap,
-// which it renames there, are not followed even where a module defines them as text. Any other
-// spelling that assembles them as an operand of a call or a data move follows that definer, and
-// one some build cannot assemble fails the file closed.
-func TestLeftOutEngine_AsmFuncdata(t *testing.T) {
-	t.Parallel()
-	base := map[string]string{
-		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
-		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
-		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
-		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
-		"lib/lib.go":      "package lib\n",
-		"lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/fd\"\n",
-		"_v/fd/fd.go":     "package fd\n",
-		"_v/fd/fd.s": "TEXT go_args_stackmap(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n\n" +
-			"TEXT no_pointers_stackmap(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n",
-		"x.go": "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
-	}
-	funcdataH := map[string]string{"funcdata.h": "#define GO_ARGS FUNCDATA $0, go_args_stackmap(SB)\n#define NO_LOCAL_POINTERS FUNCDATA $1, no_pointers_stackmap(SB)\n"}
-	body := func(pre, stmt string) map[string]string {
-		return map[string]string{"x_lofalt.s": "//go:build lofalt\n\n" + pre + "TEXT ·asm(SB),0,$0\n\t" + stmt + "\n\tRET\n"}
-	}
-	const (
-		release = iota // x.go's closure neither reaches Bad nor fails closed
-		reach          // it reaches Bad through the module's definer
-		fail           // it fails closed on the symbol: some build does not assemble the file
-	)
-	type row struct {
-		name  string
-		files map[string]string
-		want  int
-	}
-	var cases []row
-	for _, c := range []struct{ name, macro, slot string }{
-		{"go_args_stackmap", "GO_ARGS", "0"},
-		{"no_pointers_stackmap", "NO_LOCAL_POINTERS", "1"},
-	} {
-		n := c.name + "(SB)"
-		cases = append(cases, []row{
-			{c.name + ": the toolchain's funcdata.h", body("#include \"funcdata.h\"\n\n", c.macro), release},
-			{c.name + ": a module's own funcdata.h", merge(funcdataH, body("#include \"funcdata.h\"\n\n", c.macro)), release},
-			{c.name + ": a FUNCDATA macro of the file", body("#define "+c.macro+" FUNCDATA $"+c.slot+", "+n+"\n\n", c.macro), release},
-			{c.name + ": a CALL beside the toolchain's funcdata.h", body("#include \"funcdata.h\"\n\n", c.macro+"\n\tCALL "+n), reach},
-			{c.name + ": a FUNCDATA macro as CALL, then the toolchain's funcdata.h", body("#define FUNCDATA CALL\n#include \"funcdata.h\"\n\n", c.macro), fail},
-			{c.name + ": a FUNCDATA macro as MOVQ, then the toolchain's funcdata.h", body("#define FUNCDATA MOVQ\n#include \"funcdata.h\"\n\n", c.macro), fail},
-			{c.name + ": a CALL commented FUNCDATA", body("", "CALL "+n+" /* FUNCDATA */"), reach},
-			{c.name + ": a header CALL macro commented FUNCDATA", merge(body("#include \"fd.h\"\n\n", "M"), map[string]string{"fd.h": "#define M CALL " + n + " // FUNCDATA\n"}), reach},
-			{c.name + ": FUNCDATA defined as a CALL", body("#define FUNCDATA CALL\n\n", "FUNCDATA "+n), reach},
-			{c.name + ": a comment opened on an earlier line", body("", "NOP\n/*\nFUNCDATA $"+c.slot+", /* */ CALL "+n), reach},
-			{c.name + ": a macro parameter named FUNCDATA", body("#define M(FUNCDATA) FUNCDATA $"+c.slot+", "+n+"\n\n", "M(CALL)"), fail},
-			{c.name + ": a CALL beside a comment-glued operand", body("", "FUNCDATA $"+c.slot+", /**/"+n+"; CALL "+n), reach},
-			{c.name + ": FUNCDATA defined by an out-of-directory header", merge(body("#include \"h/fd.h\"\n\n", "FUNCDATA "+n), map[string]string{"h/fd.h": "#define FUNCDATA CALL\n"}), reach},
-			{c.name + ": a macro of the name", body("#define "+c.name+" ·evil\n\n", "FUNCDATA $"+c.slot+", "+n), release},
-		}...)
-	}
-	bad := symKey("example.com/v/vuln", "Bad")
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := lofRunNarrow(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
-			f := got.facts["x.go"]
-			if f == nil {
-				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
-			}
-			var fc []string
-			if tc.want == fail {
-				fc = []string{lofAsmSymbol}
-			}
-			if !slices.Equal(f.FC, fc) || len(f.FCStd) > 0 {
-				t.Errorf("x.go fails closed on %v (standard library %v), want %v", f.FC, f.FCStd, fc)
-			}
-			if reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == bad }); reached != (tc.want == reach) {
-				t.Errorf("x.go reaches Bad = %v, want %v", reached, tc.want == reach)
-			}
-			if got.withheld != (tc.want != release) {
-				t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, tc.want != release, lofDescribe(got))
-			}
-		})
-	}
-}
-
-// TestLeftOutEngine_AsmInclude: a left-out file's references, and every definer the link holds, are
-// what cmd/asm emits for them, so a header resolves as the assembler resolves it and a macro, a
-// comment or a directive's spelling counts only through what it assembles to. A file some admitted
-// build cannot assemble, or that GOFLAGS passes assembler flags to, fails its bodies closed. The
-// module sits one directory below the tree, beside a header outside it.
-func TestLeftOutEngine_AsmInclude(t *testing.T) {
-	base := map[string]string{
-		"m/go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
-		"m/main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
-		"m/_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
-		"m/_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
-		"m/_v/def/def.go":   "package def\n",
-		"m/lib/lib.go":      "package lib\n",
-		"m/lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/def\"\n",
-		"m/app/app.go":      "package app\n\nimport _ \"example.com/v/vuln\"\n",
-		"m/app/x.go":        "//go:build lofalt\n\npackage app\n\nfunc asm()\n\nfunc init() { asm() }\n",
-		"outside.h":         "#define NOTHING 1\n",
-	}
-	bad := symKey("example.com/v/vuln", "Bad")
-	asm := func(pre, stmt string) map[string]string {
-		return map[string]string{"m/app/x_lofalt.s": "//go:build lofalt\n\n" + pre + "TEXT ·asm(SB),0,$0\n\t" + stmt + "\n\tRET\n"}
-	}
-	// asm64 is asm for amd64 builds only, for statements other ports do not assemble.
-	asm64 := func(pre, stmt string) map[string]string {
-		return map[string]string{
-			"m/app/x.go":       "//go:build lofalt && amd64\n\npackage app\n\nfunc asm()\n\nfunc init() { asm() }\n",
-			"m/app/x_lofalt.s": "//go:build lofalt && amd64\n\n" + pre + "TEXT ·asm(SB),0,$0\n\t" + stmt + "\n\tRET\n",
-		}
-	}
-	definer := map[string]string{"m/_v/def/def.s": "TEXT ext(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}
-	header := map[string]string{"m/include/x.h": "#define M CALL ext(SB)\n"}
-	cases := []struct {
-		name  string
-		files map[string]string
-		reach bool   // x.go's closure reaches Bad
-		item  string // what x.go's closure fails closed on, when set
-	}{
-		{"a module ../include header's macro, to a definer", merge(asm("#include \"../include/x.h\"\n\n", "M"), header, definer), true, ""},
-		{"a module ../include header's macro, no definer", merge(asm("#include \"../include/x.h\"\n\n", "M"), header), false, ""},
-		{"a header that includes itself", merge(asm("#include \"../include/n.h\"\n\n", "M"), definer, map[string]string{
-			"m/include/n.h": "#include \"../include/n.h\"\n#include \"y.h\"\n", "m/app/y.h": "#define M CALL ext(SB)\n"}), false, lofAsmSymbol},
-		{"an include found nowhere", asm("#include \"missing.h\"\n\n", "NOP"), false, lofAsmSymbol},
-		{"an include with no closing quote", asm("#include \"missing.h\n\n", "NOP"), false, lofAsmSymbol},
-		{"an include of an unquoted name", asm("#include missing.h\n\n", "NOP"), false, lofAsmSymbol},
-		{"an include of <name>", asm("#include <missing.h>\n\n", "NOP"), false, lofAsmSymbol},
-		{"an include in a comment", asm("/* #include \"missing.h\" */\n\n", "NOP"), false, ""},
-		{"an include in a line comment", asm("// #include \"missing.h\"\n\n", "NOP"), false, ""},
-		{"an include on a line of a block comment", asm("/*\n#include \"missing.h\"\n*/\n\n", "NOP"), false, ""},
-		{"an include after a block comment on its line", merge(asm("/* c */ #include \"../include/x.h\"\n\n", "M"), header, definer), true, ""},
-		{"an include after a line comment holding /*, before a block comment", merge(asm("// like C's /* unbalanced\n#include \"../include/x.h\"\n/* block */\n\n", "M"), header, definer), true, ""},
-		{"an include after a string holding /*, before a block comment", merge(asm64("DATA s<>+0(SB)/8, $\"/*abcdef\"\n#include \"../include/x.h\"\n/* block */\n\n", "M"), header, definer), true, ""},
-		{"an own-directory include after a line comment holding /*, before a block comment", merge(asm("// like C's /* unbalanced\n#include \"y.h\"\n/* block */\n\n", "M"), definer,
-			map[string]string{"m/app/y.h": "#define M CALL ext(SB)\n"}), true, ""},
-		{"a nested include after a line comment holding /*, before a block comment", merge(asm("#include \"../include/n.h\"\n\n", "M"), definer, map[string]string{
-			"m/include/n.h": "// like C's /* unbalanced\n#include \"y.h\"\n/* block */\n", "m/app/y.h": "#define M CALL ext(SB)\n"}), true, ""},
-		{"an include behind a block comment after its #", merge(asm("#/* c */include \"../include/x.h\"\n\n", "M"), header, definer), true, ""},
-		{"an include behind a multi-line block comment after its #", merge(asm("#/*\n*/include \"../include/x.h\"\n\n", "M"), header, definer), true, ""},
-		{"an include leaving the module", asm("#include \"../../outside.h\"\n\n", "NOP"), false, ""},
-		{"an absolute include leaving the module", nil, false, ""},
-		{"the generated go_asm.h", asm("#include \"go_asm.h\"\n\n", "NOP"), false, ""},
-		{"a go_asm.h of the package's directory shadows the generated one", merge(asm("#include \"go_asm.h\"\n\n", "M"), definer,
-			map[string]string{"m/app/go_asm.h": "#define M CALL ext(SB)\n"}), true, ""},
-		{"textflag.h from $GOROOT/pkg/include", asm("#include \"textflag.h\"\n\n", "NOP"), false, ""},
-		{"a CALL after a block comment holding //", merge(asm("", "/* a // b */ CALL ext(SB)"), definer), true, ""},
-		{"a CALL after a block comment ending on a line holding //", merge(asm("", "/*\n// x */ CALL ext(SB)"), definer), true, ""},
-		{"a file macro after a block comment holding //", merge(asm("#define M /* a // b */ CALL ext(SB)\n\n", "M"), definer), true, ""},
-		{"a continued #define before TEXT", merge(asm("#define M \\\n\tCALL ext(SB)\n\n", "M"), definer), true, ""},
-		{"a spaced # define before TEXT", merge(asm("# define M CALL ext(SB)\n\n", "M"), definer), true, ""},
-		{"a #define behind a block comment after its #", merge(asm("#/* c */define M CALL ext(SB)\n\n", "M"), definer), true, ""},
-		{"a statement after TEXT on its line", merge(map[string]string{"m/app/x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0; CALL ext(SB)\n\tRET\n"}, definer), true, ""},
-		{"a DATA initializer's address", merge(asm64("DATA tbl<>+0(SB)/8, $ext(SB)\nGLOBL tbl<>(SB), 8, $8\n\n", "MOVQ tbl<>(SB), AX\n\tCALL AX"), definer), true, ""},
-		{"a space before (SB)", merge(asm("", "CALL ext (SB)"), definer), true, ""},
-		{"spaces inside (SB)", merge(asm("", "CALL ext( SB )"), definer), true, ""},
-		{"a parenthesized offset", merge(asm64("", "LEAQ ext+(8)(SB), AX\n\tCALL AX"), definer), true, ""},
-		{"a block comment before (SB)", merge(asm("", "CALL ext/* c */(SB)"), definer), true, ""},
-		{"an offset nesting parentheses", merge(asm("", "CALL ext+((0))(SB)"), definer), true, ""},
-		{"a block comment inside (SB)", merge(asm("", "CALL ext(/* c */SB)"), definer), true, ""},
-		{"a macro expanding to SB", merge(asm("#define S SB\n\n", "CALL ext(S)"), definer), true, ""},
-		{"a macro expanding to (SB)", merge(asm("#define P (SB)\n\n", "CALL ext P"), definer), true, ""},
-		{"a macro whose parameter names the symbol", merge(asm("#define F(x) x(SB)\n\n", "CALL F(ext)"), definer), true, ""},
-		{"a header macro expanding to SB", merge(asm("#include \"../include/x.h\"\n\n", "CALL ext(S)"), definer, map[string]string{"m/include/x.h": "#define S SB\n"}), true, ""},
-		{"a header macro expanding to (SB)", merge(asm("#include \"../include/x.h\"\n\n", "CALL ext P"), definer, map[string]string{"m/include/x.h": "#define P (SB)\n"}), true, ""},
-		{"a header macro whose parameter names the symbol", merge(asm("#include \"../include/x.h\"\n\n", "CALL F(ext)"), definer, map[string]string{"m/include/x.h": "#define F(x) x(SB)\n"}), true, ""},
-		// cmd/asm rejects this expansion ("expected identifier, found EOF").
-		{"a continued macro expanding to SB", merge(asm("#define S \\\n\tSB\n\n", "CALL ext(S)"), definer), false, lofAsmSymbol},
-		{"a macro whose parameter is only an offset", merge(asm64("#define L(off) MOVQ ext+off(SB), AX\n\n", "L(8)\n\tCALL AX"), definer), true, ""},
-		// A package outside the link is reached from the left-out file alone.
-		{"a macro whose parameter names an undefined name, in a package outside the link", merge(asm("", "CALL example·com∕v∕extra·g(SB)"), map[string]string{
-			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define F(lofsym) lofsym(SB)\n\nTEXT ·g(SB),0,$0\n\tCALL F(nope)\n\tRET\n"}), false, ""},
-		{"a macro naming the symbol, in a package outside the link", merge(asm("", "CALL example·com∕v∕extra·g(SB)"), map[string]string{
-			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define LOFN example·com∕v∕vuln·Bad\n\nTEXT ·g(SB),0,$0\n\tCALL LOFN(SB)\n\tRET\n"}), true, ""},
-		{"a macro taking SB as its argument, in a package outside the link", merge(asm("", "CALL example·com∕v∕extra·g(SB)"), map[string]string{
-			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define F(r) CALL example·com∕v∕vuln·Bad(r)\n\nTEXT ·g(SB),0,$0\n\tF(SB)\n\tRET\n"}), true, ""},
-		{"a macro named ∕ naming the symbol, in a package outside the link", merge(asm("", "CALL example·com∕v∕extra·g(SB)"), map[string]string{
-			"m/_v/extra/extra.go": "package extra\n\nfunc g()\n", "m/_v/extra/extra.s": "#define ∕ example·com∕v∕vuln·Bad\n\nTEXT ·g(SB),0,$0\n\tCALL ∕(SB)\n\tRET\n"}), true, ""},
-		// A definer counts by the TEXT header its object emits, however the source spells it.
-		{"a macro naming a definer's TEXT with no letter", merge(asm("", "CALL ∕(SB)"), map[string]string{
-			"m/_v/def/def.s": "#define LOFN ∕\nTEXT LOFN(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}), true, ""},
-		{"a macro named ∕ naming a definer's TEXT", merge(asm("", "CALL ext(SB)"), map[string]string{
-			"m/_v/def/def.s": "#define ∕ ext\nTEXT ∕(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}), true, ""},
-		{"a definer's TEXT after a line comment holding /*", merge(asm("", "CALL ext(SB)"), map[string]string{
-			"m/_v/def/def.s": "// like C /* unbalanced\nTEXT ext(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n/* block */\n"}), true, ""},
-		{"a definer's TEXT after a string holding /*", merge(asm("", "CALL ext(SB)"), map[string]string{
-			"m/_v/def/def.s": "//go:build amd64\n\nDATA s<>+0(SB)/8, $\"/*abcdef\"\nTEXT ext(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n/* block */\n"}), true, ""},
-		{"a definer's TEXT after a block comment holding //", merge(asm("", "CALL ext(SB)"), map[string]string{
-			"m/_v/def/def.s": "/* a // b */ TEXT ext(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}), true, ""},
-		{"a definer's TEXT with a nested offset", merge(asm("", "CALL ext(SB)"), map[string]string{
-			"m/_v/def/def.s": "TEXT ext+((0))(SB),0,$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}), true, ""},
-	}
-	check := func(t *testing.T, files map[string]string, goflags string, reach bool, item string) {
-		dir := writeTree(t, merge(base, files))
-		if files == nil {
-			out := filepath.Join(dir, "outside.h")
-			if err := os.WriteFile(filepath.Join(dir, "m", "app", "x_lofalt.s"), []byte("//go:build lofalt\n\n#include \""+out+"\"\n\nTEXT ·asm(SB),0,$0\n\tRET\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		var prepare func(*LoadResult)
-		if goflags != "" {
-			prepare = func(*LoadResult) { t.Setenv("GOFLAGS", goflags) }
-		}
-		got := lofRunNarrow(t, filepath.Join(dir, "m"), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, prepare)
-		f := got.facts["app/x.go"]
-		if f == nil {
-			t.Fatalf("the engine holds no app/x.go (facts %s)", lofDescribe(got))
-		}
-		var fc []string
-		if item != "" {
-			fc = []string{item}
-		}
-		if !slices.Equal(f.FC, fc) || len(f.FCStd) > 0 {
-			t.Errorf("x.go fails closed on %v (standard library %v), want %v", f.FC, f.FCStd, fc)
-		}
-		if reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == bad }); reached != reach {
-			t.Errorf("x.go reaches Bad = %v, want %v", reached, reach)
-		}
-		if want := reach || item != ""; got.withheld != want {
-			t.Errorf("withheld = %v, want %v (facts %s)", got.withheld, want, lofDescribe(got))
-		}
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			check(t, tc.files, "", tc.reach, tc.item)
-		})
-	}
-	// GOFLAGS that change what the assembler emits or runs (assembler flags, a -toolexec wrapper, an
-	// overlay) leave the build's objects unreproducible, so the file fails closed.
-	for _, tc := range []struct {
-		name, goflags string
-		reach         bool
-		item          string
-	}{
-		{"GOFLAGS passing no assembler flags", "-trimpath", true, ""},
-		{"GOFLAGS passing assembler flags", "-asmflags=-D=S=SB", false, lofAsmSymbol},
-		{"GOFLAGS passing package-scoped assembler flags", "-asmflags=example.com/m/app=-D=S=SB", false, lofAsmSymbol},
-		{"GOFLAGS passing a -toolexec wrapper", "-toolexec=/usr/bin/env", false, lofAsmSymbol},
-		{"GOFLAGS passing an overlay", "-overlay=/nonexistent.json", false, lofAsmSymbol},
-	} {
-		t.Run(tc.name, func(t *testing.T) { check(t, merge(asm("", "CALL ext(SB)"), definer), tc.goflags, tc.reach, tc.item) })
-	}
-}
-
-// TestLeftOutEngine_AsmLinkOwnDefiner: a bare symbol x.go's own assembly defines still follows every
-// other definer of it in the link, and a build that links no definition binds it to foreign code. The
-// link may keep another package's DUPOK definition over a non-DUPOK one in either load order, and the
-// own definition may sit in a file another build leaves out.
-func TestLeftOutEngine_AsmLinkOwnDefiner(t *testing.T) {
-	t.Parallel()
-	base := map[string]string{
-		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
-		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
-		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
-		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
-		"lib/lib.go":      "package lib\n",
-		"lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nimport _ \"example.com/v/def\"\n",
-		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
-	}
-	loadedDef := "package main\n\nimport (\n\t_ \"example.com/v/def\"\n\t\"example.com/v/vuln\"\n)\n\nfunc main() { vuln.Safe() }\n"
-	// The other definer: a body calling Bad, data whose package's init calls Bad, or a variable
-	// holding Bad.
-	text := func(flags string) map[string]string {
-		return map[string]string{"_v/def/def.go": "package def\n", "_v/def/def.s": "TEXT target(SB)," + flags + "$0\n\tCALL example·com∕v∕vuln·Bad(SB)\n\tRET\n"}
-	}
-	asmData := map[string]string{
-		"_v/def/def.go":      "package def\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
-		"_v/def/def_amd64.s": "DATA target+0(SB)/8, $2\nGLOBL target(SB),2,$8\n",
-	}
-	goVar := map[string]string{"_v/def/def.go": "package def\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname v target\nvar v = vuln.Bad\n"}
-	ownText := func(flags string) map[string]string {
-		return map[string]string{"x_lofalt.s": "//go:build lofalt\n\n#include \"textflag.h\"\n\nTEXT target(SB)," + flags + "$0\n\tRET\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n"}
-	}
-	ownData := func(def string) map[string]string {
-		return map[string]string{"x_lofalt.s": "//go:build lofalt && amd64\n\n" + def + "\nTEXT ·asm(SB),0,$0\n\tMOVQ target(SB), AX\n\tRET\n"}
-	}
-	none := map[string]string{"_v/def/def.go": "package def\n"}
-	callOnly := map[string]string{"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n"}
-	cases := []struct {
-		name  string
-		files map[string]string
-		reach bool   // x.go's closure reaches vuln.Bad
-		sink  bool   // x.go's closure reaches a loaded variable holding a func
-		item  string // what x.go's closure fails closed on, when set: entering an unloaded package
-		// that pushes a //go:linkname fails closed at the dot-less linkname arm
-	}{
-		{"own TEXT, no other definer", merge(none, ownText("NOSPLIT,")), false, false, ""},
-		{"own DUPOK TEXT, another package's DUPOK TEXT", merge(text("2,"), ownText("2,")), true, false, ""},
-		{"own DUPOK TEXT, a loaded package's DUPOK TEXT", merge(text("2,"), ownText("NOSPLIT|DUPOK,"), map[string]string{"main.go": loadedDef}), true, false, ""},
-		{"own NOSPLIT TEXT, another package's DUPOK TEXT", merge(text("2,"), ownText("NOSPLIT,")), true, false, ""},
-		{"own NOSPLIT TEXT, a loaded package's DUPOK TEXT", merge(text("2,"), ownText("NOSPLIT,"), map[string]string{"main.go": loadedDef}), true, false, ""},
-		{"own TEXT with no flags, another package's DUPOK TEXT", merge(text("2,"), ownText("")), true, false, ""},
-		{"own DUPOK TEXT, another package's non-DUPOK TEXT", merge(text(""), ownText("DUPOK,")), true, false, ""},
-		{"own unfilled GLOBL, another package's variable", merge(goVar, ownData("GLOBL target(SB),8,$8\n")), true, false, lofLinkname},
-		{"own unfilled GLOBL, a loaded package's variable", merge(goVar, ownData("GLOBL target(SB),8,$8\n"), map[string]string{"main.go": loadedDef}), false, true, ""},
-		{"own filled GLOBL, another package's DUPOK data", merge(asmData, ownData("DATA target+0(SB)/8, $1\nGLOBL target(SB),8,$8\n")), true, false, ""},
-		{"own GLOBL filled only in a disjoint build, another package's variable", merge(goVar, ownData("GLOBL target(SB),8,$8\n"), map[string]string{
-			"d_nolofalt.s": "//go:build !lofalt && amd64\n\nDATA target+0(SB)/8, $0\n",
-		}), true, false, lofLinkname},
-		{"own TEXT only in a disjoint build, no other definer", merge(none, callOnly, map[string]string{
-			"t_nolofalt.s": "//go:build !lofalt\n\nTEXT target(SB),0,$0\n\tRET\n",
-		}), false, false, ""},
-		{"own TEXT only in a disjoint build, another package's TEXT", merge(text(""), callOnly, map[string]string{
-			"t_nolofalt.s": "//go:build !lofalt\n\nTEXT target(SB),0,$0\n\tRET\n",
-		}), true, false, ""},
-	}
-	bad := symKey("example.com/v/vuln", "Bad")
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := lofRunNarrow(t, writeTree(t, merge(base, tc.files)), "example.com/v", map[string][]string{"example.com/v/vuln": {"Bad"}}, false, nil)
-			f := got.facts["x.go"]
-			if f == nil {
-				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
-			}
-			if !f.Dyn {
-				t.Errorf("x.go: no dynamic call; a build linking no definition binds the symbol to foreign code")
-			}
-			var fc []string
-			if tc.item != "" {
-				fc = []string{tc.item}
-			}
-			if !slices.Equal(f.FC, fc) {
-				t.Errorf("x.go fails closed on %v, want %v", f.FC, fc)
-			}
-			if reached := slices.ContainsFunc(f.Funcs, func(id int32) bool { return got.engine.Strs[id] == bad }); reached != tc.reach {
-				t.Errorf("x.go reaches vuln.Bad = %v, want %v", reached, tc.reach)
-			}
-			if f.Sink != tc.sink {
-				t.Errorf("x.go sink = %v, want %v", f.Sink, tc.sink)
-			}
-		})
-	}
-}
-
-// TestLeftOutEngine_AsmLinkDefinerOrder: the definer of a bare symbol sits in a package no closure
-// has parsed yet; whether another closure parsed it first changes nothing.
-func TestLeftOutEngine_AsmLinkDefinerOrder(t *testing.T) {
-	t.Parallel()
-	dir := writeTree(t, map[string]string{
-		"go.mod":          "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/v v0.0.0\n\nreplace example.com/v => ./_v\n",
-		"main.go":         "package main\n\nimport \"example.com/v/vuln\"\n\nfunc main() { vuln.Safe() }\n",
-		"_v/go.mod":       "module example.com/v\n\ngo 1.22\n",
-		"_v/vuln/vuln.go": "package vuln\n\nfunc Bad() {}\n\nfunc Safe() {}\n",
-		"lib/lib.go":      "package lib\n",
-		"lib/def.go":      "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl target\nfunc impl() { vuln.Bad() }\n",
-		"lib/y_alt.go":    "//go:build lofother\n\npackage lib\n\nfunc init() {}\n",
-		"x.go":            "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
-		"x_lofalt.s":      "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL target(SB)\n\tRET\n",
-	})
-	ctx := lofAsmNarrowPorts(context.Background())
-	load, err := LoadProgram(ctx, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	load.buildGoVersion = load.goVersion
-	release := load.buildRelease()
-	env := append(os.Environ(), "GOWORK=off")
-	floor := goDirectiveFloor(load.Packages)
-	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
-	goroot, item := lofToolchain(ctx, dir, env, release)
-	if item != "" {
-		t.Fatal(item)
-	}
-	cands := map[string]lofCandidate{}
-	for _, c := range lofCandidates(load.Packages) {
-		cands[filepath.Base(c.path)] = c
-	}
-	if _, ok := cands["y_alt.go"]; !ok {
-		t.Fatalf("y_alt.go is no candidate: %v", cands)
-	}
-	// x reports what x.go's closure reaches and fails closed on after the closures of order.
-	x := func(order ...string) (bool, []string) {
-		w := newLofWorld(ctx, load.Packages, dir, env, excluded, goroot, time.Now().Add(time.Minute))
-		var cl *lofClosure
-		for _, name := range order {
-			c := cands[name]
-			cl = w.closure(c.path, c.pkg)
-		}
-		impl := false
-		for fn := range cl.funcs {
-			impl = impl || funcKey(fn) == symKey("example.com/m/lib", "impl")
-		}
-		return impl, cl.fc
-	}
-	for _, order := range [][]string{{"x.go"}, {"y_alt.go", "x.go"}} {
-		if impl, fc := x(order...); !impl || len(fc) > 0 {
-			t.Errorf("after %v: x.go reaches lib.impl = %v, fails closed on %v; want true, nothing", order, impl, fc)
-		}
-	}
-}
-
-// lofELFObject returns an ELF64 relocatable object whose text section defines each of names as a
-// global function symbol.
-func lofELFObject(names ...string) []byte {
-	le := binary.LittleEndian
-	strtab := []byte{0}
-	syms := make([]byte, 24) // the null symbol
-	for _, n := range names {
-		s := make([]byte, 24)
-		le.PutUint32(s[0:], uint32(len(strtab)))
-		s[4] = 1<<4 | 2 // STB_GLOBAL, STT_FUNC
-		le.PutUint16(s[6:], 1)
-		syms = append(syms, s...)
-		strtab = append(append(strtab, n...), 0)
-	}
-	shstrtab := []byte("\x00.text\x00.symtab\x00.strtab\x00.shstrtab\x00")
-	text := []byte{0xc3}
-	off := func(n int) int { return (n + 7) &^ 7 }
-	textOff := 64
-	symOff := off(textOff + len(text))
-	strOff := symOff + len(syms)
-	shstrOff := strOff + len(strtab)
-	shOff := off(shstrOff + len(shstrtab))
-	out := make([]byte, shOff+5*64)
-	copy(out, "\x7fELF\x02\x01\x01")
-	le.PutUint16(out[16:], 1)  // ET_REL
-	le.PutUint16(out[18:], 62) // EM_X86_64
-	le.PutUint32(out[20:], 1)
-	le.PutUint64(out[40:], uint64(shOff))
-	le.PutUint16(out[52:], 64)
-	le.PutUint16(out[58:], 64)
-	le.PutUint16(out[60:], 5)
-	le.PutUint16(out[62:], 4)
-	copy(out[textOff:], text)
-	copy(out[symOff:], syms)
-	copy(out[strOff:], strtab)
-	copy(out[shstrOff:], shstrtab)
-	section := func(i int, name, typ uint32, flags uint64, offset, size int, link, info uint32, entsize uint64) {
-		h := out[shOff+i*64:]
-		le.PutUint32(h[0:], name)
-		le.PutUint32(h[4:], typ)
-		le.PutUint64(h[8:], flags)
-		le.PutUint64(h[24:], uint64(offset))
-		le.PutUint64(h[32:], uint64(size))
-		le.PutUint32(h[40:], link)
-		le.PutUint32(h[44:], info)
-		le.PutUint64(h[48:], 1)
-		le.PutUint64(h[56:], entsize)
-	}
-	section(1, 1, 1, 6, textOff, len(text), 0, 0, 0)       // .text: SHT_PROGBITS, alloc+exec
-	section(2, 7, 2, 0, symOff, len(syms), 3, 1, 24)       // .symtab: SHT_SYMTAB, its strings in 3, locals end at 1
-	section(3, 15, 3, 0, strOff, len(strtab), 0, 0, 0)     // .strtab
-	section(4, 23, 3, 0, shstrOff, len(shstrtab), 0, 0, 0) // .shstrtab
-	return out
-}
-
-// TestLeftOutEngine_AsmLinkDefinerStd: the race detector's runtime assembly references the race
-// runtime's symbols bare, and the standard library's own .syso objects define them: a definer
-// inside the toolchain fails closed for a standard-library refutation only, and one of a module
-// for every refutation.
-func TestLeftOutEngine_AsmLinkDefinerStd(t *testing.T) {
-	t.Parallel()
-	base := map[string]string{
-		"go.mod":     "module example.com/m\n\ngo 1.22.0\n",
-		"main.go":    "package main\n\nfunc main() {}\n",
-		"x.go":       "//go:build lofalt\n\npackage main\n\nfunc asm()\n\nfunc init() { asm() }\n",
-		"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL runtime·raceread(SB)\n\tRET\n",
-	}
-	for _, tc := range []struct {
-		name    string
-		files   map[string]string
-		fc, std bool
-	}{
-		{"only the toolchain defines it", nil, false, true},
-		{"a module's .syso object defines it too", map[string]string{
-			"main.go":   "package main\n\nimport _ \"example.com/m/sy\"\n\nfunc main() {}\n",
-			"sy/sy.go":  "package sy\n",
-			"sy/a.syso": string(lofELFObject("__tsan_read")),
-		}, true, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := lofRunNarrow(t, writeTree(t, merge(base, tc.files)), "stdlib", map[string][]string{"strings": {"Index"}}, false, nil)
-			f := got.facts["x.go"]
-			if f == nil {
-				t.Fatalf("the engine holds no x.go (facts %s)", lofDescribe(got))
-			}
-			if fc, std := slices.Contains(f.FC, lofAsmSymbol), slices.Contains(f.FCStd, lofAsmSymbol); fc != tc.fc || std != tc.std {
-				t.Errorf("x.go fails closed on %s = %v, for the standard library = %v; want %v, %v", lofAsmSymbol, fc, std, tc.fc, tc.std)
-			}
-		})
 	}
 }

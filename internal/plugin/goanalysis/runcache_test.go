@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -176,7 +175,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 				if withheld := res.Refutation == nil; withheld != tc.withheld {
 					t.Fatalf("advisory %d: withheld = %v, want %v (partiality %+v)", i, withheld, tc.withheld, res.Partiality)
 				}
-				if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+				if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 					t.Errorf("advisory %d: excluded_files declared = %v, want %v", i, declared, tc.withheld)
 				}
 			}

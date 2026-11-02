@@ -577,16 +577,27 @@ func isMain(p *packages.Package) bool {
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
 // packages in the refuted module (countingPackages) was never traced, so the refutation holds only
-// for builds that leave it out. The result then declares excluded_files instead.
+// for builds that leave it out. The result then declares excluded_files instead, or the
+// localisations of it naming the assembly, //go:linkname or cgo #include the file reaches.
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), scanned.vulnerableSymbols(module), release, buildDir, env) {
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+	withhold, reasons := !ok, []string(nil)
+	if ok {
+		withhold, reasons = leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), scanned.vulnerableSymbols(module), release, buildDir, env)
+	}
+	if !withhold {
+		return res
+	}
+	res.Refutation = nil
+	if len(reasons) == 0 {
+		reasons = []string{plugin.PartialReasonExcludedFiles}
+	}
+	for _, reason := range reasons {
+		res.Partiality = withReason(res.Partiality, reason)
 	}
 	return res
 }

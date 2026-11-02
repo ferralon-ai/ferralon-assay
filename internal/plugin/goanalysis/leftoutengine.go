@@ -22,6 +22,8 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // lofEngine is what the left-out reach test needs from one scan, advisory-independent: every file
@@ -45,10 +47,6 @@ type lofEngine struct {
 	// (lofUnknownToolchain, lofGorootMismatch): every left-out file counts for a standard-library
 	// refutation.
 	FailStd string
-	// AsmToolchain is the release the assembler that read the build's Go assembly ran as, "" when
-	// none could run; StdGaps counts the standard-library assembly files it could not read.
-	AsmToolchain string
-	StdGaps      int
 	// Facts holds each left-out file's lofFacts, gob-encoded on its own: a scan's check reads a few
 	// files' facts, so it decodes only those (file).
 	Facts map[string][]byte
@@ -205,8 +203,6 @@ func loadLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRel
 // engine afresh, and gob decodes the graph's millions of elements one by one through reflection.
 type lofWire struct {
 	Fail, FailStd string
-	AsmToolchain  string
-	StdGaps       int
 	Facts         map[string][]byte
 	Graph         []byte
 }
@@ -252,7 +248,7 @@ func (e *lofEngine) encode() ([]byte, error) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(lofWire{Fail: e.Fail, FailStd: e.FailStd, AsmToolchain: e.AsmToolchain, StdGaps: e.StdGaps, Facts: e.Facts, Graph: g}); err != nil {
+	if err := gob.NewEncoder(&buf).Encode(lofWire{Fail: e.Fail, FailStd: e.FailStd, Facts: e.Facts, Graph: g}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -263,7 +259,7 @@ func decodeLofEngine(b []byte) (*lofEngine, error) {
 	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&w); err != nil {
 		return nil, err
 	}
-	e := &lofEngine{Fail: w.Fail, FailStd: w.FailStd, AsmToolchain: w.AsmToolchain, StdGaps: w.StdGaps, Facts: w.Facts}
+	e := &lofEngine{Fail: w.Fail, FailStd: w.FailStd, Facts: w.Facts}
 	g := w.Graph
 	short := false
 	next := func() uint32 {
@@ -387,11 +383,9 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
 	goroot, failStd := lofToolchain(ctx, buildDir, env, release)
 	w := newLofWorld(ctx, pkgs, buildDir, env, excluded, goroot, time.Now().Add(lofBudgetTime))
-	w.modcache, w.goflags, w.goflagsOK = lofGoEnv(ctx, buildDir, env)
-	asm := w.asmSession()
-	defer asm.close()
+	w.modcache = lofModCache(ctx, buildDir, env)
 	in := &lofInterner{ids: map[string]int32{}}
-	e := &lofEngine{FailStd: failStd, AsmToolchain: asm.version(), files: map[string]*lofFacts{}}
+	e := &lofEngine{FailStd: failStd, files: map[string]*lofFacts{}}
 
 	// The closures and the build's SSA program are independent; build them side by side.
 	var sp *ssaProgram
@@ -435,7 +429,6 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRe
 		}
 		e.files[c.path] = f
 	}
-	e.StdGaps = asm.stdGapCount()
 
 	if err := ssaDone(); err != nil {
 		return nil, err
@@ -760,7 +753,9 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 }
 
 // counts reports whether the left-out file at path may reach S. A file the engine does not hold, or
-// any file when the engine could not be built, counts.
+// any file when the engine could not be built, counts. When the file counts because its closure
+// links assembly, binds a //go:linkname or includes C (lofAnnotated), reasons holds the
+// excluded_files localisations naming them.
 //
 // Stage 0: when none of S's packages is loaded, the file counts only when it can link one of them
 // (lofWorld.links), or that walk fails closed: S executes only once linked.
@@ -788,26 +783,30 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 // loaded code only as an argument to a loaded function, and loaded code calls into it only through
 // a func- or interface-typed parameter (routed), a method name (method-name-in-R) or a dynamic
 // call (dynamic-call-and-R-address-taken). Each of those is tested against R directly.
-func (row *lofRow) counts(path string) bool {
+func (row *lofRow) counts(path string) (counts bool, reasons []string) {
 	e := row.e
 	if e.Fail != "" {
-		return true
+		return true, nil
 	}
 	f, ok := e.file(path)
 	if !ok {
-		return true
+		return true, nil
 	}
 	if f.Dropped || f.Excluded {
-		return false
+		return false, nil
 	}
 	if !row.sLoaded {
 		linked := slices.ContainsFunc(f.Links, func(id int32) bool { return row.inPkg(e.Strs[id]) })
 		if !linked {
-			return len(f.LinkFC) > 0
+			return len(f.LinkFC) > 0, nil
 		}
 	}
-	if len(f.FC) > 0 || (row.stdlib && (e.FailStd != "" || len(f.FCStd) > 0)) {
-		return true
+	fc := f.FC
+	if row.stdlib {
+		fc = append(slices.Clone(fc), f.FCStd...)
+	}
+	if len(fc) > 0 || (row.stdlib && e.FailStd != "") {
+		return true, lofAnnotated(fc)
 	}
 	var r *lofReach
 	if f.Novel {
@@ -824,13 +823,34 @@ func (row *lofRow) counts(path string) bool {
 	hit := func(ids []int32) bool { return slices.ContainsFunc(ids, func(id int32) bool { return r.syms[id] }) }
 	switch {
 	case hit(f.Funcs), hit(f.TypeMeth), hit(f.NewMeth):
-		return true
+		return true, nil
 	case slices.ContainsFunc(f.Methods, func(id int32) bool { return r.names[id] }):
-		return true
+		return true, nil
 	case (f.Dyn || f.Vars) && r.addr:
-		return true
+		return true, nil
 	case (f.Reflect || f.Sink) && (r.addr || len(r.names) > 0):
-		return true
+		return true, nil
 	}
-	return slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) })
+	return slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) }), nil
+}
+
+// lofAnnotations maps the fail-closed items the gate names to the reason a withheld refutation
+// declares for them.
+var lofAnnotations = map[string]string{
+	lofAssembly:   plugin.PartialReasonExcludedFilesAssembly,
+	lofLinkname:   plugin.PartialReasonExcludedFilesLinkname,
+	lofCgoInclude: plugin.PartialReasonExcludedFilesCgoInclude,
+}
+
+// lofAnnotated returns the reasons lofAnnotations gives the items of fc, sorted, nil when it gives
+// none.
+func lofAnnotated(fc []string) []string {
+	var out []string
+	for _, item := range fc {
+		if r, ok := lofAnnotations[item]; ok && !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	}
+	slices.Sort(out)
+	return out
 }

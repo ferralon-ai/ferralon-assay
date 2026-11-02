@@ -130,7 +130,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
@@ -223,7 +223,7 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
@@ -317,7 +317,7 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
@@ -469,7 +469,7 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
@@ -514,7 +514,7 @@ func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})

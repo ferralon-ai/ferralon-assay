@@ -462,8 +462,9 @@ func goflagsTags(env []string) []string {
 // A file that may call into the module by these imports counts only when its declaration closure
 // may also reach one of the advisory's vulnerable symbols (symbols, by vulnerable package; none
 // listed stands for every function in it), against the scan's left-out engine (lofRow.counts),
-// which counts every file when it cannot be built.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *goRelease, buildDir string, env []string) bool {
+// which counts every file when it cannot be built. reasons holds the excluded_files localisations
+// lofRow.counts gives the first file found to count.
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *goRelease, buildDir string, env []string) (found bool, reasons []string) {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
 	var graph modGraph
@@ -605,10 +606,16 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		return r
 	})
 	counts := func(path string, own string, std bool) bool {
-		return leftOutOf(path, own, std) && row().counts(path)
+		if !leftOutOf(path, own, std) {
+			return false
+		}
+		c, why := row().counts(path)
+		if c {
+			reasons = why
+		}
+		return c
 	}
 
-	found := false
 	loadedDirs := map[string]bool{}
 	mainDir := ""
 	packages.Visit(pkgs, func(p *packages.Package) bool {
@@ -634,12 +641,13 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		return !found
 	}, nil)
 	if found {
-		return true
+		return true, reasons
 	}
 	if mainDir == "" {
 		mainDir = buildDir
 	}
-	return firstPartyLeftOut(mainDir, loadedDirs, func(path string) bool { return counts(path, "", false) })
+	found = firstPartyLeftOut(mainDir, loadedDirs, func(path string) bool { return counts(path, "", false) })
+	return found, reasons
 }
 
 // moduleReach answers, over the load's own import graph, whether a package is or imports one of a

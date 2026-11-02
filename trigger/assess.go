@@ -1067,8 +1067,12 @@ var outsideBuildExempt = map[string]bool{
 	// A reflective call runs only code compiled into the build, which comes from a listed module.
 	plugin.PartialReasonReflectiveCall: true,
 	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
-	// every .go file whatever its build constraints.
-	plugin.PartialReasonExcludedFiles: true,
+	// every .go file whatever its build constraints. The assembly, linkname targets and C a left-out
+	// file reaches call only Go code compiled into the build, which comes from a listed module.
+	plugin.PartialReasonExcludedFiles:           true,
+	plugin.PartialReasonExcludedFilesAssembly:   true,
+	plugin.PartialReasonExcludedFilesLinkname:   true,
+	plugin.PartialReasonExcludedFilesCgoInclude: true,
 }
 
 // outsideBuildBlocked reports whether a step outsideBuildGrounds rests on may not have run: the

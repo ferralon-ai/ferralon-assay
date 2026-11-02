@@ -34,7 +34,8 @@ const (
 	lofGorootMismatch   = "goroot_mismatch"
 	lofLinkname         = "linkname"
 	lofBodyless         = "bodyless"
-	lofAsmSymbol        = "asm_symbol"
+	lofAssembly         = "assembly"
+	lofCgoInclude       = "cgo_include"
 	lofBudget           = "budget"
 	lofUnresolvedName   = "unresolved_name"
 	lofGraphError       = "graph_error"
@@ -70,12 +71,6 @@ type lofWorld struct {
 	excluded func(constraint.Expr) bool
 	// goroot is the toolchain's root the compiler's intrinsic table is read from; "" reads none.
 	goroot string
-	// goflags is the GOFLAGS the build's go command runs with, from env or its go env file
-	// (lofGoEnv); goflagsOK is false when the go command cannot report it.
-	goflags   string
-	goflagsOK bool
-	// asm reads assembly through the toolchain's own assembler; nil until first asked (asmSession).
-	asm *lofAsmSession
 	// modcache is the module cache's root, whose module source the build compiles as it was
 	// downloaded; "" when not known.
 	modcache string
@@ -111,14 +106,11 @@ type lofWorld struct {
 	// holders holds the method names some loaded type declares a method of whose results hold an
 	// interface or a func.
 	holders map[string]bool
-	// linkIdx is the definers of bare link symbols over the whole link (linkIndex); nil until
-	// first asked.
-	linkIdx *lofLinkIndex
 }
 
 func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string, env []string, excluded func(constraint.Expr) bool, goroot string, deadline time.Time) *lofWorld {
 	w := &lofWorld{
-		ctx: ctx, buildDir: buildDir, env: env, excluded: excluded, goroot: goroot, deadline: deadline, goflagsOK: true,
+		ctx: ctx, buildDir: buildDir, env: env, excluded: excluded, goroot: goroot, deadline: deadline,
 		loaded: map[string]*packages.Package{}, modules: map[string]bool{},
 		dirs: map[string]string{}, names: map[string]string{}, modDirs: map[string]string{}, std: map[string]bool{}, pkgs: map[string]*lofPkg{},
 		pushes: map[string][][2]string{}, dropped: map[string]bool{},
@@ -135,23 +127,12 @@ func newLofWorld(ctx context.Context, pkgs []*packages.Package, buildDir string,
 	return w
 }
 
-// asmSession returns the world's assembly session, started on first use.
-func (w *lofWorld) asmSession() *lofAsmSession {
-	if w.asm == nil {
-		w.asm = newLofAsmSession(w.ctx, w.deadline, w.goroot, w.buildDir, w.env, w.goflags, w.goflagsOK, w.excluded)
-	}
-	return w.asm
-}
-
 // lofPkg is one package's source: for a package the build loaded, only the files it left out;
 // for any other, every non-test Go file some build compiles. Declarations of every variant are
 // indexed together.
 type lofPkg struct {
-	path string
-	dir  string
-	// root is the tree an assembly #include may reach: $GOROOT for the standard library, else
-	// the package's module root, or its directory when neither is known.
-	root   string
+	path   string
+	dir    string
 	name   string
 	std    bool
 	loaded *packages.Package
@@ -166,13 +147,9 @@ type lofPkg struct {
 	inits   []*lofDecl
 	exports []*lofDecl
 	imports []string
-	asmText map[string][]*lofAsm
-	asmData map[string]bool
-	// asmNames holds the names under this package's path among asmText's and asmData's symbols.
-	asmNames map[string]bool
-	// asmFailed is set when an assembly file of the package could not be read (lofAsmObj): any
-	// symbol of the package may be one it defines, with any body.
-	asmFailed bool
+	// asm is set when some build the refutation describes compiles an assembly file of the
+	// package.
+	asm bool
 }
 
 // lofFile is one parsed Go file of a lofPkg.
@@ -188,6 +165,8 @@ type lofFile struct {
 	links   map[string]string
 	badLink bool
 	cgo     bool
+	// include is set for a cgo file whose comments hold an #include.
+	include bool
 	decls   []*lofDecl
 }
 
@@ -223,16 +202,6 @@ type lofRef struct {
 	// soft marks a composite-literal key, which is a field name unless a declaration has it.
 	soft bool
 	link bool
-}
-
-// lofAsm is one assembly TEXT body: the symbols it references, and whether it calls through a
-// register.
-type lofAsm struct {
-	file    string
-	refs    []string
-	dynamic bool
-	// set holds the refs every body of the file shares, so a walk follows them once.
-	set *lofAsm
 }
 
 // lofClosure is what one left-out file's declaration closure touches: the loaded declarations it
@@ -414,22 +383,11 @@ func (w *lofWorld) pkgVariant(path, name string) *lofPkg {
 	p := &lofPkg{
 		path: path, dir: w.dirs[path], name: w.names[path], std: w.std[path],
 		decls: map[string][]*lofDecl{}, methods: map[string][]*lofDecl{}, byRecv: map[string][]*lofDecl{},
-		asmText: map[string][]*lofAsm{}, asmData: map[string]bool{},
 	}
 	if lp := w.loaded[path]; lp != nil && (name == "" || name == lp.Name) {
 		p.loaded, p.name = lp, lp.Name
 	} else if name != "" {
 		p.name = name
-	}
-	switch {
-	case p.std && w.goroot != "":
-		p.root = w.goroot
-	case !p.std && w.modDirs[path] != "":
-		p.root = w.modDirs[path]
-	case !p.std && w.loaded[path] != nil && lofModuleDir(w.loaded[path].Module) != "":
-		p.root = lofModuleDir(w.loaded[path].Module)
-	default:
-		p.root = p.dir
 	}
 	w.pkgs[key] = p
 	if p.dir == "" {
@@ -442,7 +400,7 @@ func (w *lofWorld) pkgVariant(path, name string) *lofPkg {
 
 // parse reads p's directory: its Go files (for a loaded package, only those the build left out),
 // excluding test files, files another package clause names, files excluded from every build the
-// refutation describes, and files proved never to compile; and its assembly.
+// refutation describes, and files proved never to compile; and whether it has assembly.
 func (w *lofWorld) parse(p *lofPkg) {
 	ents, err := os.ReadDir(p.dir)
 	if err != nil {
@@ -500,7 +458,6 @@ func (w *lofWorld) parse(p *lofPkg) {
 		}
 		w.index(p, full, af)
 	}
-	var items []lofAsmItem
 	for _, full := range asmFiles {
 		src, err := os.ReadFile(full)
 		if err != nil {
@@ -512,14 +469,9 @@ func (w *lofWorld) parse(p *lofPkg) {
 			p.errs = append(p.errs, lofParseError)
 			continue
 		}
-		if w.excluded(x) {
-			continue
+		if !w.excluded(x) {
+			p.asm = true
 		}
-		items = append(items, lofAsmItem{pkg: p.path, dir: p.dir, file: full, std: p.std})
-	}
-	w.asmSession().prefetch(items)
-	for _, it := range items {
-		w.parseAsm(p, it)
 	}
 	slices.Sort(p.imports)
 	p.imports = slices.Compact(p.imports)
@@ -569,6 +521,9 @@ func (w *lofWorld) index(p *lofPkg, path string, af *ast.File) {
 			}
 			if name, ok := strings.CutPrefix(c.Text, "//export "); ok && f.cgo {
 				exports = append(exports, strings.TrimSpace(name))
+			}
+			if f.cgo && strings.Contains(c.Text, "#include") {
+				f.include = true
 			}
 		}
 	}
@@ -842,7 +797,6 @@ type lofWalk struct {
 	touched map[*lofFile]bool
 	entered map[*lofPkg]bool
 	called  map[string]bool
-	asmDone map[*lofAsm]bool
 	queue   []*lofDecl
 	stopped bool
 }
@@ -972,13 +926,13 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 func (w *lofWorld) continued(own *lofPkg) *lofWalk {
 	if w.base == nil || w.base.own != own {
 		w.epoch++
-		w.base = &lofWalk{w: w, out: newLofClosure(), epoch: w.epoch, own: own, touched: map[*lofFile]bool{}, entered: map[*lofPkg]bool{}, called: map[string]bool{}, asmDone: map[*lofAsm]bool{}}
+		w.base = &lofWalk{w: w, out: newLofClosure(), epoch: w.epoch, own: own, touched: map[*lofFile]bool{}, entered: map[*lofPkg]bool{}, called: map[string]bool{}}
 		w.base.enter(own)
 		w.base.drain()
 	}
 	b := w.base
 	w.epoch++
-	return &lofWalk{w: w, out: b.out.clone(), epoch: w.epoch, base: b.epoch, own: own, touched: maps.Clone(b.touched), entered: maps.Clone(b.entered), called: maps.Clone(b.called), asmDone: maps.Clone(b.asmDone), stopped: b.stopped}
+	return &lofWalk{w: w, out: b.out.clone(), epoch: w.epoch, base: b.epoch, own: own, touched: maps.Clone(b.touched), entered: maps.Clone(b.entered), called: maps.Clone(b.called), stopped: b.stopped}
 }
 
 // sameDir reports whether a and b name the same directory.
@@ -1271,10 +1225,11 @@ func (k *lofWalk) drain() {
 }
 
 // fail records a fail-closed item raised in package p: inside the toolchain's own packages, a
-// linkname, assembly or bodyless item fails closed for a standard-library refutation only, since
-// that code calls module code only through the values and method names the walk follows.
+// linkname, assembly, cgo #include or bodyless item fails closed for a standard-library refutation
+// only, since that code calls module code only through the values and method names the walk
+// follows.
 func (k *lofWalk) fail(p *lofPkg, item string) {
-	if p != nil && p.std && (item == lofLinkname || item == lofAsmSymbol || item == lofBodyless) {
+	if p != nil && p.std && (item == lofLinkname || item == lofAssembly || item == lofCgoInclude || item == lofBodyless) {
 		k.out.failStd(item)
 		return
 	}
@@ -1282,14 +1237,18 @@ func (k *lofWalk) fail(p *lofPkg, item string) {
 }
 
 // touch links what compiling f links: the packages it imports, whose initializers run, and the
-// targets of its //go:linkname directives.
+// targets of its //go:linkname directives. A //go:linkname directive fails closed, and so does a
+// cgo file's #include: the walk reads neither the link's symbol binding nor C.
 func (k *lofWalk) touch(f *lofFile) {
 	if k.touched[f] {
 		return
 	}
 	k.touched[f] = true
-	if f.badLink {
+	if f.badLink || len(f.links) > 0 {
 		k.fail(f.pkg, lofLinkname)
+	}
+	if f.include {
+		k.fail(f.pkg, lofCgoInclude)
 	}
 	for _, ip := range f.all {
 		k.ref(lofRef{pkg: ip, file: f})
@@ -1425,7 +1384,7 @@ func (k *lofWalk) ref(r lofRef) {
 }
 
 // resolveIn follows the declarations named name in p: a loaded one as a terminal, and every source
-// one; reporting whether there is one, or an assembly symbol of that name.
+// one; reporting whether there is one.
 func (k *lofWalk) resolveIn(p *lofPkg, name string) bool {
 	found := false
 	if p.loaded != nil {
@@ -1438,19 +1397,7 @@ func (k *lofWalk) resolveIn(p *lofPkg, name string) bool {
 		k.push(d)
 		found = true
 	}
-	if p.asmFailed && (!found || p.asmNames[name]) {
-		k.fail(p, lofAsmSymbol)
-		found = true
-	}
-	if !p.asmNames[name] {
-		return found
-	}
-	sym := p.path + "." + name
-	for _, b := range p.asmText[sym] {
-		k.walkAsm(p, b)
-		found = true
-	}
-	return found || p.asmData[sym]
+	return found
 }
 
 // terminal records a loaded declaration the closure reaches.
@@ -1650,9 +1597,10 @@ func (k *lofWalk) remote(from *lofPkg, remote string) {
 }
 
 // bodyless resolves a function declared without a body: a //go:linkname pull names its body (an
-// edge touch follows), a push from another package or an assembly TEXT symbol of its own package
-// provides it, the host provides it (//go:wasmimport: foreign code, a dynamic call), or the
-// compiler expands it inline. Anything else fails closed.
+// edge touch follows), the host provides it (//go:wasmimport: foreign code, a dynamic call), its
+// package's assembly or a push from another package provides it, or the compiler expands it inline.
+// Assembly and a push fail closed, as does anything else: assembly is not read, so it may call any
+// function value, and a push binds through the link.
 func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	p := d.file.pkg
 	if d.file.links[d.name] != "" {
@@ -1662,19 +1610,17 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 		k.out.dyn = true
 		return
 	}
-	// An assembly file that could not be read may hold the body.
-	found := p.asmFailed
-	if found {
-		k.fail(p, lofAsmSymbol)
-	}
-	sym := p.path + "." + d.name
-	for _, b := range p.asmText[sym] {
-		k.walkAsm(p, b)
+	found := false
+	if p.asm {
+		k.fail(p, lofAssembly)
+		k.out.dyn = true
 		found = true
 	}
+	sym := p.path + "." + d.name
 	k.w.readPushes()
 	for _, push := range k.w.pushes[sym] {
 		if k.pushBody(push[0], push[1]) {
+			k.fail(p, lofLinkname)
 			found = true
 		}
 	}
@@ -1769,137 +1715,6 @@ func wasmImport(fn *ast.FuncDecl) bool {
 	return false
 }
 
-// walkAsm follows an assembly body's symbol references: "path.name" to a Go declaration or an
-// assembly symbol of that package, a file-local "name<>" to its file's, and a bare symbol to p's
-// own definition, to every definer of it in the link (linkDefiner), and to foreign code, a
-// dynamic call. A qualified or file-local symbol the walk cannot find fails closed.
-func (k *lofWalk) walkAsm(p *lofPkg, body *lofAsm) {
-	if k.asmDone[body] {
-		return
-	}
-	k.asmDone[body] = true
-	k.out.dyn = k.out.dyn || body.dynamic
-	if body.set != nil {
-		if k.asmDone[body.set] {
-			return
-		}
-		k.asmDone[body.set] = true
-		body = body.set
-	}
-	for _, ref := range body.refs {
-		switch {
-		case strings.HasSuffix(ref, "<>"):
-			bodies, ok := p.asmText[ref]
-			for _, b := range bodies {
-				k.walkAsm(p, b)
-			}
-			if !ok && !p.asmData[ref] {
-				k.fail(p, lofAsmSymbol)
-			}
-		case strings.Contains(ref, "."):
-			dot := strings.LastIndexByte(ref, '.')
-			path, name := ref[:dot], ref[dot+1:]
-			if path != p.path && path == p.path[strings.LastIndexByte(p.path, '/')+1:] {
-				// Some assembly qualifies its own package's symbols by the package name alone.
-				path = p.path
-			}
-			t := p
-			if path != p.path {
-				t = k.w.pkg(path)
-				k.enter(t)
-			}
-			if t.missing != "" || !k.resolveIn(t, name) {
-				if t.std {
-					k.out.failStd(lofAsmSymbol)
-				} else {
-					k.fail(p, lofAsmSymbol)
-				}
-			}
-		default:
-			if p.asmFailed {
-				k.fail(p, lofAsmSymbol)
-			}
-			for _, b := range p.asmText[ref] {
-				k.walkAsm(p, b)
-			}
-			// p's own definition may sit in a file another build leaves out, or lose to a DUPOK
-			// definer elsewhere: some build's link may bind the name to any definer in the link,
-			// and a build linking none binds it to foreign code.
-			k.linkDefiner(p, ref)
-			k.out.dyn = true
-		}
-	}
-}
-
-// asmName indexes sym under asmNames when it names a symbol of p.
-func (p *lofPkg) asmName(sym string) {
-	if name, ok := strings.CutPrefix(sym, p.path+"."); ok {
-		if p.asmNames == nil {
-			p.asmNames = map[string]bool{}
-		}
-		p.asmNames[name] = true
-	}
-}
-
-// parseAsm records what the toolchain's assembler emits for one of p's assembly files (lofAsmObj):
-// its TEXT bodies, with whether each calls or jumps through a register, its data symbols, and the
-// references its objects' relocations make, which every body of the file shares. A file the
-// session cannot read marks p asmFailed.
-func (w *lofWorld) parseAsm(p *lofPkg, it lofAsmItem) {
-	path := it.file
-	o := w.asmSession().object(it)
-	if !o.ok {
-		p.asmFailed = true
-		return
-	}
-	set := &lofAsm{file: path, refs: o.refs}
-	for _, sym := range slices.Sorted(maps.Keys(o.text)) {
-		p.asmText[sym] = append(p.asmText[sym], &lofAsm{file: path, refs: o.refs, dynamic: o.text[sym], set: set})
-		p.asmName(sym)
-	}
-	for sym := range o.data {
-		p.asmData[sym] = true
-		p.asmName(sym)
-	}
-}
-
-// A directive's name may follow its # past space and block comments, as cmd/asm's tokenizer skips
-// comments.
-var lofAsmIncludeDirective = regexp.MustCompile(`#(?:\s|/\*(?s:.*?)\*/)*include\b`)
-
-// asmIncludes returns the names text's #include directives give, "" for one cmd/asm cannot read
-// a name from. Directives are found in the raw text, comments and strings included: cmd/asm's lexer
-// is not modelled, and reading a header it skips only widens the go_asm.h enumeration gate. cmd/asm
-// takes only a quoted name; <name> includes nothing, and another form fails the assembly when it is
-// not skipped by an #ifdef.
-func asmIncludes(text []byte) []string {
-	var out []string
-	for _, m := range lofAsmIncludeDirective.FindAllIndex(text, -1) {
-		arg := text[m[1]:]
-		if i := bytes.IndexByte(arg, '\n'); i >= 0 {
-			arg = arg[:i]
-		}
-		arg = bytes.TrimLeft(arg, " \t")
-		if bytes.HasPrefix(arg, []byte("<")) {
-			continue
-		}
-		name, ok := bytes.CutPrefix(arg, []byte(`"`))
-		if ok {
-			name, _, ok = bytes.Cut(name, []byte(`"`))
-		}
-		if !ok {
-			name = nil
-		}
-		out = append(out, string(name))
-	}
-	return out
-}
-
-func lofRegular(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.Mode().IsRegular()
-}
-
 // lofToolchain finds the standard library source the release's go command builds from, which must
 // be the release's own and read without an overlay; it returns that GOROOT, or the fail-closed
 // item when it cannot.
@@ -1929,23 +1744,17 @@ func lofToolchain(ctx context.Context, buildDir string, env []string, release *g
 	return root, ""
 }
 
-// lofGoEnv returns the module cache's root the build's go command reads modules from, or "", and
-// the GOFLAGS it builds with, from env or the go env files it reads, with whether the go command
-// reported them. Flags a build's own command line passes are not seen.
-func lofGoEnv(ctx context.Context, buildDir string, env []string) (root, goflags string, ok bool) {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE", "GOFLAGS")
+// lofModCache returns the module cache's root the build's go command reads modules from, or "".
+func lofModCache(ctx context.Context, buildDir string, env []string) string {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE")
 	cmd.Dir = buildDir
 	cmd.Env = env
 	out, err := cmd.Output()
-	if err != nil {
-		return "", "", false
+	root := strings.TrimSpace(string(out))
+	if err != nil || !filepath.IsAbs(root) {
+		return ""
 	}
-	root, goflags, _ = strings.Cut(string(out), "\n")
-	goflags = strings.TrimSpace(goflags)
-	if root = strings.TrimSpace(root); !filepath.IsAbs(root) {
-		root = ""
-	}
-	return root, goflags, true
+	return root
 }
 
 // links returns the packages the build did not load that a file in dir can link, over every build

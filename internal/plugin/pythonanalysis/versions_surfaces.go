@@ -31,7 +31,8 @@ import (
 // records, which a caller withholds as it would every pin: pip after an allowed self-upgrade
 // (pipSelfUpgrade), and in every build the distributions an interpreter or venv seeds
 // (seededDistributions). No self-upgrade is allowed when root holds a pip config file
-// (pipConfigInTree) or a script surface names one (pipConfigNamedRE).
+// (pipConfigInTree) or a script surface names one (pipConfigNamedRE). A script surface that
+// names a uv config (uvConfigNamedRE) withholds when an allowed uv sync runs.
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
@@ -63,11 +64,20 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed, mypyInstalls := false, false
+	configNamed, mypyInstalls, uvConfigNamed, uvSynced := false, false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
 		mypyInstalls = mypyInstalls || installTypesTextRE.MatchString(src) ||
 			installTypesAbbrevRE.MatchString(src) && mypyNamedRE.MatchString(src)
+		uvConfigNamed = uvConfigNamed || uvConfigNamedRE.MatchString(src)
+	}
+	allowed := spec.Allowed
+	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
+		ok := allowed(words, b)
+		if head, _ := scriptsurface.CommandName(words[0]); ok && head == "uv" {
+			uvSynced = true
+		}
+		return ok
 	}
 	veto := scriptsurface.New(root, read, spec)
 	classify := veto.Classify(pyInstallSurface)
@@ -83,6 +93,9 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	scriptWithheld = veto.Withheld() || mypyInstalls
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
+	}
+	if uvConfigNamed && uvSynced {
+		scriptWithheld = true
 	}
 	// After the check above: seeding is not a self-upgrade, and must not trip it.
 	if tooling == nil {
@@ -142,7 +155,7 @@ func pySurfaceName(path string) (string, bool) {
 	case isManifest(lower):
 		return "manifest name", true
 	case strings.HasPrefix(lower, "pipfile"), lower == "pixi.toml", strings.HasPrefix(lower, "pylock.") && ext == ".toml",
-		lower == "tox.ini", lower == "noxfile.py":
+		lower == "tox.ini", lower == "noxfile.py", lower == "uv.toml":
 		return "install surface name", true
 	case isCondaEnvName(lower), strings.HasPrefix(lower, "conda-lock") && (ext == ".yml" || ext == ".yaml"):
 		return "conda name", true

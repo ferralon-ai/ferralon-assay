@@ -1,6 +1,8 @@
 package scriptsurface
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,11 +26,26 @@ type Binder interface {
 	// as a surface on its own. With locks given, each of them that is there in dir must be a
 	// regular file read here, reached through no symlink. nil when any is not.
 	Prefixed(dir, name string, locks ...string) []string
-	// Clear reports whether nothing is at p, a relative path with no .. part, beside each
-	// file Nearest(name) returns: nothing in the build tree there and, under a Dockerfile,
-	// nothing copied or mounted there. It binds p's first element, so a command that names a
-	// path through it withholds. false when Nearest(name) is nil or p may be there.
+	// Clear reports whether nothing is at p, a relative path whose only .. parts lead it, beside
+	// each file Nearest(name) returns: nothing in the build tree there and, under a Dockerfile,
+	// nothing copied or mounted there. In the tree, a p with .. must stay inside root from a
+	// file reached through no symlink. It binds p's first element past its .. parts, so a
+	// command that names a path through it withholds. false when Nearest(name) is nil or p
+	// may be there.
 	Clear(name, p string) bool
+	// Beside returns the build-tree files at p, a relative path whose only .. parts lead it,
+	// beside each file Nearest(name) returns, each read here and unchanged: under a
+	// Dockerfile, the files copied there and covered by no mount. In the tree, a p with ..
+	// must stay inside root from a file reached through no symlink. nil when any is not.
+	Beside(name, p string) []string
+	// Enclosing returns every file named name in the directories above each file Nearest(name)
+	// returns, up to the top of the build, each read here and unchanged. Each directory the
+	// command runs in, and each file Nearest(name) returns, must be reached through no
+	// symlink, so the directories a tool walks up are the ones named here; in a Dockerfile, no
+	// mount may cover any place a file of that name is looked for. ok is false when
+	// Nearest(name) is nil, any of that does not hold, or one may be there that is not read
+	// here.
+	Enclosing(name string) (found []string, ok bool)
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -226,10 +243,14 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 
 func (c *hostCursor) Clear(name, p string) bool {
 	hits := c.Nearest(name)
-	if hits == nil || !plainRel(p) {
+	up, ok := relPath(p)
+	if hits == nil || !ok {
 		return false
 	}
 	for _, h := range hits {
+		if up && !c.climbs(h, p) {
+			return false
+		}
 		if there, known := c.v.lstat(filepath.Dir(h), p); there || !known {
 			return false
 		}
@@ -238,17 +259,83 @@ func (c *hostCursor) Clear(name, p string) bool {
 	return true
 }
 
-// plainRel reports whether p is a relative path with no .., shell expansion or glob.
-func plainRel(p string) bool {
-	if p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$`*?[{~") {
-		return false
+func (c *hostCursor) Beside(name, p string) []string {
+	hits := c.Nearest(name)
+	up, ok := relPath(p)
+	if hits == nil || !ok {
+		return nil
 	}
-	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
-		if part == ".." {
-			return false
+	found := make([]string, 0, len(hits))
+	for _, h := range hits {
+		f := filepath.Join(filepath.Dir(h), p)
+		if up && !c.climbs(h, p) || !c.v.packageFile(f) {
+			return nil
+		}
+		found = append(found, f)
+	}
+	c.v.bind(p)
+	c.v.bindRoot(p)
+	return found
+}
+
+func (c *hostCursor) Enclosing(name string) ([]string, bool) {
+	hits := c.Nearest(name)
+	if hits == nil {
+		return nil, false
+	}
+	for _, d := range c.dirs {
+		if c.v.linked(d) {
+			return nil, false
 		}
 	}
-	return true
+	var found []string
+	for _, h := range hits {
+		if !c.v.unlinked(h) {
+			return nil, false
+		}
+		for dir := filepath.Dir(h); dir != c.v.root; {
+			dir = filepath.Dir(dir)
+			if !c.v.inRoot(dir) {
+				break
+			}
+			f := filepath.Join(dir, name)
+			regular, there, known := c.v.stat(f)
+			if !known || there && (!regular || !c.v.read(f)) {
+				return nil, false
+			}
+			if regular {
+				found = append(found, f)
+			}
+		}
+	}
+	return found, true
+}
+
+// climbs reports whether p, which leaves h's directory through .., lands inside root, and
+// h is reached through no symlink, so the directory a tool reaches through .. is the one
+// the path names.
+func (c *hostCursor) climbs(h, p string) bool {
+	return c.v.unlinked(h) && c.v.inRoot(filepath.Join(filepath.Dir(h), p))
+}
+
+// relPath reports whether p is a relative path with no shell expansion or glob, whose ..
+// parts all lead it; up reports whether it has any.
+func relPath(p string) (up, ok bool) {
+	if p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$`*?[{~") {
+		return false, false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
+		switch {
+		case part == "..":
+			if ok {
+				return false, false
+			}
+			up = true
+		case part != "" && part != ".":
+			ok = true
+		}
+	}
+	return up, ok
 }
 
 func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
@@ -385,6 +472,32 @@ func (v *Veto) unlinked(p string) bool {
 		}
 	}
 	return true
+}
+
+// linked reports whether some part of p, inside root, that exists is a symlink, or may be:
+// the directory a process reaches there is then not the one p names.
+func (v *Veto) linked(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	if rel == "." {
+		return false
+	}
+	at := v.root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		at = filepath.Join(at, part)
+		fi, err := os.Lstat(at)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return false
+		case err != nil:
+			return true
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return true
+		}
+	}
+	return false
 }
 
 func isDir(p string) bool {

@@ -1396,7 +1396,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 						escape(fd)
 					}
 					for _, p := range paths {
-						if len(prog.byModule[p]) > 0 {
+						if prog.named[p] {
 							escapeModule(p)
 						}
 					}

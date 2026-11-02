@@ -319,7 +319,8 @@ func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pip
 // rootMatcher returns whether an advisory package key names the scanned project itself, judged
 // exactly as codebase_inventory judges it, or nil when the project declares no package identity.
 func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) bool {
-	root, ok := pipeline.ReadRootPackage(ctx, acq.buildDir, acq.language)
+	dir := manifestDir(acq)
+	root, ok := pipeline.ReadRootPackage(ctx, dir, acq.language)
 	if !ok {
 		return nil
 	}
@@ -329,12 +330,24 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 		}
 		var ok bool
 		if root.PURLType == "golang" {
-			_, ok = root.Matches(acq.buildDir, k.Name, "", "")
+			_, ok = root.Matches(dir, k.Name, "", "")
 		} else {
-			_, ok = root.Matches(acq.buildDir, "", k.Name, "")
+			_, ok = root.Matches(dir, "", k.Name, "")
 		}
 		return ok
 	}
+}
+
+// manifestDir is the directory the work set reads the project's own manifest from. For Go that is
+// the module root checkout.FindGoModuleRoot picks, the same root codebase_inventory re-roots to, so
+// a module nested below the checkout root is read rather than reported missing.
+func manifestDir(acq *acquired) string {
+	if acq.language == checkout.LangGo {
+		if root, ok := checkout.FindGoModuleRoot(acq.buildDir); ok {
+			return root
+		}
+	}
+	return acq.buildDir
 }
 
 // purlTypeForEcosystem maps an OSV ecosystem name (the inventory's vocabulary) onto the PURL type an
@@ -423,7 +436,7 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	// The project's own published package is queried too, so OSV answers for advisories against
 	// the repository itself. Only a versioned one: OSV answers an unversioned query with every
 	// advisory ever recorded against the package.
-	if root, ok := pipeline.ReadRootPackage(ctx, acq.buildDir, acq.language); ok && root.Version != "" {
+	if root, ok := pipeline.ReadRootPackage(ctx, manifestDir(acq), acq.language); ok && root.Version != "" {
 		pkgs = append(pkgs, report.Package{Ecosystem: ws.ecosystem, Name: root.Name, Version: root.Version, Root: true})
 	}
 	if len(pkgs) == 0 {
@@ -594,7 +607,7 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 	}
 
 	if acq.language == checkout.LangGo {
-		pkgs, notes := goDependencyInventory(acq.buildDir)
+		pkgs, notes := goDependencyInventory(manifestDir(acq))
 		return pkgs, nil, notes
 	}
 

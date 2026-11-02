@@ -2,7 +2,10 @@ package pythonanalysis
 
 import (
 	"maps"
+	"slices"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // TestCallGraph_ReexportRebinding: a site that imports a name through a module re-exporting
@@ -445,6 +448,47 @@ func TestCallGraph_GlobalImportInADef(t *testing.T) {
 		}
 		if f := funcSCIP("pkg/impl", nil, "f", 1); tc.both && !hasEdge(res.Edges, goC, f) && !symbolSet(res.Escaped)[f] {
 			t.Errorf("%s: %s not reached; edges %v, escaped %v", tc.name, f, res.Edges, res.Escaped)
+		}
+	}
+}
+
+// TestCallGraph_ModuleHeldByAssignment: a module attribute that holds a module by
+// assignment, or by a store from another module, is not an import binding the site can
+// follow, so the site stays listed. The held module is used as a value, so what its own
+// first-party imports bind escapes, followed on through each module so bound.
+func TestCallGraph_ModuleHeldByAssignment(t *testing.T) {
+	chainSite := "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		// unheld: nothing hands the module over, so vuln must not escape.
+		unheld bool
+	}{
+		{name: "assigned an imported module", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\ng = y\n", "c.py": chainSite}},
+		{name: "assigned a dotted module", files: map[string]string{"pkg/sub/a.py": "import pkg.alt.y\ng = pkg.alt.y\n", "c.py": chainSite}},
+		{name: "assigned a module's attribute", files: map[string]string{"pkg/sub/a.py": "from pkg import alt\ng = alt.y\n", "c.py": chainSite}},
+		{name: "assigned, by from-import", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\ng = y\n", "c.py": "from pkg.sub.a import g\n\ndef go():\n    return g.h(1)\n"}},
+		{name: "assigned, by the caller's star import", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\ng = y\n", "c.py": "from pkg.sub.a import *\n\ndef go():\n    return g.h(1)\n"}},
+		{name: "assigned in a def that declares it global", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\n\ndef init():\n    global g\n    g = y\n", "c.py": chainSite}},
+		{name: "assigned a package, read through its submodule", files: map[string]string{"pkg/sub/a.py": "from pkg import alt\ng = alt\n", "c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.y.h(1)\n"}},
+		{name: "assigned a module that imports a module", files: map[string]string{"pkg/sub/a.py": "from pkg import alt2\ng = alt2\n", "pkg/alt2.py": "from pkg.alt import y\n", "c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.y.h(1)\n"}},
+		{name: "assigned a module that imports a namespace package's module", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\ng = y\n", "pkg/alt/y.py": "import pkg.w\n", "pkg/w.py": "from pkg.v import vuln as h\n", "c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.pkg.w.h(1)\n"}},
+		{name: "assigned a module that imports a namespace package", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\ng = y\n", "pkg/alt/y.py": "from pkg import ns\n", "pkg/ns/m.py": "from pkg.v import vuln as h\n", "c.py": "import pkg.sub.a\nimport pkg.ns.m\n\ndef go():\n    return pkg.sub.a.g.ns.m.h(1)\n"}},
+		{name: "stored from another module", files: map[string]string{"pkg/sub/a.py": "", "d.py": "import pkg.sub.a\nfrom pkg.alt import y\npkg.sub.a.g = y\n", "c.py": "import d\n" + chainSite}},
+		{name: "stored through a from-imported module", files: map[string]string{"pkg/sub/a.py": "", "d.py": "from pkg.sub import a\nfrom pkg.alt import y\na.g = y\n", "c.py": "import d\n" + chainSite}},
+		{name: "stored by setattr", files: map[string]string{"pkg/sub/a.py": "", "d.py": "from pkg.sub import a\nfrom pkg.alt import y\nsetattr(a, 'g', y)\n", "c.py": "import d\n" + chainSite}},
+		{name: "module not handed over", unheld: true, files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\ng = 1\n", "c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n"}},
+	} {
+		files := map[string]string{"pkg/v.py": "def vuln(x):\n    return x\n",
+			"pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y.py": "from ..v import vuln as h\n"}
+		maps.Copy(files, tc.files)
+		res := mustCallGraph(t, files)
+		goC, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/v", nil, "vuln", 1)
+		if reached := hasEdge(res.Edges, goC, vuln) || symbolSet(res.Escaped)[vuln]; reached == tc.unheld {
+			t.Errorf("%s: %s reached = %v, want %v; edges %v, escaped %v", tc.name, vuln, reached, !tc.unheld, res.Edges, res.Escaped)
+		}
+		if listed := slices.ContainsFunc(res.Unresolved, func(u plugin.UnresolvedCall) bool { return u.Caller.SCIP == goC }); !tc.unheld && !listed {
+			t.Errorf("%s: site not listed; unresolved %+v", tc.name, res.Unresolved)
 		}
 	}
 }

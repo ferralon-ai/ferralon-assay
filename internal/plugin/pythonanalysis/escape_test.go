@@ -386,7 +386,7 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 		},
 		{
 			name:    "call with no arity match escapes the candidate",
-			files:   map[string]string{"m.py": "def target(x, y=1, z=2):\n    return x\n\ndef caller():\n    return target(1)\n"},
+			files:   map[string]string{"m.py": "def target(x, y=1, z=2):\n    return x\n\ndef caller():\n    return target(1, 2, 3, 4)\n"},
 			escaped: []string{funcSCIP("m", nil, "target", 3)},
 		},
 		{
@@ -396,11 +396,11 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			kept:    []string{funcSCIP("n", nil, "target", 3)},
 		},
 		{
-			name: "defaulted callee edged from one site escapes from another",
+			name: "defaulted callee edged from one site escapes from another that misses its arity",
 			files: map[string]string{
 				"a.py": "def g(x, y=1, z=2):\n    return x\n",
 				"c.py": "from a import g\n\ndef one():\n    return g(1, 2)\n",
-				"d.py": "from a import g\n\ndef two():\n    return g(1)\n",
+				"d.py": "from a import g\n\ndef two():\n    return g(1, 2, 3, 4)\n",
 			},
 			escaped: []string{funcSCIP("a", nil, "g", 3)},
 		},

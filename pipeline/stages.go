@@ -2448,10 +2448,11 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
 // guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
-// inside it, or a require), and
-// whether the manifest was readable at all. manifestKnown=false — no build dir, or an absent /
-// unparseable go.mod — forces the caller to fail OPEN, because absence is only PROVABLE against a
-// manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
+// inside it, or a require), or a module the go.work in force uses declares it the same way, and
+// whether the manifests were readable at all. manifestKnown=false — no build dir, or an absent /
+// unparseable go.mod or go.work — forces the caller to fail OPEN, because absence is only PROVABLE
+// against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
+// manifest_membership.go.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
@@ -2464,11 +2465,38 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if err != nil {
 		return false, false
 	}
-	if mf.Module != nil && goPathOwner(buildDir, mf.Module.Mod.Path, module) != goOwnedElsewhere {
+	var root string
+	if mf.Module != nil {
+		root = mf.Module.Mod.Path
+		if goPathOwner(buildDir, root, module) != goOwnedElsewhere {
+			return true, true
+		}
+	}
+	declares := func(mf *modfile.File) bool {
+		for _, r := range mf.Require {
+			if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	if declares(mf) {
 		return true, true
 	}
-	for _, r := range mf.Require {
-		if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
+	uses, _, ok := goWorkUses(buildDir)
+	if !ok {
+		return false, false
+	}
+	for _, use := range uses {
+		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
+		if err != nil {
+			return false, false
+		}
+		wm, err := modfile.Parse("go.mod", data, nil)
+		if err != nil || wm.Module == nil {
+			return false, false
+		}
+		if p := wm.Module.Mod.Path; p != root && (module == p || strings.HasPrefix(module, p+"/")) || declares(wm) {
 			return true, true
 		}
 	}
@@ -3332,11 +3360,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// mis-attribution). The CallGraph leg is unchanged (guard discovery reads it).
 	reachOut := reach
 	reachOut.Paths = paths
-	reachPayload, err := reachabilityPayload(reachOut, cg, toolchainScan)
-	if err != nil {
-		return err
-	}
-	reachRef, err := putPayload(store, c, s.Name(), artifact.TypeReachability, "reachability (resolved)", reachPayload)
+	reachRef, err := putReachability(store, c, s.Name(), reachOut, cg, toolchainScan)
 	if err != nil {
 		return err
 	}
@@ -3405,22 +3429,48 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 // fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
 // subject scan.
 func reachabilityPayload(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) ([]byte, error) {
+	b, _, _, err := encodeReachability(reach, cg, ts)
+	return b, err
+}
+
+// encodeReachability is reachabilityPayload that also returns the payload's reachability and
+// toolchain_scan values, which share no memory with the payload.
+func encodeReachability(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (payload, reachLeg, tsLeg []byte, err error) {
 	r, err := json.Marshal(reach)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	t, err := json.Marshal(ts)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	b := append([]byte(`{"reachability":`), r...)
 	b = append(b, `,"call_graph":`...)
 	if b, err = cg.AppendJSON(b); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	b = append(b, `,"toolchain_scan":`...)
 	b = append(b, t...)
-	return append(b, '}'), nil
+	return append(b, '}'), r, t, nil
+}
+
+// putReachability stores the resolved reachability artifact. When the store takes seeds and cg is
+// the decode of its own encoding, it also seeds the artifact's ReachabilityRecord from the values
+// the payload was encoded from, so readers neither split the payload nor decode the run's graph
+// again for every case.
+func putReachability(store artifact.Store, c *assessment.Assessment, producedBy string, reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (artifact.Ref, error) {
+	payload, reachLeg, tsLeg, err := encodeReachability(reach, cg, ts)
+	if err != nil {
+		return artifact.Ref{}, err
+	}
+	ref, err := putPayload(store, c, producedBy, artifact.TypeReachability, "reachability (resolved)", payload)
+	if err != nil {
+		return ref, err
+	}
+	if seeder, ok := store.(artifact.Seeder); ok && cg.FromEncoding() {
+		seeder.Seed(ref.ID, reachabilityViewKey, seededReachability(reachLeg, tsLeg, cg))
+	}
+	return ref, nil
 }
 
 // firstPartyReachPaths derives (ingress→sink) ReachPaths for a FIRST-PARTY sink by walking the

@@ -58,9 +58,10 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		// unpinned is set when a requirements line installs something no node names: an
 		// unnamed archive or URL, a local directory whose own manifest is not inventoried, or
 		// a "-r" include that cannot be read.
-		unpinned bool
-		includes []reqLink
-		locals   []reqLink
+		unpinned    bool
+		includes    []reqLink
+		constraints []reqLink
+		locals      []reqLink
 	)
 	walked := make(map[string]bool, len(manifests))
 	for _, m := range manifests {
@@ -100,11 +101,14 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 				edges = append(edges, plugin.DependencyEdge{Parent: idFor(parent), Child: idFor(r.Name)})
 			}
 		}
-		if rf.unnamed {
+		if rf.unnamed || rf.skipped {
 			unpinned = true
 		}
 		for _, t := range rf.includes {
 			includes = append(includes, reqLink{from: path, target: t})
+		}
+		for _, t := range rf.constraints {
+			constraints = append(constraints, reqLink{from: path, target: t})
 		}
 		for _, t := range rf.locals {
 			locals = append(locals, reqLink{from: path, target: t})
@@ -154,7 +158,9 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 	}
 
 	// A "-r" include that the walk did not already inventory is read in place, as pip would
-	// read it; one that cannot be read leaves the graph incomplete.
+	// read it. A "-c" constraint file is read too: its pins install nothing, but pip installs
+	// the "-r" includes it names. Either one that cannot be read (a URL, a file generated later)
+	// leaves the graph incomplete.
 	buildReal, err := filepath.EvalSymlinks(req.BuildDir)
 	if err != nil {
 		buildReal = req.BuildDir
@@ -166,9 +172,15 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		}
 	}
 	followed := map[string]bool{}
-	for len(includes) > 0 {
-		inc := includes[0]
-		includes = includes[1:]
+	constrained := map[string]bool{}
+	for len(includes) > 0 || len(constraints) > 0 {
+		constraint := len(includes) == 0
+		var inc reqLink
+		if constraint {
+			inc, constraints = constraints[0], constraints[1:]
+		} else {
+			inc, includes = includes[0], includes[1:]
+		}
 		path, key, read := includePath(buildReal, inc, walkedReal, followed)
 		if path == "" {
 			if !read {
@@ -176,14 +188,25 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 			}
 			continue
 		}
-		followed[key] = true
+		if constraint {
+			if constrained[key] {
+				continue
+			}
+			constrained[key] = true
+		} else {
+			followed[key] = true
+		}
 		data, err := readRegular(path)
 		if err != nil {
 			unpinned = true
 			continue
 		}
 		rf := parseRequirementsFile(data, req.TargetEnv, req.Selection)
-		applyViaEdges(rf.reqs, pipCompileVia(data))
+		if constraint {
+			rf = reqFile{includes: rf.includes, constraints: rf.constraints, skipped: rf.skipped}
+		} else {
+			applyViaEdges(rf.reqs, pipCompileVia(data))
+		}
 		emit(path, rf)
 	}
 

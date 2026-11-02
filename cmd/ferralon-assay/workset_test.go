@@ -395,6 +395,96 @@ func TestGoInventory_ReadsRequiresAndStdlib(t *testing.T) {
 	}
 }
 
+// TestGoInventory_ReadsTheAnalyzedModule pins the inventory to the go.mod the pipeline analyzes:
+// checkout.FindGoModuleRoot's pick under the checkout root, which is the root go.mod when there is
+// one, otherwise the shallowest nested one, lexicographically first among equals. The requires, the
+// stdlib query point's build manifest and the project's own identity all come from that module.
+func TestGoInventory_ReadsTheAnalyzedModule(t *testing.T) {
+	gomod := func(module string) string {
+		return "module " + module + "\n\ngo 1.21\n\nrequire " + module + "dep v1.0.0\n"
+	}
+	for _, tc := range []struct {
+		name    string
+		modules map[string]string // dir relative to the checkout root -> its go.mod
+		want    string            // module dir the inventory reads, relative to the checkout root
+	}{
+		{name: "root module", modules: map[string]string{".": gomod("example.com/root")}, want: "."},
+		{name: "nested only", modules: map[string]string{"service": gomod("example.com/service")}, want: "service"},
+		{name: "root and nested", modules: map[string]string{
+			".":       gomod("example.com/root"),
+			"service": gomod("example.com/service"),
+		}, want: "."},
+		{name: "nested siblings", modules: map[string]string{
+			"b": gomod("example.com/b"),
+			"a": gomod("example.com/a"),
+		}, want: "a"},
+		{name: "shallower nested wins", modules: map[string]string{
+			"a/deep": gomod("example.com/deep"),
+			"z":      gomod("example.com/z"),
+		}, want: "z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for rel, content := range tc.modules {
+				if err := os.MkdirAll(filepath.Join(dir, rel), 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, rel, "go.mod"), []byte(content), 0o600); err != nil {
+					t.Fatalf("write go.mod: %v", err)
+				}
+			}
+			wantDir := filepath.Join(dir, tc.want)
+			if got, ok := checkout.FindGoModuleRoot(dir); !ok || got != wantDir {
+				t.Fatalf("FindGoModuleRoot = %q, %v; the pipeline analyzes %q", got, ok, wantDir)
+			}
+			build := &buildToolchainAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: "go"}, resolved: "go1.20.14"}
+			acq := &acquired{
+				buildDir:    dir,
+				language:    checkout.LangGo,
+				plugin:      build,
+				goToolchain: subjectGoToolchain{trustObserved: true},
+			}
+
+			resolved, unresolved, notes := goDependencyInventory(context.Background(), acq)
+			if len(notes) != 0 {
+				t.Errorf("notes = %+v, want none", notes)
+			}
+			if len(unresolved) != 0 {
+				t.Errorf("unresolved = %+v, want none", unresolved)
+			}
+			module := strings.Fields(tc.modules[tc.want])[1]
+			want := []report.Package{
+				{Ecosystem: ecosystemGo, Name: module + "dep", Version: "v1.0.0"},
+				{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: "1.20.14"},
+			}
+			if len(resolved) != len(want) || resolved[0] != want[0] || resolved[1] != want[1] {
+				t.Errorf("resolved = %+v, want %+v", resolved, want)
+			}
+			if len(build.dirs) != 1 || build.dirs[0] != wantDir {
+				t.Errorf("BuildManifest read at %q, want [%q]", build.dirs, wantDir)
+			}
+			isRoot := rootMatcher(context.Background(), acq)
+			if isRoot == nil || !isRoot(pipeline.PackageKey{Ecosystem: "golang", Name: module}) {
+				t.Errorf("rootMatcher does not recognise %s as the project", module)
+			}
+		})
+	}
+}
+
+// TestGoInventory_NoModuleIsNoManifest pins the disclosure for a tree with no go.mod within the
+// module search.
+func TestGoInventory_NoModuleIsNoManifest(t *testing.T) {
+	acq := &acquired{buildDir: t.TempDir(), language: checkout.LangGo}
+
+	resolved, unresolved, notes := goDependencyInventory(context.Background(), acq)
+	if len(resolved) != 0 || len(unresolved) != 0 {
+		t.Errorf("inventory = %+v / %+v, want empty", resolved, unresolved)
+	}
+	if len(notes) != 1 || notes[0].Reason != plugin.PartialReasonNoManifest || notes[0].Ecosystem != ecosystemGo {
+		t.Errorf("notes = %+v, want one %s note", notes, plugin.PartialReasonNoManifest)
+	}
+}
+
 // TestWorkSet_StdlibQueryPoint pins where the OSV widening asks about the Go standard library. Only
 // an EXACT toolchain is a query point, in OSV's bare-semver form: "go1.21.0" is not a version OSV
 // can parse, and it answers such a query with every stdlib advisory ever recorded, which reads like
@@ -498,10 +588,12 @@ type buildToolchainAnalyzer struct {
 	unsearchingAnalyzer
 	resolved string
 	calls    int
+	dirs     []string
 }
 
-func (a *buildToolchainAnalyzer) BuildManifest(context.Context, plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+func (a *buildToolchainAnalyzer) BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
 	a.calls++
+	a.dirs = append(a.dirs, req.BuildDir)
 	return plugin.BuildManifestResult{Runtimes: []plugin.RuntimeSpec{{Name: "go", Resolved: a.resolved}}}, nil
 }
 

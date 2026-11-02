@@ -760,8 +760,12 @@ func versionlessPURL(purlType, name string) string {
 // real facts for that no repository's go.mod will ever name, so without this the widening cannot
 // reach them. It is resolved at the subject's toolchain when that is exact (stdlibVersion), and is
 // otherwise unresolved: named, with no version.
+//
+// go.mod is read at the module root (manifestDir), the module the pipeline analyzes; a tree
+// with no go.mod within that search gets a no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
-	data, err := os.ReadFile(filepath.Join(manifestDir(acq), "go.mod"))
+	dir := manifestDir(acq)
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 	}
@@ -789,7 +793,7 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 		}
 		add(r.Mod.Path, r.Mod.Version)
 	}
-	if v := stdlibVersion(ctx, acq, mf); v != "" {
+	if v := stdlibVersion(ctx, acq, dir, mf); v != "" {
 		add(goStdlibPackage, v)
 	} else {
 		unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
@@ -810,8 +814,8 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 // unfiltered firehose that reads exactly like a real answer.
 //
 // The analyzer's resolved build toolchain is read only under trust, the only state in which the
-// resolution consults it.
-func stdlibVersion(ctx context.Context, acq *acquired, mf *modfile.File) string {
+// resolution consults it. Its build manifest is read at dir, the module root mf was read from.
+func stdlibVersion(ctx context.Context, acq *acquired, dir string, mf *modfile.File) string {
 	in := pipeline.ToolchainCandidates{
 		SubjectDeclared: acq.goToolchain.declared,
 		CIObserved:      acq.goToolchain.observed,
@@ -824,7 +828,7 @@ func stdlibVersion(ctx context.Context, acq *acquired, mf *modfile.File) string 
 		in.ToolchainDirective = mf.Toolchain.Name
 	}
 	if in.TrustCIObserved && acq.plugin != nil {
-		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: acq.buildDir}); err == nil {
+		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: dir}); err == nil {
 			if rt, ok := mani.PrimaryRuntime(); ok {
 				in.BuildResolved = rt.Resolved
 			}

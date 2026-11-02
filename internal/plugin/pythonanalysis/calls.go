@@ -97,8 +97,8 @@ type scopedBinding struct {
 	// guarded marks a binding inside an if/elif/else or try/except/else/finally block of
 	// its scope (or on such a header line): an alternative, not a rebinding every path runs.
 	guarded bool
-	// global marks a def's import of a name the def declares global: it binds the module
-	// attribute. classBody marks an import in a class body: a class attribute, reachable
+	// global marks an import, in a def or a class body, of a name the def or class body
+	// declares global: it binds the module attribute. classBody marks an import in a class body: a class attribute, reachable
 	// wherever the class or an instance goes.
 	global, classBody bool
 	// chain marks a dotted `import a.b as c`: c holds getattr(a, "b"), an attribute chain
@@ -186,7 +186,7 @@ func (fs *fileScan) recordReads(st string, names []string) {
 }
 
 // markOpaque marks names as given a module-scope value the lane does not read: by a binding
-// recordReads does not read, or by a def that declares them global. byValue is false when
+// recordReads does not read, or by a def or class body that declares them global. byValue is false when
 // the binding is an import.
 func (fs *fileScan) markOpaque(names []string, byValue bool) {
 	if len(names) == 0 {
@@ -405,7 +405,8 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 		}
 	}
 	// classGlobal carries to module scope the names a class body binds that it declares
-	// global, as unread values: the class branches record bindings only under the class.
+	// global, as unread values unless st is empty (an import): the class branches record
+	// bindings only under the class.
 	classGlobal := func(st string, names []string) {
 		var global []string
 		for _, n := range names {

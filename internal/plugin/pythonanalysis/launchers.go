@@ -582,7 +582,7 @@ func (prog *program) starBinds(f *fileParse, name string) (paths []string, open 
 				open = true // a store through the module object rebinds it
 			}
 			if g.depImports[""][name] > 0 && !g.opaque[name] && !g.defs[""][name] && len(g.fpBinds[""][name]) == 0 && len(g.reads[name]) == 0 && len(g.starPaths) == 0 {
-				continue // a dependency's: bound no other way, and nothing stored or star-imported into it
+				continue // a dependency's: bound no other way and nothing star-imported into it (a store has set open)
 			}
 			if _, bound := g.bindings[""][name]; bound || g.topNames[name] {
 				if !slices.Contains(paths, sp) {

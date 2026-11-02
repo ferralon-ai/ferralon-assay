@@ -572,6 +572,17 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script a star-imported module handed to setattr may rebind",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nimport tool.b\nfrom tool.star import *\n", "tool/star.py": "try:\n    from fastimpl import main\nexcept ImportError:\n    pass\n",
+				"tool/b.py": "import tool.star\nfrom tool.fac import make\n\nsetattr(tool.star, \"main\", make())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script a star import of a dependency's name resolves",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

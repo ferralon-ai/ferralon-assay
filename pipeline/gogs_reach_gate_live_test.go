@@ -122,7 +122,7 @@ func TestGogsReachGate(t *testing.T) {
 		t.Fatalf("CallGraph (real gogs) hard error: %v", err)
 	}
 	t.Logf("GATE callgraph: %d edges, %d roots", len(cg.Edges), len(cg.Roots))
-	paths := firstPartyReachPaths(cg, ing, sinkSCIP)
+	paths := firstPartyReachPaths(plugin.NewCallGraphView(cg), ing, sinkSCIP)
 	if len(paths) == 0 {
 		t.Errorf("GATE-3 REACH: FAIL — firstPartyReachPaths produced no ingress→sink path for %s", sinkSCIP)
 	} else {

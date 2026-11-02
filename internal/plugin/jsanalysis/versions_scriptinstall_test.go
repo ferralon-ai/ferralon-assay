@@ -107,6 +107,12 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"NPM_FLAGS in netlify.toml", npm(map[string]string{"netlify.toml": "[build.environment]\n  NPM_FLAGS = \"--no-save express@4.18.2\"\n"}), false, ""},
 		{"PNPM_FLAGS in netlify.toml", npm(map[string]string{"netlify.toml": "[build.environment]\n  PNPM_FLAGS = \"--no-frozen-lockfile\"\n"}), false, ""},
 		{"BUN_FLAGS in a CI file", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  BUN_FLAGS: --no-save\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
+		{"NPM_CONFIG_REGISTRY set by ${:=}", npm(map[string]string{"install.sh": ": \"${NPM_CONFIG_REGISTRY:=https://registry.example.com}\"\nnpm install\n"}), false, ""},
+		{"YARN_REGISTRY set by ${=}", npm(map[string]string{"install.sh": ": ${YARN_REGISTRY=https://registry.example.com}\nnpm install\n"}), false, ""},
+		{"NPM_FLAGS set by zsh ${::=}", npm(map[string]string{"install.sh": ": ${NPM_FLAGS::=--no-save}\nnpm install\n"}), false, ""},
+		{"YARN_REGISTRY read by ${}", npm(map[string]string{"install.sh": "echo \"${YARN_REGISTRY}\"\nnpm install\n"}), true, ""},
+		{"YARN_REGISTRY read by ${:-}", npm(map[string]string{"install.sh": "echo \"${YARN_REGISTRY:-https://registry.npmjs.org}\"\nnpm install\n"}), true, ""},
+		{"YARN_REGISTRY read by ${-}", npm(map[string]string{"install.sh": "echo \"${YARN_REGISTRY-https://registry.npmjs.org}\"\nnpm install\n"}), true, ""},
 		{"NPM_CONFIG_REGISTRY set by Dockerfile ENV", npm(map[string]string{"Dockerfile": "FROM node:20\nENV NPM_CONFIG_REGISTRY=https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
 
 		// npm configs that only choose which locked packages install keep the pin; every other

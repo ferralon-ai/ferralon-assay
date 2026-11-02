@@ -5,6 +5,9 @@
 // a test can prove per form that the handler is an http_route ingress AND heads the
 // taint trace to that form's sink.
 //
+// A route's selector is its full pattern, composed under the Route closures it is
+// registered in, through a named func and a method value as well.
+//
 // The registered handlers are deliberately methods, closures and ServeHTTP
 // implementations, the shapes the package-scope net/http signature rule (Kind
 // "handler") never lists, so the chi registration is the only thing that makes them
@@ -30,25 +33,28 @@ import (
 var sunk []string
 
 // One sink per registration form, so each form's taint path is distinguishable.
-func sinkGet(v string)        { sunk = append(sunk, v) }
-func sinkPost(v string)       { sunk = append(sunk, v) }
-func sinkPut(v string)        { sunk = append(sunk, v) }
-func sinkPatch(v string)      { sunk = append(sunk, v) }
-func sinkDelete(v string)     { sunk = append(sunk, v) }
-func sinkHead(v string)       { sunk = append(sunk, v) }
-func sinkOptions(v string)    { sunk = append(sunk, v) }
-func sinkConnect(v string)    { sunk = append(sunk, v) }
-func sinkTrace(v string)      { sunk = append(sunk, v) }
-func sinkMethod(v string)     { sunk = append(sunk, v) }
-func sinkMethodFunc(v string) { sunk = append(sunk, v) }
-func sinkHandle(v string)     { sunk = append(sunk, v) }
-func sinkHandleFunc(v string) { sunk = append(sunk, v) }
-func sinkRoute(v string)      { sunk = append(sunk, v) }
-func sinkGroup(v string)      { sunk = append(sunk, v) }
-func sinkWith(v string)       { sunk = append(sunk, v) }
-func sinkMount(v string)      { sunk = append(sunk, v) }
-func sinkMountSub(v string)   { sunk = append(sunk, v) }
-func sinkV1(v string)         { sunk = append(sunk, v) }
+func sinkGet(v string)         { sunk = append(sunk, v) }
+func sinkPost(v string)        { sunk = append(sunk, v) }
+func sinkPut(v string)         { sunk = append(sunk, v) }
+func sinkPatch(v string)       { sunk = append(sunk, v) }
+func sinkDelete(v string)      { sunk = append(sunk, v) }
+func sinkHead(v string)        { sunk = append(sunk, v) }
+func sinkOptions(v string)     { sunk = append(sunk, v) }
+func sinkConnect(v string)     { sunk = append(sunk, v) }
+func sinkTrace(v string)       { sunk = append(sunk, v) }
+func sinkMethod(v string)      { sunk = append(sunk, v) }
+func sinkMethodFunc(v string)  { sunk = append(sunk, v) }
+func sinkHandle(v string)      { sunk = append(sunk, v) }
+func sinkHandleFunc(v string)  { sunk = append(sunk, v) }
+func sinkRoute(v string)       { sunk = append(sunk, v) }
+func sinkGroup(v string)       { sunk = append(sunk, v) }
+func sinkWith(v string)        { sunk = append(sunk, v) }
+func sinkMount(v string)       { sunk = append(sunk, v) }
+func sinkMountSub(v string)    { sunk = append(sunk, v) }
+func sinkV1(v string)          { sunk = append(sunk, v) }
+func sinkNestedRoute(v string) { sunk = append(sunk, v) }
+func sinkMethodRoute(v string) { sunk = append(sunk, v) }
+func sinkDynRoute(v string)    { sunk = append(sunk, v) }
 
 // Negative sinks: no chi-registered handler reaches these.
 func sinkNeverRegistered(v string) { sunk = append(sunk, v) }
@@ -81,6 +87,29 @@ func (s *server) routeForm(w http.ResponseWriter, r *http.Request) {
 func (s *server) withForm(w http.ResponseWriter, r *http.Request)     { sinkWith(r.URL.Path) }
 func (s *server) mountSubForm(w http.ResponseWriter, r *http.Request) { sinkMountSub(r.URL.Path) }
 func (s *server) v1Form(w http.ResponseWriter, r *http.Request)       { sinkV1(r.URL.Path) }
+func (s *server) nestedRouteForm(w http.ResponseWriter, r *http.Request) {
+	sinkNestedRoute(r.URL.Path)
+}
+func (s *server) methodRouteForm(w http.ResponseWriter, r *http.Request) {
+	sinkMethodRoute(r.URL.Path)
+}
+func (s *server) dynRouteForm(w http.ResponseWriter, r *http.Request) { sinkDynRoute(r.URL.Path) }
+
+// adminRoutes is a named func a Route closure calls: its routes, in a nested Route,
+// a Group and on a With result, are composed under every Route above it.
+func adminRoutes(a chi.Router, s *server) {
+	a.Route("/users", func(u chi.Router) {
+		u.Group(func(g chi.Router) {
+			g.With(middleware).Get("/{id}", s.nestedRouteForm)
+		})
+	})
+}
+
+// methodRoutes is a method value handed to Route directly.
+func (s *server) methodRoutes(r chi.Router) { r.Get("/{id}", s.methodRouteForm) }
+
+// prefixFromConfig stands in for a Route pattern read at run time: no constant.
+func prefixFromConfig() string { return sunk[0] }
 
 // mountedHandler is an http.Handler mounted directly (its ServeHTTP is the ingress).
 type mountedHandler struct{}
@@ -159,6 +188,13 @@ func main() {
 	// A bare chi router mounted directly: chi's own ServeHTTP is no ingress.
 	r.Mount("/bare", chi.NewRouter())
 	(&fwdRouter{r: r}).Get("/fwd", s.neverRegistered)
+	r.Route("/admin", func(a chi.Router) { adminRoutes(a, s) })
+	r.Route("/m", s.methodRoutes)
+	// A Route whose pattern is no constant, under /outer: its routes keep their local
+	// pattern, neither guessing the prefix nor skipping it to /outer/dyn.
+	r.Route("/outer", func(o chi.Router) {
+		o.Route(prefixFromConfig(), func(d chi.Router) { d.Get("/dyn", s.dynRouteForm) })
+	})
 
 	old := chiv1.NewRouter()
 	old.Get("/v1/{id}", s.v1Form)

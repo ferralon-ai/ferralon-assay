@@ -3391,6 +3391,112 @@ func (s reachabilityIngress) entrypointsFor(store artifact.Store, caseID string)
 	return &e, nil
 }
 
+// reachAttribution is what countedReachPaths attributes a Go reach path by: the names of the
+// selected affected package, every other affected package the build carries joined to its ranges,
+// the scanned project's module path, and the advisory's trust tier.
+type reachAttribution struct {
+	selected []string
+	others   []presentRanges
+	project  string
+	trust    TrustTier
+}
+
+// readReachAttribution reads the reachAttribution for a Go assessment that selected an affected
+// package. ok is false otherwise, and every path then counts. A toolchain package's ranges lose
+// their lower bounds when the toolchain version is only a floor, as rangesForToolchainFloor says.
+func readReachAttribution(store artifact.Store, caseID string) (reachAttribution, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return reachAttribution{}, false
+	}
+	var inv struct {
+		Language string `json:"language"`
+		Module   string `json:"module"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil || inv.Language != "go" {
+		return reachAttribution{}, false
+	}
+	sel, ok := extractSelectedPackage(store, caseID)
+	if !ok {
+		return reachAttribution{}, false
+	}
+	a := reachAttribution{project: inv.Module, others: extractAlsoPresent(store, caseID)}
+	for _, n := range []string{sel.Module, sel.Coordinate} {
+		if n != "" {
+			a.selected = append(a.selected, n)
+		}
+	}
+	for i, o := range a.others {
+		if o.Coordinate == goStdlibPURLName {
+			a.others[i].Ranges = rangesForToolchainFloor(store, caseID, o.Ranges)
+		}
+	}
+	a.trust, _ = extractAdvisoryTrust(store, caseID)
+	return a, true
+}
+
+// countedReachPaths returns the reach paths that count toward the selected package, those
+// attributed to it first, each group in its input order. A path is attributed by its sink's import
+// path to the affected package owning the longest name that is the import path or a prefix of it
+// at a "/" boundary; stdlib owns an import path whose first element has no dot, and the selected
+// package wins a tie. A sink with no import path, one inside the scanned project, or one no
+// affected package owns is attributed to the selected package. A path is dropped only when its
+// owner is another affected package whose every version in the build is provably outside that
+// package's ranges (everyVersionOutside).
+func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.ReachPath {
+	var own, other []plugin.ReachPath
+	for _, p := range paths {
+		o, ok := a.owner(p.Sink.Package)
+		switch {
+		case !ok:
+			own = append(own, p)
+		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown, a.trust):
+		default:
+			other = append(other, p)
+		}
+	}
+	return append(own, other...)
+}
+
+// owner returns the other affected package an import path is attributed to, or false when it is
+// attributed to the selected package.
+func (a reachAttribution) owner(pkg string) (presentRanges, bool) {
+	if pkg == "" || a.project != "" && (pkg == a.project || strings.HasPrefix(pkg, a.project+"/")) {
+		return presentRanges{}, false
+	}
+	best := 0
+	for _, n := range a.selected {
+		best = max(best, ownedLength(n, pkg))
+	}
+	var (
+		owner presentRanges
+		found bool
+	)
+	for _, o := range a.others {
+		if l := max(ownedLength(o.Module, pkg), ownedLength(o.Coordinate, pkg)); l > best {
+			best, owner, found = l, o, true
+		}
+	}
+	return owner, found
+}
+
+// ownedLength is the length of the match by which the package named name owns import path pkg,
+// or 0 when it does not own it.
+func ownedLength(name, pkg string) int {
+	switch {
+	case name == "":
+		return 0
+	case name == goStdlibPURLName:
+		if first, _, _ := strings.Cut(pkg, "/"); !strings.Contains(first, ".") {
+			return len(first)
+		}
+		return 0
+	case pkg == name || strings.HasPrefix(pkg, name+"/"):
+		return len(name)
+	}
+	return 0
+}
+
 func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.Assessment, store artifact.Store, sinkRef artifact.Ref) error {
 	buildDir, err := InventoryBuildDir(store, c.ID)
 	if err != nil {
@@ -3456,8 +3562,17 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// onto a positional pick from the shared, sorted ingress map and collapses every
 	// advisory's entry point onto whichever ingress sorts first (the SSRF→expandHandler
 	// mis-attribution). The CallGraph leg is unchanged (guard discovery reads it).
+	// Candidate pairs are written for the counted paths only. When none count, the reachability
+	// artifact keeps every path, so the record never reads as an absence of paths.
+	counted := paths
+	if a, ok := readReachAttribution(store, c.ID); ok {
+		counted = countedReachPaths(paths, a)
+	}
 	reachOut := reach
-	reachOut.Paths = paths
+	reachOut.Paths = counted
+	if len(counted) == 0 {
+		reachOut.Paths = paths
+	}
 	reachRef, err := putReachability(store, c, s.Name(), reachOut, cg, toolchainScan)
 	if err != nil {
 		return err
@@ -3468,7 +3583,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 
-	for _, p := range paths {
+	for _, p := range counted {
 		pair := artifact.CandidatePair{
 			SchemaVersion: artifact.CandidatePairSchemaVersion,
 			Sink:          sinkRef,

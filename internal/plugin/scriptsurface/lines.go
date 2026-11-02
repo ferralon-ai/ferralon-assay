@@ -37,6 +37,9 @@ func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 // before what follows it; and marks one that follows &&, which runs only if the command before
 // it did; background marks one a lone & ends, which may not have finished when what follows runs.
 // end is the operator that ends it (&&, ||, |, & or ;), or "" at the end of the text.
+// script marks one split from a line of a POSIX shell script whose own text shadows no data
+// command (posixRun, shadowsData), which the shell runs as it stands; a value elsewhere may be
+// a parameter some other command splices into its own text.
 type segment struct {
 	words      []string
 	expands    bool
@@ -45,6 +48,7 @@ type segment struct {
 	background bool
 	end        string
 	param      bool // a data surface's value under no command key (commandKeys)
+	script     bool
 }
 
 // dataKeys are keys whose values a build never runs as a command.

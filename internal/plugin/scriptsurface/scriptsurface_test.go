@@ -211,6 +211,95 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Procfile command behind a redirect to a name starting +", tree(map[string]string{"Procfile": "web: >+#x inst add x\n"}), true, ""},
 		{"Procfile command behind a redirect to a name starting -1", tree(map[string]string{"Procfile": "web: >-1#x inst add x\n"}), true, ""},
 		{"Procfile command behind a redirect, no installer", tree(map[string]string{"Procfile": "web: >/dev/null serve\n"}), false, ""},
+
+		// Commands that only print, match or test their arguments.
+		{"echo of an install piped into a shell", tree(map[string]string{"install.sh": "echo inst add x | sh\n"}), true, ""},
+		{"printf of an install piped into bash", tree(map[string]string{"install.sh": "printf 'inst add x\\n' | bash\n"}), true, ""},
+		{"grep output piped on", tree(map[string]string{"install.sh": "grep -o 'inst add x' notes.txt | tee run.sh\n"}), true, ""},
+		{"echo of an install into a file", tree(map[string]string{"install.sh": "echo inst add x > run.sh\n"}), true, ""},
+		{"echo of a command substitution", tree(map[string]string{"install.sh": "echo \"$(inst add x)\"\n"}), true, ""},
+		{"echo of a backtick substitution", tree(map[string]string{"install.sh": "echo \"`inst add x`\"\n"}), true, ""},
+		{"printf %b", tree(map[string]string{"install.sh": "printf '%b' 'inst add x'\n"}), true, ""},
+		{"printf -v", tree(map[string]string{"install.sh": "printf -v c 'inst add %s' x\n"}), true, ""},
+		{"echo through a relative path", tree(map[string]string{"install.sh": "./echo inst add x\n"}), true, ""},
+		{"eval", tree(map[string]string{"install.sh": "eval 'inst add x'\n"}), true, ""},
+		{"sh -c", tree(map[string]string{"install.sh": "sh -c 'inst add x'\n"}), true, ""},
+		{"env", tree(map[string]string{"install.sh": "env inst add x\n"}), true, ""},
+		{"a program not known to only print", tree(map[string]string{"install.sh": "awk '/inst add/' notes.txt\n"}), true, ""},
+		{"echo of an install piped with stderr into a shell", tree(map[string]string{"install.sh": "echo inst add x |& sh\n"}), true, ""},
+		{"grep of a process substitution", tree(map[string]string{"install.sh": "grep -q x <(inst add x)\n"}), true, ""},
+		{"echo into a process substitution", tree(map[string]string{"install.sh": "echo inst add x > >(sh)\n"}), true, ""},
+		{"echo with an unclosed quote piped into a shell", tree(map[string]string{"install.sh": "echo inst add x | sh \"\n"}), true, ""},
+		{"grep through a run wrapper", tree(map[string]string{"install.sh": "instw run grep -q inst x\n"}), true, ""},
+		{"grep piped on", tree(map[string]string{"install.sh": "grep -h inst x | sh\n"}), true, ""},
+		{"grep in an exec form, read without a shell", tree(map[string]string{"Dockerfile": "FROM base\nCMD [\"grep\", \"-q\", \"inst\", \"x\"]\n"}), true, ""},
+		{"grep in a step input an action may run", tree(map[string]string{".github/workflows/ci.yml": steps("- uses: org/run@v1\n        with:\n          cmd: grep -q inst x\n")}), true, ""},
+		{"grep in a block input an action may run", tree(map[string]string{".github/workflows/ci.yml": steps("- uses: org/run@v1\n        with:\n          cmd: |\n            grep -q inst x\n")}), true, ""},
+		{"grep in a workflow run step", tree(map[string]string{".github/workflows/ci.yml": steps("- run: grep -q inst x\n")}), true, ""},
+		{"grep in a package.json script", tree(map[string]string{"package.json": `{"scripts":{"hint":"grep -q inst x"}}`}), true, ""},
+		{"grep in a Makefile recipe", tree(map[string]string{"Makefile": "hint:\n\t@grep -q inst x\n"}), true, ""},
+		{"script echo piped into a shell by its caller", tree(map[string]string{"gen.sh": "echo inst add x\n", "install.sh": "./gen.sh | sh\n"}), true, ""},
+		{"script echo piped into bash -s", tree(map[string]string{"gen.sh": "echo inst add x\n", "install.sh": "./gen.sh | bash -s\n"}), true, ""},
+		{"script echo read by sh from a process substitution", tree(map[string]string{"gen.sh": "echo inst add x\n", "install.sh": "sh < <(./gen.sh)\n"}), true, ""},
+		{"script echo piped into a shell by a workflow", tree(map[string]string{"gen.sh": "echo inst add x\n", ".github/workflows/ci.yml": steps("- run: ./gen.sh | sh\n")}), true, ""},
+		{"script echo piped into a shell by a Makefile", tree(map[string]string{"gen.sh": "echo inst add x\n", "Makefile": "all:\n\t./gen.sh | sh\n"}), true, ""},
+		{"script echo with no caller in the tree", tree(map[string]string{"gen.sh": "echo inst add x\n"}), true, ""},
+		{"script grep of a file piped into a shell by its caller", tree(map[string]string{"setup.txt": "inst add x\n", "gen.sh": "grep 'inst add' setup.txt\n", "install.sh": "./gen.sh | sh\n"}), true, ""},
+		{"grep that prints its matches", tree(map[string]string{"install.sh": "grep -h inst notes.txt\n"}), true, ""},
+		{"grep -o, -l and -c", tree(map[string]string{"install.sh": "grep -o inst a; grep -l inst b; grep -c inst c\n"}), true, ""},
+		{"grep -e -q, where -q is the pattern", tree(map[string]string{"install.sh": "grep -e -q inst\n"}), true, ""},
+		{"grep -eq, where q is the pattern", tree(map[string]string{"install.sh": "grep -eq inst\n"}), true, ""},
+		{"grep -q after an option with an argument", tree(map[string]string{"install.sh": "grep -m 1 -q inst x\n"}), true, ""},
+		{"quiet grep piped into a shell", tree(map[string]string{"install.sh": "grep -q inst x | sh\n"}), true, ""},
+		{"grep pattern that ends in q", tree(map[string]string{"install.sh": "grep xq inst\n"}), true, ""},
+		{"grep --quiet abbreviated", tree(map[string]string{"install.sh": "grep --qu inst x\n"}), true, ""},
+		{"egrep and fgrep that print", tree(map[string]string{"install.sh": "egrep inst a || fgrep inst b\n"}), true, ""},
+		{"grep --label, which prints its value", tree(map[string]string{"install.sh": "grep -H --label='inst add x' x -\n"}), true, ""},
+		{"grep --label abbreviated", tree(map[string]string{"install.sh": "grep -H --lab 'inst add x' x -\n"}), true, ""},
+		{"grep pattern naming an install", tree(map[string]string{"guard.sh": "printf '%s' \"$CMD\" | grep -qE '(inst[[:space:]]+add|inst[[:space:]]+publish)' && deny \"no\"\n"}), false, ""},
+		{"grep -q -e naming an install", tree(map[string]string{"guard.sh": "grep -q -e inst notes.txt\n"}), false, ""},
+		{"grep -iq and --quiet", tree(map[string]string{"guard.sh": "grep -iq inst notes.txt && grep --quiet inst notes.txt\n"}), false, ""},
+		{"egrep and fgrep", tree(map[string]string{"guard.sh": "egrep -q 'inst add' notes.txt || fgrep --silent inst notes.txt\n"}), false, ""},
+		{"echo naming an install, which a caller may run", tree(map[string]string{"install.sh": "echo \"run inst add x to install\"\n"}), true, ""},
+		{"echo by absolute path", tree(map[string]string{"install.sh": "/bin/echo inst add x\n"}), true, ""},
+		{"printf naming an install", tree(map[string]string{"install.sh": "printf '%s\\n' 'inst add x'\n"}), true, ""},
+		{"test and [ naming the installer", tree(map[string]string{"install.sh": "test -n inst && [ inst = inst ]\n"}), false, ""},
+		{"true and false with an installer argument", tree(map[string]string{"install.sh": "true inst add x; false inst\n"}), false, ""},
+		{"grep after an allowed install", tree(map[string]string{"install.sh": "inst sync && grep -q inst log.txt\n"}), false, ""},
+		{"test -v evaluating a single-quoted substitution", tree(map[string]string{"install.sh": "test -v 'a[$(inst add x)]'\n"}), true, ""},
+		{"[ -v evaluating a single-quoted substitution", tree(map[string]string{"install.sh": "[ -v 'a[$(inst add x)]' ]\n"}), true, ""},
+		{"arithmetic test evaluating a single-quoted backtick substitution", tree(map[string]string{"install.sh": "test 'a[`inst add x`]' -eq 0\n"}), true, ""},
+		{"grep shadowed by a function", tree(map[string]string{"install.sh": "grep() { shift; \"$@\"; }\ngrep -q inst add x\n"}), true, ""},
+		{"test shadowed by a function over lines", tree(map[string]string{"install.sh": "test()\n{\n  \"$@\"\n}\ntest inst add x\n"}), true, ""},
+		{"grep shadowed by a function keyword", tree(map[string]string{"install.sh": "function grep { shift; \"$@\"; }\ngrep -q inst add x\n"}), true, ""},
+		{"grep found on a changed PATH", tree(map[string]string{"install.sh": "export PATH=./tools:/usr/bin\ngrep -q inst add x\n"}), true, ""},
+		{"grep hashed to another program", tree(map[string]string{"install.sh": "hash -p ./tools/run grep\ngrep -q inst add x\n"}), true, ""},
+		{"test builtin disabled", tree(map[string]string{"install.sh": "enable -n test\ntest inst add x\n"}), true, ""},
+		{"grep after an alias", tree(map[string]string{"install.sh": "shopt -s expand_aliases\nalias grep=run\ngrep -q inst add x\n"}), true, ""},
+		{"grep after a sourced file", tree(map[string]string{"lib.sh": "grep() { \"$@\"; }\n", "install.sh": "source ./lib.sh\ngrep -q inst add x\n"}), true, ""},
+		{"grep after a dot-sourced file", tree(map[string]string{"lib.sh": "grep() { \"$@\"; }\n", "install.sh": ". ./lib.sh\ngrep -q inst add x\n"}), true, ""},
+		{"grep after an eval", tree(map[string]string{"install.sh": "eval \"$DEFS\"\ngrep -q inst add x\n"}), true, ""},
+		{"grep line in a heredoc another interpreter reads", tree(map[string]string{"install.sh": "perl <<'EOF'\ngrep -q, system 'inst add x';\nEOF\n"}), true, ""},
+		{"grep -o, which prints its matches", tree(map[string]string{"install.sh": "grep -o inst notes.txt\n"}), true, ""},
+		{"false run by an ERR trap", tree(map[string]string{"install.sh": "trap '${BASH_COMMAND#false }' ERR\nfalse inst add x\n"}), true, ""},
+		{"true run by a DEBUG trap", tree(map[string]string{"install.sh": "trap '${BASH_COMMAND#true }' DEBUG\ntrue inst add x\n"}), true, ""},
+		{"grep after a backslashed alias", tree(map[string]string{"install.sh": "run() { shift; \"$@\"; }\n\\alias grep=run\ngrep -q inst add x\n"}), true, ""},
+		{"grep shadowed by a function continued over lines", tree(map[string]string{"install.sh": "grep \\\n() { shift; \"$@\"; }\ngrep -q inst add x\n"}), true, ""},
+		{"grep found on a PATH continued over lines", tree(map[string]string{"install.sh": "export PA\\\nTH=./tools:/usr/bin\ngrep -q inst add x\n"}), true, ""},
+		{"grep found on a quoted PATH", tree(map[string]string{"install.sh": "export PA''TH=./tools:/usr/bin\ngrep -q inst add x\n"}), true, ""},
+		{"grep found on a PATH printf sets", tree(map[string]string{"install.sh": "printf -v PA\"\"TH \"%s\" ./tools:/usr/bin\ngrep -q inst add x\n"}), true, ""},
+		{"grep after a quoted dot-source", tree(map[string]string{"lib.sh": "grep() { shift; \"$@\"; }\n", "install.sh": "'.' ./lib.sh\ngrep -q inst add x\n"}), true, ""},
+		{"grep after a quoted eval", tree(map[string]string{"install.sh": "'eval' 'grep() { shift; \"$@\"; }'\ngrep -q inst add x\n"}), true, ""},
+		{"grep in a zsh script", tree(map[string]string{"install.zsh": "path=(./tools $path)\ngrep -q inst add x\n"}), true, ""},
+		{"grep in a script zsh runs", tree(map[string]string{"install.sh": "#!/bin/zsh\nfunctions[grep]='shift; \"$@\"'\ngrep -q inst add x\n"}), true, ""},
+		{"true in a .sh file ruby runs", tree(map[string]string{"setup.sh": "#!/usr/bin/env ruby\ntrue and system 'inst add x'\n"}), true, ""},
+		{"true in a .sh file perl runs", tree(map[string]string{"setup.sh": "#!/usr/bin/perl\ntrue and system 'inst add x';\n"}), true, ""},
+		{"grep in a script bash runs", tree(map[string]string{"guard.sh": "#!/usr/bin/env bash\ngrep -q inst notes.txt\n"}), false, ""},
+		{"grep in a script sh runs", tree(map[string]string{"guard": "#!/bin/sh\ngrep -q inst notes.txt\n"}), false, ""},
+		{"grep beside a cleanup trap", tree(map[string]string{"guard.sh": "trap 'rm -f \"$tmp\"' EXIT\ngrep -q inst notes.txt\n"}), false, ""},
+		{"grep beside test grouping parens", tree(map[string]string{"guard.sh": "[ \\( -f a \\) -o -f b ] && test \"(\" -f a \")\"\ngrep -q inst notes.txt\n"}), false, ""},
+		{"grep of a relative path, and a word that starts like eval", tree(map[string]string{"guard.sh": "grep -q inst ./notes.txt\ntest -n evaluated\n"}), false, ""},
+		{"grep beside a word that only contains eval and PATH", tree(map[string]string{"guard.sh": "P='(^|/)eval/|MYPATH'\ngrep -q inst notes.txt\n"}), false, ""},
 		{"unterminated quote", tree(map[string]string{"install.sh": "echo 'x && inst sync\n"}), true, ""},
 		{"unjoined continuation", tree(map[string]string{"install.sh": "inst sync \\"}), true, ""},
 
@@ -579,6 +668,34 @@ func TestVeto_SampleHooks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := withheld(writeTree(t, tt.files), testSpec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A command a concurrent runner starts is never data, though the same command on its own line
+// of the script is.
+func TestVeto_DataOnlyUnderConcurrent(t *testing.T) {
+	conc := testSpec
+	conc.Concurrent = func(words []string) ([]string, bool) {
+		if words[0] == "conc" {
+			return words[1:], true
+		}
+		return nil, false
+	}
+	tests := []struct {
+		name   string
+		script string
+		want   bool // withheld
+	}{
+		{"quiet grep a concurrent runner starts", "conc \"grep -q inst x\"\n", true},
+		{"quiet grep on its own", "grep -q inst x\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "install.sh": tt.script}
+			if got := withheld(writeTree(t, files), conc); got != tt.want {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
 			}
 		})

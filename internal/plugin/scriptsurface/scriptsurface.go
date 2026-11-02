@@ -929,6 +929,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		base, unknown = append(base, dirs...), !ok
 	}
 	included := yaml && gitlabIncluded(path, units)
+	script := s.kind == kindShell && posixRun(path, units) && !shadowsData(units)
 	for _, u := range units {
 		carry := &hostCursor{v: v, dirs: append([]string(nil), base...), unknown: unknown}
 		if u.bad {
@@ -1005,6 +1006,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			}
 			for _, seg := range segs {
 				seg.param = u.param && len(lines) == 1 || lineKind == kindData && !rl.cmd && rl.whole
+				seg.script = script
 				if why := v.command(seg, cur, 0); why != "" {
 					return why
 				}
@@ -1143,6 +1145,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if seg.expands || hasRedirect(words) {
 		return "install command with an expansion or redirect: " + strings.Join(words, " ")
 	}
+	if dataOnly(seg) {
+		v.mention(words[1:])
+		cur.other()
+		return ""
+	}
 	if v.spec.Concurrent != nil {
 		if cmds, ok := v.spec.Concurrent(words); ok {
 			return v.concurrent(words, cmds, cur, depth)
@@ -1185,6 +1192,83 @@ func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 		}
 	}
 	return ""
+}
+
+// dataCommands are the programs that neither run nor install from their arguments, so an
+// installer token there is text: they match or test it. The set is closed; any other program
+// may run what it is given. What a command prints is the script's output, and a caller may run
+// that (./gen.sh | sh), from anywhere, under any name, inside the tree or out, so each is one
+// only while it prints nothing: test, [, true and false never do, and grep only when quiet.
+// echo and printf print their arguments, and are never one.
+var dataCommands = map[string]bool{
+	"grep": true, "egrep": true, "fgrep": true,
+	"test": true, "[": true, "true": true, "false": true,
+}
+
+// dataOnly reports whether a command, with no expansion or redirect, is one of dataCommands
+// that prints nothing and is not piped on. Only a command split from a line of a shell script
+// is one (segment.script): a value in a CI file or manifest may be an input an action splices
+// into its own command (${{ inputs.cmd }} | sh), and a command a run wrapper or concurrently
+// runs is never one. A $ or backtick even inside single quotes rules one out, since bash's
+// test -v and ksh's arithmetic tests evaluate a subscript such as 'a[$(cmd)]'.
+func dataOnly(seg segment) bool {
+	head, ok := CommandName(seg.words[0])
+	if !seg.script || !ok || !dataCommands[head] || seg.end == "|" || hasExpansion(seg.words) {
+		return false
+	}
+	return !strings.HasSuffix(head, "grep") || grepQuiet(seg.words[1:])
+}
+
+// dataShadowRE finds what in a shell script's own text may make a dataCommands name run another
+// program, or run a command's text: a function by that name (name() or function name), an
+// alias, enable or hash, any use of PATH, a sourced file or eval, which may define either,
+// BASH_COMMAND, through which a trap runs a command's text, and a heredoc, whose body another
+// interpreter may read and which this reads as shell lines. The repo is the owner's own: what a
+// caller's environment brings (PATH, BASH_ENV, exported functions), or a name an expansion
+// builds, is out of its reach.
+var dataShadowRE = regexp.MustCompile(`<<|(?:^|[^A-Za-z0-9_])PATH(?:[^A-Za-z0-9_]|$)|(?:^|[\s;&|({])(?:alias|enable|hash|source|eval|\.)(?:\s|$)|(?:^|[\s;&|({])(?:e?grep|fgrep|test|true|false|\[)\s*\(\s*\)|BASH_COMMAND|\bfunction\s+(?:e?grep|fgrep|test|true|false|\[)`)
+
+// shadowText joins continued lines and drops quotes and backslashes, so that a name with a
+// quote, a backslash or a continuation in it reads as the word the shell runs.
+var shadowText = strings.NewReplacer("\\\r\n", "", "\\\n", "", `\`, "", "'", "", `"`, "")
+
+// shadowsData reports whether a shell script's units hold anything dataShadowRE finds, so that
+// none of its commands is read as data.
+func shadowsData(units []unit) bool {
+	for _, u := range units {
+		if dataShadowRE.MatchString(shadowText.Replace(u.text)) {
+			return true
+		}
+	}
+	return false
+}
+
+// grepFlags are the short grep options that take no argument, so a cluster of them may go on to
+// another option.
+const grepFlags = "abcEFGHhiILlnoPrRsTUvVwxyzZ"
+
+// grepQuiet reports whether grep's leading options include -q, --quiet or --silent, so that it
+// prints nothing. It reads options only up to the first word that is not a cluster of grepFlags
+// (a long option other than those two ends it), and a cluster only up to a letter that is not
+// one of grepFlags, since what follows may be that option's argument (-eq matches q).
+func grepQuiet(args []string) bool {
+	for _, w := range args {
+		if w == "--quiet" || w == "--silent" {
+			return true
+		}
+		if len(w) < 2 || w[0] != '-' {
+			return false
+		}
+		for _, c := range w[1:] {
+			if c == 'q' {
+				return true
+			}
+			if !strings.ContainsRune(grepFlags, c) {
+				return false
+			}
+		}
+	}
+	return false
 }
 
 // pathOnlyScripts are the version-manager init scripts, as written after . or source, that
@@ -1391,4 +1475,19 @@ func (v *Veto) segmentHasToken(words []string) bool {
 		}
 	}
 	return false
+}
+
+// posixRun reports whether a shell script is one a POSIX-family shell other than zsh runs: no
+// .zsh name, and no #! line or one naming such a shell. zsh ties path to PATH and lets a script
+// set functions[grep] or commands[grep], and a .sh file whose #! names ruby or perl is not
+// shell at all.
+func posixRun(path string, units []unit) bool {
+	if strings.EqualFold(filepath.Ext(path), ".zsh") || len(units) == 0 {
+		return false
+	}
+	first, _, _ := strings.Cut(units[0].text, "\n")
+	if !strings.HasPrefix(first, "#!") {
+		return true
+	}
+	return shellShebang([]byte(first)) && !strings.Contains(first, "zsh")
 }

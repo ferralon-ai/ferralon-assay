@@ -929,6 +929,45 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script its own namespace handed to a callee bound through builtins",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\ndef set(ns):\n    ns[\"main\"] = inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nimport builtins\nfrom tool import fac\nbuiltins.store = fac.set\nstore(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to __import__ beside a method named __import__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass App:\n    def __import__(self, m):\n        return __import__(\"tool.fac\", globals(), locals(), [], 0)\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script its own namespace handed to a def named sorted in a class body",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass C:\n    def sorted(ns):\n        ns[\"main\"] = make()\n    sorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to an enclosing def named sorted",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef h():\n    def sorted(ns):\n        ns[\"main\"] = make()\n    def g():\n        sorted(globals())\n    g()\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script the globals builtin aliased",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

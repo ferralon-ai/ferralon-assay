@@ -1571,22 +1571,35 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	if stars["sys"] {
 		names["modules"] = lookupModules
 	}
-	// shadowed reports whether the file may rebind a builtin's name: a star import, or the
-	// name anywhere but called (a def, class, import, assignment or parameter).
+	// shadowed reports whether the file may rebind a builtin's name where it is called: a star
+	// import, or the name anywhere but called (a def, class, import, assignment or parameter).
+	// A def or class written directly in a class body binds only there, and its methods do not
+	// see it.
 	rebinds := map[string]bool{}
+	classAt := classScope(clean)
+	classBinds := map[string][]int{}
 	for i := 0; i < n; i++ {
 		if !isIdentStartRune(r[i]) || i > 0 && isIdentPart(r[i-1]) {
 			continue
 		}
 		w, end := readWordRunes(r, i)
 		if pj := skipSpaceBack(r, i-1); pj < 0 || r[pj] != '.' {
-			if q := skipAllSpace(r, end); q >= n || r[q] != '(' || precededByDef(r, i) || precededByWord(r, i, "class") {
+			switch q := skipAllSpace(r, end); {
+			case precededByDef(r, i) || precededByWord(r, i, "class"):
+				if c := classAt(i); c >= 0 {
+					classBinds[w] = append(classBinds[w], c)
+				} else {
+					rebinds[w] = true
+				}
+			case q >= n || r[q] != '(':
 				rebinds[w] = true
 			}
 		}
 		i = end - 1
 	}
-	shadowed := func(w string) bool { return len(stars) > 0 || rebinds[w] }
+	shadowed := func(w string, at int) bool {
+		return len(stars) > 0 || rebinds[w] || slices.Contains(classBinds[w], classAt(at))
+	}
 	kindOf := func(w string, dotted bool) lookupKind {
 		switch w {
 		case "import_module":

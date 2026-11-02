@@ -269,7 +269,7 @@ var readOnlyMethods = map[string]bool{
 // call counts only for a builtin the file never rebinds (shadowed). Any other use may bind
 // any name: a store by a key the scanner cannot read, a dunder of the module, the module
 // replaced in sys.modules, or the namespace handed on as a value.
-func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool, shadowed func(string) bool) {
+func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool, shadowed func(string, int) bool) {
 	n := len(r)
 	p := skipAllSpace(r, end)
 	j := skipSpaceBack(r, start-1)
@@ -280,7 +280,7 @@ func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, modul
 		return
 	case j >= 0 && r[j] == '(' && p < n && (r[p] == ',' || r[p] == ')'):
 		fn, k := wordBefore(r, j)
-		if fn == "" || k >= 0 && r[k] == '.' || shadowed(fn) {
+		if fn == "" || k >= 0 && r[k] == '.' || shadowed(fn, j) {
 			break
 		}
 		switch {
@@ -361,13 +361,13 @@ func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, modul
 // importArg reports whether the argument starting at r[start] is passed to a bare
 // __import__ call the file never rebinds, which reads the globals and locals it is handed
 // only for the importing package's name.
-func importArg(r []rune, start int, shadowed func(string) bool) bool {
+func importArg(r []rune, start int, shadowed func(string, int) bool) bool {
 	open := enclosingOpen(r, start)
 	if open < 0 || r[open] != '(' {
 		return false
 	}
 	w, k := wordBefore(r, open)
-	return w == "__import__" && (k < 0 || r[k] != '.') && !shadowed(w)
+	return w == "__import__" && (k < 0 || r[k] != '.') && !shadowed(w, start)
 }
 
 // target reports whether the expression from r[start] to r[end] is bound rather than read:
@@ -409,6 +409,63 @@ func target(r []rune, start, end int) bool {
 		}
 	}
 	return kw == "for" || kw == "as" && !colon
+}
+
+// classScope returns, for each rune index of a cleaned source, the class body the code there
+// sits directly in, as an id, or -1 when its innermost scope is a def body or the module. A
+// def or class header belongs to the enclosing scope. Lines are read as moduleScope reads them.
+func classScope(clean string) func(i int) int {
+	r := []rune(clean)
+	type block struct {
+		indent, id int
+		class      bool
+	}
+	var spans [][3]int
+	var stack []block
+	depth, start := 0, 0
+	for i := 0; i <= len(r); i++ {
+		if i < len(r) && r[i] != '\n' {
+			switch r[i] {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				depth--
+			}
+			continue
+		}
+		if i < len(r) && (depth > 0 || continuedBreak(r, i)) {
+			continue
+		}
+		line := r[start:i]
+		if nl := slices.Index(line, '\n'); nl >= 0 {
+			line = line[:nl]
+		}
+		if t := strings.TrimLeft(string(line), " \t"); t != "" {
+			indent := len(line) - len([]rune(t))
+			for len(stack) > 0 && indent <= stack[len(stack)-1].indent {
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) > 0 && stack[len(stack)-1].class {
+				spans = append(spans, [3]int{start, i, stack[len(stack)-1].id})
+			}
+			w, rest := firstWord(t)
+			if w == "async" {
+				w, _ = firstWord(strings.TrimSpace(rest))
+			}
+			if w == "def" || w == "class" {
+				stack = append(stack, block{indent, i, w == "class"})
+			}
+		}
+		start = i + 1
+	}
+	return func(i int) int {
+		for _, s := range spans {
+			if i >= s[0] && i < s[1] {
+				return s[2]
+			}
+		}
+		return -1
+	}
 }
 
 // moduleScope reports, for each rune index of a cleaned source, whether the code there runs

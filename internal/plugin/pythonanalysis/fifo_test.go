@@ -94,10 +94,26 @@ func TestReaders_FIFO(t *testing.T) {
 			},
 		},
 		{
+			name: "parseManifestCoverage poetry.lock", fifo: "poetry.lock",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := parseManifestCoverage(pipe); ok {
+					t.Error("parseManifestCoverage read a pipe")
+				}
+			},
+		},
+		{
 			name: "manifestDecls pyproject.toml", fifo: "pyproject.toml",
 			check: func(t *testing.T, _, pipe string) {
 				if _, ok := manifestDecls(pipe); ok {
 					t.Error("manifestDecls read a pipe")
+				}
+			},
+		},
+		{
+			name: "uvSourced pyproject.toml", fifo: "pyproject.toml",
+			check: func(t *testing.T, _, pipe string) {
+				if uvSourced([]string{pipe}, "pyjwt") {
+					t.Error("uvSourced read a pipe")
 				}
 			},
 		},
@@ -129,14 +145,6 @@ func TestReaders_FIFO(t *testing.T) {
 			check: func(t *testing.T, dir, _ string) {
 				if _, _, ok := readRequirementSpecs(dir, "reqs.txt"); ok {
 					t.Error("readRequirementSpecs read a pipe")
-				}
-			},
-		},
-		{
-			name: "poetryLockConsistent poetry.lock", fifo: "poetry.lock",
-			check: func(t *testing.T, _, pipe string) {
-				if poetryLockConsistent(pipe, nil) {
-					t.Error("poetryLockConsistent accepted a pipe")
 				}
 			},
 		},

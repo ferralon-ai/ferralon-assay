@@ -84,8 +84,10 @@ type Partiality struct {
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
-	// Targets exclude the advisory's package (trigger/assess.go). Only the ingress, reachability
-	// and vulnerable-symbol results' Scoped limits reach the verdict; set on any other result, they
+	// Targets exclude the advisory's package (trigger/assess.go). The ingress, reachability and
+	// vulnerable-symbol results' Scoped limits reach the verdict that way. The dependency inventory's
+	// reach it too: each is disclosed on the Report's inventory note for its reason, whose Targets
+	// bound which rows the limit demotes (trigger/inventory_sbom.go). Set on any other result, they
 	// are dropped.
 	Scoped []ScopedReason `json:"scoped,omitempty"`
 }
@@ -178,6 +180,13 @@ const (
 	// Mapped onto the existing tool_failure base and flagged to L0 (quartz-q14) for cross-lane
 	// adjudication — anvil may want a fourth base for "resolution could not proceed".
 	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
+
+	// unrecognised_install_surface names a file the script-surface rule does not read as a
+	// surface that runs a lane installer at a command position (scriptsurface.Veto.Unrecognised):
+	// the lane withholds as it would on an unreadable install surface. A lane appends ":" and
+	// the file and line, relative to the build ("Earthfile:12"), and lists it after a bare
+	// tool_failure, so a reader matching that base exactly sees no change.
+	PartialReasonUnrecognisedInstallSurface = PartialReasonToolFailure + ":unrecognised_install_surface"
 
 	// --- module-resolution reason localisers ---
 	//
@@ -305,6 +314,11 @@ const (
 	// call graph. A limit of the method's source-level reading, not a per-run failure, so it
 	// is classified inherent alongside native_link_boundary.
 	PartialReasonMacroExpansion = "macro_expansion"
+	// PartialReasonNestedModule is the Go inventory's limit for a module in the checkout that the
+	// build root's module graph does not include, so neither are its requirements. A did-not-run
+	// limit: each such module is a scoped limit naming its directory, whose Targets are what its
+	// go.mod requires when that list is complete (go 1.17 or later), and unbounded otherwise.
+	PartialReasonNestedModule = PartialReasonUnsupported + ":nested_module"
 )
 
 // Complete is the constructor for a fully-resolved result.
@@ -718,6 +732,11 @@ type DependencyNode struct {
 	Provenance DependencyProvenance `json:"provenance"`        // §4.1 manifest/lockfile/resolver/runtime-target provenance
 	Partiality Partiality           `json:"partiality"`        // §4.1 per-node declared partiality (unresolved condition on THIS node)
 	Replace    string               `json:"replace,omitempty"` // module path a replace directive substitutes for this one (Go); empty when not replaced or replaced by a directory
+	// NotInstalled marks a package a lockfile declares that every install the build is known to
+	// run leaves out, such as a poetry group no install selects. Version is still the declared pin.
+	// It says this lock entry is not what the build installs, not that no copy of the package is
+	// present: a tool the environment seeds, such as pip, may still be there at another version.
+	NotInstalled bool `json:"not_installed,omitempty"`
 }
 
 // DependencyEdge is one parent→child dependency relationship (§4.1 "parent edges"). This is the
@@ -811,7 +830,7 @@ const (
 type RuntimeSpec struct {
 	Name      string        `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
 	Version   string        `json:"version,omitempty"`   // declared/minimum runtime version (JS: node engine range)
-	Toolchain string        `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one; a stronger floor than Version
+	Toolchain string        `json:"toolchain,omitempty"` // the manifest's toolchain directive, recorded as declared; not a bound (Go: its presence implies go1.21 or later, its version does not)
 	Source    RuntimeSource `json:"source,omitempty"`    // provenance of this identity
 	Target    string        `json:"target,omitempty"`    // this toolchain's target platform/architecture ("linux/amd64", "x86_64-linux-gnu")
 	Lang      string        `json:"lang,omitempty"`      // language mode this toolchain compiles ("c", "c++")

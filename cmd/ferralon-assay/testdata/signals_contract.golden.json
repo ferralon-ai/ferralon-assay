@@ -1,0 +1,35 @@
+{
+  "provenance": {
+    "commit_sha": "0123456789abcdef",
+    "analyzer_version": "",
+    "advisory_cursor": "",
+    "timestamp": "2026-10-26T00:00:00Z",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 2,
+      "fact_source": "builtin_table",
+      "signals_digest": "sha256:e4f2193b5cb252760dedfa7c4f3260d6fb99b26256db9bbb7400d0e181c7c220"
+    }
+  },
+  "rows": [
+    {
+      "advisory": "CVE-2025-8110",
+      "priority": {
+        "epss_score": 0.91,
+        "epss_percentile": 0.99,
+        "epss_as_of": "2026-10-19",
+        "kev_listed": true,
+        "kev_catalog_version": "2026.10.19",
+        "kev_date_released": "2026-10-19T18:00:00Z"
+      }
+    },
+    {
+      "advisory": "GO-2021-0113",
+      "priority": {
+        "epss_score": 0.0123,
+        "epss_percentile": 0.456,
+        "epss_as_of": "2026-09-01"
+      }
+    }
+  ]
+}

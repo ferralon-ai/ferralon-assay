@@ -101,7 +101,7 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 		if !ok {
 			return false
 		}
-		if isRequirementsName(filepath.Base(m)) && (len(decls.reqs) > 0 || len(decls.nested) > 0) && !reqs.refused(m) {
+		if isRequirementsName(filepath.Base(m)) && (len(decls.reqs) > 0 || len(decls.nested) > 0) && !reqs.refused(m) && !reqs.closed(m, governing) {
 			return false
 		}
 		for _, l := range governing {

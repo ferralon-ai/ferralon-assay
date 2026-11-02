@@ -42,7 +42,7 @@ func renderTier1Body(r report.Report) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headline(c, headlineTail(r)))
+	b.WriteString(reportHeadline(r, c))
 	b.WriteString("\n\n")
 
 	// Same placement rationale as the Tier-0 panel: the disclosure qualifies the
@@ -102,7 +102,7 @@ func partialityCallout(r report.Report) string {
 	}
 	var b strings.Builder
 	b.WriteString("> [!NOTE]\n")
-	b.WriteString("> **Partial coverage.** This scan could not fully resolve the codebase:\n")
+	b.WriteString("> " + coverageLead(r) + "\n")
 	b.WriteString(">\n") // blank quoted line so the list below renders as a list, not a lazy continuation
 	for _, l := range lines {
 		fmt.Fprintf(&b, "> - %s\n", l)

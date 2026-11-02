@@ -307,8 +307,8 @@ func TestBaseline_DisqualifiedToolchainAdvisoryIsReported(t *testing.T) {
 }
 
 // TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges runs GO-2021-0264 as the built-in table
-// carries it: fixed go1.16.10 and go1.17.3. A floor past both disqualifies it; a floor inside the
-// 1.17.x range leaves it undetermined. A go directive below 1.21 is no floor at all — go1.16.5 may
+// carries it: fixed go1.16.10 and go1.17.3. A floor past both disqualifies it, including the
+// go1.21.0 floor a toolchain line implies. A go directive below 1.21 is no floor at all — go1.16.5 may
 // have built a `go 1.17` module — so with nothing else established the toolchain is unresolved and
 // the advisory is undetermined for that reason, never disqualified off the directive.
 func TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges(t *testing.T) {
@@ -320,8 +320,11 @@ func TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges(t *testing.T) {
 		t.Errorf("go 1.21.0: GO-2021-0264 verdict = %q, want %q", got, report.VerdictDisqualified)
 	}
 
+	// No go command before 1.21 parses a toolchain line, so the floor is go1.21.0, past both fixes.
 	rep = runGoBaseline(t, "module example.com/target\n\ngo 1.17\n\ntoolchain go1.17.0\n", stdlib, table)
-	assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainNotScanned)
+	if got := verdictByID(rep)["GO-2021-0264"]; got != report.VerdictDisqualified {
+		t.Errorf("go 1.17 + toolchain line: GO-2021-0264 verdict = %q, want %q", got, report.VerdictDisqualified)
+	}
 
 	rep = runGoBaseline(t, "module example.com/target\n\ngo 1.17\n", stdlib, table)
 	assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainUnresolved)

@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
@@ -42,9 +41,9 @@ func NewDotNetPlugin(opts ...DotNetOption) (LanguagePlugin, error) {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath(BinaryName("dotnet"))
+		bin, err := discoverBinary("dotnet")
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("dotnet"), err)
+			return nil, err
 		}
 		p.bin = bin
 	}

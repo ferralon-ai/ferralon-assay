@@ -16,7 +16,10 @@ package pythonanalysis
 // inventory assembly + reason-code/field wiring is L0-gated (onyx-q6) and lands in E5.
 
 import (
+	"bytes"
+	"encoding/binary"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -58,6 +61,10 @@ type pyReq struct {
 	Raw      string // original spec text for a non-normal line (VCS/URL/editable/include identity)
 	Marker   string // captured PEP 508 marker text ("" = none)
 
+	// Redirected marks a lock entry installed from a git, URL or local source rather than an
+	// index: the advisory path reads its version as unresolved; the inventory keeps it.
+	Redirected bool
+
 	// E4 parent edges + classification (C4). Relationship is relUnexpressed for a format with
 	// no edge data (requirements.txt); the pdm.lock/uv.lock parsers set relDirect/relTransitive
 	// and populate Parents with the normalized names of the packages that declare this node as a
@@ -89,14 +96,35 @@ type pyReq struct {
 // drop), so a caller can distinguish "excluded because the marker said so" from "never
 // parsed". env may be nil (then any marked line is unresolved).
 func resolveRequirements(data []byte, env map[string]string, selection []string) []pyReq {
-	var out []pyReq
-	for _, raw := range joinContinuations(string(data)) {
+	return parseRequirementsFile(data, env, selection).reqs
+}
+
+// reqFile is one parsed requirements file: the requirements that name a PyPI project, plus
+// the selected lines that install something without naming one. Those lines become no node
+// (a node named after a path or URL is not a package), so the caller decides from them
+// whether the graph is complete.
+type reqFile struct {
+	reqs        []pyReq
+	includes    []string // "-r" targets as written
+	constraints []string // "-c" targets: pip installs the "-r" includes inside one, never its pins
+	locals      []string // local directory installs (".", "-e ./pkg"), extras stripped
+	unnamed     bool     // an archive, URL or VCS install whose project the line does not name
+	skipped     bool     // an include or editable option this reader does not follow
+}
+
+// parseRequirementsFile is resolveRequirements with the non-node lines kept. A line that is
+// not a requirement at all (a TOML "name = ..." key, stray text) is dropped, as pip would
+// refuse it rather than install anything.
+func parseRequirementsFile(data []byte, env map[string]string, selection []string) reqFile {
+	var f reqFile
+	for _, raw := range joinContinuations(decodeRequirements(data)) {
 		line := strings.TrimSpace(stripReqCommentSafe(raw))
 		if line == "" {
 			continue
 		}
 
 		// E3: retain --hash tokens rather than truncating them off the line.
+		options := line
 		line, hashes := extractHashes(line)
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -104,26 +132,64 @@ func resolveRequirements(data []byte, env map[string]string, selection []string)
 		}
 
 		// E3: a line the old parser dropped — an editable/include option or a VCS/URL
-		// requirement — becomes a partial node (source_unpinned), never a silent omission.
-		// A pure option line (e.g. --index-url) carries no dependency and is skipped.
-		if strings.HasPrefix(line, "-") {
-			if kind, ok := optionKind(line); ok {
-				out = append(out, buildSourceNode(line, kind, hashes, env, selection))
+		// requirement — is recorded, never silently omitted. A pure option line (e.g.
+		// --index-url) carries no dependency and is skipped. pip decides whether a line is an
+		// option line before it reads hashes, so a requirement after a leading --hash is one of
+		// its ignored positionals.
+		if strings.HasPrefix(options, "-") {
+			// pip splits an option line shell-style and parses every word as an option or,
+			// a marker included, an ignored positional. A line shlex cannot split fails the
+			// whole file in pip.
+			words, ok := shellSplit(options)
+			if !ok {
+				f.skipped = true
+				continue
+			}
+			if len(words) == 0 {
+				continue
+			}
+			kind := reqInclude
+			target, ok := includeTarget(words, 0)
+			if !ok {
+				kind = reqEditable
+				target, ok = editableTarget(words, 0)
+			}
+			if (!ok && abbreviatesInstallOption(words[0])) || laterInstallOption(words) {
+				f.skipped = true
+				continue
+			}
+			switch {
+			case ok && target != "" && kind == reqEditable:
+				// pip takes the whole word as the editable, so a glued marker is part of
+				// the path or URL, not a marker; leave it unread.
+				if strings.Contains(target, ";") {
+					f.skipped = true
+					continue
+				}
+				spec, _ := splitMarker(line)
+				f.addSource(spec, target, kind, hashes, env, selection)
+			case ok && target != "" && !isConstraintFlag(words[0]):
+				f.includes = append(f.includes, target)
+			default:
+				if c, ok := constraintTarget(words); ok {
+					f.constraints = append(f.constraints, c)
+				}
 			}
 			continue
 		}
-		if kind, ok := urlKind(line); ok {
-			out = append(out, buildSourceNode(line, kind, hashes, env, selection))
+		line = requirementArgs(line)
+		if _, ok := urlKind(line); ok || isPathSpec(line) || isFileLink(line) || directRefName(line) != "" {
+			if spec, marker := splitMarker(line); markerMaySelect(marker, env, selection) {
+				f.addSource(line, spec, reqNormal, hashes, env, selection)
+			}
 			continue
 		}
 
 		// Normal requirement: split marker, parse the spec (name/version/extras).
-		marker := ""
-		if i := strings.IndexByte(line, ';'); i >= 0 {
-			marker = strings.TrimSpace(line[i+1:])
-			line = strings.TrimSpace(line[:i])
+		line, marker := splitMarker(line)
+		if !wellFormedRequirement(line) {
+			continue
 		}
-
 		name, version, resolved, extras := parseRequirementSpec(line)
 		if name == "" {
 			continue
@@ -141,9 +207,295 @@ func resolveRequirements(data []byte, env map[string]string, selection []string)
 			Hashes:         hashes,
 		}
 		applyMarker(&r, env, selection)
-		out = append(out, r)
+		f.reqs = append(f.reqs, r)
 	}
-	return out
+	return f
+}
+
+// addSource records an editable, path, URL or VCS line (spec is its target, marker
+// stripped). A line that states its project — "name @ url", a "#egg=" fragment, a wheel
+// filename — becomes a source_unpinned node under that name; a local directory is kept for
+// the caller to check; anything else is an unnamed install.
+func (f *reqFile) addSource(line, spec string, kind reqKind, hashes []string, env map[string]string, selection []string) {
+	urlK, isURL := urlKind(spec)
+	if name := directRefName(spec); name != "" {
+		if kind == reqNormal {
+			kind = reqURL
+			_, ref, _ := strings.Cut(spec, "@")
+			if k, ok := urlKind(strings.TrimSpace(ref)); ok {
+				kind = k
+			}
+		}
+		f.reqs = append(f.reqs, buildSourceNode(line, name, kind, hashes, env, selection))
+		return
+	}
+	if isURL {
+		if kind == reqNormal {
+			kind = urlK
+		}
+		if name := eggName(spec); name != "" {
+			f.reqs = append(f.reqs, buildSourceNode(line, name, kind, hashes, env, selection))
+			return
+		}
+	}
+	if name := wheelName(spec); name != "" {
+		if kind == reqNormal {
+			kind = reqURL
+		}
+		f.reqs = append(f.reqs, buildSourceNode(line, name, kind, hashes, env, selection))
+		return
+	}
+	if isURL || hasArchiveExt(spec) {
+		f.unnamed = true
+		return
+	}
+	f.locals = append(f.locals, stripExtrasSuffix(spec))
+}
+
+// decodeRequirements decodes a requirements file the way pip's auto_decode does: a UTF-16 or
+// UTF-8 byte-order mark selects the encoding, and the mark itself is not text.
+func decodeRequirements(data []byte) string {
+	switch {
+	case bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}):
+		return string(data[3:])
+	case bytes.HasPrefix(data, []byte{0xFF, 0xFE}):
+		return decodeUTF16(data[2:], binary.LittleEndian)
+	case bytes.HasPrefix(data, []byte{0xFE, 0xFF}):
+		return decodeUTF16(data[2:], binary.BigEndian)
+	}
+	return string(data)
+}
+
+func decodeUTF16(b []byte, order binary.ByteOrder) string {
+	u := make([]uint16, len(b)/2)
+	for i := range u {
+		u[i] = order.Uint16(b[2*i:])
+	}
+	return string(utf16.Decode(u))
+}
+
+// splitMarker splits a "; <marker>" suffix off a line.
+func splitMarker(line string) (spec, marker string) {
+	if i := strings.IndexByte(line, ';'); i >= 0 {
+		return strings.TrimSpace(line[:i]), strings.TrimSpace(line[i+1:])
+	}
+	return line, ""
+}
+
+// markerMaySelect reports whether a line with this marker may be installed: no marker, a true
+// marker, or one that cannot be decided. Only a marker that evaluates false excludes it.
+func markerMaySelect(marker string, env map[string]string, selection []string) bool {
+	if marker == "" {
+		return true
+	}
+	mr := evaluateMarker(marker, env, selection)
+	return mr.unresolved || mr.selected
+}
+
+// editableTarget returns the target of an editable option at words[i] ("-e .", "-e.",
+// "--editable=./pkg").
+func editableTarget(words []string, i int) (string, bool) {
+	return optionValue(words, i, "--editable", "-e")
+}
+
+// abbreviatesInstallOption reports whether word is a shortened --requirement or --editable,
+// which pip's option parser accepts as the full option.
+func abbreviatesInstallOption(word string) bool {
+	word, _, _ = strings.Cut(word, "=")
+	return len(word) > 2 && (strings.HasPrefix("--requirement", word) || strings.HasPrefix("--editable", word))
+}
+
+// laterInstallOption reports whether an option line carries an include or editable after its
+// first option ("--pre -r dev.txt"); pip reads every option on the line.
+func laterInstallOption(words []string) bool {
+	for i := 1; i < len(words); i++ {
+		if !strings.HasPrefix(words[i], "-") {
+			continue
+		}
+		if _, ok := editableTarget(words, i); ok || abbreviatesInstallOption(words[i]) {
+			return true
+		}
+		if _, ok := includeTarget(words, i); ok && !isConstraintFlag(words[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// constraintTarget returns the file named by the first constraint option on an option line, in
+// any of pip's spellings ("-c c.txt", "-cc.txt", "--pre --cons=c.txt"); pip reads only the
+// first. A word another option consumes as its value ("-i -c") is not an option.
+func constraintTarget(words []string) (string, bool) {
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		name, val, attached := strings.Cut(w, "=")
+		long := strings.HasPrefix(w, "--")
+		switch {
+		case long && len(name) >= len("--cons") && strings.HasPrefix("--constraint", name):
+			if attached {
+				return val, val != ""
+			}
+		case !long && strings.HasPrefix(w, "-c"):
+			if len(w) > 2 {
+				return w[2:], true
+			}
+		case long && !attached && takesValue(name), !long && takesValue(w):
+			i++
+			continue
+		default:
+			continue
+		}
+		if i+1 < len(words) {
+			return words[i+1], true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+func isConstraintFlag(spec string) bool {
+	return strings.HasPrefix(spec, "-c") || strings.HasPrefix(spec, "--constraint")
+}
+
+// isPathSpec mirrors pip's test for a requirement that names a file or directory rather than
+// a project: a path separator, a leading ".", or an archive filename.
+func isPathSpec(spec string) bool {
+	spec, _ = splitMarker(spec)
+	return strings.ContainsAny(spec, `/\`) || strings.HasPrefix(spec, ".") || hasArchiveExt(spec)
+}
+
+// isFileLink reports a "file:" link without "//" ("file:.", "file:pkg"), which pip installs
+// as a local path.
+func isFileLink(spec string) bool {
+	return len(spec) >= len("file:") && strings.EqualFold(spec[:len("file:")], "file:")
+}
+
+func hasArchiveExt(spec string) bool {
+	base := strings.ToLower(specBase(spec))
+	for _, ext := range pipArchiveExts {
+		if strings.HasSuffix(base, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// specBase is the last path element of a path or URL, without a query or fragment.
+func specBase(spec string) string {
+	if i := strings.IndexAny(spec, "?#"); i >= 0 {
+		spec = spec[:i]
+	}
+	if i := strings.LastIndexAny(spec, `/\`); i >= 0 {
+		spec = spec[i+1:]
+	}
+	return spec
+}
+
+// directRefName is the project a PEP 508 direct reference ("name[extras] @ url") names, or ""
+// when the line is not one.
+func directRefName(spec string) string {
+	at := strings.IndexByte(spec, '@')
+	if at < 0 {
+		return ""
+	}
+	name := strings.TrimSpace(spec[:at])
+	if i := strings.IndexByte(name, '['); i >= 0 && strings.HasSuffix(name, "]") {
+		name = strings.TrimSpace(name[:i])
+	}
+	if !validProjectName(name) {
+		return ""
+	}
+	return normalizePyCoordinate(name)
+}
+
+// eggName is the project a VCS or URL requirement's "#egg=<name>" fragment names, or "".
+func eggName(spec string) string {
+	_, frag, ok := strings.Cut(spec, "#")
+	if !ok {
+		return ""
+	}
+	for _, kv := range strings.Split(frag, "&") {
+		egg, ok := strings.CutPrefix(kv, "egg=")
+		if !ok {
+			continue
+		}
+		if j := strings.IndexAny(egg, "; \t"); j >= 0 {
+			egg = egg[:j]
+		}
+		if !validProjectName(egg) {
+			return ""
+		}
+		return normalizePyCoordinate(egg)
+	}
+	return ""
+}
+
+// wheelName is the project a wheel filename names (PEP 427: the field before the first "-"),
+// or "" when spec is not a wheel. An sdist filename does not split unambiguously, so it names
+// nothing.
+func wheelName(spec string) string {
+	base := specBase(spec)
+	if !strings.HasSuffix(strings.ToLower(base), ".whl") {
+		return ""
+	}
+	name, _, ok := strings.Cut(base, "-")
+	if !ok || !validProjectName(name) {
+		return ""
+	}
+	return normalizePyCoordinate(name)
+}
+
+// stripExtrasSuffix drops a trailing "[extras]" from a local path (".[dev]" -> ".").
+func stripExtrasSuffix(spec string) string {
+	if strings.HasSuffix(spec, "]") {
+		if i := strings.LastIndexByte(spec, '['); i > 0 {
+			return strings.TrimSpace(spec[:i])
+		}
+	}
+	return spec
+}
+
+// requirementArgs returns a requirement line without its trailing per-line options
+// ("psycopg2 --no-binary psycopg2"): as pip splits it, the requirement ends at the first
+// whitespace-separated token that starts with '-'.
+func requirementArgs(line string) string {
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		if strings.HasPrefix(f, "-") {
+			return strings.Join(fields[:i], " ")
+		}
+	}
+	return line
+}
+
+// wellFormedRequirement reports whether spec (marker stripped) reads as a PEP 508 name
+// requirement: a valid project name, an optional extras group, then nothing or a version
+// specifier. A TOML key line ("name = \"x\"") fails on the bare "=".
+func wellFormedRequirement(spec string) bool {
+	end := strings.IndexAny(spec, "=<>!~[( \t")
+	if end < 0 {
+		return validProjectName(spec)
+	}
+	if !validProjectName(spec[:end]) {
+		return false
+	}
+	rest := strings.TrimSpace(spec[end:])
+	if strings.HasPrefix(rest, "[") {
+		j := strings.IndexByte(rest, ']')
+		if j < 0 {
+			return false
+		}
+		rest = strings.TrimSpace(rest[j+1:])
+	}
+	if rest == "" || strings.HasPrefix(rest, "(") {
+		return true
+	}
+	for _, op := range []string{"===", "==", "!=", "<=", ">=", "~=", "<", ">"} {
+		if strings.HasPrefix(rest, op) {
+			return true
+		}
+	}
+	return false
 }
 
 // stripReqCommentSafe removes a "# …" inline comment, treating '#' as a comment only at line
@@ -157,24 +509,6 @@ func stripReqCommentSafe(line string) string {
 		}
 	}
 	return line
-}
-
-// optionKind classifies a leading-"-" line. It returns (kind, true) for the dependency-
-// bearing option lines the old parser dropped — "-e"/"--editable" editables and
-// "-r"/"--requirement"/"-c"/"--constraint" includes — and (0, false) for a pure option line
-// (e.g. --index-url) that carries no dependency and should be skipped rather than recorded.
-func optionKind(line string) (reqKind, bool) {
-	flag := line
-	if i := strings.IndexAny(line, " \t="); i >= 0 {
-		flag = line[:i]
-	}
-	switch flag {
-	case "-e", "--editable":
-		return reqEditable, true
-	case "-r", "--requirement", "-c", "--constraint":
-		return reqInclude, true
-	}
-	return 0, false
 }
 
 // urlKind classifies a VCS or direct-URL requirement. git+/hg+/svn+/bzr+ prefixes are VCS;
@@ -191,18 +525,14 @@ func urlKind(line string) (reqKind, bool) {
 	return 0, false
 }
 
-// buildSourceNode builds a partial node for a dropped-shape line (editable/include/VCS/URL).
-// The node is Selected (the dependency IS installed) but carries source_unpinned partiality:
-// its exact identity is undeclared without a fetch (§3.1 — never infer safety from a missing
-// node). Any marker still gates selection; retained hashes are attached.
-func buildSourceNode(line string, kind reqKind, hashes []string, env map[string]string, selection []string) pyReq {
-	marker := ""
-	if i := strings.IndexByte(line, ';'); i >= 0 {
-		marker = strings.TrimSpace(line[i+1:])
-		line = strings.TrimSpace(line[:i])
-	}
+// buildSourceNode builds a partial node for an editable/VCS/URL/wheel line that names its
+// project. The node is Selected (the dependency IS installed) but carries source_unpinned
+// partiality: its version is undeclared without a fetch (§3.1 — never infer safety from a
+// missing node). Any marker still gates selection; retained hashes are attached.
+func buildSourceNode(line, name string, kind reqKind, hashes []string, env map[string]string, selection []string) pyReq {
+	line, marker := splitMarker(line)
 	r := pyReq{
-		Name:    sourceNodeName(line, kind),
+		Name:    name,
 		Source:  "requirements.txt",
 		Kind:    kind,
 		Raw:     line,
@@ -212,32 +542,6 @@ func buildSourceNode(line string, kind reqKind, hashes []string, env map[string]
 	}
 	applyMarker(&r, env, selection) // a marker still gates selection; may add env_unresolved
 	return r
-}
-
-// sourceNodeName derives a best-effort identity for a non-normal line: the "#egg=<name>"
-// fragment for a VCS/URL requirement when present, otherwise the target following the option
-// flag, otherwise the raw spec. Exact registry identity is undeclared (that is the
-// source_unpinned partiality) — this is only a stable label.
-func sourceNodeName(line string, kind reqKind) string {
-	if kind == reqVCS || kind == reqURL {
-		if i := strings.Index(line, "#egg="); i >= 0 {
-			egg := line[i+len("#egg="):]
-			if j := strings.IndexAny(egg, "&; \t"); j >= 0 {
-				egg = egg[:j]
-			}
-			if n := normalizePyCoordinate(egg); n != "" {
-				return n
-			}
-		}
-		return line
-	}
-	// editable/include: the target after the flag.
-	if i := strings.IndexAny(line, " \t="); i >= 0 {
-		if t := strings.TrimSpace(line[i+1:]); t != "" {
-			return t
-		}
-	}
-	return line
 }
 
 // extractHashes removes "--hash=<algo>:<digest>" (and the space-separated "--hash <value>")

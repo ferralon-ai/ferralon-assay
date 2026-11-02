@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -183,6 +184,10 @@ func runBaseline(args []string) error {
 	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
+	var missing *analyzerMissingError
+	if errors.As(err, &missing) {
+		return f.publishAnalyzerMissing(ctx, "baseline", missing)
+	}
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}

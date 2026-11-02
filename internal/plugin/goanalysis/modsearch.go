@@ -219,7 +219,7 @@ func goflagsBlockSearch(ctx context.Context, buildDir string) bool {
 	b, err := runCached(ctx, "goflagsblock", buildKey(buildDir), func() ([]byte, error) {
 		// GOFLAGS applies to go env's own flags too: -u, -w or -json there would print nothing or
 		// something other than GOFLAGS, so they are set on the command line, which overrides it.
-		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "-json=false", "-u=false", "-w=false", "-changed=false", "GOFLAGS"))
+		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "-json=false", "-u=false", "-w=false", "GOFLAGS"))
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, err

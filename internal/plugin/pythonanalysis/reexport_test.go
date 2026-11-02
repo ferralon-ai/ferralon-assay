@@ -47,6 +47,8 @@ func TestCallGraph_ReexportRebinding(t *testing.T) {
 		{name: "star import that binds the name", a: reexport + "from .x import *\n", c: bare, callee: "g", listed: true, edgeless: true, vulnWins: true,
 			extra: map[string]string{"pkg/x.py": "from .v import vuln as g\n"}},
 		{name: "star import of a dependency", a: reexport + "from os.path import *\n", c: bare, callee: "g", listed: true},
+		{name: "nested star import of a dependency", a: reexport + "from .x import *\n", c: bare, callee: "g", listed: true,
+			extra: map[string]string{"pkg/x.py": "from .y import *\n", "pkg/y.py": "from os.path import *\n"}},
 		{name: "stored through the module object", a: reexport, c: bare, callee: "g", listed: true,
 			extra: map[string]string{"b.py": "import pkg.a\nfrom pkg.v import vuln\npkg.a.g = vuln\n"}},
 		{name: "re-exported twice, assigned at the end", a: "from .b import g\n", c: bare, callee: "g", listed: true, edgeless: true, vulnWins: true,

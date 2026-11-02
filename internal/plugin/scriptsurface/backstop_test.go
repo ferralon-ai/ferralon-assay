@@ -72,10 +72,13 @@ func TestVeto_Backstop(t *testing.T) {
 		{"install script named like prose", tree(map[string]string{"install.py": "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"}), true, "install.py:2"},
 		{"install template named like prose", tree(map[string]string{"ci/templates/install.yml": "steps:\n  - script: inst add x\n"}), true, "ci/templates/install.yml:2"},
 		{"scripts/*.js execSync", tree(map[string]string{"scripts/setup.js": "const { execSync } = require('child_process')\nexecSync('inst add x')\n"}), true, "scripts/setup.js:2"},
-		{"Dockerfile-prod RUN (ferralon-ai/tracker#630)", tree(map[string]string{"Dockerfile-prod": "FROM base\nWORKDIR /app\nRUN inst add x==1\n"}), true, "Dockerfile-prod:3"},
-		{"Containerfile_dev RUN", tree(map[string]string{"Containerfile_dev": "FROM base\nRUN inst add x\n"}), true, "Containerfile_dev:2"},
+		// surfaceOf reads these names as Dockerfiles, so the Dockerfile rule withholds and
+		// the backstop records nothing.
+		{"Dockerfile-prod RUN (ferralon-ai/tracker#630)", tree(map[string]string{"Dockerfile-prod": "FROM base\nWORKDIR /app\nRUN inst add x==1\n"}), true, ""},
+		{"Containerfile_dev RUN", tree(map[string]string{"Containerfile_dev": "FROM base\nRUN inst add x\n"}), true, ""},
+		{"Dockerfile-like name no surface takes", tree(map[string]string{"myDockerfile": "FROM base\nWORKDIR /app\nRUN inst add x==1\n"}), true, "myDockerfile:3"},
 		{"arbitrary Dockerfile name (ferralon-ai/tracker#631)", tree(map[string]string{"docker-compose.yml": "services:\n  web:\n    build: {context: ., dockerfile: docker/web.df}\n", "docker/web.df": "FROM base\nRUN inst add x==1\n"}), true, "docker/web.df:2"},
-		{"Dockerfile-like ENV sets an installer variable", tree(map[string]string{"Dockerfile-prod": "FROM base\nENV INST_INDEX=http://mirror\n"}), true, "Dockerfile-prod:2"},
+		{"Dockerfile-like ENV sets an installer variable", tree(map[string]string{"myDockerfile": "FROM base\nENV INST_INDEX=http://mirror\n"}), true, "myDockerfile:2"},
 		{"poe task (ferralon-ai/tracker#508)", tree(map[string]string{"pyproject.toml": "[project]\nname = \"a\"\n\n[tool.poe.tasks]\nsetup = \"inst add x\"\n"}), true, "pyproject.toml:5"},
 		{"pdm script (ferralon-ai/tracker#508)", tree(map[string]string{"pyproject.toml": "[tool.pdm.scripts]\nsetup = {shell = \"inst add x\"}\n"}), true, "pyproject.toml:2"},
 		{"hatch env script (ferralon-ai/tracker#508)", tree(map[string]string{"pyproject.toml": "[tool.hatch.envs.default.scripts]\nsetup = [\n  \"echo hi\",\n  \"inst add x\",\n]\n"}), true, "pyproject.toml:4"},
@@ -120,12 +123,12 @@ func TestVeto_Backstop(t *testing.T) {
 		{"installer by path", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: ./venv/bin/inst add x\n"}), true, "ci/pipeline.yml:2"},
 		{"read-only verb inside shell text", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: bash -c \"inst list; inst add x\"\n"}), true, "ci/pipeline.yml:2"},
 		{"installer as an argument", tree(map[string]string{"ci/pipeline.yml": "steps:\n  - command: retry 3 inst add x\n"}), true, "ci/pipeline.yml:2"},
-		// Dockerfile-like files are read by the Dockerfile rule.
-		{"lowercase Dockerfile-like", tree(map[string]string{"Dockerfile-prod": "from base\nrun inst add x\n"}), true, "Dockerfile-prod:2"},
-		{"Dockerfile-like heredoc", tree(map[string]string{"Dockerfile-prod": "FROM base\nRUN <<EOF\ninst add x\nEOF\n"}), true, "Dockerfile-prod:2"},
-		{"Dockerfile-like CMD", tree(map[string]string{"Dockerfile-prod": "FROM base\nCMD inst add x\nRUN echo\n"}), true, "Dockerfile-prod:2"},
-		{"Dockerfile-like continuation line", tree(map[string]string{"Dockerfile-prod": "FROM base\nRUN echo hi && \\\n    inst add x\n"}), true, "Dockerfile-prod:2"},
-		{"Dockerfile-like bound install passes", tree(map[string]string{"Dockerfile-prod": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), false, ""},
+		// Dockerfile-like files no surface takes by name are read by the Dockerfile rule.
+		{"lowercase Dockerfile-like", tree(map[string]string{"myDockerfile": "from base\nrun inst add x\n"}), true, "myDockerfile:2"},
+		{"Dockerfile-like heredoc", tree(map[string]string{"myDockerfile": "FROM base\nRUN <<EOF\ninst add x\nEOF\n"}), true, "myDockerfile:2"},
+		{"Dockerfile-like CMD", tree(map[string]string{"myDockerfile": "FROM base\nCMD inst add x\nRUN echo\n"}), true, "myDockerfile:2"},
+		{"Dockerfile-like continuation line", tree(map[string]string{"myDockerfile": "FROM base\nRUN echo hi && \\\n    inst add x\n"}), true, "myDockerfile:2"},
+		{"Dockerfile-like bound install passes", tree(map[string]string{"myDockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), false, ""},
 		// One-line JSON and further CI keys.
 		{"one-line Buildkite JSON", tree(map[string]string{".buildkite/pipeline.json": "{\"steps\":[{\"label\":\"deps\",\"command\":\"inst add x\"}]}"}), true, ".buildkite/pipeline.json:1"},
 		{"one-line JSON commands array", tree(map[string]string{"ci/steps.json": "{\"steps\":[{\"commands\":[\"echo hi\",\"inst add x\"]}]}\n"}), true, "ci/steps.json:1"},

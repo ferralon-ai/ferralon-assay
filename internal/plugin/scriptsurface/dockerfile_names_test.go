@@ -8,33 +8,40 @@ import "testing"
 func TestVeto_DockerfileNames(t *testing.T) {
 	const install = "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nRUN tool rewrite\nRUN inst sync\n"
 	tests := []struct {
-		name string
-		want bool
+		name     string
+		want     bool
+		backstop bool // withheld by the backstop, which names the line, not by a surface rule
 	}{
-		{"Dockerfile", true},
-		{"Containerfile", true},
-		{"Dockerfile.prod", true},
-		{"Dockerfile-prod", true},
-		{"Dockerfile_api", true},
-		{"dockerfile-dev", true},
-		{"Containerfile-dev", true},
-		{"Containerfile_api", true},
-		{"api.Dockerfile", true},
-		{"api-Dockerfile", true},
-		{"api_Dockerfile", true},
-		{"api-Containerfile", true},
-		{"docker/Dockerfile-prod", true},
+		{"Dockerfile", true, false},
+		{"Containerfile", true, false},
+		{"Dockerfile.prod", true, false},
+		{"Dockerfile-prod", true, false},
+		{"Dockerfile_api", true, false},
+		{"dockerfile-dev", true, false},
+		{"Containerfile-dev", true, false},
+		{"Containerfile_api", true, false},
+		{"api.Dockerfile", true, false},
+		{"api-Dockerfile", true, false},
+		{"api_Dockerfile", true, false},
+		{"api-Containerfile", true, false},
+		{"docker/Dockerfile-prod", true, false},
 
-		// Guards: the name is what makes it one.
-		{"notes.txt", false},
-		{"Dockerfiles", false},
-		{"myDockerfile", false},
+		// Guards: the name is what makes it one. Dockerfiles and myDockerfile are no surface,
+		// but their content is Dockerfile-like, so the backstop withholds on them and names
+		// the line; a surface withholds by its own rule and the backstop names nothing.
+		{"notes.txt", false, false},
+		{"Dockerfiles", true, true},
+		{"myDockerfile", true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "reqs.txt": "x==1\n", tt.name: install})
-			if got := withheld(dir, testSpec); got != tt.want {
+			got, at := backstopped(dir)
+			if got != tt.want {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+			if tt.backstop != (at != "") {
+				t.Fatalf("Unrecognised() = %q, want a backstop line %v", at, tt.backstop)
 			}
 		})
 	}

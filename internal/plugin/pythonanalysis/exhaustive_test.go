@@ -420,6 +420,9 @@ func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
 		// "===" selects exactly the version string it names, so it pins the release the lock
 		// records under that string.
 		{"an arbitrary-equality pin", reqs(strings.Replace(pins, "click==8.1.7", "click===8.1.7", 1)), true},
+		// The string is compared as written: "v8.1.7" is not the string the lock records, so it
+		// selects nothing the closure can follow.
+		{"an arbitrary-equality pin with a leading v", reqs(strings.Replace(pins, "click==8.1.7", "click===v8.1.7", 1)), false},
 
 		// Lines that are not pins.
 		{"a range", reqs(strings.Replace(pins, "click==8.1.7", "click>=8", 1)), false},

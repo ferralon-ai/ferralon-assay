@@ -32,6 +32,7 @@ func TestRequirementsLineShapes(t *testing.T) {
 		includes []string
 		locals   []string
 		unnamed  bool
+		skipped  bool
 		wantRaw  string // the node's Raw, checked when set
 	}{
 		{name: "pinned", line: "requests==2.31.0", wantNode: "requests", wantKind: reqNormal},
@@ -76,6 +77,15 @@ func TestRequirementsLineShapes(t *testing.T) {
 		{name: "relative dir without a dot", line: "libs/core", locals: []string{"libs/core"}},
 		{name: "vcs egg that is not a project name", line: "git+https://github.com/o/r.git#egg=foo!bar", unnamed: true},
 		{name: "wheel whose name is not a project name", line: "dist/foo!bar-1.0-py3-none-any.whl", unnamed: true},
+		{name: "hash after a pin", line: "pyjwt==2.8.0 --hash=sha256:x", wantNode: "pyjwt", wantKind: reqNormal},
+		{name: "pin after a leading hash", line: "--hash=sha256:x pyjwt==2.8.0"},
+		{name: "pin after a leading spaced hash", line: "--hash sha256:x pyjwt==2.8.0"},
+		{name: "marked pin after a leading hash", line: `--hash=sha256:x pyjwt==2.8.0 ; sys_platform == "linux"`},
+		{name: "vcs egg after a leading hash", line: "--hash=sha256:x git+https://github.com/o/r.git#egg=foo"},
+		{name: "archive url after a leading hash", line: "--hash=sha256:x https://h/a.zip"},
+		{name: "local dir after a leading hash", line: "--hash=sha256:x ./libs/core"},
+		{name: "editable after a leading hash", line: "--hash=sha256:x -e ./pkg", skipped: true},
+		{name: "include after a leading hash", line: "--hash=sha256:x -r base.txt", skipped: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rf := parseRequirementsFile([]byte(tc.line+"\n"), map[string]string{"sys_platform": "linux"}, nil)
@@ -104,6 +114,9 @@ func TestRequirementsLineShapes(t *testing.T) {
 			}
 			if rf.unnamed != tc.unnamed {
 				t.Errorf("unnamed = %v, want %v", rf.unnamed, tc.unnamed)
+			}
+			if rf.skipped != tc.skipped {
+				t.Errorf("skipped = %v, want %v", rf.skipped, tc.skipped)
 			}
 		})
 	}

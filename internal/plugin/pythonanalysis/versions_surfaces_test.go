@@ -79,7 +79,7 @@ func TestResolveVersions_ManifestCandidateVetoes(t *testing.T) {
 		"lowercase cargo.lock": {"svc/cargo.lock", "version = 3\n"},
 		"Yarn.lock case":       {"svc/Yarn.lock", "x\n"},
 		"Manifest.in case":     {"svc/Manifest.in", "include README.md\n"},
-		"requirement lines":    {"svc/deps", "foo= =1\n"},
+		"requirement lines":    {"svc/deps", "foo (== 1)\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mustVetoedPy(t, writeTree(t, map[string]string{

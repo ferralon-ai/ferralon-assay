@@ -11,6 +11,7 @@ package pythonanalysis
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -111,14 +112,16 @@ func parsePEP508(s string) (pep508Req, bool) {
 	return r, true
 }
 
-// normalizeSpecifier validates a comma-separated PEP 440 specifier set and returns it with all
-// whitespace removed (">= 2.0, < 3" → ">=2.0,<3"). ok is false when any clause has an unknown
+// normalizeSpecifier validates a comma-separated PEP 440 specifier set and returns it with the
+// whitespace around each operator removed (">= 2.0, < 3" → ">=2.0,<3"). ok is false when any clause has an unknown
 // operator or a version that does not look like a PEP 440 version.
 func normalizeSpecifier(spec string) (string, bool) {
 	clauses := strings.Split(spec, ",")
 	out := make([]string, 0, len(clauses))
 	for _, c := range clauses {
-		c = strings.Join(strings.Fields(c), "")
+		// The operator is read before any inner whitespace goes: "== =1.0" is an "==" clause
+		// with a malformed version, not "===1.0", and packaging rejects it.
+		c = strings.TrimSpace(c)
 		if c == "" {
 			return "", false
 		}
@@ -132,7 +135,10 @@ func normalizeSpecifier(spec string) (string, bool) {
 		if op == "" {
 			return "", false
 		}
-		ver := c[len(op):]
+		ver := strings.TrimSpace(c[len(op):])
+		if strings.IndexFunc(ver, unicode.IsSpace) >= 0 {
+			return "", false
+		}
 		if op != "===" && ver != "" && (ver[0] == 'v' || ver[0] == 'V') {
 			ver = ver[1:] // PEP 440 normalizes one leading "v" away
 		}
@@ -200,13 +206,19 @@ func requirementConstraint(spec string) string {
 }
 
 // specifierPin returns the version a normalized specifier (pep508Req.Specifier) pins when
-// its first clause is an exact "==X" with no "*" prefix match, as parseRequirementSpec
-// resolves one.
+// its first clause is an exact "==X" with no "*" prefix match, or a "===X" whose X is a PEP 440
+// version, as parseRequirementSpec resolves one.
 func specifierPin(specifier string) (string, bool) {
 	first, _, _ := strings.Cut(specifier, ",")
 	ver, ok := strings.CutPrefix(first, "==")
-	if !ok || ver == "" || strings.HasPrefix(ver, "=") || strings.Contains(ver, "*") {
+	if !ok || ver == "" || strings.Contains(ver, "*") {
 		return "", false
+	}
+	if arb, ok := strings.CutPrefix(ver, "="); ok {
+		if !arbitraryPinIsVersion(arb) {
+			return "", false
+		}
+		ver = arb
 	}
 	return ver, true
 }

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
+	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -702,8 +703,9 @@ func isProjectNameRune(c rune) bool {
 }
 
 // parseRequirementSpec extracts (name, version, resolved, extras) from a single requirement
-// spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix); anything else
-// (range, compatible, bare name) is UNRESOLVED. The extras group "[a,b]" is CAPTURED (PLAN-170
+// spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix), or a "===X" whose X
+// is a PEP 440 version; anything else (range, compatible, bare name) is UNRESOLVED. The extras
+// group "[a,b]" is CAPTURED (PLAN-170
 // E2, replacing the old unconditional skip) and returned normalized; the advisory path
 // (parseRequirementLines, parsePyproject) ignores it, while the selected-set path resolves it
 // against the declared extras selection.
@@ -741,18 +743,34 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool, ext
 	if !strings.HasPrefix(rest, "==") {
 		return name, "", false, extras // not an exact pin → UNRESOLVED
 	}
-	ver := strings.TrimSpace(rest[2:])
+	op := "=="
+	if strings.HasPrefix(rest, "===") {
+		op = "==="
+	}
+	ver := strings.TrimSpace(rest[len(op):])
 	// A version with a further comma-clause or a "*" prefix is not a single exact pin.
 	if i := strings.IndexAny(ver, ", \t"); i >= 0 {
 		ver = ver[:i]
 	}
-	if ver != "" && (ver[0] == 'v' || ver[0] == 'V') {
+	if op != "===" && ver != "" && (ver[0] == 'v' || ver[0] == 'V') {
 		ver = ver[1:] // PEP 440 normalizes one leading "v" away, as parsePEP508 does
 	}
-	if ver == "" || strings.Contains(ver, "*") || containsJinja(ver) {
-		return name, "", false, extras // "*" prefix or a Jinja-templated version → UNRESOLVED
+	if ver == "" || strings.HasPrefix(ver, "=") || strings.Contains(ver, "*") || containsJinja(ver) {
+		return name, "", false, extras // "== =1.0", a "*" prefix or a Jinja-templated version → UNRESOLVED
+	}
+	if op == "===" && !arbitraryPinIsVersion(ver) {
+		return name, "", false, extras
 	}
 	return name, ver, true, extras
+}
+
+// arbitraryPinIsVersion reports whether a "===" operand names a version. Arbitrary equality
+// matches the installed version string exactly, so it pins one only when that string is itself
+// a PEP 440 version; any other string ("1.0-custom") is not a version an advisory range can
+// place.
+func arbitraryPinIsVersion(v string) bool {
+	_, ok := pep440.Parse(v)
+	return ok
 }
 
 // containsJinja reports whether s carries a Jinja2 template delimiter, including a
@@ -1046,7 +1064,7 @@ func stringList(v any) ([]string, bool) {
 }
 
 // parsePyprojectLexical reads the "dependencies = [ ... ]" array under a "[project]" table
-// line by line, resolving only exact "==" pins. It is the fallback for a file the TOML decoder
+// line by line, resolving only exact pins (as parseRequirementSpec does). It is the fallback for a file the TOML decoder
 // rejects.
 func parsePyprojectLexical(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -68,6 +69,7 @@ func (o *Orchestrator) Run(ctx context.Context, assessmentID string) error {
 	// stage outcome — a failed scan still consumed a scan's worth of compute.
 	scanCounter.Add(ctx, 1)
 
+	timer := stageTimerFrom(ctx)
 	o.log("assessment=%s starting (%d stages)", assessmentID, len(o.stages))
 	for i, stage := range o.stages {
 		c.Status = stage.Status()
@@ -75,7 +77,12 @@ func (o *Orchestrator) Run(ctx context.Context, assessmentID string) error {
 			return err
 		}
 		o.log("assessment=%s stage=%s (%d/%d) status=%s", assessmentID, stage.Name(), i+1, len(o.stages), c.Status)
-		if err := stage.Run(ctx, c, o.store); err != nil {
+		start := time.Now()
+		err := stage.Run(ctx, c, o.store)
+		if timer != nil {
+			timer.record(stage.Name(), time.Since(start))
+		}
+		if err != nil {
 			c.Status = assessment.StatusFailed
 			o.log("assessment=%s stage=%s FAILED: %v", assessmentID, stage.Name(), err)
 			if uerr := o.assessments.Update(c); uerr != nil {

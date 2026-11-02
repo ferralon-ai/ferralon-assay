@@ -1,6 +1,9 @@
 package jsanalysis
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestMarkRebound: a call's callee name (or its receiver) is rebound when any binding the
 // resolver does not read may be in force where the call runs. Each row parses one module and
@@ -61,6 +64,71 @@ func TestMarkRebound(t *testing.T) {
 			}
 			if site.rebound != tc.want {
 				t.Errorf("rebound = %v, want %v", site.rebound, tc.want)
+			}
+		})
+	}
+}
+
+// TestMarkRebound_NestedNamesPerBlock pins that the names a nested class or function keyword
+// binds are read per outermost block: a lookup in one function must not answer for another. The
+// nested name is a function expression's, which no scope records, so only that read finds it.
+func TestMarkRebound_NestedNamesPerBlock(t *testing.T) {
+	src := "function g() {}\n" +
+		"function b() { return g(1); }\n" +
+		"function a() { const h = function g() {}; return g(2); }\n" +
+		"function c() { return g(3); }\n"
+	res := parseFile("app", src)
+	var got []bool
+	for _, cs := range res.calls {
+		if !cs.opaque && calleeAsWritten(cs) == "g" {
+			got = append(got, cs.rebound)
+		}
+	}
+	want := []bool{false, true, false}
+	if len(got) != len(want) {
+		t.Fatalf("calls to g = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("call %d to g: rebound = %v, want %v", i+1, got[i], want[i])
+		}
+	}
+}
+
+// TestMarkRebound_ArrowBodyJoinedLines pins where an arrow's expression body ends across a
+// line break it joins, including a continuation line with no indentation, and that finding
+// the end terminates.
+func TestMarkRebound_ArrowBodyJoinedLines(t *testing.T) {
+	cases := []struct {
+		name   string
+		src    string
+		callee string
+	}{
+		{"call continues on the next line", "function x() {}\nconst f = (x) => g\n(0, x());\n", "x"},
+		{"unindented operator line", "function g() {}\nconst f = (g) => 0\n+ g(1);\n", "g"},
+		{"indented operator lines", "function g() {}\nconst f = (g) => 0\n\n   + g(1);\n", "g"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan parseResult, 1)
+			go func() { done <- parseFile("app", tc.src) }()
+			var res parseResult
+			select {
+			case res = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("parseFile did not finish in 5s")
+			}
+			var site *callSite
+			for k := range res.calls {
+				if cs := res.calls[k]; !cs.opaque && calleeAsWritten(cs) == tc.callee && site == nil {
+					site = &res.calls[k]
+				}
+			}
+			if site == nil {
+				t.Fatalf("no call to %s in %+v", tc.callee, res.calls)
+			}
+			if !site.rebound {
+				t.Errorf("rebound = false, want true: the call is in the arrow's body")
 			}
 		})
 	}

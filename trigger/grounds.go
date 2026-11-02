@@ -468,15 +468,13 @@ func libraryEntrypoints(store artifact.Store, assessmentID string) []plugin.Reso
 
 // reachabilityResult reads the reachability stage's result off its artifact.
 func reachabilityResult(store artifact.Store, assessmentID string) (plugin.ReachabilityResult, bool) {
-	arts, err := store.Query(assessmentID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
+	rec, ok, err := pipeline.Reachability(store, assessmentID)
+	if err != nil || !ok {
 		return plugin.ReachabilityResult{}, false
 	}
-	var payload struct {
-		Reachability plugin.ReachabilityResult `json:"reachability"`
-	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
+	reach, err := rec.Result()
+	if err != nil {
 		return plugin.ReachabilityResult{}, false
 	}
-	return payload.Reachability, true
+	return reach, true
 }

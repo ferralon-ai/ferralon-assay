@@ -781,6 +781,16 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
+			name: "script its own namespace handed to a method named __import__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\nclass Loader:\n    def __import__(self, name, ns):\n        ns[\"main\"] = inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import Loader\n\nLoader().__import__(\"x\", globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script another name setattr on its own module",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

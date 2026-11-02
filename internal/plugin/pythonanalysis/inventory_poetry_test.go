@@ -27,7 +27,7 @@ func TestInventory_PoetryInstallGroups(t *testing.T) {
 			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ncategory = \"dev\"\noptional = false\n"
 		bareLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\n"
 	)
-	versions := map[string]string{"jinja2": "3.1.4", "pytest": "8.3.2", "sphinx": "7.4.7", "colorama": "0.4.6", "setuptools": "75.1.0"}
+	versions := map[string]string{"jinja2": "3.1.4", "pytest": "8.3.2", "sphinx": "7.4.7", "colorama": "0.4.6", "setuptools": "75.1.0", "packaging": "24.2"}
 	tests := []struct {
 		name         string
 		files        map[string]string // over pyproject.toml and poetry.lock
@@ -72,6 +72,8 @@ func TestInventory_PoetryInstallGroups(t *testing.T) {
 		{"a pip self-upgrade puts only pip in place", map[string]string{"install.sh": "pip install -U pip\npoetry install --only main\n"}, []string{"pytest", "sphinx"}},
 		{"a distribution the interpreter seeds is never left out", map[string]string{"install.sh": "poetry install --only main\n",
 			"poetry.lock": lock + "\n" + "[[package]]\nname = \"setuptools\"\nversion = \"75.1.0\"\ngroups = [\"dev\"]\n"}, []string{"pytest", "sphinx"}},
+		{"what a seeded distribution requires is never left out", map[string]string{"install.sh": "poetry install --only main\n",
+			"poetry.lock": lock + "\n" + "[[package]]\nname = \"packaging\"\nversion = \"24.2\"\ngroups = [\"dev\"]\n"}, []string{"pytest", "sphinx"}},
 		// An installer in a file no surface rule reads may put any package in place.
 		{"an installer the backstop finds outside every surface", map[string]string{"install.sh": "poetry install --only main\n",
 			"tasks.py": "from invoke import task\n\n@task\ndef deps(c):\n    c.run(\"pip install pytest==8.3.2\")\n"}, nil},

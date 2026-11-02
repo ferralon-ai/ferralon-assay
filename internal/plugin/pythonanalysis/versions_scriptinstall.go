@@ -284,6 +284,10 @@ var pipConfigNamedRE = regexp.MustCompile(`(?i)pip\.conf|pip\.ini|pip_config_fil
 // venv. So each may be installed, at a version nothing read here records, in every build.
 var seededDistributions = []string{"pip", "setuptools", "wheel"}
 
+// seededRequirements are what a seeded distribution requires, which seeding puts in place
+// beside it: wheel 0.46 and later requires packaging.
+var seededRequirements = []string{"packaging"}
+
 // uvConfigNamedRE matches, in a script surface's text, a uv config file or directory (uv.toml,
 // /etc/uv, /etc/xdg/uv, .config/uv, AppData or ProgramData's uv), UV_CONFIG_FILE, or a
 // variable that moves where uv looks for one (XDG_CONFIG_HOME or XDG_CONFIG_DIRS, HOME,

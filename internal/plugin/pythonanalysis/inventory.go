@@ -257,7 +257,8 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // manifest names (scriptWithheld), an allowed pip install -r of a file the inventory need not
 // read, or an unrecognised install surface may each put such a package in place, so any of
 // them leaves every package installed. What tooling names, the distributions an interpreter
-// seeds and those an allowed pip self-upgrade or ensurepip installs, is never left out.
+// seeds and those an allowed pip self-upgrade or ensurepip installs, is never left out, nor is
+// what a seeded distribution requires (seededRequirements).
 func inventoryUninstalled(buildDir string) func(path string) map[string]bool {
 	_, _, scriptWithheld, installs, poetry, tooling, unrecognised, _ := versionSurfaces(buildDir)
 	if scriptWithheld || unrecognised != "" || len(installs) > 0 {
@@ -266,6 +267,9 @@ func inventoryUninstalled(buildDir string) func(path string) map[string]bool {
 	return func(path string) map[string]bool {
 		out := poetry.uninstalled(path)
 		for n := range tooling {
+			delete(out, n)
+		}
+		for _, n := range seededRequirements {
 			delete(out, n)
 		}
 		return out

@@ -394,3 +394,57 @@ func TestCallGraph_HeadBoundByCallersStarImport(t *testing.T) {
 		t.Errorf("head the star-imported module's star import cannot bind: edge to %s; edges %v", vuln, res.Edges)
 	}
 }
+
+// TestCallGraph_GlobalImportInADef: an import in a def that declares the name global binds
+// the module's attribute, so a site in another module that reaches the attribute (by import,
+// through a module attribute, a package's submodule name or a star import) reaches what the
+// import binds. The module also binds the name another way, so the site stays listed and the
+// target escapes; where a caller's star import binds the chain's head, the site draws the
+// edge instead. Where the module binds the name at module level as well, both targets stay
+// reached. An import in a def without the declaration binds only the def's name.
+func TestCallGraph_GlobalImportInADef(t *testing.T) {
+	globalG := "def init():\n    global g\n    from pkg.alt import y as g\n"
+	globalH := "def init():\n    global h\n    from ..v import vuln as h\n"
+	chainSite := "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		// local: the def does not declare the name global, so vuln must not escape.
+		local bool
+		// both: the module binds the name at module level as well, so pkg/impl.f must be reached too.
+		both bool
+	}{
+		{name: "attribute through an imported module", files: map[string]string{"pkg/sub/a.py": globalG, "c.py": chainSite}},
+		{name: "attribute assigned None first", files: map[string]string{"pkg/sub/a.py": "g = None\n" + globalG, "c.py": chainSite}},
+		{name: "attribute by from-import", files: map[string]string{"pkg/sub/a.py": globalG, "c.py": "from pkg.sub.a import g\n\ndef go():\n    return g.h(1)\n"}},
+		{name: "attribute through a from-imported module", files: map[string]string{"pkg/sub/a.py": globalG, "c.py": "from pkg.sub import a\n\ndef go():\n    return a.g.h(1)\n"}},
+		{name: "attribute bound by import-as", files: map[string]string{"pkg/sub/a.py": "def init():\n    global g\n    import pkg.alt.y as g\n", "c.py": chainSite}},
+		{name: "function by from-import", files: map[string]string{"pkg/sub/a.py": globalH, "c.py": "from pkg.sub.a import h\n\ndef go():\n    return h(1)\n"}},
+		{name: "function beside a def of the name", files: map[string]string{"pkg/sub/a.py": "def h(x):\n    return x\n" + globalH, "c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.h(1)\n"}},
+		{name: "function as a value", files: map[string]string{"pkg/sub/a.py": globalH, "c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.h\n    return cb(1)\n"}},
+		{name: "function by the caller's star import", files: map[string]string{"pkg/sub/a.py": globalH, "c.py": "from pkg.sub.a import *\n\ndef go():\n    return h(1)\n"}},
+		{name: "attribute by the caller's star import", files: map[string]string{"pkg/sub/a.py": globalG, "c.py": "from pkg.sub.a import *\n\ndef go():\n    return g.h(1)\n"}},
+		{name: "re-exported by from-import", files: map[string]string{"pkg/sub/a.py": "from pkg.sub.b import g\n", "pkg/sub/b.py": globalG, "c.py": "from pkg.sub.a import g\n\ndef go():\n    return g.h(1)\n"}},
+		{name: "re-exported by star import", files: map[string]string{"pkg/sub/a.py": "from pkg.sub.b import *\n", "pkg/sub/b.py": globalG, "c.py": chainSite}},
+		{name: "package rebinding its submodule's name", files: map[string]string{"pkg/sub/__init__.py": "def init():\n    global a\n    from pkg import x as a\n",
+			"pkg/sub/a.py": "from ..impl import f as g\n", "pkg/x.py": "from pkg.alt import y as g\n", "c.py": chainSite}},
+		{name: "function bound at module level too", both: true, files: map[string]string{"pkg/sub/a.py": "from ..v import vuln as h\n\ndef init():\n    global h\n    from ..impl import f as h\n",
+			"c.py": "from pkg.sub.a import h\n\ndef go():\n    return h(1)\n"}},
+		{name: "attribute bound at module level too", both: true, files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y as g\n\ndef init():\n    global g\n    from pkg.alt2 import z as g\n",
+			"pkg/alt2/__init__.py": "from . import z\n", "pkg/alt2/z.py": "from ..impl import f as h\n", "c.py": chainSite}},
+		{name: "import in a def without the declaration", local: true, files: map[string]string{"pkg/sub/a.py": "def init():\n    from ..v import vuln as h\n",
+			"c.py": "from pkg.sub.a import h\n\ndef go():\n    return h(1)\n"}},
+	} {
+		files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n",
+			"pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y.py": "from ..v import vuln as h\n"}
+		maps.Copy(files, tc.files)
+		res := mustCallGraph(t, files)
+		goC, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/v", nil, "vuln", 1)
+		if reached := hasEdge(res.Edges, goC, vuln) || symbolSet(res.Escaped)[vuln]; reached == tc.local {
+			t.Errorf("%s: %s reached = %v, want %v; edges %v, escaped %v", tc.name, vuln, reached, !tc.local, res.Edges, res.Escaped)
+		}
+		if f := funcSCIP("pkg/impl", nil, "f", 1); tc.both && !hasEdge(res.Edges, goC, f) && !symbolSet(res.Escaped)[f] {
+			t.Errorf("%s: %s not reached; edges %v, escaped %v", tc.name, f, res.Edges, res.Escaped)
+		}
+	}
+}

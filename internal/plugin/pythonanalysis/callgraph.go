@@ -487,7 +487,7 @@ func (p *program) aliasLeaves(path string) []string {
 			out = append(out, leaf)
 		}
 		for _, i := range p.byModule[mod] {
-			for _, next := range p.files[i].fpBinds[""][leaf] {
+			for _, next := range p.files[i].attrBinds(leaf) {
 				follow(next, "", chained)
 			}
 		}
@@ -514,7 +514,7 @@ func (p *program) subBinds(g *fileParse, pkg, sub string) []string {
 	seen := map[string]bool{}
 	var binds func(h *fileParse)
 	binds = func(h *fileParse) {
-		for _, b := range h.fpBinds[""][sub] {
+		for _, b := range h.attrBinds(sub) {
 			if b != self && b != own && !slices.Contains(out, b) {
 				out = append(out, b)
 			}
@@ -832,6 +832,15 @@ func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
 	return true
 }
 
+// attrBinds is the first-party import paths the module binds its attribute name to: by an
+// import at module level, or in a def that declares the name global.
+func (f *fileParse) attrBinds(name string) []string {
+	if len(f.globalBinds[name]) == 0 {
+		return f.fpBinds[""][name]
+	}
+	return append(slices.Clone(f.fpBinds[""][name]), f.globalBinds[name]...)
+}
+
 // anyScopeBinds is every first-party import path the file binds name to, in any scope.
 func (f *fileParse) anyScopeBinds(name string) []string {
 	var out []string
@@ -935,7 +944,7 @@ func loadProgram(buildDir string) (*program, error) {
 			topNames[name] = true
 		}
 		for _, b := range append(scan.bindings, scan.relBindings...) {
-			if b.scope == "" {
+			if b.scope == "" || b.global {
 				topNames[b.local] = true
 			}
 		}
@@ -1390,9 +1399,11 @@ func (prog *program) escapeFrames(out map[string]bool) {
 		escapeModule(path)
 		for _, i := range prog.byModule[path] {
 			g := &prog.files[i]
-			for attr, paths := range g.fpBinds[""] {
-				for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
-					escape(fd)
+			for _, binds := range []map[string][]string{g.fpBinds[""], g.globalBinds} {
+				for attr, paths := range binds {
+					for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
+						escape(fd)
+					}
 				}
 			}
 			for _, p := range g.starPaths {
@@ -1467,7 +1478,7 @@ func (prog *program) escapeChain(base string, rest []string, escape func(funcDec
 		for _, i := range prog.byModule[path] {
 			g := &prog.files[i]
 			declared = declared || g.topNames[attr]
-			if paths := g.fpBinds[""][attr]; len(paths) > 0 {
+			if paths := g.attrBinds(attr); len(paths) > 0 {
 				bound = true
 				for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
 					escape(fd)

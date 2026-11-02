@@ -1775,7 +1775,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	own.names = sortedDedup(own.names)
 	own.trusted = sortedDedup(own.trusted)
 	own.builtinNames = sortedDedup(builtin.names)
-	own.builtinAny = builtin.any || slices.Contains(values, "builtins")
+	own.builtinAny = builtin.any
 	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed, own
 }
 

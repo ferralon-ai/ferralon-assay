@@ -90,7 +90,7 @@ func (prog *program) markModuleStores() {
 		}
 	}
 	// A builtin trusted to only read the namespace handed to it may be rebound by a store into
-	// the module by its name or by __builtins__, or into builtins.
+	// the module by its name, or into builtins.
 	rebuilt, rebuiltAny := map[string]bool{}, false
 	for _, f := range prog.files {
 		if !isTestModule(f.module) {
@@ -103,7 +103,7 @@ func (prog *program) markModuleStores() {
 	for fi := range prog.files {
 		f := &prog.files[fi]
 		if !isTestModule(f.module) && slices.ContainsFunc(f.own.trusted, func(w string) bool {
-			return rebuiltAny || rebuilt[w] || f.storedNames[w] || f.storedNames["__builtins__"]
+			return rebuiltAny || rebuilt[w] || f.storedNames[w]
 		}) {
 			exposed = append(exposed, fi)
 		}

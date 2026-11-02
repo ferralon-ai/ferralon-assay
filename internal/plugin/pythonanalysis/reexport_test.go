@@ -490,3 +490,35 @@ func TestCallGraph_ModuleHeldByAssignment(t *testing.T) {
 		}
 	}
 }
+
+// TestCallGraph_ValueChainThroughBoundModule: a dotted value whose attribute a module binds
+// to another module by import ("a.g.h", where a holds "from pkg.alt import y as g") hands
+// over what the rest of the chain names in that module, so the function it lands on must
+// escape.
+func TestCallGraph_ValueChainThroughBoundModule(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		// unreached: the chain lands on another function, so vuln must not escape.
+		unreached bool
+	}{
+		{name: "value two deep", files: map[string]string{"c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.g.h\n    return cb(1)\n"}},
+		{name: "argument two deep", files: map[string]string{"c.py": "from pkg.sub import a\n\ndef run(f):\n    return f(1)\n\ndef go():\n    return run(a.g.h)\n"}},
+		{name: "bound module as a value", files: map[string]string{"c.py": "from pkg.sub import a\n\ndef go():\n    m = a.g\n    return m.h(1)\n"}},
+		{name: "three deep", files: map[string]string{"pkg/sub/a.py": "from pkg import alt as g\n", "c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.g.y.h\n    return cb(1)\n"}},
+		{name: "module re-exported by a third module", files: map[string]string{"pkg/sub/a.py": "from pkg.alt2 import y as g\n", "pkg/alt2.py": "from pkg.alt import y\n", "c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.g.h\n    return cb(1)\n"}},
+		{name: "bound by a global import in a def", files: map[string]string{"pkg/sub/a.py": "def init():\n    global g\n    from pkg.alt import y as g\n", "c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.g.h\n    return cb(1)\n"}},
+		{name: "bound to a top-level module", files: map[string]string{"pkg/sub/a.py": "import top as g\n", "top.py": "from pkg.v import vuln as h\n", "c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.g.h\n    return cb(1)\n"}},
+		{name: "chain lands on another function", unreached: true, files: map[string]string{"pkg/alt/y.py": "from ..v import vuln as h\n\ndef other(x):\n    return x\n", "c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.g.other\n    return cb(1)\n"}},
+		{name: "import cycle", unreached: true, files: map[string]string{"pkg/sub/a.py": "from pkg.b import x as g\n", "pkg/b.py": "from pkg.sub.a import g as x\n", "c.py": "from pkg.sub import a\n\ndef go():\n    cb = a.g.h\n    return cb(1)\n"}},
+	} {
+		files := map[string]string{"pkg/v.py": "def vuln(x):\n    return x\n", "pkg/sub/a.py": "from pkg.alt import y as g\n",
+			"pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y.py": "from ..v import vuln as h\n"}
+		maps.Copy(files, tc.files)
+		res := mustCallGraph(t, files)
+		goC, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/v", nil, "vuln", 1)
+		if reached := hasEdge(res.Edges, goC, vuln) || symbolSet(res.Escaped)[vuln]; reached == tc.unreached {
+			t.Errorf("%s: %s reached = %v, want %v; edges %v, escaped %v", tc.name, vuln, reached, !tc.unreached, res.Edges, res.Escaped)
+		}
+	}
+}

@@ -234,6 +234,11 @@ func PutArtifact(store artifact.Store, c *assessment.Assessment, producedBy stri
 	if err != nil {
 		return artifact.Ref{}, err
 	}
+	return putPayload(store, c, producedBy, t, descriptor, payload)
+}
+
+// putPayload is PutArtifact for a payload that is already encoded.
+func putPayload(store artifact.Store, c *assessment.Assessment, producedBy string, t artifact.Type, descriptor string, payload []byte) (artifact.Ref, error) {
 	return store.Put(&artifact.Artifact{
 		AssessmentID: c.ID,
 		Type:         t,
@@ -3275,7 +3280,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	vulnID := govulnMatchID(store, c.ID, c.Request.Vulnerability.ID)
 
 	depCache := s.deps.cacheFor(store, c.ID)
-	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, DependencyCache: depCache})
+	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, DependencyCache: depCache})
 	if err != nil {
 		return err
 	}
@@ -3327,15 +3332,11 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// mis-attribution). The CallGraph leg is unchanged (guard discovery reads it).
 	reachOut := reach
 	reachOut.Paths = paths
-	reachPayload := struct {
-		Reachability plugin.ReachabilityResult `json:"reachability"`
-		CallGraph    plugin.CallGraphResult    `json:"call_graph"`
-		// ToolchainScan records which Go toolchain this analysis actually ran under.
-		// It is the fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass
-		// itself off as a subject scan.
-		ToolchainScan ToolchainScan `json:"toolchain_scan"`
-	}{Reachability: reachOut, CallGraph: cg, ToolchainScan: toolchainScan}
-	reachRef, err := PutArtifact(store, c, s.Name(), artifact.TypeReachability, "reachability (resolved)", reachPayload)
+	reachPayload, err := reachabilityPayload(reachOut, cg, toolchainScan)
+	if err != nil {
+		return err
+	}
+	reachRef, err := putPayload(store, c, s.Name(), artifact.TypeReachability, "reachability (resolved)", reachPayload)
 	if err != nil {
 		return err
 	}
@@ -3390,11 +3391,43 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	return nil
 }
 
+// reachabilityPayload is the resolved reachability artifact's payload, byte for byte what json.Marshal
+// makes of
+//
+//	struct {
+//		Reachability  plugin.ReachabilityResult `json:"reachability"`
+//		CallGraph     plugin.CallGraphResult    `json:"call_graph"`
+//		ToolchainScan ToolchainScan             `json:"toolchain_scan"`
+//	}
+//
+// except that the call graph is appended from the view's encoding rather than re-encoded for every
+// advisory. ToolchainScan records which Go toolchain this analysis actually ran under. It is the
+// fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
+// subject scan.
+func reachabilityPayload(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) ([]byte, error) {
+	r, err := json.Marshal(reach)
+	if err != nil {
+		return nil, err
+	}
+	t, err := json.Marshal(ts)
+	if err != nil {
+		return nil, err
+	}
+	b := append([]byte(`{"reachability":`), r...)
+	b = append(b, `,"call_graph":`...)
+	if b, err = cg.AppendJSON(b); err != nil {
+		return nil, err
+	}
+	b = append(b, `,"toolchain_scan":`...)
+	b = append(b, t...)
+	return append(b, '}'), nil
+}
+
 // firstPartyReachPaths derives (ingress→sink) ReachPaths for a FIRST-PARTY sink by walking the
 // static CallGraph backward from the resolved sink toward an entry point. Soundness / inv.5: this
 // asserts only STRUCTURAL reachability — a candidate, never a verdict and never proof.
-func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressResult, sink string) []plugin.ReachPath {
-	if sink == "" || len(cg.Edges) == 0 {
+func firstPartyReachPaths(cg plugin.CallGraphView, ingresses plugin.IngressResult, sink string) []plugin.ReachPath {
+	if sink == "" || cg.EdgeCount() == 0 {
 		return nil
 	}
 
@@ -3404,8 +3437,8 @@ func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressRes
 	// carries the structured Symbol for each node so the ReachPath.Sink/Ingress/Trace fields —
 	// now plugin.Symbol — are reconstructed at the return boundary.
 	symBySCIP := make(map[string]plugin.Symbol)
-	callers := make(map[string][]string, len(cg.Edges))
-	for _, e := range cg.Edges {
+	callers := make(map[string][]string, cg.EdgeCount())
+	for e := range cg.Edges() {
 		symBySCIP[e.Caller.SCIP] = e.Caller
 		symBySCIP[e.Callee.SCIP] = e.Callee
 		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
@@ -3418,8 +3451,8 @@ func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressRes
 			ingressSyms[in.Symbol.SCIP] = struct{}{}
 		}
 	}
-	roots := make(map[string]struct{}, len(cg.Roots))
-	for _, r := range cg.Roots {
+	roots := make(map[string]struct{})
+	for r := range cg.Roots() {
 		symBySCIP[r.SCIP] = r
 		roots[r.SCIP] = struct{}{}
 	}

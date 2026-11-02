@@ -203,3 +203,43 @@ func TestCallGraph_ImportAsBindingThroughItself(t *testing.T) {
 		}
 	}
 }
+
+// An import-as chain one dot deep is its own top attribute: it must not stand in for the
+// restart a deeper chain under it needs, wherever else in the program it is imported.
+func TestCallGraph_ImportAsChainUnderOneDotChain(t *testing.T) {
+	s4 := func(outer string) map[string]string {
+		return map[string]string{
+			"pkg/__init__.py": "from . import r\nfrom . import alt2 as r\nfrom . import sub\n" + outer + "\n", "pkg/sub/__init__.py": "", "pkg/sub/a.py": "from ..impl import f as g\n",
+			"pkg/alt/__init__.py": "import pkg.r.y as a\n", "pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f as g\n",
+			"pkg/alt2/__init__.py": "from . import y\n", "pkg/alt2/y.py": "from ..v import vuln as g\n",
+			"c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n"}
+	}
+	s4n := s4("from . import alt as sub")
+	s4n["tools/__init__.py"] = ""
+	s4n["tools/other.py"] = "import pkg.alt as zz\n"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{"site prefix bound by a one-dot import-as", s4("import pkg.alt as sub")},
+		{"site prefix bound by from-import, one-dot import-as elsewhere", s4n},
+		{"import-as leaf through a rebound prefix", map[string]string{
+			"pkg/__init__.py": "from . import r\nfrom . import alt2 as r\n", "pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f\n",
+			"pkg/alt2/__init__.py": "from ..v import vuln as y\n", "pkg/m.py": "import pkg.r.y as g\n",
+			"c.py": "import pkg.m\n\ndef go():\n    return pkg.m.g(1)\n"}},
+		{"chained visit before the unchained one", map[string]string{
+			"pkg/__init__.py":     "from . import r\nfrom . import alt2 as r\nfrom . import sub\nfrom . import w\nimport pkg.w.v as sub\nfrom . import alt as sub\n",
+			"pkg/sub/__init__.py": "", "pkg/sub/a.py": "from ..impl import f as g\n", "pkg/w/__init__.py": "from .. import alt as v\n", "pkg/w/v.py": "",
+			"pkg/alt/__init__.py": "import pkg.r.y as a\n", "pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f as g\n",
+			"pkg/alt2/__init__.py": "from . import y\n", "pkg/alt2/y.py": "from ..v import vuln as g\n",
+			"c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n"}},
+	} {
+		files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n"}
+		maps.Copy(files, tc.files)
+		res := mustCallGraph(t, files)
+		goC, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/v", nil, "vuln", 1)
+		if !hasEdge(res.Edges, goC, vuln) && !symbolSet(res.Escaped)[vuln] {
+			t.Errorf("%s: %s unreachable; edges %v, escaped %v", tc.name, vuln, res.Edges, res.Escaped)
+		}
+	}
+}

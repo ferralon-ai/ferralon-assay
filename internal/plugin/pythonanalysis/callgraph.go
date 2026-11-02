@@ -435,9 +435,10 @@ func (p *program) aliasLeaves(path string) []string {
 	var out []string
 	var walk func(path string, from int, chained bool)
 	// follow walks b+suffix, starting over at the top when b is an import-as chain met
-	// outside another one.
+	// outside another one. A one-dot chain ("pkg/x") is its own top attribute, so it walks as
+	// a from-import would and leaves later chains free to start over.
 	follow := func(b, suffix string, chained bool) {
-		if p.chainPaths[b] && !chained {
+		if p.chainPaths[b] && !chained && strings.Count(b, "/") > 1 {
 			walk(b+suffix, 1, true)
 		} else {
 			walk(b+suffix, strings.Count(b, "/"), chained)

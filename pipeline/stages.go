@@ -1858,17 +1858,17 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	toolchain := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	goFloor := ""
 	if language == "go" {
-		in := toolchainInputs{
-			subjectDeclared:    s.subjectGoVersion,
-			ciObserved:         s.ciGoVersion,
-			trustCIObserved:    s.trustCIGoVersion,
-			buildResolved:      buildToolchain,
-			toolchainDirective: toolchainDirective,
-			goDirective:        goVersion,
+		cands := ToolchainCandidates{
+			SubjectDeclared:    s.subjectGoVersion,
+			CIObserved:         s.ciGoVersion,
+			TrustCIObserved:    s.trustCIGoVersion,
+			BuildResolved:      buildToolchain,
+			ToolchainDirective: toolchainDirective,
+			GoDirective:        goVersion,
 		}
-		toolchain = resolveToolchainFact(in)
+		toolchain = ResolveToolchain(cands)
 		if !bazelWorkspaceAbove(buildDir, checkoutRoot) {
-			goFloor = goLineFloor(in)
+			goFloor = goLineFloor(toolchainInputs{toolchainDirective: cands.ToolchainDirective, goDirective: cands.GoDirective})
 		}
 	}
 

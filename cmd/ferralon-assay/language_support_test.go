@@ -45,10 +45,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -319,14 +321,7 @@ func TestHouseCanariesStillOptIn(t *testing.T) {
 // script instead would have tested the wrong artifact on the surface that has it, and SKIPPED on the
 // published repo, where it does not exist and never will.
 func TestBakedTargetsCoverEverySupportedLanguage(t *testing.T) {
-	// In-module, so it is present on every surface this test runs on: an unreadable table is a
-	// failure, never a skip.
-	path := filepath.Join("..", "..", "scripts", "build-release.sh")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading the release target table at %s: %v", path, err)
-	}
-	script := string(data)
+	script := readReleaseTargetTable(t)
 	for _, language := range supportedLanguages {
 		want := "./cmd/" + plugin.BinaryName(language)
 		if !strings.Contains(script, want) {
@@ -335,4 +330,107 @@ func TestBakedTargetsCoverEverySupportedLanguage(t *testing.T) {
 				want, language)
 		}
 	}
+}
+
+// TestBakedTargetsAreAllSupportedLanguages is the other half of supportedLanguages' "exactly when":
+// every analyzer plugin the release bakes is a listed language.
+//
+// The list gates behaviour, not only this file's claim. releaseLanguage reads it to decide what a
+// missing analyzer means: for a listed language it is an install fault and the run fails, publishing
+// nothing; for an unlisted one it is a neutral, published not-analyzed Report. A plugin baked into
+// the tarball but left off the list would turn its own install fault into that neutral outcome — exit
+// 0 and a zero-finding Report through every sink, replacing what an earlier run published.
+func TestBakedTargetsAreAllSupportedLanguages(t *testing.T) {
+	baked := bakedPluginTargets(readReleaseTargetTable(t))
+	// A parse that finds nothing would pass vacuously: the release always bakes at least one plugin.
+	if len(baked) == 0 {
+		t.Fatal("found no ./cmd/" + brand.PluginPrefix + "* target in build-release.sh BAKED_TARGETS: " +
+			"the table's form changed and bakedPluginTargets no longer reads it")
+	}
+	for _, pkg := range unlistedBakedPlugins(baked, supportedLanguages) {
+		t.Errorf("build-release.sh BAKED_TARGETS builds %s, but its language is not in supportedLanguages: "+
+			"a host missing that shipped plugin would publish a not-analyzed Report instead of failing", pkg)
+	}
+}
+
+// TestUnlistedBakedPlugins pins the parse and the comparison TestBakedTargetsAreAllSupportedLanguages
+// runs on the real table, including the drift it exists to catch.
+func TestUnlistedBakedPlugins(t *testing.T) {
+	const table = `# ./cmd/assay-plugin-ruby is named in a comment, outside the table
+BAKED_TARGETS=(
+  ferralon-assay-scan=./cmd/ferralon-assay
+  ferralon-assay-scan-plugin=./cmd/assay-plugin-go
+  ferralon-assay-scan-plugin-cfamily=./cmd/assay-plugin-cfamily
+)
+OTHER=(
+  x=./cmd/assay-plugin-rust
+)
+`
+	cases := []struct {
+		name      string
+		script    string
+		languages []string
+		want      []string
+	}{
+		{"every baked plugin listed", table, []string{"go", "cfamily"}, nil},
+		{"a baked plugin left off the list", table, []string{"go"}, []string{"./cmd/assay-plugin-cfamily"}},
+		{"a listed language not baked is the other test's", table, []string{"go", "cfamily", "java"}, nil},
+		{"no table", "BUILD=(\n  a=./cmd/assay-plugin-go\n)\n", []string{}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := unlistedBakedPlugins(bakedPluginTargets(tc.script), tc.languages)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("unlistedBakedPlugins = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got, want := bakedPluginTargets(table), []string{"./cmd/assay-plugin-go", "./cmd/assay-plugin-cfamily"}; !slices.Equal(got, want) {
+		t.Errorf("bakedPluginTargets = %q, want %q", got, want)
+	}
+}
+
+// readReleaseTargetTable reads scripts/build-release.sh. It is in-module, so it is present on every
+// surface these tests run on: an unreadable table is a failure, never a skip.
+func readReleaseTargetTable(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "scripts", "build-release.sh")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the release target table at %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// bakedPluginTargets returns the analyzer plugin packages (./cmd/assay-plugin-<lang>) in script's
+// BAKED_TARGETS array, in order. Lines are name=package; the scanner's own target and anything
+// outside the array are not plugins.
+func bakedPluginTargets(script string) []string {
+	var pkgs []string
+	in := false
+	for _, line := range strings.Split(script, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "BAKED_TARGETS=(":
+			in = true
+		case in && line == ")":
+			return pkgs
+		case in:
+			if _, pkg, ok := strings.Cut(line, "="); ok && strings.HasPrefix(pkg, "./cmd/"+brand.PluginPrefix) {
+				pkgs = append(pkgs, pkg)
+			}
+		}
+	}
+	return pkgs
+}
+
+// unlistedBakedPlugins returns the baked plugin packages whose language is not in languages.
+func unlistedBakedPlugins(baked, languages []string) []string {
+	var unlisted []string
+	for _, pkg := range baked {
+		if !slices.ContainsFunc(languages, func(l string) bool { return pkg == "./cmd/"+plugin.BinaryName(l) }) {
+			unlisted = append(unlisted, pkg)
+		}
+	}
+	return unlisted
 }

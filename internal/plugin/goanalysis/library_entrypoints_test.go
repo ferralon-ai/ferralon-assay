@@ -278,3 +278,46 @@ func TestResolveEntrypoints_Placement(t *testing.T) {
 		})
 	}
 }
+
+// TestWithholdForLibraryEscape_IncompleteLoad: a withhold the incomplete load contributes to declares
+// tool_failure beside library_escape; one a complete load makes because a package reaches does not.
+func TestWithholdForLibraryEscape_IncompleteLoad(t *testing.T) {
+	base := map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Bad() {}\n",
+	}
+	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
+	cases := []struct {
+		name   string
+		lib    string
+		failed bool
+	}{
+		{"a load that does not type-check", "package lib\n\nvar N int = \"x\"\n", true},
+		{"a complete load that reaches the module", "package lib\n\nimport \"example.com/vulnmod\"\n\nfunc Get() func() { return vulnmod.Bad }\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, err := plugin.ParseLibraryEntrypoints("auto")
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := writeTree(t, merge(base, map[string]string{"pkg/lib/lib.go": tc.lib}))
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refuted := plugin.ReachabilityResult{
+				Partiality: plugin.Complete(),
+				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
+			}
+			res := withholdForLibraryEscape(refuted, scanned, load.Packages, resolveEntrypoints(load.Packages, entry, dir))
+			if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonLibraryEscape) {
+				t.Fatalf("result %+v, want the refutation withheld as library_escape", res)
+			}
+			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.failed {
+				t.Errorf("tool_failure declared = %v, want %v (partiality %+v)", failed, tc.failed, res.Partiality)
+			}
+		})
+	}
+}

@@ -111,8 +111,10 @@ func (p *program) declsNamed(leaves []string) []funcDecl {
 // only where the caller holds that binding (aliasBound): a bare call whose name the caller's
 // scopes bind by import, not shadowed by a parameter or local, or a call through a name
 // bound to a first-party module that re-exports the leaf, along a path whose attributes may
-// themselves hold modules. escape is the wider set the escape scan uses: every alias the
-// file binds the name to in any scope.
+// themselves hold modules. Where no scope decides a chain's head, the paths the file's star
+// imports may bind it to stand beside those (starImportPaths). escape is the wider set the
+// escape scan uses: every alias the file binds the name to in any scope, and the star
+// imports' paths.
 func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) {
 	name := cs.calleeName
 	if name == "" {
@@ -142,7 +144,38 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 	if paths, ok := f.aliasBound(head, cs.scopes); ok && !cs.inner {
 		edge = p.withAliases(edge, via(paths))
 	}
-	return edge, p.withAliases(p.withAliases([]string{name}, edge), via(f.anyScopeBinds(head)))
+	stars := p.starImportPaths(f, head)
+	if _, decided := f.deciding(cs); !decided && !cs.inner && !cs.shadowed {
+		edge = p.withAliases(edge, via(stars))
+	}
+	return edge, p.withAliases(p.withAliases([]string{name}, edge), via(append(f.anyScopeBinds(head), stars...)))
+}
+
+// starImportPaths is the paths the file's first-party star imports may bind name to: the name in
+// each star-imported module that may bind it other than by the star imports followed here
+// (starMayBindBesides) or has a submodule by the name, which a package's star import binds once
+// something has loaded it. The star-imported modules' own star imports are followed in turn,
+// each module once.
+func (p *program) starImportPaths(f *fileParse, name string) []string {
+	var out []string
+	seen := map[string]bool{}
+	var walk func(stars []string)
+	walk = func(stars []string) {
+		for _, star := range stars {
+			if seen[star] {
+				continue
+			}
+			seen[star] = true
+			if path := star + "/" + name; p.starMayBindBesides(star, name, true) || len(p.byModule[path]) > 0 {
+				out = append(out, path)
+			}
+			for _, i := range p.byModule[star] {
+				walk(p.files[i].starPaths)
+			}
+		}
+	}
+	walk(f.starPaths)
+	return out
 }
 
 // deciding finds the scope that decides the name a site calls (a chain's head): the
@@ -454,7 +487,7 @@ func (p *program) aliasLeaves(path string) []string {
 			out = append(out, leaf)
 		}
 		for _, i := range p.byModule[mod] {
-			for _, next := range p.files[i].fpBinds[""][leaf] {
+			for _, next := range p.files[i].attrBinds(leaf) {
 				follow(next, "", chained)
 			}
 		}
@@ -481,7 +514,7 @@ func (p *program) subBinds(g *fileParse, pkg, sub string) []string {
 	seen := map[string]bool{}
 	var binds func(h *fileParse)
 	binds = func(h *fileParse) {
-		for _, b := range h.fpBinds[""][sub] {
+		for _, b := range h.attrBinds(sub) {
 			if b != self && b != own && !slices.Contains(out, b) {
 				out = append(out, b)
 			}
@@ -573,11 +606,22 @@ func (p *program) moduleRebinds(mod, name string) bool {
 // module declares or imports it at top level, star-imports or computes names itself, or is
 // not a module the lane reads.
 func (p *program) starMayBind(path, name string) bool {
+	return p.starMayBindBesides(path, name, false)
+}
+
+// starMayBindBesides is starMayBind, except that with walked set the module's first-party
+// star imports don't count: the caller follows those itself.
+func (p *program) starMayBindBesides(path, name string, walked bool) bool {
 	if len(p.byModule[path]) == 0 {
 		return true
 	}
 	for _, i := range p.byModule[path] {
-		if g := &p.files[i]; g.topNames[name] || len(g.stars) > 0 || g.computed || g.storedAny || g.storedNames[name] {
+		g := &p.files[i]
+		stars := len(g.stars)
+		if walked {
+			stars -= len(g.starPaths)
+		}
+		if g.topNames[name] || stars > 0 || g.computed || g.storedAny || g.storedNames[name] {
 			return true
 		}
 	}
@@ -788,6 +832,15 @@ func (f *fileParse) siteComplete(cs callSite, depDrawn bool) bool {
 	return true
 }
 
+// attrBinds is the first-party import paths the module binds its attribute name to: by an
+// import at module level, or in a def that declares the name global.
+func (f *fileParse) attrBinds(name string) []string {
+	if len(f.globalBinds[name]) == 0 {
+		return f.fpBinds[""][name]
+	}
+	return append(slices.Clone(f.fpBinds[""][name]), f.globalBinds[name]...)
+}
+
 // anyScopeBinds is every first-party import path the file binds name to, in any scope.
 func (f *fileParse) anyScopeBinds(name string) []string {
 	var out []string
@@ -891,7 +944,7 @@ func loadProgram(buildDir string) (*program, error) {
 			topNames[name] = true
 		}
 		for _, b := range append(scan.bindings, scan.relBindings...) {
-			if b.scope == "" {
+			if b.scope == "" || b.global {
 				topNames[b.local] = true
 			}
 		}
@@ -1320,39 +1373,37 @@ func (prog *program) escapeFrames(out map[string]bool) {
 	}
 	modDone := map[string]bool{}
 	// escapeModule escapes every function of the modules an import path names: the module
-	// is a value, so any of its functions can be reached by attribute name.
-	escapeModule := func(path string) {
+	// is a value, so any of its functions can be reached by attribute name, and so can what
+	// its first-party imports and star imports bind as its attributes, and everything of a
+	// module so bound. A star import binds the same names, so it escapes the same set.
+	var escapeModule func(path string)
+	escapeModule = func(path string) {
 		if modDone[path] {
 			return
 		}
 		modDone[path] = true
-		for _, g := range prog.files {
-			if moduleNamedBy(g.module, path) {
-				for _, fd := range g.decls {
-					escape(fd)
-				}
-			}
-		}
-	}
-	// escapeStar escapes what a star import may bind: every function of the module, what its
-	// own first-party imports bind at module level, and what its star imports bind in turn.
-	starDone := map[string]bool{}
-	var escapeStar func(path string)
-	escapeStar = func(path string) {
-		if starDone[path] {
-			return
-		}
-		starDone[path] = true
-		escapeModule(path)
-		for _, i := range prog.byModule[path] {
+		for i := range prog.files {
 			g := &prog.files[i]
-			for attr, paths := range g.fpBinds[""] {
-				for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
-					escape(fd)
+			if !moduleNamedBy(g.module, path) {
+				continue
+			}
+			for _, fd := range g.decls {
+				escape(fd)
+			}
+			for _, binds := range []map[string][]string{g.fpBinds[""], g.globalBinds} {
+				for attr, paths := range binds {
+					for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
+						escape(fd)
+					}
+					for _, p := range paths {
+						if prog.named[p] {
+							escapeModule(p)
+						}
+					}
 				}
 			}
 			for _, p := range g.starPaths {
-				escapeStar(p)
+				escapeModule(p)
 			}
 		}
 	}
@@ -1374,7 +1425,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 			escapeModule(path)
 		}
 		for _, path := range f.starPaths {
-			escapeStar(path)
+			escapeModule(path)
 		}
 		for name := range f.refs.names {
 			for _, fd := range prog.declsNamed(prog.withAliases([]string{name}, f.anyScopeBinds(name))) {
@@ -1423,7 +1474,7 @@ func (prog *program) escapeChain(base string, rest []string, escape func(funcDec
 		for _, i := range prog.byModule[path] {
 			g := &prog.files[i]
 			declared = declared || g.topNames[attr]
-			if paths := g.fpBinds[""][attr]; len(paths) > 0 {
+			if paths := g.attrBinds(attr); len(paths) > 0 {
 				bound = true
 				for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
 					escape(fd)

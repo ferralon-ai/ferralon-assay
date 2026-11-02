@@ -820,6 +820,7 @@ func stdlibVersion(ctx context.Context, acq *acquired, dir string, mf *modfile.F
 		SubjectDeclared: acq.goToolchain.declared,
 		CIObserved:      acq.goToolchain.observed,
 		TrustCIObserved: acq.goToolchain.trustObserved,
+		BazelWorkspace:  pipeline.BazelWorkspaceAbove(dir),
 	}
 	if mf.Go != nil {
 		in.GoDirective = mf.Go.Version

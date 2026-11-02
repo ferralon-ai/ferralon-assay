@@ -142,6 +142,10 @@ type toolchainInputs struct {
 	buildResolved      string
 	toolchainDirective string
 	goDirective        string
+	// bazelWorkspace is set when a Bazel workspace sits at or above the module root
+	// (BazelWorkspaceAbove). rules_go then compiles with the SDK the workspace declares, which
+	// go.mod's directives do not bound.
+	bazelWorkspace bool
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
@@ -201,7 +205,8 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	}
 	if in.trustCIObserved {
 		exactSources = append(exactSources, struct{ raw, source string }{in.ciObserved, ToolchainSourceCIObserved})
-		if !directivesBindToolchain(in) {
+		// Under Bazel the host go command's resolution says nothing about the SDK rules_go compiles with.
+		if !directivesBindToolchain(in) && !in.bazelWorkspace {
 			exactSources = append(exactSources, struct{ raw, source string }{in.buildResolved, ToolchainSourceBuildResolved})
 		}
 	}
@@ -269,9 +274,12 @@ var firstToolchainLineRelease = goToolchainVersion{major: 1, minor: 21}
 // `toolchain` line's version is never a candidate (see the file comment). ok is false when the go
 // line does not bind or does not parse, in which case the returned fact is the explicit unresolved
 // one and no exact claim can be refuted.
+//
+// Inside a Bazel workspace (bazelWorkspace) rules_go compiles with the SDK the workspace declares, so
+// no directive is a floor: the result is the same as when the go line does not bind.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	unresolved := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
-	if !directivesBindToolchain(in) {
+	if in.bazelWorkspace || !directivesBindToolchain(in) {
 		return unresolved, goToolchainVersion{}, false
 	}
 	parsed, ok := parseGoToolchainVersion(in.goDirective)

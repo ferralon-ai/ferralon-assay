@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -86,6 +87,7 @@ type toolchainInventoryFields struct {
 	Language  string        `json:"language"`
 	GoVersion string        `json:"go_version"`
 	Toolchain ToolchainFact `json:"toolchain"`
+	GoFloor   string        `json:"go_floor"`
 }
 
 // runRealInventory runs the REAL codebase_inventory stage over the on-disk tree and returns what it
@@ -419,6 +421,7 @@ func TestCodebaseInventory_GoFloorReachesRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			buildDir := writeGoModFixture(t, tc.goMod)
 			if tc.marker != "" {
+				gitInitRepo(t, buildDir)
 				if err := os.WriteFile(filepath.Join(buildDir, tc.marker), nil, 0o644); err != nil {
 					t.Fatalf("write %s: %v", tc.marker, err)
 				}
@@ -445,39 +448,53 @@ func TestCodebaseInventory_GoFloorReachesRequest(t *testing.T) {
 	}
 }
 
-// TestBazelWorkspaceAbove: a marker in the module root or any directory up to the checkout root
-// counts; one above the checkout root does not.
+// TestBazelWorkspaceAbove: a marker file in the module root or any directory above it counts up to
+// the git top-level of the module root, inclusive; one above the top-level, a sibling's, a directory
+// of that name, and any marker with no repository to bound the search do not.
 func TestBazelWorkspaceAbove(t *testing.T) {
 	cases := []struct {
 		name   string
 		marker string // directory, relative to the temp root, holding the marker
 		file   string
+		noRepo bool // skip git init: the search has no top-level to stop at
 		want   bool
 	}{
-		{"none", "", "", false},
-		{"MODULE.bazel in the module root", "checkout/svc", "MODULE.bazel", true},
-		{"WORKSPACE at the checkout root", "checkout", "WORKSPACE", true},
-		{"WORKSPACE.bazel at the checkout root", "checkout", "WORKSPACE.bazel", true},
-		{"marker above the checkout root", ".", "MODULE.bazel", false},
-		{"marker in a sibling", "checkout/other", "WORKSPACE", false},
+		{"none", "", "", false, false},
+		{"MODULE.bazel in the module root", "checkout/mid/svc", "MODULE.bazel", false, true},
+		{"marker between the module and the top-level", "checkout/mid", "MODULE.bazel", false, true},
+		{"WORKSPACE at the top-level", "checkout", "WORKSPACE", false, true},
+		{"WORKSPACE.bazel at the top-level", "checkout", "WORKSPACE.bazel", false, true},
+		{"marker above the top-level", ".", "MODULE.bazel", false, false},
+		{"directory named WORKSPACE", "checkout", "WORKSPACE/", false, false},
+		{"marker in a sibling", "checkout/other", "WORKSPACE", false, false},
+		{"no git repository", "checkout", "WORKSPACE", true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			checkoutRoot := filepath.Join(root, "checkout")
-			moduleRoot := filepath.Join(checkoutRoot, "svc")
+			moduleRoot := filepath.Join(checkoutRoot, "mid", "svc")
 			for _, d := range []string{moduleRoot, filepath.Join(checkoutRoot, "other")} {
 				if err := os.MkdirAll(d, 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if tc.file != "" {
-				if err := os.WriteFile(filepath.Join(root, tc.marker, tc.file), nil, 0o644); err != nil {
+			if !tc.noRepo {
+				gitInitRepo(t, checkoutRoot)
+			}
+			switch path := filepath.Join(root, tc.marker, tc.file); {
+			case tc.file == "":
+			case strings.HasSuffix(tc.file, "/"):
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.WriteFile(path, nil, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if got := bazelWorkspaceAbove(moduleRoot, checkoutRoot); got != tc.want {
-				t.Errorf("bazelWorkspaceAbove = %v, want %v", got, tc.want)
+			if got := BazelWorkspaceAbove(moduleRoot); got != tc.want {
+				t.Errorf("BazelWorkspaceAbove = %v, want %v", got, tc.want)
 			}
 		})
 	}

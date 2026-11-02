@@ -538,6 +538,64 @@ func TestWorkSet_StdlibQueryPoint(t *testing.T) {
 	}
 }
 
+// TestWorkSet_StdlibQueryPointBazel pins that a Bazel workspace at or above the module root leaves
+// go.mod's directives no floor, so a declared exact toolchain below the go line stands: the query
+// point is the one a module with no go line gets, not the by-name query a binding go line forces.
+func TestWorkSet_StdlibQueryPointBazel(t *testing.T) {
+	const byName = ""
+	for _, tc := range []struct {
+		name   string
+		gomod  string
+		marker string // directory, relative to the temp root, holding MODULE.bazel; "-" for none
+		top    string // directory, relative to the temp root, that is the git top-level
+		want   string
+	}{
+		{name: "binding go line, no workspace", gomod: "module m\n\ngo 1.22.0\n", marker: "-", top: ".", want: byName},
+		{name: "binding go line, workspace at the module root", gomod: "module m\n\ngo 1.22.0\n", marker: "svc", top: ".", want: "1.21.5"},
+		{name: "binding go line, workspace above the module root", gomod: "module m\n\ngo 1.22.0\n", marker: ".", top: ".", want: "1.21.5"},
+		{name: "toolchain line, workspace above the module root", gomod: "module m\n\ngo 1.22.0\n\ntoolchain go1.24.3\n", marker: ".", top: ".", want: "1.21.5"},
+		{name: "no go line, workspace above the module root", gomod: "module m\n", marker: ".", top: ".", want: "1.21.5"},
+		{name: "binding go line, workspace above the git top-level", gomod: "module m\n\ngo 1.22.0\n", marker: ".", top: "svc", want: byName},
+		{name: "no go line, no workspace", gomod: "module m\n", marker: "-", top: ".", want: "1.21.5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			mod := filepath.Join(root, "svc")
+			if err := os.MkdirAll(mod, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(mod, "go.mod"), []byte(tc.gomod), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.marker != "-" {
+				if err := os.WriteFile(filepath.Join(root, tc.marker, "MODULE.bazel"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gitT(t, filepath.Join(root, tc.top), "init", "-q")
+			acq := goFixture(t, tc.gomod)
+			acq.buildDir = mod
+			acq.goToolchain = subjectGoToolchain{declared: "go1.21.5"}
+			osv := &fakeOSV{}
+
+			resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+
+			var queried []report.Package
+			for _, p := range osv.seen {
+				if p.Name == goStdlibPackage {
+					queried = append(queried, p)
+				}
+			}
+			if len(queried) != 1 {
+				t.Fatalf("stdlib queried %d times (%+v), want once", len(queried), queried)
+			}
+			if got := queried[0].Version; got != tc.want {
+				t.Errorf("stdlib query point = %q, want %q (\"\" is by name)", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestWorkSet_StdlibQueryPointFromBuildToolchain pins the analyzer-resolved build toolchain as a
 // stdlib query point: exact only under trust, consulted only under trust, and ignored when go.mod's
 // directives bind the toolchain.

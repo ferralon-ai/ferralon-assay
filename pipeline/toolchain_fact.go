@@ -143,7 +143,7 @@ type toolchainInputs struct {
 	toolchainDirective string
 	goDirective        string
 	// bazelWorkspace is set when a Bazel workspace sits at or above the module root
-	// (bazelWorkspaceAbove). rules_go then compiles with the SDK the workspace declares, which
+	// (BazelWorkspaceAbove). rules_go then compiles with the SDK the workspace declares, which
 	// go.mod's directives do not bound.
 	bazelWorkspace bool
 }

@@ -484,8 +484,8 @@ func TestBazelWorkspaceAbove(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if got := bazelWorkspaceAbove(moduleRoot); got != tc.want {
-				t.Errorf("bazelWorkspaceAbove = %v, want %v", got, tc.want)
+			if got := BazelWorkspaceAbove(moduleRoot); got != tc.want {
+				t.Errorf("BazelWorkspaceAbove = %v, want %v", got, tc.want)
 			}
 		})
 	}

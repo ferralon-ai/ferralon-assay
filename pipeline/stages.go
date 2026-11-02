@@ -1865,7 +1865,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			BuildResolved:      buildToolchain,
 			ToolchainDirective: toolchainDirective,
 			GoDirective:        goVersion,
-			BazelWorkspace:     bazelWorkspaceAbove(buildDir),
+			BazelWorkspace:     BazelWorkspaceAbove(buildDir),
 		}
 		toolchain = ResolveToolchain(cands)
 		if !cands.BazelWorkspace {
@@ -2056,12 +2056,12 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 // empty version and pinned true means go.mod does not require the module, a real fact about the
 // codebase. pinned false means the module is required but replaced by a local directory or by
 // another module, so the build compiles code no upstream version describes.
-// bazelWorkspaceAbove reports whether a Bazel workspace marker file sits in moduleRoot or any
+// BazelWorkspaceAbove reports whether a Bazel workspace marker file sits in moduleRoot or any
 // directory above it. Bazel (rules_go) takes its Go SDK from the workspace, not from go.mod, so the
 // go line is no floor on the release a Bazel build compiles with. The walk does not stop at the
 // checkout root: a scan target can be a subdirectory of a Bazel monorepo, and a stray marker
 // further up only drops a floor.
-func bazelWorkspaceAbove(moduleRoot string) bool {
+func BazelWorkspaceAbove(moduleRoot string) bool {
 	if moduleRoot == "" {
 		return false
 	}

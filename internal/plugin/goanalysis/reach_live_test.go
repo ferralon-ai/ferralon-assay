@@ -19,6 +19,7 @@ package goanalysis
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,5 +126,31 @@ func TestReachability_Live_BrokenDirIsHardError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected a hard error for a nonexistent build dir (inv.4)")
+	}
+}
+
+// TestReachability_Live_SettledFailureReplays drives the real govulncheck over a tree whose load
+// fails on a type error: the failure settles, and a later advisory gets the same hard error from
+// the run cache even after the tree is fixed, which a fresh run would scan cleanly.
+func TestReachability_Live_SettledFailureReplays(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n",
+	})
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	req := plugin.ReachabilityRequest{BuildDir: dir, VulnID: liveVulnID}
+	_, first := Reachability(ctx, req)
+	var failed *govulncheckError
+	if !errors.As(first, &failed) || !failed.settled || len(loadPackageErrors(failed.cause)) == 0 {
+		t.Fatalf("first run: %v, want a settled load failure carrying package errors", first)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Reachability(ctx, req); err == nil || err.Error() != first.Error() {
+		t.Fatalf("second advisory: %v, want the first run's error %q", err, first)
+	}
+	if _, err := Reachability(WithRunCacheDir(context.Background(), t.TempDir()), req); err != nil {
+		t.Fatalf("fresh run over the fixed tree: %v", err)
 	}
 }

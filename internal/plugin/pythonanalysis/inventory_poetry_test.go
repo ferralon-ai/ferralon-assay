@@ -72,6 +72,9 @@ func TestInventory_PoetryInstallGroups(t *testing.T) {
 		{"a pip self-upgrade puts only pip in place", map[string]string{"install.sh": "pip install -U pip\npoetry install --only main\n"}, []string{"pytest", "sphinx"}},
 		{"a distribution the interpreter seeds is never left out", map[string]string{"install.sh": "poetry install --only main\n",
 			"poetry.lock": lock + "\n" + "[[package]]\nname = \"setuptools\"\nversion = \"75.1.0\"\ngroups = [\"dev\"]\n"}, []string{"pytest", "sphinx"}},
+		// An installer in a file no surface rule reads may put any package in place.
+		{"an installer the backstop finds outside every surface", map[string]string{"install.sh": "poetry install --only main\n",
+			"tasks.py": "from invoke import task\n\n@task\ndef deps(c):\n    c.run(\"pip install pytest==8.3.2\")\n"}, nil},
 		{"an allowed pip install -r", map[string]string{"install.sh": "poetry install --only main\npip install -r requirements-dev.txt\n",
 			"requirements-dev.txt": "pytest==8.3.2\n"}, nil},
 	}

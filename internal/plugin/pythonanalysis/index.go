@@ -63,7 +63,7 @@ func loadFiles(buildDir string) (files []parseResult, readFailed, skipped bool, 
 			readFailed = true
 			continue
 		}
-		pr := parseFile(moduleOf(buildDir, p), string(data))
+		pr := parseFile(moduleOf(buildDir, p), string(loneCRToLF(data)))
 		if pr.skipped {
 			skipped = true
 		}

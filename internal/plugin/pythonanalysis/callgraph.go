@@ -787,7 +787,7 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, p)
-		clean, lits := stripPythonLiterals(string(data))
+		clean, lits := stripPythonLiterals(string(loneCRToLF(data)))
 		clean, lits, unread := spliceFStrings(clean, lits)
 		lines := logicalLines(clean)
 

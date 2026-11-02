@@ -61,6 +61,9 @@ var chiForms = []struct {
 	{"Mount", "mountedHandler#ServeHTTP().", "sinkMount"},
 	{"Mount sub-router", "server#mountSubForm().", "sinkMountSub"},
 	{"chi v1 path", "server#v1Form().", "sinkV1"},
+	{"nested Route in a named func", "server#nestedRouteForm().", "sinkNestedRoute"},
+	{"Route on a method value", "server#methodRouteForm().", "sinkMethodRoute"},
+	{"non-constant Route pattern", "server#dynRouteForm().", "sinkDynRoute"},
 }
 
 func chiIngresses(t *testing.T) []plugin.Ingress {
@@ -151,12 +154,13 @@ func TestChi_AdapterAndRouterServeHTTPAreNoIngress(t *testing.T) {
 	}
 }
 
-// TestChi_NetHTTPHandlerFuncIsNoHandler pins chiHandler's explicit net/http
+// TestChi_NetHTTPHandlerFuncIsNoHandler pins routerHandler's explicit net/http
 // exclusion, which no chimod fixture can reach: the fixture stands net/http in at
 // another path, and a value boxed into its own Handler interface is already caught by
 // the adapter clause. Here a net/http HandlerFunc is boxed into an http.Handler-shaped
 // interface declared elsewhere, so only the net/http clause keeps its ServeHTTP from
-// becoming a chi handler. The packages are type-checked in memory (no net/http load).
+// becoming a chi (or gin) handler. The packages are type-checked in memory (no
+// net/http load).
 func TestChi_NetHTTPHandlerFuncIsNoHandler(t *testing.T) {
 	fset := token.NewFileSet()
 	parse := func(path, src string) *ast.File {
@@ -209,8 +213,10 @@ func Box(f http.HandlerFunc) iface.Handler { return f }`
 		t.Fatal("no MakeInterface in app.Box")
 	}
 	sp := &ssaProgram{prog: app.Prog}
-	if fn := sp.chiHandler(mi); fn != nil {
-		t.Errorf("net/http HandlerFunc boxed into %s resolved to handler %s, want none", mi.Type(), fn)
+	for _, r := range pathRouters {
+		if fn := sp.routerHandler(r, mi); fn != nil {
+			t.Errorf("net/http HandlerFunc boxed into %s resolved to handler %s, want none", mi.Type(), fn)
+		}
 	}
 }
 
@@ -236,6 +242,34 @@ func TestChi_MethodSelectorIsPattern(t *testing.T) {
 	for h := range want {
 		if !seen[h] {
 			t.Errorf("%s: no http_route ingress found", h)
+		}
+	}
+}
+
+// TestChi_RoutePrefixIsComposed proves a route registered inside a Route closure has
+// the full composed pattern as its selector: one Route deep, Routes nested through a
+// named func and a Group and on a With result, and a method value handed to Route.
+// A route on the root router, or directly in a Group (which adds no prefix), keeps its
+// own pattern, and so does one under a Route whose pattern is no constant — never a
+// guessed prefix.
+func TestChi_RoutePrefixIsComposed(t *testing.T) {
+	want := map[string]string{
+		"server#getForm().":         "/get/{id}",
+		"main$2$1().":               "/group",
+		"server#routeForm().":       "/route/{id}",
+		"server#nestedRouteForm().": "/admin/users/{id}",
+		"server#methodRouteForm().": "/m/{id}",
+		"server#dynRouteForm().":    "/dyn",
+	}
+	got := map[string][]string{}
+	for _, in := range chiIngresses(t) {
+		if in.Kind == "http_route" {
+			got[in.Symbol.SCIP] = append(got[in.Symbol.SCIP], in.Selector)
+		}
+	}
+	for h, sel := range want {
+		if g := got[chiFixtureSCIP+h]; len(g) != 1 || g[0] != sel {
+			t.Errorf("%s selectors = %q, want [%q]", h, g, sel)
 		}
 	}
 }

@@ -1,8 +1,11 @@
 package artifact_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,5 +171,248 @@ func TestMemStorePutSetsCreatedAt(t *testing.T) {
 	}
 	if a.CreatedAt.Before(before) || a.CreatedAt.After(after) {
 		t.Errorf("CreatedAt %v not in expected range [%v, %v]", a.CreatedAt, before, after)
+	}
+}
+
+func TestViewDecodesOncePerArtifactAndKey(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000040"
+	fs, err := artifact.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		store artifact.Store
+		// wantDecodes is how many times decode runs over the steps below.
+		wantDecodes int
+	}{
+		// Two reads of key a share one decode, key b gets its own, and replacing the artifact's
+		// payload under the same id decodes the new payload once more.
+		{"mem store shares", artifact.NewMemStore(), 3},
+		// A store that keeps no views decodes on every read.
+		{"other store decodes each read", fs, 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			decodes := 0
+			decode := func(p []byte) any { decodes++; return string(p) }
+			read := func(key string) (any, bool) {
+				t.Helper()
+				v, ok, err := artifact.View(tc.store, aid, artifact.TypeReachability, key, decode)
+				if err != nil {
+					t.Fatalf("View: %v", err)
+				}
+				return v, ok
+			}
+
+			if _, ok := read("a"); ok {
+				t.Fatal("View found an artifact in an empty store")
+			}
+			a := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":1}`)}
+			if _, err := tc.store.Put(a); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"a", "a", "b"} {
+				if v, ok := read(key); !ok || v != `{"v":1}` {
+					t.Fatalf("View(%q) = %v, %v; want the stored payload", key, v, ok)
+				}
+			}
+			if _, err := tc.store.Put(&artifact.Artifact{ID: a.ID, AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":2}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if v, ok := read("a"); !ok || v != `{"v":2}` {
+				t.Fatalf("View after replacing the payload = %v, %v; want the new payload", v, ok)
+			}
+			if decodes != tc.wantDecodes {
+				t.Errorf("decode ran %d times; want %d", decodes, tc.wantDecodes)
+			}
+		})
+	}
+}
+
+// TestViewDecodeCannotChangeStoredPayload pins that a decode which writes into or keeps its input
+// cannot change what Query returns or desynchronise the payload from its hash.
+func TestViewDecodeCannotChangeStoredPayload(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000042"
+	tests := []struct {
+		name   string
+		decode func(p []byte) any
+	}{
+		{"overwrites in place", func(p []byte) any {
+			for i := range p {
+				p[i] = 'x'
+			}
+			return nil
+		}},
+		{"retains and truncates", func(p []byte) any { return p[:0] }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			put := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":1}`)}
+			if _, err := store.Put(put); err != nil {
+				t.Fatal(err)
+			}
+			v, _, err := artifact.View(store, aid, artifact.TypeReachability, "k", tc.decode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept, ok := v.([]byte); ok {
+				_ = append(kept, "mutated"...)
+			}
+			arts, err := store.Query(aid, artifact.TypeReachability)
+			if err != nil || len(arts) != 1 {
+				t.Fatalf("Query = %d artifacts, %v", len(arts), err)
+			}
+			if string(arts[0].Payload) != `{"v":1}` {
+				t.Errorf("stored payload = %q, want it unchanged", arts[0].Payload)
+			}
+			sum := sha256.Sum256(arts[0].Payload)
+			if got := "sha256:" + hex.EncodeToString(sum[:]); got != arts[0].ContentHash || got != put.ContentHash {
+				t.Errorf("payload hash %s disagrees with stored %s / Put %s", got, arts[0].ContentHash, put.ContentHash)
+			}
+		})
+	}
+}
+
+// TestSeed pins Seed's seed-if-absent contract: a seed stands in for the decode only where no view
+// exists yet, never replaces one, and does not outlive the payload it was seeded for.
+func TestSeed(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000043"
+	tests := []struct {
+		name string
+		// before runs between Put and Seed.
+		before   func(s *artifact.MemStore, id string, read func(key string) any)
+		seedID   func(id string) string
+		wantSeed bool
+		// wantA and wantB are what readers of keys a and b then get; "decoded" is decode's value.
+		wantA, wantB any
+		wantDecodes  int
+	}{
+		{"absent view is seeded", nil, nil, true, "seeded", "decoded", 1},
+		{"existing view is kept", func(_ *artifact.MemStore, _ string, read func(string) any) { read("a") }, nil, false, "decoded", "decoded", 2},
+		{"unknown id is not seeded", nil, func(string) string { return "no-such-id" }, false, "decoded", "decoded", 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := artifact.NewMemStore()
+			decodes := 0
+			read := func(key string) any {
+				t.Helper()
+				v, ok := s.View(aid, artifact.TypeReachability, key, func([]byte) any { decodes++; return "decoded" })
+				if !ok {
+					t.Fatalf("View(%q) found nothing", key)
+				}
+				return v
+			}
+			a := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{}`)}
+			if _, err := s.Put(a); err != nil {
+				t.Fatal(err)
+			}
+			if tc.before != nil {
+				tc.before(s, a.ID, read)
+			}
+			id := a.ID
+			if tc.seedID != nil {
+				id = tc.seedID(id)
+			}
+			if got := s.Seed(id, "a", "seeded"); got != tc.wantSeed {
+				t.Errorf("Seed = %v, want %v", got, tc.wantSeed)
+			}
+			if got := read("a"); got != tc.wantA {
+				t.Errorf("view a = %v, want %v", got, tc.wantA)
+			}
+			if got := read("b"); got != tc.wantB {
+				t.Errorf("view b = %v, want %v", got, tc.wantB)
+			}
+			if decodes != tc.wantDecodes {
+				t.Errorf("decode ran %d times, want %d", decodes, tc.wantDecodes)
+			}
+		})
+	}
+
+	t.Run("replacing the payload drops the seed", func(t *testing.T) {
+		s := artifact.NewMemStore()
+		a := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{}`)}
+		if _, err := s.Put(a); err != nil {
+			t.Fatal(err)
+		}
+		if !s.Seed(a.ID, "a", "seeded") {
+			t.Fatal("Seed = false")
+		}
+		if _, err := s.Put(&artifact.Artifact{ID: a.ID, AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":2}`)}); err != nil {
+			t.Fatal(err)
+		}
+		v, _ := s.View(aid, artifact.TypeReachability, "a", func(p []byte) any { return string(p) })
+		if v != `{"v":2}` {
+			t.Errorf("view after replacement = %v, want the new payload decoded", v)
+		}
+	})
+
+	t.Run("decode in flight is kept", func(t *testing.T) {
+		s := artifact.NewMemStore()
+		a := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{}`)}
+		if _, err := s.Put(a); err != nil {
+			t.Fatal(err)
+		}
+		started, release := make(chan struct{}), make(chan struct{})
+		got := make(chan any)
+		go func() {
+			v, _ := s.View(aid, artifact.TypeReachability, "a", func([]byte) any {
+				close(started)
+				<-release
+				return "decoded"
+			})
+			got <- v
+		}()
+		<-started
+		if s.Seed(a.ID, "a", "seeded") {
+			t.Error("Seed replaced a view whose decode was running")
+		}
+		close(release)
+		if v := <-got; v != "decoded" {
+			t.Errorf("in-flight reader got %v, want decoded", v)
+		}
+		if v, _ := s.View(aid, artifact.TypeReachability, "a", func([]byte) any { return "again" }); v != "decoded" {
+			t.Errorf("later reader got %v, want decoded", v)
+		}
+	})
+}
+
+// TestSeedConcurrent races readers against a seed: every reader gets the one value the view
+// settles on. Run it under -race.
+func TestSeedConcurrent(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000044"
+	for i := 0; i < 50; i++ {
+		s := artifact.NewMemStore()
+		a := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{}`)}
+		if _, err := s.Put(a); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		got := make([]any, 8)
+		for g := range got {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				got[g], _ = s.View(aid, artifact.TypeReachability, "a", func([]byte) any { return new(int) })
+			}()
+		}
+		seeded := new(int)
+		wg.Add(1)
+		var didSeed bool
+		go func() {
+			defer wg.Done()
+			didSeed = s.Seed(a.ID, "a", seeded)
+		}()
+		wg.Wait()
+		for g := range got {
+			if got[g] != got[0] {
+				t.Fatalf("reader %d got a different value from reader 0", g)
+			}
+		}
+		if (got[0] == seeded) != didSeed {
+			t.Fatalf("readers got the seed = %v, Seed reported %v", got[0] == seeded, didSeed)
+		}
 	}
 }

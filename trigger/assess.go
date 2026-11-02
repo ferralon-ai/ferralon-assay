@@ -107,8 +107,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	case hasCandidate(store, assessmentID):
-		path, _ := candidatePath(store, assessmentID)
-		grade, entry, frames := reachabilityEvidence(store, assessmentID)
+		shown, shownOK := evidencePath(store, assessmentID)
+		path := reachableLabel(store, assessmentID, shown, shownOK)
+		grade, entry, frames := reachabilityEvidenceOn(store, assessmentID, shown, shownOK)
 		guards := guardsOnPath(store, assessmentID, frames)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
@@ -233,8 +234,8 @@ func guardsOnPath(store artifact.Store, assessmentID string, frames []report.Cal
 	if len(declared) == 0 || len(frames) == 0 {
 		return nil
 	}
-	edges := callGraphEdges(store, assessmentID)
-	if len(edges) == 0 {
+	cg, _ := callGraph(store, assessmentID)
+	if cg.EdgeCount() == 0 {
 		return nil
 	}
 	onPath := make(map[string]bool, len(frames))
@@ -246,7 +247,7 @@ func guardsOnPath(store artifact.Store, assessmentID string, frames []report.Cal
 		declaredSet[g] = true
 	}
 	found := make(map[string]bool, len(declared))
-	for _, e := range edges {
+	for e := range cg.Edges() {
 		if !onPath[e.Caller.SCIP] {
 			continue
 		}
@@ -422,28 +423,19 @@ func guardSufficiencyFor(onPath []string, declared []guardSufficiencyVariant) []
 	return out
 }
 
-// callGraphEdges reads the resolved call-graph edges from the reachability artifact
-// (S5 records the call graph alongside the reachability result). Empty when the
-// stub path produced no graph.
-func callGraphEdges(store artifact.Store, assessmentID string) []plugin.CallEdge {
-	cg, _ := callGraphResult(store, assessmentID)
-	return cg.Edges
-}
-
-// callGraphResult reads the whole call-graph leg of the reachability artifact, partiality
-// included. ok is false when there is no reachability artifact to read it from.
-func callGraphResult(store artifact.Store, assessmentID string) (plugin.CallGraphResult, bool) {
-	arts, err := store.Query(assessmentID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
-		return plugin.CallGraphResult{}, false
+// callGraph reads the call-graph leg of the reachability artifact (S5 records the call graph
+// alongside the reachability result), partiality included. ok is false when there is no
+// reachability artifact to read it from; the stub path's artifact holds an empty graph.
+func callGraph(store artifact.Store, assessmentID string) (pipeline.CallGraphView, bool) {
+	rec, ok, err := pipeline.Reachability(store, assessmentID)
+	if err != nil || !ok {
+		return pipeline.CallGraphView{}, false
 	}
-	var payload struct {
-		CallGraph plugin.CallGraphResult `json:"call_graph"`
+	cg, err := rec.CallGraph()
+	if err != nil {
+		return pipeline.CallGraphView{}, false
 	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
-		return plugin.CallGraphResult{}, false
-	}
-	return payload.CallGraph, true
+	return cg, true
 }
 
 // symbolLeaf extracts the bare function/method name from a self-emitted SCIP id
@@ -591,13 +583,27 @@ func withSignals(p report.Provenance, sig *intel.Signals) report.Provenance {
 
 // reachabilityEvidence derives the structured reachability evidence for a candidate
 // from the deterministic discovery artifacts: the strength grade, the ingress at the
-// path head, and the ingress→sink call frames. inv. 5: this is evidence strength, not
-// a verdict — the strongest grade (attacker_tainted) still means *candidate*, never
-// exploitable. attacker_tainted requires BOTH an attacker-controllable ingress AND
-// taint path-presence to the sink; anything less is control_flow_only.
+// path head, and the ingress→sink call frames, all read from the path evidencePath
+// selects. inv. 5: this is evidence strength, not a verdict — the strongest grade
+// (attacker_tainted) still means *candidate*, never exploitable. attacker_tainted
+// requires BOTH an attacker-controllable ingress AND taint path-presence to the sink;
+// anything less is control_flow_only.
 func reachabilityEvidence(store artifact.Store, assessmentID string) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
+	p, ok := evidencePath(store, assessmentID)
+	return reachabilityEvidenceOn(store, assessmentID, p, ok)
+}
+
+// reachabilityEvidenceOn is reachabilityEvidence over an already selected path p (ok false
+// when no artifact records one), so the caller can read the reachable_path label from the
+// same path. With a path recorded, the entry point is an ingress on that path or none; the
+// ingress map's lone-ingress fallback (entryPointFor) applies only when no path is recorded.
+func reachabilityEvidenceOn(store artifact.Store, assessmentID string, p plugin.ReachPath, ok bool) (report.ReachabilityGrade, *report.EntryPoint, []report.CallFrame) {
 	ingresses := ingressMap(store, assessmentID)
-	frames, ingressSym := candidateTrace(store, assessmentID)
+	var frames []report.CallFrame
+	var ingressSym string
+	if ok {
+		frames, ingressSym = framesOf(p.Trace), p.Ingress.SCIP
+	}
 
 	// attacker_tainted requires an attacker-controllable ingress to lie ON the
 	// ingress→sink path-presence trace (the call path IS the path-presence evidence,
@@ -608,9 +614,12 @@ func reachabilityEvidence(store artifact.Store, assessmentID string) (report.Rea
 	// stays a candidate (inv. 5): the strong grade is evidence strength, not a proof.
 	entry := attackerIngressInTrace(frames, ingresses)
 	grade := report.GradeControlFlowOnly
-	if entry != nil {
+	switch {
+	case entry != nil:
 		grade = report.GradeAttackerTainted
-	} else {
+	case ok:
+		entry = reachingEntryPoint(ingressSym, ingresses)
+	default:
 		entry = entryPointFor(ingressSym, ingresses)
 	}
 	return grade, entry, frames
@@ -677,17 +686,40 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 	return nil
 }
 
-// candidateTrace returns the ingress→sink call frames and the ingress symbol for the
-// representative candidate path. It prefers the taint artifact's path-presence trace
-// (populated for first-party taint flows), then the govulncheck reachability paths.
-func candidateTrace(store artifact.Store, assessmentID string) ([]report.CallFrame, string) {
-	if p, ok := firstTaintPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+// evidencePath selects the one path a candidate's Report evidence is read from: the
+// reachable_path label, the call path and the entry point. A path anchored at an ingress
+// wins over one that is not; within each, the taint artifact's path-presence trace
+// (populated for first-party taint flows) wins over the reachability paths, and each
+// artifact's own path order breaks ties. ok is false when neither artifact records a path.
+func evidencePath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+	sources := [][]plugin.ReachPath{taintPaths(store, assessmentID), reachPaths(store, assessmentID)}
+	for _, paths := range sources {
+		for _, p := range paths {
+			if p.Ingress.SCIP != "" {
+				return p, true
+			}
+		}
 	}
-	if p, ok := firstReachPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress.SCIP
+	for _, paths := range sources {
+		if len(paths) > 0 {
+			return paths[0], true
+		}
 	}
-	return nil, ""
+	return plugin.ReachPath{}, false
+}
+
+// reachableLabel is the reachable_path label for the path evidencePath selected: it names an
+// entrypoint exactly when that path is anchored at one. When no artifact records a path there
+// is no trace to agree with, and the label is read from the candidate pairs (candidatePath).
+func reachableLabel(store artifact.Store, assessmentID string, p plugin.ReachPath, ok bool) string {
+	if !ok {
+		label, _ := candidatePath(store, assessmentID)
+		return label
+	}
+	if p.Ingress.SCIP != "" {
+		return labelEntrypoint
+	}
+	return labelReachable
 }
 
 func framesOf(trace []plugin.Symbol) []report.CallFrame {
@@ -701,23 +733,32 @@ func framesOf(trace []plugin.Symbol) []report.CallFrame {
 	return frames
 }
 
+// reachingEntryPoint is the EntryPoint for THIS advisory's reaching ingress: the ingress
+// map entry (for kind + selector) whose symbol is the resolved path's ingress symbol, or nil
+// when the symbol is empty or not in the map.
+func reachingEntryPoint(ingressSym string, ingresses []plugin.Ingress) *report.EntryPoint {
+	if ingressSym == "" {
+		return nil
+	}
+	for _, in := range ingresses {
+		if in.Symbol.SCIP == ingressSym {
+			return entryPointOf(in)
+		}
+	}
+	return nil
+}
+
 // entryPointFor resolves the EntryPoint for a candidate from THIS advisory's reaching
-// ingress: it matches the resolved path's ingress symbol against the ingress map (for
-// kind + selector). When the path carries no reaching ingress it falls back ONLY to an
-// unambiguous single ingress; it never positionally picks among several, which would
-// borrow an entry point belonging to a different advisory's sink — the mis-attribution
-// inv. 5 forbids (evidence must be advisory-specific). Returns nil (honest unknown
-// entry point) rather than fabricate one. The attacker_tainted path in
-// reachabilityEvidence resolves the entry from the trace directly, so this fallback runs
-// only for a control_flow_only candidate.
+// ingress (reachingEntryPoint). Without one it falls back ONLY to an unambiguous single
+// ingress; it never positionally picks among several, which would borrow an entry point
+// belonging to a different advisory's sink — the mis-attribution inv. 5 forbids (evidence
+// must be advisory-specific). Returns nil (honest unknown entry point) rather than
+// fabricate one. reachabilityEvidenceOn calls it only when no path is recorded, since the
+// fallback ingress is not on any trace.
 func entryPointFor(ingressSym string, ingresses []plugin.Ingress) *report.EntryPoint {
 	// 1. The advisory-specific reaching ingress (ReachPath.Ingress for the resolved sink).
-	if ingressSym != "" {
-		for _, in := range ingresses {
-			if in.Symbol.SCIP == ingressSym {
-				return entryPointOf(in)
-			}
-		}
+	if entry := reachingEntryPoint(ingressSym, ingresses); entry != nil {
+		return entry
 	}
 	// 2. No reaching ingress recorded: fall back only when the ingress is UNAMBIGUOUS —
 	//    a single attacker-controllable ingress, or a single ingress overall (the stub /
@@ -738,32 +779,26 @@ func entryPointFor(ingressSym string, ingresses []plugin.Ingress) *report.EntryP
 	return nil
 }
 
-func firstTaintPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
+func taintPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
 	arts, err := store.Query(assessmentID, artifact.TypeTaint)
 	if err != nil || len(arts) == 0 {
-		return plugin.ReachPath{}, false
+		return nil
 	}
 	var td struct {
 		Result plugin.TaintResult `json:"result"`
 	}
-	if err := json.Unmarshal(arts[0].Payload, &td); err != nil || len(td.Result.Paths) == 0 {
-		return plugin.ReachPath{}, false
+	if err := json.Unmarshal(arts[0].Payload, &td); err != nil {
+		return nil
 	}
-	return td.Result.Paths[0], true
+	return td.Result.Paths
 }
 
-func firstReachPath(store artifact.Store, assessmentID string) (plugin.ReachPath, bool) {
-	arts, err := store.Query(assessmentID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
-		return plugin.ReachPath{}, false
+func reachPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
+	reach, ok := reachabilityResult(store, assessmentID)
+	if !ok {
+		return nil
 	}
-	var payload struct {
-		Reachability plugin.ReachabilityResult `json:"reachability"`
-	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil || len(payload.Reachability.Paths) == 0 {
-		return plugin.ReachPath{}, false
-	}
-	return payload.Reachability.Paths[0], true
+	return reach.Paths
 }
 
 // disqualResult reads the disqualification_discovery artifact (TypeDiscovery).
@@ -821,22 +856,37 @@ func disqualDetail(reason string) string {
 	}
 }
 
-// candidatePath reports whether the reachability_ingress stage recorded at least one
-// candidate (ingress→sink) pair, and returns a compact path string for the Report.
+// candidatePath reports whether the reachability_ingress stage recorded at least one decodable
+// candidate (ingress→sink) pair, and returns a compact path string for the Report. Every pair
+// is read, since Query's order is not stable: the label names an entrypoint when any decodable
+// pair carries one.
 func candidatePath(store artifact.Store, assessmentID string) (string, bool) {
 	arts, err := store.Query(assessmentID, artifact.TypeCandidatePair)
-	if err != nil || len(arts) == 0 {
+	if err != nil {
 		return "", false
 	}
-	var pair artifact.CandidatePair
-	if err := json.Unmarshal(arts[0].Payload, &pair); err != nil {
+	found := false
+	for _, a := range arts {
+		var pair artifact.CandidatePair
+		if err := json.Unmarshal(a.Payload, &pair); err != nil {
+			continue
+		}
+		if pair.Ingress != nil {
+			return labelEntrypoint, true
+		}
+		found = true
+	}
+	if !found {
 		return "", false
 	}
-	if pair.Ingress != nil {
-		return "entrypoint → advisory symbol", true
-	}
-	return "advisory symbol reachable", true
+	return labelReachable, true
 }
+
+// The reachable_path labels: a path anchored at an entrypoint, and one that is not.
+const (
+	labelEntrypoint = "entrypoint → advisory symbol"
+	labelReachable  = "advisory symbol reachable"
+)
 
 // advisoryFromArtifacts reads the normalized-advisory artifact and returns the
 // report.Advisory identity plus the resolved SBOM package the scan evaluated. When
@@ -998,27 +1048,77 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // A scoped limit (plugin.ScopedReason) joins the run-wide reasons only when it counts for this
 // advisory's package (scopedLimitCounts).
 //
-// The reason is analysis_did_not_run, except when the only did-not-run limit is the analyzer
-// declaring it does not know the advisory: that is the more precise statement of the same fact.
+// The reason is analysis_did_not_run, except in two cases that state the fact more precisely. When
+// the only did-not-run limit is the analyzer declaring it does not know the advisory, the reason is
+// advisory_unknown_to_analyzer. When every did-not-run limit is one an analyzer declares only after
+// its search ran and came back empty (refutationWithheldReasons), the reason is
+// refutation_withheld: the steps ran, and the search did not cover all the code the build may run.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
 	reasons := didNotRunReasons(store, assessmentID, pkg)
+	versionHeld := false
+	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
+		kept := withoutVersionLimits(store, assessmentID, reasons)
+		versionHeld = len(kept) < len(reasons)
+		reasons = kept
+	}
 	switch {
 	case len(reasons) == 0:
 		return "", false
 	case !slices.ContainsFunc(reasons, func(r string) bool { return r != plugin.PartialReasonAdvisoryUnknownToAnalyzer }):
+		// An unresolved version is the more precise statement still, and notExploitableGrounds
+		// names it.
+		if versionHeld {
+			return "", false
+		}
 		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	case !slices.ContainsFunc(reasons, func(r string) bool { return !refutationWithheldReasons[r] }):
+		return report.ReasonRefutationWithheld, true
 	}
 	return report.ReasonAnalysisDidNotRun, true
+}
+
+// refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
+// refutation its completed search would have supported: each leaves that search intact and says code
+// it did not cover may contradict it. A limit can also be declared when its coverage check cannot run
+// (excluded_files when `go mod graph` fails), still in place of a refutation. cgo:env_unresolved is
+// not listed: it means `go env` failed, which puts the search's own build configuration in doubt, so
+// it keeps analysis_did_not_run.
+var refutationWithheldReasons = map[string]bool{
+	plugin.PartialReasonExcludedFiles:     true,
+	plugin.PartialReasonUnsearchedMethods: true,
+	plugin.PartialReasonLibraryEscape:     true,
+	plugin.PartialReasonReflectiveCall:    true,
+}
+
+// withoutVersionLimits drops, one occurrence each, the limits the inventory recorded against
+// resolving this package's version. They are why the version is unresolved, and for a package
+// admittedPackage cannot admit that is already the whole answer: notExploitableGrounds stops at
+// package_version_unresolved whatever else was declared. outsideBuildGrounds, the one refutation
+// that needs no admitted package, is held by outsideBuildBlocked, which still weighs them. Another
+// axis's copy of the same reason stays, since the footprint appends each axis's limits unmerged,
+// so the row still says analysis_did_not_run when a step other than version resolution did not run.
+func withoutVersionLimits(store artifact.Store, assessmentID string, reasons []string) []string {
+	inv, ok := inventory(store, assessmentID)
+	if !ok {
+		return reasons
+	}
+	out := slices.Clone(reasons)
+	for _, r := range inv.PartialityFlags {
+		if i := slices.Index(out, r); i >= 0 {
+			out = slices.Delete(out, i, i+1)
+		}
+	}
+	return out
 }
 
 // emptyGraphUncalledComplete reports whether the call graph is empty and the analyzer declined to
 // call it complete: a search that did not happen (see analysisDidNotRun).
 func emptyGraphUncalledComplete(store artifact.Store, assessmentID string) bool {
-	cg, ok := callGraphResult(store, assessmentID)
-	return ok && len(cg.Edges) == 0 && !cg.Partiality.Complete
+	cg, ok := callGraph(store, assessmentID)
+	return ok && cg.EdgeCount() == 0 && !cg.Partiality().Complete
 }
 
 // didNotRunReasons returns the did-not-run limits analysisDidNotRun weighs for this assessment, in
@@ -1190,7 +1290,7 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // owes one. Keeping it beside the row's construction is what stops the two from drifting: every
 // run mode adds the finding and then asks this, so a surface can never show a row with no limit
 // or a limit with no row.
-// An analysis_did_not_run or advisory_unknown_to_analyzer row owes NO note of its own. That row stands on limits partialityNotes
+// An analysis_did_not_run, advisory_unknown_to_analyzer or refutation_withheld row owes NO note of its own. That row stands on limits partialityNotes
 // already publishes at scan scope, each named precisely (unsupported_phase1, no_manifest, …) and
 // each scoped to the ecosystem the run actually detected. Synthesizing a second note here would
 // disclose one fact twice and scope the copy to Go.
@@ -1201,7 +1301,8 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	switch {
 	case f.Verdict != report.VerdictUndetermined,
 		f.UndeterminedReason == report.ReasonAnalysisDidNotRun,
-		f.UndeterminedReason == report.ReasonAdvisoryUnknownToAnalyzer:
+		f.UndeterminedReason == report.ReasonAdvisoryUnknownToAnalyzer,
+		f.UndeterminedReason == report.ReasonRefutationWithheld:
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {

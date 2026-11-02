@@ -7,6 +7,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -29,6 +30,11 @@ func TestResolveToolchainFact_Bazel(t *testing.T) {
 			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
+			name: "a workspace with a toolchain line takes no floor",
+			in:   toolchainInputs{goDirective: "1.21.0", toolchainDirective: "go1.22.4", bazelWorkspace: true},
+			want: ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
+		},
+		{
 			name: "a workspace refutes no exact claim",
 			in:   toolchainInputs{subjectDeclared: "go1.21.13", goDirective: "1.22.0", bazelWorkspace: true},
 			want: ToolchainFact{Version: "go1.21.13", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
@@ -43,6 +49,34 @@ func TestResolveToolchainFact_Bazel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := resolveToolchainFact(tc.in); !toolchainFactEqual(got, tc.want) {
 				t.Errorf("resolveToolchainFact(%+v) = %+v, want %+v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveToolchainFloor_BazelIsNoBindingGoLine: a Bazel workspace yields exactly what a go line
+// that does not bind yields, in all three results, so no caller can read a bound into it.
+func TestResolveToolchainFloor_BazelIsNoBindingGoLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		bazel toolchainInputs
+	}{
+		{"go line only", toolchainInputs{goDirective: "1.22.0", bazelWorkspace: true}},
+		{"go line and toolchain line", toolchainInputs{goDirective: "1.22.0", toolchainDirective: "go1.22.4", bazelWorkspace: true}},
+		{"toolchain line only", toolchainInputs{toolchainDirective: "go1.22.4", bazelWorkspace: true}},
+	}
+	// "1.22" is a bare go line with no toolchain line: it does not bind (directivesBindToolchain).
+	unbound := toolchainInputs{goDirective: "1.22"}
+	wantFact, wantParsed, wantOK := resolveToolchainFloor(unbound)
+	if wantOK {
+		t.Fatalf("fixture: %+v unexpectedly resolves a floor", unbound)
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fact, parsed, ok := resolveToolchainFloor(tc.bazel)
+			if !reflect.DeepEqual(fact, wantFact) || !reflect.DeepEqual(parsed, wantParsed) || ok != wantOK {
+				t.Errorf("resolveToolchainFloor(%+v) = (%+v, %+v, %v), want (%+v, %+v, %v)",
+					tc.bazel, fact, parsed, ok, wantFact, wantParsed, wantOK)
 			}
 		})
 	}

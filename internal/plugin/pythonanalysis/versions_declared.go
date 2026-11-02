@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -74,7 +75,9 @@ func isCondaToolPackage(spec string) bool {
 
 // pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
-// dependency tables, and the uv and pdm dev-dependencies.
+// dependency tables, the uv and pdm dev-dependencies, the hatch environments'
+// dependencies, and the names [tool.uv.sources] redirects. [tool.pixi] is read for its
+// presence and the PyPI names it declares (pixiPyPIDeps).
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -94,12 +97,62 @@ type pyprojectDoc struct {
 			} `toml:"group"`
 		} `toml:"poetry"`
 		UV struct {
-			DevDependencies []any `toml:"dev-dependencies"`
+			DevDependencies        []any `toml:"dev-dependencies"`
+			Sources                any   `toml:"sources"`
+			OverrideDependencies   any   `toml:"override-dependencies"`
+			ConstraintDependencies any   `toml:"constraint-dependencies"`
 		} `toml:"uv"`
 		PDM struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
 		} `toml:"pdm"`
+		Hatch hatchConfig `toml:"hatch"`
+		Pixi  any         `toml:"pixi"`
 	} `toml:"tool"`
+}
+
+// hatchConfig is pyproject.toml's [tool.hatch], or a hatch.toml (the same keys at the top
+// level), as version resolution and the coverage check both read it.
+type hatchConfig struct {
+	Sources any `toml:"sources"`
+	Env     struct {
+		Collectors map[string]any `toml:"collectors"`
+	} `toml:"env"`
+	Envs map[string]struct {
+		Type              any `toml:"type"`
+		Dependencies      any `toml:"dependencies"`
+		ExtraDependencies any `toml:"extra-dependencies"`
+		PreInstall        any `toml:"pre-install-commands"`
+		PostInstall       any `toml:"post-install-commands"`
+		Scripts           any `toml:"scripts"`
+		ExtraScripts      any `toml:"extra-scripts"`
+		EnvVars           any `toml:"env-vars"`
+		Sources           any `toml:"sources"`
+		Workspace         any `toml:"workspace"`
+		Overrides         any `toml:"overrides"`
+	} `toml:"envs"`
+}
+
+// installsPast reports whether hatch can install what its environments' dependency lists do
+// not say. Sources and workspace members redirect a declared dependency to a local path, a
+// git ref or a URL at install time; a collector other than the built-in default is a plugin
+// that can rewrite any environment; and an environment can install past its lists itself
+// (hatchEnvInstalls).
+func (h hatchConfig) installsPast() bool {
+	if h.Sources != nil {
+		return true
+	}
+	for c := range h.Env.Collectors {
+		if c != "default" {
+			return true
+		}
+	}
+	for _, env := range h.Envs {
+		if env.Sources != nil || env.Workspace != nil ||
+			hatchEnvInstalls(env.Type, env.Overrides, env.EnvVars, env.PreInstall, env.PostInstall, env.Scripts, env.ExtraScripts) {
+			return true
+		}
+	}
+	return false
 }
 
 // parsePyprojectVersions reads pyproject.toml's [project] dependencies and
@@ -108,8 +161,13 @@ type pyprojectDoc struct {
 // table names, and [build-system].requires, which no lock covers. The bool is false when the
 // file does not decode, when an entry installs a local path other than the project itself or
 // ends in a backslash (setuptoolsJoins),
-// when dynamic dependencies name no file this reader can read, or when a dependency group or
-// tool dependency table holds an entry it cannot read (pyprojectToolDeps).
+// when dynamic dependencies name no file this reader can read, when a dependency group or
+// tool dependency table holds an entry it cannot read (pyprojectToolDeps), when
+// [tool.uv.sources] is not a table or [tool.uv] override-dependencies is not a list of
+// requirements, or when the file configures pixi, whose dependency tables this reader does
+// not resolve. An entry [tool.uv.sources] names is a direct reference, and one an override
+// names is unresolved unless a lock beside it pins a version it admits. The PyPI names pixi
+// declares are entries, each unresolved.
 func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -118,12 +176,14 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	var (
 		deps     []plugin.ResolvedDependency
 		origins  []manifestOrigin
-		readable = true
+		readable = doc.Tool.Pixi == nil
+		locks    = projectLocksIn(dir)
 	)
 	addSpec := func(spec string) {
 		d, o, keep, ok := pep508Entry(spec, dir)
 		readable = readable && ok && !setuptoolsJoins(spec)
 		if keep {
+			o.lockedBy = locks
 			deps = append(deps, d)
 			origins = append(origins, o)
 		}
@@ -138,6 +198,10 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	}
 	tdeps, torigins, tok := pyprojectToolDeps(doc, dir)
 	deps, origins, readable = append(deps, tdeps...), append(origins, torigins...), readable && tok
+	if pixi, ok := doc.Tool.Pixi.(map[string]any); ok {
+		pdeps, porigins := pixiPyPIDeps(pixi, "pyproject.toml", dir)
+		deps, origins = append(deps, pdeps...), append(origins, porigins...)
+	}
 	if pyprojectDynamicDeps(doc) {
 		// Dynamic dependencies are read only from the requirement files a dynamic-metadata
 		// table names; with none named, nothing here can say what the build backend will
@@ -166,7 +230,198 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 			origins = append(origins, o)
 		}
 	}
+	redirected, sourcesOK := uvSourceNames(doc.Tool.UV.Sources)
+	readable = readable && sourcesOK
+	for i, d := range deps {
+		if redirected[normalizePyCoordinate(d.Coordinate)] {
+			deps[i] = pyResolved(d.Coordinate, "", false, d.Source)
+			origins[i].directRef = true
+		}
+	}
+	overridden, overridesOK := uvResolverNames(doc.Tool.UV.OverrideDependencies, true)
+	_, constraintsOK := uvResolverNames(doc.Tool.UV.ConstraintDependencies, false)
+	readable = readable && overridesOK && constraintsOK
+	for i, d := range deps {
+		if overridden[normalizePyCoordinate(d.Coordinate)] && !origins[i].directRef {
+			deps[i] = pyResolved(d.Coordinate, "", false, d.Source)
+		}
+	}
 	return deps, origins, readable
+}
+
+// uvResolverNames returns the normalized names a [tool.uv] override-dependencies or
+// constraint-dependencies list names. uv installs an overridden name at what the override admits
+// in place of every declared specifier, while any other installer honours the declaration, so
+// neither pins the installed version alone: a declaration of the name resolves only through a
+// lock pin both admit (uvOverrideEntries holds the override's side). A constraint only narrows
+// the declarations, so its names mark nothing here; it is read for its shape alone. ok is false
+// when the value does not read (uvResolverSpecs).
+func uvResolverNames(v any, scoped bool) (map[string]bool, bool) {
+	specs, added, ok := uvResolverSpecs(v, scoped)
+	if !ok {
+		return nil, false
+	}
+	names := make(map[string]bool, len(specs)+len(added))
+	for _, s := range append(specs, added...) {
+		r, _ := parsePEP508(s)
+		names[normalizePyCoordinate(r.Name)] = true
+	}
+	return names, true
+}
+
+// uvResolverSpecs returns the requirement strings of a [tool.uv] override-dependencies or
+// constraint-dependencies list, each well-formed PEP 508. With scoped, an entry may also be a
+// scoped override, { package = { name = ..., version = ... }, dependencies = [...] }
+// (https://docs.astral.sh/uv/reference/settings/#override-dependencies): each of its dependencies
+// is read as an override, conditional on the package or not, since it may replace the pin. Those
+// come back in added rather than specs: a scoped override can also add a dependency the package
+// does not declare, so unlike a plain override it can put a name in the build. ok is false when
+// an entry matches neither form.
+func uvResolverSpecs(v any, scoped bool) (specs, added []string, ok bool) {
+	if v == nil {
+		return nil, nil, true
+	}
+	entries, isList := v.([]any)
+	if !isList {
+		return nil, nil, false
+	}
+	addSpec := func(e any, to *[]string) bool {
+		s, isStr := e.(string)
+		if !isStr {
+			return false
+		}
+		s = strings.TrimSpace(s)
+		if _, ok := parsePEP508(s); !ok {
+			return false
+		}
+		*to = append(*to, s)
+		return true
+	}
+	for _, e := range entries {
+		if addSpec(e, &specs) {
+			continue
+		}
+		t, isTable := e.(map[string]any)
+		if !scoped || !isTable || !uvScopedOverrideShape(t) {
+			return nil, nil, false
+		}
+		for _, d := range t["dependencies"].([]any) {
+			if !addSpec(d, &added) {
+				return nil, nil, false
+			}
+		}
+	}
+	return specs, added, true
+}
+
+// uvScopedOverrideShape reports whether t has a scoped override's keys alone: a package table
+// naming the package, and a dependencies list.
+func uvScopedOverrideShape(t map[string]any) bool {
+	pkg, isTable := t["package"].(map[string]any)
+	if !isTable {
+		return false
+	}
+	if _, named := pkg["name"].(string); !named {
+		return false
+	}
+	_, isList := t["dependencies"].([]any)
+	return isList && len(t) == 2
+}
+
+// uvOverrideEntries returns every [tool.uv] override-dependencies entry for want among the
+// pyproject.toml manifests, each with the uv.lock beside it as its resolution, and the
+// constraint-dependencies entries for want as origins alone. A lock written before an entry was
+// added still pins what the declarations alone admitted, which uv re-locks past on a plain sync.
+// uv reads both lists only from the workspace root and applies them to every member; reading
+// them from every pyproject is deliberately wider, so a standalone project's own entries count
+// too, and a constraint in one project can veto another project's pin it excludes, beside any
+// lock. A pyproject that does not decode, or whose lists do not read, is already read as a failure.
+func uvOverrideEntries(manifests []string, want string) ([]plugin.ResolvedDependency, []manifestOrigin, []manifestOrigin) {
+	var (
+		deps        []plugin.ResolvedDependency
+		origins     []manifestOrigin
+		constraints []manifestOrigin
+	)
+	for _, m := range manifests {
+		if filepath.Base(m) != "pyproject.toml" {
+			continue
+		}
+		data, err := readRegular(m)
+		if err != nil {
+			continue
+		}
+		var doc pyprojectDoc
+		if toml.Unmarshal(data, &doc) != nil {
+			continue
+		}
+		read := func(v any, scoped bool, add func(plugin.ResolvedDependency, manifestOrigin)) {
+			specs, added, _ := uvResolverSpecs(v, scoped)
+			for _, s := range append(specs, added...) {
+				r, _ := parsePEP508(s)
+				if normalizePyCoordinate(r.Name) != want {
+					continue
+				}
+				d, o, keep, ok := pep508Entry(s, filepath.Dir(m))
+				if !keep || !ok { // a file: URL, local to the project or not, installs that tree
+					d = pyResolved(r.Name, "", false, "pyproject.toml")
+					o.directRef = true
+				}
+				o.lockedBy = []string{"uv.lock"}
+				add(d, o)
+			}
+		}
+		read(doc.Tool.UV.OverrideDependencies, true, func(d plugin.ResolvedDependency, o manifestOrigin) {
+			deps = append(deps, d)
+			origins = append(origins, o)
+		})
+		read(doc.Tool.UV.ConstraintDependencies, false, func(_ plugin.ResolvedDependency, o manifestOrigin) {
+			constraints = append(constraints, o)
+		})
+	}
+	return deps, origins, constraints
+}
+
+// uvSourceNames returns the normalized names a [tool.uv.sources] table redirects. uv installs
+// each from its source (a git ref, a URL, a local path, a workspace member or a named index)
+// whatever the declaration's specifier says, so its entries read as direct references: never
+// resolved here, and never covered by a lock. ok is false when the table is not a table.
+func uvSourceNames(sources any) (map[string]bool, bool) {
+	if sources == nil {
+		return nil, true
+	}
+	t, isMap := sources.(map[string]any)
+	if !isMap {
+		return nil, false
+	}
+	names := make(map[string]bool, len(t))
+	for name := range t {
+		names[normalizePyCoordinate(name)] = true
+	}
+	return names, true
+}
+
+// uvSourced reports whether any pyproject.toml among manifests names want in [tool.uv.sources].
+// A workspace root's sources apply to every member, and a lock written before the source was
+// added still pins an index release, so a source anywhere leaves the coordinate unresolved and
+// its lock entries incomplete. A pyproject that does not decode is already read as a failure.
+func uvSourced(manifests []string, want string) bool {
+	for _, m := range manifests {
+		if filepath.Base(m) != "pyproject.toml" {
+			continue
+		}
+		data, err := readRegular(m)
+		if err != nil {
+			continue
+		}
+		var doc pyprojectDoc
+		if toml.Unmarshal(data, &doc) != nil {
+			continue
+		}
+		if names, _ := uvSourceNames(doc.Tool.UV.Sources); names[want] {
+			return true
+		}
+	}
+	return false
 }
 
 // pyprojectDynamicDeps reports whether [project].dynamic lists dependencies or
@@ -181,12 +436,14 @@ func pyprojectDynamicDeps(doc pyprojectDoc) bool {
 }
 
 // pyprojectToolDeps reads the pyproject tables that declare installs outside [project]: PEP 735
-// [dependency-groups], [tool.uv] dev-dependencies and [tool.pdm] dev-dependencies as PEP 508
-// strings, and the [tool.poetry] dependencies, dev-dependencies and group tables as poetry
-// constraints. Each declaration is covered only by its own tool's lock in the same directory
-// (PEP 735 groups by groupLocks). ok is false when an entry is not a well-formed
-// requirement, a group is malformed (dependencyGroupSpecs), a poetry constraint does not
-// translate, or a poetry entry installs a local path or file.
+// [dependency-groups], [tool.uv] dev-dependencies, [tool.pdm] dev-dependencies and each
+// [tool.hatch.envs] environment's dependencies and extra-dependencies as PEP 508 strings, and
+// the [tool.poetry] dependencies, dev-dependencies and group tables as poetry constraints. Each
+// declaration is covered only by its own tool's lock in the same directory (PEP 735 groups by
+// groupLocks); hatch has no lock, so nothing covers its environments. ok is false when an
+// entry is not a well-formed requirement, a group is malformed (dependencyGroupSpecs), a
+// poetry constraint does not translate, a poetry entry installs a local path or file, or a
+// hatch environment can install past its dependency lists (hatchEnvInstalls).
 func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var (
 		deps    []plugin.ResolvedDependency
@@ -203,19 +460,8 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	addAny := func(v any, lockedBy []string) {
-		entries, isList := v.([]any)
-		if v != nil && !isList {
-			ok = false
-			return
-		}
-		for _, e := range entries {
-			s, isStr := e.(string)
-			if !isStr {
-				ok = false
-				return
-			}
-			addPEP508(s, lockedBy)
-		}
+		d, o, listOK := pep508List(v, dir, lockedBy)
+		deps, origins, ok = append(deps, d...), append(origins, o...), ok && listOK
 	}
 
 	groupSpecs, groupsOK := dependencyGroupSpecs(doc.DependencyGroups)
@@ -227,6 +473,8 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 	for _, g := range slices.Sorted(maps.Keys(doc.Tool.PDM.DevDependencies)) {
 		addAny(doc.Tool.PDM.DevDependencies[g], []string{"pdm.lock"})
 	}
+	hd, ho, hatchOK := hatchEnvDeps(doc.Tool.Hatch, dir)
+	deps, origins, ok = append(deps, hd...), append(origins, ho...), ok && hatchOK
 
 	p := doc.Tool.Poetry
 	tables := []map[string]any{p.Dependencies, p.DevDependencies}
@@ -247,8 +495,9 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 				ok = false
 				continue
 			}
+			indexed := poetryIndexSourced(t[name])
 			for _, d := range decls {
-				if d.Direct {
+				if d.Direct || indexed {
 					deps = append(deps, pyResolved(name, "", false, "pyproject.toml"))
 					origins = append(origins, manifestOrigin{dir: dir, directRef: true})
 					continue
@@ -258,6 +507,167 @@ func pyprojectToolDeps(doc pyprojectDoc, dir string) ([]plugin.ResolvedDependenc
 		}
 	}
 	return deps, origins, ok
+}
+
+// pep508List reads v as the array of PEP 508 strings a TOML dependency list must be, each
+// entry with the locks that may cover it; nil is an empty list. ok is false when v is not an
+// array of strings or an entry is not a well-formed requirement (pep508Entry); the entries after
+// a bad one are still read, so their names stay declared.
+func pep508List(v any, dir string, lockedBy []string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	entries, isList := v.([]any)
+	if v != nil && !isList {
+		return nil, nil, false
+	}
+	var (
+		deps    []plugin.ResolvedDependency
+		origins []manifestOrigin
+		allOK   = true
+	)
+	for _, e := range entries {
+		s, isStr := e.(string)
+		if !isStr {
+			allOK = false
+			continue
+		}
+		d, o, keep, ok := pep508Entry(s, dir)
+		if !ok {
+			allOK = false
+			continue
+		}
+		if keep {
+			o.lockedBy = lockedBy
+			deps = append(deps, d)
+			origins = append(origins, o)
+		}
+	}
+	return deps, origins, allOK
+}
+
+// hatchEnvDeps reads the dependencies and extra-dependencies of every hatch environment, from
+// pyproject.toml's [tool.hatch] or from hatch.toml. Hatch has no lock, so nothing covers them.
+// ok is false when a list is not an array of well-formed requirements, or hatch can install
+// past the lists (installsPast).
+func hatchEnvDeps(h hatchConfig, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	var (
+		deps    []plugin.ResolvedDependency
+		origins []manifestOrigin
+		ok      = !h.installsPast()
+	)
+	for _, e := range slices.Sorted(maps.Keys(h.Envs)) {
+		env := h.Envs[e]
+		for _, v := range []any{env.Dependencies, env.ExtraDependencies} {
+			d, o, listOK := pep508List(v, dir, nil)
+			deps, origins, ok = append(deps, d...), append(origins, o...), ok && listOK
+		}
+	}
+	return deps, origins, ok
+}
+
+// hatchEnvInstalls reports whether a hatch environment can install what its dependency lists
+// do not say: its type is not the built-in "virtual" (a plugin installs by its own keys), its
+// overrides are not a table or set dependencies, extra-dependencies, commands, scripts or
+// env-vars that do (matrix and other overrides add values this reader does not evaluate), a
+// pre- or post-install command or a script names an installer (hatchCommandsInstall), or an
+// env-var sets a PIP_* or UV_* variable, which every pip or uv the environment runs reads.
+func hatchEnvInstalls(typ, overrides, envVars any, commands ...any) bool {
+	if t, isStr := typ.(string); typ != nil && (!isStr || t != "virtual") {
+		return true
+	}
+	if _, isMap := overrides.(map[string]any); overrides != nil && !isMap {
+		return true
+	}
+	return hatchOverridesInstall(overrides) || hatchEnvVarsInstall(envVars) ||
+		slices.ContainsFunc(commands, hatchCommandsInstall)
+}
+
+// hatchOverridesInstall reports whether an overrides value sets dependencies,
+// extra-dependencies, sources, workspace or type anywhere in it, or sets commands, scripts or
+// env-vars that install. A set- prefix overwrites the option rather than appending to it, and
+// counts the same.
+func hatchOverridesInstall(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, sub := range t {
+			switch strings.TrimPrefix(k, "set-") {
+			case "dependencies", "extra-dependencies", "sources", "workspace", "type":
+				return true
+			case "pre-install-commands", "post-install-commands", "scripts", "extra-scripts":
+				if hatchCommandsInstall(sub) {
+					return true
+				}
+			case "env-vars":
+				if hatchEnvVarsInstall(sub) {
+					return true
+				}
+			}
+			if hatchOverridesInstall(sub) {
+				return true
+			}
+		}
+	case []any:
+		return slices.ContainsFunc(t, hatchOverridesInstall)
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchOverridesInstall(m) })
+	}
+	return false
+}
+
+// hatchCommandsInstall reports whether any string in v, at any depth, has a word laneToken
+// names, split the way the build-script veto splits a command (scriptsurface.NamesToken), so
+// a quoted, chained, path-qualified or {env:...}-defaulted installer counts.
+func hatchCommandsInstall(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return scriptsurface.NamesToken(t, laneToken, nil)
+	case []any:
+		return slices.ContainsFunc(t, hatchCommandsInstall)
+	case map[string]any:
+		return slices.ContainsFunc(slices.Collect(maps.Values(t)), hatchCommandsInstall)
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchCommandsInstall(m) })
+	}
+	return false
+}
+
+// hatchEnvVarsInstall reports whether any key or string in v, at any depth, sets a PIP_* or
+// UV_* variable (laneEnvRE), or names an installer a command can reach through $VAR or
+// {env:VAR} (hatchCommandsInstall): the env-vars table, or an override's KEY=VALUE strings
+// and key fields.
+func hatchEnvVarsInstall(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return laneEnvRE.MatchString(t) || hatchCommandsInstall(t)
+	case []any:
+		return slices.ContainsFunc(t, hatchEnvVarsInstall)
+	case map[string]any:
+		for k, sub := range t {
+			if laneEnvRE.MatchString(k) || hatchEnvVarsInstall(sub) {
+				return true
+			}
+		}
+	case []map[string]any:
+		return slices.ContainsFunc(t, func(m map[string]any) bool { return hatchEnvVarsInstall(m) })
+	}
+	return false
+}
+
+// poetryIndexSourced reports whether a [tool.poetry] dependency value, or any element of an
+// array of them, is pinned to a named index (source = "..."). That index serves whatever it holds
+// under the name, so on the version path the declaration is a direct reference. Coverage still
+// checks it against the lock like any other pin.
+func poetryIndexSourced(v any) bool {
+	entries, isList := v.([]any)
+	if !isList {
+		entries = []any{v}
+	}
+	for _, e := range entries {
+		if m, isMap := e.(map[string]any); isMap {
+			if _, has := m["source"]; has {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // poetryInstallsLocal reports whether a [tool.poetry] dependency value, or any element of an
@@ -353,10 +763,11 @@ func dependencyGroupSpecs(groups map[string]any) ([]string, bool) {
 // exact "==" pin resolves. A "name @ url" direct reference is UNRESOLVED and no lock covers
 // it. A file: URL other than the project's own directory makes ok false; the project's own
 // directory is dropped (keep false). Name and specifier come from parsePEP508, and a string
-// it rejects makes ok false.
+// it rejects makes ok false. The origin names no lock that resolves the entry; the caller
+// sets lockedBy for the table it reads.
 func pep508Entry(spec, dir string) (d plugin.ResolvedDependency, o manifestOrigin, keep, ok bool) {
 	s := strings.TrimSpace(spec)
-	o = manifestOrigin{dir: dir, lockedBy: projectLocks}
+	o = manifestOrigin{dir: dir}
 	if loc, isFile := fileURLPath(s); isFile {
 		return d, o, false, isProjectDir(loc, dir)
 	}

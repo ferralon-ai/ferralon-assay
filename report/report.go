@@ -179,6 +179,11 @@ type Package struct {
 	// build compiles that module's code under Name. Empty when not replaced or replaced by a
 	// directory.
 	Replace string `json:"replace,omitempty"`
+	// NotInstalled marks a package a lockfile declares that every install the build is known to
+	// run leaves out (plugin.DependencyNode.NotInstalled). Version is still the declared pin.
+	// It says this lock entry is not what the build installs, not that no copy of the package is
+	// present: a tool the environment seeds, such as pip, may still be there at another version.
+	NotInstalled bool `json:"not_installed,omitempty"`
 }
 
 // Label is the package as a finding row names it: name@version for a resolved package. A
@@ -711,6 +716,31 @@ type Provenance struct {
 	// Nil on a Report built without it (additive; a reader that predates the field is
 	// unaffected). See IntelProvenance.
 	Intel *IntelProvenance `json:"intel,omitempty"`
+	// Timings records how long this pass took. Nil on a Report built without it (additive). It is
+	// operational disclosure, never a verdict input: no finding depends on it, and two runs with
+	// identical findings will differ here.
+	Timings *RunTimings `json:"timings,omitempty"`
+}
+
+// RunTimings is the wall time of one scan pass: end to end, and per pipeline stage summed over
+// every advisory the pass assessed. The gap between WallSeconds and the stage sum is the work done
+// outside the per-advisory pipeline (acquisition, work-set resolution, publication).
+type RunTimings struct {
+	// WallSeconds is the elapsed time from the start of the run mode to the publication of this
+	// Report.
+	WallSeconds float64 `json:"wall_seconds"`
+	// Stages lists each pipeline stage in the order it first ran.
+	Stages []StageTiming `json:"stages,omitempty"`
+}
+
+// StageTiming is one pipeline stage's accumulated wall time over a pass.
+type StageTiming struct {
+	// Stage is the pipeline stage name (e.g. "reachability_ingress").
+	Stage string `json:"stage"`
+	// Runs is how many times the stage ran — once per advisory that reached it.
+	Runs int `json:"runs"`
+	// Seconds is the stage's total wall time across those runs.
+	Seconds float64 `json:"seconds"`
 }
 
 // IntelProvenance records the intel inputs a scan pass actually used: which set of
@@ -868,6 +898,11 @@ type PartialityNote struct {
 	// limit) and the location inside it. Disclosure only, and part of the note's identity.
 	Package string `json:"package,omitempty"`
 	Path    string `json:"path,omitempty"`
+	// Targets bounds which packages the limit could hide, as PURLs without a version: a reader
+	// applies it only to a row whose package could be one of them. Empty (nil or []) is unbounded,
+	// which applies to every row, and is what every note carried before the field existed. Not
+	// part of the note's identity: notes merged on it keep the widest bound (Builder.Build).
+	Targets []string `json:"targets,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report
@@ -968,6 +1003,11 @@ const (
 	// reported nothing about the advisory at all. It may not know the advisory, or may never have
 	// analyzed the affected module. Its silence is not a search that came back empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// ReasonRefutationWithheld: the analysis ran and found no path to the advisory's vulnerable
+	// code, but code that search did not cover may reach it (files the build left out, methods it
+	// never started from, importers of a library package, calls made through reflection), so the
+	// refutation was withheld. The scan-level PartialityNote list names which.
+	ReasonRefutationWithheld = "refutation_withheld"
 	// ReasonAdvisoryRangeAbsent: a path reaches the advisory's vulnerable code, but the advisory
 	// records no affected version range the version axis can bound, so it was admitted at every installed
 	// version and nothing establishes that this version is affected. The path stays on the finding

@@ -370,13 +370,21 @@ func dedupPartiality(notes []PartialityNote) []PartialityNote {
 			index[k] = len(out)
 			merged := n
 			merged.Advisories = append([]string(nil), n.Advisories...)
+			merged.Targets = append([]string(nil), n.Targets...)
 			out = append(out, merged)
 			continue
 		}
 		out[i].Advisories = append(out[i].Advisories, n.Advisories...)
+		// Either note unbounded leaves the merged note unbounded; otherwise it bounds the union.
+		if len(out[i].Targets) == 0 || len(n.Targets) == 0 {
+			out[i].Targets = nil
+		} else {
+			out[i].Targets = append(out[i].Targets, n.Targets...)
+		}
 	}
 	for i := range out {
 		out[i].Advisories = sortedUnique(out[i].Advisories)
+		out[i].Targets = sortedUnique(out[i].Targets)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Reason != out[j].Reason {

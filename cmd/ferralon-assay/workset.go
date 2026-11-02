@@ -323,7 +323,7 @@ func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pip
 // rootMatcher returns whether an advisory package key names the scanned project itself, judged
 // exactly as codebase_inventory judges it, or nil when the project declares no package identity.
 func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) bool {
-	dir := acq.manifestDir()
+	dir := manifestDir(acq)
 	root, ok := pipeline.ReadRootPackage(ctx, dir, acq.language)
 	if !ok {
 		return nil
@@ -340,6 +340,18 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 		}
 		return ok
 	}
+}
+
+// manifestDir is the directory the work set reads the project's own manifest from. For Go that is
+// the module root checkout.FindGoModuleRoot picks, the same root codebase_inventory re-roots to, so
+// a module nested below the checkout root is read rather than reported missing.
+func manifestDir(acq *acquired) string {
+	if acq.language == checkout.LangGo {
+		if root, ok := checkout.FindGoModuleRoot(acq.buildDir); ok {
+			return root
+		}
+	}
+	return acq.buildDir
 }
 
 // purlTypeForEcosystem maps an OSV ecosystem name (the inventory's vocabulary) onto the PURL type an
@@ -438,7 +450,7 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	// The project's own published package is queried too, so OSV answers for advisories against
 	// the repository itself. Only a versioned one: OSV answers an unversioned query with every
 	// advisory ever recorded against the package.
-	if root, ok := pipeline.ReadRootPackage(ctx, acq.manifestDir(), acq.language); ok && root.Version != "" {
+	if root, ok := pipeline.ReadRootPackage(ctx, manifestDir(acq), acq.language); ok && root.Version != "" {
 		pkgs = append(pkgs, report.Package{Ecosystem: ws.ecosystem, Name: root.Name, Version: root.Version, Root: true})
 	}
 	if len(pkgs) == 0 {
@@ -749,10 +761,10 @@ func versionlessPURL(purlType, name string) string {
 // reach them. It is resolved at the subject's toolchain when that is exact (stdlibVersion), and is
 // otherwise unresolved: named, with no version.
 //
-// go.mod is read at the module root (acquired.manifestDir), the module the pipeline analyzes; a tree
+// go.mod is read at the module root (manifestDir), the module the pipeline analyzes; a tree
 // with no go.mod within that search gets a no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
-	dir := acq.manifestDir()
+	dir := manifestDir(acq)
 	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}

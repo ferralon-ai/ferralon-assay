@@ -543,3 +543,44 @@ func TestReviewGlobalVersionVetoMustReachOSVInventory(t *testing.T) {
 		t.Fatalf("unresolved = %+v, want jinja2 with no version", unresolved)
 	}
 }
+
+// A project only pixi's PyPI tables declare enters the inventory unresolved, so the work set
+// discloses it rather than leaving it out unnamed. A conda dependency is not a PyPI project and
+// stays out.
+func TestInventory_PixiDeclaredNames(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"pyproject pixi table": {
+			"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask==3.0.0\"]\n\n" +
+				"[tool.pixi.pypi-dependencies]\npyjwt = \"==2.10.0\"\n\n[tool.pixi.dependencies]\nnumpy = \"1.26.*\"\n",
+		},
+		"pixi.toml": {
+			"pixi.toml": "[workspace]\nchannels = [\"conda-forge\"]\nplatforms = [\"linux-64\"]\n\n" +
+				"[pypi-dependencies]\npyjwt = \"==2.10.0\"\n\n[dependencies]\nnumpy = \"1.26.*\"\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			files["requirements.txt"], files["app.py"] = "flask==3.0.0\n", "x = 1\n"
+			for f, body := range files {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte(body), 0o600); err != nil {
+					t.Fatalf("write %s: %v", f, err)
+				}
+			}
+			acq := &acquired{
+				buildDir: dir, language: checkout.LangPython, repo: "example.com/fixture",
+				plugin: pythonInventory{unsearchingAnalyzer{language: checkout.LangPython}},
+			}
+			resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
+			names := map[string]string{}
+			for _, p := range append(resolved, unresolved...) {
+				names[p.Name] = p.Version
+			}
+			if v, ok := names["pyjwt"]; !ok || v != "" {
+				t.Fatalf("pyjwt not in the inventory unresolved: resolved=%+v unresolved=%+v notes=%+v", resolved, unresolved, notes)
+			}
+			if _, ok := names["numpy"]; ok {
+				t.Fatalf("conda numpy entered the PyPI inventory: resolved=%+v unresolved=%+v", resolved, unresolved)
+			}
+		})
+	}
+}

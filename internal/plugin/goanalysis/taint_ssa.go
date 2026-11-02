@@ -262,7 +262,7 @@ func isGinBinder(name string) bool {
 // echo.Context is an INTERFACE, so these are invoke calls with the context as the
 // receiver, never a static callee.
 var echoContextAccessors = map[string]bool{
-	"Param": true, "QueryParam": true, "QueryParams": true, "FormValue": true,
+	"Param": true, "ParamValues": true, "QueryParam": true, "QueryParams": true, "FormValue": true,
 	"FormParams": true, "FormFile": true, "MultipartForm": true, "QueryString": true,
 	"RealIP": true, "Request": true, "Cookie": true, "Cookies": true,
 }

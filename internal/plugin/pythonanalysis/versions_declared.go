@@ -77,7 +77,7 @@ func isCondaToolPackage(spec string) bool {
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
 // dependency tables, the uv and pdm dev-dependencies, the hatch environments'
 // dependencies, and the names [tool.uv.sources] redirects. [tool.pixi] is read for its
-// presence alone.
+// presence and the PyPI names it declares (pixiPyPIDeps).
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -165,8 +165,9 @@ func (h hatchConfig) installsPast() bool {
 // tool dependency table holds an entry it cannot read (pyprojectToolDeps), when
 // [tool.uv.sources] is not a table or [tool.uv] override-dependencies is not a list of
 // requirements, or when the file configures pixi, whose dependency tables this reader does
-// not read. An entry [tool.uv.sources] names is a direct reference, and one an override
-// names is unresolved unless a lock beside it pins a version it admits.
+// not resolve. An entry [tool.uv.sources] names is a direct reference, and one an override
+// names is unresolved unless a lock beside it pins a version it admits. The PyPI names pixi
+// declares are entries, each unresolved.
 func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -195,6 +196,10 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	}
 	tdeps, torigins, tok := pyprojectToolDeps(doc, dir)
 	deps, origins, readable = append(deps, tdeps...), append(origins, torigins...), readable && tok
+	if pixi, ok := doc.Tool.Pixi.(map[string]any); ok {
+		pdeps, porigins := pixiPyPIDeps(pixi, "pyproject.toml", dir)
+		deps, origins = append(deps, pdeps...), append(origins, porigins...)
+	}
 	if pyprojectDynamicDeps(doc) {
 		// Dynamic dependencies are read only from the requirement files a dynamic-metadata
 		// table names; with none named, nothing here can say what the build backend will

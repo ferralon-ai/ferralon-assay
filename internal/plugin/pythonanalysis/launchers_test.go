@@ -1028,6 +1028,38 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script rebound by another module's literal store into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool.fac import make\n\ndef fix(func):\n    func.__globals__[\"main\"] = make()\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module's computed store into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool.fac import make\n\ndef fix(func, k=\"main\"):\n    func.__globals__[k] = make()\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script beside another module's literal store of another name into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool.fac import make\n\ndef fix(func):\n    func.__globals__[\"other\"] = make()\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script its own namespace handed to a builtin rebound by a literal globals key",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

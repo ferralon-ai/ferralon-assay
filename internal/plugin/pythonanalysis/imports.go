@@ -1630,7 +1630,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		return names[w]
 	}
-	var builtin ownStores
+	var builtin, foreign ownStores
 	si := 0
 	for i := 0; i < n; {
 		if si < len(spans) && i >= spans[si][0] {
@@ -1667,9 +1667,11 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			builtin.any = true
 		}
 		// A frame's or function's globals, and a module-scope frame's locals, are a
-		// namespace dict.
+		// namespace dict: the file's own for its own frames and defs, another module's for a
+		// caller's frame or a function handed in.
 		if dotted && (w == "f_globals" || w == "__globals__" || w == "f_locals" && inModule(i)) {
 			own.use(r, i, end, lits, false, shadowed)
+			foreign.use(r, i, end, lits, false, shadowed)
 		}
 		kind := kindOf(w, dotted)
 		if kind == lookupNone || precededByDef(r, i) || assignedTo(r, end) {
@@ -1776,6 +1778,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	own.trusted = sortedDedup(own.trusted)
 	own.builtinNames = sortedDedup(builtin.names)
 	own.builtinAny = builtin.any
+	own.foreignNames = sortedDedup(foreign.names)
+	own.foreignAny = foreign.any
 	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed, own
 }
 

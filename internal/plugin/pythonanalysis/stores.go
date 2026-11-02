@@ -89,6 +89,28 @@ func (prog *program) markModuleStores() {
 			}
 		}
 	}
+	// A store into a namespace that may be another module's, such as a decorated function's
+	// __globals__, may rebind the name in any first-party module.
+	var foreign []string
+	foreignAny := false
+	for _, f := range prog.files {
+		if !isTestModule(f.module) {
+			foreign = append(foreign, f.own.foreignNames...)
+			foreignAny = foreignAny || f.own.foreignAny
+		}
+	}
+	for fi := range prog.files {
+		f := &prog.files[fi]
+		if foreignAny {
+			ownAny = append(ownAny, fi)
+		}
+		for _, name := range foreign {
+			if f.storedNames == nil {
+				f.storedNames = map[string]bool{}
+			}
+			f.storedNames[name] = true
+		}
+	}
 	// A builtin trusted to only read the namespace handed to it may be rebound by a store into
 	// the module by its name, or into builtins.
 	rebuilt, rebuiltAny := map[string]bool{}, false
@@ -258,6 +280,8 @@ type ownStores struct {
 	trusted      []string
 	builtinNames []string
 	builtinAny   bool
+	foreignNames []string
+	foreignAny   bool
 }
 
 // ownModuleEnd returns the index just past a subscript or .get of __name__ on sys.modules,

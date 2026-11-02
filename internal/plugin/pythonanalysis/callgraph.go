@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -52,8 +51,10 @@ type program struct {
 	// attrTargets.
 	leafMemo    map[string][]string
 	reboundMemo map[string]bool
-	// chainPaths holds the first-party paths some dotted `import a.b as c` binds.
-	chainPaths map[string]bool
+	// modVals holds the modules each module attribute may hold (attrModules) and modDeps,
+	// per attribute, the attributes whose modules read it.
+	modVals map[modKey][]string
+	modDeps map[modKey][]modKey
 	// launchers are the entry points the build's manifests declare (launchers.go);
 	// launchersUnread records a manifest whose entry points could not be read in full, so
 	// ingress discovery may miss a script; launchersUnsupported one that declares entry
@@ -449,74 +450,154 @@ func (p *program) withAliases(leaves, paths []string) []string {
 }
 
 // aliasLeaves follows an import path ("pkg/g") through re-exports to a fixpoint: its leaf
-// names a function, and when the module it is imported from binds that leaf by a first-party
-// import itself, the path that import names is followed in turn. When a package on the path
-// binds its submodule's name to another path by first-party import, itself or through its star
-// imports, the path through that binding is followed too: the attribute holds whichever binding
-// ran last. A from-import finds its module in sys.modules whatever a package binds, so lookups
-// through a path it names resume at the attribute it names. A dotted `import a.b as c` binds
-// an attribute chain from the top package instead, so lookups through its path start over at
-// the top, one level deep: within that walk a further such path resumes at its attribute. The
-// names left to look up never grow and are drawn from the bindings' leaves and the path's own
-// tail, and each path is visited once per lookup start and level, so the walk ends.
+// names a function, and when a module the path's prefix may hold binds that leaf by a
+// first-party import itself, the path that import names is followed in turn. The prefix is
+// an attribute chain from the top package, so the modules it may hold come from attrModules,
+// segment by segment. Each module and leaf is visited once, so the walk ends.
 func (p *program) aliasLeaves(path string) []string {
 	if out, ok := p.leafMemo[path]; ok {
 		return out
 	}
-	visited := map[string]bool{}
+	visited := map[modKey]bool{}
 	var out []string
-	var walk func(path string, from int, chained bool)
-	// follow walks b+suffix, starting over at the top when b is an import-as chain met
-	// outside another one. A one-dot chain ("pkg/x") is its own top attribute, so it walks as
-	// a from-import would and leaves later chains free to start over.
-	follow := func(b, suffix string, chained bool) {
-		if p.chainPaths[b] && !chained && strings.Count(b, "/") > 1 {
-			walk(b+suffix, 1, true)
-		} else {
-			walk(b+suffix, strings.Count(b, "/"), chained)
-		}
-	}
-	walk = func(path string, from int, chained bool) {
-		key := path + "\x00" + strconv.Itoa(from) + "\x00" + strconv.FormatBool(chained)
-		if visited[key] {
-			return
-		}
-		visited[key] = true
-		mod, leaf := parentModule(path), path[strings.LastIndexByte(path, '/')+1:]
+	var walk func(mods []string, leaf string)
+	walk = func(mods []string, leaf string) {
 		if !slices.Contains(out, leaf) {
 			out = append(out, leaf)
 		}
-		for _, i := range p.byModule[mod] {
-			for _, next := range p.files[i].attrBinds(leaf) {
-				follow(next, "", chained)
+		for _, mod := range mods {
+			if visited[modKey{mod, leaf}] {
+				continue
 			}
-		}
-		segs := strings.Split(path, "/")
-		for j := from; j < len(segs)-1; j++ {
-			pkg, sub, rest := strings.Join(segs[:j], "/"), segs[j], strings.Join(segs[j+1:], "/")
-			for _, i := range p.byModule[pkg] {
-				for _, b := range p.subBinds(&p.files[i], pkg, sub) {
-					follow(b, "/"+rest, chained)
+			visited[modKey{mod, leaf}] = true
+			for _, i := range p.byModule[mod] {
+				f := &p.files[i]
+				for _, next := range f.attrBinds(leaf) {
+					walk(p.bindPrefix(f, leaf, next, p.attrModules), next[strings.LastIndexByte(next, '/')+1:])
 				}
 			}
 		}
 	}
-	walk(path, 1, false)
+	segs := strings.Split(path, "/")
+	walk(p.chainModules(segs[:len(segs)-1], p.attrModules), segs[len(segs)-1])
 	p.leafMemo[path] = out
 	return out
 }
 
-// subBinds lists the paths a package file g binds its submodule's name sub to by first-party
-// import, itself or through its star imports followed transitively, other than that submodule.
-func (p *program) subBinds(g *fileParse, pkg, sub string) []string {
+// modKey names the attribute name of module mod.
+type modKey struct{ mod, name string }
+
+// chainModules is the modules the attribute chain segs may hold, from the top package segs[0]
+// on, reading each attribute's modules through get.
+func (p *program) chainModules(segs []string, get func(modKey) []string) []string {
+	if len(segs) == 0 {
+		return nil
+	}
+	mods := []string{segs[0]}
+	for _, s := range segs[1:] {
+		var next []string
+		for _, m := range mods {
+			for _, v := range get(modKey{m, s}) {
+				if !slices.Contains(next, v) {
+					next = append(next, v)
+				}
+			}
+		}
+		mods = next
+	}
+	return mods
+}
+
+// bindPrefix is the modules whose attribute a first-party import in file f binding name to
+// path reads. A from-import finds its module in sys.modules whatever a package binds, so that
+// is the path's own prefix; a dotted `import a.b.c as d` binds an attribute chain from the top
+// package instead, so its prefix holds whatever that chain may hold, the prefix's own module
+// among them.
+func (p *program) bindPrefix(f *fileParse, name, path string, get func(modKey) []string) []string {
+	mod := parentModule(path)
+	if mod == "" {
+		return nil
+	}
+	if f.chainBinds[name+"\x00"+path] {
+		return p.chainModules(strings.Split(mod, "/"), get)
+	}
+	return []string{mod}
+}
+
+// attrModules is the modules attribute k.name of module k.mod may hold, whichever binding
+// ran last: the submodule of that name, a top-level module a first-party import binds the
+// name to, and the modules the path of each other first-party import of the name in the
+// package, itself or through its star imports, may hold. It is the least fixpoint over the
+// attributes those imports read, solved by worklist and kept, so import-as chains that read
+// one another end; every module in it is a named path, so the sets are bounded.
+func (p *program) attrModules(k modKey) []string {
+	if _, ok := p.modVals[k]; ok {
+		return p.modVals[k]
+	}
+	p.modVals[k] = nil
+	queue, queued := []modKey{k}, map[modKey]bool{k: true}
+	for len(queue) > 0 {
+		at := queue[0]
+		queue = queue[1:]
+		queued[at] = false
+		get := func(dep modKey) []string {
+			if _, ok := p.modVals[dep]; !ok {
+				p.modVals[dep] = nil
+				queue, queued[dep] = append(queue, dep), true
+			}
+			if !slices.Contains(p.modDeps[dep], at) {
+				p.modDeps[dep] = append(p.modDeps[dep], at)
+			}
+			return p.modVals[dep]
+		}
+		vals, grew := p.modVals[at], false
+		add := func(m string) {
+			if !slices.Contains(vals, m) {
+				vals, grew = append(vals, m), true
+			}
+		}
+		if self := at.mod + "/" + at.name; p.named[self] {
+			add(self)
+		}
+		for _, i := range p.byModule[at.mod] {
+			p.subBinds(&p.files[i], at.mod, at.name, func(h *fileParse, b string) {
+				if !strings.Contains(b, "/") {
+					if p.named[b] {
+						add(b)
+					}
+					return
+				}
+				leaf := b[strings.LastIndexByte(b, '/')+1:]
+				for _, m := range p.bindPrefix(h, at.name, b, get) {
+					for _, v := range get(modKey{m, leaf}) {
+						add(v)
+					}
+				}
+			})
+		}
+		if grew {
+			p.modVals[at] = vals
+			for _, d := range p.modDeps[at] {
+				if !queued[d] {
+					queue, queued[d] = append(queue, d), true
+				}
+			}
+		}
+	}
+	return p.modVals[k]
+}
+
+// subBinds calls bind with each path a package file g binds its submodule's name sub to by
+// first-party import, itself or through its star imports followed transitively, other than
+// that submodule, and the file whose import binds it.
+func (p *program) subBinds(g *fileParse, pkg, sub string, bind func(h *fileParse, path string)) {
 	self, own := pkg+"/"+sub, g.module+"/"+sub
-	var out []string
 	seen := map[string]bool{}
 	var binds func(h *fileParse)
 	binds = func(h *fileParse) {
 		for _, b := range h.attrBinds(sub) {
-			if b != self && b != own && !slices.Contains(out, b) {
-				out = append(out, b)
+			if b != self && b != own {
+				bind(h, b)
 			}
 		}
 		for _, star := range h.starPaths {
@@ -530,7 +611,6 @@ func (p *program) subBinds(g *fileParse, pkg, sub string) []string {
 		}
 	}
 	binds(g)
-	return out
 }
 
 // aliasRebound reports whether a module that aliasLeaves follows an import path through may
@@ -715,8 +795,11 @@ type fileParse struct {
 	// globalBinds holds the first-party paths defs' imports bind to module attributes they
 	// declare global, by name.
 	globalBinds map[string][]string
-	depBinds    map[string]map[string]bool
-	locals      map[string]map[string]bool
+	// chainBinds holds, keyed name+"\x00"+path, the first-party paths a dotted
+	// `import a.b as c` in the file binds a name to.
+	chainBinds map[string]bool
+	depBinds   map[string]map[string]bool
+	locals     map[string]map[string]bool
 	// storedNames and storedAny are what stores through a module object may rebind in the
 	// file's namespace (markModuleStores): those names, or any name.
 	storedNames map[string]bool
@@ -885,7 +968,7 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
 	}
 
-	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}, chainPaths: map[string]bool{}, reboundMemo: map[string]bool{}, attrMemo: map[attrKey][]string{}}
+	prog := &program{funcsByName: map[string][]funcDecl{}, leafMemo: map[string][]string{}, modVals: map[modKey][]string{}, modDeps: map[modKey][]modKey{}, reboundMemo: map[string]bool{}, attrMemo: map[attrKey][]string{}}
 	var rawBindings [][]scopedBinding
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
@@ -1094,6 +1177,7 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 	}
 	f.fpBinds = map[string]map[string][]string{}
 	f.globalBinds = map[string][]string{}
+	f.chainBinds = map[string]bool{}
 	bind := func(b scopedBinding, path string) {
 		m := f.fpBinds[b.scope]
 		if m == nil {
@@ -1104,7 +1188,7 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 			m[b.local] = append(m[b.local], path)
 		}
 		if b.chain {
-			prog.chainPaths[path] = true
+			f.chainBinds[b.local+"\x00"+path] = true
 		}
 		if b.global && !slices.Contains(f.globalBinds[b.local], path) {
 			f.globalBinds[b.local] = append(f.globalBinds[b.local], path)

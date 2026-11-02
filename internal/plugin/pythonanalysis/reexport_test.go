@@ -252,6 +252,74 @@ func TestCallGraph_ImportAsChainUnderOneDotChain(t *testing.T) {
 	}
 }
 
+// TestCallGraph_ImportAsChainNested: an import-as chain that a package's attribute reads
+// through another import-as chain resolves segment by segment from the top package, so a
+// site reaches the binding that wins at runtime, by an edge or an escape, however deep the
+// chains nest. A from-import of the same path finds its module in sys.modules, whatever
+// another file imports as a chain.
+func TestCallGraph_ImportAsChainNested(t *testing.T) {
+	site := "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		// safe: the site reaches pkg/impl.f only, so pkg/v.vuln is neither an edge nor escaped.
+		safe bool
+	}{
+		{"import-as chain inside an import-as chain", map[string]string{
+			"pkg/__init__.py":     "from . import q, r\nfrom . import alt as r\nimport pkg.r.y as q\n",
+			"pkg/sub/__init__.py": "from . import a\nimport pkg.q.x as a\n", "pkg/sub/a.py": "from ..impl import f as g\n",
+			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
+			"pkg/r/__init__.py": "", "pkg/r/y/__init__.py": "", "pkg/r/y/x.py": "from ...impl import f as g\n",
+			"pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y/__init__.py": "from . import x\n", "pkg/alt/y/x.py": "from ...v import vuln as g\n",
+			"c.py": site}, false},
+		{"import-as chain under a root two levels deep", map[string]string{
+			"pkg/__init__.py":    "from . import r\nfrom . import alt2 as r\nfrom . import sub\nfrom . import w\nfrom . import w2 as w\nimport pkg.w.v as sub\n",
+			"pkg/w2/__init__.py": "from .. import alt as v\n", "pkg/w/__init__.py": "", "pkg/w/v.py": "",
+			"pkg/alt/__init__.py": "import pkg.r.y as a\n", "pkg/alt2/__init__.py": "from . import y\n", "pkg/alt2/y.py": "from ..v import vuln as g\n",
+			"pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f as g\n", "pkg/sub/__init__.py": "", "pkg/sub/a.py": "from ..impl import f as g\n",
+			"c.py": site}, false},
+		{"from-import of a path another file imports as a chain", map[string]string{
+			"pkg/__init__.py": "from . import q\nfrom . import alt as q\n", "pkg/sub/__init__.py": "from pkg.q import x as a\n",
+			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
+			"pkg/alt/__init__.py": "from . import x\n", "pkg/alt/x.py": "from ..v import vuln as g\n",
+			"tools/__init__.py": "", "tools/other.py": "import pkg.q.x as zz\n",
+			"c.py": "import tools.other\nimport pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, true},
+		{"import-as of that path in the package itself", map[string]string{
+			"pkg/__init__.py": "from . import q\nfrom . import alt as q\n", "pkg/sub/__init__.py": "import pkg.q.x as a\n",
+			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
+			"pkg/alt/__init__.py": "from . import x\n", "pkg/alt/x.py": "from ..v import vuln as g\n",
+			"c.py": "import pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, false},
+		{"import-as of that path rebound through a star import", map[string]string{
+			"pkg/__init__.py": "from . import q\nfrom .reb import *\n", "pkg/reb.py": "from . import alt as q\n", "pkg/sub/__init__.py": "import pkg.q.x as a\n",
+			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
+			"pkg/alt/__init__.py": "from . import x\n", "pkg/alt/x.py": "from ..v import vuln as g\n",
+			"c.py": "import pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, false},
+		{"import-as of that path rebound to a top-level module", map[string]string{
+			"pkg/__init__.py": "from . import q\nimport alt as q\n", "pkg/sub/__init__.py": "import pkg.q.x as a\n",
+			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
+			"alt/__init__.py": "from . import x\n", "alt/x.py": "from pkg.v import vuln as g\n",
+			"c.py": "import pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, false},
+		{"import-as chain in a star-imported module", map[string]string{
+			"pkg/__init__.py": "from . import q, r\nfrom . import alt2 as r\nfrom .reb import *\n", "pkg/reb.py": "import pkg.r.y as q\n",
+			"pkg/q.py": "from .impl import f as g\n", "pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f as g\n",
+			"pkg/alt2/__init__.py": "from . import y\n", "pkg/alt2/y.py": "from ..v import vuln as g\n",
+			"c.py": "import pkg\n\ndef go():\n    return pkg.q.g(1)\n"}, false},
+	} {
+		files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n"}
+		maps.Copy(files, tc.files)
+		res := mustCallGraph(t, files)
+		goC, impl, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("pkg/v", nil, "vuln", 1)
+		esc := symbolSet(res.Escaped)
+		reached := func(fn string) bool { return hasEdge(res.Edges, goC, fn) || esc[fn] }
+		if tc.safe && (!reached(impl) || reached(vuln)) {
+			t.Errorf("%s: want %s reached and %s neither an edge nor escaped; edges %v, escaped %v", tc.name, impl, vuln, res.Edges, res.Escaped)
+		}
+		if !tc.safe && !reached(vuln) {
+			t.Errorf("%s: %s unreachable; edges %v, escaped %v", tc.name, vuln, res.Edges, res.Escaped)
+		}
+	}
+}
+
 // A site through a module attribute that holds another module (pkg.sub.a.g.h, where a.py
 // binds g to pkg.alt.y) reaches what that module binds h to, a re-export as well as a def.
 func TestCallGraph_ModuleAttributeHoldingAModule(t *testing.T) {

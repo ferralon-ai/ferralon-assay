@@ -1550,7 +1550,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	names := map[string]lookupKind{}
 	builtinsNames := map[string]bool{"__builtins__": true}
 	for _, b := range bindings {
-		if lookupTarget(b.target) == "builtins" {
+		if lookupTarget(b.target) == "builtins" || strings.HasSuffix("."+b.target, ".__builtins__") {
 			builtinsNames[b.local] = true
 		}
 		switch lookupTarget(b.target) {
@@ -1661,8 +1661,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		if !dotted && builtinsNames[w] && !precededByDef(r, i) && !assignedTo(r, end) {
 			builtin.use(r, i, end, lits, true, shadowed)
 		}
-		// Another module's __builtins__ is its builtins, as a module or a dict.
-		if dotted && w == "__builtins__" {
+		// Another module's __builtins__ is its builtins, as a module or a dict, and so is a
+		// frame's f_builtins.
+		if dotted && (w == "__builtins__" || w == "f_builtins") {
 			builtin.any = true
 		}
 		// A frame's or function's globals, and a module-scope frame's locals, are a
@@ -1756,28 +1757,44 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		i = end
 	}
-	// So is a namespace's "__builtins__" key, or getattr of that name.
+	// So is any value spelled "__builtins__" or "builtins", whatever reads it, other than a
+	// dict display's key or a comparison operand.
 	for at, l := range lits {
-		if l.body != "__builtins__" {
+		if l.body != "__builtins__" && l.body != "builtins" {
 			continue
 		}
-		switch j := skipSpaceBack(r, at-1); {
-		case j < 0:
-		case r[j] == '[':
-			builtin.any = true
-		case r[j] == ',':
-			if o := enclosingOpen(r, j); o >= 0 && r[o] == '(' {
-				if fn, _ := wordBefore(r, o); fn == "getattr" {
-					builtin.any = true
-				}
-			}
+		j, k := skipSpaceBack(r, at-1), skipAllSpace(r, l.end)
+		if j >= 0 && (r[j] == '{' || r[j] == ',') && k < n && r[k] == ':' && enclosingOpen(r, at) >= 0 && r[enclosingOpen(r, at)] == '{' {
+			continue
 		}
+		if comparedAt(r, j, k) {
+			continue
+		}
+		builtin.any = true
 	}
 	own.names = sortedDedup(own.names)
 	own.trusted = sortedDedup(own.trusted)
 	own.builtinNames = sortedDedup(builtin.names)
 	own.builtinAny = builtin.any || slices.Contains(values, "builtins")
 	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed, own
+}
+
+// comparedAt reports whether the operand ending before r[k] and starting after r[j] is
+// compared by ==, != or in.
+func comparedAt(r []rune, j, k int) bool {
+	n := len(r)
+	if k+1 < n && (r[k] == '=' || r[k] == '!') && r[k+1] == '=' {
+		return true
+	}
+	if k < n && isIdentStartRune(r[k]) {
+		if w, _ := readWordRunes(r, k); w == "in" || w == "not" {
+			return true
+		}
+	}
+	if j >= 1 && r[j] == '=' && (r[j-1] == '=' || r[j-1] == '!') {
+		return true
+	}
+	return false
 }
 
 // dunderImported returns the modules an __import__ of name, whose '(' is r[open], may

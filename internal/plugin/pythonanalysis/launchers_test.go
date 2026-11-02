@@ -1154,6 +1154,94 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by get",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nvars(json).get(\"__builtins__\")[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by attrgetter",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import operator\nimport json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\noperator.attrgetter(\"__builtins__\")(json)[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by __getattribute__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\njson.__getattribute__(\"__builtins__\")[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by a parenthesised name",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ngetattr(json, (\"__builtins__\"))[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a frame's f_builtins",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nsys._getframe().f_builtins[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through an imported __builtins__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nfrom json import __builtins__ as b\n\nb[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through another module's builtins fetched by getattr",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py":   "import tool.helper\nimport json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ngetattr(tool.helper, \"builtins\").sorted = ev\n",
+				"tool/helper.py": "import builtins\n",
+				"tool/cli.py":    "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin beside a __builtins__ key in a dict display and a comparison",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\n\nexec(\"x = 1\", {\"__builtins__\": {}})\nnames = [k for k in vars(json) if k != \"__builtins__\"]\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script its own namespace handed to a builtin rebound through its module's __builtins__",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

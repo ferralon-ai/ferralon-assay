@@ -17,7 +17,7 @@
 // unless it carries no $ or backtick and no redirect and the lane's Allowed accepts it; a run
 // wrapper the lane does not name, a surface that sets one of the lane's variables, and a line
 // that names a token and does not tokenise withhold too. A variable the lane's EnvKeeps names
-// only selects among the packages a lock read here records, so setting it does not. A Spec
+// installs nothing outside a lock read here, so setting it does not. A Spec
 // missing any required decision withholds on every surface it recognises.
 //
 // Binding follows the directory a command runs in. On the host it starts at the surface's
@@ -85,9 +85,10 @@ type Spec struct {
 	Token func(word string) bool
 	// Env matches one of the lane's installer variables being set.
 	Env *regexp.Regexp
-	// EnvKeeps reports whether an installer variable Env matched, by its name, only selects
-	// which of the packages a lock read here records get installed, so setting it installs
-	// nothing outside that lock. nil means none does.
+	// EnvKeeps reports whether an installer variable Env matched, by its name, installs
+	// nothing outside the lock read here: it only selects which of the packages that lock
+	// records get installed, changes none of the packages, versions or environment an install
+	// has, or does only what a flag the lane already allows does. nil means none does.
 	EnvKeeps func(name string) bool
 	// Allowed reports whether a command naming a token, already free of expansions and
 	// redirects, is one of the lane's allowed forms and binds, through b, to the manifest and

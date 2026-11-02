@@ -110,8 +110,9 @@ func (p *program) declsNamed(leaves []string) []funcDecl {
 // (depOnly). It stands for a first-party function an import binds to it under another name
 // only where the caller holds that binding (aliasBound): a bare call whose name the caller's
 // scopes bind by import, not shadowed by a parameter or local, or a call through a name
-// bound to a first-party module that re-exports the leaf. escape is the wider set the escape
-// scan uses: every alias the file binds the name to in any scope.
+// bound to a first-party module that re-exports the leaf, along a path whose attributes may
+// themselves hold modules. escape is the wider set the escape scan uses: every alias the
+// file binds the name to in any scope.
 func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) {
 	name := cs.calleeName
 	if name == "" {
@@ -134,9 +135,7 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 			if mid != "" {
 				path += "/" + mid
 			}
-			if p.named[path] {
-				out = append(out, path+"/"+name)
-			}
+			out = append(out, path+"/"+name)
 		}
 		return out
 	}

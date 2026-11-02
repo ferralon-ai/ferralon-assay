@@ -246,3 +246,64 @@ func TestCallGraph_ImportAsChainUnderOneDotChain(t *testing.T) {
 		}
 	}
 }
+
+// A site through a module attribute that holds another module (pkg.sub.a.g.h, where a.py
+// binds g to pkg.alt.y) reaches what that module binds h to, a re-export as well as a def.
+func TestCallGraph_ModuleAttributeHoldingAModule(t *testing.T) {
+	site := "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"
+	subRebound := map[string]string{"pkg/sub/__init__.py": "from . import a\nfrom pkg import x as a\n", "pkg/alt/__init__.py": "from . import y\n"}
+	with := func(base map[string]string, kv ...string) map[string]string {
+		files := maps.Clone(base)
+		for i := 0; i < len(kv); i += 2 {
+			files[kv[i]] = kv[i+1]
+		}
+		return files
+	}
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{"attribute bound by from-import", map[string]string{"pkg/sub/a.py": "from pkg.alt import y as g\n", "pkg/alt/__init__.py": "from . import y\n", "c.py": site}},
+		{"rebound submodule, attribute bound by import-as", with(subRebound, "pkg/x.py", "import pkg.alt.y as g\n", "c.py", site)},
+		{"rebound submodule, attribute bound by from-import", with(subRebound, "pkg/x.py", "from pkg.alt import y as g\n", "c.py", site)},
+		{"attribute bound by import-as through a rebound package", map[string]string{
+			"pkg/__init__.py": "from . import r\nfrom . import alt as r\n", "pkg/x.py": "import pkg.r.y as g\n",
+			"pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f as h\n", "pkg/alt/__init__.py": "from . import y\n",
+			"c.py": "import pkg.x\n\ndef go():\n    return pkg.x.g.h(1)\n"}},
+	} {
+		for _, reexport := range []bool{true, false} {
+			files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n", "pkg/sub/a.py": "from ..impl import f as g\n"}
+			maps.Copy(files, tc.files)
+			want := funcSCIP("pkg/v", nil, "vuln", 1)
+			files["pkg/alt/y.py"] = "from ..v import vuln as h\n"
+			if !reexport {
+				want = funcSCIP("pkg/alt/y", nil, "h", 1)
+				files["pkg/alt/y.py"] = "def h(x):\n    return x\n"
+			}
+			res := mustCallGraph(t, files)
+			goC := funcSCIP("c", nil, "go", 0)
+			if !hasEdge(res.Edges, goC, want) && !symbolSet(res.Escaped)[want] {
+				t.Errorf("%s (re-export %v): %s unreachable; edges %v, escaped %v", tc.name, reexport, want, res.Edges, res.Escaped)
+			}
+		}
+	}
+	// A site whose function does not hold the binding gets no edge; the binding made in
+	// another scope still escapes the re-export's source.
+	files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n", "pkg/sub/a.py": "from ..impl import f as g\n",
+		"pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y.py": "from ..v import vuln as h\n",
+		"c.py": "def setup():\n    global pkg\n    import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"}
+	maps.Copy(files, with(subRebound, "pkg/x.py", "from pkg.alt import y as g\n"))
+	res := mustCallGraph(t, files)
+	if vuln := funcSCIP("pkg/v", nil, "vuln", 1); !symbolSet(res.Escaped)[vuln] {
+		t.Errorf("binding in another scope: %s not escaped; escaped %v", vuln, res.Escaped)
+	}
+	// A star import in the caller leaves the head undecided, so the edge comes from the
+	// site's own leaves: the re-export's source, not only an escape.
+	files = map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n", "pkg/util.py": "X = 1\n",
+		"pkg/sub/a.py": "from pkg.alt import y as g\n", "pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y.py": "from ..v import vuln as h\n",
+		"c.py": "from pkg.util import *\nimport pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"}
+	res = mustCallGraph(t, files)
+	if goC, vuln := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/v", nil, "vuln", 1); !hasEdge(res.Edges, goC, vuln) {
+		t.Errorf("head undecided: no edge to %s; edges %v", vuln, res.Edges)
+	}
+}

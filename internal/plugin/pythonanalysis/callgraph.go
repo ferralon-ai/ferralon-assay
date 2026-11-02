@@ -729,8 +729,7 @@ type fileParse struct {
 	binders    map[string]map[string]int
 	defs       map[string]map[string]bool
 	depImports map[string]map[string]int
-	// reads, opaque and unreadValue are fileScan's: the names each module-scope assignment's
-	// value reads.
+	// reads, opaque and unreadValue are fileScan's (see recordReads and markOpaque).
 	reads       map[string][]string
 	opaque      map[string]bool
 	unreadValue map[string]bool

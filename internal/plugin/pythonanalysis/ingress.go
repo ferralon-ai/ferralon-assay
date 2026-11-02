@@ -24,6 +24,7 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 	if err != nil {
 		return plugin.IngressResult{}, err
 	}
+	prog.markModuleStores()
 
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress

@@ -386,6 +386,96 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
+			name: "script also a tuple target",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\nmain, other = make(), 0\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script the defining module also assigned a call result",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n", "tool/cli.py": "from tool.impl import main\n",
+				"tool/impl.py": "from tool.fac import make\n\ndef main():\n    return 0\n\nmain = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script through a module alias also assigned a class",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:ns.main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def inner():\n    return 0\n\nclass NS:\n    main = inner\n",
+				"tool/cli.py": "from tool import impl as ns\nfrom tool.fac import NS\n\nns = NS\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a global def in a def binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/cli.py": "from tool.impl import main\n\ndef init():\n    global main\n    def main():\n        return 1\n\ninit()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a global class in a def binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/cli.py": "from tool.impl import main\n\ndef init():\n    global main\n    class main:\n        pass\n\ninit()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a store through the defining module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "from tool import impl\nfrom tool.fac import make\n\nimpl.main = make()\n", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a star import may rebind",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.star import *\n", "tool/star.py": "from tool.fac import make\n\nmain = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script the defining module handed to a first-party function",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "from tool import impl\nfrom tool.fac import patch\n\npatch(impl)\n", "tool/impl.py": cli,
+				"tool/fac.py": "def inner():\n    return 0\n\ndef patch(m):\n    setattr(m, \"main\", inner)\n", "tool/cli.py": "from tool.impl import main\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "package a store into a namespace package of the same name binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool:main\"\n",
+				"tool/__init__.py": "from tool.impl import main\n", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"a/tool/x.py": "", "b.py": "import a.tool\nfrom tool.fac import make\n\na.tool.main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "Django views module a global assignment in a def rebinds",
 			files: map[string]string{
 				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n", "site/views2.py": "def dash(request):\n    return None\n",

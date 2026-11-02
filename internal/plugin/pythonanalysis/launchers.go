@@ -632,12 +632,22 @@ func (prog *program) bindsFirstParty(f *fileParse, name string, seen map[string]
 	return !bound && f.depImports[""][name] == 0
 }
 
-// rebindsFirstParty reports whether the file's module scope also binds name, other than by
-// import, def or class, to a value that may be first-party code the lane does not follow: an
-// assignment reading first-party code, or a binding whose value the lane does not read
-// (a def that declares name global and assigns it, a tuple or for target).
+// rebindsFirstParty reports whether the file's module namespace may also bind name, other
+// than by import, def or class, to a value that may be first-party code the lane does not
+// follow: an assignment reading first-party code, a binding whose value the lane does not
+// read (any binding recordReads does not read, or one in a def that declares name global),
+// a store through a module object, or a star import that may bind it.
 func (prog *program) rebindsFirstParty(f *fileParse, name string) bool {
-	if f.unreadValue[name] {
+	if f.unreadValue[name] || f.storedAny || f.storedNames[name] {
+		return true
+	}
+	segs := strings.Split(f.module, "/")
+	for a := range segs {
+		if prog.dirStores[strings.Join(segs[a:], "/")][name] {
+			return true
+		}
+	}
+	if paths, open := prog.starBinds(f, name); len(paths) > 0 || open {
 		return true
 	}
 	reads, assigned := f.reads[name]

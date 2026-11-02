@@ -571,6 +571,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			addCalls(bases)
 			if o := owner(); o == nil || o.className == "" {
 				addNames(&fs.defs, enclosingScope(), []string{name})
+				carry(enclosingScope(), text, []string{name})
 			} else {
 				addNames(&fs.defs, classScopeKey(), []string{name})
 			}
@@ -630,6 +631,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 			if o := owner(); o == nil || o.className == "" {
 				addNames(&fs.defs, enclosingScope(), []string{name})
+				carry(enclosingScope(), text, []string{name})
 			} else {
 				addNames(&fs.defs, classScopeKey(), []string{name})
 			}

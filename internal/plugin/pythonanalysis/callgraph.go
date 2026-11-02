@@ -1371,7 +1371,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 			out[fd.scip()] = true
 		}
 	}
-	modDone := map[string]bool{}
+	modDone, chainDone := map[string]bool{}, map[string]bool{}
 	// escapeModule escapes every function of the modules an import path names: the module
 	// is a value, so any of its functions can be reached by attribute name, and so can what
 	// its first-party imports and star imports bind as its attributes, and everything of a
@@ -1435,7 +1435,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 		for chain := range f.refs.chains {
 			segs := strings.Split(chain, ".")
 			for _, base := range f.anyScopeBinds(segs[0]) {
-				prog.escapeChain(base, segs[1:], escape, escapeModule)
+				prog.escapeChain(base, segs[1:], chainDone, escape, escapeModule)
 			}
 		}
 	}
@@ -1454,13 +1454,20 @@ func (prog *program) escapeFrames(out map[string]bool) {
 // the longest prefix of the chain that names a module. With no attribute after it, the
 // module itself is the value. An attribute the module declares is a function or class
 // handed over by name, which the name scan covers; one the module binds by first-party
-// import is followed through the import; anything else ("handlers.__dict__", an attribute
-// the scanner cannot see) may reach any function of the module.
-func (prog *program) escapeChain(base string, rest []string, escape func(funcDecl), escapeModule func(string)) {
+// import is followed through the import, and the rest of the chain with it ("a.g.h" where a
+// binds g to a module); anything else ("handlers.__dict__", an attribute the scanner cannot
+// see) may reach any function of the module. done holds the chains already followed, so an
+// import cycle ends.
+func (prog *program) escapeChain(base string, rest []string, done map[string]bool, escape func(funcDecl), escapeModule func(string)) {
+	key := base + "\x00" + strings.Join(rest, "/")
+	if done[key] {
+		return
+	}
+	done[key] = true
 	for k := len(rest); k >= 0; k-- {
-		path := base
-		if k > 0 {
-			path += "/" + strings.Join(rest[:k], "/")
+		path := strings.Join(append([]string{base}, rest[:k]...), "/")
+		if base == "" {
+			path = strings.Join(rest[:k], "/")
 		}
 		if !prog.named[path] {
 			continue
@@ -1478,6 +1485,10 @@ func (prog *program) escapeChain(base string, rest []string, escape func(funcDec
 				bound = true
 				for _, fd := range prog.declsNamed(prog.withAliases([]string{attr}, paths)) {
 					escape(fd)
+				}
+				for _, p := range paths {
+					leaf := p[strings.LastIndexByte(p, '/')+1:]
+					prog.escapeChain(parentModule(p), append([]string{leaf}, rest[k+1:]...), done, escape, escapeModule)
 				}
 			}
 		}

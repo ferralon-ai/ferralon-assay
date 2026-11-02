@@ -76,7 +76,8 @@ func isCondaToolPackage(spec string) bool {
 // pyprojectDoc is the subset of pyproject.toml version resolution reads: [project]
 // dependencies, [build-system] requires, PEP 735 [dependency-groups], the [tool.poetry]
 // dependency tables, the uv and pdm dev-dependencies, the hatch environments'
-// dependencies, and the names [tool.uv.sources] redirects.
+// dependencies, and the names [tool.uv.sources] redirects. [tool.pixi] is read for its
+// presence alone.
 type pyprojectDoc struct {
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
@@ -105,6 +106,7 @@ type pyprojectDoc struct {
 			DevDependencies map[string]any `toml:"dev-dependencies"`
 		} `toml:"pdm"`
 		Hatch hatchConfig `toml:"hatch"`
+		Pixi  any         `toml:"pixi"`
 	} `toml:"tool"`
 }
 
@@ -160,9 +162,10 @@ func (h hatchConfig) installsPast() bool {
 // file does not decode, when an entry installs a local path other than the project itself or
 // ends in a backslash (setuptoolsJoins),
 // when dynamic dependencies name no file this reader can read, when a dependency group or
-// tool dependency table holds an entry it cannot read (pyprojectToolDeps), or when
+// tool dependency table holds an entry it cannot read (pyprojectToolDeps), when
 // [tool.uv.sources] is not a table or [tool.uv] override-dependencies is not a list of
-// requirements. An entry [tool.uv.sources] names is a direct reference, and one an override
+// requirements, or when the file configures pixi, whose dependency tables this reader does
+// not read. An entry [tool.uv.sources] names is a direct reference, and one an override
 // names is unresolved unless a lock beside it pins a version it admits.
 func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
@@ -172,7 +175,7 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	var (
 		deps     []plugin.ResolvedDependency
 		origins  []manifestOrigin
-		readable = true
+		readable = doc.Tool.Pixi == nil
 	)
 	addSpec := func(spec string) {
 		d, o, keep, ok := pep508Entry(spec, dir)

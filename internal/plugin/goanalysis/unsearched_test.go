@@ -302,7 +302,7 @@ func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if incompleteLoad(load.Packages) {
+			if incompleteLoad(load.Packages, nil) {
 				t.Fatal("load incomplete")
 			}
 			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages)
@@ -365,7 +365,7 @@ func TestWithholdForLibraryEscape_VulnerablePackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if incompleteLoad(load.Packages) {
+			if incompleteLoad(load.Packages, nil) {
 				t.Fatal("load incomplete")
 			}
 			decl, err := plugin.ParseLibraryEntrypoints(tc.decl)
@@ -422,7 +422,7 @@ func TestNarrowedGates_StandardLibraryWidening(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if incompleteLoad(load.Packages) {
+	if incompleteLoad(load.Packages, nil) {
 		t.Fatal("load incomplete")
 	}
 	entry := resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir)

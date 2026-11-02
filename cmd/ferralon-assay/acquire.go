@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -191,6 +193,13 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, cfOpts...)
 	if err != nil {
 		cleanup()
+		var missing *plugin.NotInstalledError
+		if errors.As(err, &missing) && !releaseLanguage(language) {
+			return nil, &analyzerMissingError{
+				acq:     acquired{language: language, repo: repo, analyzeRef: analyzeRef, analyzedCommit: analyzedCommit},
+				missing: missing,
+			}
+		}
 		return nil, err
 	}
 	logPhase(os.Stderr, "acquire", time.Since(start)-graphTime)
@@ -209,11 +218,45 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	}, nil
 }
 
+// supportedLanguages is every language the release claims. A language belongs here exactly when the
+// tarball bakes an analyzer plugin for it (scripts/build-release.sh BAKED_TARGETS) — the two lists
+// are the same claim made in two places, and language_support_test.go is where the claim is tested.
+var supportedLanguages = []string{
+	checkout.LangGo,
+	checkout.LangJava,
+	checkout.LangKotlin,
+	checkout.LangJS,
+	checkout.LangPython,
+	checkout.LangDotNet,
+}
+
+// releaseLanguage reports whether the release ships an analyzer for language.
+func releaseLanguage(language string) bool {
+	return slices.Contains(supportedLanguages, language)
+}
+
+// analyzerMissingError is acquireTarget's error for a tree whose detected language is outside the
+// release (C/C++ today) and has no analyzer plugin installed. Nothing can be assessed, so the run
+// publishes a Report that says so (publishAnalyzerMissing) instead of failing. A release language
+// whose analyzer is missing is an install fault, not this: acquireTarget returns the plugin error and
+// the run fails without replacing what an earlier run published. acq carries only what the Report
+// needs: the language and the subject's identity and provenance. The tree itself was already cleaned
+// up.
+type analyzerMissingError struct {
+	acq     acquired
+	missing *plugin.NotInstalledError
+}
+
+func (e *analyzerMissingError) Error() string { return e.missing.Error() }
+
+func (e *analyzerMissingError) Unwrap() error { return e.missing }
+
 // selectPlugin constructs the subprocess-backed analyzer client for the detected language.
 // A non-empty bin is an explicit path to that language's assay-plugin-<lang> binary
-// (the -plugin-go flag); when empty each constructor discovers its binary on PATH. Only one
-// plugin runs per scan (the tree is a single language), so a single override suffices. cfOpts
-// apply to the C-family plugin only, goOpts to the Go plugin only.
+// (the -plugin-go flag); when empty each constructor discovers its binary on PATH, and one that is
+// not there is a *plugin.NotInstalledError. Only one plugin runs per scan (the tree is a single
+// language), so a single override suffices. cfOpts apply to the C-family plugin only, goOpts to the
+// Go plugin only.
 func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
 	var graphFile string
 	if graph != nil {
@@ -378,9 +421,13 @@ func advisoryCorpus(language string, includeHouseCanaries bool) []assessment.Vul
 		// identifier) and there is no C/C++ ecosystem wired, so there is nothing honest to seed here.
 		// A floor is NOT a coverage claim; fabricating one to force a completing scan is exactly the
 		// dishonesty this codebase forbids. cfamily is therefore deliberately NOT in the release
-		// supportedLanguages set (language_support_test.go) — it routes and fails open (a scan of a
-		// C/C++ tree halts at the empty-work-set gate, never a false clean verdict), and a real floor
-		// lands with the Phase-1 engine.
+		// supportedLanguages set (tested in language_support_test.go), and the release ships no cfamily
+		// plugin. A scan of a C/C++ tree therefore never reaches a verdict: where the plugin is not
+		// installed, acquireTarget stops before the work set and the run publishes a zero-finding
+		// Report whose did_not_run note names the language and the missing plugin, then exits 0
+		// (publishAnalyzerMissing); where a source build installed it, this empty floor halts the run
+		// at the empty-work-set gate (errEmptyWorkSet) with no Report. Neither is a clean verdict. A
+		// real floor lands with the Phase-1 engine.
 		return nil
 	default:
 		return nil

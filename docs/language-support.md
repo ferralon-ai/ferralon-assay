@@ -24,8 +24,16 @@ Java and Kotlin search the compiled program and its dependency JARs. .NET resolv
 inside the restored NuGet assemblies for the build's target. Python and JavaScript bind imports to
 the packages that provide them and trace first-party calls to the dependency boundary.
 
-C/C++ is not in the scanner release asset. A scan of a C/C++ tree stops at the empty-work-set gate and
-fails the run, so it never publishes a Report that reads as clean.
+C/C++ is not in the scanner release asset, which ships no C/C++ analyzer. A scan of a C/C++ tree on
+the release publishes a Report with no findings and one `did_not_run` note saying C/C++ was not
+analyzed and naming the missing analyzer, and the run exits 0: the host lacks an analyzer, the
+repository is not at fault. The job summary and the PR comment lead with "Not analyzed", so the Report
+never reads as clean. With a C/C++ analyzer you installed yourself from a source build, the scan
+instead stops at the empty-work-set gate and fails the run, because there is no C/C++ advisory floor
+yet.
+
+A missing analyzer for a language the release does ship is an install fault, not an unsupported
+language: the run fails and publishes nothing, so the previous results stay in place.
 
 ## Verdicts
 

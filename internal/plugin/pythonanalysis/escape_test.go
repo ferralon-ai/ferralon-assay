@@ -1364,7 +1364,9 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"import_module continued after import with CRLF literal", "from importlib import \\\r\n    import_module\r\n\r\ndef load():\r\n    return import_module('plugins.x')\r\n", true, false, false},
 		{"hasattr of sys continued", "import sys\n\nP = hasattr( \\\n    sys, 'platform')\n", false, false, false},
 		{"def named import_module continued", "def \\\n    import_module(n):\n    return n\n", false, false, false},
-		{"call split inside brackets after a stray closer fails closed", "import importlib\n\ns = f\"{d[\")\"]}\"\n\ndef load():\n    return importlib.import_module(\n        'plugins.x')\n", false, false, true},
+		// The ")" sits inside the f-string, so the call really loads plugins.x, and the
+		// loader-literal read finds it.
+		{"call split inside brackets after a stray closer reads the literal", "import importlib\n\ns = f\"{d[\")\"]}\"\n\ndef load():\n    return importlib.import_module(\n        'plugins.x')\n", true, false, false},
 		{"value use after stray closer and opener", "import importlib\n\ns = f\"{d[\")\"]}\"\nt = f\"{d[\"(\"]}\"\n\nLOAD = importlib.import_module\n('plugins.x')\n", false, false, true},
 		{"star import of sys with the backslash after import", "from sys import\\\n    *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
 		{"star import of sys with the backslash after import and CRLF", "from sys import\\\r\n    *\r\n\r\ndef go(mod):\r\n    return modules[mod]\r\n", false, false, true},

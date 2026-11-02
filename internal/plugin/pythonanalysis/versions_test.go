@@ -1850,7 +1850,7 @@ func TestResolveVersions_LockSourceRedirect(t *testing.T) {
 	const pp = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n"
 	poetry := func(extra string) map[string]string {
 		return map[string]string{"pyproject.toml": pp,
-			"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\ndescription = \"\"\n" + extra +
+			"poetry.lock": poetryLockHeader("2.1.3") + "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\ndescription = \"\"\n" + extra +
 				"\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"*\"\n"}
 	}
 	pdm := func(extra string) map[string]string {

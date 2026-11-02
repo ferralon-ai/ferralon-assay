@@ -1459,7 +1459,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 // see) may reach any function of the module. done holds the chains already followed, so an
 // import cycle ends.
 func (prog *program) escapeChain(base string, rest []string, done map[string]bool, escape func(funcDecl), escapeModule func(string)) {
-	key := strings.Join(append([]string{base}, rest...), "/")
+	key := base + "\x00" + strings.Join(rest, "/")
 	if done[key] {
 		return
 	}

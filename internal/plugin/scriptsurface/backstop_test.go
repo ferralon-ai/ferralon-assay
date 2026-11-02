@@ -2,6 +2,7 @@ package scriptsurface
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -673,6 +674,36 @@ func checkInvoked(t *testing.T, tree, links map[string]string, wantWithheld bool
 }
 
 // When the build cannot be read whole, a file may name a hit unseen, so every hit withholds.
+// A file that may name a hit but cannot be read when the hit is checked counts as naming it.
+func TestVeto_BackstopInvokedUnreadableText(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fail     string
+		withheld bool
+	}{
+		{"every file read", "", false},
+		{"a file that may name it unreadable", "ci/other.yml", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "examples/provision.yml": "steps:\n  - run: inst add x\n", "ci/other.yml": "steps:\n  - run: echo hi\n"})
+			spec := testSpec
+			spec.ReadRegular = func(path string) ([]byte, error) {
+				if tc.fail != "" && path == filepath.Join(root, tc.fail) {
+					return nil, fs.ErrPermission
+				}
+				return testSpec.ReadRegular(path)
+			}
+			v := New(root, testRead(root), spec)
+			none := func(string, []byte) (string, bool) { return "", false }
+			for range buildtree.Candidates(root, v.Classify(none), v.FullyRead) {
+			}
+			if withheld := v.Unrecognised() == "examples/provision.yml:2"; withheld != tc.withheld || withheld == (len(v.Inactive()) == 1) {
+				t.Fatalf("Unrecognised() = %q, Inactive() = %v; want withheld %v", v.Unrecognised(), v.Inactive(), tc.withheld)
+			}
+		})
+	}
+}
+
 func TestVeto_BackstopInvokedFailsClosed(t *testing.T) {
 	root := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "examples/provision.yml": "steps:\n  - run: inst add x\n"})
 	if err := os.Symlink(t.TempDir(), filepath.Join(root, "vendored")); err != nil {

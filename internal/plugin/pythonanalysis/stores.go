@@ -318,11 +318,12 @@ var readOnlyMethods = map[string]bool{
 // into the dict by literal key, a .update of keyword arguments or a .setdefault by literal key,
 // bind those names. An attribute or subscript that is not a target (see target), a getattr
 // by a literal name that is not a dunder, a hasattr, delattr or del, a membership test, a **
-// unpacking, an argument to __import__, readOnlyWrappers and readOnlyMethods bind none; a
-// call counts only for a builtin the file never rebinds (shadowed). Any other use may bind
-// any name: a store by a key the scanner cannot read, a dunder of the module, the module
-// replaced in sys.modules, or the namespace handed on as a value.
-func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool, shadowed func(string, int) bool) {
+// unpacking, an argument to __import__ or after the first to get_type_hints (typeHintsArg),
+// readOnlyWrappers and readOnlyMethods bind none; a call counts only for a builtin the file
+// never rebinds (shadowed). Any other use may bind any name: a store by a key the scanner
+// cannot read, a dunder of the module, the module replaced in sys.modules, or the namespace
+// handed on as a value.
+func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool, shadowed func(string, int) bool, typing func(string) bool) {
 	n := len(r)
 	p := skipAllSpace(r, end)
 	j := skipSpaceBack(r, start-1)
@@ -330,6 +331,8 @@ func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, modul
 	case j >= 1 && r[j] == '*' && r[j-1] == '*', precededByWord(r, start, "in"):
 		return
 	case j >= 0 && (r[j] == '(' || r[j] == ',') && p < n && (r[p] == ',' || r[p] == ')') && importArg(r, start, shadowed):
+		return
+	case j >= 0 && r[j] == ',' && p < n && (r[p] == ',' || r[p] == ')') && typeHintsArg(r, start, typing):
 		return
 	case j >= 0 && r[j] == '(' && p < n && (r[p] == ',' || r[p] == ')'):
 		fn, k := wordBefore(r, j)
@@ -421,6 +424,23 @@ func importArg(r []rune, start int, shadowed func(string, int) bool) bool {
 	}
 	w, k := wordBefore(r, open)
 	return w == "__import__" && (k < 0 || r[k] != '.') && !shadowed(w, start)
+}
+
+// typeHintsArg reports whether the argument starting at r[start] is passed, after the first, to
+// get_type_hints on the typing or typing_extensions module (typing), which evaluates
+// annotations in the namespaces it is handed. An annotation that binds a name, a walrus in a
+// string annotation, is not read.
+func typeHintsArg(r []rune, start int, typing func(string) bool) bool {
+	open := enclosingOpen(r, start)
+	if open < 0 || r[open] != '(' {
+		return false
+	}
+	w, k := wordBefore(r, open)
+	if w != "get_type_hints" || k < 0 || r[k] != '.' {
+		return false
+	}
+	m, q := wordBefore(r, k)
+	return typing(m) && (q < 0 || r[q] != '.')
 }
 
 // target reports whether the expression from r[start] to r[end] is bound rather than read:

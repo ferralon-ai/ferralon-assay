@@ -1630,6 +1630,33 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		return names[w]
 	}
+	// typing reports whether a name is the typing or typing_extensions module: every import
+	// binding of it is one, and the file uses it nowhere else but as typing.<attr>.
+	typingMods := map[string]bool{}
+	for _, b := range bindings {
+		if _, ok := typingMods[b.local]; !ok || typingMods[b.local] {
+			typingMods[b.local] = b.target == "typing" || b.target == "typing_extensions"
+		}
+	}
+	for i, si := 0, 0; i < n; {
+		if si < len(spans) && i >= spans[si][0] {
+			i = max(i, spans[si][1])
+			si++
+			continue
+		}
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if pj := skipSpaceBack(r, i-1); typingMods[w] && (pj < 0 || r[pj] != '.') {
+			if q := skipAllSpace(r, end); q >= n || r[q] != '.' {
+				typingMods[w] = false
+			}
+		}
+		i = end
+	}
+	typing := func(w string) bool { return len(stars) == 0 && typingMods[w] }
 	var builtin, foreign ownStores
 	si := 0
 	for i := 0; i < n; {
@@ -1649,7 +1676,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			switch q := skipAllSpace(r, end); {
 			case q < n && r[q] == '(':
 				if c := skipAllSpace(r, q+1); c < n && r[c] == ')' {
-					own.use(r, i, c+1, lits, false, shadowed)
+					own.use(r, i, c+1, lits, false, shadowed, typing)
 				}
 			case !assignedTo(r, end):
 				// The builtin itself handed on, called wherever it goes.
@@ -1659,7 +1686,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		// A store through the builtins module rebinds a builtin for every module, read as a
 		// store through the file's own module is.
 		if !dotted && builtinsNames[w] && !precededByDef(r, i) && !assignedTo(r, end) {
-			builtin.use(r, i, end, lits, true, shadowed)
+			builtin.use(r, i, end, lits, true, shadowed, typing)
 		}
 		// Another module's __builtins__ is its builtins, as a module or a dict, and so is a
 		// frame's f_builtins.
@@ -1670,8 +1697,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		// namespace dict: the file's own for its own frames and defs, another module's for a
 		// caller's frame or a function handed in.
 		if dotted && (w == "f_globals" || w == "__globals__" || w == "f_locals" && inModule(i)) {
-			own.use(r, i, end, lits, false, shadowed)
-			foreign.use(r, i, end, lits, false, shadowed)
+			start := dottedStart(r, i)
+			own.use(r, start, end, lits, false, shadowed, typing)
+			foreign.use(r, start, end, lits, false, shadowed, typing)
 		}
 		kind := kindOf(w, dotted)
 		if kind == lookupNone || precededByDef(r, i) || assignedTo(r, end) {
@@ -1726,7 +1754,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				case name == "":
 					computed = true
 					if e := ownModuleEnd(r, aend); e > 0 {
-						own.use(r, dottedStart(r, i), e, lits, true, shadowed)
+						own.use(r, dottedStart(r, i), e, lits, true, shadowed, typing)
 					}
 				default:
 					values = append(values, name)
@@ -1748,7 +1776,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			case name == "":
 				computed = true
 				if e := ownModuleEnd(r, end); e > 0 {
-					own.use(r, i, e, lits, true, shadowed)
+					own.use(r, i, e, lits, true, shadowed, typing)
 				}
 			default:
 				values = append(values, name)

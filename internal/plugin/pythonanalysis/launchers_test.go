@@ -1060,6 +1060,59 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
+			name: "script beside another module's membership test on a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "def fix(func):\n    if \"main\" in func.__globals__:\n        pass\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script beside another module handing a decorated function's globals to get_type_hints",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing_extensions\n\ndef fix(func):\n    typing_extensions.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to a get_type_hints not typing's",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\nfrom tool import fac as typing\n\ndef fix(func):\n    typing.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to get_type_hints on a typing it rebinds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\nfrom tool.fac import make\n\ntyping = make()\n\ndef fix(func):\n    typing.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals first to get_type_hints",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\n\ndef fix(func):\n    typing.get_type_hints(func.__globals__, func)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script its own namespace handed to a builtin rebound by a literal globals key",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

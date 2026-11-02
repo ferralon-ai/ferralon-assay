@@ -16,6 +16,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 	"github.com/ferralon-ai/ferralon-assay/trigger"
@@ -378,6 +379,36 @@ func TestWarnNoInventory(t *testing.T) {
 			got := strings.HasPrefix(w.String(), "::warning title="+brand.Name+"::cve-watch has nothing to query")
 			if got != tc.want || (!tc.want && w.Len() != 0) {
 				t.Fatalf("output = %q, want warning %v", w.String(), tc.want)
+			}
+		})
+	}
+}
+
+// TestWarnUnqueried: a heartbeat whose stored Report left nested Go modules out says it is partial
+// and names them; any other says nothing.
+func TestWarnUnqueried(t *testing.T) {
+	nested := report.PartialityNote{Reason: plugin.PartialReasonNestedModule, Ecosystem: "Go", Path: "exporter/b, receiver/a"}
+	cases := []struct {
+		name string
+		res  trigger.CVEWatchResult
+		want string // a substring of the output line; "" for no output
+	}{
+		{name: "complete heartbeat", res: trigger.CVEWatchResult{Heartbeat: true}},
+		{name: "nested modules unqueried", res: trigger.CVEWatchResult{Heartbeat: true, Unqueried: []report.PartialityNote{nested}},
+			want: "not queried: exporter/b, receiver/a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, annotations strings.Builder
+			warnUnqueried(&out, &annotations, &tc.res)
+			if tc.want == "" {
+				if out.Len()+annotations.Len() != 0 {
+					t.Fatalf("output %q, annotations %q; want none", out.String(), annotations.String())
+				}
+				return
+			}
+			if !strings.Contains(out.String(), tc.want) || !strings.HasPrefix(annotations.String(), "::warning title="+brand.Name+"::cve-watch is partial") {
+				t.Fatalf("output %q, annotations %q; want %q and a warning", out.String(), annotations.String(), tc.want)
 			}
 		})
 	}

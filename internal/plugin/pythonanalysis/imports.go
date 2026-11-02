@@ -239,6 +239,14 @@ func (d distResolver) importDeclared(path string) bool {
 	return slices.ContainsFunc(d.distsFor(path), func(s string) bool { return d.declared[s] })
 }
 
+// knownTop reports whether the dotted path's top-level name is one the standard library, a
+// curated distribution or a declared distribution provides: a module the build imports from
+// outside its sources even when a first-party module path happens to contain the name.
+func (d distResolver) knownTop(path string) bool {
+	top, _, _ := strings.Cut(path, ".")
+	return d.python.ships(top) || len(d.curated.Reverse(top)) > 0 || d.declared[normalizePyCoordinate(top)]
+}
+
 // curatedShippers returns the curated distributions shipping exactly the longest curated
 // package that is path or a whole-segment prefix of it, or nil when none is.
 func (d distResolver) curatedShippers(path string) []string {

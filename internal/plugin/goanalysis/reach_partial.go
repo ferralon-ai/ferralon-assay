@@ -23,25 +23,58 @@ import (
 // type error), and x/vuln has no flag to tolerate one. When that failure is settled, the scan instead
 // runs govulncheck once more over the build's packages less the roots that import a package the load
 // could not read: the partial run. Its symbol findings are paths that exist in the build, so they
-// stand. Its silence covers only what it loaded, so every refutation it would ground and every
-// advisory it says nothing about is withheld as a tool failure.
+// stand. Its silence covers only what it loaded. The excluded roots run only code in their own
+// import closure (Hidden), so a refutation of a module Hidden holds no package of still stands; every
+// other refutation, and every advisory the run says nothing about while Hidden is unknown, is withheld
+// as a tool failure.
 
 // govulncheckPartialKind names the run cache entry that holds a partial run, under the same key as
 // the stream and the settled failure it replaces.
 const govulncheckPartialKind = "govulncheck-partial"
 
 // govulncheckPartialMarker identifies a partial run record; an entry without it is no record.
-const govulncheckPartialMarker = "govulncheck-partial/v2"
+const govulncheckPartialMarker = "govulncheck-partial/v3"
 
 // partialRun is a govulncheck run over the build less Excluded, the roots of ./... that are or
 // import a package in Unloadable, which the full run's load could not read. Modules names each
-// unloadable package's module as a scoped limit does (modulePURL).
+// unloadable package's module as a scoped limit does (modulePURL). Hidden names the module of every
+// package in Excluded's import closure (hiddenModules), or is nil when that closure is unknown.
 type partialRun struct {
 	Marker     string            `json:"marker"`
 	Unloadable []string          `json:"unloadable"`
 	Modules    map[string]string `json:"modules"`
 	Excluded   []string          `json:"excluded"`
+	Hidden     []string          `json:"hidden,omitempty"`
 	Stream     []byte            `json:"stream"`
+}
+
+// readImports returns the packages the run could not load whose imports the go command still read in
+// full: every one of Unloadable when Hidden is known, since each lies in the closure hiddenModules
+// read; none for a nil run or an unknown closure.
+func (run *partialRun) readImports() []string {
+	if run == nil || run.Hidden == nil {
+		return nil
+	}
+	return run.Unloadable
+}
+
+// hides reports whether the code the run left out may hold a package of the module purl names: Hidden
+// is unknown, or names that module, one it lies under, or one under it. Paths compare without case,
+// as the gate's scoped-limit match does.
+func (run *partialRun) hides(purl string) bool {
+	if run.Hidden == nil {
+		return true
+	}
+	module, ok := strings.CutPrefix(purl, "pkg:golang/")
+	if !ok {
+		return true
+	}
+	module = strings.ToLower(module)
+	return slices.ContainsFunc(run.Hidden, func(h string) bool {
+		hidden, ok := strings.CutPrefix(h, "pkg:golang/")
+		hidden = strings.ToLower(hidden)
+		return ok && (underModule(module, hidden) || underModule(hidden, module))
+	})
 }
 
 // govulncheckOrPartial returns the govulncheck stream for buildDir under env (govulncheckCached),
@@ -116,6 +149,8 @@ type listedPackage struct {
 	Dir        string
 	DepOnly    bool
 	Imports    []string
+	Deps       []string      // every package it depends on, directly or not, implicit ones included
+	Error      *struct{}     // set when the go command could not read the package or its imports
 	Module     *listedModule // none for the standard library
 }
 
@@ -178,7 +213,39 @@ func partialRunRecord(buildDir string, perrs []packages.Error, list func() ([]li
 			modules[p.ImportPath] = p.purl()
 		}
 	}
-	return json.Marshal(partialRun{Marker: govulncheckPartialMarker, Unloadable: unloadable, Modules: modules, Excluded: excluded, Stream: out})
+	return json.Marshal(partialRun{Marker: govulncheckPartialMarker, Unloadable: unloadable, Modules: modules, Excluded: excluded,
+		Hidden: hiddenModules(graph, excluded), Stream: out})
+}
+
+// hiddenModules returns the purls of the modules that hold a package in the import closure of
+// excluded (each root and its Deps, implicit dependencies included), sorted. A main module's package
+// counts under both "" (first-party, modulePURL) and its module path. It returns nil, unknown, when a
+// package of the closure is not listed or the go command could not read it, since its imports, and
+// so the rest of the closure, are then unknown.
+func hiddenModules(graph []listedPackage, excluded []string) []string {
+	listed := make(map[string]listedPackage, len(graph))
+	for _, p := range graph {
+		listed[p.ImportPath] = p
+	}
+	var hidden []string
+	for _, root := range excluded {
+		r, ok := listed[root]
+		if !ok {
+			return nil
+		}
+		for _, path := range append([]string{root}, r.Deps...) {
+			p, ok := listed[path]
+			if !ok || p.Error != nil {
+				return nil
+			}
+			hidden = append(hidden, p.purl())
+			if p.Module != nil && p.Module.Main {
+				hidden = append(hidden, "pkg:golang/"+p.Module.Path)
+			}
+		}
+	}
+	slices.Sort(hidden)
+	return slices.Compact(hidden)
 }
 
 // posFile matches a go/packages error position, file:line or file:line:col.
@@ -276,7 +343,7 @@ func excludedRoots(graph []listedPackage, unloadable []string) (excluded, kept [
 // the govulncheck load sees them: tests excluded. It never fetches: a settled failure already
 // resolved every module offline (packagesResolveOffline).
 func listBuildPackages(ctx context.Context, buildDir string, env []string) ([]listedPackage, error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Imports,Module", "./...")
+	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json=ImportPath,Dir,DepOnly,Imports,Deps,Error,Module", "./...")
 	cmd.Dir = buildDir
 	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
 	out, err := cmd.Output()
@@ -296,8 +363,10 @@ func listBuildPackages(ctx context.Context, buildDir string, env []string) ([]li
 }
 
 // withholdForPartialRun shapes a result read off a partial run. A symbol finding is a path in the
-// build and stands. A refutation, and an advisory the run says nothing about, rest on a search that
-// left the excluded roots out, so neither stands: each declares tool_failure. Every result names
+// build and stands. A refutation rests on a search that left the excluded roots out, so it stands only
+// when the code they run holds no package of the refuted module (hides); otherwise it declares
+// tool_failure. An advisory the run says nothing about declares tool_failure while that code is
+// unknown; once it is known, the scoped limit bounds what the run left out to it. Every result names
 // what the run left out.
 func withholdForPartialRun(res plugin.ReachabilityResult, scanned vulnScan) plugin.ReachabilityResult {
 	run := scanned.partial
@@ -306,9 +375,11 @@ func withholdForPartialRun(res plugin.ReachabilityResult, scanned vulnScan) plug
 	}
 	switch {
 	case res.Refutation != nil:
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
-	case len(scanned.findings) == 0:
+		if run.hides(res.Refutation.Package) {
+			res.Refutation = nil
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
+		}
+	case len(scanned.findings) == 0 && run.Hidden == nil:
 		reasons := slices.DeleteFunc(slices.Clone(res.Partiality.Reasons), func(r string) bool {
 			return r == plugin.PartialReasonAdvisoryUnknownToAnalyzer
 		})
@@ -321,9 +392,10 @@ func withholdForPartialRun(res plugin.ReachabilityResult, scanned vulnScan) plug
 	return res
 }
 
-// partialRunLimits discloses a partial run as unbounded tool_failure limits, one per module of a
-// package the run could not load (Package as a scoped limit names it), each naming those packages
-// and the roots the run left out.
+// partialRunLimits discloses a partial run as tool_failure limits, one per module of a package the
+// run could not load (Package as a scoped limit names it), each naming those packages and the roots
+// the run left out. Each is bounded to Hidden, the modules the code left out can reach, and unbounded
+// when that is unknown.
 func partialRunLimits(run *partialRun) []plugin.ScopedReason {
 	byModule := map[string][]string{}
 	for _, p := range run.Unloadable {
@@ -336,6 +408,7 @@ func partialRunLimits(run *partialRun) []plugin.ScopedReason {
 			Package: mod,
 			Path: fmt.Sprintf("govulncheck could not load %s; it searched the build less the roots that are or import a package it could not load: %s",
 				nameList(byModule[mod]), nameList(run.Excluded)),
+			Targets: slices.Clone(run.Hidden),
 		})
 	}
 	return limits

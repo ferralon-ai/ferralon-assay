@@ -207,7 +207,7 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if len(stacksToReachPaths(findingsToStacks(scanned.findings))) == 0 {
 		graph = reconcileSummaryGraph
 	}
-	g, err := graph(ctx, buildDir, load)
+	g, err := graph(ctx, buildDir, scanned.partial.readImports(), load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
@@ -347,7 +347,7 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 		return res
 	}
 	vulnerable := scanned.vulnerablePackages(module)
-	incomplete := incompleteLoad(pkgs)
+	incomplete := incompleteLoad(pkgs, scanned.partial.readImports())
 	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
@@ -373,11 +373,13 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 }
 
 // incompleteLoad reports whether a package failed to load or type-check, so that its imports, and
-// what reaches through them, may be incomplete.
-func incompleteLoad(pkgs []*packages.Package) bool {
+// what reaches through them, may be incomplete. A package in known does not count: it, and every
+// package importing it, lies in the partial run's Hidden closure, whose modules' refutations are
+// withheld anyway (withholdForPartialRun, and reflectReachOf on why the rest stand).
+func incompleteLoad(pkgs []*packages.Package, known []string) bool {
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.Types == nil || len(p.Errors) > 0 {
+		if (p.Types == nil || len(p.Errors) > 0) && !slices.Contains(known, p.PkgPath) {
 			incomplete = true
 		}
 	})
@@ -1126,26 +1128,27 @@ type reconcileSummary struct {
 	ReflectReach map[string][]string `json:"reflect_reach"`
 }
 
-// reconcileKey is the run-cache key of every reconcile entry for buildDir. The program load reads the
-// process environment, so that is part of it.
-func reconcileKey(buildDir string) []string {
-	return append([]string{buildDir}, os.Environ()...)
+// reconcileKey is the run-cache key of every reconcile entry for buildDir under known, which is as
+// reflectReachOf takes it. The program load reads the process environment, so that is part of it.
+func reconcileKey(buildDir string, known []string) []string {
+	return append([]string{buildDir, "known=" + strings.Join(known, ",")}, os.Environ()...)
 }
 
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
 // once per tree per scan through the run cache. Reflection's calls are bounded per advisory
 // (withholdForReflectReach), so the graph does not declare them run-wide. The compute that stores the
 // graph then stores its summary (reconcileSummaryGraph): the edges entry, then the marker, then the
-// summary, each through a rename and each only once the one before it is stored.
-func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+// summary, each through a rename and each only once the one before it is stored. known is as
+// reflectReachOf takes it.
+func reconcileCallGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
 	dir := RunCacheDir(ctx)
-	key := reconcileKey(buildDir)
+	key := reconcileKey(buildDir, known)
 	if dir != "" {
 		if b, err := os.ReadFile(runCachePath(dir, "reconcile", key)); err == nil {
 			return decodeReconcileGraph(b)
 		}
 	}
-	b, err := computeReconcileGraph(load)
+	b, err := computeReconcileGraph(load, known)
 	if err != nil {
 		return reconcileGraph{}, err
 	}
@@ -1169,7 +1172,7 @@ func storeReconcileGraph(dir string, key []string, b []byte) (reconcileGraph, er
 }
 
 // computeReconcileGraph builds the reconcile graph from load and encodes it as the edges entry holds it.
-func computeReconcileGraph(load func() (*LoadResult, error)) ([]byte, error) {
+func computeReconcileGraph(load func() (*LoadResult, error), known []string) ([]byte, error) {
 	loaded, err := load()
 	if err != nil {
 		return nil, err
@@ -1178,7 +1181,7 @@ func computeReconcileGraph(load func() (*LoadResult, error)) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	reasons, reach, err := reflectReachOf(loaded)
+	reasons, reach, err := reflectReachOf(loaded, known)
 	if err != nil {
 		return nil, err
 	}
@@ -1218,13 +1221,13 @@ func storeReconcileSummary(dir string, key []string, g reconcileGraph) {
 // reconcileSummaryGraph returns the reconcile graph without its edges, for a result with no path.
 // It reads the summary when the marker names it and the edges entry is present, and otherwise falls
 // back to the whole graph.
-func reconcileSummaryGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+func reconcileSummaryGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
 	if dir := RunCacheDir(ctx); dir != "" {
-		if s, ok := readReconcileSummary(dir, reconcileKey(buildDir)); ok {
+		if s, ok := readReconcileSummary(dir, reconcileKey(buildDir, known)); ok {
 			return reconcileGraph{CallGraph: plugin.CallGraphResult{Partiality: s.Partiality}, ReflectReach: s.ReflectReach}, nil
 		}
 	}
-	return reconcileCallGraph(ctx, buildDir, load)
+	return reconcileCallGraph(ctx, buildDir, known, load)
 }
 
 // readReconcileSummary returns the cached summary for key, and whether it can be trusted: it decodes,

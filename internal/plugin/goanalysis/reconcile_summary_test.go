@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"sync"
@@ -128,7 +129,7 @@ func TestReconciledResult_SummaryEqualsFullDecode(t *testing.T) {
 
 					cache := t.TempDir()
 					ctx := WithRunCacheDir(context.Background(), cache)
-					key := reconcileKey(dir)
+					key := reconcileKey(dir, nil)
 					if _, err := storeReconcileGraph(cache, key, b); err != nil {
 						t.Fatal(err)
 					}
@@ -198,7 +199,7 @@ func TestReconcileSummaryGraph_UntrustedFallsBack(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := t.TempDir()
-			key := reconcileKey(dir)
+			key := reconcileKey(dir, nil)
 			write := func(kind string, b []byte) {
 				if b == nil {
 					return
@@ -237,17 +238,17 @@ func mustJSON(t *testing.T, v any) []byte {
 // Without a run cache the summary graph is the whole graph, computed in-process.
 func TestReconcileCallGraph_EntryBytes(t *testing.T) {
 	dir, load := summaryFixture(t)
-	want, err := computeReconcileGraph(load)
+	want, err := computeReconcileGraph(load, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cache := t.TempDir()
 	ctx := WithRunCacheDir(context.Background(), cache)
-	g, err := reconcileCallGraph(ctx, dir, load)
+	g, err := reconcileCallGraph(ctx, dir, nil, load)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := reconcileKey(dir)
+	key := reconcileKey(dir, nil)
 	got, err := os.ReadFile(runCachePath(cache, "reconcile", key))
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +264,7 @@ func TestReconcileCallGraph_EntryBytes(t *testing.T) {
 		t.Fatalf("stored summary = %+v (trusted %v), want the graph's partiality and reflect reach", s, ok)
 	}
 
-	inProcess, err := reconcileSummaryGraph(context.Background(), dir, load)
+	inProcess, err := reconcileSummaryGraph(context.Background(), dir, nil, load)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +280,7 @@ func TestReconcileSummaryGraph_ConcurrentComputes(t *testing.T) {
 	cache := t.TempDir()
 	ctx := WithRunCacheDir(context.Background(), cache)
 	const buildDir = "/src"
-	key := reconcileKey(buildDir)
+	key := reconcileKey(buildDir, nil)
 	graph := func(i int) []byte {
 		return mustJSON(t, reconcileGraph{
 			CallGraph:    plugin.CallGraphResult{Partiality: plugin.Partial("r" + strconv.Itoa(i)), Edges: []plugin.CallEdge{{Caller: sym("a"), Callee: sym("b")}}},
@@ -302,7 +303,7 @@ func TestReconcileSummaryGraph_ConcurrentComputes(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range 200 {
-				g, err := reconcileSummaryGraph(ctx, buildDir, noLoad)
+				g, err := reconcileSummaryGraph(ctx, buildDir, nil, noLoad)
 				if err != nil {
 					continue // nothing stored yet
 				}
@@ -322,7 +323,7 @@ func TestReconcileSummaryGraph_ConcurrentComputes(t *testing.T) {
 func BenchmarkReconcileDecode(b *testing.B) {
 	cache := b.TempDir()
 	const buildDir = "/src"
-	key := reconcileKey(buildDir)
+	key := reconcileKey(buildDir, nil)
 	edges := make([]plugin.CallEdge, 100_000)
 	for i := range edges {
 		edges[i] = plugin.CallEdge{
@@ -347,7 +348,7 @@ func BenchmarkReconcileDecode(b *testing.B) {
 	b.Run("no-path", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			if _, err := reconcileSummaryGraph(ctx, buildDir, noLoad); err != nil {
+			if _, err := reconcileSummaryGraph(ctx, buildDir, nil, noLoad); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -355,9 +356,142 @@ func BenchmarkReconcileDecode(b *testing.B) {
 	b.Run("path", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			if _, err := reconcileCallGraph(ctx, buildDir, noLoad); err != nil {
+			if _, err := reconcileCallGraph(ctx, buildDir, nil, noLoad); err != nil {
 				b.Fatal(err)
 			}
 		}
 	})
+}
+
+// cacheEntries returns every entry in the run cache dir, by file name.
+func cacheEntries(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	des, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[string][]byte, len(des))
+	for _, de := range des {
+		b, err := os.ReadFile(filepath.Join(dir, de.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[de.Name()] = b
+	}
+	return out
+}
+
+// TestReconcileGraph_KeyedByKnown: the packages a partial run could not load (known) change the
+// reflect reach, so on one build directory two runs with different known share no reconcile entry,
+// edges, marker or summary, on either read path, and a run with the same known is served from its
+// own entries with no load, even after a run with other known stored its own.
+func TestReconcileGraph_KeyedByKnown(t *testing.T) {
+	illTyped := "package vulnmod\n\nfunc Safe() { var x int = \"s\"; _ = x }\n\nfunc Bad() {}\n"
+	dir := writeTree(t, merge(reflectBase, map[string]string{
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"_vulnmod/vulnmod.go": illTyped,
+	}))
+	loaded, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Under knownA the ill-typed vulnmod makes the reach unknown; under knownB the partial run could
+	// not load it, so the reach is known.
+	var knownA []string
+	knownB := []string{"example.com/vulnmod"}
+	kinds := []string{"reconcile", "reconcile-marker", "reconcile-summary"}
+
+	for _, tc := range []struct {
+		name    string
+		graph   func(context.Context, string, []string, func() (*LoadResult, error)) (reconcileGraph, error)
+		summary bool
+	}{
+		{"edges path", reconcileCallGraph, false},
+		{"summary path", reconcileSummaryGraph, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			ctx := WithRunCacheDir(context.Background(), cache)
+			loads := 0
+			load := func() (*LoadResult, error) {
+				loads++
+				return loaded, nil
+			}
+			run := func(known []string) reconcileGraph {
+				t.Helper()
+				g, err := tc.graph(ctx, dir, known, load)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return g
+			}
+
+			a := run(knownA)
+			if loads != 1 || a.ReflectReach != nil {
+				t.Fatalf("first run under knownA: %d loads, reach %v; want one load and an unknown reach", loads, a.ReflectReach)
+			}
+			afterA := cacheEntries(t, cache)
+			for _, kind := range kinds {
+				if _, ok := afterA[filepath.Base(runCachePath(cache, kind, reconcileKey(dir, knownA)))]; !ok {
+					t.Fatalf("no %s entry stored under knownA", kind)
+				}
+			}
+			if len(afterA) != len(kinds) {
+				t.Fatalf("knownA stored %d entries, want %d", len(afterA), len(kinds))
+			}
+
+			if got := run(knownA); loads != 1 || !reflect.DeepEqual(got.ReflectReach, a.ReflectReach) || !reflect.DeepEqual(got.CallGraph.Partiality, a.CallGraph.Partiality) {
+				t.Fatalf("same knownA: %d loads, got %+v; want a hit on the stored entries", loads, got)
+			}
+
+			b := run(knownB)
+			if loads != 2 || b.ReflectReach == nil {
+				t.Fatalf("other known: %d loads, reach %v; want a fresh load and a known reach", loads, b.ReflectReach)
+			}
+			afterB := cacheEntries(t, cache)
+			for name, content := range afterA {
+				if !bytes.Equal(afterB[name], content) {
+					t.Errorf("knownB changed knownA's entry %s", name)
+				}
+			}
+			for _, kind := range kinds {
+				name := filepath.Base(runCachePath(cache, kind, reconcileKey(dir, knownB)))
+				if _, shared := afterA[name]; shared {
+					t.Errorf("%s entry of knownB is knownA's", kind)
+				} else if _, ok := afterB[name]; !ok {
+					t.Errorf("no %s entry stored under knownB", kind)
+				}
+			}
+			if len(afterB) != 2*len(kinds) {
+				t.Errorf("after both runs %d entries, want %d", len(afterB), 2*len(kinds))
+			}
+
+			for _, k := range []struct {
+				name  string
+				known []string
+				want  reconcileGraph
+			}{
+				{"knownA", knownA, a},
+				{"knownB", knownB, b},
+			} {
+				if got := run(k.known); loads != 2 || !reflect.DeepEqual(got.ReflectReach, k.want.ReflectReach) {
+					t.Errorf("%s after both: %d loads, reach %v; want a hit with %v", k.name, loads, got.ReflectReach, k.want.ReflectReach)
+				}
+				if _, ok := readReconcileSummary(cache, reconcileKey(dir, k.known)); !ok {
+					t.Errorf("%s summary untrusted after both runs", k.name)
+				}
+			}
+
+			// The summary path is served from the summary alone: a garbled edges entry, still present,
+			// is not decoded.
+			if tc.summary {
+				if err := os.WriteFile(runCachePath(cache, "reconcile", reconcileKey(dir, knownA)), []byte("not json"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if got := run(knownA); loads != 2 || !reflect.DeepEqual(got.ReflectReach, a.ReflectReach) {
+					t.Errorf("knownA summary after both: %d loads, reach %v; want the summary", loads, got.ReflectReach)
+				}
+			}
+		})
+	}
 }

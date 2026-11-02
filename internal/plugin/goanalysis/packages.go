@@ -105,31 +105,10 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		Context: ctx,
 		Dir:     buildDir,
 		Tests:   false,
-		// The analyzed target is the buildDir's own module — NEVER a member of any
-		// workspace the analyzer process itself happens to run inside (e.g. an
-		// enclosing repository's go.work during development). Force GOWORK=off so the load resolves the
-		// target module standalone; an ambient go.work would otherwise make
-		// packages.Load try to resolve the target against the wrong module graph and
-		// return an empty/garbled program.
-		Env: append(os.Environ(), "GOWORK=off"),
 	}
-	// The build loaded is the one `go build` ships from this environment: cgo is on or off as the go
-	// command resolves it here (CGO_ENABLED and CC inherited, else on when the default C compiler is
-	// found), pinned so every load reads that one variant. The files the other variant compiles are
-	// the dropped limit below.
-	pinned, cgoErr := cgoPinned(ctx, buildDir, cfg.Env)
-	if cgoErr == nil {
-		cfg.Env = pinned
-	}
-	// The toolchain is the one the go command resolves here from GOTOOLCHAIN and the go.mod go and
-	// toolchain lines, pinned so every load runs under that one release. It is not the build's: a
-	// caller that knows the subject's toolchain sets buildGoVersion.
-	goVersion := goEnvVersion(ctx, buildDir, cfg.Env)
-	if r, ok := parseGoRelease(goVersion); ok {
-		cfg.Env = append(cfg.Env, "GOTOOLCHAIN="+r.toolchain())
-	} else {
-		goVersion = ""
-	}
+	var goVersion string
+	var cgoErr error
+	cfg.Env, goVersion, cgoErr = programEnv(ctx, buildDir)
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go/packages load %q: %w", buildDir, err)
@@ -179,6 +158,36 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		Packages: pkgs, Partiality: part, cgo: cgo, cgoBounded: bounded, cgoUnresolved: cgoErr != nil,
 		goVersion: goVersion,
 	}, nil
+}
+
+// programEnv returns the environment LoadProgram loads buildDir under, the release it pins there
+// ("" when the go command resolves none) and why cgo could not be pinned (nil when it was).
+func programEnv(ctx context.Context, buildDir string) (env []string, goVersion string, cgoErr error) {
+	// The analyzed target is the buildDir's own module — NEVER a member of any
+	// workspace the analyzer process itself happens to run inside (e.g. an
+	// enclosing repository's go.work during development). Force GOWORK=off so the load resolves the
+	// target module standalone; an ambient go.work would otherwise make
+	// packages.Load try to resolve the target against the wrong module graph and
+	// return an empty/garbled program.
+	env = append(os.Environ(), "GOWORK=off")
+	// The build loaded is the one `go build` ships from this environment: cgo is on or off as the go
+	// command resolves it here (CGO_ENABLED and CC inherited, else on when the default C compiler is
+	// found), pinned so every load reads that one variant. The files the other variant compiles are
+	// the dropped limit LoadProgram reports.
+	pinned, cgoErr := cgoPinned(ctx, buildDir, env)
+	if cgoErr == nil {
+		env = pinned
+	}
+	// The toolchain is the one the go command resolves here from GOTOOLCHAIN and the go.mod go and
+	// toolchain lines, pinned so every load runs under that one release. It is not the build's: a
+	// caller that knows the subject's toolchain sets buildGoVersion.
+	goVersion = goEnvVersion(ctx, buildDir, env)
+	if r, ok := parseGoRelease(goVersion); ok {
+		env = append(env, "GOTOOLCHAIN="+r.toolchain())
+	} else {
+		goVersion = ""
+	}
+	return env, goVersion, cgoErr
 }
 
 type buildEnvironKey struct{}

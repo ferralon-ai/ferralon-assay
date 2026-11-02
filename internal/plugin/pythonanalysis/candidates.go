@@ -166,7 +166,7 @@ func pyCandidateName(path string) (string, bool) {
 	switch {
 	case isManifest(name):
 		return "manifest name", true
-	case name == "Pipfile", name == "pixi.toml", name == "pixi.lock", name == "pylock.toml",
+	case lower == "hatch.toml", name == "Pipfile", name == "pixi.toml", name == "pixi.lock", name == "pylock.toml",
 		strings.HasPrefix(lower, "pylock.") && ext == ".toml",
 		strings.HasPrefix(lower, "conda-lock") && (ext == ".yml" || ext == ".yaml"):
 		return "install manifest name", true

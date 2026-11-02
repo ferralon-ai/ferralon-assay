@@ -18,6 +18,28 @@ type CallGraphView struct {
 	enc []byte
 	// rev is cg's reverse-edge index, built on first use and shared by every view of cg.
 	rev *reverseIndex
+	// counted, when set, holds cg's CountedCallGraph encoding for every view sharing cg, so it is
+	// encoded at most once.
+	counted *countedEncoding
+}
+
+// CountedCallGraph is a call graph with its Unresolved and Escaped lists reduced to counts: what a
+// persisted copy of the graph carries. Decoded as a CallGraphResult it gives the same partiality,
+// algorithm, edges and roots, and no Unresolved list, which the contract reads as every declared
+// reason unattributable: more conservative than the graph, never less.
+type CountedCallGraph struct {
+	Partiality      Partiality `json:"partiality"`
+	Algorithm       string     `json:"algorithm"`
+	Edges           []CallEdge `json:"edges"`
+	Roots           []Symbol   `json:"roots"`
+	UnresolvedCount int        `json:"unresolved_count,omitempty"`
+	EscapedCount    int        `json:"escaped_count,omitempty"`
+}
+
+type countedEncoding struct {
+	once sync.Once
+	b    []byte
+	err  error
 }
 
 // NewCallGraphView is a view over cg. The view reads cg's slices in place, so cg must be the
@@ -185,4 +207,36 @@ func (v CallGraphView) AppendJSON(dst []byte) ([]byte, error) {
 		return nil, err
 	}
 	return append(dst, b...), nil
+}
+
+// AppendCountedJSON appends the json.Marshal encoding of the graph's CountedCallGraph to dst. A
+// view over a memoized graph encodes it once for every view of that graph.
+func (v CallGraphView) AppendCountedJSON(dst []byte) ([]byte, error) {
+	if v.counted == nil {
+		b, err := v.countedJSON()
+		if err != nil {
+			return nil, err
+		}
+		return append(dst, b...), nil
+	}
+	v.counted.once.Do(func() { v.counted.b, v.counted.err = v.countedJSON() })
+	if v.counted.err != nil {
+		return nil, v.counted.err
+	}
+	return append(dst, v.counted.b...), nil
+}
+
+func (v CallGraphView) countedJSON() ([]byte, error) {
+	var cg CallGraphResult
+	if v.cg != nil {
+		cg = *v.cg
+	}
+	return json.Marshal(CountedCallGraph{
+		Partiality:      cg.Partiality,
+		Algorithm:       cg.Algorithm,
+		Edges:           cg.Edges,
+		Roots:           cg.Roots,
+		UnresolvedCount: len(cg.Unresolved),
+		EscapedCount:    len(cg.Escaped),
+	})
 }

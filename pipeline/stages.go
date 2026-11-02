@@ -3420,13 +3420,15 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 //
 //	struct {
 //		Reachability  plugin.ReachabilityResult `json:"reachability"`
-//		CallGraph     plugin.CallGraphResult    `json:"call_graph"`
+//		CallGraph     plugin.CountedCallGraph   `json:"call_graph"`
 //		ToolchainScan ToolchainScan             `json:"toolchain_scan"`
 //	}
 //
-// except that the call graph is appended from the view's encoding rather than re-encoded for every
-// advisory. ToolchainScan records which Go toolchain this analysis actually ran under. It is the
-// fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
+// except that the call graph is appended from the view's counted encoding rather than re-encoded for
+// every advisory. The leg carries the declined sites and escaped symbols as counts: every
+// candidate's artifact holds a copy, and a dynamic-language monorepo lists a site per dynamic
+// call. ToolchainScan records which Go toolchain this analysis actually ran under. It is the fact
+// SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
 // subject scan.
 func reachabilityPayload(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) ([]byte, error) {
 	b, _, _, err := encodeReachability(reach, cg, ts)
@@ -3446,7 +3448,7 @@ func encodeReachability(reach plugin.ReachabilityResult, cg plugin.CallGraphView
 	}
 	b := append([]byte(`{"reachability":`), r...)
 	b = append(b, `,"call_graph":`...)
-	if b, err = cg.AppendJSON(b); err != nil {
+	if b, err = cg.AppendCountedJSON(b); err != nil {
 		return nil, nil, nil, err
 	}
 	b = append(b, `,"toolchain_scan":`...)
@@ -3457,7 +3459,9 @@ func encodeReachability(reach plugin.ReachabilityResult, cg plugin.CallGraphView
 // putReachability stores the resolved reachability artifact. When the store takes seeds and cg is
 // the decode of its own encoding, it also seeds the artifact's ReachabilityRecord from the values
 // the payload was encoded from, so readers neither split the payload nor decode the run's graph
-// again for every case.
+// again for every case. The seed holds the full in-memory graph, Unresolved and Escaped lists
+// included, while the payload carries their counts; a record's readers see only the partiality,
+// edges and roots, which both carry alike.
 func putReachability(store artifact.Store, c *assessment.Assessment, producedBy string, reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (artifact.Ref, error) {
 	payload, reachLeg, tsLeg, err := encodeReachability(reach, cg, ts)
 	if err != nil {

@@ -489,6 +489,7 @@ var (
 // extras_require dict in src, and whether every occurrence of either name was such a literal
 // and src holds no "**" outside string literals and comments.
 func scanSetupPy(src string) (specs []string, complete bool) {
+	src = string(loneCRToLF([]byte(src)))
 	specs, complete = scanSetupPyKeys(src, setupPyRuntimeKeys)
 	return specs, complete && !hasPySplat(src)
 }
@@ -498,6 +499,7 @@ func scanSetupPy(src string) (specs []string, complete bool) {
 // those names was such a literal whose every element setuptools reads as written
 // (setuptoolsReadsAsWritten).
 func scanSetupPyKeys(src string, keys []string) (specs []string, complete bool) {
+	src = universalNewlines(src)
 	complete = true
 	for _, key := range keys {
 		for i := 0; ; {
@@ -584,6 +586,7 @@ func literalStringListDict(src string, i int) (elems []string, next int, ok bool
 
 // hasPySplat reports whether src holds "**" outside string literals and comments.
 func hasPySplat(src string) bool {
+	src = universalNewlines(src)
 	for i := 0; i < len(src); {
 		switch {
 		case src[i] == '#':
@@ -651,7 +654,7 @@ func literalStringList(src string, i int) (elems []string, next int, ok bool) {
 // taken as a requirement: in an arbitrary Python file it is far more likely to be a key, a
 // path, or prose. The hook is never executed; these are declared dependencies only.
 func parseHatchBuild(data []byte) ([]plugin.ResolvedDependency, bool) {
-	src := string(data)
+	src := universalNewlines(string(data))
 	var out []plugin.ResolvedDependency
 	seen := map[string]bool{}
 	for i := 0; i < len(src); {

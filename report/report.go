@@ -179,6 +179,11 @@ type Package struct {
 	// build compiles that module's code under Name. Empty when not replaced or replaced by a
 	// directory.
 	Replace string `json:"replace,omitempty"`
+	// NotInstalled marks a package a lockfile declares that every install the build is known to
+	// run leaves out (plugin.DependencyNode.NotInstalled). Version is still the declared pin.
+	// It says this lock entry is not what the build installs, not that no copy of the package is
+	// present: a tool the environment seeds, such as pip, may still be there at another version.
+	NotInstalled bool `json:"not_installed,omitempty"`
 }
 
 // Label is the package as a finding row names it: name@version for a resolved package. A
@@ -711,6 +716,31 @@ type Provenance struct {
 	// Nil on a Report built without it (additive; a reader that predates the field is
 	// unaffected). See IntelProvenance.
 	Intel *IntelProvenance `json:"intel,omitempty"`
+	// Timings records how long this pass took. Nil on a Report built without it (additive). It is
+	// operational disclosure, never a verdict input: no finding depends on it, and two runs with
+	// identical findings will differ here.
+	Timings *RunTimings `json:"timings,omitempty"`
+}
+
+// RunTimings is the wall time of one scan pass: end to end, and per pipeline stage summed over
+// every advisory the pass assessed. The gap between WallSeconds and the stage sum is the work done
+// outside the per-advisory pipeline (acquisition, work-set resolution, publication).
+type RunTimings struct {
+	// WallSeconds is the elapsed time from the start of the run mode to the publication of this
+	// Report.
+	WallSeconds float64 `json:"wall_seconds"`
+	// Stages lists each pipeline stage in the order it first ran.
+	Stages []StageTiming `json:"stages,omitempty"`
+}
+
+// StageTiming is one pipeline stage's accumulated wall time over a pass.
+type StageTiming struct {
+	// Stage is the pipeline stage name (e.g. "reachability_ingress").
+	Stage string `json:"stage"`
+	// Runs is how many times the stage ran — once per advisory that reached it.
+	Runs int `json:"runs"`
+	// Seconds is the stage's total wall time across those runs.
+	Seconds float64 `json:"seconds"`
 }
 
 // IntelProvenance records the intel inputs a scan pass actually used: which set of

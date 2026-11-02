@@ -158,19 +158,25 @@ first source that yields a usable version:
 
 1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), or the
    `ASSAY_SUBJECT_GO_VERSION` environment variable. Exact.
-2. **Your `go.mod` directives** — `toolchain goX.Y.Z` and `go X.Y.Z`. Each is a **minimum**, not an
-   exact version: `GOTOOLCHAIN=auto` only ever switches up from them. When both are present, the
-   higher one wins. A go command before 1.21 does not enforce the `go` line, so `go 1.17` may have
-   been built by go1.16.5. A `go` line is therefore a minimum only when the module also has a
-   `toolchain` line, or when the `go` line is three-part (`go 1.21.0`) at 1.21.0 or later — go
-   commands before 1.21 reject both. A two-part `go` line (`go 1.21`, `go 1.22`) is not a minimum,
-   and neither is a `go` line below 1.21 without a `toolchain` line. Such a `go` line is left out.
+2. **Your `go.mod` `go` line** — a **minimum**, not an exact version. Every go command from 1.21 on
+   refuses to build your module with an older Go, whatever `GOTOOLCHAIN` says. A go command before
+   1.21 does not enforce the `go` line, so `go 1.17` may have been built by go1.16.5. The `go` line
+   is therefore a minimum only when the module also has a `toolchain` line, or when the `go` line is
+   three-part (`go 1.21.0`) at 1.21.0 or later — go commands before 1.21 reject both. A two-part `go`
+   line (`go 1.21`, `go 1.22`) is not a minimum, and neither is a `go` line below 1.21 without a
+   `toolchain` line. Such a `go` line is left out.
+
+   A `toolchain` line raises the minimum to at least go1.21.0, because no older go command can read
+   your `go.mod`. Its own version is not a minimum: under `GOTOOLCHAIN=local` or a pinned
+   `GOTOOLCHAIN` the go command ignores it, and `actions/setup-go` sets `GOTOOLCHAIN=local`. With
+   `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.21.0.
 3. Otherwise, unresolved.
 
 A declaration below your own `go.mod` floor is discarded in favor of the floor, because a module
 cannot build with a Go older than its directives require. A stale `subject-go-version` therefore
 weakens the fact to a minimum rather than letting the scan rely on a version your repository has
-already moved past.
+already moved past. A declaration at or above the minimum is kept, even when it is below your
+`toolchain` line.
 
 The difference between exact and minimum matters. A minimum is enough to disqualify an advisory when
 even your floor is past the fix. It is not enough to conclude anything from a vulnerable symbol being
@@ -208,7 +214,10 @@ Before turning it on:
 The CLI also reads `ASSAY_CI_GO_VERSION`, the Go the CI runner has installed. The scan uses it as a
 toolchain source only when you also set `ASSAY_TRUST_OBSERVED_GO=true`, which asserts that the
 observed Go is the one your repository builds with: true in a job that ran `actions/setup-go` ahead
-of the scan, false in a dedicated scan workflow where the observed Go is the runner image's. Any
+of the scan, false in a dedicated scan workflow where the observed Go is the runner image's. The
+observation must be the Go that actually builds: under `GOTOOLCHAIN=auto`, sample `go version` from
+your module directory, so it reports the toolchain the go command switches to, not the Go installed
+before the switch. Any
 other value leaves the observation out and resolution falls back to your `go.mod` directives. When
 trusted, it counts as an exact toolchain, ranked after your declaration and above your `go.mod`
 directives. The same assertion lets the scan use the Go its own `go` command resolves for your

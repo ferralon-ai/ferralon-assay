@@ -4,8 +4,7 @@ package pythonanalysis
 // edges).
 //
 // Both formats are TOML built around a "[[package]]" array-of-tables carrying a package's
-// name, exact pinned version, dependency edges, and artifact hashes. Unlike poetry.lock —
-// which the lexical tomlString path reads only for flat scalars — E4 must read the dependency
+// name, exact pinned version, dependency edges, and artifact hashes. E4 must read the dependency
 // edges and hashes, which live in multi-line arrays and inline tables (array-of-strings for
 // pdm, array-of-inline-tables for uv). A partial hand-rolled TOML reader for those is exactly
 // the fragile reimplementation OQ2 ruled against, so parsing goes through the L0-approved
@@ -50,6 +49,22 @@ type pdmPackage struct {
 	Marker       string    `toml:"marker"` // optional package-level environment marker
 	Dependencies []string  `toml:"dependencies"`
 	Files        []pdmFile `toml:"files"`
+	// A package installed from a VCS checkout, a URL or a local path carries its VCS kind
+	// (git, hg, svn, bzr), url or path (editable = true marks a path installed in place) instead
+	// of index files.
+	Git      string `toml:"git"`
+	Hg       string `toml:"hg"`
+	Svn      string `toml:"svn"`
+	Bzr      string `toml:"bzr"`
+	URL      string `toml:"url"`
+	Path     string `toml:"path"`
+	Editable bool   `toml:"editable"`
+}
+
+// redirected reports whether the package installs from a VCS checkout, a URL or a local path
+// rather than an index, so its locked version is not the index release an advisory describes.
+func (p pdmPackage) redirected() bool {
+	return p.Git != "" || p.Hg != "" || p.Svn != "" || p.Bzr != "" || p.URL != "" || p.Path != "" || p.Editable
 }
 
 type pdmFile struct {
@@ -105,6 +120,7 @@ func parsePDMLock(data []byte, env map[string]string, selection []string) ([]pyR
 			Hashes:       pdmHashes(p.Files),
 			Selected:     true, // a locked package is in the installed set (target-env re-selection is E5)
 			Relationship: classifyPDM(parents[name]),
+			Redirected:   p.redirected(),
 		}
 		out = append(out, r)
 	}
@@ -173,11 +189,23 @@ type uvPackage struct {
 }
 
 // uvSource is uv's inline-table package source. A root project carries editable or virtual
-// (its path); a resolved dependency carries registry (the index URL).
+// (its path); a resolved dependency carries registry (the index URL), or git, url, path or
+// directory when a [tool.uv.sources] entry redirects it.
 type uvSource struct {
-	Registry string `toml:"registry"`
-	Editable string `toml:"editable"`
-	Virtual  string `toml:"virtual"`
+	Registry  string `toml:"registry"`
+	Editable  string `toml:"editable"`
+	Virtual   string `toml:"virtual"`
+	Git       string `toml:"git"`
+	URL       string `toml:"url"`
+	Path      string `toml:"path"`
+	Directory string `toml:"directory"`
+}
+
+// redirected reports whether the package installs from a git checkout, a URL or a local path
+// rather than an index. Its locked version is whatever that source's metadata says, which does
+// not make it the index release of that version an advisory describes.
+func (s uvSource) redirected() bool {
+	return s.Git != "" || s.URL != "" || s.Path != "" || s.Directory != ""
 }
 
 type uvDep struct {
@@ -246,6 +274,7 @@ func parseUVLock(data []byte, env map[string]string, selection []string) ([]pyRe
 			Hashes:       uvHashes(p),
 			Selected:     true,
 			Relationship: classifyUV(name, direct, parents[name]),
+			Redirected:   p.Source.redirected(),
 		}
 		out = append(out, r)
 	}
@@ -312,9 +341,28 @@ type poetryPackage struct {
 	Version      string                 `toml:"version"`
 	Dependencies map[string]interface{} `toml:"dependencies"`
 	Files        []pdmFile              `toml:"files"`
+	Source       poetrySource           `toml:"source"`
 }
 
-// parsePoetryLock parses a poetry.lock into the selected set for the declared environment,
+// poetrySource is a package's [package.source]. It is absent for PyPI and typed legacy for
+// another index; git, url, file and directory install whatever that ref, archive or tree holds.
+type poetrySource struct {
+	Type string `toml:"type"`
+	URL  string `toml:"url"`
+}
+
+// redirected reports whether the package installs from somewhere other than an index. An
+// unrecognized type counts, and so does a url with no type, since this reader cannot tell what
+// either serves.
+func (s poetrySource) redirected() bool {
+	t := strings.TrimSpace(s.Type)
+	if t == "" {
+		return s.URL != ""
+	}
+	return t != "legacy"
+}
+
+// parsePoetryLockSelected parses a poetry.lock into the selected set for the declared environment,
 // reading parent edges from each package's [package.dependencies]. A dependency's markers gate
 // its edge exactly as on pdm/uv (false → inactive, unbound → active). An optional dependency
 // (optional = true, enabled through the parent's [package.extras]) is kept as an edge when the
@@ -365,6 +413,7 @@ func parsePoetryLockSelected(data []byte, env map[string]string, selection []str
 			Hashes:       pdmHashes(p.Files),
 			Selected:     true,
 			Relationship: classifyPDM(parents[name]),
+			Redirected:   p.Source.redirected(),
 		})
 	}
 	return out, nil
@@ -440,11 +489,12 @@ func parseUVLockAdvisory(data []byte) ([]plugin.ResolvedDependency, bool) {
 }
 
 // pyReqsToResolved projects the selected-set pyReq records onto the advisory path's
-// ResolvedDependency, preserving each package's exact pin (or UNRESOLVED when unpinned).
+// ResolvedDependency, preserving each package's exact pin (or UNRESOLVED when unpinned or
+// redirected off its index).
 func pyReqsToResolved(reqs []pyReq) []plugin.ResolvedDependency {
 	out := make([]plugin.ResolvedDependency, 0, len(reqs))
 	for _, r := range reqs {
-		out = append(out, pyResolved(r.Name, r.Version, r.Resolved, r.Source))
+		out = append(out, pyResolved(r.Name, r.Version, r.Resolved && !r.Redirected, r.Source))
 	}
 	return out
 }

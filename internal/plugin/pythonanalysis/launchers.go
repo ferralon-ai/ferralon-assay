@@ -568,8 +568,9 @@ func (prog *program) launchTargets() []launchTarget {
 
 // starBinds is the first-party modules whose star import into f binds name, whatever else f
 // binds it to, since a later star import rebinds it. open is true when a star import may bind
-// it in a way the lane does not follow: a module it does not read, or one that star-imports
-// first-party code without binding the name itself.
+// it in a way the lane does not follow: a module it does not read, one that a store through a
+// module object may bind it in, or one that star-imports first-party code without binding the
+// name itself.
 func (prog *program) starBinds(f *fileParse, name string) (paths []string, open bool) {
 	for _, sp := range f.starPaths {
 		if len(prog.byModule[sp]) == 0 {
@@ -577,8 +578,11 @@ func (prog *program) starBinds(f *fileParse, name string) (paths []string, open 
 		}
 		for _, i := range prog.byModule[sp] {
 			g := &prog.files[i]
-			if g.depImports[""][name] > 0 && !g.opaque[name] && !g.defs[""][name] && len(g.fpBinds[""][name]) == 0 && len(g.reads[name]) == 0 {
-				continue // a dependency's, bound no other way
+			if prog.storesInto(g, name) {
+				open = true // a store through the module object rebinds it
+			}
+			if g.depImports[""][name] > 0 && !g.opaque[name] && !g.defs[""][name] && len(g.fpBinds[""][name]) == 0 && len(g.reads[name]) == 0 && len(g.starPaths) == 0 {
+				continue // a dependency's: bound no other way, and nothing stored or star-imported into it
 			}
 			if _, bound := g.bindings[""][name]; bound || g.topNames[name] {
 				if !slices.Contains(paths, sp) {
@@ -638,14 +642,8 @@ func (prog *program) bindsFirstParty(f *fileParse, name string, seen map[string]
 // read (any binding recordReads does not read, or one in a def that declares name global),
 // a store through a module object, or a star import that may bind it.
 func (prog *program) rebindsFirstParty(f *fileParse, name string) bool {
-	if f.unreadValue[name] || f.storedAny || f.storedNames[name] {
+	if f.unreadValue[name] || prog.storesInto(f, name) {
 		return true
-	}
-	segs := strings.Split(f.module, "/")
-	for a := range segs {
-		if prog.dirStores[strings.Join(segs[a:], "/")][name] {
-			return true
-		}
 	}
 	if paths, open := prog.starBinds(f, name); len(paths) > 0 || open {
 		return true
@@ -811,4 +809,18 @@ func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module
 func (prog *program) unresolved(t launchTarget) bool {
 	_, _, _, missing := prog.launchDecls(t)
 	return t.unread || !t.optional && missing
+}
+
+// storesInto reports whether a store through a module object may bind name in f's namespace.
+func (prog *program) storesInto(f *fileParse, name string) bool {
+	if f.storedAny || f.storedNames[name] {
+		return true
+	}
+	segs := strings.Split(f.module, "/")
+	for a := range segs {
+		if prog.dirStores[strings.Join(segs[a:], "/")][name] {
+			return true
+		}
+	}
+	return false
 }

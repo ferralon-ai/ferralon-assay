@@ -414,7 +414,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 		}
 		fs.countBinders("", st, global)
-		fs.markOpaque(global, true)
+		fs.markOpaque(global, st != "")
 	}
 	// bind records the bindings one simple statement makes in bindScope. A compound header
 	// with its body on the same line ("except ImportError: g = None") binds the body's
@@ -432,16 +432,17 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			var imported []string
 			o := owner()
 			classBody := o != nil && o.className != ""
+			isGlobal := func(n string) bool { return globals[bindScope][n] || classBody && globals[classScopeKey()][n] }
 			for _, ib := range parseImportStatement(st) {
-				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody, chain: kw == "import" && strings.Contains(ib.target, ".")})
+				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: isGlobal(ib.local), classBody: classBody, chain: kw == "import" && strings.Contains(ib.target, ".")})
 				imported = append(imported, ib.local)
 			}
 			for _, ib := range parseRelativeImport(st) {
-				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody})
+				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: isGlobal(ib.local), classBody: classBody})
 				imported = append(imported, ib.local)
 			}
 			if classBody {
-				classGlobal(st, imported)
+				classGlobal("", imported)
 			}
 			carry(bindScope, "", imported)
 			return

@@ -710,6 +710,18 @@ func TestCallGraph_ModuleQualifiedResolution(t *testing.T) {
 			listed: true,
 		},
 		{
+			name: "module path to a def the module rebinds through a global in a class body",
+			files: map[string]string{
+				"pkg/__init__.py": "",
+				"other.py":        "def g(x):\n    return x\n",
+				"pkg/impl.py":     "import other\n\ndef f(x):\n    return x\n\nclass K:\n    global f\n    f = other.g\n",
+				"app.py":          "from pkg import impl\n\ndef index():\n    return impl.f(1)\n",
+			},
+			caller: funcSCIP("app", nil, "index", 0),
+			absent: []string{funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("other", nil, "g", 1)},
+			listed: true,
+		},
+		{
 			name: "standard-library module beside a first-party module of its name",
 			files: map[string]string{
 				"util.py": "def loads(s):\n    return s\n", "app/__init__.py": "", "app/json.py": "X = 1\n",

@@ -456,6 +456,36 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script a global class in a class body binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\nclass K:\n    global main\n    class main:\n        def __init__(self):\n            make()()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a global import in a class body in a def binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\n\ndef setup():\n    class K:\n        global main\n        from tool.alt import main\n\nsetup()\n",
+				"tool/alt.py": "from tool.fac import make\n\nmain = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a global import in a class body resolves",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "class K:\n    global main\n    from tool.impl import main\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script a store through the defining module",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
@@ -485,6 +515,71 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			},
 			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 			partial: true,
+		},
+		{
+			name: "script a star import may rebind past a dependency's import with a def",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py":  "from tool.impl import main\nfrom tool.star import *\n",
+				"tool/star.py": "try:\n    from fastimpl import main\nexcept ImportError:\n    def main():\n        return 0\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a star import may rebind past a dependency's import with a first-party import",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py":  "from tool.impl import main\nfrom tool.star import *\n",
+				"tool/star.py": "try:\n    from fastimpl import main\nexcept ImportError:\n    from .fb import main\n", "tool/fb.py": "from tool.fac import make\n\nmain = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a star import may rebind past a dependency's import with a class-body global",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py":  "from tool.impl import main\nfrom tool.star import *\n",
+				"tool/star.py": "from tool.fac import make\ntry:\n    from fastimpl import main\nexcept ImportError:\n    class K:\n        global main\n        main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a star import may rebind past a dependency's import through a further star import",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py":  "from tool.impl import main\nfrom tool.star import *\n",
+				"tool/star.py": "try:\n    from fastimpl import main\nexcept ImportError:\n    pass\nfrom tool.star2 import *\n", "tool/star2.py": "from tool.fac import make\n\nmain = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a store into a star-imported module may rebind",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nimport tool.b\nfrom tool.star import *\n", "tool/star.py": "try:\n    from fastimpl import main\nexcept ImportError:\n    pass\n",
+				"tool/b.py": "import tool.star\nfrom tool.fac import make\n\ntool.star.main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a star import of a dependency's name resolves",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py":  "from tool.impl import main\nfrom tool.star import *\n",
+				"tool/star.py": "try:\n    from fastimpl import main\nexcept ImportError:\n    pass\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
 			name: "script a star import of a star import may rebind",

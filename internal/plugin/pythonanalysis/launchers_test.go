@@ -154,6 +154,25 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			absent: []string{funcSCIP("app", nil, "main", 0)},
 		},
 		{
+			name: "script a global import in a def binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/cli.py": "def init():\n    global main\n    from tool.impl import main\n\ninit()\n",
+			},
+			want:  []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			roots: []string{funcSCIP("tool/impl", nil, "main", 0)},
+		},
+		{
+			name: "script through a module a global import in a def binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:app.main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/cli.py": "def init():\n    global app\n    from tool import impl as app\n\ninit()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "Django path to an imported views module",
 			files: map[string]string{
 				"site/__init__.py": "", "site/views.py": "def index(request):\n    return None\n",
@@ -320,6 +339,23 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			},
 			want:    []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
 			partial: true,
+		},
+		{
+			name: "Django views module a global import in a def binds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.urls import path\n\ndef load():\n    global views\n    from site import views\n\nload()\nurlpatterns = [path(\"d/\", views.dash)]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+		},
+		{
+			name: "Django class-based view on a base a global import in a def binds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/base.py": "from django.views import View\n\nclass Base(View):\n    def get(self, request):\n        return None\n",
+				"site/views.py": "def load():\n    global Base\n    from site.base import Base\n\nload()\n\nclass Items(Base):\n    template = \"x\"\n",
+				"site/urls.py":  "from django.urls import path\nfrom site import views\n\nurlpatterns = [path(\"items/\", views.Items.as_view())]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/base", []string{"Base"}, "get", 2), "items/"}},
 		},
 		{
 			name: "a path that is not django's names no view",

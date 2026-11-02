@@ -540,7 +540,7 @@ func (prog *program) launchTargets() []launchTarget {
 				continue
 			}
 			var bases [][]string
-			if paths := f.fpBinds[""][v.chain[0]]; len(paths) > 0 {
+			if paths := f.attrBinds(v.chain[0]); len(paths) > 0 {
 				for _, p := range paths {
 					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
 				}
@@ -708,7 +708,7 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 			continue
 		}
 		var next []pathHit
-		if paths := g.fpBinds[""][segs[0]]; len(paths) > 0 {
+		if paths := g.attrBinds(segs[0]); len(paths) > 0 {
 			for _, p := range paths {
 				hs, _, _ := prog.resolvePath(append(strings.Split(p, "/"), segs[1:]...), 0)
 				next = append(next, hs...)
@@ -769,7 +769,7 @@ func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module
 		}
 		for _, i := range prog.byModule[path] {
 			hits = append(hits, pathHit{file: i, attrs: attrs})
-			for _, next := range prog.files[i].fpBinds[""][attrs[0]] {
+			for _, next := range prog.files[i].attrBinds(attrs[0]) {
 				walk(append(strings.Split(next, "/"), attrs[1:]...), 0)
 			}
 		}

@@ -45,14 +45,15 @@ func (v *Veto) Inactive() []Site {
 }
 
 // Annotations returns each site as a lane's annotation on what it resolves: install commands
-// found there, which the result assumes are not active.
+// found there, which the result assumes are not active. The detail carries the site and fixed
+// text only, no words of the file's.
 func Annotations(sites []Site) []plugin.Annotation {
 	var out []plugin.Annotation
 	for _, s := range sites {
 		out = append(out, plugin.Annotation{
 			Reason: plugin.AnnotationInstallSurfaceInactive,
 			Path:   s.String(),
-			Detail: "install commands found at " + s.String() + "; this analysis assumes they are not active (" + s.Why + ")",
+			Detail: "install commands found at " + s.String() + "; this analysis assumes they are not active",
 		})
 	}
 	return out
@@ -70,13 +71,41 @@ func (v *Veto) relPath(path string) string {
 // invoked reports whether the build may run the file at path, in which the backstop found an
 // installer, so the backstop withholds on it rather than annotating it:
 //
-//   - a hook manager or CI agent runs it: an active git hook or a shellDirs file;
+//   - a hook manager or CI agent runs it: an active git hook, a shellDirs file, or a hook
+//     manager's configuration (hookConfig);
+//   - a workflow uses an action from the tree, and it is an action's metadata (action.yml);
 //   - a runner loads it by its default name without anything naming it (runnerDefault);
 //   - a file the build reads or the backstop reads, other than itself, names it (namedIn).
 //
 // Each is an over-approximation: a name in a file nothing runs still counts.
 func (v *Veto) invoked(path string) bool {
-	return v.inGitDir(path) || shellDir(v.root, path) || runnerDefault(path) || v.namedIn(path)
+	return v.inGitDir(path) || shellDir(v.root, path) || hookConfig(path) || actionMetadata(path) ||
+		runnerDefault(path) || v.namedIn(path)
+}
+
+// hookConfig reports whether the file at path is a hook manager's configuration, which the
+// manager runs as hooks and CI runs by the manager's command without naming the file:
+// pre-commit's and prek's, lefthook's, or overcommit's.
+func hookConfig(path string) bool {
+	lower := strings.ToLower(filepath.Base(path))
+	switch lower {
+	case ".pre-commit-config.yaml", ".pre-commit-config.yml", "prek.toml", ".overcommit.yml":
+		return true
+	}
+	ext := filepath.Ext(lower)
+	switch strings.TrimSuffix(lower, ext) {
+	case "lefthook", ".lefthook", "lefthook-local", ".lefthook-local":
+		return ext == ".yml" || ext == ".yaml" || ext == ".toml" || ext == ".json" || ext == ".jsonc"
+	}
+	return false
+}
+
+// actionMetadata reports whether the file at path is an action's metadata file. The backstop
+// reads one only when a workflow uses an action from the tree (backstopSkips), and a workflow
+// names the action by its directory alone, so each counts as invoked.
+func actionMetadata(path string) bool {
+	lower := strings.ToLower(filepath.Base(path))
+	return lower == "action.yml" || lower == "action.yaml"
 }
 
 // runnerDefaultNames are the lowercased base names of the files a task runner, build tool or
@@ -201,23 +230,31 @@ func names(paths []string) func(data []byte) bool {
 // nameOf returns a matcher for text that may run the file at path by name: its base name
 // (install.py, whatever path, separator or quoting comes before it, so cd scripts && python
 // install.py and $(SCRIPTS)/install.py count); for source code, its stem after a path separator
-// and before a quote, as an import specifier names it (require("./install")); and for a Python
+// and before a quote, whitespace or line end, as an import specifier or an extensionless run
+// names it (require("./install"), node scripts/install --prod); and for a Python
 // module, the module run with -m (python -m install, python -m scripts.install), its dotted
 // path from its directory (scripts.install), an import of it beside it (import install), or a
 // from-import of it from that directory or a relative one (from scripts import install, from
 // . import install, from .install import main). Each is compared whole: post_install.py and
-// install_deps are other names.
+// install_deps are other names. A package's __main__.py is also named as the module of its
+// directory run with -m (python -m tools.provision).
 func nameOf(path string) func(data []byte) bool {
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	forms := []*regexp.Regexp{regexp.MustCompile(`(?:^|[^\w.-])` + regexp.QuoteMeta(base) + `(?:$|[^\w.-])`)}
 	if stem != "" && sourceExts[strings.ToLower(ext)] {
-		forms = append(forms, regexp.MustCompile(`[/\\]`+regexp.QuoteMeta(stem)+"[\"'`]"))
+		forms = append(forms, regexp.MustCompile(`(?m)[/\\]`+regexp.QuoteMeta(stem)+"(?:[\"'`\\s]|$)"))
 	}
+	tokens := [][]byte{[]byte(stemOr(stem, base))}
 	if strings.EqualFold(ext, ".py") && stem != "" {
 		q := regexp.QuoteMeta(stem)
-		dir := regexp.QuoteMeta(filepath.Base(filepath.Dir(path)))
+		dirName := filepath.Base(filepath.Dir(path))
+		dir := regexp.QuoteMeta(dirName)
+		if stem == "__main__" {
+			tokens = append(tokens, []byte(dirName))
+			forms = append(forms, regexp.MustCompile(`-m[ \t]+(?:[\w.]+\.)?`+dir+`(?:$|[^\w.])`))
+		}
 		forms = append(forms,
 			regexp.MustCompile(`-m[ \t]+(?:[\w.]+\.)?`+q+`(?:$|[^\w.])`),
 			regexp.MustCompile(`(?:^|[^\w])`+dir+`\.`+q+`(?:$|[^\w])`),
@@ -226,14 +263,15 @@ func nameOf(path string) func(data []byte) bool {
 			regexp.MustCompile(`\bimport[ \t]+`+q+`(?:$|[^\w.])`))
 	}
 	return func(data []byte) bool {
-		if !bytes.Contains(data, []byte(stemOr(stem, base))) {
+		if !slices.ContainsFunc(tokens, func(t []byte) bool { return bytes.Contains(data, t) }) {
 			return false
 		}
 		return slices.ContainsFunc(forms, func(re *regexp.Regexp) bool { return re.Match(data) })
 	}
 }
 
-// stemOr returns stem, or base when stem is empty (a dotfile), as the text every form contains.
+// stemOr returns stem, or base when stem is empty (a dotfile), as text every form but a
+// __main__.py's -m contains.
 func stemOr(stem, base string) string {
 	if stem == "" {
 		return base

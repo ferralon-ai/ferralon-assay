@@ -17,7 +17,7 @@ func installAssumption(path, detail string) report.PartialityNote {
 // An assumption is shown beside the counts it qualifies, never in the limits footer, and leaves
 // the headline clean: the versions it rests on were resolved.
 func TestBothSurfaces_AssumptionShownBesideCountsNotInFooter(t *testing.T) {
-	r := goScanReport(installAssumption("ci/steps.yml:2", "install commands found at ci/steps.yml:2; this analysis assumes they are not active (pip install)"))
+	r := goScanReport(installAssumption("ci/steps.yml:2", "install commands found at ci/steps.yml:2; this analysis assumes they are not active"))
 	for name, s := range bothSurfaces(t, r) {
 		if !strings.Contains(s, goCleanHeadline) {
 			t.Errorf("%s: an assumption must not qualify the headline\n---\n%s", name, s)

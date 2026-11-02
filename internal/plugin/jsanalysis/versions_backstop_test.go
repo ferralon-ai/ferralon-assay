@@ -40,6 +40,9 @@ func checkOutcome(t *testing.T, pin, absent plugin.DependencyVersionResult, want
 			if len(r.Annotations) != 1 || r.Annotations[0].Reason != plugin.AnnotationInstallSurfaceInactive || (cause != "" && r.Annotations[0].Path != cause) {
 				t.Fatalf("annotations = %v; want one %s at %s", r.Annotations, plugin.AnnotationInstallSurfaceInactive, cause)
 			}
+			if want := "install commands found at " + r.Annotations[0].Path + "; this analysis assumes they are not active"; r.Annotations[0].Detail != want {
+				t.Fatalf("detail = %q; want %q, which carries none of the file's words", r.Annotations[0].Detail, want)
+			}
 		}
 	case withhold:
 		if pin.Match.Resolved || absent.Exhaustive {

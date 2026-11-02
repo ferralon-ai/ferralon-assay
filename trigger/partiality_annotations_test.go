@@ -12,7 +12,7 @@ import (
 var inactiveInstall = plugin.Annotation{
 	Reason: plugin.AnnotationInstallSurfaceInactive,
 	Path:   "ci/steps.yml:2",
-	Detail: "install commands found at ci/steps.yml:2; this analysis assumes they are not active (pip install)",
+	Detail: "install commands found at ci/steps.yml:2; this analysis assumes they are not active",
 }
 
 func annotatedInventory(t *testing.T, store *artifact.MemStore) {

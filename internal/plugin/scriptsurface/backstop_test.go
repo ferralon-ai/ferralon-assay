@@ -578,6 +578,8 @@ func TestVeto_BackstopInvoked(t *testing.T) {
 		{"named only by itself", map[string]string{"ci/provision.yml": "# tool provision.yml\n" + hit}, false, "ci/provision.yml:3"},
 		{"a longer name is another file", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/post_provision.yml ci/provision.yml.bak")}, false, "ci/provision.yml:2"},
 		{"module named in an unrelated attribute", map[string]string{"tools/provision.py": lit, ".github/workflows/ci.yml": wf("tool self.provision")}, false, "tools/provision.py:2"},
+		{"another package run with -m", map[string]string{"tools/provision/__main__.py": lit, ".github/workflows/ci.yml": wf("python -m tools.provisioner")}, false, "tools/provision/__main__.py:2"},
+		{"a longer name run without an extension", map[string]string{"scripts/provision.js": "require('child_process').execSync('inst add x')\n", ".github/workflows/ci.yml": wf("node scripts/provisioner --prod")}, false, "scripts/provision.js:1"},
 
 		{"named by a workflow", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/provision.yml")}, true, "ci/provision.yml:2"},
 		{"named by base name after a cd", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("cd ci && tool provision.yml")}, true, "ci/provision.yml:2"},
@@ -606,6 +608,13 @@ func TestVeto_BackstopInvoked(t *testing.T) {
 		{"Gradle build script", map[string]string{"build.gradle.kts": "tasks.register<Exec>(\"deps\") {\n    commandLine(\"inst\", \"add\", \"x\")\n}\n"}, true, "build.gradle.kts:2"},
 		{"Bitrise config", map[string]string{"bitrise.yml": "workflows:\n  ci:\n    steps:\n      - script:\n          inputs:\n            - content: inst add x\n"}, true, "bitrise.yml:6"},
 		{"turbo tasks", map[string]string{"turbo.json": "{\"tasks\": {\"deps\": \"inst add x\"}}\n"}, true, "turbo.json:1"},
+		{"pre-commit config", map[string]string{".pre-commit-config.yaml": "repos:\n  - repo: local\n    hooks:\n      - id: x\n        entry: inst add x\n"}, true, ".pre-commit-config.yaml:5"},
+		{"prek config", map[string]string{"prek.toml": "[[repos]]\nrepo = \"local\"\n[[repos.hooks]]\nid = \"x\"\nentry = \"inst add x\"\n"}, true, "prek.toml:5"},
+		{"lefthook config", map[string]string{"lefthook.yml": "pre-commit:\n  commands:\n    x:\n      run: inst add x\n"}, true, "lefthook.yml:4"},
+		{"action at the root a workflow uses", map[string]string{"action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - run: inst add x\n      shell: bash\n", ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - uses: ./\n"}, true, "action.yml:5"},
+		{"action in a directory a workflow uses", map[string]string{"ci/actions/setup/action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - run: inst add x\n      shell: bash\n", ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - uses: ./ci/actions/setup\n"}, true, "ci/actions/setup/action.yml:5"},
+		{"package run with -m", map[string]string{"tools/provision/__main__.py": lit, ".github/workflows/ci.yml": wf("python -m tools.provision")}, true, "tools/provision/__main__.py:2"},
+		{"script run without its extension", map[string]string{"scripts/provision.js": "require('child_process').execSync('inst add x')\n", ".github/workflows/ci.yml": wf("node scripts/provision --prod")}, true, "scripts/provision.js:1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { checkInvoked(t, tt.files, nil, tt.withheld, tt.at) })

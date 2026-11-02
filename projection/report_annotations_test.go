@@ -13,7 +13,7 @@ import (
 var installInactive = plugin.Annotation{
 	Reason: plugin.AnnotationInstallSurfaceInactive,
 	Path:   "ci/steps.yml:2",
-	Detail: "install commands found at ci/steps.yml:2; this analysis assumes they are not active (pip install)",
+	Detail: "install commands found at ci/steps.yml:2; this analysis assumes they are not active",
 }
 
 // annotatedReport is fixtureReport with the install-surface annotation on its disqualified row,
@@ -34,7 +34,7 @@ func annotatedReport(t *testing.T) (report.Report, string) {
 // Every machine-readable sink carries the assumption on the row it qualifies, and only there.
 func TestReportProjections_CarryAnnotations(t *testing.T) {
 	r, id := annotatedReport(t)
-	const want = "This analysis assumes: " + "install commands found at ci/steps.yml:2; this analysis assumes they are not active (pip install)."
+	const want = "This analysis assumes: " + "install commands found at ci/steps.yml:2; this analysis assumes they are not active."
 
 	log, err := projection.ProjectReportSARIF(r)
 	if err != nil {

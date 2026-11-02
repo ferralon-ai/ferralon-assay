@@ -40,6 +40,9 @@ func checkOutcome(t *testing.T, pin, absent plugin.DependencyVersionResult, want
 			if len(r.Annotations) != 1 || r.Annotations[0].Reason != plugin.AnnotationInstallSurfaceInactive || (cause != "" && r.Annotations[0].Path != cause) {
 				t.Fatalf("annotations = %v; want one %s at %s", r.Annotations, plugin.AnnotationInstallSurfaceInactive, cause)
 			}
+			if want := "install commands found at " + r.Annotations[0].Path + "; this analysis assumes they are not active"; r.Annotations[0].Detail != want {
+				t.Fatalf("detail = %q; want %q, which carries none of the file's words", r.Annotations[0].Detail, want)
+			}
 		}
 	case withhold:
 		if pin.Match.Resolved || absent.Exhaustive {
@@ -77,7 +80,7 @@ func TestResolveVersions_UnrecognisedInstallSurface(t *testing.T) {
 		{"Dockerfile-prod, a surface by name", "Dockerfile-prod", "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN uv sync --frozen && pip install PyJWT==1.0.0\n", withhold, ""},
 		{"Dockerfile-like file no surface takes", "myDockerfile", "FROM python:3.12\nWORKDIR /app\nCOPY . .\nRUN uv sync --frozen && pip install PyJWT==1.0.0\n", annotate, "myDockerfile:4"},
 		{"poe task", "pyproject.toml", exPyproject + "\n[tool.poe.tasks]\nsetup = \"pip install PyJWT==1.0.0\"\n", withhold, "pyproject.toml:6"},
-		{"uv run in a pre-commit config", ".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: lint\n        entry: uv run ruff\n        language: system\n", annotate, ".pre-commit-config.yaml:5"},
+		{"uv run in a pre-commit config", ".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: lint\n        entry: uv run ruff\n        language: system\n", withhold, ".pre-commit-config.yaml:5"},
 		{"pip under bash -c", "ci/steps.yml", "steps:\n  - command: bash -c \"pip install PyJWT==1.0.0\"\n", annotate, "ci/steps.yml:2"},
 		{"pip by a venv path", "ci/steps.yml", "steps:\n  - command: ./venv/bin/pip install PyJWT==1.0.0\n", annotate, "ci/steps.yml:2"},
 		{"get-pip piped into python", "ci/steps.yml", "steps:\n  - command: curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - PyJWT==1.0.0\n", annotate, "ci/steps.yml:2"},

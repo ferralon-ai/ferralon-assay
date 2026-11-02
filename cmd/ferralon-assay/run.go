@@ -1220,7 +1220,7 @@ func runPRInherit(args []string) error {
 	cfg, err := f.resolve(analysis, true)
 	var missing *analyzerMissingError
 	if errors.As(err, &missing) {
-		return f.publishAnalyzerMissing(ctx, "pr-inherit", missing)
+		return f.publishAnalyzerMissing(ctx, "pr-inherit", missing, clock)
 	}
 	if err != nil {
 		return markIfStopped(analysis, err)
@@ -1313,7 +1313,7 @@ func runCVEWatch(args []string) error {
 	cfg, err := f.resolve(analysis, false)
 	var missing *analyzerMissingError
 	if errors.As(err, &missing) {
-		return f.publishAnalyzerMissing(ctx, "cve-watch", missing)
+		return f.publishAnalyzerMissing(ctx, "cve-watch", missing, clock)
 	}
 	if err != nil {
 		return markIfStopped(analysis, err)

@@ -72,8 +72,9 @@ func analyzerMissingReport(e *analyzerMissingError, revision, commit string) (*r
 // Nothing reaches the work set, so the empty-work-set gate never runs, and no SBOM or baseline is
 // written to the StateStore: a later run with the plugin installed starts clean. The scan-truncated
 // output is set false, as on every path that published a Report, and the self-cleanup revoke check
-// runs as it does after every scan (analyzerMissingRevokeCheck).
-func (f *runFlags) publishAnalyzerMissing(ctx context.Context, mode string, e *analyzerMissingError) error {
+// runs as it does after every scan (analyzerMissingRevokeCheck). clock is the mode's run clock, so the
+// Report records how long the run took to reach this outcome, as every published Report does.
+func (f *runFlags) publishAnalyzerMissing(ctx context.Context, mode string, e *analyzerMissingError, clock *runClock) error {
 	rep, err := analyzerMissingReport(e, *f.revision, *f.commit)
 	if err != nil {
 		return err
@@ -86,7 +87,7 @@ func (f *runFlags) publishAnalyzerMissing(ctx context.Context, mode string, e *a
 	intel := report.IntelProvenance{WorkSetSource: report.WorkSetBuiltinLanguageSet, FactSource: report.FactSourceBuiltinTable}
 	// Nothing was cut short: the Report is complete in what it says.
 	writeScanTruncated(false, os.Stderr)
-	if err := publishResult(ctx, *f.outDir, rep, intel, e.acq.analyzeRef, nil, nil); err != nil {
+	if err := publishResult(ctx, *f.outDir, rep, intel, e.acq.analyzeRef, nil, nil, clock); err != nil {
 		return err
 	}
 	printSummary(*f.outDir, rep, "none: nothing was assessed")

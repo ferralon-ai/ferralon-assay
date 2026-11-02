@@ -186,7 +186,7 @@ func runBaseline(args []string) error {
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	var missing *analyzerMissingError
 	if errors.As(err, &missing) {
-		return f.publishAnalyzerMissing(ctx, "baseline", missing)
+		return f.publishAnalyzerMissing(ctx, "baseline", missing, clock)
 	}
 	if err != nil {
 		return markIfStopped(analysis, err)

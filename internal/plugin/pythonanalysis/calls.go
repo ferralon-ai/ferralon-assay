@@ -404,6 +404,18 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 		}
 	}
+	// classGlobal carries to module scope the names a class body binds that it declares
+	// global, as unread values: the class branches record bindings only under the class.
+	classGlobal := func(st string, names []string) {
+		var global []string
+		for _, n := range names {
+			if globals[classScopeKey()][n] {
+				global = append(global, n)
+			}
+		}
+		fs.countBinders("", st, global)
+		fs.markOpaque(global, true)
+	}
 	// bind records the bindings one simple statement makes in bindScope. A compound header
 	// with its body on the same line ("except ImportError: g = None") binds the body's
 	// names too, as alternatives.
@@ -427,6 +439,9 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			for _, ib := range parseRelativeImport(st) {
 				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody})
 				imported = append(imported, ib.local)
+			}
+			if classBody {
+				classGlobal(st, imported)
 			}
 			carry(bindScope, "", imported)
 			return
@@ -460,6 +475,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				o.classNames[n] = true
 			}
 			fs.countBinders(classScopeKey(), st, names)
+			classGlobal(st, names)
 			return
 		}
 		if bindScope == "" {
@@ -489,8 +505,12 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				if kw == "nonlocal" {
 					decl = &nonlocals
 				}
+				key := bindScope
+				if o := owner(); kw == "global" && o != nil && o.className != "" {
+					key = classScopeKey()
+				}
 				for _, n := range strings.Split(strings.TrimSpace(strings.TrimPrefix(st, kw)), ",") {
-					addNames(decl, bindScope, []string{strings.TrimSpace(n)})
+					addNames(decl, key, []string{strings.TrimSpace(n)})
 				}
 				continue
 			}
@@ -574,6 +594,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				carry(enclosingScope(), text, []string{name})
 			} else {
 				addNames(&fs.defs, classScopeKey(), []string{name})
+				classGlobal(text, []string{name})
 			}
 			stack = append(stack, pyFrame{indent: ll.indent, className: name})
 			pendingRoute = false
@@ -634,6 +655,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				carry(enclosingScope(), text, []string{name})
 			} else {
 				addNames(&fs.defs, classScopeKey(), []string{name})
+				classGlobal(text, []string{name})
 			}
 			pendingRoute = false
 			pendingTask = ""

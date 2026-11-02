@@ -436,6 +436,26 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script a global assignment in a class body binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\nclass K:\n    global main\n    main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a global def in a class body binds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/cli.py": "from tool.impl import main\n\nclass K:\n    global main\n    def main():\n        return 0\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script a store through the defining module",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
@@ -451,6 +471,28 @@ func TestFindIngresses_Launchers(t *testing.T) {
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
 				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
 				"tool/cli.py": "from tool.impl import main\nfrom tool.star import *\n", "tool/star.py": "from tool.fac import make\n\nmain = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a star import may rebind past a dependency's import",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py":  "from tool.impl import main\nfrom tool.star import *\n",
+				"tool/star.py": "from tool.fac import make\n\ntry:\n    from fastimpl import main\nexcept ImportError:\n    main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a star import of a star import may rebind",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.star import *\n", "tool/star.py": "from tool.star2 import *\n",
+				"tool/star2.py": "from tool.fac import make\n\nmain = make()\n",
 			},
 			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 			partial: true,
@@ -473,6 +515,16 @@ func TestFindIngresses_Launchers(t *testing.T) {
 				"a/tool/x.py": "", "b.py": "import a.tool\nfrom tool.fac import make\n\na.tool.main = make()\n",
 			},
 			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "src package a store into a namespace package of the same name binds",
+			files: map[string]string{
+				"pyproject.toml":       "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool:main\"\n",
+				"src/tool/__init__.py": "from tool.impl import main\n", "src/tool/impl.py": cli, "src/tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"a/tool/x.py": "", "b.py": "import a.tool\nfrom tool.fac import make\n\na.tool.main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("src/tool/impl", nil, "main", 0), "tool"}},
 			partial: true,
 		},
 		{

@@ -577,8 +577,8 @@ func (prog *program) starBinds(f *fileParse, name string) (paths []string, open 
 		}
 		for _, i := range prog.byModule[sp] {
 			g := &prog.files[i]
-			if g.depImports[""][name] > 0 {
-				continue // a dependency's
+			if g.depImports[""][name] > 0 && !g.opaque[name] && !g.defs[""][name] && len(g.fpBinds[""][name]) == 0 && len(g.reads[name]) == 0 {
+				continue // a dependency's, bound no other way
 			}
 			if _, bound := g.bindings[""][name]; bound || g.topNames[name] {
 				if !slices.Contains(paths, sp) {

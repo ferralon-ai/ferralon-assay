@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,10 +200,22 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // supplies the loaded program, and is asked for it only to build the graph or to withhold a
 // refutation. entry is the caller's statement of the build's library entry points.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
-	g, err := reconcileCallGraph(ctx, buildDir, load)
+	// reconcile reads the graph's edges only to corroborate a path, so a result evidenceResult derives
+	// no path for reads the summary instead. A result with a path reads the whole graph, every field
+	// of it from the one edges entry.
+	graph := reconcileCallGraph
+	if len(stacksToReachPaths(findingsToStacks(scanned.findings))) == 0 {
+		graph = reconcileSummaryGraph
+	}
+	g, err := graph(ctx, buildDir, scanned.partial.readImports(), load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
+	return resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+}
+
+// resultFromGraph is reconciledResult over the reconcile graph g.
+func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
 	if res.Refutation != nil {
 		loaded, err := load()
@@ -320,7 +334,7 @@ func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []str
 // entry point reaches the refuted module (for the standard library, a vulnerable package), or the
 // entry points or their reach are unknown, the result declares library_escape instead. A refutation
 // that stands only because the caller declared a package no entry point carries that declaration
-// as an assumption.
+// as an assumption. A withhold the incomplete load contributes to declares tool_failure beside it.
 func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -333,11 +347,14 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 		return res
 	}
 	vulnerable := scanned.vulnerablePackages(module)
-	incomplete := incompleteLoad(pkgs)
+	incomplete := incompleteLoad(pkgs, scanned.partial.readImports())
 	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+		if incomplete {
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
+		}
 		return res
 	}
 	// With the load complete, auto's own exclusions are the inferred rule and need no statement.
@@ -356,11 +373,13 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 }
 
 // incompleteLoad reports whether a package failed to load or type-check, so that its imports, and
-// what reaches through them, may be incomplete.
-func incompleteLoad(pkgs []*packages.Package) bool {
+// what reaches through them, may be incomplete. A package in known does not count: it, and every
+// package importing it, lies in the partial run's Hidden closure, whose modules' refutations are
+// withheld anyway (withholdForPartialRun, and reflectReachOf on why the rest stand).
+func incompleteLoad(pkgs []*packages.Package, known []string) bool {
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.Types == nil || len(p.Errors) > 0 {
+		if (p.Types == nil || len(p.Errors) > 0) && !slices.Contains(known, p.PkgPath) {
 			incomplete = true
 		}
 	})
@@ -575,8 +594,9 @@ func isMain(p *packages.Package) bool {
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
 // packages in the refuted module was never traced, so the refutation holds only for builds that
-// leave it out. The result then declares excluded_files instead. An advisory that lists no vulnerable
-// package in the module, or lists the module once with none, makes every package of it count.
+// leave it out. The result then declares excluded_files instead, and tool_failure beside it when the
+// check withholds because one of its own steps failed. An advisory that lists no vulnerable package in
+// the module, or lists the module once with none, makes every package of it count.
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -587,9 +607,17 @@ func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult,
 	if scanned.wholeModule[module] || len(scanned.imports[module]) == 0 {
 		vulnerable = nil
 	}
-	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {
+	if !ok {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+		return res
+	}
+	if counts, failed := leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env); counts {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+		if failed {
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
+		}
 	}
 	return res
 }
@@ -1123,39 +1151,138 @@ type reconcileGraph struct {
 	ReflectReach map[string][]string    `json:"reflect_reach"`
 }
 
+// reconcileSummary is the part of a reconcileGraph a result with no path reads: reconcile reads
+// edges only to corroborate a path. ID names the compute that wrote it; the reconcile marker entry
+// holds the same ID only after that compute stored an edges entry of this key. A later compute may
+// replace that edges entry, so a trusted summary relies on every compute of a key building the same
+// graph, as every reader of the edges entry already does.
+type reconcileSummary struct {
+	ID           string              `json:"id"`
+	Partiality   plugin.Partiality   `json:"partiality"`
+	ReflectReach map[string][]string `json:"reflect_reach"`
+}
+
+// reconcileKey is the run-cache key of every reconcile entry for buildDir under known, which is as
+// reflectReachOf takes it. The program load reads the process environment, so that is part of it.
+func reconcileKey(buildDir string, known []string) []string {
+	return append([]string{buildDir, "known=" + strings.Join(known, ",")}, os.Environ()...)
+}
+
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
-// once per tree per scan through the run cache. The program load reads the process environment, so
-// that is part of the key. Reflection's calls are bounded per advisory (withholdForReflectReach), so
-// the graph does not declare them run-wide.
-func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
-	b, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		loaded, err := load()
-		if err != nil {
-			return nil, err
+// once per tree per scan through the run cache. Reflection's calls are bounded per advisory
+// (withholdForReflectReach), so the graph does not declare them run-wide. The compute that stores the
+// graph then stores its summary (reconcileSummaryGraph): the edges entry, then the marker, then the
+// summary, each through a rename and each only once the one before it is stored. known is as
+// reflectReachOf takes it.
+func reconcileCallGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+	dir := RunCacheDir(ctx)
+	key := reconcileKey(buildDir, known)
+	if dir != "" {
+		if b, err := os.ReadFile(runCachePath(dir, "reconcile", key)); err == nil {
+			return decodeReconcileGraph(b)
 		}
-		cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
-		if err != nil {
-			return nil, err
-		}
-		reasons, reach, err := reflectReachOf(loaded)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range reasons {
-			if declaredRunWide(r) {
-				cg.Partiality = withReason(cg.Partiality, r)
-			}
-		}
-		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
-	})
+	}
+	b, err := computeReconcileGraph(load, known)
 	if err != nil {
 		return reconcileGraph{}, err
 	}
+	if dir == "" {
+		return decodeReconcileGraph(b)
+	}
+	return storeReconcileGraph(dir, key, b)
+}
+
+// storeReconcileGraph decodes the graph one compute encoded as b and stores it in the run cache in
+// dir under key: the edges entry, then its summary.
+func storeReconcileGraph(dir string, key []string, b []byte) (reconcileGraph, error) {
+	g, err := decodeReconcileGraph(b)
+	if err != nil {
+		return reconcileGraph{}, err
+	}
+	if writeRunCacheEntry(dir, "reconcile", runCachePath(dir, "reconcile", key), b) {
+		storeReconcileSummary(dir, key, g)
+	}
+	return g, nil
+}
+
+// computeReconcileGraph builds the reconcile graph from load and encodes it as the edges entry holds it.
+func computeReconcileGraph(load func() (*LoadResult, error), known []string) ([]byte, error) {
+	loaded, err := load()
+	if err != nil {
+		return nil, err
+	}
+	cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
+	if err != nil {
+		return nil, err
+	}
+	reasons, reach, err := reflectReachOf(loaded, known)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range reasons {
+		if declaredRunWide(r) {
+			cg.Partiality = withReason(cg.Partiality, r)
+		}
+	}
+	return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
+}
+
+func decodeReconcileGraph(b []byte) (reconcileGraph, error) {
 	var g reconcileGraph
 	if err := json.Unmarshal(b, &g); err != nil {
 		return reconcileGraph{}, fmt.Errorf("decode cached call graph: %w", err)
 	}
 	return g, nil
+}
+
+// storeReconcileSummary stores g's summary under a fresh compute id: the marker first, then the
+// summary, so a summary the marker names was written after the edges entry of the same compute.
+func storeReconcileSummary(dir string, key []string, g reconcileGraph) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return
+	}
+	id := hex.EncodeToString(raw[:])
+	s, err := json.Marshal(reconcileSummary{ID: id, Partiality: g.CallGraph.Partiality, ReflectReach: g.ReflectReach})
+	if err != nil {
+		return
+	}
+	if writeRunCacheEntry(dir, "reconcile-marker", runCachePath(dir, "reconcile-marker", key), []byte(id)) {
+		writeRunCacheEntry(dir, "reconcile-summary", runCachePath(dir, "reconcile-summary", key), s)
+	}
+}
+
+// reconcileSummaryGraph returns the reconcile graph without its edges, for a result with no path.
+// It reads the summary when the marker names it and the edges entry is present, and otherwise falls
+// back to the whole graph.
+func reconcileSummaryGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+	if dir := RunCacheDir(ctx); dir != "" {
+		if s, ok := readReconcileSummary(dir, reconcileKey(buildDir, known)); ok {
+			return reconcileGraph{CallGraph: plugin.CallGraphResult{Partiality: s.Partiality}, ReflectReach: s.ReflectReach}, nil
+		}
+	}
+	return reconcileCallGraph(ctx, buildDir, known, load)
+}
+
+// readReconcileSummary returns the cached summary for key, and whether it can be trusted: it decodes,
+// the marker holds its id, and the edges entry is present.
+func readReconcileSummary(dir string, key []string) (reconcileSummary, bool) {
+	b, err := os.ReadFile(runCachePath(dir, "reconcile-summary", key))
+	if err != nil {
+		return reconcileSummary{}, false
+	}
+	var s reconcileSummary
+	if err := json.Unmarshal(b, &s); err != nil {
+		return reconcileSummary{}, false
+	}
+	marker, err := os.ReadFile(runCachePath(dir, "reconcile-marker", key))
+	if err != nil || s.ID == "" || string(marker) != s.ID {
+		return reconcileSummary{}, false
+	}
+	if _, err := os.Stat(runCachePath(dir, "reconcile", key)); err != nil {
+		return reconcileSummary{}, false
+	}
+	return s, true
 }
 
 // --- LOCAL structs for govulncheck's -json stream schema ---

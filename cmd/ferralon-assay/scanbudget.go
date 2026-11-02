@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -170,6 +171,22 @@ func markIfStopped(analysis context.Context, err error) error {
 		writeScanTruncated(true, os.Stderr)
 	}
 	return err
+}
+
+// warnUnqueried says a CVE-watch heartbeat was partial: Go modules the build root's module graph
+// leaves out were not inventoried, so OSV was not queried for their dependencies.
+func warnUnqueried(out, annotations io.Writer, res *trigger.CVEWatchResult) {
+	if len(res.Unqueried) == 0 {
+		return
+	}
+	var dirs []string
+	for _, n := range res.Unqueried {
+		if n.Path != "" {
+			dirs = append(dirs, n.Path)
+		}
+	}
+	fmt.Fprintf(out, "  partial:    Go modules outside the root module's graph were not inventoried, so their dependencies were not queried: %s\n", strings.Join(dirs, ", "))
+	fmt.Fprintf(annotations, "::warning title=%s::%s\n", brand.Name, escapeWorkflowData("cve-watch is partial: the stored SBOM holds none of the dependencies of Go modules outside the root module's graph ("+strings.Join(dirs, ", ")+"), so a new advisory that affects only them goes unnoticed."))
 }
 
 // warnNoInventory annotates a CVE-watch heartbeat that had no dependency inventory to query.

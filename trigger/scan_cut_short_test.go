@@ -251,7 +251,7 @@ func storedCorpus(assessed, cut []assessment.VulnRef) *memStore {
 
 // fastPathOverCorpus runs PR re-analysis of advisories over a head identical to store's baseline,
 // so it takes the fast path, with the stopping plugin stopAt and mode.
-func fastPathOverCorpus(t *testing.T, store *memStore, advisories []assessment.VulnRef, stopAt string, mode stopMode) *report.Report {
+func fastPathOverCorpus(t *testing.T, store *memStore, advisories []assessment.VulnRef, stopAt string, mode stopMode) *PRInheritResult {
 	t.Helper()
 	opts, analysis := stoppingOptions(t, stopAt, mode)
 	res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
@@ -271,7 +271,7 @@ func fastPathOverCorpus(t *testing.T, store *memStore, advisories []assessment.V
 	if err := res.Report.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	return res.Report
+	return res
 }
 
 // checkCutShort fails the test unless rep holds one row per id in verdicts, with that verdict
@@ -330,8 +330,8 @@ func TestInheritFastPath_CutShort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rep := fastPathOverCorpus(t, storedCorpus(cutShortCorpus[:1], nil), cutShortCorpus, tc.stopAt, tc.mode)
-			checkCutShort(t, rep, tc.verdicts, tc.cutNote)
+			res := fastPathOverCorpus(t, storedCorpus(cutShortCorpus[:1], nil), cutShortCorpus, tc.stopAt, tc.mode)
+			checkCutShort(t, res.Report, tc.verdicts, tc.cutNote)
 		})
 	}
 }
@@ -340,28 +340,43 @@ func TestInheritFastPath_CutShort(t *testing.T) {
 // stored baseline cut short after GO-T-1 holds scan_cut_short rows for GO-T-2 and GO-T-3, and the
 // head is unchanged. A cut row is no row to inherit, so each one in the work set is assessed fresh
 // and replaced, and the scan_cut_short note counts the cut rows left, with the baseline's cause,
-// or is gone when none is left.
+// or is gone when none is left. The result names a replaced row's advisory as assessed only when
+// this run assessed it; one this run's stop cut short again is named as cut short.
 func TestInheritFastPath_RecountsCutShort(t *testing.T) {
 	cases := []struct {
 		name       string
 		advisories []assessment.VulnRef
+		stopAt     string
 		verdicts   map[string]report.Verdict
 		cutNote    string
+		assessed   []string
+		cutShort   []string
 	}{
 		{
-			name: "a complete run clears the note", advisories: cutShortCorpus,
+			name: "a complete run clears the note", advisories: cutShortCorpus, stopAt: "never",
 			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictNotExploitable},
+			assessed: []string{"GO-T-2", "GO-T-3"},
 		},
 		{
-			name: "a partial run recounts it", advisories: cutShortCorpus[1:2],
+			name: "a partial run recounts it", advisories: cutShortCorpus[1:2], stopAt: "never",
 			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictNotExploitable, "GO-T-3": report.VerdictUndetermined},
 			cutNote:  "1 of 3 advisories were not assessed: test stop",
+			assessed: []string{"GO-T-2"},
+		},
+		{
+			name: "a stop inside the second advisory assesses none", advisories: cutShortCorpus, stopAt: "GO-T-2",
+			verdicts: map[string]report.Verdict{"GO-T-1": report.VerdictNotExploitable, "GO-T-2": report.VerdictUndetermined, "GO-T-3": report.VerdictUndetermined},
+			cutNote:  "2 of 3 advisories were not assessed: test stop",
+			cutShort: []string{"GO-T-2", "GO-T-3"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rep := fastPathOverCorpus(t, storedCorpus(cutShortCorpus[:1], cutShortCorpus[1:]), tc.advisories, "never", stopAndWait)
-			checkCutShort(t, rep, tc.verdicts, tc.cutNote)
+			res := fastPathOverCorpus(t, storedCorpus(cutShortCorpus[:1], cutShortCorpus[1:]), tc.advisories, tc.stopAt, stopAndWait)
+			checkCutShort(t, res.Report, tc.verdicts, tc.cutNote)
+			if !slices.Equal(res.AssessedAdvisories, tc.assessed) || !slices.Equal(res.CutShortAdvisories, tc.cutShort) {
+				t.Errorf("assessed = %q, cut short = %q; want %q, %q", res.AssessedAdvisories, res.CutShortAdvisories, tc.assessed, tc.cutShort)
+			}
 		})
 	}
 }

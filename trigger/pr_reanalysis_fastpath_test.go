@@ -16,7 +16,7 @@ import (
 
 // These tests pin the PR re-analysis fast path (an unchanged SBOM) to the invariant the slow path
 // keeps: an advisory is never left without a row. The baseline holds a row for twoPackageAdvisory
-// (A) only; wiringAdvisory (C) is new to the work set. tracker#357.
+// (A) only; wiringAdvisory (C) is new to the work set.
 
 // countingCheckout is fixedCheckout counting its fetches, so a test can tell whether any
 // assessment ran.
@@ -83,10 +83,11 @@ func oneRow(t *testing.T, rep *report.Report, id string) report.AdvisoryFinding 
 	return rows[0]
 }
 
-// TestInheritFastPath_NewAdvisoryGetsFreshRow_Issue357: Eric's repro. A baseline holding A, a
-// work set holding A and C, and an unchanged SBOM: A inherits its baseline row, and C, which has
-// no row to inherit, is assessed and gets a fresh one.
-func TestInheritFastPath_NewAdvisoryGetsFreshRow_Issue357(t *testing.T) {
+// TestInheritFastPath_NewAdvisoryGetsFreshRow: an advisory added to the work set after the baseline
+// was stored is not left rowless. A baseline holding A, a work set holding A and C, and an
+// unchanged SBOM: A inherits its baseline row, and C, which has no row to inherit, is assessed and
+// gets a fresh one.
+func TestInheritFastPath_NewAdvisoryGetsFreshRow(t *testing.T) {
 	res, fetches := fastPathRun(t, []assessment.VulnRef{twoPackageAdvisory, wiringAdvisory},
 		refutingGoPlugin{inventory: plugin.Complete()}, "")
 	if a := oneRow(t, res.Report, twoPackageAdvisory.ID); a.Evidence.Detail != baselineDetail {
@@ -269,7 +270,7 @@ func TestInheritFastPath_FreshRowIsTheHeads(t *testing.T) {
 // the baseline's rows are re-emitted unvalidated, as they always have been, whether or not fresh
 // rows sit beside them, so a stored row today's Validate rejects never fails the run.
 func TestInheritBaseline_ValidatesFreshRows(t *testing.T) {
-	valid := report.AdvisoryFinding{Advisory: report.Advisory{ID: "FERRALON-TEST-357", Source: "corpus"},
+	valid := report.AdvisoryFinding{Advisory: report.Advisory{ID: "FERRALON-TEST-FRESH", Source: "corpus"},
 		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonAnalysisDidNotRun}
 	invalid := valid
 	invalid.UndeterminedReason = "" // an undetermined row must say why

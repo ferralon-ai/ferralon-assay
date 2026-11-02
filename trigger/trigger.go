@@ -274,17 +274,24 @@ type PRInheritResult struct {
 	// the fast path.
 	ChangedPackages []string
 	// AssessedAdvisories names the fast path's work-set advisories the baseline holds no
-	// row for, which it assessed rather than leave rowless, each id once even when two
-	// sources share it. Empty on the slow path, and
-	// on a fast path with a row for every advisory.
+	// usable row for — no row, or a scan_cut_short one, which says nothing — that this run
+	// assessed, a failed assessment included; each id once even when two sources share it.
+	// An advisory this run's own stop cut short is in CutShortAdvisories instead. Empty on
+	// the slow path, and on a fast path with a usable row for every advisory.
 	AssessedAdvisories []string
+	// CutShortAdvisories names the fast path's work-set advisories with no usable baseline
+	// row that this run's stop reached before they were assessed, each id once; each has a
+	// scan_cut_short row. An id two sources share is named in each list a source of it
+	// belongs to. Empty on the slow path, and on a fast path the stop cut no advisory short.
+	CutShortAdvisories []string
 }
 
 // RunPRInherit decides between the fast path and re-analysis and returns the PR's Report.
 //
 // Fast path (Inherited): the PR SBOM equals the baseline SBOM → emit a Report that
 // inherits the baseline's findings, carrying a Baseline pointer. S1–S6 runs only for a
-// work-set advisory the baseline holds no row for, which would otherwise have none.
+// work-set advisory the baseline holds no usable row for (none, or a scan_cut_short one),
+// which would otherwise have none.
 // Slow path: at least one package changed → re-run S1–S6 for the advisories whose
 // package changed and merge those findings over the inherited baseline findings.
 //
@@ -311,8 +318,9 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 	changed := changedPackages(baseline.SBOM, req.PRSBOM)
 
 	if len(changed) == 0 {
-		// Nothing changed, so every baseline row stands; but an advisory new to the work set has
-		// no row to inherit, and the Report's cursor covers it all the same.
+		// Nothing changed, so every baseline row stands but a scan_cut_short one, which says
+		// nothing and is replaced by a fresh row. An advisory new to the work set has no row to
+		// inherit either, and the Report's cursor covers it all the same.
 		unrowed := unrowedAdvisories(baseline, req.Advisories)
 		fresh, notes, cause := assessUnrowed(ctx, req, unrowed)
 		rep, err := inheritBaseline(baseline, req, state, fresh, notes, cause)
@@ -320,10 +328,20 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 			return nil, err
 		}
 		res := &PRInheritResult{Report: rep, Inherited: true}
+		cut := make(map[string]struct{})
+		for _, f := range fresh {
+			if f.UndeterminedReason == report.ReasonScanCutShort {
+				cut[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
+			}
+		}
 		for _, adv := range unrowed {
+			list := &res.AssessedAdvisories
+			if _, ok := cut[adv.ID+"\x00"+adv.Source]; ok {
+				list = &res.CutShortAdvisories
+			}
 			// unrowed holds one entry per (id, source), so two sources sharing an id would name it twice.
-			if !slices.Contains(res.AssessedAdvisories, adv.ID) {
-				res.AssessedAdvisories = append(res.AssessedAdvisories, adv.ID)
+			if !slices.Contains(*list, adv.ID) {
+				*list = append(*list, adv.ID)
 			}
 		}
 		return res, nil

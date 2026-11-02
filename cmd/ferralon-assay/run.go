@@ -1253,7 +1253,10 @@ func runPRInherit(args []string) error {
 	if res.Inherited {
 		fmt.Fprintf(os.Stdout, "  path:       inherited baseline (dependency set unchanged)\n")
 		if len(res.AssessedAdvisories) > 0 {
-			fmt.Fprintf(os.Stdout, "  assessed:   %s (no baseline row)\n", strings.Join(res.AssessedAdvisories, ", "))
+			fmt.Fprintf(os.Stdout, "  assessed:   %s (no usable baseline row)\n", strings.Join(res.AssessedAdvisories, ", "))
+		}
+		if len(res.CutShortAdvisories) > 0 {
+			fmt.Fprintf(os.Stdout, "  cut short:  %s (no usable baseline row; the scan stopped before assessing them)\n", strings.Join(res.CutShortAdvisories, ", "))
 		}
 	} else {
 		fmt.Fprintf(os.Stdout, "  path:       re-analyzed affected slice\n")

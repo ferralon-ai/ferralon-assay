@@ -19,13 +19,14 @@ type shellUnit struct {
 }
 
 // shellUnits maps the source line, from 0, of each scalar a shell unit is read from to its
-// unit. Only a GitHub workflow and a GitLab pipeline or its include have units; any other
-// file, or one that does not decode, has none, and its lines are each read on their own.
+// unit. Only an Actions workflow (actionsWorkflow) and a GitLab pipeline or its include have
+// units; any other file, or one that does not decode, has none, and its lines are each read
+// on their own.
 // included is true for a GitLab pipeline set with an include, where a job in one file may
 // extend or reference a job in another.
 func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 	slash := "/" + strings.ToLower(filepath.ToSlash(path))
-	github := strings.Contains(slash, "/.github/workflows/")
+	github := actionsWorkflow(slash)
 	gitlab := gitlabCI[strings.ToLower(filepath.Base(path))]
 	if !github && !gitlab {
 		return nil

@@ -70,7 +70,7 @@ func TestResolveGoWorkspace_StopsAtTheRepository(t *testing.T) {
 	if err != nil || ws.File != "" {
 		t.Fatalf("above the work tree: ResolveGoWorkspace = %+v, %v; want off", ws, err)
 	}
-	if present, known := goModRequires(context.Background(), buildDir, ws, "example.com/lib"); present || !known {
+	if present, known := goModRequires(context.Background(), buildDir, ws, "example.com/lib", noNestedModules); present || !known {
 		t.Fatalf("goModRequires = %v, %v; want false, true", present, known)
 	}
 }

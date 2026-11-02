@@ -11,6 +11,7 @@ import (
 
 const (
 	exUVLock = `version = 1
+requires-python = ">=3.8"
 [[package]]
 name = "app"
 version = "0.1.0"
@@ -97,6 +98,7 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"dev-requirements.txt", map[string]string{"dev-requirements.txt": "pyjwt==2.8.0\n"}, false},
 		{"requirements.in", map[string]string{"requirements.in": "pyjwt\n"}, false},
 		{"Pipfile without a lock", map[string]string{"Pipfile": "[packages]\npyjwt = \"*\"\n"}, false},
+		{"HATCH.toml in another case", map[string]string{"HATCH.toml": "[envs.default]\ndependencies = [\"pyjwt\"]\n"}, false},
 		{"environment.yml", map[string]string{"environment.yml": "dependencies:\n  - pip:\n    - pyjwt\n"}, false},
 		{"tox.ini with deps", map[string]string{"tox.ini": "[testenv]\ndeps = pyjwt\n"}, false},
 		// tox installs the project into each env it makes, resolving its dependencies itself.
@@ -109,7 +111,8 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"-r include glued", map[string]string{"requirements.txt": "-rbase.txt\n", "base.txt": "pyjwt==2.8.0\n"}, false},
 		{"--requirement= include", map[string]string{"requirements.txt": "--requirement=base.txt\n", "base.txt": "pyjwt==2.8.0\n"}, false},
 		{"-c include missing", map[string]string{"requirements.txt": "-c pins.txt\nflask==3.0.0\n"}, false},
-		{"-r include of a parsed manifest", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, false},
+		{"-r include of a parsed manifest", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask>=3\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, false},
+		{"-r include of a parsed manifest, closed under the lock", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, true},
 		{"-r include of a parsed manifest, hashed", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0 --hash=sha256:aaa\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, true},
 
 		// pyproject declarations outside [project].
@@ -267,8 +270,12 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"hash on a continued line", uv(map[string]string{"requirements.txt": "flask==3.0.0 \\\n    " + h + "\n"}), true},
 		{"-r include of a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\n", "requirements-base.txt": "flask==3.0.0" + h + "\n"}), true},
 		{"unhashed -r include inside a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n"}), true},
-		{"unhashed -r include inside a hashed file, installed alone", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), false},
-		{"requirements file that only -r's a file with no pins", uv(map[string]string{"requirements-dev.txt": "-r requirements-empty.txt\n", "requirements-empty.txt": "# nothing pinned\n"}), false},
+		{"unhashed -r include inside a hashed file, installed alone", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), true},
+		{"unhashed -r include inside a hashed file, installed alone, include not closed", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), false},
+		// An install set with no pins installs nothing, so it is closed; the index pip.conf keeps
+		// it off the closure route so the row still reaches the nested refused check.
+		{"requirements file that only -r's a file with no pins", uv(map[string]string{"requirements-dev.txt": "-r requirements-empty.txt\n", "requirements-empty.txt": "# nothing pinned\n"}), true},
+		{"requirements file that only -r's a file with no pins, index pip.conf", uv(map[string]string{"requirements-dev.txt": "-r requirements-empty.txt\n", "requirements-empty.txt": "# nothing pinned\n", "docker/pip.conf": "[global]\nindex-url = https://mirror.example/simple\n"}), false},
 		{"--require-hashes option line", uv(map[string]string{"requirements.txt": "--require-hashes\nflask==3.0.0" + h + "\n"}), true},
 		{"-c hashed constraints, unhashed requirement", uv(map[string]string{"requirements.txt": "-c requirements-constraints.txt\nflask>=3\n", "requirements-constraints.txt": "flask==3.0.0" + h + "\n"}), false},
 		{"Dockerfile installs an unhashed requirements.txt", uv(map[string]string{"requirements.txt": "flask>=3\n", "Dockerfile": docker + "RUN pip install -r requirements.txt\n"}), false},
@@ -294,7 +301,30 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"PIP.CONF names no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/PIP.CONF": "[install]\nno-require-hashes = 1\n"}), false},
 		{"pip.conf inside a nested .git directory", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "vendor/.git/pip.conf": "[install]\nno-require-hashes = 1\n"}), false},
 		{"option line --require-hashes with unhashed pins", uv(map[string]string{"requirements.txt": "--require-hashes\nflask==3.0.0\n"}), true},
-		{"pip.conf that leaves hash mode alone", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), true},
+		{"pip.conf that leaves hash mode alone", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n"}), true},
+		// A script surface that names a pip config may put any file where pip reads it.
+		{"pip.conf that leaves hash mode alone, copied to /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), false},
+		{"another name copied to /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "ci/pip-settings.cfg": "[install]\nno-require-hashes = true\n", "Dockerfile": docker + "COPY ci/pip-settings.cfg /etc/pip.conf\n"}), false},
+		{"ADD from a URL to /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ADD https://example.com/pip.cfg /etc/pip.conf\n"}), false},
+		{"secret mounted at /etc/pip.conf", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN --mount=type=secret,id=pip,target=/etc/pip.conf pip install -r requirements.txt\n"}), false},
+		{"copied to a user pip.ini", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/settings /root/AppData/Roaming/pip/pip.ini\n"}), false},
+		{"copied to /etc/xdg/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /etc/xdg/pip/\n"}), false},
+		{"copied to ~/.config/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /root/.config/pip/\n"}), false},
+		{"ADD from a URL to ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ADD https://github.com/org/pipcfg.git /root/.pip/\n"}), false},
+		{"copied from a stage to ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg /out/ /root/.pip/\n"}), false},
+		{"copied to ProgramData/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/ProgramData/pip/\n"}), false},
+		{"copied to AppData\\Roaming\\pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ C:\\Users\\app\\AppData\\Roaming\\pip\n"}), false},
+		{"a stage mounted at ~/.pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN --mount=type=bind,from=cfg,target=/root/.pip,source=/out true\n"}), false},
+		{"copied to AppData\\Roaming\\pip in a JSON-array COPY", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + `COPY ["ci/", "C:\\Users\\app\\AppData\\Roaming\\pip\\"]` + "\n"}), false},
+		{"copied to /etc/xdg/pip/ through a doubled slash", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ /etc//xdg//pip/\n"}), false},
+		{"copied to the legacy per-user pip folder", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / C:/Users/ContainerUser/pip/\n"}), false},
+		{"copied into the legacy per-user pip folder, named through %USERPROFILE% as the WORKDIR", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "WORKDIR %USERPROFILE%\\pip\nCOPY ci/settings.cfg .\n"}), false},
+		{"copied to the legacy per-user pip folder through ~", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY --from=cfg / ~/pip/\n"}), false},
+		{"copied to Application Support/pip", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/ \"/Users/app/Library/Application Support/pip/\"\n"}), false},
+		{"XDG_CONFIG_HOME moved", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "ENV XDG_CONFIG_HOME=/cfg\nCOPY ci/ /cfg/\n"}), false},
+		{"pip config set", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "install.sh": "pip config set install.no-require-hashes true\n"}), false},
+		{"a cache mount at .pip-cache", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN --mount=type=cache,target=/root/.pip-cache true\n"}), true},
+		{"a Dockerfile naming no pip config", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "COPY ci/settings.cfg /etc/app.conf\n"}), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -311,6 +341,164 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 	r := resolveVersion(t, writeTree(t, uv(map[string]string{"requirements.txt": "flask>=3\n"})), "jinja2")
 	if !r.Found || !r.Match.Resolved {
 		t.Fatalf("jinja2: found=%v %+v, want resolved", r.Found, r.Match)
+	}
+}
+
+// An unhashed file of "==" pins covers when every governing lock is a uv.lock whose edges, out
+// of every pinned release, land on another pin: pip then has no name to fetch past the file.
+// Edge markers are ignored, a marked pin pins no edge into it, and an index the lock was not
+// resolved against, a lock that prunes or rewrites edges, or a line that is not a pin leaves
+// the file to the hash and --no-deps checks. Hash mode does not enter into it.
+func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
+	const (
+		reg  = "source = { registry = \"https://pypi.org/simple\" }\n"
+		lock = "version = 1\nrequires-python = \">=3.8\"\n" +
+			"[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\ndependencies = [{ name = \"flask\" }]\n\n" +
+			"[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n" + reg + "dependencies = [{ name = \"jinja2\" }, { name = \"click\" }]\n\n[package.optional-dependencies]\nasync = [{ name = \"asgiref\" }]\n\n" +
+			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n" + reg + "dependencies = [{ name = \"markupsafe\" }]\n\n" +
+			"[[package]]\nname = \"click\"\nversion = \"8.1.7\"\n" + reg + "dependencies = [{ name = \"colorama\", marker = \"sys_platform == 'win32'\" }]\n\n" +
+			"[[package]]\nname = \"colorama\"\nversion = \"0.4.6\"\n" + reg + "\n" +
+			"[[package]]\nname = \"markupsafe\"\nversion = \"2.1.5\"\n" + reg + "\n" +
+			"[[package]]\nname = \"asgiref\"\nversion = \"3.8.1\"\n" + reg + "\n" +
+			"[[package]]\nname = \"celery\"\nversion = \"5.4.0\"\n" + reg + "dependencies = [{ name = \"redis\", extra = [\"hiredis\"] }]\n\n" +
+			"[[package]]\nname = \"redis\"\nversion = \"5.0.0\"\n" + reg + "\n[package.optional-dependencies]\nhiredis = [{ name = \"hiredis\" }]\n\n" +
+			"[[package]]\nname = \"hiredis\"\nversion = \"2.3.2\"\n" + reg
+		pins   = "flask==3.0.0\njinja2==3.1.4\nclick==8.1.7\ncolorama==0.4.6\nmarkupsafe==2.1.5\n"
+		celery = "celery==5.4.0\nredis==5.0.0\n"
+		h      = " --hash=sha256:aaa"
+		docker = "FROM python:3.12\nWORKDIR /app\nCOPY . .\n"
+		poetry = "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n"
+	)
+	tree := func(lock string, extra map[string]string) map[string]string {
+		files := map[string]string{"pyproject.toml": exPyproject, "uv.lock": lock}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	reqs := func(body string, extra ...string) map[string]string {
+		files := map[string]string{"requirements.txt": body}
+		for i := 0; i+1 < len(extra); i += 2 {
+			files[extra[i]] = extra[i+1]
+		}
+		return tree(lock, files)
+	}
+	edit := func(old, new string) string {
+		if !strings.Contains(lock, old) {
+			t.Fatalf("lock fixture has no %q", old)
+		}
+		return strings.Replace(lock, old, new, 1)
+	}
+	hashed := strings.ReplaceAll(pins, "\n", h+"\n")
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"closed", reqs(pins), true},
+		{"closed, installed from a Dockerfile", reqs(pins, "Dockerfile", docker+"RUN pip install -r requirements.txt\n"), true},
+		{"closed through a nested -r", reqs("-r requirements-base.txt\nflask==3.0.0\n", "requirements-base.txt", pins), true},
+		{"closed, a hashed -c constraints file", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", hashed), true},
+		{"stale pin: an edge to a name the file does not pin", reqs(strings.Replace(pins, "markupsafe==2.1.5\n", "", 1)), false},
+		{"stale pin, the edge's target pinned only in a -c constraints file", reqs("-c requirements-constraints.txt\n"+strings.Replace(pins, "markupsafe==2.1.5\n", "", 1), "requirements-constraints.txt", hashed), false},
+		{"stale pin in a nested -r", reqs("-r requirements-base.txt\n", "requirements-base.txt", strings.Replace(pins, "markupsafe==2.1.5\n", "", 1)), false},
+
+		// Markers.
+		{"a marked edge still counts", reqs(strings.Replace(pins, "colorama==0.4.6\n", "", 1)), false},
+		{"a marked pin an edge needs", reqs(strings.Replace(pins, "colorama==0.4.6\n", "colorama==0.4.6 ; sys_platform == \"win32\"\n", 1)), false},
+		{"a marked pin no edge needs", reqs(pins + "asgiref==3.8.1 ; python_version < \"3.11\"\n"), true},
+		{"a marked pin whose release has an unpinned edge", reqs(pins + "celery==5.4.0 ; sys_platform == \"linux\"\n"), false},
+
+		// Extras.
+		{"an extra on a pin, pulled in", reqs(strings.Replace(pins, "flask==", "flask[async]==", 1) + "asgiref==3.8.1\n"), true},
+		{"an extra on a pin, its dependency unpinned", reqs(strings.Replace(pins, "flask==", "flask[async]==", 1)), false},
+		{"an extra the lock does not record", reqs(strings.Replace(pins, "flask==", "flask[nope]==", 1)), false},
+		{"an edge asks an extra, pulled in", reqs(pins + celery + "hiredis==2.3.2\n"), true},
+		{"an edge asks an extra, its dependency unpinned", reqs(pins + celery), false},
+		{"an edge asks an extra the lock does not record", tree(edit("\n[package.optional-dependencies]\nhiredis = [{ name = \"hiredis\" }]\n", ""), map[string]string{"requirements.txt": pins + celery + "hiredis==2.3.2\n"}), false},
+
+		// "===" selects exactly the version string it names, so it pins the release the lock
+		// records under that string.
+		{"an arbitrary-equality pin", reqs(strings.Replace(pins, "click==8.1.7", "click===8.1.7", 1)), true},
+		// The string is compared as written: "v8.1.7" is not the string the lock records, so it
+		// selects nothing the closure can follow.
+		{"an arbitrary-equality pin with a leading v", reqs(strings.Replace(pins, "click==8.1.7", "click===v8.1.7", 1)), false},
+
+		// Lines that are not pins.
+		{"a range", reqs(strings.Replace(pins, "click==8.1.7", "click>=8", 1)), false},
+		{"a wildcard", reqs(strings.Replace(pins, "click==8.1.7", "click==8.1.*", 1)), false},
+		{"a pin with a second clause", reqs(strings.Replace(pins, "click==8.1.7", "click==8.1.7,!=8.1.6", 1)), false},
+		{"a bare name", reqs(strings.Replace(pins, "click==8.1.7", "click", 1)), false},
+		{"a range in a nested -r", reqs("-r requirements-base.txt\n"+pins, "requirements-base.txt", "click>=8\n"), false},
+
+		// Another index or wheel source than the one the lock resolved against.
+		{"-i", reqs("-i https://mirror.example/simple\n" + pins), false},
+		{"-i glued", reqs("-ihttps://mirror.example/simple\n" + pins), false},
+		{"--index-url", reqs("--index-url https://mirror.example/simple\n" + pins), false},
+		{"--index-url abbreviated", reqs("--index=https://mirror.example/simple\n" + pins), false},
+		{"--extra-index-url", reqs("--extra-index-url https://mirror.example/simple\n" + pins), false},
+		{"--find-links", reqs("--find-links ./wheels\n" + pins), false},
+		{"-f glued", reqs("-f./wheels\n" + pins), false},
+		{"--find-links abbreviated, second on the line", reqs("--prefer-binary --find ./wheels\n" + pins), false},
+		{"--find-links in a nested -r", reqs("-r requirements-base.txt\n"+pins, "requirements-base.txt", "--find-links ./wheels\n"), false},
+		// A constraints file covers on its own (hashed, or naming nothing), but pip applies its
+		// options to the file that names it.
+		{"--index-url in a hashed -c constraints file", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "--index-url https://mirror.example/simple\n"+hashed), false},
+		{"closed, an options-only -c constraints file", reqs("-c requirements-index.txt\n"+pins, "requirements-index.txt", "--no-index\n"), true},
+		{"--index-url alone in a -c constraints file", reqs("-c requirements-index.txt\n"+pins, "requirements-index.txt", "--index-url https://mirror.example/simple\n"), false},
+		{"closed, a -c file a -c file names", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "-c requirements-index.txt\n"+hashed, "requirements-index.txt", "--no-index\n"), true},
+		{"--index-url in a -c file a -c file names", reqs("-c requirements-constraints.txt\n"+pins, "requirements-constraints.txt", "-c requirements-index.txt\n"+hashed, "requirements-index.txt", "--index-url https://mirror.example/simple\n"), false},
+		{"--no-index", reqs("--no-index\n" + pins), true},
+		{"--trusted-host", reqs("--trusted-host pypi.org\n" + pins), true},
+		{"pip.conf names index-url", reqs(pins, "docker/pip.conf", "[global]\nindex-url = https://mirror.example/simple\n"), false},
+		{"pip.ini names extra_index_url", reqs(pins, "pip.ini", "[global]\nextra_index_url = https://mirror.example/simple\n"), false},
+		{"pip.conf names find-links", reqs(pins, "pip.conf", "[install]\nfind-links = ./wheels\n"), false},
+		{"pip.conf that names no index", reqs(pins, "pip.conf", "[global]\ntimeout = 60\n"), true},
+
+		// Files that install past the file.
+		{"a file setup.cfg names", reqs(pins, "setup.cfg", "[metadata]\nname = app\n[options]\ninstall_requires = file: requirements.txt\n"), false},
+
+		// Locks whose edges are not the index's metadata, or that are not a uv.lock.
+		{"a poetry.lock governs too", reqs(pins, "poetry.lock", poetry), false},
+		{"uv.lock with supported-markers", tree("supported-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock with resolution-markers", tree("resolution-markers = [\"python_full_version >= '3.12'\", \"python_full_version < '3.12'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock with a package's resolution-markers", tree(edit("name = \"jinja2\"\nversion = \"3.1.4\"\n", "name = \"jinja2\"\nversion = \"3.1.4\"\nresolution-markers = [\"python_full_version >= '3.12'\"]\n"), map[string]string{"requirements.txt": pins}), false},
+		// requires-python: uv drops edges it excludes, so it must admit the build's interpreter.
+		{"uv.lock requires-python wider than the project's", tree(lock, map[string]string{"pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.10\"\n", 1), "requirements.txt": pins}), true},
+		{"uv.lock requires-python narrower than the project's", tree(strings.Replace(lock, ">=3.8", ">=3.10", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.8\"\n", 1)}), false},
+		{"uv.lock requires-python with an upper bound the project's lacks", tree(strings.Replace(lock, ">=3.8", ">=3.8,<3.15", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.8\"\n", 1)}), false},
+		{"uv.lock requires-python with an upper bound past the tables", tree(strings.Replace(lock, ">=3.8", ">=3.8,<3.16", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.8\"\n", 1)}), false},
+		{"uv.lock requires-python with an upper bound, read as the build's", tree(strings.Replace(lock, ">=3.8", ">=3.8,<3.13", 1), map[string]string{"requirements.txt": pins}), true},
+		{"uv.lock without requires-python", tree(strings.Replace(lock, "requires-python = \">=3.8\"\n", "", 1), map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock requires-python bounding a patch level the project's does not", tree(strings.Replace(lock, ">=3.8", ">=3.10.5", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.10\"\n", 1)}), false},
+		{"uv.lock requires-python excluding the project's lowest patch", tree(strings.Replace(lock, ">=3.8", ">3.10", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.10\"\n", 1)}), false},
+		{"uv.lock requires-python excluding a release newer than the tables", tree(strings.Replace(lock, ">=3.8", ">=3.10, !=3.15.*", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.10\"\n", 1)}), false},
+		{"uv.lock requires-python with whole-minor clauses", tree(strings.Replace(lock, ">=3.8", "~=3.9, !=3.11.*", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">=3.12,<4\"\n", 1)}), true},
+		{"uv.lock requires-python bounding the project's patch level", tree(strings.Replace(lock, ">=3.8", ">=3.10.5", 1), map[string]string{"requirements.txt": pins, "pyproject.toml": strings.Replace(exPyproject, "[project]\n", "[project]\nrequires-python = \">= 3.10.5\"\n", 1)}), true},
+		{"uv.lock in a subdirectory, the build declaring no interpreter", map[string]string{"svc/pyproject.toml": exPyproject, "svc/uv.lock": strings.Replace(lock, ">=3.8", ">=3.10", 1), "svc/requirements.txt": pins}, false},
+		{"uv.lock in a subdirectory admitting the assumed interpreter", map[string]string{"svc/pyproject.toml": exPyproject, "svc/uv.lock": lock, "svc/requirements.txt": pins}, true},
+		{"uv.lock with required-markers", tree("required-markers = [\"sys_platform == 'linux'\"]\n"+lock, map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock [manifest] overrides", tree(lock+"\n[manifest]\noverrides = [{ name = \"markupsafe\", specifier = \"==2.1.5\" }]\n", map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock [manifest] unknown key", tree(lock+"\n[manifest]\nsomething-new = []\n", map[string]string{"requirements.txt": pins}), false},
+		{"uv.lock [manifest] members and constraints", tree(lock+"\n[manifest]\nmembers = [\"app\"]\nconstraints = [{ name = \"click\", specifier = \"<9\" }]\n", map[string]string{"requirements.txt": pins}), true},
+		{"a pin the lock holds from git, not a registry", tree(edit("name = \"markupsafe\"\nversion = \"2.1.5\"\n"+reg, "name = \"markupsafe\"\nversion = \"2.1.5\"\nsource = { git = \"https://github.com/pallets/markupsafe?rev=2.1.5\" }\n"), map[string]string{"requirements.txt": pins}), false},
+
+		// Hash mode does not enter into it (tracker#410's out-of-tree no-require-hashes included).
+		{"--no-require-hashes option line", reqs("--no-require-hashes\n" + pins), true},
+		{"pip.conf names no-require-hashes", reqs(pins, "pip.conf", "[install]\nno-require-hashes = 1\n"), true},
+		{"hashed, hashes disabled in pip.conf", reqs(hashed, "pip.conf", "[install]\nno-require-hashes = 1\n"), true},
+		{"hashed, not closed, hashes disabled in pip.conf", reqs(strings.Replace(hashed, "markupsafe==2.1.5"+h+"\n", "", 1), "pip.conf", "[install]\nno-require-hashes = 1\n"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "PyJWT")
+			if r.Found {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
 	}
 }
 
@@ -334,7 +522,7 @@ func TestReqInstalls_RefusedNeedsEveryIncluder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			installs := pipInstalls{base: {{noDeps: true}}, dev: {tt.devInstl}}
-			r := newReqInstalls(root, []string{base, dev}, installs)
+			r := newReqInstalls(root, []string{base, dev}, installs, false)
 			if got := r.refused(base); got != tt.want {
 				t.Fatalf("refused(base) = %v, want %v", got, tt.want)
 			}
@@ -378,6 +566,45 @@ func TestPipConfigDisablesHashes_Unreadable(t *testing.T) {
 			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
 			if !pipConfigDisablesHashes(root) {
 				t.Fatal("unreadable entry not counted as naming no-require-hashes")
+			}
+		})
+	}
+}
+
+// The walk skips the .git directory at the repository root and nothing else. Tracked content
+// cannot live under .git, and a pip config written there at build time is as invisible to this
+// check as one written to ~/.config/pip, so walking it would close nothing. The rest of the tree
+// is still walked, a .git file (a worktree or submodule gitlink) does not stop the walk, and a
+// directory named .git deeper in the tree is walked.
+func TestPipConfigMatches_GitSkip(t *testing.T) {
+	const off = "[install]\nno-require-hashes = true\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"pip.conf under the root .git directory", map[string]string{".git/pip.conf": off}, false},
+		{"pip.conf beside a root .git directory", map[string]string{".git/HEAD": "ref: refs/heads/main\n", "svc/pip.conf": off}, true},
+		{"pip.conf beside a root .git file", map[string]string{".git": "gitdir: ../main/.git/worktrees/x\n", "svc/pip.conf": off}, true},
+		{"pip.conf under a nested .git directory", map[string]string{"sub/.git/pip.conf": off}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, body := range tt.files {
+				p := filepath.Join(root, name)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := pipConfigDisablesHashes(root); got != tt.want {
+				t.Errorf("pipConfigDisablesHashes = %v, want %v", got, tt.want)
+			}
+			if got := pipConfigInTree(root); got != tt.want {
+				t.Errorf("pipConfigInTree = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -457,5 +684,162 @@ func TestResolveVersions_PipfileLockWalkOrderDeterministic(t *testing.T) {
 		if !reflect.DeepEqual(r.Match, first) {
 			t.Fatalf("run %d: Match = %+v, first run %+v", i, r.Match, first)
 		}
+	}
+}
+
+// TestDeclaredDistributions_ReadsPastMalformedEntry: a malformed hatch requirement leaves the list
+// partly read, but the names after it are still declared.
+func TestDeclaredDistributions_ReadsPastMalformedEntry(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"hatch.toml": "[envs.default]\ndependencies = [\"not a requirement!!\", 3, \"pyjwt==2.8.0\"]\n",
+	})
+	names, complete, _ := declaredDistributions(root)
+	if !names["pyjwt"] {
+		t.Errorf("declared %v, want pyjwt", names)
+	}
+	if complete {
+		t.Error("complete, want partial")
+	}
+}
+
+// serverless-python-requirements installs the file custom.pythonRequirements.fileName names,
+// joined to the service directory and to each function module, with its dependencies, so a
+// --no-deps install elsewhere no longer narrows that file. A module may lie outside the service,
+// so the name matches wherever a path ends with it. A config or fragment this cannot resolve may
+// name any file.
+func TestResolveVersions_ExhaustiveServerlessFileName(t *testing.T) {
+	const docker = "FROM python:3.12\nWORKDIR /app\nCOPY . .\n"
+	sls := func(fileName string) string {
+		return "service: app\nplugins:\n  - serverless-python-requirements\ncustom:\n  pythonRequirements:\n    fileName: " + fileName + "\n"
+	}
+	tree := func(req string, extra map[string]string) map[string]string {
+		files := map[string]string{"pyproject.toml": exPyproject, "uv.lock": exUVLock, req: "flask==3.0.0\n",
+			"Dockerfile": docker + "RUN pip install --no-deps -r " + req + "\n"}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	const prod = "requirements-prod.txt"
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"no Serverless config", tree(prod, nil), true},
+		{"serverless.yml names the file", tree(prod, map[string]string{"serverless.yml": sls(prod)}), false},
+		{"serverless.yml names it with a leading ./", tree(prod, map[string]string{"serverless.yml": sls("./" + prod)}), false},
+		{"serverless.yml names another file", tree(prod, map[string]string{"serverless.yml": sls("requirements-lambda.txt")}), true},
+		{"serverless.yml names a file the name ends with", tree(prod, map[string]string{"serverless.yml": sls("prod.txt")}), true},
+		{"serverless.yml without custom", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\n"}), true},
+		{"pythonRequirements without fileName", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements:\n    dockerizePip: true\n"}), true},
+		{"pythonRequirements left empty", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements:\n"}), true},
+		{"package.json lists the plugin", tree(prod, map[string]string{"package.json": `{"devDependencies": {"serverless-python-requirements": "^6.1.0"}}`}), true},
+		{"pythonRequirements in a .serverless output", tree(prod, map[string]string{"svc/.serverless/serverless-state.json": `{"service": {"custom": {"pythonRequirements": {}}}}`}), true},
+		{"a plugins fragment", tree(prod, map[string]string{"plugins.yml": "- serverless-python-requirements\n"}), true},
+		{"YAML with a service that is not a config", tree(prod, map[string]string{"chart/values.yaml": "service:\n  port: 80\n"}), true},
+		{"a template that does not parse", tree(prod, map[string]string{"chart/templates/svc.yaml": "kind: Service\nspec:\n  {{- toYaml .Values.service | nindent 2 }}\n"}), true},
+		{"pythonRequirements in the root .serverless output", tree(prod, map[string]string{".serverless/serverless-state.json": `{"service": {"custom": {"pythonRequirements": {}}}}`}), true},
+		{"a function module holds the named file", tree("svc/"+prod, map[string]string{"serverless.yml": sls(prod)}), false},
+		{"a function module outside the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls(prod)}), false},
+		{"a --config file under another name", tree(prod, map[string]string{"lambda.yaml": sls(prod)}), false},
+		{"a --config JSON file under another name", tree(prod, map[string]string{"serverless.prod.json": `{"custom": {"pythonRequirements": {"fileName": "` + prod + `"}}}`}), false},
+		{"serverless.json names the file", tree(prod, map[string]string{"serverless.json": `{"custom": {"pythonRequirements": {"fileName": "` + prod + `"}}}`}), false},
+		{"serverless.ts sets pythonRequirements", tree(prod, map[string]string{"serverless.ts": "export default { custom: { pythonRequirements: { fileName: f } } };\n"}), false},
+		{"serverless.js without pythonRequirements", tree(prod, map[string]string{"serverless.js": "module.exports = require('./base');\n"}), false},
+		{"code that mentions neither", tree(prod, map[string]string{"app.js": "module.exports = { service: 'app' };\n"}), true},
+		{"pythonRequirements inside node_modules", tree(prod, map[string]string{"node_modules/serverless-python-requirements/index.js": "const pythonRequirements = {};\n"}), true},
+		{"fileName is a variable", tree(prod, map[string]string{"serverless.yml": sls("${opt:reqs, 'requirements.txt'}")}), false},
+		{"fileName is not a string", tree(prod, map[string]string{"serverless.yml": sls("[a, b]")}), false},
+		{"fileName climbs out of the service directory", tree(prod, map[string]string{"svc/serverless.yml": sls("../" + prod)}), false},
+		{"fileName climbs above the root and back down", tree(prod, map[string]string{"svc/serverless.yml": sls("../../repo/" + prod)}), false},
+		{"a climbing fileName joined under a function module", tree("lib/x/"+prod, map[string]string{"serverless.yml": sls("../x/" + prod)}), false},
+		{"fileName is absolute", tree("x/"+prod, map[string]string{"serverless.yml": sls("/x/" + prod)}), false},
+		{"custom from a ${file()} fragment", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.yml)}\n", "custom.yml": "pythonRequirements:\n  fileName: " + prod + "\n"}), false},
+		{"custom from a fragment in another directory", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./config/sls.yml):custom}\n", "config/sls.yml": sls(prod)}), false},
+		{"custom from a fragment written in code", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: ${file(./custom.js)}\n", "custom.js": "module.exports = { pythonRequirements: {} };\n"}), false},
+		{"the plugin with custom from a fragment under node_modules", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\ncustom: ${file(./node_modules/@org/sls/custom.yml)}\n", "node_modules/@org/sls/custom.yml": "pythonRequirements:\n  fileName: " + prod + "\n"}), false},
+		{"the plugin with custom from outside the tree", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins:\n  - serverless-python-requirements\ncustom: ${file(../shared/custom.yml)}\n"}), false},
+		{"plugins and custom from fragments outside the tree", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins: ${file(../shared/plugins.yml)}\ncustom: ${file(../shared/custom.yml)}\n"}), false},
+		{"plugins and custom from one base file", tree(prod, map[string]string{"serverless.yml": "service: app\nplugins: ${file(./base.yml):plugins}\ncustom: ${file(./base.yml):custom}\n", "base.yml": "plugins: []\ncustom: {}\n"}), false},
+		{"a config with a key that is not a string", tree(prod, map[string]string{"serverless.yml": "service: app\n1: x\ncustom: ${file(../shared/custom.yml)}\n"}), false},
+		{"a flow-style config with a key that is not a string", tree(prod, map[string]string{"serverless.yml": "{service: app, 1: x, custom: \"${file(../c.yml)}\"}\n"}), false},
+		{"a JSON list of records with a service", tree(prod, map[string]string{"data/routes.json": `[{"service":"auth"}]`}), true},
+		{"a --config written in code under another name", tree(prod, map[string]string{"sls.config.js": "module.exports = { custom: { pythonRequirements: { fileName: 'requirements-prod.txt' } } };\n"}), false},
+		{"a list that mentions pythonRequirements", tree(prod, map[string]string{"fragments/pr.yml": "- pythonRequirements:\n    fileName: requirements-prod.txt\n"}), false},
+		{"a custom that is not a map outside a config", tree(prod, map[string]string{"chart/values.yaml": "custom: enabled\nservices: {}\n"}), true},
+		{"pythonRequirements mentioned outside custom", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  stage: dev\nresources: ${file(./pythonRequirements.yml)}\n"}), false},
+		{"a minified config with a later service that does not parse", tree(prod, map[string]string{"serverless.json": `{"provider":{},"service":"app","custom":"${file(../c.yml)}","service":"app"}`}), false},
+		{"a minified config that does not parse", tree(prod, map[string]string{"serverless.json": `{"service":"app","custom":"${file(../c.yml)}","service":"app"}`}), false},
+		{"a config that does not parse", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom: [\n"}), false},
+		{"pythonRequirements is a variable", tree(prod, map[string]string{"serverless.yml": "service: app\ncustom:\n  pythonRequirements: ${file(./reqs.yml)}\n"}), false},
+		{"YAML that does not parse", tree(prod, map[string]string{"serverless.yml": "custom:\n  pythonRequirements: [\n"}), false},
+		{"YAML that mentions pythonRequirements outside custom", tree(prod, map[string]string{".github/workflows/ci.yml": "on: push\n# pythonRequirements\n"}), false},
+		{"a config inside the root .git directory", tree(prod, map[string]string{".git/serverless.yml": sls(prod)}), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "PyJWT")
+			if r.Found {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
+// A Serverless config this cannot read, or a directory it cannot walk, may name any file. The
+// Exhaustive rows cannot pin this: an unreadable entry withholds there on its own, so the walk
+// runs directly.
+func TestServerlessNames_Unreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files whatever their mode")
+	}
+	tests := []struct {
+		name string
+		path string // the entry made unreadable
+		file bool
+	}{
+		{"config that cannot be read", "serverless.yml", true},
+		{"directory that cannot be walked", "svc", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			p := filepath.Join(root, tt.path)
+			if tt.file {
+				if err := os.WriteFile(p, []byte("service: app\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f := filepath.Join(root, "requirements-prod.txt")
+			if serverlessNames(root).named(f) {
+				t.Fatal("readable tree reported as naming the file")
+			}
+			if err := os.Chmod(p, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
+			if !serverlessNames(root).named(f) {
+				t.Fatal("unreadable entry not counted as naming the file")
+			}
+		})
+	}
+}
+
+// A root given relative matches the files at its top, which have no separator before their name.
+// The CLI passes an absolute root, so the walk runs directly.
+func TestServerlessNames_RelativeRoot(t *testing.T) {
+	t.Chdir(writeTree(t, map[string]string{"serverless.yml": "custom:\n  pythonRequirements:\n    fileName: requirements-prod.txt\n"}))
+	s := serverlessNames(".")
+	if !s.named("requirements-prod.txt") {
+		t.Fatal("top-level named file not matched under a relative root")
+	}
+	if s.named("requirements-dev.txt") {
+		t.Fatal("unnamed file matched under a relative root")
 	}
 }

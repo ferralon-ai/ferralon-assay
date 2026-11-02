@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
@@ -346,6 +348,47 @@ func TestRunCVEWatch_NoOverlapHeartbeat(t *testing.T) {
 	// Heartbeat must reuse the existing Report object, not rebuild it (cursor-only write).
 	if store.lastSeen.Report != baseline {
 		t.Fatalf("heartbeat must reuse the existing Report object, not rebuild it")
+	}
+}
+
+// TestRunCVEWatch_NestedModulesUnqueried: a heartbeat over a baseline whose inventory left nested Go
+// modules out (a stub root go.mod above them leaves the SBOM empty) reports those modules as
+// unqueried instead of passing for a clean watch; a baseline with no such limit reports none.
+func TestRunCVEWatch_NestedModulesUnqueried(t *testing.T) {
+	inv := plugin.DependencyInventory{Partiality: plugin.Partiality{Scoped: []plugin.ScopedReason{
+		{Reason: plugin.PartialReasonNestedModule, Path: "exporter/b"},
+		{Reason: plugin.PartialReasonNestedModule, Path: "receiver/a", Targets: []string{"pkg:golang/golang.org/x/crypto"}},
+	}}}
+	_, stubNotes := sbomFromInventory(inv, "Go")
+	cases := []struct {
+		name  string
+		notes []report.PartialityNote
+		want  string // the unqueried notes' paths; "" for none
+	}{
+		{"stub root above nested modules", stubNotes, "exporter/b, receiver/a"},
+		{"no nested modules", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseline := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "base-sha"}).
+				AddPartiality(tc.notes...).
+				WithProvenance(report.Provenance{CommitSHA: "base-sha"}).
+				Build()
+			store := &memStore{state: &statestore.State{Report: &baseline, SBOM: baseline.SBOM}}
+			res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+				Subject: Subject{Repo: "r", ResolvedCommit: "sha"}, Codebase: assessment.CodebaseRef{Repo: "r"},
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			var paths []string
+			for _, n := range res.Unqueried {
+				paths = append(paths, n.Path)
+			}
+			if !res.Heartbeat || strings.Join(paths, "; ") != tc.want {
+				t.Fatalf("heartbeat %v, unqueried %+v; want a heartbeat naming %q", res.Heartbeat, res.Unqueried, tc.want)
+			}
+		})
 	}
 }
 

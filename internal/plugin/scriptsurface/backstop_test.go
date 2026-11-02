@@ -630,6 +630,7 @@ func TestVeto_BackstopInvokedThroughLinks(t *testing.T) {
 		{"named through a link to it", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool bootstrap.yml")}, true, "bootstrap.yml:2", map[string]string{"bootstrap.yml": "ci/provision.yml"}},
 		{"named by the file it links to", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/provision.yml")}, true, "bootstrap.yml:2", map[string]string{"bootstrap.yml": "ci/provision.yml"}},
 		{"a link into a skipped directory", map[string]string{"examples/provision.yml": hit, "node_modules/pkg/a.txt": "a\n"}, true, "examples/provision.yml:2", map[string]string{"vendor": "node_modules/pkg"}},
+		{"a link to a skipped directory", map[string]string{"examples/provision.yml": hit, "node_modules/pkg/a.txt": "a\n"}, true, "examples/provision.yml:2", map[string]string{"vendor": "node_modules"}},
 		{"a link into a git dir", map[string]string{"examples/provision.yml": hit, ".git/info/a.txt": "a\n"}, true, "examples/provision.yml:2", map[string]string{"meta": ".git/info"}},
 		{"a link to the git dir", map[string]string{"examples/provision.yml": hit, ".git/info/a.txt": "a\n"}, true, "examples/provision.yml:2", map[string]string{"meta": ".git"}},
 		{"a dangling link", map[string]string{"examples/provision.yml": hit}, true, "examples/provision.yml:2", map[string]string{"meta": "missing"}},

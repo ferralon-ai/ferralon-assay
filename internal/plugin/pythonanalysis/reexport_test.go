@@ -289,6 +289,16 @@ func TestCallGraph_ImportAsChainNested(t *testing.T) {
 			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
 			"pkg/alt/__init__.py": "from . import x\n", "pkg/alt/x.py": "from ..v import vuln as g\n",
 			"c.py": "import pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, false},
+		{"import-as of that path rebound through a star import", map[string]string{
+			"pkg/__init__.py": "from . import q\nfrom .reb import *\n", "pkg/reb.py": "from . import alt as q\n", "pkg/sub/__init__.py": "import pkg.q.x as a\n",
+			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
+			"pkg/alt/__init__.py": "from . import x\n", "pkg/alt/x.py": "from ..v import vuln as g\n",
+			"c.py": "import pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, false},
+		{"import-as of that path rebound to a top-level module", map[string]string{
+			"pkg/__init__.py": "from . import q\nimport alt as q\n", "pkg/sub/__init__.py": "import pkg.q.x as a\n",
+			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
+			"alt/__init__.py": "from . import x\n", "alt/x.py": "from pkg.v import vuln as g\n",
+			"c.py": "import pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, false},
 	} {
 		files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n"}
 		maps.Copy(files, tc.files)

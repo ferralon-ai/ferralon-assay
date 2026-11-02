@@ -2,9 +2,9 @@ package scriptsurface
 
 import (
 	"encoding/json"
+	"maps"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -521,24 +521,65 @@ func (c *dockerCursor) lockAbove(dir string, locks []string) bool {
 }
 
 var (
-	heredocRE   = regexp.MustCompile(`<<-?\s*["']?([A-Za-z_][A-Za-z0-9_]*)`)
 	dockerPlain = map[string]bool{
 		"ENV": true, "ARG": true, "LABEL": true, "EXPOSE": true, "USER": true, "VOLUME": true,
 		"STOPSIGNAL": true, "MAINTAINER": true, "SHELL": true,
 	}
 )
 
+// dockerReadingsMax bounds the readings dockerfileAt checks a Dockerfile in.
+const dockerReadingsMax = 64
+
 // dockerfileAt applies the rule to a Dockerfile, stage by stage, and returns why it withholds
 // and the 1-based line of src that does (0 when it does not). CMD and ENTRYPOINT run after
 // every RUN, so they are checked against the stage as it ends. A Dockerfile's build context is
 // its own directory or the build root; an Earthfile's (earth) is its own directory only, as
 // Earthly sends no other.
+//
+// dockerHeredocs takes a line's instruction as BuildKit's splitCommand does and splits its
+// words at Unicode blanks as BuildKit's lexer does, but reads those words as BuildKit does
+// only where the line holds no $, backslash or backtick; elsewhere it may open a heredoc
+// BuildKit doesn't, whose body would then hide instructions BuildKit runs. Where both open
+// heredocs, they agree on how many and on their names, except on a line with a
+// ${name<op>word} expansion, which is withheld (dockerUnsure). So the file is read once for
+// each way the heredocs on such lines may go, open or not, and checked in every reading.
 func (v *Veto) dockerfileAt(file, src string, earth bool) (string, int) {
+	readings := []map[int]bool{{}}
+	for n := 0; n < len(readings); n++ {
+		if n == dockerReadingsMax {
+			return "Dockerfile heredocs too many to read each way", 0
+		}
+		opens := readings[n]
+		lines, starts, docs, joined, unsure := dockerLines(src, func(start int, line string) bool {
+			if !strings.ContainsAny(line, "$\\`") {
+				return true
+			}
+			if _, ok := opens[start]; !ok {
+				shut := maps.Clone(opens)
+				shut[start] = false
+				readings = append(readings, shut)
+				opens[start] = true
+			}
+			return opens[start]
+		})
+		if unsure {
+			return "Dockerfile heredoc beside a ${name<op>word} expansion", starts[len(starts)-1] + 1
+		}
+		if why, at := v.dockerReading(file, lines, starts, docs, joined, earth); why != "" {
+			return why, at
+		}
+	}
+	return "", 0
+}
+
+// dockerReading applies the rule to one reading of a Dockerfile: its instructions, the
+// source line, from 0, each starts on, the heredocs each opens and whether the last is
+// joined, from dockerLines; and returns why it withholds and the 1-based line that does.
+func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map[int][]heredoc, joined, earth bool) (string, int) {
 	ctxs := []string{filepath.Dir(file)}
 	if ctxs[0] != v.root && !earth {
 		ctxs = append(ctxs, v.root)
 	}
-	lines, starts, joined := logicalLinesAt(src)
 	if !joined && v.hasToken(lines[len(lines)-1]) {
 		return "install command in an unjoined continuation", starts[len(starts)-1] + 1
 	}
@@ -564,14 +605,21 @@ func (v *Veto) dockerfileAt(file, src string, earth bool) (string, int) {
 		}
 		word, rest, _ := strings.Cut(line, " ")
 		instr, rest := strings.ToUpper(word), strings.TrimSpace(rest)
-		if hd := heredocRE.FindAllStringSubmatch(rest, -1); hd != nil && (instr == "RUN" || instr == "COPY" || instr == "ADD") {
-			body := line
-			for _, m := range hd {
-				for i++; i < len(lines) && strings.TrimSpace(lines[i]) != m[1]; i++ {
+		if hd := docs[i]; hd != nil {
+			body, hidden := line, false
+			for _, d := range hd {
+				var text []string
+				for i++; i < len(lines) && !d.ends(lines[i]); i++ {
 					body += "\n" + lines[i]
+					l := lines[i]
+					if d.dash {
+						l = strings.TrimLeft(l, "\t")
+					}
+					text = append(text, l)
 				}
+				hidden = hidden || v.shellHides(strings.Join(text, "\n"))
 			}
-			if v.hasToken(body) {
+			if v.hasToken(body) || hidden {
 				return "install command in a heredoc", at
 			}
 			v.mention(strings.Fields(body))
@@ -660,4 +708,16 @@ func (v *Veto) dockerfileAt(file, src string, earth bool) (string, int) {
 		}
 	}
 	return flush()
+}
+
+// shellHides reports whether text, read as a shell script, holds an installer that only its
+// line continuations show.
+func (v *Veto) shellHides(text string) bool {
+	lines, _, hidden, _ := logicalLinesAt(text, kindShell)
+	for _, l := range append(lines, hidden...) {
+		if v.hasToken(l) {
+			return true
+		}
+	}
+	return false
 }

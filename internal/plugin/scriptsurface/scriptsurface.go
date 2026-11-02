@@ -820,9 +820,15 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 // opaque applies the rule to a surface this does not parse: any line naming a token, or an
 // install verb after an expansion, withholds.
 func (v *Veto) opaque(src string) string {
-	for _, line := range strings.Split(src, "\n") {
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
 		if v.hasToken(line) {
 			return "install command in a surface this does not parse"
+		}
+		// Batch continues a line that ends in ^, and PowerShell one that ends in a backtick.
+		if t := strings.TrimSuffix(line, "\r"); i+1 < len(lines) && (strings.HasSuffix(t, "^") || strings.HasSuffix(t, "`")) &&
+			v.hasToken(boundaryWord(t[:len(t)-1], lines[i+1])) {
+			return "install command across a line continuation"
 		}
 		if expandedInstallLine(line) {
 			return "install verb after an expansion in a surface this does not parse"
@@ -944,9 +950,14 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			}
 			continue
 		}
-		lines, starts, joined := logicalLinesAt(u.text)
+		lines, starts, hidden, joined := logicalLinesAt(u.text, kind)
 		if !joined && v.hasToken(lines[len(lines)-1]) {
 			return "install command in an unjoined continuation"
+		}
+		for _, w := range hidden {
+			if v.hasToken(w) {
+				return "install command across a line continuation"
+			}
 		}
 		// A line with no key of its own, such as a continuation, takes the mark of the last
 		// line with one. A keyed line holds its key's whole value unless the next line is

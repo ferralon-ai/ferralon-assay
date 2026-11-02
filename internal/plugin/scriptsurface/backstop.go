@@ -1171,7 +1171,7 @@ func (v *Veto) shellText(text string, recipe bool) string {
 // withholds. shell reads each line as shell text (a scalar, a block scalar); otherwise each
 // line is a data line (a list item, an array element, a quoted scalar, an inline table).
 func (v *Veto) valueText(text string, shell bool) (int, string) {
-	lines, starts, _ := logicalLinesAt(text)
+	lines, starts, _, _ := logicalLinesAt(text, kindData)
 	for k, l := range lines {
 		t := strings.TrimSpace(l)
 		if t == "" || strings.HasPrefix(t, "#") {

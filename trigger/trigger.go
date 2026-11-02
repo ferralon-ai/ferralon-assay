@@ -52,7 +52,10 @@ type BaselineRequest struct {
 	AssessOptions []pipeline.AssessOption
 	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
 	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.
-	// A caller outside this module sets it with signals.Feed.
+	// A caller outside this module sets it with signals.Feed. The Report the run builds records
+	// the file's verified digest as Provenance.Intel.SignalsDigest; with none it records nothing.
+	// The Report it returns is the committed one: after a conflicting write that is
+	// statestore.Merge's, which may name no file, or the other run's.
 	Signals *intel.Signals
 	// Bands is the OPTIONAL scheduler-only prioritization hint: advisory id → Band. It is
 	// read ONLY by the admission gate (admitAdvisories), above S1, to decide whether/when a
@@ -214,7 +217,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		// row, plus the scan-level limit that explains it. The report has carried such rows
 		// since v2; v1 withheld the row entirely, having no cell for "the advisory applies and
 		// we established nothing". The row is what makes the omission legible at the count.
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
 		if note, ok := limitNoteFor(f); ok {
@@ -227,12 +230,12 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))
 	}
 
-	b.WithProvenance(report.Provenance{
+	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzer,
 		AdvisoryCursor:  req.Cursor,
 		Timestamp:       time.Now().UTC(),
-	})
+	}, req.Signals))
 	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
 	rep, err := b.BuildValidated()
@@ -396,6 +399,12 @@ type CVEWatchResult struct {
 	// NoInventory is true on a heartbeat over an empty stored SBOM that a baseline stopped before
 	// resolving: there was nothing to query, so the heartbeat says nothing about new advisories.
 	NoInventory bool
+	// Unqueried is the stored Report's inventory limits that name Go modules the build root's module
+	// graph leaves out (plugin.PartialReasonNestedModule). The stored SBOM holds none of their
+	// dependencies, so OSV was not queried for them, and a heartbeat says nothing about advisories
+	// that affect only those modules: on a stub root go.mod above them, the SBOM is empty and that is
+	// every advisory. Set on a heartbeat and on an earnest run alike.
+	Unqueried []report.PartialityNote
 	// Cursor is the new cursor written to state (the full sorted advisory-ID set).
 	Cursor string
 }
@@ -452,6 +461,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 			Cursor:      committed.Cursor,
 			Truncated:   hasCutShort(state.Report.Partiality),
 			NoInventory: len(state.SBOM.Packages) == 0 && inventoryCutShort(state.Report.Partiality),
+			Unqueried:   unqueriedModules(state.Report.Partiality),
 		}, nil
 	}
 
@@ -481,5 +491,6 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		Report:        committed.Report,
 		Cursor:        committed.Cursor,
 		Truncated:     hasCutShort(committed.Report.Partiality),
+		Unqueried:     unqueriedModules(committed.Report.Partiality),
 	}, nil
 }

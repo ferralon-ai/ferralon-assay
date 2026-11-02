@@ -179,6 +179,11 @@ type Package struct {
 	// build compiles that module's code under Name. Empty when not replaced or replaced by a
 	// directory.
 	Replace string `json:"replace,omitempty"`
+	// NotInstalled marks a package a lockfile declares that every install the build is known to
+	// run leaves out (plugin.DependencyNode.NotInstalled). Version is still the declared pin.
+	// It says this lock entry is not what the build installs, not that no copy of the package is
+	// present: a tool the environment seeds, such as pip, may still be there at another version.
+	NotInstalled bool `json:"not_installed,omitempty"`
 }
 
 // Label is the package as a finding row names it: name@version for a resolved package. A
@@ -533,8 +538,8 @@ type EvidenceSummary struct {
 // can always say how old each one is. Which signals file the values came from is recorded once, as
 // Provenance.Intel.SignalsDigest.
 //
-// A nil Priority means the run had no signals, or the file had no stamped value for the advisory's
-// id or aliases. It never means "not exploited".
+// A nil Priority means the run had no signals, the file had no stamped value for the advisory's id
+// or aliases, or the join to its record was refused. It never means "not exploited".
 type Priority struct {
 	// EPSSScore is FIRST.org's 0..1 probability the CVE is exploited in the wild in the 30 days
 	// after EPSSAsOf. Set only with EPSSAsOf. Not omitempty: 0 is a real score, so it serializes
@@ -711,6 +716,31 @@ type Provenance struct {
 	// Nil on a Report built without it (additive; a reader that predates the field is
 	// unaffected). See IntelProvenance.
 	Intel *IntelProvenance `json:"intel,omitempty"`
+	// Timings records how long this pass took. Nil on a Report built without it (additive). It is
+	// operational disclosure, never a verdict input: no finding depends on it, and two runs with
+	// identical findings will differ here.
+	Timings *RunTimings `json:"timings,omitempty"`
+}
+
+// RunTimings is the wall time of one scan pass: end to end, and per pipeline stage summed over
+// every advisory the pass assessed. The gap between WallSeconds and the stage sum is the work done
+// outside the per-advisory pipeline (acquisition, work-set resolution, publication).
+type RunTimings struct {
+	// WallSeconds is the elapsed time from the start of the run mode to the publication of this
+	// Report.
+	WallSeconds float64 `json:"wall_seconds"`
+	// Stages lists each pipeline stage in the order it first ran.
+	Stages []StageTiming `json:"stages,omitempty"`
+}
+
+// StageTiming is one pipeline stage's accumulated wall time over a pass.
+type StageTiming struct {
+	// Stage is the pipeline stage name (e.g. "reachability_ingress").
+	Stage string `json:"stage"`
+	// Runs is how many times the stage ran — once per advisory that reached it.
+	Runs int `json:"runs"`
+	// Seconds is the stage's total wall time across those runs.
+	Seconds float64 `json:"seconds"`
 }
 
 // IntelProvenance records the intel inputs a scan pass actually used: which set of
@@ -722,6 +752,10 @@ type Provenance struct {
 // resolved its facts from a stale corpus is the same shape as one that resolved them
 // from a fresh one. Without this block, "why did this go red with no code change?" — or
 // green — has no answer.
+//
+// The command line fills the whole block. trigger.Run* sets only SignalsDigest, the one input it
+// holds: how the work set was chosen and where the facts came from are known to the entrypoint that
+// resolved them, so on a library run the other fields are zero, meaning not recorded.
 //
 // It is DISCLOSURE, never a verdict (inv. 5). No finding's verdict, grounds, or count
 // depends on it; it narrows what the verdicts above cover, exactly as PartialityNote
@@ -762,8 +796,19 @@ type IntelProvenance struct {
 	// bundle handed over without one). It records what was verified, not who should have signed.
 	CorpusSigner *CorpusSigner `json:"corpus_signer,omitempty"`
 	// SignalsDigest is the signals_digest of the EPSS/KEV signals file the pass ranked its findings
-	// with, as the file states it. Empty when the run had no signals, in which case no finding
-	// carries a Priority. Each priority value carries its own age stamp; this names the file.
+	// with: the value the loader recomputed from the file's payload, not the file's unverified
+	// claim. trigger.Run* records it from the request's Signals, so a library run and the command
+	// line name the file alike. Each priority value carries its own age stamp; this names the file.
+	// When set, the file ranked every row in the Report, so a row with no Priority is one the file
+	// holds no usable signal for (no record, or a refused join).
+	//
+	// A Report read back from the state ref is not always one run's work, so Priority rows can appear
+	// WITHOUT a digest: statestore.Merge, on a conflicting write, unions rows from two runs and leaves
+	// the digest empty when any row, ranked or not, came from a Report that named a different file (or
+	// none) than the one whose provenance the merge kept; and a Report written before this field
+	// existed has rows and no digest. So empty with Priority rows means the file is not known; empty
+	// with no Priority rows means no file is named: no signals were recorded, or the rows came from
+	// runs that did not share one.
 	SignalsDigest string `json:"signals_digest,omitempty"`
 }
 
@@ -853,6 +898,11 @@ type PartialityNote struct {
 	// limit) and the location inside it. Disclosure only, and part of the note's identity.
 	Package string `json:"package,omitempty"`
 	Path    string `json:"path,omitempty"`
+	// Targets bounds which packages the limit could hide, as PURLs without a version: a reader
+	// applies it only to a row whose package could be one of them. Empty (nil or []) is unbounded,
+	// which applies to every row, and is what every note carried before the field existed. Not
+	// part of the note's identity: notes merged on it keep the widest bound (Builder.Build).
+	Targets []string `json:"targets,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report

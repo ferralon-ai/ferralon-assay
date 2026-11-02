@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -28,23 +29,35 @@ func countRequirementLines(t *testing.T, path string) int {
 	return n
 }
 
-// TestDropRecoveryC3 asserts that every requirement line the old parser dropped now becomes a
-// node: node count == line count. Deleting any one continue-replacement branch (or reverting
-// it to a `continue`) drops that line and fails the count assertion — the C3 control.
+// TestDropRecoveryC3 asserts that no requirement line is silently omitted: each one becomes
+// a node, or is recorded as the include or local install it is (node count + recorded lines
+// == line count). A line that names no PyPI project becomes no node. Deleting any one
+// branch (or reverting it to a `continue`) drops that line and fails the count — the C3
+// control.
 func TestDropRecoveryC3(t *testing.T) {
 	path := filepath.Join("testdata", "drop", "requirements.txt")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	nodes := resolveRequirements(data, nil, nil)
+	rf := parseRequirementsFile(data, nil, nil)
+	nodes := rf.reqs
 
 	lineCount := countRequirementLines(t, path)
-	if len(nodes) != lineCount {
-		t.Fatalf("node count %d != line count %d — a dropped line is a silent omission (§3.1)", len(nodes), lineCount)
+	if got := len(nodes) + len(rf.includes) + len(rf.locals); got != lineCount {
+		t.Fatalf("nodes+includes+locals %d != line count %d — a dropped line is a silent omission (§3.1)", got, lineCount)
+	}
+	if !reflect.DeepEqual(rf.includes, []string{"other-requirements.txt"}) {
+		t.Errorf("includes = %q, want [other-requirements.txt]", rf.includes)
+	}
+	if !reflect.DeepEqual(rf.locals, []string{"./localpkg"}) {
+		t.Errorf("locals = %q, want [./localpkg]", rf.locals)
+	}
+	if rf.unnamed {
+		t.Error("unnamed = true; every install line in the fixture names its project or is local")
 	}
 
-	// Each dropped shape must be present with the right kind and partiality. Keyed by Name so
+	// Each named shape must be present with the right kind and partiality. Keyed by Name so
 	// the assertions do not depend on slice order.
 	byName := make(map[string]pyReq, len(nodes))
 	for _, n := range nodes {
@@ -56,10 +69,8 @@ func TestDropRecoveryC3(t *testing.T) {
 		wantKind     reqKind
 		wantUnpinned bool // carries source_unpinned partiality
 	}{
-		{name: "./localpkg", wantKind: reqEditable, wantUnpinned: true},
-		{name: "other-requirements.txt", wantKind: reqInclude, wantUnpinned: true},
 		{name: "foo", wantKind: reqVCS, wantUnpinned: true}, // #egg=foo
-		{name: "https://example.com/wheels/bar-1.0-py3-none-any.whl", wantKind: reqURL, wantUnpinned: true},
+		{name: "bar", wantKind: reqURL, wantUnpinned: true}, // the wheel filename names bar
 		{name: "baz", wantKind: reqNormal, wantUnpinned: false},
 	}
 	for _, c := range checks {
@@ -74,8 +85,8 @@ func TestDropRecoveryC3(t *testing.T) {
 		if got := containsString(r.Partial, plugin.PartialReasonSourceUnpinned); got != c.wantUnpinned {
 			t.Errorf("%s: source_unpinned partiality = %v, want %v", c.name, got, c.wantUnpinned)
 		}
-		// A dropped-shape node is still Selected (the dependency IS installed; only its exact
-		// identity is unpinned) — never silently excluded.
+		// A source node is still Selected (the dependency IS installed; only its version is
+		// unpinned) — never silently excluded.
 		if c.wantKind != reqNormal && !r.Selected {
 			t.Errorf("%s: source node must be Selected (installed but unpinned)", c.name)
 		}

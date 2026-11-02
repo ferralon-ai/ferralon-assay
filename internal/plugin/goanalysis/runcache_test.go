@@ -233,7 +233,7 @@ func TestRunCacheKeys(t *testing.T) {
 			CallGraph:    plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}},
 			ReflectReach: map[string][]string{"example.com/m": {"F"}},
 		}
-		if _, err := runCached(ctx, "reconcile", reconcileCacheKey(buildDir, nil), func() ([]byte, error) {
+		if _, err := runCached(ctx, "reconcile", reconcileKey(buildDir, nil), func() ([]byte, error) {
 			return json.Marshal(seed)
 		}); err != nil {
 			t.Fatal(err)
@@ -268,7 +268,7 @@ func TestRunCacheKeys(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := WithRunCacheDir(context.Background(), t.TempDir())
-				if _, err := runCached(ctx, "reconcile", reconcileCacheKey(buildDir, nil), func() ([]byte, error) {
+				if _, err := runCached(ctx, "reconcile", reconcileKey(buildDir, nil), func() ([]byte, error) {
 					return json.Marshal(reconcileGraph{ReflectReach: tc.reach})
 				}); err != nil {
 					t.Fatal(err)

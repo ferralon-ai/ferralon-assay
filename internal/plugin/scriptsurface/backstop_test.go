@@ -582,6 +582,7 @@ func TestVeto_BackstopInvoked(t *testing.T) {
 		{"named by a workflow", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/provision.yml")}, true, "ci/provision.yml:2"},
 		{"named by base name after a cd", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("cd ci && tool provision.yml")}, true, "ci/provision.yml:2"},
 		{"named by a Dockerfile", map[string]string{"ci/provision.yml": hit, "Dockerfile": "FROM base\nCOPY . /src\nRUN tool /src/ci/provision.yml\n"}, true, "ci/provision.yml:2"},
+		{"named by an action no workflow uses", map[string]string{"ci/provision.yml": hit, ".github/actions/setup/action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - run: tool ci/provision.yml\n      shell: bash\n"}, true, "ci/provision.yml:2"},
 		{"named by a make recipe", map[string]string{"ci/provision.yml": hit, "Makefile": "deps:\n\ttool $(CI)/provision.yml\n"}, true, "ci/provision.yml:2"},
 		{"named by a build config", map[string]string{"ci/provision.yml": hit, "setup.cfg": "[tool]\nconfig = ci/provision.yml\n"}, true, "ci/provision.yml:2"},
 		{"named through a build script", map[string]string{"ci/provision.yml": hit, "tools/run.py": "import subprocess\nsubprocess.run([\"tool\", \"ci/provision.yml\"])\n"}, true, "ci/provision.yml:2"},

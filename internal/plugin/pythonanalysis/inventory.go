@@ -255,14 +255,21 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // install the build is known to run leaves out of the environment, shared with version
 // resolution's scoping (poetryInstalls). A script surface that may install a package no
 // manifest names (scriptWithheld), an allowed pip install -r of a file the inventory need not
-// read, or an allowed pip self-upgrade may each put such a package in place, so any of them
-// leaves every package installed.
+// read, or an unrecognised install surface may each put such a package in place, so any of
+// them leaves every package installed. What tooling names, the distributions an interpreter
+// seeds and those an allowed pip self-upgrade or ensurepip installs, is never left out.
 func inventoryUninstalled(buildDir string) func(path string) map[string]bool {
 	_, _, scriptWithheld, installs, poetry, tooling, unrecognised, _ := versionSurfaces(buildDir)
-	if scriptWithheld || unrecognised != "" || len(installs) > 0 || len(tooling) > 0 {
+	if scriptWithheld || unrecognised != "" || len(installs) > 0 {
 		return func(string) map[string]bool { return nil }
 	}
-	return poetry.uninstalled
+	return func(path string) map[string]bool {
+		out := poetry.uninstalled(path)
+		for n := range tooling {
+			delete(out, n)
+		}
+		return out
+	}
 }
 
 // manifestToPyReqs parses one recognized manifest into selected-set pyReq records for the

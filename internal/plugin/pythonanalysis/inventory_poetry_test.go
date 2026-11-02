@@ -27,7 +27,7 @@ func TestInventory_PoetryInstallGroups(t *testing.T) {
 			"[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\ncategory = \"dev\"\noptional = false\n"
 		bareLock = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.3.2\"\n"
 	)
-	versions := map[string]string{"jinja2": "3.1.4", "pytest": "8.3.2", "sphinx": "7.4.7", "colorama": "0.4.6"}
+	versions := map[string]string{"jinja2": "3.1.4", "pytest": "8.3.2", "sphinx": "7.4.7", "colorama": "0.4.6", "setuptools": "75.1.0"}
 	tests := []struct {
 		name         string
 		files        map[string]string // over pyproject.toml and poetry.lock
@@ -69,7 +69,9 @@ func TestInventory_PoetryInstallGroups(t *testing.T) {
 		{"no membership keys under a group flag", map[string]string{"install.sh": "poetry install --only main\n", "pyproject.toml": legacyProject, "poetry.lock": bareLock}, nil},
 		{"no install recorded", nil, nil},
 		{"a withheld script surface", map[string]string{"install.sh": "poetry install --only main\npip install pytest\n"}, nil},
-		{"a pip self-upgrade", map[string]string{"install.sh": "pip install -U pip\npoetry install --only main\n"}, nil},
+		{"a pip self-upgrade puts only pip in place", map[string]string{"install.sh": "pip install -U pip\npoetry install --only main\n"}, []string{"pytest", "sphinx"}},
+		{"a distribution the interpreter seeds is never left out", map[string]string{"install.sh": "poetry install --only main\n",
+			"poetry.lock": lock + "\n" + "[[package]]\nname = \"setuptools\"\nversion = \"75.1.0\"\ngroups = [\"dev\"]\n"}, []string{"pytest", "sphinx"}},
 		{"an allowed pip install -r", map[string]string{"install.sh": "poetry install --only main\npip install -r requirements-dev.txt\n",
 			"requirements-dev.txt": "pytest==8.3.2\n"}, nil},
 	}

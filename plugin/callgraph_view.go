@@ -93,6 +93,12 @@ func (v CallGraphView) Roots() iter.Seq[Symbol] {
 	}
 }
 
+// FromEncoding reports whether the graph is json.Unmarshal of exactly the bytes AppendJSON
+// appends, as a memoized graph's shared decode is. Decoding those bytes then yields a value equal
+// to the graph. A view that wraps a caller's result need not round-trip that way: encoding can
+// lose the difference between a nil and an empty slice.
+func (v CallGraphView) FromEncoding() bool { return v.enc != nil }
+
 // MarshalJSON encodes the graph exactly as json.Marshal encodes its CallGraphResult; the zero view
 // encodes as an empty CallGraphResult.
 func (v CallGraphView) MarshalJSON() ([]byte, error) {

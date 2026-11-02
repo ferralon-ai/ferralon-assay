@@ -3332,11 +3332,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// mis-attribution). The CallGraph leg is unchanged (guard discovery reads it).
 	reachOut := reach
 	reachOut.Paths = paths
-	reachPayload, err := reachabilityPayload(reachOut, cg, toolchainScan)
-	if err != nil {
-		return err
-	}
-	reachRef, err := putPayload(store, c, s.Name(), artifact.TypeReachability, "reachability (resolved)", reachPayload)
+	reachRef, err := putReachability(store, c, s.Name(), reachOut, cg, toolchainScan)
 	if err != nil {
 		return err
 	}
@@ -3405,22 +3401,48 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 // fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
 // subject scan.
 func reachabilityPayload(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) ([]byte, error) {
+	b, _, _, err := encodeReachability(reach, cg, ts)
+	return b, err
+}
+
+// encodeReachability is reachabilityPayload that also returns the payload's reachability and
+// toolchain_scan values, which share no memory with the payload.
+func encodeReachability(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (payload, reachLeg, tsLeg []byte, err error) {
 	r, err := json.Marshal(reach)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	t, err := json.Marshal(ts)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	b := append([]byte(`{"reachability":`), r...)
 	b = append(b, `,"call_graph":`...)
 	if b, err = cg.AppendJSON(b); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	b = append(b, `,"toolchain_scan":`...)
 	b = append(b, t...)
-	return append(b, '}'), nil
+	return append(b, '}'), r, t, nil
+}
+
+// putReachability stores the resolved reachability artifact. When the store takes seeds and cg is
+// the decode of its own encoding, it also seeds the artifact's ReachabilityRecord from the values
+// the payload was encoded from, so readers neither split the payload nor decode the run's graph
+// again for every case.
+func putReachability(store artifact.Store, c *assessment.Assessment, producedBy string, reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (artifact.Ref, error) {
+	payload, reachLeg, tsLeg, err := encodeReachability(reach, cg, ts)
+	if err != nil {
+		return artifact.Ref{}, err
+	}
+	ref, err := putPayload(store, c, producedBy, artifact.TypeReachability, "reachability (resolved)", payload)
+	if err != nil {
+		return ref, err
+	}
+	if seeder, ok := store.(artifact.Seeder); ok && cg.FromEncoding() {
+		seeder.Seed(ref.ID, reachabilityViewKey, seededReachability(reachLeg, tsLeg, cg))
+	}
+	return ref, nil
 }
 
 // firstPartyReachPaths derives (ingress→sink) ReachPaths for a FIRST-PARTY sink by walking the

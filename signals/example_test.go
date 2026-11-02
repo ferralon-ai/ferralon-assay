@@ -4,15 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/signals"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 	"github.com/ferralon-ai/ferralon-assay/trigger"
 )
 
-// Example loads a signals file, feeds it to a baseline request so the run's findings carry a
-// Priority, and records which file ranked them on the Report the run returns, which trigger.Run*
-// does not do yet.
+// Example loads a signals file and feeds it to a baseline request so the run's findings carry a
+// Priority. The Report the run returns names the file that ranked them.
 func Example() {
 	s, err := signals.Load("testdata/signals.json")
 	if err != nil {
@@ -27,10 +25,6 @@ func Example() {
 	if err != nil {
 		panic(err)
 	}
-	if rep.Provenance.Intel == nil {
-		rep.Provenance.Intel = &report.IntelProvenance{}
-	}
-	rep.Provenance.Intel.SignalsDigest = s.Digest()
 	fmt.Println("ranked with", rep.Provenance.Intel.SignalsDigest)
 
 	if e, ok := s.EPSS("CVE-2021-38561"); ok {

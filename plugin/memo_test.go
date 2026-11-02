@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -336,6 +337,67 @@ func TestMemoizeConcurrent(t *testing.T) {
 	for _, r := range res.Partiality.Reasons {
 		if r == "mutated" {
 			t.Fatal("a caller's mutation leaked into the cached answer")
+		}
+	}
+}
+
+// TestMemoizeCallGraphUnshared pins that the interface's CallGraph hands every caller its own
+// value: the plugin runs once, and no caller's edit to its result reaches any other caller.
+func TestMemoizeCallGraphUnshared(t *testing.T) {
+	ctx := context.Background()
+	want, err := StubPlugin{}.CallGraph(ctx, CallGraphRequest{BuildDir: "/src"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := []struct {
+		name   string
+		mutate func(*CallGraphResult)
+	}{
+		{"untouched", func(*CallGraphResult) {}},
+		{"edits edges and roots", func(r *CallGraphResult) {
+			r.Edges[0].Caller.SCIP = "mutated"
+			r.Roots[0].Name = "mutated"
+			r.Edges = append(r.Edges[:0], CallEdge{})
+		}},
+		{"edits partiality", func(r *CallGraphResult) {
+			r.Partiality.Complete = !r.Partiality.Complete
+			r.Partiality.Reasons = append(r.Partiality.Reasons, "mutated")
+		}},
+	}
+	// mutator is the call, 0-based, whose result is edited before the calls after it read.
+	for _, mutator := range []int{0, 1} {
+		for _, tc := range mutations {
+			t.Run(fmt.Sprintf("caller %d %s", mutator, tc.name), func(t *testing.T) {
+				inner := newCountingPlugin()
+				lp := Memoize(inner)
+				var got []CallGraphResult
+				for i := 0; i < 4; i++ {
+					r, err := lp.CallGraph(ctx, CallGraphRequest{BuildDir: "/src"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if i > mutator && mustJSON(t, r) != mustJSON(t, want) {
+						t.Errorf("call %d after caller %d's edit: got %s, want %s", i, mutator, mustJSON(t, r), mustJSON(t, want))
+					}
+					if i == mutator {
+						tc.mutate(&r)
+					}
+					got = append(got, r)
+				}
+				if &got[2].Edges[0] == &got[3].Edges[0] {
+					t.Error("two callers share one decode; each is meant to get its own")
+				}
+				v, err := SharedCallGraph(ctx, lp, CallGraphRequest{BuildDir: "/src"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mustJSON(t, v) != mustJSON(t, want) {
+					t.Errorf("view after caller %d's edit: got %s, want %s", mutator, mustJSON(t, v), mustJSON(t, want))
+				}
+				if n := inner.count(OpCallGraph); n != 1 {
+					t.Errorf("inner calls = %d, want 1", n)
+				}
+			})
 		}
 	}
 }

@@ -968,6 +968,16 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script its own namespace handed to a def named sorted in a class body after a dedented continuation",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass C:\n    def sorted(ns):\n        ns[\"main\"] = make()\n    x = (1,\n0)\n    sorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script the globals builtin aliased",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

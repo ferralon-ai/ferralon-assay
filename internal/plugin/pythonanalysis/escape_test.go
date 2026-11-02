@@ -601,8 +601,8 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
-			name:   "import cycle ends",
-			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "from a import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
+			name:   "re-export through an import cycle",
+			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "import a\nfrom impl import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
 			caller: funcSCIP("app", nil, "c", 0),
 			callee: funcSCIP("impl", nil, "x", 1),
 		},

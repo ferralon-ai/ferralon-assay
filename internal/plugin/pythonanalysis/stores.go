@@ -261,35 +261,39 @@ var readOnlyMethods = map[string]bool{
 
 // use records one use of the file's namespace, the expression running from r[start] to
 // r[end]: its module object when module is set, else its dict. It reads an allow-list: a
-// literal-named attribute store on the module or a setattr of it by literal name, a
-// literal-key store into the dict, a .update of keyword arguments or a .setdefault by literal
-// key, bind those names; an attribute or subscript read, a getattr, hasattr or delattr, a
-// del, a membership test, a ** unpacking, an argument to __import__, readOnlyWrappers and
-// readOnlyMethods bind none. Any other use may bind any name: a store by a key the scanner
-// cannot read, a dunder of the module, the module replaced in sys.modules, or the namespace
-// handed on as a value.
-func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool) {
+// literal-named attribute stored on the module or a setattr of it by literal name, a store
+// into the dict by literal key, a .update of keyword arguments or a .setdefault by literal key,
+// bind those names. An attribute or subscript that is not a target (see target), a getattr
+// by a literal name that is not a dunder, a hasattr, delattr or del, a membership test, a **
+// unpacking, an argument to __import__, readOnlyWrappers and readOnlyMethods bind none; a
+// call counts only for a builtin the file never rebinds (shadowed). Any other use may bind
+// any name: a store by a key the scanner cannot read, a dunder of the module, the module
+// replaced in sys.modules, or the namespace handed on as a value.
+func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool, shadowed func(string) bool) {
 	n := len(r)
 	p := skipAllSpace(r, end)
 	j := skipSpaceBack(r, start-1)
 	switch {
 	case j >= 1 && r[j] == '*' && r[j-1] == '*', precededByWord(r, start, "in"):
 		return
-	case j >= 0 && (r[j] == '(' || r[j] == ',') && p < n && (r[p] == ',' || r[p] == ')') && importArg(r, start):
+	case j >= 0 && (r[j] == '(' || r[j] == ',') && p < n && (r[p] == ',' || r[p] == ')') && importArg(r, start, shadowed):
 		return
 	case j >= 0 && r[j] == '(' && p < n && (r[p] == ',' || r[p] == ')'):
-		k := skipSpaceBack(r, j-1)
-		e := k + 1
-		for k >= 0 && isIdentPart(r[k]) {
-			k--
+		fn, k := wordBefore(r, j)
+		if fn == "" || k >= 0 && r[k] == '.' || shadowed(fn) {
+			break
 		}
-		switch fn := string(r[k+1 : e]); {
+		switch {
 		case module && fn == "setattr" && r[p] == ',':
 			if name, ok := literalSubscript(r, p+1, lits, ","); ok {
 				s.names = append(s.names, name)
 				return
 			}
-		case module && r[p] == ',' && (fn == "getattr" || fn == "hasattr" || fn == "delattr"),
+		case module && fn == "getattr" && r[p] == ',':
+			if name, ok := literalSubscript(r, p+1, lits, ",)"); ok && !strings.HasPrefix(name, "__") {
+				return
+			}
+		case module && r[p] == ',' && (fn == "hasattr" || fn == "delattr"),
 			r[p] == ')' && readOnlyWrappers[fn]:
 			return
 		}
@@ -297,13 +301,13 @@ func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, modul
 		attr, aend := readWordRunes(r, skipAllSpace(r, p+1))
 		switch {
 		case attr == "" || strings.HasPrefix(attr, "__"):
-		case rebound(r, aend):
+		case target(r, start, aend):
 			s.names = append(s.names, attr)
 			return
 		default:
 			return
 		}
-	case module && rebound(r, end):
+	case module && target(r, start, end):
 	case module:
 		if precededByWord(r, start, "del") {
 			return
@@ -313,7 +317,7 @@ func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, modul
 		if c < 0 {
 			break
 		}
-		if !rebound(r, c+1) {
+		if !target(r, start, c+1) {
 			return
 		}
 		if name, ok := literalSubscript(r, p+1, lits, "]"); ok {
@@ -355,30 +359,56 @@ func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, modul
 }
 
 // importArg reports whether the argument starting at r[start] is passed to a bare
-// __import__ call, which reads the globals and locals it is handed only for the importing
-// package's name.
-func importArg(r []rune, start int) bool {
+// __import__ call the file never rebinds, which reads the globals and locals it is handed
+// only for the importing package's name.
+func importArg(r []rune, start int, shadowed func(string) bool) bool {
 	open := enclosingOpen(r, start)
 	if open < 0 || r[open] != '(' {
 		return false
 	}
 	w, k := wordBefore(r, open)
-	return w == "__import__" && (k < 0 || r[k] != '.')
+	return w == "__import__" && (k < 0 || r[k] != '.') && !shadowed(w)
 }
 
-// rebound reports whether the target ending at r[end] is assigned or augmented.
-func rebound(r []rune, end int) bool {
-	if assignedTo(r, end) {
-		return true
+// target reports whether the expression from r[start] to r[end] is bound rather than read:
+// assigned or augmented, alone or inside a tuple, list, parenthesised or annotated target
+// (a statement-level '=' or augmented operator after it), the target of a for, in a
+// statement or a comprehension (the nearest for or in before it is a for), or of a with's
+// as. A trailer after it (an attribute, subscript or call) reads it.
+func target(r []rune, start, end int) bool {
+	if p := skipAllSpace(r, end); p < len(r) && strings.ContainsRune(".[(", r[p]) {
+		return false
 	}
-	k := skipAllSpace(r, end)
-	op := string(r[k:min(k+4, len(r))])
-	for _, o := range []string{"+=", "-=", "*=", "/=", "//=", "%=", "@=", "&=", "|=", "^=", ">>=", "<<=", "**="} {
-		if strings.HasPrefix(op, o) {
+	s := start
+	for s > 0 && r[s-1] != ';' {
+		s--
+	}
+	depth, kw, with, colon := 0, "", false, false
+	for i := s; i < len(r) && r[i] != ';'; i++ {
+		switch c := r[i]; {
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case i >= end && depth == 0 && c == '=' && (i+1 >= len(r) || r[i+1] != '=') &&
+			(i == 0 || !strings.ContainsRune("=!<>:", r[i-1]) || i >= 2 && r[i-1] == r[i-2] && (r[i-1] == '<' || r[i-1] == '>')):
 			return true
+		case i < start && isIdentStartRune(c) && (i == 0 || !isIdentPart(r[i-1])):
+			w, e := readWordRunes(r, i)
+			switch {
+			case w == "for" || w == "in":
+				kw = w
+			case w == "with" && strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(r[s:i])), "async")) == "":
+				with = true
+			case w == "as" && with:
+				kw, colon = "as", false
+			}
+			i = e - 1
+		case i < start && c == ':' && depth == 0:
+			colon = true
 		}
 	}
-	return false
+	return kw == "for" || kw == "as" && !colon
 }
 
 // moduleScope reports, for each rune index of a cleaned source, whether the code there runs

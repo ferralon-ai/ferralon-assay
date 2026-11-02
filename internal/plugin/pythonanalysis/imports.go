@@ -1571,6 +1571,22 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	if stars["sys"] {
 		names["modules"] = lookupModules
 	}
+	// shadowed reports whether the file may rebind a builtin's name: a star import, or the
+	// name anywhere but called (a def, class, import, assignment or parameter).
+	rebinds := map[string]bool{}
+	for i := 0; i < n; i++ {
+		if !isIdentStartRune(r[i]) || i > 0 && isIdentPart(r[i-1]) {
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if pj := skipSpaceBack(r, i-1); pj < 0 || r[pj] != '.' {
+			if q := skipAllSpace(r, end); q >= n || r[q] != '(' || precededByDef(r, i) || precededByWord(r, i, "class") {
+				rebinds[w] = true
+			}
+		}
+		i = end - 1
+	}
+	shadowed := func(w string) bool { return len(stars) > 0 || rebinds[w] }
 	kindOf := func(w string, dotted bool) lookupKind {
 		switch w {
 		case "import_module":
@@ -1605,11 +1621,19 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		pj := skipSpaceBack(r, i-1)
 		dotted := pj >= 0 && r[pj] == '.'
 		if !dotted && (w == "globals" || (w == "vars" || w == "locals") && inModule(i)) && !precededByDef(r, i) {
-			if q := skipAllSpace(r, end); q < n && r[q] == '(' {
+			switch q := skipAllSpace(r, end); {
+			case q < n && r[q] == '(':
 				if c := skipAllSpace(r, q+1); c < n && r[c] == ')' {
-					own.use(r, i, c+1, lits, false)
+					own.use(r, i, c+1, lits, false, shadowed)
 				}
+			case !assignedTo(r, end):
+				// The builtin itself handed on, called wherever it goes.
+				own.any = true
 			}
+		}
+		// A frame's globals, and a module-scope frame's locals, are a namespace dict.
+		if dotted && (w == "f_globals" || w == "f_locals" && inModule(i)) {
+			own.use(r, i, end, lits, false, shadowed)
 		}
 		kind := kindOf(w, dotted)
 		if kind == lookupNone || precededByDef(r, i) || assignedTo(r, end) {
@@ -1664,7 +1688,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				case name == "":
 					computed = true
 					if e := ownModuleEnd(r, aend); e > 0 {
-						own.use(r, dottedStart(r, i), e, lits, true)
+						own.use(r, dottedStart(r, i), e, lits, true, shadowed)
 					}
 				default:
 					values = append(values, name)
@@ -1686,7 +1710,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			case name == "":
 				computed = true
 				if e := ownModuleEnd(r, end); e > 0 {
-					own.use(r, i, e, lits, true)
+					own.use(r, i, e, lits, true, shadowed)
 				}
 			default:
 				values = append(values, name)
@@ -2190,10 +2214,13 @@ func precededByWord(r []rune, i int, w string) bool {
 	return string(r[j+1:end]) == w
 }
 
-// ownModuleArg reports whether the argument at r[i] is exactly __name__, closed by one of
-// closers.
+// ownModuleArg reports whether the argument at r[i] is exactly __name__ or __spec__.name,
+// closed by one of closers.
 func ownModuleArg(r []rune, i int, closers string) bool {
 	w, e := readWordRunes(r, skipAllSpace(r, i))
+	if a, ae, ok := attributeAfter(r, e); w == "__spec__" && ok && a == "name" {
+		w, e = "__name__", ae
+	}
 	e = skipAllSpace(r, e)
 	return w == "__name__" && e < len(r) && strings.ContainsRune(closers, r[e])
 }

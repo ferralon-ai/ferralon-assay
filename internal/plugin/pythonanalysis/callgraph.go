@@ -524,12 +524,12 @@ func (p *program) bindPrefix(f *fileParse, name, path string, get func(modKey) [
 	return []string{mod}
 }
 
-// attrModules is the modules attribute k.name of module k.mod may hold: the submodule of
-// that name, and whatever the module may hold that each first-party import of the name in the
-// package, itself or through its star imports, binds: the attribute ran last. It is the least
-// fixpoint over the attributes those imports read, solved by worklist and kept, so import-as
-// chains that read one another end; every module in it is a named path, so the sets are
-// bounded.
+// attrModules is the modules attribute k.name of module k.mod may hold, whichever binding
+// ran last: the submodule of that name, a top-level module a first-party import binds the
+// name to, and the modules the path of each other first-party import of the name in the
+// package, itself or through its star imports, may hold. It is the least fixpoint over the
+// attributes those imports read, solved by worklist and kept, so import-as chains that read
+// one another end; every module in it is a named path, so the sets are bounded.
 func (p *program) attrModules(k modKey) []string {
 	if _, ok := p.modVals[k]; ok {
 		return p.modVals[k]

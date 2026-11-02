@@ -255,8 +255,8 @@ func TestCallGraph_ImportAsChainUnderOneDotChain(t *testing.T) {
 // TestCallGraph_ImportAsChainNested: an import-as chain that a package's attribute reads
 // through another import-as chain resolves segment by segment from the top package, so a
 // site reaches the binding that wins at runtime, by an edge or an escape, however deep the
-// chains nest. A from-import
-// of the same path finds its module in sys.modules, whatever another file imports as a chain.
+// chains nest. A from-import of the same path finds its module in sys.modules, whatever
+// another file imports as a chain.
 func TestCallGraph_ImportAsChainNested(t *testing.T) {
 	site := "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n"
 	for _, tc := range []struct {
@@ -299,6 +299,11 @@ func TestCallGraph_ImportAsChainNested(t *testing.T) {
 			"pkg/q/__init__.py": "", "pkg/q/x.py": "from ..impl import f as g\n",
 			"alt/__init__.py": "from . import x\n", "alt/x.py": "from pkg.v import vuln as g\n",
 			"c.py": "import pkg.sub\n\ndef go():\n    return pkg.sub.a.g(1)\n"}, false},
+		{"import-as chain in a star-imported module", map[string]string{
+			"pkg/__init__.py": "from . import q, r\nfrom . import alt2 as r\nfrom .reb import *\n", "pkg/reb.py": "import pkg.r.y as q\n",
+			"pkg/q.py": "from .impl import f as g\n", "pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f as g\n",
+			"pkg/alt2/__init__.py": "from . import y\n", "pkg/alt2/y.py": "from ..v import vuln as g\n",
+			"c.py": "import pkg\n\ndef go():\n    return pkg.q.g(1)\n"}, false},
 	} {
 		files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n"}
 		maps.Copy(files, tc.files)

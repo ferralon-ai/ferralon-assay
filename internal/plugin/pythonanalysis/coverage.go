@@ -136,6 +136,17 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
 			}
+			// pip unquotes the option string first (--"requirement", -\r), so test the unquoted line.
+			unq := strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(line)
+			if _, isInclude := includeTarget(unq); isInclude {
+				return out, false
+			}
+			if kind, ok := optionKind(unq); ok && kind == reqEditable {
+				return out, false
+			}
+			if abbreviatesInstallOption(unq) || laterInstallOption(unq) || untrackedConstraint(unq) || envOptionName(line) {
+				return out, false
+			}
 			// pip parses every option on the line, not just the first, and accepts any
 			// unambiguous prefix of a long option; --no-r is the shortest for this one.
 			for _, f := range strings.Fields(line) {
@@ -187,6 +198,88 @@ func indexOption(f string) bool {
 		return false
 	}
 	return strings.HasPrefix(f, "-i") || strings.HasPrefix(f, "-f")
+}
+
+// envOptionName reports an option name that comes from an environment variable ("-${R} x.txt",
+// "--pre ${R} x.txt"): pip expands it before parsing, so it may name an install option. A
+// variable in an option's value ("--index-url=https://${TOKEN}@host/simple") is left alone; one
+// whose expansion itself carries whitespace and options is out of reach of a static read. pip
+// splits the line shell-style on ASCII whitespace, so with any quote, backslash or non-ASCII
+// byte a value can hide an option word ("-i \"x -i\" ${R}") and the line fails closed;
+// without them the fields are pip's.
+func envOptionName(line string) bool {
+	if !strings.Contains(line, "${") {
+		return false
+	}
+	if strings.ContainsAny(line, `"'\`) || !isASCII(line) {
+		return true
+	}
+	value := false
+	for _, f := range strings.Fields(line) {
+		if value {
+			value = false
+			continue
+		}
+		switch {
+		case strings.HasPrefix(f, "--"):
+			name, _, attached := strings.Cut(f, "=")
+			if strings.Contains(name, "${") {
+				return true
+			}
+			value = !attached && takesValue(name)
+		case strings.HasPrefix(f, "-"):
+			if strings.HasPrefix(f[1:], "${") {
+				return true
+			}
+			value = takesValue(f)
+		case strings.HasPrefix(f, "${"):
+			return true
+		}
+	}
+	return false
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// takesValue reports a requirements-file option, in any shortened spelling, that consumes the
+// next field as its value.
+func takesValue(f string) bool {
+	switch f {
+	case "-i", "-f", "-c", "-r", "-e", "-C":
+		return true
+	}
+	if len(f) <= 2 || !strings.HasPrefix(f, "--") {
+		return false
+	}
+	for _, opt := range []string{"--index-url", "--pypi-url", "--extra-index-url", "--find-links", "--trusted-host", "--no-binary", "--only-binary", "--all-releases", "--only-final", "--use-feature", "--constraint", "--requirement", "--editable", "--hash", "--config-settings"} {
+		if strings.HasPrefix(opt, f) {
+			return true
+		}
+	}
+	return false
+}
+
+// untrackedConstraint reports a constraint option that includeTarget does not record: shortened
+// ("--cons c.txt") or after another option ("--pre -c c.txt"). A constraint file can itself
+// include a requirement file, so pip may install from it.
+func untrackedConstraint(line string) bool {
+	for i, f := range strings.Fields(line) {
+		word, _, _ := strings.Cut(f, "=")
+		if len(word) > 2 && strings.HasPrefix("--constraint", word) && (i > 0 || word != "--constraint") {
+			return true
+		}
+		if i > 0 && strings.HasPrefix(f, "-c") {
+			return true
+		}
+	}
+	return false
 }
 
 // pyprojectAll is every pyproject.toml table that declares something to install.

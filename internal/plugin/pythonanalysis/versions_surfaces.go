@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,6 +39,29 @@ import (
 // config in the tree is read when it sets only that tool's settings (toolConfigClean). unrecognised is where a file the rule does not read as a surface runs an
 // installer (scriptsurface.Veto.Unrecognised), or "".
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string) {
+	return scanSurfaces(root, nil)
+}
+
+// scriptRun is a pip install a script surface runs: one the rule withholds, from a surface it
+// withholds on, or an allowed self-upgrade. args are pip's arguments after install, as written,
+// files the build-tree -r files they name that the lane does not already read, and uv whether
+// uv runs it.
+type scriptRun struct {
+	surface string
+	args    []string
+	files   []runFile
+	uv      bool
+}
+
+// runFile is a -r file a run resolves: the build-tree path, and the name the installer is
+// given, by which it reads the file.
+type runFile struct {
+	path, name string
+}
+
+// scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip
+// install the script surfaces run that names what it installs (scriptRun).
+func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -64,11 +88,11 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 			}
 		}
 	}
+	manifest := func(path string) bool {
+		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
+	}
 	read := func(path string) bool {
-		if wideMarked(path) {
-			return false
-		}
-		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path) || toolConfigClean(path)
+		return !wideMarked(path) && (manifest(path) || toolConfigClean(path))
 	}
 	installs, poetry = pipInstalls{}, poetryInstalls{}
 	if !pipConfigInTree(root) {
@@ -92,8 +116,16 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 		return ok
 	}
+	var rec *runRecorder
+	if runs != nil {
+		rec = &runRecorder{inner: spec.Allowed, tooling: tooling}
+		spec.Allowed = rec.allowed
+	}
 	veto := scriptsurface.New(root, read, spec)
 	classify := veto.Classify(pyInstallSurface)
+	if rec != nil {
+		classify = rec.classify(root, veto)
+	}
 	match := func(path string, head []byte) (string, bool) {
 		mypyInstalls = mypyInstalls || mypyConfigInstalls(head) || installTypesLineRE.Match(head)
 		return classify(path, head)
@@ -104,6 +136,10 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 	}
 	scriptWithheld = veto.Withheld() || mypyInstalls
+	if rec != nil {
+		rec.rescan(root, manifest, newScriptSpec(pipInstalls{}, poetryInstalls{}, maps.Clone(tooling)))
+		*runs = rec.runs
+	}
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}

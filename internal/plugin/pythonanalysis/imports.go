@@ -1549,6 +1549,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	spans, stars := importStatements(r)
 	names := map[string]lookupKind{}
 	for _, b := range bindings {
+		if t := lookupTarget(b.target); t == "builtins" || strings.HasPrefix(t, "builtins.") {
+			own.builtins = true
+		}
 		switch lookupTarget(b.target) {
 		case "sys":
 			names[b.local] = lookupSys
@@ -1597,8 +1600,14 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		i = end - 1
 	}
+	// A builtin trusted where it is called is recorded, since a store elsewhere may still
+	// rebind it (see markModuleStores).
 	shadowed := func(w string, at int) bool {
-		return len(stars) > 0 || rebinds[w] || slices.Contains(classBinds[w], classAt(at))
+		if len(stars) > 0 || rebinds[w] || slices.Contains(classBinds[w], classAt(at)) {
+			return true
+		}
+		own.trusted = append(own.trusted, w)
+		return false
 	}
 	kindOf := func(w string, dotted bool) lookupKind {
 		switch w {
@@ -1644,8 +1653,12 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				own.any = true
 			}
 		}
-		// A frame's globals, and a module-scope frame's locals, are a namespace dict.
-		if dotted && (w == "f_globals" || w == "f_locals" && inModule(i)) {
+		if !dotted && w == "__builtins__" {
+			own.builtins = true
+		}
+		// A frame's or function's globals, and a module-scope frame's locals, are a
+		// namespace dict.
+		if dotted && (w == "f_globals" || w == "__globals__" || w == "f_locals" && inModule(i)) {
 			own.use(r, i, end, lits, false, shadowed)
 		}
 		kind := kindOf(w, dotted)
@@ -1735,6 +1748,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		i = end
 	}
 	own.names = sortedDedup(own.names)
+	own.trusted = sortedDedup(own.trusted)
+	own.builtins = own.builtins || slices.Contains(values, "builtins")
 	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed, own
 }
 

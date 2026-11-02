@@ -133,6 +133,9 @@ func normalizeSpecifier(spec string) (string, bool) {
 			return "", false
 		}
 		ver := c[len(op):]
+		if op != "===" && ver != "" && (ver[0] == 'v' || ver[0] == 'V') {
+			ver = ver[1:] // PEP 440 normalizes one leading "v" away
+		}
 		if op == "===" {
 			if ver == "" {
 				return "", false
@@ -145,10 +148,9 @@ func normalizeSpecifier(spec string) (string, bool) {
 	return strings.Join(out, ","), true
 }
 
-// validPEP440Version is a shape check, not a full PEP 440 grammar: an optional "v", a leading
-// digit, then version characters (including a trailing ".*" wildcard).
+// validPEP440Version is a shape check, not a full PEP 440 grammar: a leading digit, then
+// version characters (including a trailing ".*" wildcard).
 func validPEP440Version(v string) bool {
-	v = strings.TrimPrefix(v, "v")
 	if v == "" || v[0] < '0' || v[0] > '9' {
 		return false
 	}

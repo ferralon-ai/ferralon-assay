@@ -687,6 +687,9 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool, ext
 	if i := strings.IndexAny(ver, ", \t"); i >= 0 {
 		ver = ver[:i]
 	}
+	if ver != "" && (ver[0] == 'v' || ver[0] == 'V') {
+		ver = ver[1:] // PEP 440 normalizes one leading "v" away, as parsePEP508 does
+	}
 	if ver == "" || strings.Contains(ver, "*") || containsJinja(ver) {
 		return name, "", false, extras // "*" prefix or a Jinja-templated version → UNRESOLVED
 	}

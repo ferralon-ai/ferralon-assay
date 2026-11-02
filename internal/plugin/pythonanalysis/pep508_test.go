@@ -51,3 +51,37 @@ func TestSpecifierPin(t *testing.T) {
 		}
 	}
 }
+
+// parsePEP508 drops one leading "v" or "V" on a version, as PEP 440 normalization does.
+// Arbitrary equality keeps its version as written. A doubled "v", a "v" with no version, and
+// an empty marker after ';' stay malformed, as pip's parser rejects them.
+func TestParsePEP508_NormalizableSpellings(t *testing.T) {
+	for _, tt := range []struct {
+		spec, specifier, marker string
+		ok                      bool
+	}{
+		{"pyjwt>=V2.0", ">=2.0", "", true},
+		{"pyjwt>=v2.0", ">=2.0", "", true},
+		{"pyjwt==V2.8.0", "==2.8.0", "", true},
+		{"pyjwt>=V2,!=v2.1.*", ">=2,!=2.1.*", "", true},
+		{"pyjwt===V2.0", "===V2.0", "", true},
+		{"pyjwt>=1;", "", "", false},
+		{"pyjwt>=1 ;  ", "", "", false},
+		{"pyjwt;", "", "", false},
+		{"pyjwt @ https://example.com/pyjwt-2.8.0.tar.gz ;", "", "", false},
+		{"pyjwt>=1; python_version >= '3.9'", ">=1", "python_version >= '3.9'", true},
+		{"pyjwt>=V", "", "", false},
+		{"pyjwt>=Vx", "", "", false},
+		{"pyjwt>=vv2", "", "", false},
+	} {
+		t.Run(tt.spec, func(t *testing.T) {
+			r, ok := parsePEP508(tt.spec)
+			if ok != tt.ok || r.Specifier != tt.specifier || r.Marker != tt.marker {
+				t.Fatalf("parsePEP508 = %+v ok %v, want specifier %q marker %q ok %v", r, ok, tt.specifier, tt.marker, tt.ok)
+			}
+		})
+	}
+	if d, ok := declaredDependency("pyjwt==V2.8.0", "pyproject.toml"); !ok || d.Version != "2.8.0" || !d.Resolved {
+		t.Fatalf("declaredDependency = %+v ok %v, want pyjwt 2.8.0 resolved", d, ok)
+	}
+}

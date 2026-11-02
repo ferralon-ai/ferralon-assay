@@ -583,7 +583,9 @@ func (v *Veto) gitHooksFile(p string) bool {
 	return false
 }
 
-// setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep.
+// setsEnv reports whether src sets an installer variable the lane's EnvKeeps does not keep,
+// by assignment or by an assigning expansion. Env does not match inside ${…}, so the name each
+// assigning expansion sets is checked as the assignment NAME=.
 func (v *Veto) setsEnv(src string) bool {
 	for _, m := range v.spec.Env.FindAllString(src, -1) {
 		name := strings.TrimLeftFunc(m, func(r rune) bool { return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) })
@@ -591,7 +593,52 @@ func (v *Veto) setsEnv(src string) bool {
 			return true
 		}
 	}
+	for _, name := range assignedByExpansion(src) {
+		if v.setsEnv(name + "=") {
+			return true
+		}
+	}
 	return false
+}
+
+// assignedByExpansion returns the name of each expansion in src that assigns its variable when
+// unset or empty: ${NAME:=…}, ${NAME=…} and zsh's ${NAME::=…}. A subscripted ${NAME[…] counts
+// when any ] later on its line is followed by one of those operators, so a subscript may hold
+// any text (${NAME[a[1]]:=…}, ${NAME["k}"]:=…}). Each ${ is read on its own, so an expansion
+// inside another one's subscript or operand is seen too. ${NAME}, ${NAME:-…} and ${NAME-…}
+// only read it.
+func assignedByExpansion(src string) []string {
+	assigns := func(i int) bool {
+		rest := strings.TrimPrefix(strings.TrimPrefix(src[i:], ":"), ":")
+		return strings.HasPrefix(rest, "=")
+	}
+	// closes[i] reports whether a ] followed by an assigning operator lies at or after i on i's line.
+	closes := make([]bool, len(src)+1)
+	for i := len(src) - 1; i >= 0; i-- {
+		switch {
+		case src[i] == '\n':
+		case src[i] == ']' && assigns(i+1):
+			closes[i] = true
+		default:
+			closes[i] = closes[i+1]
+		}
+	}
+	var names []string
+	for i := strings.Index(src, "${"); i >= 0; {
+		j := i + 2
+		for j < len(src) && (src[j] == '_' || src[j] >= 'A' && src[j] <= 'Z' || src[j] >= 'a' && src[j] <= 'z' || j > i+2 && src[j] >= '0' && src[j] <= '9') {
+			j++
+		}
+		if j > i+2 && (j < len(src) && src[j] == '[' && closes[j+1] || assigns(j)) {
+			names = append(names, src[i+2:j])
+		}
+		k := strings.Index(src[i+2:], "${")
+		if k < 0 {
+			break
+		}
+		i += 2 + k
+	}
+	return names
 }
 
 // inGitDir reports whether p lies inside a directory named .git.

@@ -417,10 +417,13 @@ func TestResolveVersions_ExhaustivePinnedClosure(t *testing.T) {
 		{"an edge asks an extra, its dependency unpinned", reqs(pins + celery), false},
 		{"an edge asks an extra the lock does not record", tree(edit("\n[package.optional-dependencies]\nhiredis = [{ name = \"hiredis\" }]\n", ""), map[string]string{"requirements.txt": pins + celery + "hiredis==2.3.2\n"}), false},
 
+		// "===" selects exactly the version string it names, so it pins the release the lock
+		// records under that string.
+		{"an arbitrary-equality pin", reqs(strings.Replace(pins, "click==8.1.7", "click===8.1.7", 1)), true},
+
 		// Lines that are not pins.
 		{"a range", reqs(strings.Replace(pins, "click==8.1.7", "click>=8", 1)), false},
 		{"a wildcard", reqs(strings.Replace(pins, "click==8.1.7", "click==8.1.*", 1)), false},
-		{"an arbitrary-equality pin", reqs(strings.Replace(pins, "click==8.1.7", "click===8.1.7", 1)), false},
 		{"a pin with a second clause", reqs(strings.Replace(pins, "click==8.1.7", "click==8.1.7,!=8.1.6", 1)), false},
 		{"a bare name", reqs(strings.Replace(pins, "click==8.1.7", "click", 1)), false},
 		{"a range in a nested -r", reqs("-r requirements-base.txt\n"+pins, "requirements-base.txt", "click>=8\n"), false},

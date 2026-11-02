@@ -911,6 +911,7 @@ func (l *pyLock) covers(path string, decls pyDecls) bool {
 type reqInstalls struct {
 	root     string
 	installs pipInstalls         // every allowed pip install -r the script surfaces run
+	named    bool                // a script surface names a pip config (pipConfigNamedRE)
 	decls    map[string]*pyDecls // requirements file → what it reads as; nil when it does not
 	includer map[string][]string // requirements file → the requirements files that -r it
 	directed map[string]bool     // files a pyproject.toml or setup.cfg names in a file directive
@@ -922,9 +923,10 @@ type reqInstalls struct {
 }
 
 // newReqInstalls reads every requirements file among manifests and every file they -r, and
-// the file directives of every other manifest.
-func newReqInstalls(root string, manifests []string, installs pipInstalls) *reqInstalls {
-	r := &reqInstalls{root: root, installs: installs, decls: map[string]*pyDecls{}, includer: map[string][]string{},
+// the file directives of every other manifest. configNamed reports whether a script surface
+// names a pip config (pipConfigNamedRE).
+func newReqInstalls(root string, manifests []string, installs pipInstalls, configNamed bool) *reqInstalls {
+	r := &reqInstalls{root: root, installs: installs, named: configNamed, decls: map[string]*pyDecls{}, includer: map[string][]string{},
 		directed: map[string]bool{}, memo: map[string]bool{}, visiting: map[string]bool{}}
 	var queue []string
 	for _, m := range manifests {
@@ -999,9 +1001,11 @@ func (r *reqInstalls) hashMode(f string) bool {
 
 // hashesDisabled reports whether pip may run with --no-require-hashes (pip 26.2 and later),
 // which stops a --hash line from turning hash-checking mode on: a requirements file read here
-// sets it on an option line, or a pip.conf or pip.ini anywhere under root names it (a build can
-// COPY one to where pip reads its config). A config file that cannot be read counts. pip
-// configuration outside the tree is assumed not to set it.
+// sets it on an option line, a pip.conf or pip.ini anywhere under root names it (a build can
+// COPY one to where pip reads its config), or a script surface names a pip config, which may
+// put a file of any name where pip reads it (COPY ci/settings.cfg /etc/pip.conf, a secret
+// mounted at /etc/pip.conf) or set the option (pip config set). A config file that cannot be
+// read counts. pip configuration outside the tree is assumed not to set it.
 func (r *reqInstalls) hashesDisabled() bool {
 	if r.hashOff != nil {
 		return *r.hashOff
@@ -1011,7 +1015,7 @@ func (r *reqInstalls) hashesDisabled() bool {
 		off = off || d != nil && d.hashOff
 	}
 	if !off {
-		off = pipConfigDisablesHashes(r.root)
+		off = r.named || pipConfigDisablesHashes(r.root)
 	}
 	r.hashOff = &off
 	return off

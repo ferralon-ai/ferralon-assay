@@ -33,12 +33,12 @@ import (
 // withholds as it would every pin: pip after an allowed self-upgrade (pipSelfUpgrade), and in
 // every build the distributions an interpreter or venv seeds (seededDistributions). No
 // self-upgrade is allowed when root holds a pip config file (pipConfigInTree) or a script
-// surface names one (pipConfigNamedRE). A script surface that names a uv config
+// surface names one (pipConfigNamedRE); configNamed reports the second. A script surface that names a uv config
 // (uvConfigNamedRE) withholds when an allowed uv sync runs, and one that names a poetry or pdm
 // config (toolConfigNamedRE) when an allowed poetry install or pdm sync runs. A poetry or pdm
 // config in the tree is read when it sets only that tool's settings (toolConfigClean). unrecognised is where a file the rule does not read as a surface runs an
 // installer (scriptsurface.Veto.Unrecognised), or "".
-func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string) {
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, configNamed bool) {
 	return scanSurfaces(root, nil)
 }
 
@@ -61,7 +61,7 @@ type runFile struct {
 
 // scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip
 // install the script surfaces run that names what it installs (scriptRun).
-func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string) {
+func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, configNamed bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -153,7 +153,7 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 	for _, n := range seededDistributions {
 		tooling[n] = true
 	}
-	return manifests, unread || scriptWithheld, scriptWithheld, installs, poetry, tooling, veto.Unrecognised()
+	return manifests, unread || scriptWithheld, scriptWithheld, installs, poetry, tooling, veto.Unrecognised(), configNamed
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

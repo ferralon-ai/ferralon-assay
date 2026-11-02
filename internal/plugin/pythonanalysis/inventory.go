@@ -258,7 +258,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // read, or an allowed pip self-upgrade may each put such a package in place, so any of them
 // leaves every package installed.
 func inventoryUninstalled(buildDir string) func(path string) map[string]bool {
-	_, _, scriptWithheld, installs, poetry, tooling, unrecognised := versionSurfaces(buildDir)
+	_, _, scriptWithheld, installs, poetry, tooling, unrecognised, _ := versionSurfaces(buildDir)
 	if scriptWithheld || unrecognised != "" || len(installs) > 0 || len(tooling) > 0 {
 		return func(string) map[string]bool { return nil }
 	}

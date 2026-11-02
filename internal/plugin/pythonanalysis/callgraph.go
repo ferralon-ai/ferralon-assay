@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -416,45 +417,73 @@ func (p *program) withAliases(leaves, paths []string) []string {
 // aliasLeaves follows an import path ("pkg/g") through re-exports to a fixpoint: its leaf
 // names a function, and when the module it is imported from binds that leaf by a first-party
 // import itself, the path that import names is followed in turn. When a package on the path
-// binds its submodule's name to another module by first-party import, the path through that
-// module is followed too: the attribute holds whichever binding ran last. Each path is
-// visited once, so an import cycle ends.
+// binds its submodule's name to another path by first-party import, itself or through its star
+// imports, the path through that binding is followed too: the attribute holds whichever binding
+// ran last. A path an import names is a module and its attribute, which an import finds in
+// sys.modules whatever a package binds, so lookups resume at that attribute. The names left to
+// look up never grow and are drawn from the bindings' leaves and the path's own tail, and each
+// path is visited once per lookup start, so the walk ends.
 func (p *program) aliasLeaves(path string) []string {
 	if out, ok := p.leafMemo[path]; ok {
 		return out
 	}
 	visited := map[string]bool{}
 	var out []string
-	var walk func(string)
-	walk = func(path string) {
-		if visited[path] {
+	var walk func(path string, from int)
+	walk = func(path string, from int) {
+		key := path + "\x00" + strconv.Itoa(from)
+		if visited[key] {
 			return
 		}
-		visited[path] = true
+		visited[key] = true
 		mod, leaf := parentModule(path), path[strings.LastIndexByte(path, '/')+1:]
 		if !slices.Contains(out, leaf) {
 			out = append(out, leaf)
 		}
 		for _, i := range p.byModule[mod] {
 			for _, next := range p.files[i].fpBinds[""][leaf] {
-				walk(next)
+				walk(next, strings.Count(next, "/"))
 			}
 		}
 		segs := strings.Split(path, "/")
-		for j := 1; j < len(segs)-1; j++ {
+		for j := from; j < len(segs)-1; j++ {
 			pkg, sub, rest := strings.Join(segs[:j], "/"), segs[j], strings.Join(segs[j+1:], "/")
 			for _, i := range p.byModule[pkg] {
-				g := &p.files[i]
-				for _, b := range g.fpBinds[""][sub] {
-					if b != pkg+"/"+sub && b != g.module+"/"+sub {
-						walk(b + "/" + rest)
-					}
+				for _, b := range p.subBinds(&p.files[i], pkg, sub) {
+					walk(b+"/"+rest, strings.Count(b, "/"))
 				}
 			}
 		}
 	}
-	walk(path)
+	walk(path, 1)
 	p.leafMemo[path] = out
+	return out
+}
+
+// subBinds lists the paths a package file g binds its submodule's name sub to by first-party
+// import, itself or through its star imports followed transitively, other than that submodule.
+func (p *program) subBinds(g *fileParse, pkg, sub string) []string {
+	self, own := pkg+"/"+sub, g.module+"/"+sub
+	var out []string
+	seen := map[string]bool{}
+	var binds func(h *fileParse)
+	binds = func(h *fileParse) {
+		for _, b := range h.fpBinds[""][sub] {
+			if b != self && b != own && !slices.Contains(out, b) {
+				out = append(out, b)
+			}
+		}
+		for _, star := range h.starPaths {
+			if seen[star] {
+				continue
+			}
+			seen[star] = true
+			for _, k := range p.byModule[star] {
+				binds(&p.files[k])
+			}
+		}
+	}
+	binds(g)
 	return out
 }
 

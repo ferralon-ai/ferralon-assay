@@ -61,6 +61,10 @@ func TestCallGraph_ReexportRebinding(t *testing.T) {
 			extra: map[string]string{"pkg/x.py": "def g(x):\n    return x\n\nfrom .v import vuln\ng = vuln\n"}},
 		{name: "qualified through a package that binds the module twice", c: "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n", callee: "pkg.sub.a.g", listed: true, edgeless: true, vulnWins: true, extra: sub},
 		{name: "qualified through a from-imported package that binds the module twice", c: "from pkg import sub\nimport pkg.sub.a\n\ndef go():\n    return sub.a.g(1)\n", callee: "sub.a.g", listed: true, edgeless: true, vulnWins: true, extra: sub},
+		{name: "qualified through a package whose star import binds the module again", c: "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n", callee: "pkg.sub.a.g", listed: true, edgeless: true, vulnWins: true,
+			extra: map[string]string{"pkg/sub/__init__.py": "from . import a\nfrom .y import *\n", "pkg/sub/a.py": "from ..impl import f as g\n", "pkg/sub/y.py": "from . import x as a\n", "pkg/sub/x.py": "from ..v import vuln as g\n"}},
+		{name: "qualified through a package that binds the module to another module's attribute", c: "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n", callee: "pkg.sub.a.g", listed: true, edgeless: true, vulnWins: true,
+			extra: map[string]string{"pkg/sub/__init__.py": "from . import a\nfrom .x import mod as a\n", "pkg/sub/a.py": "from ..impl import f as g\n", "pkg/sub/x.py": "from .. import w as mod\n", "pkg/w.py": "from .v import vuln as g\n"}},
 		{name: "names computed in the module", a: reexport + "from .v import vuln\nglobals().update(g=vuln)\n", c: bare, callee: "g", listed: true},
 		{name: "class defined after the re-export", a: reexport + "class g:\n    pass\n", c: bare, callee: "g", listed: true, edgeless: true},
 		{name: "namespace stored through from another module", a: reexport, c: bare, callee: "g", listed: true,
@@ -152,4 +156,24 @@ func TestCallGraph_ReexportRebindingSrcLayout(t *testing.T) {
 		}
 	}
 	t.Fatalf("a.g(1) not listed; unresolved %v", res.Unresolved)
+}
+
+// TestCallGraph_SubmoduleBoundToItsOwnAttribute: a package that binds its submodule's name to
+// that submodule's attribute of the same name (from .config import config) is a common shape;
+// a site through the submodule completes, and still reaches the submodule's function.
+func TestCallGraph_SubmoduleBoundToItsOwnAttribute(t *testing.T) {
+	for _, c := range []string{
+		"from pkg.config import load\n\ndef go():\n    return load(1)\n",
+		"import pkg.config\n\ndef go():\n    return pkg.config.load(1)\n",
+	} {
+		res := mustCallGraph(t, map[string]string{
+			"pkg/__init__.py": "from .config import config\n",
+			"pkg/config.py":   "config = {}\n\ndef load(x):\n    return x\n",
+			"c.py":            c,
+		})
+		goC, load := funcSCIP("c", nil, "go", 0), funcSCIP("pkg/config", nil, "load", 1)
+		if !hasEdge(res.Edges, goC, load) && !symbolSet(res.Escaped)[load] {
+			t.Fatalf("%q: %s unreachable; edges %v, escaped %v", c, load, res.Edges, res.Escaped)
+		}
+	}
 }

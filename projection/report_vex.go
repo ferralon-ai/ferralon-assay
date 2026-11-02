@@ -45,6 +45,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
@@ -87,6 +88,7 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		if action != "" {
 			stmt.ActionStatement = action
 		}
+		stmt.StatusNotes = annotationsStatement(f.Annotations)
 		stmts = append(stmts, stmt)
 	}
 
@@ -253,6 +255,16 @@ func reportDocSlug(r report.Report) string {
 		return r.Provenance.CommitSHA
 	}
 	return "report"
+}
+
+// annotationsStatement renders the assumptions the analysis made in reaching a verdict, one
+// sentence each, empty when it made none.
+func annotationsStatement(annotations []plugin.Annotation) string {
+	var out []string
+	for _, a := range annotations {
+		out = append(out, "This analysis assumes: "+a.Detail+".")
+	}
+	return strings.Join(out, " ")
 }
 
 // assumptionsStatement renders the assumptions a not_exploitable holds under as one sentence, empty

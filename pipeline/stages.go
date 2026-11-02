@@ -31,6 +31,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/checkout/gomodtree"
 	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
@@ -247,6 +248,11 @@ func PutArtifact(store artifact.Store, c *assessment.Assessment, producedBy stri
 	if err != nil {
 		return artifact.Ref{}, err
 	}
+	return putPayload(store, c, producedBy, t, descriptor, payload)
+}
+
+// putPayload is PutArtifact for a payload that is already encoded.
+func putPayload(store artifact.Store, c *assessment.Assessment, producedBy string, t artifact.Type, descriptor string, payload []byte) (artifact.Ref, error) {
 	return store.Put(&artifact.Artifact{
 		AssessmentID: c.ID,
 		Type:         t,
@@ -1641,7 +1647,8 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		// Persist WHY the resolution was incomplete (e.g. "no_manifest"): a degraded resolve leaves
 		// the version empty, which downstream is indistinguishable from "this codebase has no such
 		// dependency". Carrying the reason is what makes an unresolvable scan distinguishable from a
-		// clean one at the customer surface — the flags are disclosure only and gate no verdict.
+		// clean one at the customer surface. They hold a refutation only while the version resolved
+		// anyway; an unresolved version is its own undetermined reason (trigger withoutVersionLimits).
 		var flags []string
 		if !vr.Partiality.Complete {
 			flags = append(flags, vr.Partiality.Reasons...)
@@ -1676,6 +1683,9 @@ type depVersions struct {
 	// Presence is the first resolved copy, which maliciousPresence matches against. It stands
 	// without agreement, so it is never read by the not-affected path.
 	Presence string
+	// Annotations are the assumptions the resolver's answer rests on (plugin.Annotation). They
+	// qualify the answer without making it partial, so they gate nothing here.
+	Annotations []plugin.Annotation
 }
 
 // singleVersion is a dependency whose source can carry one version only (a go.mod require, the
@@ -1691,7 +1701,7 @@ func singleVersion(v string) depVersions {
 // MatchesComplete over a complete scan and every copy it lists is resolved; Match may still be
 // unresolved, as it is when the copies disagree.
 func depVersionsOf(vr plugin.DependencyVersionResult) depVersions {
-	dep := depVersions{Found: vr.Found}
+	dep := depVersions{Found: vr.Found, Annotations: vr.Annotations}
 	if vr.Found && vr.Match.Resolved {
 		dep.Version = vr.Match.Version
 		dep.Versions = []string{dep.Version}
@@ -1873,26 +1883,32 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// resolved BEFORE dependency-version resolution because the version axis consumes it: for a
 	// go-toolchain-scheme advisory this fact IS resolved_version.
 	//
-	// Go-only by construction. Both floors are go.mod directives and both exact tiers are statements
+	// Go-only by construction. The floor is a go.mod directive and the exact tiers are statements
 	// about a Go build environment, so resolving this for a JS/Java/Python/.NET subject would label
 	// the RUNNER's Go as the subject's — the same category error the fact exists to close. Other
 	// ecosystems' runtime versions (e.g. a node engine range) live in RuntimeSpec{Name:"node"}, not here.
 	toolchain := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
+	goFloor := ""
 	if language == "go" {
 		goDirective := goVersion
 		if goWork.File != "" {
 			// A workspace build runs under the go.work's go and toolchain lines and ignores its
-			// modules' own toolchain lines, so those are what bound its toolchain.
+			// modules' own toolchain lines, so those are what bound its toolchain and its floor.
 			goDirective, toolchainDirective = goWork.Directives()
 		}
-		toolchain = resolveToolchainFact(toolchainInputs{
-			subjectDeclared:    s.subjectGoVersion,
-			ciObserved:         s.ciGoVersion,
-			trustCIObserved:    s.trustCIGoVersion,
-			buildResolved:      buildToolchain,
-			toolchainDirective: toolchainDirective,
-			goDirective:        goDirective,
-		})
+		cands := ToolchainCandidates{
+			SubjectDeclared:    s.subjectGoVersion,
+			CIObserved:         s.ciGoVersion,
+			TrustCIObserved:    s.trustCIGoVersion,
+			BuildResolved:      buildToolchain,
+			ToolchainDirective: toolchainDirective,
+			GoDirective:        goDirective,
+			BazelWorkspace:     BazelWorkspaceAbove(buildDir),
+		}
+		toolchain = ResolveToolchain(cands)
+		if !cands.BazelWorkspace {
+			goFloor = goLineFloor(toolchainInputs{toolchainDirective: cands.ToolchainDirective, goDirective: cands.GoDirective})
+		}
 	}
 
 	src := s.src
@@ -1904,6 +1920,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		resolved        depVersions
 		alsoPresent     []presentPackage
 		partialityFlags []string
+		// annotations is every assumption a resolution of any affected package rested on: an
+		// install command the lane assumed inactive qualifies every version it read in the scan.
+		annotations []plugin.Annotation
 	)
 	// presenceVersion is the version maliciousPresence matches against: the package selection
 	// below run over each package's first resolved copy rather than its agreed Match. It is
@@ -1927,6 +1946,11 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 				return dep, nil, true, nil
 			}
 			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, goWork, language, module, coordinate, scheme, toolchain)
+			for _, a := range dep.Annotations {
+				if !slices.Contains(annotations, a) {
+					annotations = append(annotations, a)
+				}
+			}
 			return dep, flags, false, err
 		}
 		presenceSelected := false
@@ -2024,12 +2048,18 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		GoVersion       string   `json:"go_version,omitempty"`
 		BuildCommand    string   `json:"build_command,omitempty"`
 		PartialityFlags []string `json:"partiality_flags,omitempty"`
+		// Annotations are the assumptions the resolved versions rest on. Unlike PartialityFlags
+		// they leave the resolution complete; trigger discloses them on every verdict they qualify.
+		Annotations []plugin.Annotation `json:"annotations,omitempty"`
 		// Toolchain is the subject's Go toolchain resolved to one bounded fact. Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
 		// stayed dark. Read back by Toolchain() (the version axis, and the scan-level disclosure
 		// trigger/assess.go emits for a toolchain advisory it could not adjudicate).
 		Toolchain ToolchainFact `json:"toolchain"`
+		// GoFloor is the go.mod `go` line when it binds (goLineFloor): no build of the subject runs a
+		// Go below it. Read back by toolchainFloor for the reachability request.
+		GoFloor string `json:"go_floor,omitempty"`
 		// SelectedModule/SelectedCoordinate name the v3 affected_packages[] element select-by-target
 		// picked (the package the target depends on). They are the join key extractSelectedPackage
 		// uses to read the selected element off the normalized-advisory artifact. Both empty ⇒ scalar
@@ -2059,7 +2089,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		GoVersion:          goVersion,
 		BuildCommand:       buildCommand,
 		PartialityFlags:    partialityFlags,
+		Annotations:        annotations,
 		Toolchain:          toolchain,
+		GoFloor:            goFloor,
 		SelectedModule:     selectedModule,
 		SelectedCoordinate: selectedCoordinate,
 		Root:               isRoot,
@@ -2067,6 +2099,43 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	}
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeInventory, "codebase inventory", inv)
 	return err
+}
+
+// BazelWorkspaceAbove reports whether a Bazel workspace marker file sits in moduleRoot or any
+// directory above it up to the git top-level of moduleRoot, inclusive, and never above it; it is false
+// when that top-level cannot be determined. Bazel (rules_go) takes its Go SDK from the workspace, not
+// from go.mod, so the go line is no floor on the release a Bazel build compiles with.
+func BazelWorkspaceAbove(moduleRoot string) bool {
+	if moduleRoot == "" {
+		return false
+	}
+	top, err := gitOutput(context.Background(), moduleRoot, "rev-parse", "--show-toplevel")
+	if err != nil || top == "" {
+		return false
+	}
+	top, err = filepath.EvalSymlinks(top)
+	if err != nil {
+		return false
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Clean(moduleRoot))
+	if err != nil {
+		return false
+	}
+	for {
+		for _, marker := range []string{"MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"} {
+			if fi, err := os.Stat(filepath.Join(dir, marker)); err == nil && !fi.IsDir() {
+				return true
+			}
+		}
+		if dir == top {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // moduleVersionFromGoMod parses buildDir/go.mod and returns the version the build selects for
@@ -2503,7 +2572,21 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 // list the go command could not compute — forces the caller to fail OPEN, because absence is only
 // PROVABLE against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
 // manifest_membership.go.
-func goModRequires(ctx context.Context, buildDir string, ws GoWorkspace, module string) (present bool, manifestKnown bool) {
+//
+// Those manifests are the whole build only when no other module of the checkout can build against
+// module, so a module none of them declares is unknown, not absent, when:
+//   - the build runs under ws (its effective GOWORK is on and names ws.File) and the go command's
+//     build list for it cannot be computed. A computed list that holds the module is presence; one
+//     that does not is absence, since the go command computes it over the whole workspace graph,
+//     members below go 1.17 included;
+//   - the build runs with GOWORK=off and a go.work sits in buildDir: the walk leaves the modules it
+//     uses out, and nothing here reads what their builds draw on;
+//   - nested reports a module outside buildDir's module graph that may require it (gomodtree.Tree's
+//     MayRequire: one whose go.mod names it, declares go below 1.17 or does not parse), or a walk that
+//     could not read the whole tree. This holds under a workspace too.
+//
+// nested is called only when no manifest declares module.
+func goModRequires(ctx context.Context, buildDir string, ws GoWorkspace, module string, nested func() gomodtree.Tree) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
 	}
@@ -2550,19 +2633,23 @@ func goModRequires(ctx context.Context, buildDir string, ws GoWorkspace, module 
 			return true, true
 		}
 	}
-	if ws.File == "" {
-		return false, true
-	}
-	// Under a go.work no go.mod states what is in the build: a dependency the workspace selects at
-	// a higher version can bring in a module none of them lists. Only the build list decides.
-	mods, err := workspaceBuildList(ctx, buildDir, ws)
-	if err != nil {
+	if ws.File != "" {
+		// Under a go.work no go.mod states what is in the build: a dependency the workspace selects at
+		// a higher version can bring in a module none of them lists. Only the build list decides.
+		mods, err := workspaceBuildList(ctx, buildDir, ws)
+		if err != nil {
+			return false, false
+		}
+		for _, m := range mods {
+			if !m.Main && (module == m.Path || strings.HasPrefix(module, m.Path+"/")) {
+				return true, true
+			}
+		}
+	} else if fi, err := os.Stat(filepath.Join(buildDir, "go.work")); err == nil && !fi.IsDir() {
 		return false, false
 	}
-	for _, m := range mods {
-		if !m.Main && (module == m.Path || strings.HasPrefix(module, m.Path+"/")) {
-			return true, true
-		}
+	if nested().MayRequire(module) {
+		return false, false
 	}
 	return false, true
 }
@@ -2863,17 +2950,15 @@ func Toolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
 // analyzer's toolchain, and they are all the same thing to a verdict: not established. A reader that
 // wants to tell them apart reads the ToolchainScan block itself.
 func SubjectToolchainScanned(store artifact.Store, caseID string) bool {
-	arts, err := store.Query(caseID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
+	rec, ok, err := Reachability(store, caseID)
+	if err != nil || !ok {
 		return false
 	}
-	var payload struct {
-		ToolchainScan ToolchainScan `json:"toolchain_scan"`
-	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
+	ts, err := rec.ToolchainScan()
+	if err != nil {
 		return false
 	}
-	return payload.ToolchainScan.Subject
+	return ts.Subject
 }
 
 // ToolchainSubject reports whether the advisory under assessment is keyed to the Go
@@ -3353,6 +3438,23 @@ func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID str
 	return fact.Version
 }
 
+// toolchainFloor returns the subject's binding go line (goLineFloor) as codebase_inventory recorded
+// it, or "" when it recorded none. It only ever narrows the files the analyzer reads as compiled, so
+// unlike requestedToolchain it needs neither the flag nor an exact fact.
+func (s reachabilityIngress) toolchainFloor(store artifact.Store, caseID string) string {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return ""
+	}
+	var inv struct {
+		GoFloor string `json:"go_floor"`
+	}
+	if json.Unmarshal(arts[0].Payload, &inv) != nil {
+		return ""
+	}
+	return inv.GoFloor
+}
+
 // entrypointsFor is the run's library-entrypoints statement with its paths based at the checkout
 // root, which for a nested module lies above the build directory. A record with no checkout root
 // leaves Base empty, so the lane reads the paths from the build directory.
@@ -3387,7 +3489,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 
 	depCache := s.deps.cacheFor(store, c.ID)
-	cg, err := s.plugin.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache})
+	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache})
 	if err != nil {
 		return err
 	}
@@ -3410,6 +3512,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		VulnID:             vulnID,
 		Symbols:            sinks,
 		GoToolchain:        requestedToolchain,
+		GoToolchainFloor:   s.toolchainFloor(store, c.ID),
 		Package:            admittedPackagePURL(store, c.ID),
 		DependencyCache:    depCache,
 		LibraryEntrypoints: entrypoints,
@@ -3440,15 +3543,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// mis-attribution). The CallGraph leg is unchanged (guard discovery reads it).
 	reachOut := reach
 	reachOut.Paths = paths
-	reachPayload := struct {
-		Reachability plugin.ReachabilityResult `json:"reachability"`
-		CallGraph    plugin.CallGraphResult    `json:"call_graph"`
-		// ToolchainScan records which Go toolchain this analysis actually ran under.
-		// It is the fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass
-		// itself off as a subject scan.
-		ToolchainScan ToolchainScan `json:"toolchain_scan"`
-	}{Reachability: reachOut, CallGraph: cg, ToolchainScan: toolchainScan}
-	reachRef, err := PutArtifact(store, c, s.Name(), artifact.TypeReachability, "reachability (resolved)", reachPayload)
+	reachRef, err := putReachability(store, c, s.Name(), reachOut, cg, toolchainScan)
 	if err != nil {
 		return err
 	}
@@ -3503,38 +3598,96 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	return nil
 }
 
+// reachabilityPayload is the resolved reachability artifact's payload, byte for byte what json.Marshal
+// makes of
+//
+//	struct {
+//		Reachability  plugin.ReachabilityResult `json:"reachability"`
+//		CallGraph     plugin.CountedCallGraph   `json:"call_graph"`
+//		ToolchainScan ToolchainScan             `json:"toolchain_scan"`
+//	}
+//
+// except that the call graph is appended from the view's counted encoding rather than re-encoded for
+// every advisory. The leg carries the declined sites and escaped symbols as counts: every
+// candidate's artifact holds a copy, and a dynamic-language monorepo lists a site per dynamic
+// call. ToolchainScan records which Go toolchain this analysis actually ran under. It is the fact
+// SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
+// subject scan.
+func reachabilityPayload(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) ([]byte, error) {
+	b, _, _, err := encodeReachability(reach, cg, ts)
+	return b, err
+}
+
+// encodeReachability is reachabilityPayload that also returns the payload's reachability and
+// toolchain_scan values, which share no memory with the payload.
+func encodeReachability(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (payload, reachLeg, tsLeg []byte, err error) {
+	r, err := json.Marshal(reach)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	t, err := json.Marshal(ts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	b := append([]byte(`{"reachability":`), r...)
+	b = append(b, `,"call_graph":`...)
+	if b, err = cg.AppendCountedJSON(b); err != nil {
+		return nil, nil, nil, err
+	}
+	b = append(b, `,"toolchain_scan":`...)
+	b = append(b, t...)
+	return append(b, '}'), r, t, nil
+}
+
+// putReachability stores the resolved reachability artifact. When the store takes seeds and cg is
+// the decode of its own encoding, it also seeds the artifact's ReachabilityRecord from the values
+// the payload was encoded from, so readers neither split the payload nor decode the run's graph
+// again for every case. The seed holds the full in-memory graph, Unresolved and Escaped lists
+// included, while the payload carries their counts; a record's readers see only the partiality,
+// edges and roots, which both carry alike.
+func putReachability(store artifact.Store, c *assessment.Assessment, producedBy string, reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (artifact.Ref, error) {
+	payload, reachLeg, tsLeg, err := encodeReachability(reach, cg, ts)
+	if err != nil {
+		return artifact.Ref{}, err
+	}
+	ref, err := putPayload(store, c, producedBy, artifact.TypeReachability, "reachability (resolved)", payload)
+	if err != nil {
+		return ref, err
+	}
+	if seeder, ok := store.(artifact.Seeder); ok && cg.FromEncoding() {
+		seeder.Seed(ref.ID, reachabilityViewKey, seededReachability(reachLeg, tsLeg, cg))
+	}
+	return ref, nil
+}
+
 // firstPartyReachPaths derives (ingress→sink) ReachPaths for a FIRST-PARTY sink by walking the
 // static CallGraph backward from the resolved sink toward an entry point. Soundness / inv.5: this
 // asserts only STRUCTURAL reachability — a candidate, never a verdict and never proof.
-func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressResult, sink string) []plugin.ReachPath {
-	if sink == "" || len(cg.Edges) == 0 {
+func firstPartyReachPaths(cg plugin.CallGraphView, ingresses plugin.IngressResult, sink string) []plugin.ReachPath {
+	if sink == "" || cg.EdgeCount() == 0 {
 		return nil
 	}
 
 	// The BFS runs over SCIP-id keys, reproducing the pre-Symbol identity exactly: CallEdge
 	// endpoints were bare SCIP ids, and the sink parameter is a SCIP id (resolvedSinkSCIP), so
-	// keying the graph on .SCIP is the same graph the old string-typed code built. symBySCIP
-	// carries the structured Symbol for each node so the ReachPath.Sink/Ingress/Trace fields —
-	// now plugin.Symbol — are reconstructed at the return boundary.
-	symBySCIP := make(map[string]plugin.Symbol)
-	callers := make(map[string][]string, len(cg.Edges))
-	for _, e := range cg.Edges {
-		symBySCIP[e.Caller.SCIP] = e.Caller
-		symBySCIP[e.Callee.SCIP] = e.Callee
-		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
-	}
-
-	ingressSyms := make(map[string]struct{}, len(ingresses.Ingresses))
+	// keying the graph on .SCIP is the same graph the old string-typed code built. The structured
+	// Symbol for each node reconstructs the ReachPath.Sink/Ingress/Trace fields — now
+	// plugin.Symbol — at the return boundary. The graph's reverse-edge index is built once per
+	// graph, not per sink; only the ingresses are overlaid here. A root's Symbol beats an
+	// ingress's, which beats an edge endpoint's.
+	ingressSyms := make(map[string]plugin.Symbol, len(ingresses.Ingresses))
 	for _, in := range ingresses.Ingresses {
 		if in.Symbol.SCIP != "" {
-			symBySCIP[in.Symbol.SCIP] = in.Symbol
-			ingressSyms[in.Symbol.SCIP] = struct{}{}
+			ingressSyms[in.Symbol.SCIP] = in.Symbol
 		}
 	}
-	roots := make(map[string]struct{}, len(cg.Roots))
-	for _, r := range cg.Roots {
-		symBySCIP[r.SCIP] = r
-		roots[r.SCIP] = struct{}{}
+	symOf := func(id string) plugin.Symbol {
+		if !cg.IsRoot(id) {
+			if s, ok := ingressSyms[id]; ok {
+				return s
+			}
+		}
+		return cg.Symbol(id)
 	}
 
 	type node struct {
@@ -3548,20 +3701,19 @@ func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressRes
 		queue = queue[1:]
 
 		_, isIngress := ingressSyms[cur.sym]
-		_, isRoot := roots[cur.sym]
-		if isIngress || isRoot {
+		if isIngress || cg.IsRoot(cur.sym) {
 			trace := make([]plugin.Symbol, len(cur.path))
 			for i := range cur.path {
-				trace[i] = symBySCIP[cur.path[len(cur.path)-1-i]]
+				trace[i] = symOf(cur.path[len(cur.path)-1-i])
 			}
 			var ingress plugin.Symbol
 			if isIngress {
-				ingress = symBySCIP[cur.sym]
+				ingress = symOf(cur.sym)
 			}
-			return []plugin.ReachPath{{Sink: symBySCIP[sink], Ingress: ingress, Trace: trace}}
+			return []plugin.ReachPath{{Sink: symOf(sink), Ingress: ingress, Trace: trace}}
 		}
 
-		for _, caller := range callers[cur.sym] {
+		for caller := range cg.Callers(cur.sym) {
 			if _, seen := visited[caller]; seen {
 				continue
 			}
@@ -3834,13 +3986,9 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 		}
 	}
 
-	if arts, err := store.Query(c.ID, artifact.TypeReachability); err != nil {
+	if rec, ok, err := Reachability(store, c.ID); err != nil {
 		return err
-	} else if len(arts) > 0 {
-		var full struct {
-			Reachability plugin.ReachabilityResult `json:"reachability"`
-			CallGraph    plugin.CallGraphResult    `json:"call_graph"`
-		}
+	} else if ok {
 		// Partiality is harvested whether or not any path was found, and BEFORE the
 		// path-count branch. Harvesting it only on len(Paths) > 0 dropped the disclosure
 		// on precisely the case it exists for: a reachability pass that resolved nothing
@@ -3850,22 +3998,20 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 		// The call graph's limits are harvested beside reachability's: a lane may declare a
 		// step that did not run only on its graph, and that limit must hold the verdict
 		// whether or not the graph has edges.
-		unmarshalled := json.Unmarshal(arts[0].Payload, &full) == nil
+		reach, reachErr := rec.Result()
+		cg, cgErr := rec.CallGraph()
+		unmarshalled := reachErr == nil && cgErr == nil
 		if unmarshalled {
-			payload.PartialityFlags = append(payload.PartialityFlags, full.Reachability.Partiality.Reasons...)
-			payload.PartialityFlags = append(payload.PartialityFlags, full.CallGraph.Partiality.Reasons...)
-			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.Reachability.Partiality.Scoped)
-			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.CallGraph.Partiality.Scoped)
+			cgPartiality := cg.Partiality()
+			payload.PartialityFlags = append(payload.PartialityFlags, reach.Partiality.Reasons...)
+			payload.PartialityFlags = append(payload.PartialityFlags, cgPartiality.Reasons...)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, reach.Partiality.Scoped)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, cgPartiality.Scoped)
 		}
-		if unmarshalled && len(full.Reachability.Paths) > 0 {
-			payload.ReachablePathCount = len(full.Reachability.Paths)
-		} else {
-			var stub struct {
-				Reachable bool `json:"reachable"`
-			}
-			if json.Unmarshal(arts[0].Payload, &stub) == nil && stub.Reachable {
-				payload.ReachablePathCount = 1
-			}
+		if unmarshalled && len(reach.Paths) > 0 {
+			payload.ReachablePathCount = len(reach.Paths)
+		} else if reachable, err := rec.StubReachable(); err == nil && reachable {
+			payload.ReachablePathCount = 1
 		}
 	}
 

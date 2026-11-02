@@ -8,8 +8,7 @@ package pythonanalysis
 //
 //   - every manifest the resolver discovers parses, and at least one is a complete,
 //     edge-bearing lockfile (uv.lock, pdm.lock, poetry.lock), each of which records the full
-//     resolved closure; a poetry.lock's lexical advisory read and TOML decode agree on its
-//     package set;
+//     resolved closure;
 //   - the coordinate is not a first-party project (a uv workspace root or member, a pyproject
 //     [project] or [tool.poetry] name, a setup.cfg [metadata] name, a setup.py literal name),
 //     and every setup.py names its project literally: lockfiles omit the project itself, so its
@@ -43,8 +42,11 @@ package pythonanalysis
 // Build-time requirements ([build-system].requires, setup_requires) are declarations, found on
 // the advisory path like any other, but not part of coverage: build-isolation environments are
 // not runtime installs, and no lockfile records them. A package the build backend's own
-// dependency closure brings into that environment, an interpreter-seeded pip, and a
-// Dockerfile RUN pip install are outside what Exhaustive covers.
+// dependency closure brings into that environment, and a Dockerfile RUN pip install, are
+// outside what Exhaustive covers.
+//
+// pip, setuptools and wheel are never Exhaustive (seededDistributions): the interpreter the
+// build runs on, or a venv it creates, may hold them at versions no lockfile records.
 
 import (
 	"os"
@@ -54,16 +56,14 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
-	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // manifestSetCovers reports whether the parsed manifests (found under root) meet every condition
 // above but the last: the complete lockfiles govern every manifest and every install surface is
 // read, so the lockfiles enumerate every package an install from them creates. Exhaustive adds
-// installedCopyPresent(root, coord, true). perFile maps each manifest path to what
-// parseManifestCoverage returned for it. The cheap manifest checks run before the walk of the
-// build dir.
-func manifestSetCovers(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool, installs pipInstalls) bool {
+// installedCopyPresent(root, coord, true). The cheap manifest checks run before the walk of the
+// build dir. configNamed reports whether a script surface names a pip config (pipConfigNamedRE).
+func manifestSetCovers(root, coordinate string, manifests []string, parseFailed bool, installs pipInstalls, configNamed bool) bool {
 	if parseFailed || len(manifests) == 0 {
 		return false
 	}
@@ -76,9 +76,6 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 		if !completeLockfiles[filepath.Base(m)] {
 			continue
 		}
-		if filepath.Base(m) == "poetry.lock" && !poetryLockConsistent(m, perFile[m]) {
-			return false
-		}
 		l, ok := readPyLock(m)
 		if !ok {
 			return false
@@ -88,7 +85,7 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 	if len(locks) == 0 {
 		return false
 	}
-	reqs := newReqInstalls(root, manifests, installs)
+	reqs := newReqInstalls(root, manifests, installs, configNamed)
 	for _, m := range manifests {
 		if completeLockfiles[filepath.Base(m)] {
 			continue
@@ -101,7 +98,7 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 		if !ok {
 			return false
 		}
-		if isRequirementsName(filepath.Base(m)) && (len(decls.reqs) > 0 || len(decls.nested) > 0) && !reqs.refused(m) {
+		if isRequirementsName(filepath.Base(m)) && (len(decls.reqs) > 0 || len(decls.nested) > 0) && !reqs.refused(m) && !reqs.closed(m, governing) {
 			return false
 		}
 		for _, l := range governing {
@@ -179,37 +176,6 @@ func installedCopyPresent(root, coord string, sitePackages bool) bool {
 
 // completeLockfiles are the formats whose [[package]] set is the full resolved closure.
 var completeLockfiles = map[string]bool{"uv.lock": true, "pdm.lock": true, "poetry.lock": true}
-
-// poetryLockConsistent reports whether poetry.lock decodes as TOML and the lexical advisory
-// read (lexical) found exactly the package names the decode does. The advisory path's Found is
-// computed from the lexical read, so a package it missed would otherwise read as absent.
-func poetryLockConsistent(path string, lexical []plugin.ResolvedDependency) bool {
-	data, err := readRegular(path)
-	if err != nil {
-		return false
-	}
-	reqs, err := parsePoetryLockSelected(data, nil, nil)
-	if err != nil {
-		return false
-	}
-	want := map[string]bool{}
-	for _, r := range reqs {
-		want[normalizePyCoordinate(r.Name)] = true
-	}
-	got := map[string]bool{}
-	for _, d := range lexical {
-		got[normalizePyCoordinate(d.Coordinate)] = true
-	}
-	if len(got) != len(want) {
-		return false
-	}
-	for n := range want {
-		if !got[n] {
-			return false
-		}
-	}
-	return true
-}
 
 // firstPartyNames collects the normalized names of the projects the manifests define. ok is
 // false when a project's name cannot be read without executing it (a setup.py with no literal
@@ -380,18 +346,33 @@ func archiveNames(file, coord string) bool {
 	return false
 }
 
-// includeTarget returns the file an include line names, in any of pip's spellings
-// (-r f, -rf, -r=f, --requirement f, --requirement=f, and the -c/--constraint equivalents).
-func includeTarget(line string) (string, bool) {
-	for _, flag := range []string{"--requirement", "--constraint", "-r", "-c"} {
-		rest, ok := strings.CutPrefix(line, flag)
+// includeTarget returns the file named by an include or constraint option at words[i], in any
+// of pip's spellings (-r f, -rf, -r=f, --requirement f, --requirement=f, and the
+// -c/--constraint equivalents).
+func includeTarget(words []string, i int) (string, bool) {
+	return optionValue(words, i, "--requirement", "--constraint", "-r", "-c")
+}
+
+// optionValue returns the value of words[i] when it is one of flags, in any of pip's
+// spellings: "-x v", "-xv", "--long v", "--long=v". After a short flag an "=" is part of the
+// value, as pip's option parser reads it. A flag with nothing after it has an empty value.
+func optionValue(words []string, i int, flags ...string) (string, bool) {
+	for _, flag := range flags {
+		rest, ok := strings.CutPrefix(words[i], flag)
 		if !ok {
 			continue
 		}
-		if strings.HasPrefix(flag, "--") && rest != "" && rest[0] != '=' && rest[0] != ' ' && rest[0] != '\t' {
-			continue // a longer option sharing the prefix
+		long := strings.HasPrefix(flag, "--")
+		switch {
+		case rest == "" && i+1 < len(words):
+			return words[i+1], true
+		case rest == "":
+			return "", true
+		case !long:
+			return rest, true
+		case rest[0] == '=':
+			return rest[1:], true
 		}
-		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
 	}
 	return "", false
 }

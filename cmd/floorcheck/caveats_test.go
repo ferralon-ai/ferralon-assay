@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -260,6 +261,46 @@ var errBadMapping = func() error {
 func TestShippedCaveats(t *testing.T) {
 	if _, err := loadCaveats(filepath.Join("..", "..", "floor", "caveats.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestShippedCaveatIDs keeps the shipped mapping to the caveat ids docs/floor.md lists under
+// "Caveat ids", so a misspelt id fails here instead of reaching the summary.
+func TestShippedCaveatIDs(t *testing.T) {
+	root := filepath.Join("..", "..")
+	c, err := loadCaveats(filepath.Join(root, "floor", "caveats.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := os.ReadFile(filepath.Join(root, "docs", "floor.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, found := strings.Cut(string(doc), "\n### Caveat ids\n")
+	if !found {
+		t.Fatal(`docs/floor.md has no "### Caveat ids" section`)
+	}
+	section, _, _ = strings.Cut(section, "\n#")
+	listed := map[string]bool{}
+	for _, line := range strings.Split(section, "\n") {
+		if id, ok := strings.CutPrefix(line, "| `"); ok {
+			if id, _, ok = strings.Cut(id, "`"); ok {
+				listed[id] = true
+			}
+		}
+	}
+	if len(listed) == 0 {
+		t.Fatal(`docs/floor.md "Caveat ids" lists no id`)
+	}
+	for _, m := range c.Mappings {
+		if !listed[m.Caveat] {
+			t.Errorf("mapping %s (%s): caveat %s is not listed under docs/floor.md \"Caveat ids\"", m.Reason, m.Language, m.Caveat)
+		}
+	}
+	for _, s := range c.Structural {
+		if !listed[s.Caveat] {
+			t.Errorf("structural %s (%s) is not listed under docs/floor.md \"Caveat ids\"", s.Caveat, s.Language)
+		}
 	}
 }
 

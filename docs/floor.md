@@ -123,9 +123,11 @@ ferralon.floor-summary.v1`), and the artifact includes every `report.json` and `
 ## The caveat tally
 
 The language capability matrix names the caveats that stop Assay from reaching a verdict in each
-language, such as `JS-UNINSPECTABLE-RUNWIDE` or `JAVA-GRAPH-PRECONDITION`. The floor run measures
-which of them fire on each demo repository, every night, so the matrix's prevalence figures come
-from real scans instead of estimates.
+language, such as `JS-UNINSPECTABLE-RUNWIDE` or `JAVA-GRAPH-PRECONDITION`. The matrix is not on
+`main` yet: it is proposed in [#246](https://github.com/ferralon-ai/ferralon-assay/pull/246) as
+`docs/capabilities/`, one page per language. The floor run measures which of its caveats fire on
+each demo repository, every night, so the matrix's prevalence figures come from real scans instead
+of estimates. [Caveat ids](#caveat-ids) lists the ids the tally uses.
 
 **What it counts.** `floorcheck check` reads every machine-readable reason a readable
 `report.json` carries:
@@ -163,6 +165,28 @@ never reach the Slack alert. If `floor/caveats.json` can't be read, `floorcheck`
 records it as `caveat_mapping_error`, and shows every reason unmapped. The run's result is
 unaffected.
 
+### Caveat ids
+
+These are the caveat ids `floor/caveats.json` may name, and where each is defined. A matrix page is
+a page of `docs/capabilities/` in #246. `TestShippedCaveatIDs` fails if a mapping's `caveat` or a
+`structural` caveat is not in this table, so a misspelt id fails the tests.
+
+| Caveat | Language | Defined in |
+|---|---|---|
+| `JS-UNINSPECTABLE-RUNWIDE` | js | matrix, `javascript.md` |
+| `JS-LOADTIME-CODEGEN` | js | matrix, `javascript.md` |
+| `JS-UNLISTED-RESIDUE` | js | matrix, `javascript.md` |
+| `JS-NO-CLEAR-GROUNDS` | js | matrix, `javascript.md` (structural) |
+| `JAVA-GRAPH-PRECONDITION` | java | matrix, `java.md` |
+| `JAVA-LAUNCH-ENTRY-UNLICENSED` | java | matrix, `java.md` |
+| `JAVA-OTHER-TOOL-BUILD` | java | matrix, `java.md` |
+| `JAVA-INSTALL-UNLISTED` | java | matrix, `java.md` |
+| `JAVA-FRAMEWORK-HAZARD` | java | matrix, `java.md` |
+| `JAVA-FIRST-PARTY-BYTECODE-ABSENT` | java | this tally, named after `first_party_bytecode_absent`; not a matrix id |
+| `PYTHON-DYNAMIC-IMPORT-RUNWIDE` | python | matrix, `python.md` |
+| `PYTHON-NO-CLEAR-PRODUCER` | python | matrix, `python.md` (structural) |
+| `SCAN-CUT-SHORT` | any | this tally, for `scan_cut_short`; not a matrix id |
+
 ### Adding a mapping
 
 Add an entry to `mappings` in `floor/caveats.json`:
@@ -184,7 +208,8 @@ Add an entry to `mappings` in `floor/caveats.json`:
 - `run_wide`: set it to `true` when the caveat is only the run-wide form of the reason. Scoped
   notes, finding reasons and package reasons then don't fire it. Set it to `false` to fire the
   caveat on every occurrence. One reason can have one mapping of each kind per language.
-- `caveat` (required): the matrix's caveat id, in upper case with hyphens.
+- `caveat` (required): the matrix's caveat id, in upper case with hyphens. A new id needs a row
+  under [Caveat ids](#caveat-ids).
 - `defined_in` (required): the non-test Go file that declares the reason's constant.
   `TestShippedCaveatReasons` evaluates that file's string constants (literals, `plugin.X`,
   `report.X`, same-package names and `+`) and fails if none has the reason's value, so the mapping

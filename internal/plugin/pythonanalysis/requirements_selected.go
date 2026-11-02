@@ -58,6 +58,10 @@ type pyReq struct {
 	Raw      string // original spec text for a non-normal line (VCS/URL/editable/include identity)
 	Marker   string // captured PEP 508 marker text ("" = none)
 
+	// Redirected marks a lock entry installed from a git, URL or local source rather than an
+	// index: the advisory path reads its version as unresolved; the inventory keeps it.
+	Redirected bool
+
 	// E4 parent edges + classification (C4). Relationship is relUnexpressed for a format with
 	// no edge data (requirements.txt); the pdm.lock/uv.lock parsers set relDirect/relTransitive
 	// and populate Parents with the normalized names of the packages that declare this node as a

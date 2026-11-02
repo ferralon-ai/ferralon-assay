@@ -308,7 +308,7 @@ func TestCallGraph_ModuleAttributeHoldingAModule(t *testing.T) {
 	}
 }
 
-// A chain whose head only the caller's star import binds (from pkg.m import *, then g.h(1),
+// TestCallGraph_HeadBoundByCallersStarImport: a chain whose head only the caller's star import binds (from pkg.m import *, then g.h(1),
 // where pkg/m.py binds g to pkg.alt.y) reaches what that module binds h to, a re-export as
 // well as a def.
 func TestCallGraph_HeadBoundByCallersStarImport(t *testing.T) {
@@ -325,9 +325,12 @@ func TestCallGraph_HeadBoundByCallersStarImport(t *testing.T) {
 		{"top package bound by import", map[string]string{"pkg/m.py": "import pkg.alt.y\n", "c.py": star("pkg.alt.y.h(1)")}},
 		{"package attribute through a middle", map[string]string{"pkg/m.py": "from pkg import alt as g\n", "c.py": star("g.y.h(1)")}},
 		{"through the module's own star import", map[string]string{"pkg/m.py": "from pkg.n import *\n", "pkg/n.py": "from pkg.alt import y as g\n", "c.py": star("g.h(1)")}},
+		{"star imports in a cycle", map[string]string{"pkg/m.py": "from pkg.n import *\nfrom pkg.alt import y as g\n", "pkg/n.py": "from pkg.m import *\n", "c.py": star("g.h(1)")}},
 		{"star import of a package", map[string]string{"pkg/m/__init__.py": "from pkg.alt import y as g\n", "c.py": star("g.h(1)")}},
 		{"loaded submodule of a package", map[string]string{"pkg/m/__init__.py": "", "pkg/m/a.py": "from pkg.alt import y as g\n",
 			"c.py": "import pkg.m.a\n" + star("a.g.h(1)")}},
+		{"loaded submodule through the module's own star import", map[string]string{"pkg/m.py": "from pkg.alt import *\n", "pkg/alt/__init__.py": "",
+			"c.py": "import pkg.alt.y\n" + star("y.h(1)")}},
 		{"site in a nested def", map[string]string{"pkg/m.py": "from pkg.alt import y as g\n",
 			"c.py": "from pkg.m import *\n\ndef go():\n    def inner():\n        return g.h(1)\n    return inner()\n"}},
 		{"statement that binds the name in a comprehension too", map[string]string{"pkg/m.py": "from pkg.alt import y as g\n",
@@ -373,5 +376,12 @@ func TestCallGraph_HeadBoundByCallersStarImport(t *testing.T) {
 		if e.Callee.SCIP == vuln {
 			t.Errorf("head bound by the class body: edge %v", e)
 		}
+	}
+	// A star-imported module that binds no such name gives the head nothing, though a package
+	// binds the module's name to another (importing pkg.m replaces that attribute).
+	files["pkg/__init__.py"], files["pkg/m.py"], files["pkg/alt/__init__.py"] = "from . import alt as m\n", "X = 1\n", "from . import y\nfrom . import y as g\n"
+	files["c.py"] = "from pkg.m import *\nfrom pkg import other\ng = other\n\ndef go():\n    return g.h(1)\n"
+	if res := mustCallGraph(t, files); hasEdge(res.Edges, goC, vuln) {
+		t.Errorf("head the star-imported module cannot bind: edge to %s; edges %v", vuln, res.Edges)
 	}
 }

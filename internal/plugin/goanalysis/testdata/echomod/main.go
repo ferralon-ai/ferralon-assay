@@ -54,14 +54,19 @@ func sinkWrapH(v any)      { sunk = append(sunk, v) }
 func sinkWrapF(v any)      { sunk = append(sunk, v) }
 
 // One sink per modeled echo.Context accessor, reached from accessorsForm.
-func sinkParam(v any)       { sunk = append(sunk, v) }
-func sinkQueryParam(v any)  { sunk = append(sunk, v) }
-func sinkQueryParams(v any) { sunk = append(sunk, v) }
-func sinkFormValue(v any)   { sunk = append(sunk, v) }
-func sinkFormParams(v any)  { sunk = append(sunk, v) }
-func sinkRequest(v any)     { sunk = append(sunk, v) }
-func sinkCookie(v any)      { sunk = append(sunk, v) }
-func sinkBind(v any)        { sunk = append(sunk, v) }
+func sinkParam(v any)         { sunk = append(sunk, v) }
+func sinkQueryParam(v any)    { sunk = append(sunk, v) }
+func sinkQueryParams(v any)   { sunk = append(sunk, v) }
+func sinkFormValue(v any)     { sunk = append(sunk, v) }
+func sinkFormParams(v any)    { sunk = append(sunk, v) }
+func sinkRequest(v any)       { sunk = append(sunk, v) }
+func sinkCookie(v any)        { sunk = append(sunk, v) }
+func sinkBind(v any)          { sunk = append(sunk, v) }
+func sinkCookies(v any)       { sunk = append(sunk, v) }
+func sinkFormFile(v any)      { sunk = append(sunk, v) }
+func sinkMultipartForm(v any) { sunk = append(sunk, v) }
+func sinkQueryString(v any)   { sunk = append(sunk, v) }
+func sinkRealIP(v any)        { sunk = append(sunk, v) }
 
 // Negative sinks: no echo-registered handler reaches these.
 func sinkNotRequestData(v any)  { sunk = append(sunk, v) }
@@ -106,6 +111,13 @@ func (s *server) accessorsForm(c echo.Context) error {
 	sinkRequest(c.Request().URL.RawQuery)
 	ck, _ := c.Cookie("session")
 	sinkCookie(ck.Value)
+	sinkCookies(c.Cookies()[0].Value)
+	fh, _ := c.FormFile("upload")
+	sinkFormFile(fh.Filename)
+	mf, _ := c.MultipartForm()
+	sinkMultipartForm(mf.Value)
+	sinkQueryString(c.QueryString())
+	sinkRealIP(c.RealIP())
 	var in struct{ User string }
 	_ = c.Bind(&in)
 	sinkBind(in.User)

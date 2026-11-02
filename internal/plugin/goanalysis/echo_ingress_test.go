@@ -65,6 +65,7 @@ var echoForms = []struct {
 // result (for Bind, its bound target) to sink<name>.
 var echoAccessors = []string{
 	"Param", "QueryParam", "QueryParams", "FormValue", "FormParams", "Request", "Cookie", "Bind",
+	"Cookies", "FormFile", "MultipartForm", "QueryString", "RealIP",
 }
 
 func echoIngresses(t *testing.T) []plugin.Ingress {

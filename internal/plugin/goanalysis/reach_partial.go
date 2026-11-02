@@ -183,17 +183,19 @@ func firstPartialRun(ctx context.Context, key []string, failure error, partial f
 
 // retryPartialRun returns the partial run for a replayed failure: one stored earlier, else one it
 // makes from the failure's recorded package errors, when a retry slot is left; with none left it
-// returns errPartialRetriesSpent. It returns neither run nor error when the failure records no
-// package errors.
+// returns errPartialRetriesSpent, and errPartialRunRefused when an earlier run refused it. It
+// returns neither run nor error when the failure records no package errors.
 func retryPartialRun(ctx context.Context, key []string, failure error, partial func(failure error) ([]byte, error)) (*partialRun, error) {
-	if run, refused := knownPartialRun(ctx, key); run != nil || refused {
+	if run, refused := knownPartialRun(ctx, key); run != nil {
 		return run, nil
+	} else if refused {
+		return nil, errPartialRunRefused
 	}
 	if len(failurePackageErrors(failure)) == 0 {
 		return nil, nil
 	}
-	if !claimPartialRetry(ctx, key) {
-		return nil, errPartialRetriesSpent
+	if err := claimPartialRetry(ctx, key); err != nil {
+		return nil, err
 	}
 	return makePartialRun(ctx, key, failure, partial)
 }
@@ -235,25 +237,25 @@ func makePartialRun(ctx context.Context, key []string, failure error, partial fu
 	return run, err
 }
 
-// claimPartialRetry takes one of the scan's maxPartialRunRetries retry slots for key, reporting
-// whether one was left. A slot is a file created exclusively, so concurrent advisories never share
-// one; a slot that cannot be created for any other reason is not taken.
-func claimPartialRetry(ctx context.Context, key []string) bool {
+// claimPartialRetry takes one of the scan's maxPartialRunRetries retry slots for key. It returns
+// errPartialRetriesSpent when none is left, and the create error when a slot cannot be made for
+// any other reason. A slot is a file created exclusively, so concurrent advisories never share one.
+func claimPartialRetry(ctx context.Context, key []string) error {
 	dir := RunCacheDir(ctx)
 	if dir == "" {
-		return false
+		return errPartialRetriesSpent
 	}
 	for i := range maxPartialRunRetries {
 		f, err := os.OpenFile(runCachePath(dir, fmt.Sprintf("%s-retry%d", govulncheckPartialKind, i), key), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			_ = f.Close()
-			return true
+			return nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
-			return false
+			return fmt.Errorf("claim a partial run retry: %w", err)
 		}
 	}
-	return false
+	return errPartialRetriesSpent
 }
 
 // storedPartialRun returns the partial run the run cache holds for key, or nil.

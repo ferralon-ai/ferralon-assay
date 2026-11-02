@@ -529,8 +529,9 @@ func TestCallGraph_ValueChainThroughBoundModule(t *testing.T) {
 }
 
 // TestCallGraph_AttributeOfAFunctionValue: a dotted value whose head an import binds to a
-// function rather than a module ("x.__call__" after "from pkg import vuln as x") hands the
-// function over, so it must escape.
+// function rather than a module ("x.__call__" after "from pkg import vuln as x"), or that
+// reads past a function a module declares ("x.vuln.__call__"), hands the function over, so
+// it must escape.
 func TestCallGraph_AttributeOfAFunctionValue(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -543,6 +544,9 @@ func TestCallGraph_AttributeOfAFunctionValue(t *testing.T) {
 		{name: "attribute two deep", files: map[string]string{"pkg/__init__.py": "from .v import vuln\n", "c.py": "from pkg import vuln as x\n\ndef go():\n    return x.__call__.__call__\n"}},
 		{name: "imported in a def", files: map[string]string{"pkg/__init__.py": "from .v import vuln\n", "c.py": "def go():\n    from pkg import vuln as x\n    return x.__call__\n"}},
 		{name: "re-exported under another name", files: map[string]string{"pkg/__init__.py": "from .v import vuln as h\n", "c.py": "from pkg import h as x\n\ndef go():\n    return x.__call__\n"}},
+		{name: "declared function of an imported module", files: map[string]string{"c.py": "import pkg.v as x\n\ndef go():\n    return x.vuln.__call__\n"}},
+		{name: "declared function of a from-imported module", files: map[string]string{"c.py": "from pkg import v as m\n\ndef go():\n    return m.vuln.__call__\n"}},
+		{name: "another declared function", unreached: true, files: map[string]string{"c.py": "import pkg.v as x\n\ndef go():\n    return x.other.__call__\n"}},
 		{name: "another function", unreached: true, files: map[string]string{"pkg/__init__.py": "from .v import other\n", "c.py": "from pkg import other as x\n\ndef go():\n    return x.__call__\n"}},
 	} {
 		files := map[string]string{"pkg/v.py": "def vuln(x):\n    return x\n\ndef other(x):\n    return x\n"}

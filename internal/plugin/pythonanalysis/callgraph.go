@@ -1453,12 +1453,13 @@ func (prog *program) escapeFrames(out map[string]bool) {
 // escapeChain handles a dotted value whose head an import binds to the path base. It finds
 // the longest prefix of the chain that names a module. With no attribute after it, the
 // module itself is the value. An attribute the module declares is a function or class
-// handed over by name, which the name scan covers; one the module binds by first-party
-// import is followed through the import, and the rest of the chain with it ("a.g.h" where a
-// binds g to a module); anything else ("handlers.__dict__", an attribute the scanner cannot
-// see) may reach any function of the module. A base that names no module names a function
-// or class ("x.__call__" where x is an imported function), and reading any attribute of it
-// hands it over. done holds the chains already followed, so an import cycle ends.
+// handed over by name; the name scan sees only the chain's last segment, so one read
+// further ("m.vuln.__call__") escapes it here. One the module binds by first-party import
+// is followed through the import, and the rest of the chain with it ("a.g.h" where a binds
+// g to a module); anything else ("handlers.__dict__", an attribute the scanner cannot see)
+// may reach any function of the module. A base that names no module names a function
+// ("x.__call__" where x is an imported function), and reading any attribute of it hands it
+// over. done holds the chains already followed, so an import cycle ends.
 func (prog *program) escapeChain(base string, rest []string, done map[string]bool, escape func(funcDecl), escapeModule func(string)) {
 	key := base + "\x00" + strings.Join(rest, "/")
 	if done[key] {
@@ -1495,6 +1496,11 @@ func (prog *program) escapeChain(base string, rest []string, done map[string]boo
 		}
 		if !declared && !bound {
 			escapeModule(path)
+		}
+		if declared && k+1 < len(rest) {
+			for _, fd := range prog.declsNamed([]string{attr}) {
+				escape(fd)
+			}
 		}
 		return
 	}

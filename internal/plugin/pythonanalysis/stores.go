@@ -91,10 +91,18 @@ func (prog *program) markModuleStores() {
 	}
 	// A builtin trusted to only read the namespace handed to it may be rebound by a store into
 	// the module by its name, or into builtins.
-	rebuilt := slices.ContainsFunc(prog.files, func(f fileParse) bool { return f.own.builtins && !isTestModule(f.module) })
+	rebuilt, rebuiltAny := map[string]bool{}, false
+	for _, f := range prog.files {
+		if !isTestModule(f.module) {
+			rebuiltAny = rebuiltAny || f.own.builtinAny
+			for _, w := range f.own.builtinNames {
+				rebuilt[w] = true
+			}
+		}
+	}
 	for fi := range prog.files {
 		f := &prog.files[fi]
-		if !isTestModule(f.module) && slices.ContainsFunc(f.own.trusted, func(w string) bool { return rebuilt || f.storedNames[w] }) {
+		if !isTestModule(f.module) && slices.ContainsFunc(f.own.trusted, func(w string) bool { return rebuiltAny || rebuilt[w] || f.storedNames[w] }) {
 			exposed = append(exposed, fi)
 		}
 	}
@@ -235,13 +243,14 @@ func (prog *program) storedThrough(f *fileParse, cs callSite) bool {
 // module object (sys.modules[__name__], import_module(__name__)) or the dict globals()
 // returns, and vars() or locals() at module scope. names holds the names a store by a
 // literal key binds; any reports a use that may bind any name. trusted holds the builtins
-// a use relied on to only read the namespace handed to them, and builtins reports that the
-// file reaches the builtins module, where a store rebinds a builtin for every module.
+// a use relied on to only read the namespace handed to them; builtinNames and builtinAny
+// are what the file's stores through the builtins module may rebind for every module.
 type ownStores struct {
-	names    []string
-	any      bool
-	trusted  []string
-	builtins bool
+	names        []string
+	any          bool
+	trusted      []string
+	builtinNames []string
+	builtinAny   bool
 }
 
 // ownModuleEnd returns the index just past a subscript or .get of __name__ on sys.modules,

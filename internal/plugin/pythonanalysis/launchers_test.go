@@ -1059,6 +1059,38 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script its own namespace handed to a builtin rebound in builtins under an alias by another module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import builtins as B\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nB.sorted = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin when another module hands builtins on",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import builtins\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ndef p(b):\n    b.sorted = ev\n\np(builtins)\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin another module names only in annotations",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import builtins\n\ndef names() -> builtins.list[str]:\n    return builtins.list()\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script its own namespace handed to a builtin rebound through an imported builtins module",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

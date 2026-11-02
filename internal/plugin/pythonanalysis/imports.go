@@ -1548,9 +1548,10 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	n := len(r)
 	spans, stars := importStatements(r)
 	names := map[string]lookupKind{}
+	builtinsNames := map[string]bool{"__builtins__": true}
 	for _, b := range bindings {
-		if t := lookupTarget(b.target); t == "builtins" || strings.HasPrefix(t, "builtins.") {
-			own.builtins = true
+		if lookupTarget(b.target) == "builtins" {
+			builtinsNames[b.local] = true
 		}
 		switch lookupTarget(b.target) {
 		case "sys":
@@ -1628,6 +1629,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		return names[w]
 	}
+	var builtin ownStores
 	si := 0
 	for i := 0; i < n; {
 		if si < len(spans) && i >= spans[si][0] {
@@ -1653,8 +1655,10 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				own.any = true
 			}
 		}
-		if !dotted && w == "__builtins__" {
-			own.builtins = true
+		// A store through the builtins module rebinds a builtin for every module, read as a
+		// store through the file's own module is.
+		if !dotted && builtinsNames[w] && !precededByDef(r, i) && !assignedTo(r, end) {
+			builtin.use(r, i, end, lits, true, shadowed)
 		}
 		// A frame's or function's globals, and a module-scope frame's locals, are a
 		// namespace dict.
@@ -1749,7 +1753,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 	}
 	own.names = sortedDedup(own.names)
 	own.trusted = sortedDedup(own.trusted)
-	own.builtins = own.builtins || slices.Contains(values, "builtins")
+	own.builtinNames = sortedDedup(builtin.names)
+	own.builtinAny = builtin.any || slices.Contains(values, "builtins")
 	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed, own
 }
 

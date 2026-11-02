@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,11 +28,40 @@ import (
 // versionSurfaces returns the manifests version resolution parses, whether any other install
 // surface under root goes unread, whether a script surface may install a package no manifest
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
-// surfaces run, and the distributions an allowed self-upgrade installs at a version nothing
-// read here records (pipSelfUpgrade), which a caller withholds as it would every pin. tooling
-// is nil, and no self-upgrade is allowed, when root holds a pip config file (pipConfigInTree)
-// or a script surface names one (pipConfigNamedRE).
-func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, tooling map[string]bool) {
+// surfaces run, every poetry install they run with the groups it selects (poetryInstalls), and
+// the distributions the build may hold at a version nothing read here records, which a caller
+// withholds as it would every pin: pip after an allowed self-upgrade (pipSelfUpgrade), and in
+// every build the distributions an interpreter or venv seeds (seededDistributions). No
+// self-upgrade is allowed when root holds a pip config file (pipConfigInTree) or a script
+// surface names one (pipConfigNamedRE); configNamed reports the second. A script surface that names a uv config
+// (uvConfigNamedRE) withholds when an allowed uv sync runs, and one that names a poetry or pdm
+// config (toolConfigNamedRE) when an allowed poetry install or pdm sync runs. A poetry or pdm
+// config in the tree is read when it sets only that tool's settings (toolConfigClean). unrecognised is where a file the rule does not read as a surface runs an
+// installer (scriptsurface.Veto.Unrecognised), or "".
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, configNamed bool) {
+	return scanSurfaces(root, nil)
+}
+
+// scriptRun is a pip install a script surface runs: one the rule withholds, from a surface it
+// withholds on, or an allowed self-upgrade. args are pip's arguments after install, as written,
+// files the build-tree -r files they name that the lane does not already read, and uv whether
+// uv runs it.
+type scriptRun struct {
+	surface string
+	args    []string
+	files   []runFile
+	uv      bool
+}
+
+// runFile is a -r file a run resolves: the build-tree path, and the name the installer is
+// given, by which it reads the file.
+type runFile struct {
+	path, name string
+}
+
+// scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip
+// install the script surfaces run that names what it installs (scriptRun).
+func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, configNamed bool) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -39,7 +69,9 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		discovered[m] = true
 	}
 	// A requirement file a pyproject.toml or setup.cfg names in a file directive is read by
-	// that manifest's reader; when the manifest cannot read it, the manifest fails instead.
+	// that manifest's reader; when the manifest cannot read it, the manifest fails instead. A
+	// module a pyproject.toml's backend reads a dynamic version from is read here when it
+	// holds it as a string literal (versionModules).
 	via := map[string]bool{}
 	for _, m := range manifests {
 		if base := filepath.Base(m); base != "pyproject.toml" && base != "setup.cfg" {
@@ -50,33 +82,78 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 				via[filepath.Clean(f)] = true
 			}
 		}
-	}
-	read := func(path string) bool {
-		if wideMarked(path) {
-			return false
+		if filepath.Base(m) == "pyproject.toml" {
+			for _, f := range versionModules(m) {
+				via[filepath.Clean(f)] = true
+			}
 		}
+	}
+	manifest := func(path string) bool {
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	installs = pipInstalls{}
+	read := func(path string) bool {
+		return !wideMarked(path) && (manifest(path) || toolConfigClean(path))
+	}
+	installs, poetry = pipInstalls{}, poetryInstalls{}
 	if !pipConfigInTree(root) {
 		tooling = map[string]bool{}
 	}
-	spec := newScriptSpec(installs, tooling)
-	configNamed := false
+	spec := newScriptSpec(installs, poetry, tooling)
+	configNamed, mypyInstalls, uvConfigNamed, toolConfigNamed, uvSynced, toolSynced := false, false, false, false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
+		mypyInstalls = mypyInstalls || installTypesTextRE.MatchString(src) ||
+			installTypesAbbrevRE.MatchString(src) && mypyNamedRE.MatchString(src)
+		uvConfigNamed = uvConfigNamed || uvConfigNamedRE.MatchString(src)
+		toolConfigNamed = toolConfigNamed || toolConfigNamedRE.MatchString(src)
+	}
+	allowed := spec.Allowed
+	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
+		ok := allowed(words, b)
+		if head, _ := scriptsurface.CommandName(words[0]); ok {
+			uvSynced = uvSynced || head == "uv"
+			toolSynced = toolSynced || (head == "poetry" || head == "pdm") && words[1] != "config"
+		}
+		return ok
+	}
+	var rec *runRecorder
+	if runs != nil {
+		rec = &runRecorder{inner: spec.Allowed, tooling: tooling}
+		spec.Allowed = rec.allowed
 	}
 	veto := scriptsurface.New(root, read, spec)
-	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
+	classify := veto.Classify(pyInstallSurface)
+	if rec != nil {
+		classify = rec.classify(root, veto)
+	}
+	match := func(path string, head []byte) (string, bool) {
+		mypyInstalls = mypyInstalls || mypyConfigInstalls(head) || installTypesLineRE.Match(head)
+		return classify(path, head)
+	}
+	for _, c := range buildtree.Candidates(root, match, veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
-	scriptWithheld = veto.Withheld()
+	scriptWithheld = veto.Withheld() || mypyInstalls
+	if rec != nil {
+		rec.rescan(root, manifest, newScriptSpec(pipInstalls{}, poetryInstalls{}, maps.Clone(tooling)))
+		*runs = rec.runs
+	}
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	return manifests, unread || scriptWithheld, scriptWithheld, installs, tooling
+	if uvConfigNamed && uvSynced || toolConfigNamed && toolSynced {
+		scriptWithheld = true
+	}
+	// After the check above: seeding is not a self-upgrade, and must not trip it.
+	if tooling == nil {
+		tooling = map[string]bool{}
+	}
+	for _, n := range seededDistributions {
+		tooling[n] = true
+	}
+	return manifests, unread || scriptWithheld, scriptWithheld, installs, poetry, tooling, veto.Unrecognised(), configNamed
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.
@@ -123,11 +200,14 @@ func pySurfaceName(path string) (string, bool) {
 	lower := strings.ToLower(filepath.Base(path))
 	ext := filepath.Ext(lower)
 	dir := strings.ToLower(filepath.Base(filepath.Dir(path)))
+	if _, ok := toolConfigName(lower, dir); ok {
+		return "tool config name", true
+	}
 	switch {
 	case isManifest(lower):
 		return "manifest name", true
 	case strings.HasPrefix(lower, "pipfile"), lower == "pixi.toml", strings.HasPrefix(lower, "pylock.") && ext == ".toml",
-		lower == "tox.ini", lower == "noxfile.py":
+		lower == "tox.ini", lower == "noxfile.py", lower == "uv.toml":
 		return "install surface name", true
 	case isCondaEnvName(lower), strings.HasPrefix(lower, "conda-lock") && (ext == ".yml" || ext == ".yaml"):
 		return "conda name", true

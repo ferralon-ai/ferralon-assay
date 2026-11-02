@@ -1,6 +1,8 @@
 package scriptsurface
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +26,26 @@ type Binder interface {
 	// as a surface on its own. With locks given, each of them that is there in dir must be a
 	// regular file read here, reached through no symlink. nil when any is not.
 	Prefixed(dir, name string, locks ...string) []string
+	// Clear reports whether nothing is at p, a relative path whose only .. parts lead it, beside
+	// each file Nearest(name) returns: nothing in the build tree there and, under a Dockerfile,
+	// nothing copied or mounted there. In the tree, a p with .. must stay inside root from a
+	// file reached through no symlink. It binds p's first element past its .. parts, so a
+	// command that names a path through it withholds. false when Nearest(name) is nil or p
+	// may be there.
+	Clear(name, p string) bool
+	// Beside returns the build-tree files at p, a relative path whose only .. parts lead it,
+	// beside each file Nearest(name) returns, each read here and unchanged: under a
+	// Dockerfile, the files copied there and covered by no mount. In the tree, a p with ..
+	// must stay inside root from a file reached through no symlink. nil when any is not.
+	Beside(name, p string) []string
+	// Enclosing returns every file named name in the directories above each file Nearest(name)
+	// returns, up to the top of the build, each read here and unchanged. Each directory the
+	// command runs in, and each file Nearest(name) returns, must be reached through no
+	// symlink, so the directories a tool walks up are the ones named here; in a Dockerfile, no
+	// mount may cover any place a file of that name is looked for. ok is false when
+	// Nearest(name) is nil, any of that does not hold, or one may be there that is not read
+	// here.
+	Enclosing(name string) (found []string, ok bool)
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -31,6 +53,9 @@ type cursor interface {
 	Binder
 	cd(words []string) // nil when the target is not literal
 	other()            // a command that runs no installer and may change files
+	// wrote is a command that runs no installer and writes only under the place key, from at,
+	// names.
+	wrote(key string, venv bool)
 	// fork returns a cursor for a command started from here in a shell of its own, whose
 	// directory changes do not reach this one.
 	fork() cursor
@@ -46,6 +71,12 @@ type cursor interface {
 	present(p string) bool
 	// venv is the state of the venv rule at this command.
 	venv() *venvMark
+	// madeVenv reports whether key, from at, holds the venv a creation in an earlier shell
+	// made, unchanged since.
+	madeVenv(key string) bool
+	// pinsPython reports whether the build may hold a .python-version or .python-versions in
+	// the directory the command runs in or one above it.
+	pinsPython() bool
 }
 
 // venvMark is what the venv rule carries from command to command in one shell.
@@ -97,6 +128,27 @@ func (c *hostCursor) cd(words []string) {
 }
 
 func (c *hostCursor) other() {}
+
+func (c *hostCursor) wrote(string, bool) {}
+
+// madeVenv is false: what runs between two host shells is not seen.
+func (c *hostCursor) madeVenv(string) bool { return false }
+
+func (c *hostCursor) pinsPython() bool {
+	dir, ok := c.loc(".")
+	if !ok {
+		return true
+	}
+	for d := dir; c.v.inRoot(d); d = filepath.Dir(d) {
+		if c.present(filepath.Join(d, ".python-version")) || c.present(filepath.Join(d, ".python-versions")) {
+			return true
+		}
+		if d == c.v.root {
+			break
+		}
+	}
+	return false
+}
 
 func (c *hostCursor) fork() cursor {
 	f := *c
@@ -219,6 +271,103 @@ func (c *hostCursor) Nearest(name string, locks ...string) []string {
 	return found
 }
 
+func (c *hostCursor) Clear(name, p string) bool {
+	hits := c.Nearest(name)
+	up, ok := relPath(p)
+	if hits == nil || !ok {
+		return false
+	}
+	for _, h := range hits {
+		if up && !c.climbs(h, p) {
+			return false
+		}
+		if there, known := c.v.lstat(filepath.Dir(h), p); there || !known {
+			return false
+		}
+	}
+	c.v.bindRoot(p)
+	return true
+}
+
+func (c *hostCursor) Beside(name, p string) []string {
+	hits := c.Nearest(name)
+	up, ok := relPath(p)
+	if hits == nil || !ok {
+		return nil
+	}
+	found := make([]string, 0, len(hits))
+	for _, h := range hits {
+		f := filepath.Join(filepath.Dir(h), p)
+		if up && !c.climbs(h, p) || !c.v.packageFile(f) {
+			return nil
+		}
+		found = append(found, f)
+	}
+	c.v.bind(p)
+	c.v.bindRoot(p)
+	return found
+}
+
+func (c *hostCursor) Enclosing(name string) ([]string, bool) {
+	hits := c.Nearest(name)
+	if hits == nil {
+		return nil, false
+	}
+	for _, d := range c.dirs {
+		if c.v.linked(d) {
+			return nil, false
+		}
+	}
+	var found []string
+	for _, h := range hits {
+		if !c.v.unlinked(h) {
+			return nil, false
+		}
+		for dir := filepath.Dir(h); dir != c.v.root; {
+			dir = filepath.Dir(dir)
+			if !c.v.inRoot(dir) {
+				break
+			}
+			f := filepath.Join(dir, name)
+			regular, there, known := c.v.stat(f)
+			if !known || there && (!regular || !c.v.read(f)) {
+				return nil, false
+			}
+			if regular {
+				found = append(found, f)
+			}
+		}
+	}
+	return found, true
+}
+
+// climbs reports whether p, which leaves h's directory through .., lands inside root, and
+// h is reached through no symlink, so the directory a tool reaches through .. is the one
+// the path names.
+func (c *hostCursor) climbs(h, p string) bool {
+	return c.v.unlinked(h) && c.v.inRoot(filepath.Join(filepath.Dir(h), p))
+}
+
+// relPath reports whether p is a relative path with no shell expansion or glob, whose ..
+// parts all lead it; up reports whether it has any.
+func relPath(p string) (up, ok bool) {
+	if p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$`*?[{~") {
+		return false, false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
+		switch {
+		case part == "..":
+			if ok {
+				return false, false
+			}
+			up = true
+		case part != "" && part != ".":
+			ok = true
+		}
+	}
+	return up, ok
+}
+
 func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
 	if c.unknown || len(c.dirs) == 0 || dir == "" || filepath.IsAbs(dir) || strings.ContainsAny(dir, "$`*?[{~") {
 		return nil
@@ -289,6 +438,26 @@ func (v *Veto) stat(p string) (regular, there, known bool) {
 	return fi.Mode().IsRegular(), true, true
 }
 
+// lstat reports whether rel may be there under root: true when rel or a symlink on the way
+// to it is, so a link, dangling or not, counts as there.
+func (v *Veto) lstat(root, rel string) (there, known bool) {
+	p := root
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		p = filepath.Join(p, part)
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return false, v.spec.Absent(err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return true, true
+		}
+	}
+	return true, true
+}
+
 // glob lists what a COPY source pattern matches. ok is false when the pattern has a
 // meta character before its last element or its directory is there but could not be listed:
 // filepath.Glob drops such errors, and a match it did not list may be copied anyway.
@@ -333,6 +502,32 @@ func (v *Veto) unlinked(p string) bool {
 		}
 	}
 	return true
+}
+
+// linked reports whether some part of p, inside root, that exists is a symlink, or may be:
+// the directory a process reaches there is then not the one p names.
+func (v *Veto) linked(p string) bool {
+	rel, err := filepath.Rel(v.root, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	if rel == "." {
+		return false
+	}
+	at := v.root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		at = filepath.Join(at, part)
+		fi, err := os.Lstat(at)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return false
+		case err != nil:
+			return true
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return true
+		}
+	}
+	return false
 }
 
 func isDir(p string) bool {

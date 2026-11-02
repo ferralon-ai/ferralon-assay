@@ -2,27 +2,37 @@ package scriptsurface
 
 import (
 	"encoding/json"
+	"maps"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
 // dockerEvent is one change to a stage's filesystem, by container path: a COPY from the
 // build context (hosts, the host files or directories copied), or a taint at dst, under dst
-// when dir, or everywhere when all.
+// when dir, or everywhere when all; cmd when a command whose words were mentioned made it.
+// venv marks the taint a virtual environment's creation at dst left.
 type dockerEvent struct {
 	dst   string
 	hosts []string
 	dir   bool
 	taint bool
 	all   bool
+	cmd   bool
+	venv  bool
+}
+
+// covers reports whether the event changes the container path f.
+func (e dockerEvent) covers(f string) bool {
+	return e.all || f == e.dst || e.dir && (e.dst == "/" || strings.HasPrefix(f, e.dst+"/"))
 }
 
 type dockerStage struct {
 	events  []dockerEvent
 	wd      string
 	wdKnown bool
+	shell   bool // a SHELL instruction changed what runs a RUN's command line
+	volume  bool // a VOLUME instruction may discard what a later RUN writes under it
 }
 
 const (
@@ -35,14 +45,10 @@ const (
 func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 	for i := len(st.events) - 1; i >= 0; i-- {
 		e := st.events[i]
-		if e.all {
-			return nil, pathTainted
-		}
-		under := e.dir && (e.dst == "/" || strings.HasPrefix(f, e.dst+"/"))
-		if f != e.dst && !under {
+		if !e.covers(f) {
 			continue
 		}
-		if e.taint {
+		if e.all || e.taint {
 			return nil, pathTainted
 		}
 		if !e.dir {
@@ -66,7 +72,80 @@ func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 	return nil, pathAbsent
 }
 
+// clear reports whether no event may have put anything at or under the container path f: no
+// COPY or taint at or under it, and no directory copied over it from a host directory that
+// holds f's place or may. A command's taint of everything is left to the mentions that bind
+// reads, as a host script's commands are; any other taint of everything fails, as does a file
+// copied to a directory above f, which may be one already there.
+func (st *dockerStage) clear(v *Veto, f string) bool {
+	for _, e := range st.events {
+		switch {
+		case e.all:
+			if !e.cmd {
+				return false
+			}
+		case e.dst == f || strings.HasPrefix(e.dst, f+"/"):
+			return false
+		case e.dst == "/" || strings.HasPrefix(f, e.dst+"/"):
+			if e.taint || !e.dir {
+				return false
+			}
+			rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(f, e.dst), "/"))
+			for _, h := range e.hosts {
+				if there, known := v.lstat(h, rel); there || !known {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// linked reports whether a directory copied from the build context may put a symlink at or
+// above the container directory d, so the directory a process reaches there is not the one d
+// names.
+func (st *dockerStage) linked(v *Veto, d string) bool {
+	for _, e := range st.events {
+		if !e.dir || e.taint || e.all || e.dst != "/" && d != e.dst && !strings.HasPrefix(d, e.dst+"/") {
+			continue
+		}
+		rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(d, e.dst), "/"))
+		for _, h := range e.hosts {
+			if v.linked(filepath.Join(h, rel)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// holdsDir reports whether the stage holds a directory at the container path f: something was
+// written under it, or a directory copy put a directory there.
+func (st *dockerStage) holdsDir(v *Veto, f string) bool {
+	if f == "/" {
+		return len(st.events) > 0
+	}
+	for _, e := range st.events {
+		if strings.HasPrefix(e.dst, f+"/") {
+			return true
+		}
+		if !e.dir || !e.covers(f) {
+			continue
+		}
+		rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(f, e.dst), "/"))
+		for _, h := range e.hosts {
+			if regular, there, known := v.stat(filepath.Join(h, rel)); !known || there && !regular {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (st *dockerStage) taintAll() { st.events = append(st.events, dockerEvent{all: true}) }
+
+// taintCmd taints everything for a command whose words were mentioned.
+func (st *dockerStage) taintCmd() { st.events = append(st.events, dockerEvent{all: true, cmd: true}) }
 
 // resolve returns a container path for p, from the WORKDIR when relative.
 func (st *dockerStage) resolve(p string) (string, bool) {
@@ -79,6 +158,35 @@ func (st *dockerStage) resolve(p string) (string, bool) {
 		return path.Join(st.wd, p), true
 	}
 	return "", false
+}
+
+// mountTarget returns the container path a RUN --mount value puts a filesystem at: its
+// target, or for a secret with none, its file under /run/secrets. ok is false when that is
+// not known, a value quoted, escaped or expanding inside included.
+func (st *dockerStage) mountTarget(m string) (string, bool) {
+	m = strings.Trim(m, `"'`)
+	if strings.ContainsAny(m, "\"'\\$`") {
+		return "", false
+	}
+	var typ, target, id string
+	for _, kv := range strings.Split(m, ",") {
+		k, val, _ := strings.Cut(kv, "=")
+		switch strings.ToLower(k) {
+		case "type":
+			typ = val
+		case "target", "dst", "destination":
+			target = val
+		case "id":
+			id = val
+		}
+	}
+	if target == "" && typ == "secret" && id != "" && !strings.ContainsAny(id, "/$`") {
+		return "/run/secrets/" + id, true
+	}
+	if target == "" && typ == "ssh" {
+		return "/run/buildkit/ssh_agent", true
+	}
+	return st.resolve(target)
 }
 
 // copyInstr records a COPY or ADD. Only a plain COPY of existing build-context paths maps
@@ -186,6 +294,10 @@ type dockerCursor struct {
 	dir   string
 	known bool
 	mark  venvMark
+	// mounts are the container paths the RUN's --mount flags put a filesystem at; mountsKnown
+	// is false when one may be anywhere.
+	mounts      []string
+	mountsKnown bool
 }
 
 func (c *dockerCursor) cd(words []string) {
@@ -204,7 +316,54 @@ func (c *dockerCursor) cd(words []string) {
 }
 
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
-func (c *dockerCursor) other() { c.st.taintAll() }
+func (c *dockerCursor) other() { c.st.taintCmd() }
+
+// wrote taints only what is under the container path key. A venv created into a mount is
+// not one a later RUN sees.
+func (c *dockerCursor) wrote(key string, venv bool) {
+	venv = venv && !c.mounted(path.Join(key, "bin", "activate"))
+	c.st.events = append(c.st.events, dockerEvent{dst: key, dir: true, taint: true, venv: venv})
+}
+
+func (c *dockerCursor) pinsPython() bool {
+	dir, ok := c.at(".")
+	if !ok {
+		return true
+	}
+	for d := dir; ; d = path.Dir(d) {
+		if c.present(path.Join(d, ".python-version")) || c.present(path.Join(d, ".python-versions")) {
+			return true
+		}
+		if d == "/" {
+			return false
+		}
+	}
+}
+
+// mounted reports whether a mount of the RUN covers the container path f.
+func (c *dockerCursor) mounted(f string) bool {
+	for _, t := range c.mounts {
+		if t == "/" || f == t || strings.HasPrefix(f, t+"/") {
+			return true
+		}
+	}
+	return !c.mountsKnown
+}
+
+// madeVenv is true when the newest change to key/bin/activate is the creation of a venv at
+// key, and no SHELL, VOLUME or mount of this RUN over it changes what a . of it runs.
+func (c *dockerCursor) madeVenv(key string) bool {
+	f := path.Join(key, "bin", "activate")
+	if c.st.shell || c.st.volume || c.mounted(f) {
+		return false
+	}
+	for i := len(c.st.events) - 1; i >= 0; i-- {
+		if e := c.st.events[i]; e.covers(f) {
+			return e.venv && e.dst == key
+		}
+	}
+	return false
+}
 
 func (c *dockerCursor) fork() cursor {
 	f := *c
@@ -232,15 +391,23 @@ func (c *dockerCursor) at(p string) (string, bool) {
 	return path.Join(c.dir, p), true
 }
 
-// present is true for a path the stage has bound or tainted: a file copied in, or one a
-// command may have written.
+// present is true for a path the stage has bound or tainted, a file copied in or one a
+// command may have written, a directory it holds, or a path a mount of the RUN covers or
+// lies under.
 func (c *dockerCursor) present(p string) bool {
 	f, ok := c.at(p)
 	if !ok {
 		return true
 	}
-	_, state := c.st.lookup(c.v, f)
-	return state != pathAbsent
+	if _, state := c.st.lookup(c.v, f); state != pathAbsent || c.st.holdsDir(c.v, f) || c.mounted(f) {
+		return true
+	}
+	for _, t := range c.mounts {
+		if f == "/" || strings.HasPrefix(t, f+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *dockerCursor) venv() *venvMark { return &c.mark }
@@ -296,6 +463,122 @@ func (c *dockerCursor) Nearest(name string, locks ...string) []string {
 	}
 }
 
+func (c *dockerCursor) Clear(name, p string) bool {
+	if _, ok := relPath(p); !c.known || !c.mountsKnown || !ok {
+		return false
+	}
+	for d := c.dir; ; d = path.Dir(d) {
+		hosts, state := c.st.lookup(c.v, path.Join(d, name))
+		switch state {
+		case pathTainted:
+			return false
+		case pathBound:
+			for _, h := range hosts {
+				if !c.v.read(h) {
+					return false
+				}
+			}
+			f := path.Join(d, filepath.ToSlash(p))
+			if !c.st.clear(c.v, f) {
+				return false
+			}
+			for _, m := range c.mounts {
+				if m == "/" || m == f || strings.HasPrefix(m, f+"/") || strings.HasPrefix(f, m+"/") {
+					return false
+				}
+			}
+			c.v.bind(name)
+			c.v.bindRoot(p)
+			return true
+		}
+		if d == "/" {
+			return false
+		}
+	}
+}
+
+func (c *dockerCursor) Beside(name, p string) []string {
+	if _, ok := relPath(p); !c.known || !c.mountsKnown || !ok {
+		return nil
+	}
+	for d := c.dir; ; d = path.Dir(d) {
+		hosts, state := c.st.lookup(c.v, path.Join(d, name))
+		switch state {
+		case pathTainted:
+			return nil
+		case pathBound:
+			for _, h := range hosts {
+				if !c.v.read(h) {
+					return nil
+				}
+			}
+			f := path.Join(d, filepath.ToSlash(p))
+			found, state := c.st.lookup(c.v, f)
+			if state != pathBound || len(found) == 0 {
+				return nil
+			}
+			for _, h := range found {
+				if !c.v.read(h) {
+					return nil
+				}
+			}
+			for _, m := range c.mounts {
+				if m == "/" || m == f || strings.HasPrefix(m, f+"/") || strings.HasPrefix(f, m+"/") {
+					return nil
+				}
+			}
+			c.v.bind(name)
+			c.v.bind(p)
+			c.v.bindRoot(p)
+			return found
+		}
+		if d == "/" {
+			return nil
+		}
+	}
+}
+
+func (c *dockerCursor) Enclosing(name string) ([]string, bool) {
+	if !c.known || !c.mountsKnown {
+		return nil, false
+	}
+	var found []string
+	near := false
+	for d := c.dir; ; d = path.Dir(d) {
+		f := path.Join(d, name)
+		for _, m := range c.mounts {
+			if m == "/" || m == f || strings.HasPrefix(f, m+"/") {
+				return nil, false
+			}
+		}
+		if c.st.linked(c.v, d) {
+			return nil, false
+		}
+		hosts, state := c.st.lookup(c.v, f)
+		switch state {
+		case pathTainted:
+			return nil, false
+		case pathBound:
+			for _, h := range hosts {
+				if !c.v.read(h) {
+					return nil, false
+				}
+			}
+			if near {
+				found = append(found, hosts...)
+			}
+			near = true
+		}
+		if d == "/" {
+			if !near {
+				return nil, false
+			}
+			c.v.bind(name)
+			return found, true
+		}
+	}
+}
+
 // lockAbove reports whether the nearest of locks at or above the container directory dir was
 // copied from the build context, read here, and is unchanged since.
 func (c *dockerCursor) lockAbove(dir string, locks []string) bool {
@@ -321,63 +604,116 @@ func (c *dockerCursor) lockAbove(dir string, locks []string) bool {
 }
 
 var (
-	heredocRE   = regexp.MustCompile(`<<-?\s*["']?([A-Za-z_][A-Za-z0-9_]*)`)
 	dockerPlain = map[string]bool{
 		"ENV": true, "ARG": true, "LABEL": true, "EXPOSE": true, "USER": true, "VOLUME": true,
 		"STOPSIGNAL": true, "MAINTAINER": true, "SHELL": true,
 	}
 )
 
-// dockerfile applies the rule to a Dockerfile, stage by stage. CMD and ENTRYPOINT run after
-// every RUN, so they are checked against the stage as it ends.
-func (v *Veto) dockerfile(file, src string) string {
+// dockerReadingsMax bounds the readings dockerfileAt checks a Dockerfile in.
+const dockerReadingsMax = 64
+
+// dockerfileAt applies the rule to a Dockerfile, stage by stage, and returns why it withholds
+// and the 1-based line of src that does (0 when it does not). CMD and ENTRYPOINT run after
+// every RUN, so they are checked against the stage as it ends. A Dockerfile's build context is
+// its own directory or the build root; an Earthfile's (earth) is its own directory only, as
+// Earthly sends no other.
+//
+// dockerHeredocs takes a line's instruction as BuildKit's splitCommand does and splits its
+// words at Unicode blanks as BuildKit's lexer does, but reads those words as BuildKit does
+// only where the line holds no $, backslash or backtick; elsewhere it may open a heredoc
+// BuildKit doesn't, whose body would then hide instructions BuildKit runs. Where both open
+// heredocs, they agree on how many and on their names, except on a line with a
+// ${name<op>word} expansion, which is withheld (dockerUnsure). So the file is read once for
+// each way the heredocs on such lines may go, open or not, and checked in every reading.
+func (v *Veto) dockerfileAt(file, src string, earth bool) (string, int) {
+	readings := []map[int]bool{{}}
+	for n := 0; n < len(readings); n++ {
+		if n == dockerReadingsMax {
+			return "Dockerfile heredocs too many to read each way", 0
+		}
+		opens := readings[n]
+		lines, starts, docs, joined, unsure := dockerLines(src, func(start int, line string) bool {
+			if !strings.ContainsAny(line, "$\\`") {
+				return true
+			}
+			if _, ok := opens[start]; !ok {
+				shut := maps.Clone(opens)
+				shut[start] = false
+				readings = append(readings, shut)
+				opens[start] = true
+			}
+			return opens[start]
+		})
+		if unsure {
+			return "Dockerfile heredoc beside a ${name<op>word} expansion", starts[len(starts)-1] + 1
+		}
+		if why, at := v.dockerReading(file, lines, starts, docs, joined, earth); why != "" {
+			return why, at
+		}
+	}
+	return "", 0
+}
+
+// dockerReading applies the rule to one reading of a Dockerfile: its instructions, the
+// source line, from 0, each starts on, the heredocs each opens and whether the last is
+// joined, from dockerLines; and returns why it withholds and the 1-based line that does.
+func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map[int][]heredoc, joined, earth bool) (string, int) {
 	ctxs := []string{filepath.Dir(file)}
-	if ctxs[0] != v.root {
+	if ctxs[0] != v.root && !earth {
 		ctxs = append(ctxs, v.root)
 	}
-	lines, joined := logicalLines(src)
 	if !joined && v.hasToken(lines[len(lines)-1]) {
-		return "install command in an unjoined continuation"
+		return "install command in an unjoined continuation", starts[len(starts)-1] + 1
 	}
 	names := map[string]bool{}
 	st := &dockerStage{}
 	var deferred []segment
-	flush := func() string {
-		for _, seg := range deferred {
-			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown}
+	var deferredAt []int
+	flush := func() (string, int) {
+		for k, seg := range deferred {
+			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mountsKnown: true}
 			if why := v.command(seg, cur, 0); why != "" {
-				return why
+				return why, deferredAt[k]
 			}
 		}
-		deferred = nil
-		return ""
+		deferred, deferredAt = nil, nil
+		return "", 0
 	}
 	for i := 0; i < len(lines); i++ {
+		at := starts[i] + 1
 		line := strings.TrimSpace(lines[i])
 		if line == "" || line[0] == '#' {
 			continue
 		}
 		word, rest, _ := strings.Cut(line, " ")
 		instr, rest := strings.ToUpper(word), strings.TrimSpace(rest)
-		if hd := heredocRE.FindAllStringSubmatch(rest, -1); hd != nil && (instr == "RUN" || instr == "COPY" || instr == "ADD") {
-			body := line
-			for _, m := range hd {
-				for i++; i < len(lines) && strings.TrimSpace(lines[i]) != m[1]; i++ {
+		if hd := docs[i]; hd != nil {
+			body, hidden := line, false
+			for _, d := range hd {
+				var text []string
+				for i++; i < len(lines) && !d.ends(lines[i]); i++ {
 					body += "\n" + lines[i]
+					l := lines[i]
+					if d.dash {
+						l = strings.TrimLeft(l, "\t")
+					}
+					text = append(text, l)
 				}
+				hidden = hidden || v.shellHides(strings.Join(text, "\n"))
 			}
-			if v.hasToken(body) {
-				return "install command in a heredoc"
+			if v.hasToken(body) || hidden {
+				return "install command in a heredoc", at
 			}
 			v.mention(strings.Fields(body))
-			st.taintAll()
+			st.taintCmd()
 			continue
 		}
 		hasTok := v.hasToken(rest)
 		switch {
 		case instr == "FROM":
-			if why := flush(); why != "" {
-				return why
+			if why, line := flush(); why != "" {
+				return why, line
 			}
 			st = &dockerStage{}
 			f := strings.Fields(rest)
@@ -390,8 +726,13 @@ func (v *Veto) dockerfile(file, src string) string {
 			if len(f) >= 3 && strings.EqualFold(f[1], "as") {
 				names[strings.ToLower(f[2])] = true
 			}
+		case instr == "SHELL":
+			st.shell = true
+		case instr == "VOLUME":
+			st.volume = true
 		case instr == "WORKDIR":
 			p := strings.Trim(rest, `"`)
+			v.mention([]string{p}) // WORKDIR makes the directory, and what runs there writes into it
 			if c, ok := st.resolve(p); ok {
 				st.wd, st.wdKnown = c, true
 			} else {
@@ -400,9 +741,19 @@ func (v *Veto) dockerfile(file, src string) string {
 		case instr == "COPY" || instr == "ADD":
 			st.copyInstr(v, ctxs, rest, instr == "ADD")
 		case instr == "RUN" || instr == "CMD" || instr == "ENTRYPOINT":
+			var mounts []string
+			mountsKnown := true
 			for instr == "RUN" && strings.HasPrefix(rest, "--") {
-				_, rest, _ = strings.Cut(rest, " ")
+				var flag string
+				flag, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
+				if m, ok := strings.CutPrefix(flag, "--mount="); ok {
+					if t, ok := st.mountTarget(m); ok {
+						mounts = append(mounts, t)
+					} else {
+						mountsKnown = false
+					}
+				}
 			}
 			var segs []segment
 			ok := true
@@ -413,30 +764,47 @@ func (v *Veto) dockerfile(file, src string) string {
 			}
 			if !ok {
 				if hasTok {
-					return "install command that does not tokenise"
+					return "install command that does not tokenise", at
 				}
 				v.mention(strings.Fields(rest))
 				if instr == "RUN" {
-					st.taintAll()
+					st.taintCmd()
 				}
 				continue
 			}
 			if instr != "RUN" {
 				deferred = append(deferred, segs...)
+				for range segs {
+					deferredAt = append(deferredAt, at)
+				}
 				continue
 			}
-			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown}
+			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mounts: mounts, mountsKnown: mountsKnown}
 			for _, seg := range segs {
 				if why := v.command(seg, cur, 0); why != "" {
-					return why
+					return why, at
 				}
 			}
+		case instr == "ENV" || instr == "ARG":
+			v.mention(strings.Fields(rest)) // a later command may reach a path through the value
 		case dockerPlain[instr]:
 		default: // ONBUILD, HEALTHCHECK and anything unknown run elsewhere or not at all
-			if hasTok {
-				return "install command in " + instr
+			if v.hasToken(line) { // the whole line: a file read as a Dockerfile may be a script
+				return "install command in " + instr, at
 			}
 		}
 	}
 	return flush()
+}
+
+// shellHides reports whether text, read as a shell script, holds an installer that only its
+// line continuations show.
+func (v *Veto) shellHides(text string) bool {
+	lines, _, hidden, _ := logicalLinesAt(text, kindShell)
+	for _, l := range append(lines, hidden...) {
+		if v.hasToken(l) {
+			return true
+		}
+	}
+	return false
 }

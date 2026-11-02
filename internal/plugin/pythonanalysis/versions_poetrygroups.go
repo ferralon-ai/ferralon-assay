@@ -88,6 +88,29 @@ type poetryLockPackage struct {
 // poetryLockInstalled returns, by normalized name, whether every run installs every locked
 // package of that name. It is empty when the lock cannot be decoded.
 func poetryLockInstalled(lock string, runs []poetryInstall) map[string]bool {
+	return poetryLockEvery(lock, runs, func(g *poetryGroups, pkg poetryLockPackage, sel poetrySelection) bool {
+		return g.installs(pkg, g.selected(sel))
+	})
+}
+
+// uninstalled returns, by normalized name, whether every recorded install of the poetry.lock at
+// lock is known to leave out every locked package of that name (excludes). It is empty when no
+// install of the lock is recorded, since a bare install no script runs is not one the build is
+// known to make, or when the lock cannot be decoded.
+func (p poetryInstalls) uninstalled(lock string) map[string]bool {
+	runs := p[filepath.Clean(lock)]
+	if len(runs) == 0 {
+		return nil
+	}
+	return poetryLockEvery(lock, runs, func(g *poetryGroups, pkg poetryLockPackage, sel poetrySelection) bool {
+		return g.excludes(pkg, g.mayselect(sel))
+	})
+}
+
+// poetryLockEvery returns, by normalized name, whether holds is true of every locked package
+// of that name for every run under every pyproject.toml it reads. It is empty when the lock
+// cannot be decoded.
+func poetryLockEvery(lock string, runs []poetryInstall, holds func(*poetryGroups, poetryLockPackage, poetrySelection) bool) map[string]bool {
 	data, err := readRegular(lock)
 	if err != nil {
 		return nil
@@ -99,7 +122,7 @@ func poetryLockInstalled(lock string, runs []poetryInstall) map[string]bool {
 		return nil
 	}
 	declared := map[string]*poetryGroups{}
-	installed := map[string]bool{}
+	out := map[string]bool{}
 	seen := map[string]bool{}
 	for _, pkg := range doc.Package {
 		in := true
@@ -110,14 +133,14 @@ func poetryLockInstalled(lock string, runs []poetryInstall) map[string]bool {
 					g = readPoetryGroups(m)
 					declared[m] = g
 				}
-				in = in && g != nil && g.installs(pkg, g.selected(run.poetrySelection))
+				in = in && g != nil && holds(g, pkg, run.poetrySelection)
 			}
 		}
 		name := normalizePyCoordinate(pkg.Name)
-		installed[name] = in && (!seen[name] || installed[name])
+		out[name] = in && (!seen[name] || out[name])
 		seen[name] = true
 	}
-	return installed
+	return out
 }
 
 // poetryGroups is the dependency groups a pyproject.toml declares: by normalized name, whether
@@ -178,10 +201,26 @@ func readPoetryGroups(path string) *poetryGroups {
 // --only or --with names counts only as the manifest spells it, since poetry 1.x matches the
 // name as written; --without drops every spelling of its name.
 func (g *poetryGroups) selected(sel poetrySelection) map[string]bool {
+	return g.selectBy(sel, func(name string) bool { return g.spelled[name] }, func(string) bool { return true })
+}
+
+// mayselect is selected read as widely as any poetry might: a group --only or --with names counts
+// under any spelling of a declared group, and --without drops a group only as the manifest
+// spells it, since a poetry that matches names as written keeps it.
+func (g *poetryGroups) mayselect(sel poetrySelection) map[string]bool {
+	return g.selectBy(sel, func(name string) bool {
+		_, ok := g.optional[normalizePyCoordinate(name)]
+		return ok
+	}, func(name string) bool { return g.spelled[name] })
+}
+
+// selectBy is selected, counting a group --only or --with names when declared reports true, and
+// dropping one --without names when drops does.
+func (g *poetryGroups) selectBy(sel poetrySelection, declared, drops func(string) bool) map[string]bool {
 	out := map[string]bool{}
 	pick := func(names []string) {
 		for _, name := range names {
-			if g.spelled[name] {
+			if declared(name) {
 				out[normalizePyCoordinate(name)] = true
 			}
 		}
@@ -197,7 +236,9 @@ func (g *poetryGroups) selected(sel poetrySelection) map[string]bool {
 	}
 	pick(sel.with)
 	for _, name := range sel.without {
-		delete(out, normalizePyCoordinate(name))
+		if drops(name) {
+			delete(out, normalizePyCoordinate(name))
+		}
 	}
 	return out
 }
@@ -244,4 +285,53 @@ func (g *poetryGroups) installs(pkg poetryLockPackage, selected map[string]bool)
 		return false
 	}
 	return all("")
+}
+
+// excludes reports whether an install of the groups selected is known to leave pkg out: only an
+// extra pulls it in, or every group its lock entry names is declared and none is selected. It
+// is false wherever membership cannot be read, so given any superset of the groups installs is
+// given (mayselect), it is never true where installs is.
+func (g *poetryGroups) excludes(pkg poetryLockPackage, selected map[string]bool) bool {
+	if pkg.Optional != nil {
+		if v, ok := pkg.Optional.(bool); !ok || v {
+			return ok
+		}
+	}
+	none := func(skip string) bool {
+		for name := range g.optional {
+			if name != skip && selected[name] {
+				return false
+			}
+		}
+		return true
+	}
+	switch {
+	case pkg.Groups != nil:
+		list, ok := pkg.Groups.([]any)
+		if !ok || len(list) == 0 {
+			return false
+		}
+		for _, e := range list {
+			name, ok := e.(string)
+			if !ok {
+				return false
+			}
+			n := normalizePyCoordinate(name)
+			if _, declared := g.optional[n]; !declared || selected[n] {
+				return false
+			}
+		}
+		return true
+	case pkg.Category != nil:
+		switch pkg.Category {
+		case "main":
+			// main pulls it in, and a dev dependency may share it: only an install of no group
+			// leaves it out.
+			return len(g.optional) > 0 && none("")
+		case "dev":
+			return len(g.optional) > 1 && none("main")
+		}
+		return false
+	}
+	return len(g.optional) > 0 && none("")
 }

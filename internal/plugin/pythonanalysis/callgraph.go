@@ -142,7 +142,24 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 	if paths, ok := f.aliasBound(head, cs.scopes); ok && !cs.inner {
 		edge = p.withAliases(edge, via(paths))
 	}
-	return edge, p.withAliases(p.withAliases([]string{name}, edge), via(f.anyScopeBinds(head)))
+	stars := p.starImportPaths(f, head)
+	if _, decided := f.deciding(cs); !decided && !cs.inner && !cs.shadowed {
+		edge = p.withAliases(edge, via(stars))
+	}
+	return edge, p.withAliases(p.withAliases([]string{name}, edge), via(append(f.anyScopeBinds(head), stars...)))
+}
+
+// starImportPaths is the paths the file's first-party star imports may bind name to: the name in
+// each star-imported module that may bind it (starMayBind) or has a submodule by the name,
+// which a package's star import binds once something has loaded it.
+func (p *program) starImportPaths(f *fileParse, name string) []string {
+	var out []string
+	for _, star := range f.starPaths {
+		if path := star + "/" + name; p.starMayBind(star, name) || len(p.byModule[path]) > 0 {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // deciding finds the scope that decides the name a site calls (a chain's head): the

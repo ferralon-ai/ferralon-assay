@@ -206,6 +206,26 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"environment variable after a non-ASCII space", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i x\u00a0-i ${R} extra.txt\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 		{"quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--extra-index-url \"https://x/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
 		{"option line without an install", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --no-binary :all:\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"constraint inside a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"x -c c.txt\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"include inside a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-i \"x -r extra.txt\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"environment variable in a quoted option value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--index-url \"https://${TOKEN}@host/simple\"\nrequests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"URL include after an include", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -r https://h/x.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"absolute include after an include", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -r /opt/x.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"editable after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -e git+https://h/p#egg=p\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"editable after an include", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-r requirements-c.txt -e git+https://h/p#egg=p\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"shortened include after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt --requirem=https://h/x.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment option after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt ${R}\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"environment option name after a constraint", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt -${R}\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, false},
+		{"require-hashes on an include line", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-r requirements-c.txt --require-hashes\nrequests==2.32.3\n", "requirements-c.txt": "requests==2.32.3\n"}, false},
+		{"require-hashes as a find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-f --require-hashes\nrequests==2.32.3\n"}, false},
+		{"require-hashes as a quoted find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--find-links \"--require-hashes\"\nrequests==2.32.3\n"}, false},
+		{"require-hashes as a trusted-host value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--trusted-host --require-hashes\nrequests==2.32.3\n"}, false},
+		{"require-hashes after an attached find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--find-links=./w --require-hashes\nrequests==2.32.3\n"}, true},
+		{"require-hashes after the end of options", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -- --require-hashes\nrequests==2.32.3\n"}, false},
+		{"require-hashes after an end-of-options find-links value", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-f -- --require-hashes\nrequests==2.32.3\n"}, true},
+		{"require-hashes after a flag", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre --require-hashes\nrequests==2.32.3\n"}, true},
+		{"constraint alone", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "-c requirements-c.txt\nrequests==2.32.3 --hash=sha256:aaa\n", "requirements-c.txt": "requests==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"unclosed quote", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "--pre -i 'x\nrequests==2.32.3 --hash=sha256:aaa\n"}, false},
 
 		// Nested project definitions.
 		{"nested pyproject the lock does not resolve", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "svc/pyproject.toml": "[project]\nname = \"svc\"\ndependencies = [\"requests\"]\n"}, false},
@@ -458,7 +478,8 @@ func TestUntrackedConstraint(t *testing.T) {
 		{"--pre -cc.txt", true},
 		{"--pre --constraint=c.txt", true},
 	} {
-		if got := untrackedConstraint(tt.line); got != tt.want {
+		words, _ := shellSplit(tt.line)
+		if got := untrackedConstraint(words); got != tt.want {
 			t.Errorf("untrackedConstraint(%q) = %v, want %v", tt.line, got, tt.want)
 		}
 	}

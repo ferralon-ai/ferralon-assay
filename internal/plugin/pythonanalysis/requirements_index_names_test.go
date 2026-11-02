@@ -32,6 +32,7 @@ func TestRequirementsLineShapes(t *testing.T) {
 		includes []string
 		locals   []string
 		unnamed  bool
+		wantRaw  string // the node's Raw, checked when set
 	}{
 		{name: "pinned", line: "requests==2.31.0", wantNode: "requests", wantKind: reqNormal},
 		{name: "parenthesized", line: "requests (>=2)", wantNode: "requests", wantKind: reqNormal},
@@ -55,7 +56,7 @@ func TestRequirementsLineShapes(t *testing.T) {
 		{name: "wheel url", line: "https://example.com/w/Foo-2.0-py3-none-any.whl", wantNode: "foo", wantKind: reqURL},
 		{name: "vcs no egg", line: "git+https://github.com/o/r.git@main", unnamed: true},
 		{name: "vcs egg", line: "git+https://github.com/o/r.git#egg=Foo_Bar", wantNode: "foo-bar", wantKind: reqVCS},
-		{name: "editable vcs egg", line: "-e git+https://github.com/o/r.git#egg=foo", wantNode: "foo", wantKind: reqEditable},
+		{name: "editable vcs egg", line: "-e git+https://github.com/o/r.git#egg=foo", wantNode: "foo", wantKind: reqEditable, wantRaw: "-e git+https://github.com/o/r.git#egg=foo"},
 		{name: "editable vcs no egg", line: "-e git+https://github.com/o/r.git", unnamed: true},
 		{name: "direct ref vcs", line: "auto-gpt-plugin-template @ git+https://github.com/o/r@0.1", wantNode: "auto-gpt-plugin-template", wantKind: reqVCS},
 		{name: "direct ref url", line: "en_core_web_sm[x] @ https://h/en_core_web_sm-3.7.1.tar.gz", wantNode: "en-core-web-sm", wantKind: reqURL},
@@ -91,6 +92,9 @@ func TestRequirementsLineShapes(t *testing.T) {
 				t.Errorf("nodes = %+v, want one %q of kind %d", got, tc.wantNode, tc.wantKind)
 			case tc.wantNode != "" && tc.wantKind != reqNormal && !containsString(got[0].Partial, plugin.PartialReasonSourceUnpinned):
 				t.Errorf("%q: partial = %v, want source_unpinned", tc.wantNode, got[0].Partial)
+			}
+			if tc.wantRaw != "" && len(got) == 1 && got[0].Raw != tc.wantRaw {
+				t.Errorf("raw = %q, want %q", got[0].Raw, tc.wantRaw)
 			}
 			if !reflect.DeepEqual(rf.includes, tc.includes) {
 				t.Errorf("includes = %q, want %q", rf.includes, tc.includes)
@@ -526,6 +530,88 @@ func TestInventoryIndexNames(t *testing.T) {
 			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
 		},
 		{
+			name:      "quoted space in a constraint name",
+			files:     map[string]string{"requirements.txt": "-c \"a b.txt\"\nrequests==2.31.0\n", "a b.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "quoted space in an include name",
+			files:     map[string]string{"requirements.txt": "-r \"a b.txt\"\nrequests==2.31.0\n", "a b.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "escaped quote in a constraint name",
+			files:     map[string]string{"requirements.txt": "-c c\\\".txt\nrequests==2.31.0\n", "c\".txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "backslash kept inside double quotes",
+			files:     map[string]string{"requirements.txt": "-c \"sub\\c.txt\"\nrequests==2.31.0\n", "sub\\c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "quoted double space in a constraint name with a hash",
+			files:     map[string]string{"requirements.txt": "-c \"a  b.txt\" --hash=sha256:x\nrequests==2.31.0\n", "a  b.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:         "marker glued to an editable",
+			files:        map[string]string{"pyproject.toml": project, "requirements.txt": "-e .;python_version<\"3\"\n"},
+			wantPURLs:    []string{"pkg:pypi/click@8.1.7"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "semicolon inside a quoted vcs editable",
+			files:        map[string]string{"requirements.txt": "-e \"git+https://h/p@v;x#egg=pp\"\nrequests==2.31.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "marker inside a quoted editable",
+			files:        map[string]string{"pyproject.toml": project, "requirements.txt": "-e \".; python_version<\\\"3\\\"\"\n"},
+			wantPURLs:    []string{"pkg:pypi/click@8.1.7"},
+			wantUnpinned: true,
+		},
+		{
+			name:      "constraint inside a quoted option value",
+			files:     map[string]string{"requirements.txt": "-i \"x -c c.txt\"\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "quoted value before a constraint",
+			files:     map[string]string{"requirements.txt": "--pre -i \"x y\" -c c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:      "words after an include are ignored",
+			files:     map[string]string{"requirements.txt": "-r dev.txt extra\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
+			name:         "marker glued to an include name",
+			files:        map[string]string{"requirements.txt": "-r dev.txt;python_version<\"3\"\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
+			env:          map[string]string{"python_version": "3.11"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "unclosed double quote",
+			files:        map[string]string{"requirements.txt": "-c \"c.txt\nrequests==2.31.0\n", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:         "unclosed single quote",
+			files:        map[string]string{"requirements.txt": "--pre -i 'x\nrequests==2.31.0\n"},
+			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
+			wantUnpinned: true,
+		},
+		{
+			name:      "trailing backslash continues into nothing",
+			files:     map[string]string{"requirements.txt": "requests==2.31.0\n-c c.txt\\", "c.txt": "-r dev.txt\n", "dev.txt": "pyjwt==2.8.0\n"},
+			wantPURLs: []string{"pkg:pypi/pyjwt@2.8.0", "pkg:pypi/requests@2.31.0"},
+		},
+		{
 			name:         "include after a marker separator",
 			files:        map[string]string{"requirements.txt": "--pre ; -r dev.txt\nrequests==2.31.0\n", "dev.txt": "pyjwt==2.8.0\n"},
 			wantPURLs:    []string{"pkg:pypi/requests@2.31.0"},
@@ -698,8 +784,14 @@ func TestConstraintTarget(t *testing.T) {
 		{"--con c.txt", "", false},
 		{"--pre -c", "", false},
 		{"--pre", "", false},
+		{`-c "a b.txt"`, "a b.txt", true},
+		{`-c c\".txt`, `c".txt`, true},
+		{`-c "sub\c.txt"`, `sub\c.txt`, true},
+		{`-i "x -c c.txt"`, "", false},
+		{`--pre "-c" c.txt`, "c.txt", true},
 	} {
-		got, ok := constraintTarget(tt.line)
+		words, _ := shellSplit(tt.line)
+		got, ok := constraintTarget(words)
 		if got != tt.want || ok != tt.wantOK {
 			t.Errorf("constraintTarget(%q) = %q, %v, want %q, %v", tt.line, got, ok, tt.want, tt.wantOK)
 		}

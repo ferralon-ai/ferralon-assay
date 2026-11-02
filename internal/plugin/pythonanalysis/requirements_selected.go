@@ -124,6 +124,7 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 		}
 
 		// E3: retain --hash tokens rather than truncating them off the line.
+		options := line
 		line, hashes := extractHashes(line)
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -134,26 +135,41 @@ func parseRequirementsFile(data []byte, env map[string]string, selection []strin
 		// requirement — is recorded, never silently omitted. A pure option line (e.g.
 		// --index-url) carries no dependency and is skipped.
 		if strings.HasPrefix(line, "-") {
-			// pip ignores a marker on an option line, but reads any option after the ";":
-			// the first option's target comes from spec, every later option from line.
-			spec, _ := splitMarker(line)
+			// pip splits an option line shell-style and parses every word as an option or,
+			// a marker included, an ignored positional. A line shlex cannot split fails the
+			// whole file in pip.
+			words, ok := shellSplit(options)
+			if !ok {
+				f.skipped = true
+				continue
+			}
+			if len(words) == 0 {
+				continue
+			}
 			kind := reqInclude
-			target, ok := includeTarget(spec)
+			target, ok := includeTarget(words, 0)
 			if !ok {
 				kind = reqEditable
-				target, ok = editableTarget(spec)
+				target, ok = editableTarget(words, 0)
 			}
-			if (!ok && abbreviatesInstallOption(spec)) || laterInstallOption(line) {
+			if (!ok && abbreviatesInstallOption(words[0])) || laterInstallOption(words) {
 				f.skipped = true
 				continue
 			}
 			switch {
 			case ok && target != "" && kind == reqEditable:
+				// pip takes the whole word as the editable, so a glued marker is part of
+				// the path or URL, not a marker; leave it unread.
+				if strings.Contains(target, ";") {
+					f.skipped = true
+					continue
+				}
+				spec, _ := splitMarker(line)
 				f.addSource(spec, target, kind, hashes, env, selection)
-			case ok && target != "" && !isConstraintFlag(spec):
+			case ok && target != "" && !isConstraintFlag(words[0]):
 				f.includes = append(f.includes, target)
 			default:
-				if c, ok := constraintTarget(line); ok {
+				if c, ok := constraintTarget(words); ok {
 					f.constraints = append(f.constraints, c)
 				}
 			}
@@ -274,35 +290,30 @@ func markerMaySelect(marker string, env map[string]string, selection []string) b
 	return mr.unresolved || mr.selected
 }
 
-// editableTarget returns the target of an editable line ("-e .", "-e.", "--editable=./pkg").
-func editableTarget(line string) (string, bool) {
-	return optionValue(line, "--editable", "-e")
+// editableTarget returns the target of an editable option at words[i] ("-e .", "-e.",
+// "--editable=./pkg").
+func editableTarget(words []string, i int) (string, bool) {
+	return optionValue(words, i, "--editable", "-e")
 }
 
-// abbreviatesInstallOption reports whether line opens with a shortened --requirement or
-// --editable, which pip's option parser accepts as the full option.
-func abbreviatesInstallOption(line string) bool {
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return false
-	}
-	word, _, _ := strings.Cut(fields[0], "=")
+// abbreviatesInstallOption reports whether word is a shortened --requirement or --editable,
+// which pip's option parser accepts as the full option.
+func abbreviatesInstallOption(word string) bool {
+	word, _, _ = strings.Cut(word, "=")
 	return len(word) > 2 && (strings.HasPrefix("--requirement", word) || strings.HasPrefix("--editable", word))
 }
 
 // laterInstallOption reports whether an option line carries an include or editable after its
-// first option ("--pre -r dev.txt"); pip reads every option on the line, shell-unquoted.
-func laterInstallOption(line string) bool {
-	fields := strings.Fields(line)
-	for i := 1; i < len(fields); i++ {
-		fields[i] = strings.Trim(fields[i], `'"`)
-		if !strings.HasPrefix(fields[i], "-") {
+// first option ("--pre -r dev.txt"); pip reads every option on the line.
+func laterInstallOption(words []string) bool {
+	for i := 1; i < len(words); i++ {
+		if !strings.HasPrefix(words[i], "-") {
 			continue
 		}
-		if _, ok := editableTarget(fields[i]); ok || abbreviatesInstallOption(fields[i]) {
+		if _, ok := editableTarget(words, i); ok || abbreviatesInstallOption(words[i]) {
 			return true
 		}
-		if _, ok := includeTarget(fields[i]); ok && !isConstraintFlag(fields[i]) {
+		if _, ok := includeTarget(words, i); ok && !isConstraintFlag(words[i]) {
 			return true
 		}
 	}
@@ -311,38 +322,34 @@ func laterInstallOption(line string) bool {
 
 // constraintTarget returns the file named by the first constraint option on an option line, in
 // any of pip's spellings ("-c c.txt", "-cc.txt", "--pre --cons=c.txt"); pip reads only the
-// first. A field another option consumes as its value ("-i -c") is not an option.
-func constraintTarget(line string) (string, bool) {
-	fields := strings.Fields(line)
-	for i := 0; i < len(fields); i++ {
-		f := shellUnquote.Replace(fields[i])
-		name, val, attached := strings.Cut(f, "=")
-		long := strings.HasPrefix(f, "--")
+// first. A word another option consumes as its value ("-i -c") is not an option.
+func constraintTarget(words []string) (string, bool) {
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		name, val, attached := strings.Cut(w, "=")
+		long := strings.HasPrefix(w, "--")
 		switch {
 		case long && len(name) >= len("--cons") && strings.HasPrefix("--constraint", name):
 			if attached {
 				return val, val != ""
 			}
-		case !long && strings.HasPrefix(f, "-c"):
-			if len(f) > 2 {
-				return f[2:], true
+		case !long && strings.HasPrefix(w, "-c"):
+			if len(w) > 2 {
+				return w[2:], true
 			}
-		case long && !attached && takesValue(name), !long && takesValue(f):
+		case long && !attached && takesValue(name), !long && takesValue(w):
 			i++
 			continue
 		default:
 			continue
 		}
-		if i+1 < len(fields) {
-			return shellUnquote.Replace(fields[i+1]), true
+		if i+1 < len(words) {
+			return words[i+1], true
 		}
 		return "", false
 	}
 	return "", false
 }
-
-// shellUnquote drops the quotes and backslashes pip's shell-style split removes from a field.
-var shellUnquote = strings.NewReplacer(`"`, "", `'`, "", `\`, "")
 
 func isConstraintFlag(spec string) bool {
 	return strings.HasPrefix(spec, "-c") || strings.HasPrefix(spec, "--constraint")
@@ -500,20 +507,6 @@ func stripReqCommentSafe(line string) string {
 		}
 	}
 	return line
-}
-
-// optionKind classifies a leading-"-" line. It returns (kind, true) for the dependency-
-// bearing option lines — "-e"/"--editable" editables and "-r"/"--requirement"/"-c"/
-// "--constraint" includes, in any of pip's spellings — and (0, false) for a pure option line
-// (e.g. --index-url) that carries no dependency.
-func optionKind(line string) (reqKind, bool) {
-	if _, ok := editableTarget(line); ok {
-		return reqEditable, true
-	}
-	if _, ok := includeTarget(line); ok {
-		return reqInclude, true
-	}
-	return 0, false
 }
 
 // urlKind classifies a VCS or direct-URL requirement. git+/hg+/svn+/bzr+ prefixes are VCS;

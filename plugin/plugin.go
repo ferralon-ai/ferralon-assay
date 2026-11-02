@@ -180,10 +180,11 @@ const (
 	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
 
 	// unrecognised_install_surface names a file the script-surface rule does not read as a
-	// surface that runs a lane installer at a command position (scriptsurface.Veto.Unrecognised):
-	// the lane withholds as it would on an unreadable install surface. A lane appends ":" and
-	// the file and line, relative to the build ("Earthfile:12"), and lists it after a bare
-	// tool_failure, so a reader matching that base exactly sees no change.
+	// surface that runs a lane installer at a command position, and that something in the build
+	// may run (scriptsurface.Veto.Unrecognised): the lane withholds as it would on an unreadable
+	// install surface. A lane appends ":" and the file and line, relative to the build
+	// ("Earthfile:12"), and lists it after a bare tool_failure, so a reader matching that base
+	// exactly sees no change.
 	PartialReasonUnrecognisedInstallSurface = PartialReasonToolFailure + ":unrecognised_install_surface"
 
 	// --- module-resolution reason localisers ---
@@ -430,6 +431,28 @@ type DependencyVersionResult struct {
 	// False (the default, and every plugin that does not set it) means absence from All proves
 	// nothing and a consumer must fail open.
 	Exhaustive bool `json:"exhaustive,omitempty"`
+	// Annotations are assumptions the result rests on without being partial: what the plugin
+	// found and chose not to count, which a reader should see beside the verdict. They never
+	// clear Complete or Exhaustive.
+	Annotations []Annotation `json:"annotations,omitempty"`
+}
+
+// AnnotationAssumptionPrefix starts every Annotation.Reason: an assumption the analysis made,
+// stated so a reader can check it.
+const AnnotationAssumptionPrefix = "assumption:"
+
+// AnnotationInstallSurfaceInactive is the reason for an install command found in a file the
+// rule does not read as a script surface and nothing in the build invokes: the result assumes
+// the command is not active.
+const AnnotationInstallSurfaceInactive = AnnotationAssumptionPrefix + "install_surface_inactive"
+
+// Annotation is one assumption a result rests on. Reason is an AnnotationAssumptionPrefix
+// reason; Path is where it applies, relative to the build and slash-separated, with ":" and a
+// 1-based line when known ("examples/setup.yml:4"); Detail is why, in prose.
+type Annotation struct {
+	Reason string `json:"reason"`
+	Path   string `json:"path,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // ReachabilityRequest carries the resolved sinks to trace toward.

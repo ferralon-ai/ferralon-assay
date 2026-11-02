@@ -218,7 +218,15 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 	}
 	// No Priority here: EPSS/KEV context is attached by the report Builder (rankWith), after every
 	// verdict is final, so nothing on this path can read it (inv. 5).
+	f.Annotations = annotations(store, assessmentID)
 	return f
+}
+
+// annotations returns the assumptions the assessment's resolved versions rest on. They qualify
+// whatever verdict the row reaches, so they are read for every row and gate none.
+func annotations(store artifact.Store, assessmentID string) []plugin.Annotation {
+	inv, _ := inventory(store, assessmentID)
+	return inv.Annotations
 }
 
 // guardsOnPath returns the advisory-declared guard symbols present on the candidate
@@ -927,6 +935,8 @@ type inventoryFacts struct {
 	ResolvedVersion  string   `json:"resolved_version"`
 	ResolvedVersions []string `json:"resolved_versions"`
 	PartialityFlags  []string `json:"partiality_flags"`
+	// Annotations are the assumptions the resolved versions rest on (pipeline's inventory payload).
+	Annotations []plugin.Annotation `json:"annotations"`
 }
 
 // undeterminedReason decides whether this assessment established NOTHING about the advisory —
@@ -1232,26 +1242,29 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 	// depend on them. Surfacing those limits would qualify a scan whose findings are all
 	// cleanly disqualified, and a disclosure that appears on nearly every run stops
 	// carrying any signal at all.
+	//
+	// An assumption is the exception: a disqualification rests on the version it qualifies, so it
+	// is disclosed whatever the verdict.
+	inv, haveInv := inventory(store, assessmentID)
+	ecosystem := ""
+	if haveInv {
+		ecosystem = ecosystemFor(inv.Language)
+	}
+	var notes []report.PartialityNote
+	for _, a := range inv.Annotations {
+		notes = append(notes, report.PartialityNote{Reason: a.Reason, Ecosystem: ecosystem, Path: a.Path, Detail: a.Detail})
+	}
 	if disqualified(store, assessmentID) {
-		return nil
+		return notes
 	}
 	reasons := footprintPartialityFlags(store, assessmentID)
 	scoped := footprintScoped(store, assessmentID)
-	inv, haveInv := inventory(store, assessmentID)
 	if len(reasons) == 0 && haveInv {
 		// No footprint artifact (a run that failed before S4, or a stage set that omits
 		// the footprint) — fall back to the inventory's own flags so the S2 axis is never
 		// lost when the union is unavailable.
 		reasons = inv.PartialityFlags
 	}
-	if len(reasons) == 0 && len(scoped) == 0 {
-		return nil
-	}
-	ecosystem := ""
-	if haveInv {
-		ecosystem = ecosystemFor(inv.Language)
-	}
-	notes := make([]report.PartialityNote, 0, len(reasons)+len(scoped))
 	for _, reason := range reasons {
 		notes = append(notes, report.PartialityNote{
 			Reason:    reason,

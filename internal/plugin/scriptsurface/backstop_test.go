@@ -10,8 +10,9 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
-// backstopped runs the veto over root as withheld does, and also returns where the backstop
-// first withheld.
+// backstopped runs the veto over root as withheld does, and reports whether it withheld or the
+// backstop found an installer in a file nothing invokes, and where the backstop first did
+// either. The detection tests use it; TestVeto_BackstopInvoked decides between the two.
 func backstopped(root string) (bool, string) {
 	v := New(root, testRead(root), testSpec)
 	none := func(string, []byte) (string, bool) { return "", false }
@@ -21,7 +22,11 @@ func backstopped(root string) (bool, string) {
 			out = true
 		}
 	}
-	return out || v.Withheld(), v.Unrecognised()
+	at := v.Unrecognised()
+	if inactive := v.Inactive(); at == "" && len(inactive) > 0 {
+		at = inactive[0].String()
+	}
+	return out || v.Withheld() || len(v.Inactive()) > 0, at
 }
 
 // An installer in a command position of a file surfaceOf does not recognise withholds as the
@@ -370,12 +375,9 @@ func TestVeto_BackstopNoxLane(t *testing.T) {
 	spec.Token = func(w string) bool { return testSpec.Token(w) || w == "pip" }
 	v := New(root, testRead(root), spec)
 	none := func(string, []byte) (string, bool) { return "", false }
-	withheld := false
-	for _, c := range buildtree.Candidates(root, v.Classify(none), v.FullyRead) {
-		withheld = withheld || !c.FullyRead
-	}
-	if !withheld || v.Unrecognised() != "tools/nox_helpers.py:2" {
-		t.Fatalf("withheld = %v at %q, want true at tools/nox_helpers.py:2", withheld, v.Unrecognised())
+	buildtree.Candidates(root, v.Classify(none), v.FullyRead)
+	if got := v.Inactive(); len(got) != 1 || got[0].String() != "tools/nox_helpers.py:2" {
+		t.Fatalf("Inactive() = %v, want tools/nox_helpers.py:2", got)
 	}
 }
 
@@ -551,5 +553,99 @@ func TestVeto_BackstopFixtureFailsClosed(t *testing.T) {
 				t.Fatalf("Classify withheld = %v, want %v", ok, tt.want)
 			}
 		})
+	}
+}
+
+// The backstop withholds on a file the build may run: one a file the build or the backstop
+// reads names, a hook, or a runner's default file. Any other hit is an inactive site: the
+// build stays read whole, and the site is reported for the lane to annotate.
+func TestVeto_BackstopInvoked(t *testing.T) {
+	const hit = "steps:\n  - run: inst add x\n"
+	const lit = "import subprocess\nsubprocess.run([\"inst\", \"add\", \"x\"])\n"
+	wf := func(run string) string {
+		return "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: " + run + "\n"
+	}
+	tests := []struct {
+		name     string
+		files    map[string]string
+		withheld bool
+		at       string // Unrecognised(), or the one Inactive() site
+	}{
+		{"named by nothing", map[string]string{"examples/demo/provision.yml": hit}, false, "examples/demo/provision.yml:2"},
+		{"named only in prose", map[string]string{"docs/provision.yml": hit, "README.md": "Run `tool docs/provision.yml`.\n"}, false, "docs/provision.yml:2"},
+		{"named only by itself", map[string]string{"ci/provision.yml": "# tool provision.yml\n" + hit}, false, "ci/provision.yml:3"},
+		{"a longer name is another file", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/post_provision.yml ci/provision.yml.bak")}, false, "ci/provision.yml:2"},
+		{"module named in an unrelated attribute", map[string]string{"tools/provision.py": lit, ".github/workflows/ci.yml": wf("tool self.provision")}, false, "tools/provision.py:2"},
+
+		{"named by a workflow", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/provision.yml")}, true, "ci/provision.yml:2"},
+		{"named by base name after a cd", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("cd ci && tool provision.yml")}, true, "ci/provision.yml:2"},
+		{"named by a Dockerfile", map[string]string{"ci/provision.yml": hit, "Dockerfile": "FROM base\nCOPY . /src\nRUN tool /src/ci/provision.yml\n"}, true, "ci/provision.yml:2"},
+		{"named by a make recipe", map[string]string{"ci/provision.yml": hit, "Makefile": "deps:\n\ttool $(CI)/provision.yml\n"}, true, "ci/provision.yml:2"},
+		{"named by a build config", map[string]string{"ci/provision.yml": hit, "setup.cfg": "[tool]\nconfig = ci/provision.yml\n"}, true, "ci/provision.yml:2"},
+		{"named through a build script", map[string]string{"ci/provision.yml": hit, "tools/run.py": "import subprocess\nsubprocess.run([\"tool\", \"ci/provision.yml\"])\n"}, true, "ci/provision.yml:2"},
+		{"module run with -m", map[string]string{"tools/provision.py": lit, ".github/workflows/ci.yml": wf("python -m tools.provision")}, true, "tools/provision.py:2"},
+		{"module run with -m from its directory", map[string]string{"tools/provision.py": lit, ".github/workflows/ci.yml": wf("cd tools && python -m provision")}, true, "tools/provision.py:2"},
+		{"module from-imported", map[string]string{"tools/provision.py": lit, "noxfile.py": "from tools import (\n    lint,\n    provision,\n)\n"}, true, "tools/provision.py:2"},
+		{"module imported relatively", map[string]string{"tools/provision.py": lit, "tools/main.py": "from .provision import main\n"}, true, "tools/provision.py:2"},
+		{"script required without its extension", map[string]string{"scripts/provision.js": "require('child_process').execSync('inst add x')\n", "package.json": "{\"scripts\": {\"postinstall\": \"node -e \\\"require('./scripts/provision')\\\"\"}}\n"}, true, "scripts/provision.js:1"},
+		{"Husky hook", map[string]string{".husky/pre-commit": "inst add x\n"}, true, ".husky/pre-commit:1"},
+		{"active git hook in Python", map[string]string{".git/hooks/pre-push": "#!/usr/bin/env python3\n" + lit}, true, ".git/hooks/pre-push:3"},
+		{"invoke tasks file", map[string]string{"tasks.py": "def deps(c):\n    c.run(\"inst add x\")\n"}, true, "tasks.py:2"},
+		{"gulpfile", map[string]string{"gulpfile.js": "require('child_process').execSync('inst add x')\n"}, true, "gulpfile.js:1"},
+		{"tool config", map[string]string{"vite.config.js": "require('child_process').execSync('inst add x')\n"}, true, "vite.config.js:1"},
+		{"mage target", map[string]string{"magefiles/deps.go": "package main\n\nfunc Deps() { sh.Run(\"inst\", \"add\", \"x\") }\n"}, true, "magefiles/deps.go:3"},
+		{"module imported beside it", map[string]string{"tools/provision.py": lit, "tools/run.py": "#!/usr/bin/env python3\nimport provision\n"}, true, "tools/provision.py:2"},
+		{"module imported from its package", map[string]string{"tools/provision.py": lit, "tools/run.py": "#!/usr/bin/env python3\nfrom . import provision\n"}, true, "tools/provision.py:2"},
+		{"module named by its dotted path", map[string]string{"tools/provision.py": lit, "setup.cfg": "[tool]\nhook = tools.provision:main\n"}, true, "tools/provision.py:2"},
+		{"Buildkite agent hook", map[string]string{".buildkite/hooks/pre-command": "inst add x\n"}, true, ".buildkite/hooks/pre-command:1"},
+		{"setup.py", map[string]string{"setup.py": lit}, true, "setup.py:2"},
+		{"Rakefile", map[string]string{"Rakefile": "task :deps do\n  sh 'inst add x'\nend\n"}, true, "Rakefile:2"},
+		{"Gradle build script", map[string]string{"build.gradle.kts": "tasks.register<Exec>(\"deps\") {\n    commandLine(\"inst\", \"add\", \"x\")\n}\n"}, true, "build.gradle.kts:2"},
+		{"Bitrise config", map[string]string{"bitrise.yml": "workflows:\n  ci:\n    steps:\n      - script:\n          inputs:\n            - content: inst add x\n"}, true, "bitrise.yml:6"},
+		{"turbo tasks", map[string]string{"turbo.json": "{\"tasks\": {\"deps\": \"inst add x\"}}\n"}, true, "turbo.json:1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			root := writeTree(t, files)
+			v := New(root, testRead(root), testSpec)
+			none := func(string, []byte) (string, bool) { return "", false }
+			unread := false
+			for _, c := range buildtree.Candidates(root, v.Classify(none), v.FullyRead) {
+				unread = unread || !c.FullyRead
+			}
+			withheld := unread || v.Withheld()
+			inactive := v.Inactive()
+			if withheld != tt.withheld {
+				t.Fatalf("withheld = %v, want %v (Unrecognised %q, Inactive %v)", withheld, tt.withheld, v.Unrecognised(), inactive)
+			}
+			if tt.withheld {
+				if v.Unrecognised() != tt.at || len(inactive) != 0 {
+					t.Fatalf("Unrecognised() = %q, Inactive() = %v; want %q and none", v.Unrecognised(), inactive, tt.at)
+				}
+				return
+			}
+			if v.Unrecognised() != "" || len(inactive) != 1 || inactive[0].String() != tt.at || inactive[0].Why == "" {
+				t.Fatalf("Unrecognised() = %q, Inactive() = %v; want none and %q", v.Unrecognised(), inactive, tt.at)
+			}
+		})
+	}
+}
+
+// When the build cannot be read whole, a file may name a hit unseen, so every hit withholds.
+func TestVeto_BackstopInvokedFailsClosed(t *testing.T) {
+	root := writeTree(t, map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "examples/provision.yml": "steps:\n  - run: inst add x\n"})
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "vendored")); err != nil {
+		t.Fatal(err)
+	}
+	v := New(root, testRead(root), testSpec)
+	none := func(string, []byte) (string, bool) { return "", false }
+	for range buildtree.Candidates(root, v.Classify(none), v.FullyRead) {
+	}
+	if got := v.Unrecognised(); got != "examples/provision.yml:2" || len(v.Inactive()) != 0 {
+		t.Fatalf("Unrecognised() = %q, Inactive() = %v; want a withhold at examples/provision.yml:2", got, v.Inactive())
 	}
 }

@@ -16,13 +16,15 @@ import (
 )
 
 // The backstop reads the files surfaceOf does not recognise for a lane installer in a command
-// position, and withholds on one as the rule withholds on a surface it cannot read: the file is
-// vetoed, so FullyRead reports it unread, and the lane's versions and Exhaustive fall with it.
-// Every command in a command position a word of which names a lane token, as its program, an
-// argument, a path, or text a shell, eval or interpreter runs, goes to v.command from a
-// directory it does not know, as the same line in install.sh would: a form a lane allows
+// position. When the build may run the file (invoked), it withholds as the rule withholds on a
+// surface it cannot read: the file is vetoed, so FullyRead reports it unread, and the lane's
+// versions and Exhaustive fall with it. When nothing in the build invokes it, the lane's claims
+// stand and the hit is recorded instead (Inactive), for the lane to state as an assumption on
+// what it resolves. Every command in a command position a word of which names a lane token, as
+// its program, an argument, a path, or text a shell, eval or interpreter runs, goes to v.command
+// from a directory it does not know, as the same line in install.sh would: a form a lane allows
 // without binding a manifest, such as a pip self-upgrade, passes, a command that only reports
-// passes (readOnly), and everything else withholds.
+// passes (readOnly), and everything else is a hit.
 //
 // A command position is one of these:
 //
@@ -288,14 +290,15 @@ func (v *Veto) packageModule(path string) bool {
 // mentions, and whether every entry the walk met was read.
 type buildFiles struct {
 	files     []buildFile
+	texts     []string // the files the backstop reads that may name another (mentionSource)
 	modules   map[string]bool
 	mentioned map[string]bool
 	whole     bool
 }
 
 type buildFile struct {
-	dir  string
-	data []byte
+	path, dir string
+	data      []byte
 }
 
 // buildNames are the base names of the files the build reads beside the script surfaces: a
@@ -362,9 +365,10 @@ func (v *Veto) buildRead() *buildFiles {
 			b.whole = false
 			return nil
 		}
-		b.files = append(b.files, buildFile{dir: filepath.Dir(e.Path), data: data})
+		b.files = append(b.files, buildFile{path: e.Path, dir: filepath.Dir(e.Path), data: data})
 		return nil
 	})
+	b.texts = slices.Clone(texts)
 	// Each module a pass finds mentioned is itself a build script, so its text is the next
 	// pass's source, until a pass finds none new.
 	read := map[string]bool{}
@@ -684,9 +688,13 @@ func (v *Veto) backstop(path string, head []byte) (string, bool) {
 			line, why = v.backstopLines(src, strings.HasPrefix(lower, "bitrise."), filepath.Ext(lower) != ".cue")
 		}
 	}
-	if why != "" {
+	if why == "" {
+		return "", false
+	}
+	if v.invoked(path) {
 		return v.unrecognised(path, line, why), true
 	}
+	v.inactive = append(v.inactive, Site{Path: v.relPath(path), Line: line, Why: why})
 	return "", false
 }
 
@@ -752,11 +760,7 @@ func (v *Veto) backstopDocker(path, src string) (int, string) {
 
 // unrecognised records the first file and line the backstop withholds on, and phrases why.
 func (v *Veto) unrecognised(path string, line int, why string) string {
-	rel, err := filepath.Rel(v.root, path)
-	if err != nil {
-		rel = path
-	}
-	at := filepath.ToSlash(rel)
+	at := v.relPath(path)
 	if line > 0 {
 		at += ":" + strconv.Itoa(line)
 	}

@@ -50,6 +50,7 @@ func renderTier1Body(r report.Report) string {
 	// surface's existing tone; absent entirely when every step of the analysis ran.
 	// Only the did-not-run arm; inherent limits go to the shared footer below.
 	b.WriteString(partialityCallout(r))
+	b.WriteString(assumptionsCallout(r))
 
 	b.WriteString(countsTable(c))
 
@@ -104,6 +105,24 @@ func partialityCallout(r report.Report) string {
 	b.WriteString("> [!NOTE]\n")
 	b.WriteString("> **Partial coverage.** This scan could not fully resolve the codebase:\n")
 	b.WriteString(">\n") // blank quoted line so the list below renders as a list, not a lazy continuation
+	for _, l := range lines {
+		fmt.Fprintf(&b, "> - %s\n", l)
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// assumptionsCallout renders the scan's assumptions as a [!NOTE] alert beside the partial-coverage
+// one, or "" when it made none.
+func assumptionsCallout(r report.Report) string {
+	lines := assumptionLines(r)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("> [!NOTE]\n")
+	b.WriteString("> **Assumptions.** These verdicts hold under assumptions this scan made:\n")
+	b.WriteString(">\n")
 	for _, l := range lines {
 		fmt.Fprintf(&b, "> - %s\n", l)
 	}

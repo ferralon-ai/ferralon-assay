@@ -782,6 +782,15 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
+			name: "script a literal vars key assigned in a def after a dedented continuation",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup():\n    x = make(\n)\n    vars()[\"main\"] = make()\n\nsetup()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script its own namespace only read",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

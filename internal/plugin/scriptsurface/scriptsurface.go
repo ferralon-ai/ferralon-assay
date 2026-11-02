@@ -1006,7 +1006,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.
 				cur.mark.made, cur.wd = "", ""
-				if v.hasToken(line) {
+				if v.hasToken(line) || v.hidesToken(line) {
 					return "install command that does not tokenise"
 				}
 				if expandedInstallLine(line) {
@@ -1144,6 +1144,17 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}
 		return ""
+	}
+	if at, text, fork, sure, ok := nestedShell(words); ok {
+		why, whole := v.reread(words, text, fork, cur, depth)
+		if why != "" {
+			return why
+		}
+		if at == 0 && sure && whole {
+			// The shell or eval runs the text and nothing else, so the text is what is checked.
+			v.mention(words[1:])
+			return ""
+		}
 	}
 	if expandedInstall(words) {
 		return "install verb after an expansion: " + strings.Join(words, " ")
@@ -1502,3 +1513,204 @@ func posixRun(path string, units []unit) bool {
 	}
 	return shellShebang([]byte(first)) && !strings.Contains(first, "zsh")
 }
+
+// shells are the programs whose -c argument is shell text they read again.
+var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ksh": true, "ash": true, "mksh": true}
+
+// shellArgOptions are the shell options that take the next word as their argument.
+var shellArgOptions = map[string]bool{"--rcfile": true, "--init-file": true}
+
+// nestedShell finds in a command's words shell text that is read a second time, with its
+// quotes removed again: the argument of a shell's or su's -c, or the words after eval joined
+// by spaces. at is the index of the shell or eval word, and fork is true when the text runs in a
+// shell of its own. sure is false when other words may run beside the text, or a word other than
+// the one found may be what runs, so the command is also checked as it is.
+func nestedShell(words []string) (at int, text string, fork, sure, ok bool) {
+	for i, w := range words {
+		name, named := CommandName(w)
+		switch {
+		case !named:
+		case name == "eval":
+			if i == 0 || words[i-1] == "command" || words[i-1] == "builtin" {
+				return i, strings.Join(words[i+1:], " "), false, true, true
+			}
+		case name == "su" || name == "runuser":
+			if text, sure, ok := suCommand(words[i+1:]); ok {
+				return i, text, true, sure, true
+			}
+		case shells[name]:
+			c, want, sure := false, 0, true
+			for j := i + 1; j < len(words); j++ {
+				a := words[j]
+				switch {
+				case want > 0:
+					// The argument of an -o or -O in an earlier cluster.
+					want--
+					continue
+				case a == "--" || a == "-":
+					if c && j+1 < len(words) {
+						return i, words[j+1], true, sure, true
+					}
+				case shellArgOptions[a]:
+					j++
+					continue
+				case strings.HasPrefix(a, "--"):
+					continue
+				case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
+					c = c || strings.ContainsRune(a, 'c')
+					// Each -o or -O is taken to have the next word as its argument, but zsh's
+					// -O takes none and zsh and ksh take -oNAME, and zsh's -b ends the options,
+					// so the text may be another word.
+					want = strings.Count(a, "o") + strings.Count(a, "O")
+					sure = sure && want == 0 && !strings.ContainsRune(a, 'b')
+					continue
+				case c:
+					return i, a, true, sure, true
+				}
+				break
+			}
+		}
+	}
+	return 0, "", false, false, false
+}
+
+// suCommand finds the text su or runuser runs in the user's shell, the argument of its -c or
+// --command, among the words after it. The scan stops at --, and at runuser's -u, past which
+// the words are a command run without a shell. sure is false when -c comes after the user,
+// where it is passed to the shell, is given more than once, or beside an option not known,
+// such as a long option abbreviated, or when -s names a program that is not a shell by its
+// absolute path, since su runs a bare name from the working directory.
+func suCommand(args []string) (text string, sure, ok bool) {
+	user, known, n := false, true, 0
+	take := func(t string) {
+		text, n, sure = t, n+1, !user
+	}
+	shell := func(s string) {
+		if name, named := CommandName(s); !named || !shells[name] || !path.IsAbs(s) {
+			known = false
+		}
+	}
+	for j := 0; j < len(args); j++ {
+		a := args[j]
+		switch {
+		case a == "--" || a == "--user" || strings.HasPrefix(a, "--user="):
+			j = len(args)
+		case suArgOptions[a]:
+			j++
+			if a == "--shell" && j < len(args) {
+				shell(args[j])
+			}
+		case strings.HasPrefix(a, "--command=") || strings.HasPrefix(a, "--session-command="):
+			take(a[strings.IndexByte(a, '=')+1:])
+		case a == "--command" || a == "--session-command":
+			if j+1 < len(args) {
+				j++
+				take(args[j])
+			}
+		case strings.HasPrefix(a, "--"):
+			opt, val, _ := strings.Cut(a, "=")
+			switch {
+			case opt == "--shell":
+				shell(val)
+			case suArgOptions[opt] || suLongFlags[a]:
+			default:
+				known = false
+			}
+		case a == "-":
+		case strings.HasPrefix(a, "-"):
+			// A short-option cluster: its letters are read as getopt reads them.
+		letters:
+			for k := 1; k < len(a); k++ {
+				switch l := a[k]; {
+				case l == 'u':
+					j = len(args)
+					break letters
+				case l == 'c' || strings.IndexByte(suArgFlags, l) >= 0:
+					arg := a[k+1:]
+					if arg == "" && j+1 < len(args) {
+						j++
+						arg = args[j]
+					}
+					switch l {
+					case 'c':
+						take(arg)
+					case 's':
+						shell(arg)
+					}
+					break letters
+				case strings.IndexByte(suFlags, l) < 0:
+					known = false
+				}
+			}
+		default:
+			user = true
+		}
+	}
+	return text, sure && known && n == 1, n > 0
+}
+
+// reread applies the rule to shell text a command reads a second time, from cur or, when
+// fork, from a shell of its own. Text nested too deep withholds. Text that expands, or does
+// not split into whole commands, withholds when it names a token once its quotes are gone
+// and its expansions are either dropped or split apart, since either may be what runs. whole
+// is false when the text does not split into whole commands, so they are not all checked.
+func (v *Veto) reread(words []string, text string, fork bool, cur cursor, depth int) (string, bool) {
+	why := "install command in shell text read again: " + strings.Join(words, " ")
+	if depth >= maxRunDepth {
+		return why, false
+	}
+	segs, ok, dangles := shellSegments(text)
+	if !ok || strings.ContainsAny(text, "$`") {
+		if v.hidesToken(text) {
+			return why, false
+		}
+		if !ok {
+			return "", false
+		}
+	}
+	if dangles {
+		return why, false
+	}
+	sh := cur
+	if fork {
+		sh = cur.fork()
+	}
+	for _, seg := range segs {
+		if w := v.command(seg, sh, depth+1); w != "" {
+			return w, false
+		}
+	}
+	return "", true
+}
+
+// hidesToken reports whether shell text names a token once its quotes and escapes are
+// gone, with its expansions either dropped or split apart: what a shell reading it may run.
+func (v *Veto) hidesToken(text string) bool {
+	return v.hasToken(unquote.Replace(expansionRE.ReplaceAllString(text, ""))) || v.hasToken(splitExpansions.Replace(text)) ||
+		v.hasToken(splitEscapes.Replace(text))
+}
+
+// suArgOptions are the su and runuser long options that take the next word as their argument,
+// and suLongFlags those that take none.
+var (
+	suArgOptions = map[string]bool{"--shell": true, "--group": true, "--supp-group": true, "--whitelist-environment": true}
+	suLongFlags  = map[string]bool{"--login": true, "--pty": true, "--preserve-environment": true, "--fast": true}
+)
+
+// suFlags are the su and runuser short options that take no argument, and suArgFlags those
+// that take one, attached or as the next word.
+var (
+	suFlags    = "lmpfP"
+	suArgFlags = "sgGw"
+)
+
+var (
+	// expansionRE matches a parameter expansion, or a command substitution holding no other.
+	expansionRE = regexp.MustCompile(`\$(?:\{[^{}]*\}|\([^()]*\)|[A-Za-z0-9_@*#?!$-]+)|` + "`[^`]*`")
+	// unquote drops quotes and escapes. splitExpansions does too, and splits text at the marks
+	// of an expansion, so the text inside a command substitution is kept; splitEscapes splits
+	// at escapes as well, so a $'…' escape does not join a token to what follows it.
+	unquote         = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
+	splitExpansions = strings.NewReplacer(`'`, "", `"`, "", `\`, "", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+	splitEscapes    = strings.NewReplacer(`'`, "", `"`, "", `\`, " ", "$", " ", "{", " ", "}", " ", "(", " ", ")", " ", "`", " ")
+)

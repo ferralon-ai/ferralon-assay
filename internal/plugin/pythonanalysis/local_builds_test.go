@@ -15,7 +15,7 @@ func TestResolveVersions_LocalBuilds(t *testing.T) {
 	const (
 		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
 		member  = "[project]\nname = \"lib\"\nversion = \"0.1.0\"\n"
-		setupPy = "import subprocess\nsubprocess.run([\"pip\", \"install\", \"jinja2==3.1.2\"])\n"
+		setupPy = "from setuptools import setup\nsetup()\n"
 		jinjaUV = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
 		jinjaPy = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n"
 	)
@@ -184,7 +184,7 @@ func TestResolveVersions_LocalBuildsAbove(t *testing.T) {
 	const (
 		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
 		lib     = "[project]\nname = \"lib\"\nversion = \"0.1.0\"\n[build-system]\nrequires = [\"x\"]\nbuild-backend = "
-		setupPy = "import subprocess\nsubprocess.run([\"pip\", \"install\", \"jinja2==3.1.2\"])\n"
+		setupPy = "from setuptools import setup\nsetup()\n"
 		uvLock  = "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n\n" +
 			"[[package]]\nname = \"lib\"\nversion = \"0.1.0\"\nsource = { editable = \"../lib\" }\n\n" +
 			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
@@ -242,7 +242,7 @@ func TestResolveVersions_LocalBuildsAbove(t *testing.T) {
 func TestResolveVersions_BuildInputs(t *testing.T) {
 	const (
 		project = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2>=3.1\"]\n"
-		setupPy = "import subprocess\nsubprocess.run([\"pip\", \"install\", \"jinja2==3.1.2\"])\n"
+		setupPy = "from setuptools import setup\nsetup()\n"
 		jinjaUV = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
 		jinjaPy = "[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\n"
 		uvBuild = "[build-system]\nrequires = [\"uv_build\"]\nbuild-backend = \"uv_build\"\n"

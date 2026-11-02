@@ -1236,7 +1236,7 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
 				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
-				"tool/boot.py": "import json\n\nexec(\"x = 1\", {\"__builtins__\": {}})\nnames = [k for k in vars(json) if k != \"__builtins__\"]\n",
+				"tool/boot.py": "import json\n\nexec(\"x = 1\", {\"__builtins__\": {}})\nnames = [k for k in vars(json) if k != \"__builtins__\"]\nhas = \"__builtins__\" in vars(json)\nsame = \"builtins\" == __name__\n",
 				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
 			},
 			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},

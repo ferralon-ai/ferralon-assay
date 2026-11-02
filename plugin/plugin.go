@@ -179,6 +179,13 @@ const (
 	// adjudication — anvil may want a fourth base for "resolution could not proceed".
 	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
 
+	// unrecognised_install_surface names a file the script-surface rule does not read as a
+	// surface that runs a lane installer at a command position (scriptsurface.Veto.Unrecognised):
+	// the lane withholds as it would on an unreadable install surface. A lane appends ":" and
+	// the file and line, relative to the build ("Earthfile:12"), and lists it after a bare
+	// tool_failure, so a reader matching that base exactly sees no change.
+	PartialReasonUnrecognisedInstallSurface = PartialReasonToolFailure + ":unrecognised_install_surface"
+
 	// --- module-resolution reason localisers ---
 	//
 	// These name conditions the JS/TS import-scoped module resolver (CallGraph) cannot turn into a

@@ -35,8 +35,9 @@ import (
 // surface names one (pipConfigNamedRE). A script surface that names a uv config
 // (uvConfigNamedRE) withholds when an allowed uv sync runs, and one that names a poetry or pdm
 // config (toolConfigNamedRE) when an allowed poetry install or pdm sync runs. A poetry or pdm
-// config in the tree is read when it sets only that tool's settings (toolConfigClean).
-func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool) {
+// config in the tree is read when it sets only that tool's settings (toolConfigClean). unrecognised is where a file the rule does not read as a surface runs an
+// installer (scriptsurface.Veto.Unrecognised), or "".
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -116,7 +117,7 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	for _, n := range seededDistributions {
 		tooling[n] = true
 	}
-	return manifests, unread || scriptWithheld, scriptWithheld, installs, poetry, tooling
+	return manifests, unread || scriptWithheld, scriptWithheld, installs, poetry, tooling, veto.Unrecognised()
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

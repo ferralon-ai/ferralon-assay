@@ -121,6 +121,7 @@ func (s Spec) complete() bool {
 const (
 	kindShell      = "shell"
 	kindDockerfile = "dockerfile"
+	kindEarthfile  = "earthfile" // read as a Dockerfile once earthfileAsDockerfile adapts it
 	kindMakefile   = "makefile"
 	kindData       = "data"   // YAML, TOML, INI, JSON and Procfile lines: "key: command"
 	kindOpaque     = "opaque" // PowerShell and batch: not parsed, so a line naming a token withholds
@@ -173,6 +174,8 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 	ext := filepath.Ext(lower)
 	yaml := ext == ".yml" || ext == ".yaml"
 	switch {
+	case lower == "earthfile":
+		return surfaceType{kindEarthfile, baseNone}, true
 	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", ext == ".make", lower == "justfile", lower == ".justfile":
 		return surfaceType{kindMakefile, baseDir}, true
 	case ext == ".ps1", ext == ".bat", ext == ".cmd":
@@ -183,7 +186,8 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		return surfaceType{kindData, baseDir}, true
 	case yaml && (strings.HasPrefix(lower, "docker-compose") || strings.HasPrefix(lower, "compose.")):
 		return surfaceType{kindData, baseNone}, true
-	case yaml && (strings.Contains(slash, "/.github/workflows/") || strings.Contains(slash, "/.circleci/") ||
+	case yaml && (actionsWorkflow(slash) || strings.Contains(slash, "/.circleci/") ||
+		strings.Contains(slash, "/.buildkite/") || lower == "buildkite.yml" || lower == "buildkite.yaml" ||
 		strings.Contains(slash, "/.woodpecker/") || strings.HasPrefix(lower, "azure-pipelines") ||
 		strings.HasPrefix(lower, "buildspec") || strings.HasPrefix(lower, "cloudbuild.") ||
 		strings.HasPrefix(lower, "taskfile.")),
@@ -197,6 +201,14 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 		return surfaceType{kindData, base}, true
 	}
 	return surfaceType{}, false
+}
+
+// actionsWorkflow reports whether a file, by its lowercased slash path with a leading slash,
+// is a workflow in the GitHub Actions format: GitHub's own, and Gitea's and Forgejo's, which
+// run the same format.
+func actionsWorkflow(slash string) bool {
+	return strings.Contains(slash, "/.github/workflows/") || strings.Contains(slash, "/.gitea/workflows/") ||
+		strings.Contains(slash, "/.forgejo/workflows/")
 }
 
 // shellShebang reports whether head starts with a #! line naming a POSIX-family shell.
@@ -233,6 +245,10 @@ type Veto struct {
 	mentioned map[string]bool // lowercased base names other commands take as arguments
 	samples   []sampleRun     // the sample hooks surface passed over, each classified apart
 	triggered bool            // a surface's text may reach a sample hook (trigger)
+	// unrecognisedAt is where the backstop first withheld (Unrecognised).
+	unrecognisedAt string
+	actions        *bool       // a workflow uses an action from the tree (localActions), once known
+	build          *buildFiles // the files the build reads (buildRead), once known
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
@@ -249,11 +265,18 @@ func New(root string, read func(string) bool, spec Spec) *Veto {
 		bound: map[string]bool{}, mentioned: map[string]bool{}}
 }
 
-// Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on is
-// a candidate FullyRead reports unread, and every other file is classified by match.
+// Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on, or
+// another file the backstop finds an installer in, is a candidate FullyRead reports unread, and
+// every other file is classified by match.
 func (v *Veto) Classify(match func(path string, head []byte) (string, bool)) func(string, []byte) (string, bool) {
 	return func(path string, head []byte) (string, bool) {
-		if why, ok := v.surface(path, head); ok {
+		why, ok := "", false
+		if _, surface := surfaceOf(path, head); surface {
+			why, ok = v.surface(path, head)
+		} else {
+			why, ok = v.backstop(path, head)
+		}
+		if ok {
 			v.vetoed[path] = true
 			return why, true
 		}
@@ -662,7 +685,9 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 	units := []unit{{text: src}}
 	switch {
 	case s.kind == kindDockerfile:
-		why = v.dockerfile(path, src)
+		why, _ = v.dockerfileAt(path, src, false)
+	case s.kind == kindEarthfile:
+		why, _ = v.dockerfileAt(path, v.earthfileAsDockerfile(src), true)
 	case s.kind == kindOpaque:
 		why = v.opaque(src)
 	case strings.EqualFold(filepath.Ext(path), ".json"):

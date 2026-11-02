@@ -85,7 +85,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		origins []manifestOrigin
 	)
 	want := normalizePyCoordinate(req.Coordinate)
-	manifests, parseFailed, scriptWithheld, installs, poetry, tooling := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised := versionSurfaces(req.BuildDir)
 	if tooling[want] {
 		parseFailed, scriptWithheld = true, true
 	}
@@ -105,6 +105,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	switch {
 	case len(manifests) == 0:
 		part = plugin.Partial(plugin.PartialReasonNoManifest)
+	case parseFailed && unrecognised != "":
+		part = plugin.Partial(plugin.PartialReasonToolFailure, plugin.PartialReasonUnrecognisedInstallSurface+":"+unrecognised)
 	case parseFailed:
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}

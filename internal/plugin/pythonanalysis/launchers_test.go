@@ -1242,6 +1242,27 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
+			name: "script in a package whose __init__ stores computed names into its own namespace",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "import importlib\nfrom tool import impl\n\ndef __getattr__(name):\n    value = getattr(importlib.import_module(\"tool.fac\"), name)\n    globals()[name] = value\n    return value\n",
+				"tool/impl.py":     cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script in a package whose __init__ hands its own namespace to a rebound builtin",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "import tool.boot\nfrom tool import impl\n\nsorted(globals())\n",
+				"tool/boot.py":     "import builtins\n\nbuiltins.sorted = lambda ns: list(ns)\n",
+				"tool/impl.py":     cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
 			name: "script its own namespace handed to a builtin rebound through its module's __builtins__",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

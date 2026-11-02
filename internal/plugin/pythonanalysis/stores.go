@@ -14,7 +14,7 @@ import (
 // first-party import, transitively. Stores in test code are left out, as escape leaves test
 // code out.
 func (prog *program) markModuleStores() {
-	var exposed []int
+	var exposed, ownAny []int
 	prog.dirStores = map[string]map[string]bool{}
 	mark := func(path, name string) {
 		if prog.nsDirs[path] {
@@ -62,7 +62,7 @@ func (prog *program) markModuleStores() {
 			mark(path, "")
 		}
 		if f.own.any {
-			exposed = append(exposed, fi)
+			ownAny = append(ownAny, fi)
 		}
 		for _, name := range f.own.names {
 			if f.storedNames == nil {
@@ -105,7 +105,7 @@ func (prog *program) markModuleStores() {
 		if !isTestModule(f.module) && slices.ContainsFunc(f.own.trusted, func(w string) bool {
 			return rebuiltAny || rebuilt[w] || f.storedNames[w]
 		}) {
-			exposed = append(exposed, fi)
+			ownAny = append(ownAny, fi)
 		}
 	}
 	for len(exposed) > 0 {
@@ -126,6 +126,11 @@ func (prog *program) markModuleStores() {
 				exposed = append(exposed, prog.byModule[q]...)
 			}
 		}
+	}
+	// A store into a file's own namespace, or a builtin handed it, rebinds names there only:
+	// a submodule's namespace is its own, and a launcher loads it from sys.modules.
+	for _, i := range ownAny {
+		prog.files[i].storedAny = true
 	}
 }
 

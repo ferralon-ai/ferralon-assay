@@ -41,7 +41,9 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		discovered[m] = true
 	}
 	// A requirement file a pyproject.toml or setup.cfg names in a file directive is read by
-	// that manifest's reader; when the manifest cannot read it, the manifest fails instead.
+	// that manifest's reader; when the manifest cannot read it, the manifest fails instead. A
+	// module a pyproject.toml's backend reads a dynamic version from is read here when it
+	// holds it as a string literal (versionModules).
 	via := map[string]bool{}
 	for _, m := range manifests {
 		if base := filepath.Base(m); base != "pyproject.toml" && base != "setup.cfg" {
@@ -49,6 +51,11 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 		if decls, ok := manifestDecls(m); ok {
 			for _, f := range decls.files {
+				via[filepath.Clean(f)] = true
+			}
+		}
+		if filepath.Base(m) == "pyproject.toml" {
+			for _, f := range versionModules(m) {
 				via[filepath.Clean(f)] = true
 			}
 		}
@@ -64,18 +71,20 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, tooling)
-	configNamed, mypyInstalls, uvConfigNamed, uvSynced := false, false, false, false
+	configNamed, mypyInstalls, uvConfigNamed, pdmConfigNamed, uvSynced, pdmSynced := false, false, false, false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
 		mypyInstalls = mypyInstalls || installTypesTextRE.MatchString(src) ||
 			installTypesAbbrevRE.MatchString(src) && mypyNamedRE.MatchString(src)
 		uvConfigNamed = uvConfigNamed || uvConfigNamedRE.MatchString(src)
+		pdmConfigNamed = pdmConfigNamed || pdmConfigNamedRE.MatchString(src)
 	}
 	allowed := spec.Allowed
 	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
 		ok := allowed(words, b)
-		if head, _ := scriptsurface.CommandName(words[0]); ok && head == "uv" {
-			uvSynced = true
+		if head, _ := scriptsurface.CommandName(words[0]); ok {
+			uvSynced = uvSynced || head == "uv"
+			pdmSynced = pdmSynced || head == "pdm"
 		}
 		return ok
 	}
@@ -94,7 +103,8 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	if uvConfigNamed && uvSynced {
+	uvInTree, pdmInTree := lockToolConfigInTree(root)
+	if (uvConfigNamed || uvInTree) && uvSynced || (pdmConfigNamed || pdmInTree) && pdmSynced {
 		scriptWithheld = true
 	}
 	// After the check above: seeding is not a self-upgrade, and must not trip it.

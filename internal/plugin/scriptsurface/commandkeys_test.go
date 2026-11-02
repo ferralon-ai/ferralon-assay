@@ -137,6 +137,8 @@ func TestVeto_CommandKeysBySurface(t *testing.T) {
 		keys []string
 	}{
 		{".github/workflows/ci.yml", yaml, []string{"run", "command", "entrypoint"}},
+		{".gitea/workflows/ci.yml", yaml, []string{"run", "command", "entrypoint"}},
+		{".forgejo/workflows/ci.yaml", yaml, []string{"run", "command", "entrypoint"}},
 		{".github/actions/a/action.yml", yaml, []string{"run", "entrypoint", "pre-entrypoint", "post-entrypoint", "args"}},
 		{"compose.yaml", yaml, []string{"command", "entrypoint", "test"}},
 		{"docker-compose.yml", yaml, []string{"command", "entrypoint", "test"}},

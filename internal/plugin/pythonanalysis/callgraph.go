@@ -152,9 +152,10 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 }
 
 // starImportPaths is the paths the file's first-party star imports may bind name to: the name in
-// each star-imported module that may bind it (starMayBind) or has a submodule by the name,
-// which a package's star import binds once something has loaded it. The star-imported modules'
-// own star imports are followed in turn, each module once.
+// each star-imported module that may bind it other than by the star imports followed here
+// (starMayBindBesides) or has a submodule by the name, which a package's star import binds once
+// something has loaded it. The star-imported modules' own star imports are followed in turn,
+// each module once.
 func (p *program) starImportPaths(f *fileParse, name string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -165,7 +166,7 @@ func (p *program) starImportPaths(f *fileParse, name string) []string {
 				continue
 			}
 			seen[star] = true
-			if path := star + "/" + name; p.starMayBind(star, name) || len(p.byModule[path]) > 0 {
+			if path := star + "/" + name; p.starMayBindBesides(star, name, true) || len(p.byModule[path]) > 0 {
 				out = append(out, path)
 			}
 			for _, i := range p.byModule[star] {
@@ -605,11 +606,22 @@ func (p *program) moduleRebinds(mod, name string) bool {
 // module declares or imports it at top level, star-imports or computes names itself, or is
 // not a module the lane reads.
 func (p *program) starMayBind(path, name string) bool {
+	return p.starMayBindBesides(path, name, false)
+}
+
+// starMayBindBesides is starMayBind, except that with walked set the module's first-party
+// star imports don't count: the caller follows those itself.
+func (p *program) starMayBindBesides(path, name string, walked bool) bool {
 	if len(p.byModule[path]) == 0 {
 		return true
 	}
 	for _, i := range p.byModule[path] {
-		if g := &p.files[i]; g.topNames[name] || len(g.stars) > 0 || g.computed || g.storedAny || g.storedNames[name] {
+		g := &p.files[i]
+		stars := len(g.stars)
+		if walked {
+			stars -= len(g.starPaths)
+		}
+		if g.topNames[name] || stars > 0 || g.computed || g.storedAny || g.storedNames[name] {
 			return true
 		}
 	}

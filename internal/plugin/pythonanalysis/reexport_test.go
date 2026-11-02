@@ -325,6 +325,8 @@ func TestCallGraph_HeadBoundByCallersStarImport(t *testing.T) {
 		{"top package bound by import", map[string]string{"pkg/m.py": "import pkg.alt.y\n", "c.py": star("pkg.alt.y.h(1)")}},
 		{"package attribute through a middle", map[string]string{"pkg/m.py": "from pkg import alt as g\n", "c.py": star("g.y.h(1)")}},
 		{"through the module's own star import", map[string]string{"pkg/m.py": "from pkg.n import *\n", "pkg/n.py": "from pkg.alt import y as g\n", "c.py": star("g.h(1)")}},
+		{"star import after one two routes reach", map[string]string{"pkg/a.py": "from pkg.b import *\n", "pkg/b.py": "X = 1\n", "pkg/m.py": "from pkg.alt import y as g\n",
+			"c.py": "from pkg.a import *\nfrom pkg.b import *\nfrom pkg.m import *\n\ndef go():\n    return g.h(1)\n"}},
 		{"star imports in a cycle", map[string]string{"pkg/m.py": "from pkg.n import *\nfrom pkg.alt import y as g\n", "pkg/n.py": "from pkg.m import *\n", "c.py": star("g.h(1)")}},
 		{"star import of a package", map[string]string{"pkg/m/__init__.py": "from pkg.alt import y as g\n", "c.py": star("g.h(1)")}},
 		{"loaded submodule of a package", map[string]string{"pkg/m/__init__.py": "", "pkg/m/a.py": "from pkg.alt import y as g\n",
@@ -383,5 +385,10 @@ func TestCallGraph_HeadBoundByCallersStarImport(t *testing.T) {
 	files["c.py"] = "from pkg.m import *\nfrom pkg import other\ng = other\n\ndef go():\n    return g.h(1)\n"
 	if res := mustCallGraph(t, files); hasEdge(res.Edges, goC, vuln) {
 		t.Errorf("head the star-imported module cannot bind: edge to %s; edges %v", vuln, res.Edges)
+	}
+	// Nor does one whose only star import binds no such name.
+	files["pkg/m.py"], files["pkg/n.py"] = "from pkg.n import *\n", "X = 1\n"
+	if res := mustCallGraph(t, files); hasEdge(res.Edges, goC, vuln) {
+		t.Errorf("head the star-imported module's star import cannot bind: edge to %s; edges %v", vuln, res.Edges)
 	}
 }

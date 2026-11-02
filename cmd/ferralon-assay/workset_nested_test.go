@@ -83,7 +83,8 @@ func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 			}
 			switch {
 			case tc.workspace:
-				if want := map[string]string{goStdlibPackage: "1.21.0"}; !reflect.DeepEqual(queried, want) {
+				// go.work's go line is a directive, never an exact bound: stdlib is queried by name.
+				if want := map[string]string{goStdlibPackage: ""}; !reflect.DeepEqual(queried, want) {
 					t.Errorf("OSV queried %v, want only %v", queried, want)
 				}
 				if !reflect.DeepEqual(ws.unversioned, []string{tc.wantDep}) {

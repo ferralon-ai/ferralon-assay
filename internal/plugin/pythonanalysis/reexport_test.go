@@ -285,4 +285,14 @@ func TestCallGraph_ModuleAttributeHoldingAModule(t *testing.T) {
 			}
 		}
 	}
+	// A site whose function does not hold the binding gets no edge; the binding made in
+	// another scope still escapes the re-export's source.
+	files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n", "pkg/sub/a.py": "from ..impl import f as g\n",
+		"pkg/alt/__init__.py": "from . import y\n", "pkg/alt/y.py": "from ..v import vuln as h\n",
+		"c.py": "def setup():\n    global pkg\n    import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.h(1)\n"}
+	maps.Copy(files, with(subRebound, "pkg/x.py", "from pkg.alt import y as g\n"))
+	res := mustCallGraph(t, files)
+	if vuln := funcSCIP("pkg/v", nil, "vuln", 1); !symbolSet(res.Escaped)[vuln] {
+		t.Errorf("binding in another scope: %s not escaped; escaped %v", vuln, res.Escaped)
+	}
 }

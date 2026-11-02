@@ -143,9 +143,10 @@ type fileScan struct {
 	defs    map[string]map[string]bool
 	// reads maps each name a module-scope assignment binds to the names its values read;
 	// opaque marks the names some module-scope binding gives a value the lane does not read
-	// (see recordReads).
-	reads  map[string][]string
-	opaque map[string]bool
+	// (see recordReads); unreadValue those of them some binding other than an import does.
+	reads       map[string][]string
+	opaque      map[string]bool
+	unreadValue map[string]bool
 }
 
 // countBinders adds one binding of each name to scope, except a literal None assignment.
@@ -178,23 +179,28 @@ func (fs *fileScan) recordReads(st string, names []string) {
 	local, rest := readIdent(st)
 	rest = strings.TrimLeft(rest, " \t")
 	if len(names) != 1 || local != names[0] || !strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "==") {
-		fs.markOpaque(names)
+		fs.markOpaque(names, true)
 		return
 	}
 	fs.reads[local] = append(fs.reads[local], identHeads([]rune(rest[1:]))...)
 }
 
 // markOpaque marks names as given a module-scope value the lane does not read: by a binding
-// recordReads does not read, or by a def that declares them global.
-func (fs *fileScan) markOpaque(names []string) {
+// recordReads does not read, or by a def that declares them global. byValue is false when
+// the binding is an import.
+func (fs *fileScan) markOpaque(names []string, byValue bool) {
 	if len(names) == 0 {
 		return
 	}
 	if fs.reads == nil {
 		fs.reads, fs.opaque = map[string][]string{}, map[string]bool{}
 	}
+	if fs.unreadValue == nil {
+		fs.unreadValue = map[string]bool{}
+	}
 	for _, n := range names {
 		fs.opaque[n] = true
+		fs.unreadValue[n] = fs.unreadValue[n] || byValue
 	}
 }
 
@@ -391,7 +397,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 		}
 		fs.countBinders("", st, global)
-		fs.markOpaque(global)
+		fs.markOpaque(global, st != "")
 		if scopes := funcScopes(); len(nonlocal) > 0 && len(scopes) > 1 {
 			for _, outer := range scopes[:len(scopes)-1] {
 				fs.countBinders(outer, st, nonlocal)

@@ -357,6 +357,45 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}, {"http_route", funcSCIP("site/views2", nil, "dash", 1), "d/"}},
 		},
 		{
+			name: "script also assigned a call result",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\nmain = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a global import in a def binds, also assigned a call result",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": "def make():\n    return inner\n\ndef inner():\n    return 0\n",
+				"tool/cli.py": "from tool.fac import make\n\nmain = make()\n\ndef init():\n    global main\n    from tool.impl import main\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script also assigned a dependency's call result",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/cli.py": "from tool.impl import main\nfrom depfac import make\n\nif make:\n    main = make()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "Django views module a global assignment in a def rebinds",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n", "site/views2.py": "def dash(request):\n    return None\n",
+				"site/fac.py":  "def make():\n    from site import views2\n    return views2\n",
+				"site/urls.py": "from django.urls import path\nfrom site import views\nfrom site.fac import make\n\ndef load():\n    global views\n    views = make()\n\nload()\nurlpatterns = [path(\"d/\", views.dash)]\n",
+			},
+			want:    []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "d/"}},
+			partial: true,
+		},
+		{
 			name: "Django class-based view on a base a global import in a def binds",
 			files: map[string]string{
 				"site/__init__.py": "", "site/base.py": "from django.views import View\n\nclass Base(View):\n    def get(self, request):\n        return None\n",

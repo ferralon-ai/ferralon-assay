@@ -544,6 +544,9 @@ func (prog *program) launchTargets() []launchTarget {
 				for _, p := range paths {
 					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
 				}
+				if prog.rebindsFirstParty(f, v.chain[0]) {
+					out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+				}
 			} else if prog.definesFirstParty(f, v.chain[0]) {
 				bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
 			} else {
@@ -629,6 +632,18 @@ func (prog *program) bindsFirstParty(f *fileParse, name string, seen map[string]
 	return !bound && f.depImports[""][name] == 0
 }
 
+// rebindsFirstParty reports whether the file's module scope also binds name, other than by
+// import, def or class, to a value that may be first-party code the lane does not follow: an
+// assignment reading first-party code, or a binding whose value the lane does not read
+// (a def that declares name global and assigns it, a tuple or for target).
+func (prog *program) rebindsFirstParty(f *fileParse, name string) bool {
+	if f.unreadValue[name] {
+		return true
+	}
+	reads, assigned := f.reads[name]
+	return assigned && slices.ContainsFunc(reads, func(h string) bool { return prog.namesFirstParty(f, h, map[string]bool{}) })
+}
+
 // pathHit is a place a dotted path reaches: a file of the module it names, and the attribute
 // path read in that file.
 type pathHit struct {
@@ -640,7 +655,8 @@ type pathHit struct {
 // the target's path reaches, "" when it reaches none (a dependency's); whole is true when
 // the path names that module and no attribute of it (an entry point that loads a module);
 // missing is true when the path reaches first-party code the lane cannot name in full (no
-// function or class by the name, or a class-based view's base it cannot find).
+// function or class by the name, a class-based view's base it cannot find, or a name the
+// path reads that a file also binds to a value the lane does not follow).
 func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module string, whole, missing bool) {
 	hits, module, whole := prog.resolvePath(t.segs, t.mod)
 	seen := map[string]bool{}
@@ -650,9 +666,10 @@ func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module strin
 			decls = append(decls, fd)
 		}
 	}
-	found, complete := false, true
+	found, complete, rebound := false, true, false
 	visited := map[string]bool{}
 	for _, h := range hits {
+		rebound = rebound || len(h.attrs) > 0 && prog.rebindsFirstParty(&prog.files[h.file], h.attrs[0])
 		if t.view {
 			f, c := prog.viewMethods(h, add, visited)
 			found, complete = found || f, complete && c
@@ -674,6 +691,7 @@ func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module strin
 	} else {
 		missing = module != "" && (!whole || route) && len(decls) == 0
 	}
+	missing = missing || module != "" && rebound
 	return decls, module, whole, missing
 }
 

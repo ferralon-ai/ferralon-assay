@@ -265,7 +265,7 @@ func commandKeysOf(path string) map[string]bool {
 	switch {
 	case strings.HasPrefix(lower, "docker-compose"), strings.HasPrefix(lower, "compose."):
 		family = "compose"
-	case strings.Contains(slash, "/.github/workflows/"):
+	case actionsWorkflow(slash):
 		family = "workflow"
 	case strings.Contains(slash, "/.github/actions/") && (lower == "action.yml" || lower == "action.yaml"):
 		family = "action"

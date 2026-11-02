@@ -108,7 +108,8 @@ const (
 // go.sum records but go.mod does not name, or one a go.mod elsewhere in the repository declares,
 // leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
 // in the build, so the path may still be the root's, but it may also be the other module's at
-// another version.
+// another version. So does one a go.work member requires or replaces, or the go.work replaces: the
+// workspace build may serve the path from that module instead.
 func goPathOwner(buildDir, mod, p string) goOwner {
 	if p == mod {
 		return goOwnedByRoot
@@ -158,7 +159,11 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 			return goOwnedElsewhere
 		}
 	}
-	for _, m := range outside {
+	work, ok := goWorkRequires(buildDir)
+	if !ok {
+		return goOwnerAmbiguous
+	}
+	for _, m := range append(outside, work...) {
 		if claims(m) {
 			return goOwnerAmbiguous
 		}
@@ -176,7 +181,8 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 // goTreeModules returns the module path every go.mod below buildDir declares, whatever directory
 // it sits in, and as outside the module path every other go.mod in the git work tree holding
 // buildDir declares; ok is false when the tree cannot be walked or a go.mod below buildDir declares
-// no module.
+// no module. Like the go command, it skips testdata directories and those whose name begins with
+// . or _, unless buildDir is inside one.
 func goTreeModules(buildDir string) (below, outside []string, ok bool) {
 	own, err := filepath.EvalSymlinks(buildDir)
 	if err != nil {
@@ -191,7 +197,7 @@ func goTreeModules(buildDir string) (below, outside []string, ok bool) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if goIgnoredDir(d.Name()) && !strings.HasPrefix(own+string(filepath.Separator), p+string(filepath.Separator)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -215,41 +221,88 @@ func goTreeModules(buildDir string) (below, outside []string, ok bool) {
 	return below, outside, err == nil
 }
 
+func goIgnoredDir(name string) bool {
+	return name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
 // goWorkModules returns the module path of every module the go.work the go command would find
 // from buildDir (the nearest at or above it) uses; ok is false when that go.work does not parse or
 // a module it uses declares no module path.
 func goWorkModules(buildDir string) ([]string, bool) {
+	uses, _, ok := goWorkUses(buildDir)
+	if !ok {
+		return nil, false
+	}
+	var mods []string
+	for _, use := range uses {
+		m := goModFileModule(filepath.Join(use, "go.mod"))
+		if m == "" {
+			return nil, false
+		}
+		mods = append(mods, m)
+	}
+	return mods, true
+}
+
+// goWorkRequires returns the module path every go.mod of a module the go.work in force uses
+// requires or replaces, and every one that go.work replaces; ok is false when one cannot be read.
+func goWorkRequires(buildDir string) ([]string, bool) {
+	uses, paths, ok := goWorkUses(buildDir)
+	if !ok {
+		return nil, false
+	}
+	for _, use := range uses {
+		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
+		if err != nil {
+			return nil, false
+		}
+		mf, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return nil, false
+		}
+		for _, r := range mf.Require {
+			paths = append(paths, r.Mod.Path)
+		}
+		for _, r := range mf.Replace {
+			paths = append(paths, r.Old.Path)
+		}
+	}
+	return paths, true
+}
+
+// goWorkUses returns the directory of every module the go.work the go command would find from
+// buildDir uses, and the module path of everything it replaces; ok is false when that go.work
+// cannot be read or does not parse.
+func goWorkUses(buildDir string) (uses, replaced []string, ok bool) {
 	dir, err := filepath.Abs(buildDir)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	for {
 		data, err := os.ReadFile(filepath.Join(dir, "go.work"))
 		if err == nil {
 			wf, err := modfile.ParseWork("go.work", data, nil)
 			if err != nil {
-				return nil, false
+				return nil, nil, false
 			}
-			var mods []string
+			for _, r := range wf.Replace {
+				replaced = append(replaced, r.Old.Path)
+			}
 			for _, u := range wf.Use {
 				use := filepath.FromSlash(u.Path)
 				if !filepath.IsAbs(use) {
 					use = filepath.Join(dir, use)
 				}
-				m := goModFileModule(filepath.Join(use, "go.mod"))
-				if m == "" {
-					return nil, false
-				}
-				mods = append(mods, m)
+				uses = append(uses, use)
 			}
-			return mods, true
+			return uses, replaced, true
 		}
 		if !os.IsNotExist(err) {
-			return nil, false
+			return nil, nil, false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return nil, true
+			return nil, nil, true
 		}
 		dir = parent
 	}

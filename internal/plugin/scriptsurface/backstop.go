@@ -1167,6 +1167,32 @@ func (v *Veto) shellText(text string, recipe bool) string {
 	return v.segmentsAt(backstopSegments(text), recipe)
 }
 
+// hiddenStart returns the 0-based line within text of the logical line, of a data reading of
+// text whose lines start at starts, that hides w: the one a continuation joining into w starts
+// on, or else the one holding w.
+func hiddenStart(text string, starts []int, w string) int {
+	raw := strings.Split(text, "\n")
+	at := -1
+	for j := 1; j < len(raw) && at < 0; j++ {
+		prev := strings.TrimSuffix(raw[j-1], "\r")
+		if n := len(prev) - len(strings.TrimRight(prev, `\`)); n%2 == 1 && boundaryWord(prev[:len(prev)-1], strings.TrimSuffix(raw[j], "\r")) == w {
+			at = j - 1
+		}
+	}
+	for j := 0; j < len(raw) && at < 0; j++ {
+		if strings.Contains(raw[j], w) {
+			at = j
+		}
+	}
+	line := 0
+	for _, st := range starts {
+		if st <= at {
+			line = st
+		}
+	}
+	return line
+}
+
 // valueText gates a command key's value, and returns the 0-based line within text and why it
 // withholds. shell reads each line as shell text (a scalar, a block scalar); otherwise each
 // line is a data line (a list item, an array element, a quoted scalar, an inline table).
@@ -1177,7 +1203,7 @@ func (v *Veto) valueText(text string, shell bool) (int, string) {
 		// two sides apart; the word they make is the hidden text.
 		for _, w := range hidden {
 			if v.hasToken(w) {
-				return 0, "install command across a line continuation"
+				return hiddenStart(text, starts, w), "install command across a line continuation"
 			}
 		}
 	}

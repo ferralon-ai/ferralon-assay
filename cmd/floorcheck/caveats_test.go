@@ -50,6 +50,9 @@ func TestParseCaveats(t *testing.T) {
 		{"mapped twice", `{"mappings":[{` + ok + `},{` + ok + `}]}`, "twice"},
 		{"structural without a language", `{"mappings":[{` + ok + `}],"structural":[{"caveat":"JS-NO-CLEAR-GROUNDS","language":"any"}]}`, "structural"},
 		{"structural twice", `{"mappings":[{` + ok + `}],"structural":[{"caveat":"JS-X-Y","language":"js"},{"caveat":"JS-X-Y","language":"js"}]}`, "twice"},
+		{"structural is a mapping's caveat", `{"mappings":[{` + strings.Replace(strings.Replace(ok, `"any"`, `"js"`, 1), `"SCAN-CUT-SHORT"`, `"JS-X-Y"`, 1) + `}],"structural":[{"caveat":"JS-X-Y","language":"js"}]}`, "also a mapping's caveat"},
+		{"structural is an any mapping's caveat", `{"mappings":[{` + ok + `}],"structural":[{"caveat":"SCAN-CUT-SHORT","language":"go"}]}`, "also a mapping's caveat"},
+		{"structural shares a caveat id with another language's mapping", `{"mappings":[{` + strings.Replace(strings.Replace(ok, `"any"`, `"python"`, 1), `"SCAN-CUT-SHORT"`, `"JS-X-Y"`, 1) + `}],"structural":[{"caveat":"JS-X-Y","language":"js"}]}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseCaveats([]byte(tc.json))

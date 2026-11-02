@@ -85,6 +85,9 @@ func (c Caveats) validate() error {
 		runWide          bool
 	}
 	seen := map[key]bool{}
+	// mapped holds language/caveat for every mapping target. A structural caveat must not be one:
+	// addCaveats would replace the fired rollup with the always-applies one and drop its counts.
+	mapped := map[string]bool{}
 	for _, m := range c.Mappings {
 		switch {
 		case m.Reason == "" || strings.TrimSpace(m.Reason) != m.Reason:
@@ -101,6 +104,7 @@ func (c Caveats) validate() error {
 			return fmt.Errorf("%s is mapped twice for language %s (run_wide %v)", m.Reason, m.Language, m.RunWide)
 		}
 		seen[k] = true
+		mapped[m.Language+"/"+m.Caveat] = true
 	}
 	structural := map[string]bool{}
 	for _, s := range c.Structural {
@@ -111,6 +115,8 @@ func (c Caveats) validate() error {
 			return fmt.Errorf("structural %s: language %q is not one of %s", s.Caveat, s.Language, strings.Join(languages, ", "))
 		case structural[s.Language+"/"+s.Caveat]:
 			return fmt.Errorf("structural %s is listed twice for %s", s.Caveat, s.Language)
+		case mapped[s.Language+"/"+s.Caveat] || mapped[anyLanguage+"/"+s.Caveat]:
+			return fmt.Errorf("structural %s for %s is also a mapping's caveat; a caveat a reason fires is not structural", s.Caveat, s.Language)
 		}
 		structural[s.Language+"/"+s.Caveat] = true
 	}

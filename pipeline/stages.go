@@ -3580,13 +3580,15 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 //
 //	struct {
 //		Reachability  plugin.ReachabilityResult `json:"reachability"`
-//		CallGraph     plugin.CallGraphResult    `json:"call_graph"`
+//		CallGraph     plugin.CountedCallGraph   `json:"call_graph"`
 //		ToolchainScan ToolchainScan             `json:"toolchain_scan"`
 //	}
 //
-// except that the call graph is appended from the view's encoding rather than re-encoded for every
-// advisory. ToolchainScan records which Go toolchain this analysis actually ran under. It is the
-// fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
+// except that the call graph is appended from the view's counted encoding rather than re-encoded for
+// every advisory. The leg carries the declined sites and escaped symbols as counts: every
+// candidate's artifact holds a copy, and a dynamic-language monorepo lists a site per dynamic
+// call. ToolchainScan records which Go toolchain this analysis actually ran under. It is the fact
+// SubjectToolchainScanned reads back, and the reason a fallback cannot pass itself off as a
 // subject scan.
 func reachabilityPayload(reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) ([]byte, error) {
 	b, _, _, err := encodeReachability(reach, cg, ts)
@@ -3606,7 +3608,7 @@ func encodeReachability(reach plugin.ReachabilityResult, cg plugin.CallGraphView
 	}
 	b := append([]byte(`{"reachability":`), r...)
 	b = append(b, `,"call_graph":`...)
-	if b, err = cg.AppendJSON(b); err != nil {
+	if b, err = cg.AppendCountedJSON(b); err != nil {
 		return nil, nil, nil, err
 	}
 	b = append(b, `,"toolchain_scan":`...)
@@ -3617,7 +3619,9 @@ func encodeReachability(reach plugin.ReachabilityResult, cg plugin.CallGraphView
 // putReachability stores the resolved reachability artifact. When the store takes seeds and cg is
 // the decode of its own encoding, it also seeds the artifact's ReachabilityRecord from the values
 // the payload was encoded from, so readers neither split the payload nor decode the run's graph
-// again for every case.
+// again for every case. The seed holds the full in-memory graph, Unresolved and Escaped lists
+// included, while the payload carries their counts; a record's readers see only the partiality,
+// edges and roots, which both carry alike.
 func putReachability(store artifact.Store, c *assessment.Assessment, producedBy string, reach plugin.ReachabilityResult, cg plugin.CallGraphView, ts ToolchainScan) (artifact.Ref, error) {
 	payload, reachLeg, tsLeg, err := encodeReachability(reach, cg, ts)
 	if err != nil {
@@ -3643,28 +3647,24 @@ func firstPartyReachPaths(cg plugin.CallGraphView, ingresses plugin.IngressResul
 
 	// The BFS runs over SCIP-id keys, reproducing the pre-Symbol identity exactly: CallEdge
 	// endpoints were bare SCIP ids, and the sink parameter is a SCIP id (resolvedSinkSCIP), so
-	// keying the graph on .SCIP is the same graph the old string-typed code built. symBySCIP
-	// carries the structured Symbol for each node so the ReachPath.Sink/Ingress/Trace fields —
-	// now plugin.Symbol — are reconstructed at the return boundary.
-	symBySCIP := make(map[string]plugin.Symbol)
-	callers := make(map[string][]string, cg.EdgeCount())
-	for e := range cg.Edges() {
-		symBySCIP[e.Caller.SCIP] = e.Caller
-		symBySCIP[e.Callee.SCIP] = e.Callee
-		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
-	}
-
-	ingressSyms := make(map[string]struct{}, len(ingresses.Ingresses))
+	// keying the graph on .SCIP is the same graph the old string-typed code built. The structured
+	// Symbol for each node reconstructs the ReachPath.Sink/Ingress/Trace fields — now
+	// plugin.Symbol — at the return boundary. The graph's reverse-edge index is built once per
+	// graph, not per sink; only the ingresses are overlaid here. A root's Symbol beats an
+	// ingress's, which beats an edge endpoint's.
+	ingressSyms := make(map[string]plugin.Symbol, len(ingresses.Ingresses))
 	for _, in := range ingresses.Ingresses {
 		if in.Symbol.SCIP != "" {
-			symBySCIP[in.Symbol.SCIP] = in.Symbol
-			ingressSyms[in.Symbol.SCIP] = struct{}{}
+			ingressSyms[in.Symbol.SCIP] = in.Symbol
 		}
 	}
-	roots := make(map[string]struct{})
-	for r := range cg.Roots() {
-		symBySCIP[r.SCIP] = r
-		roots[r.SCIP] = struct{}{}
+	symOf := func(id string) plugin.Symbol {
+		if !cg.IsRoot(id) {
+			if s, ok := ingressSyms[id]; ok {
+				return s
+			}
+		}
+		return cg.Symbol(id)
 	}
 
 	type node struct {
@@ -3678,20 +3678,19 @@ func firstPartyReachPaths(cg plugin.CallGraphView, ingresses plugin.IngressResul
 		queue = queue[1:]
 
 		_, isIngress := ingressSyms[cur.sym]
-		_, isRoot := roots[cur.sym]
-		if isIngress || isRoot {
+		if isIngress || cg.IsRoot(cur.sym) {
 			trace := make([]plugin.Symbol, len(cur.path))
 			for i := range cur.path {
-				trace[i] = symBySCIP[cur.path[len(cur.path)-1-i]]
+				trace[i] = symOf(cur.path[len(cur.path)-1-i])
 			}
 			var ingress plugin.Symbol
 			if isIngress {
-				ingress = symBySCIP[cur.sym]
+				ingress = symOf(cur.sym)
 			}
-			return []plugin.ReachPath{{Sink: symBySCIP[sink], Ingress: ingress, Trace: trace}}
+			return []plugin.ReachPath{{Sink: symOf(sink), Ingress: ingress, Trace: trace}}
 		}
 
-		for _, caller := range callers[cur.sym] {
+		for caller := range cg.Callers(cur.sym) {
 			if _, seen := visited[caller]; seen {
 				continue
 			}

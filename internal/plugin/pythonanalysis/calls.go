@@ -97,8 +97,8 @@ type scopedBinding struct {
 	// guarded marks a binding inside an if/elif/else or try/except/else/finally block of
 	// its scope (or on such a header line): an alternative, not a rebinding every path runs.
 	guarded bool
-	// global marks a def's import of a name the def declares global: it binds the module
-	// attribute. classBody marks an import in a class body: a class attribute, reachable
+	// global marks an import, in a def or a class body, of a name the def or class body
+	// declares global: it binds the module attribute. classBody marks an import in a class body: a class attribute, reachable
 	// wherever the class or an instance goes.
 	global, classBody bool
 	// chain marks a dotted `import a.b as c`: c holds getattr(a, "b"), an attribute chain
@@ -143,9 +143,10 @@ type fileScan struct {
 	defs    map[string]map[string]bool
 	// reads maps each name a module-scope assignment binds to the names its values read;
 	// opaque marks the names some module-scope binding gives a value the lane does not read
-	// (see recordReads).
-	reads  map[string][]string
-	opaque map[string]bool
+	// (see recordReads); unreadValue those of them some binding other than an import does.
+	reads       map[string][]string
+	opaque      map[string]bool
+	unreadValue map[string]bool
 }
 
 // countBinders adds one binding of each name to scope, except a literal None assignment.
@@ -178,23 +179,28 @@ func (fs *fileScan) recordReads(st string, names []string) {
 	local, rest := readIdent(st)
 	rest = strings.TrimLeft(rest, " \t")
 	if len(names) != 1 || local != names[0] || !strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "==") {
-		fs.markOpaque(names)
+		fs.markOpaque(names, true)
 		return
 	}
 	fs.reads[local] = append(fs.reads[local], identHeads([]rune(rest[1:]))...)
 }
 
 // markOpaque marks names as given a module-scope value the lane does not read: by a binding
-// recordReads does not read, or by a def that declares them global.
-func (fs *fileScan) markOpaque(names []string) {
+// recordReads does not read, or by a def or class body that declares them global. byValue is false when
+// the binding is an import.
+func (fs *fileScan) markOpaque(names []string, byValue bool) {
 	if len(names) == 0 {
 		return
 	}
 	if fs.reads == nil {
 		fs.reads, fs.opaque = map[string][]string{}, map[string]bool{}
 	}
+	if fs.unreadValue == nil {
+		fs.unreadValue = map[string]bool{}
+	}
 	for _, n := range names {
 		fs.opaque[n] = true
+		fs.unreadValue[n] = fs.unreadValue[n] || byValue
 	}
 }
 
@@ -391,12 +397,25 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 		}
 		fs.countBinders("", st, global)
-		fs.markOpaque(global)
+		fs.markOpaque(global, st != "")
 		if scopes := funcScopes(); len(nonlocal) > 0 && len(scopes) > 1 {
 			for _, outer := range scopes[:len(scopes)-1] {
 				fs.countBinders(outer, st, nonlocal)
 			}
 		}
+	}
+	// classGlobal carries to module scope the names a class body binds that it declares
+	// global, as unread values unless st is empty (an import): the class branches record
+	// bindings only under the class.
+	classGlobal := func(st string, names []string) {
+		var global []string
+		for _, n := range names {
+			if globals[classScopeKey()][n] {
+				global = append(global, n)
+			}
+		}
+		fs.countBinders("", st, global)
+		fs.markOpaque(global, st != "")
 	}
 	// bind records the bindings one simple statement makes in bindScope. A compound header
 	// with its body on the same line ("except ImportError: g = None") binds the body's
@@ -414,13 +433,17 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			var imported []string
 			o := owner()
 			classBody := o != nil && o.className != ""
+			isGlobal := func(n string) bool { return globals[bindScope][n] || classBody && globals[classScopeKey()][n] }
 			for _, ib := range parseImportStatement(st) {
-				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody, chain: kw == "import" && strings.Contains(ib.target, ".")})
+				fs.bindings = append(fs.bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: isGlobal(ib.local), classBody: classBody, chain: kw == "import" && strings.Contains(ib.target, ".")})
 				imported = append(imported, ib.local)
 			}
 			for _, ib := range parseRelativeImport(st) {
-				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: globals[bindScope][ib.local], classBody: classBody})
+				fs.relBindings = append(fs.relBindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target, guarded: guarded, global: isGlobal(ib.local), classBody: classBody})
 				imported = append(imported, ib.local)
+			}
+			if classBody {
+				classGlobal("", imported)
 			}
 			carry(bindScope, "", imported)
 			return
@@ -454,6 +477,7 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				o.classNames[n] = true
 			}
 			fs.countBinders(classScopeKey(), st, names)
+			classGlobal(st, names)
 			return
 		}
 		if bindScope == "" {
@@ -483,8 +507,12 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 				if kw == "nonlocal" {
 					decl = &nonlocals
 				}
+				key := bindScope
+				if o := owner(); kw == "global" && o != nil && o.className != "" {
+					key = classScopeKey()
+				}
 				for _, n := range strings.Split(strings.TrimSpace(strings.TrimPrefix(st, kw)), ",") {
-					addNames(decl, bindScope, []string{strings.TrimSpace(n)})
+					addNames(decl, key, []string{strings.TrimSpace(n)})
 				}
 				continue
 			}
@@ -565,8 +593,10 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			addCalls(bases)
 			if o := owner(); o == nil || o.className == "" {
 				addNames(&fs.defs, enclosingScope(), []string{name})
+				carry(enclosingScope(), text, []string{name})
 			} else {
 				addNames(&fs.defs, classScopeKey(), []string{name})
+				classGlobal(text, []string{name})
 			}
 			stack = append(stack, pyFrame{indent: ll.indent, className: name})
 			pendingRoute = false
@@ -624,8 +654,10 @@ func parseCallsAndIngresses(lines []logicalLine) fileScan {
 			}
 			if o := owner(); o == nil || o.className == "" {
 				addNames(&fs.defs, enclosingScope(), []string{name})
+				carry(enclosingScope(), text, []string{name})
 			} else {
 				addNames(&fs.defs, classScopeKey(), []string{name})
+				classGlobal(text, []string{name})
 			}
 			pendingRoute = false
 			pendingTask = ""

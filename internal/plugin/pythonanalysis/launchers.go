@@ -544,6 +544,9 @@ func (prog *program) launchTargets() []launchTarget {
 				for _, p := range paths {
 					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
 				}
+				if prog.rebindsFirstParty(f, v.chain[0]) {
+					out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+				}
 			} else if prog.definesFirstParty(f, v.chain[0]) {
 				bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
 			} else {
@@ -565,8 +568,9 @@ func (prog *program) launchTargets() []launchTarget {
 
 // starBinds is the first-party modules whose star import into f binds name, whatever else f
 // binds it to, since a later star import rebinds it. open is true when a star import may bind
-// it in a way the lane does not follow: a module it does not read, or one that star-imports
-// first-party code without binding the name itself.
+// it in a way the lane does not follow: a module it does not read, one that a store through a
+// module object may bind it in, or one that star-imports first-party code without binding the
+// name itself.
 func (prog *program) starBinds(f *fileParse, name string) (paths []string, open bool) {
 	for _, sp := range f.starPaths {
 		if len(prog.byModule[sp]) == 0 {
@@ -574,8 +578,11 @@ func (prog *program) starBinds(f *fileParse, name string) (paths []string, open 
 		}
 		for _, i := range prog.byModule[sp] {
 			g := &prog.files[i]
-			if g.depImports[""][name] > 0 {
-				continue // a dependency's
+			if prog.storesInto(g, name) {
+				open = true // a store through the module object rebinds it
+			}
+			if g.depImports[""][name] > 0 && !g.opaque[name] && !g.defs[""][name] && len(g.fpBinds[""][name]) == 0 && len(g.reads[name]) == 0 && len(g.starPaths) == 0 {
+				continue // a dependency's: bound no other way and nothing star-imported into it (a store has set open)
 			}
 			if _, bound := g.bindings[""][name]; bound || g.topNames[name] {
 				if !slices.Contains(paths, sp) {
@@ -629,6 +636,22 @@ func (prog *program) bindsFirstParty(f *fileParse, name string, seen map[string]
 	return !bound && f.depImports[""][name] == 0
 }
 
+// rebindsFirstParty reports whether the file's module namespace may also bind name, other
+// than by import, def or class, to a value that may be first-party code the lane does not
+// follow: an assignment reading first-party code, a binding whose value the lane does not
+// read (any binding recordReads does not read, or one in a def that declares name global),
+// a store through a module object, or a star import that may bind it.
+func (prog *program) rebindsFirstParty(f *fileParse, name string) bool {
+	if f.unreadValue[name] || prog.storesInto(f, name) {
+		return true
+	}
+	if paths, open := prog.starBinds(f, name); len(paths) > 0 || open {
+		return true
+	}
+	reads, assigned := f.reads[name]
+	return assigned && slices.ContainsFunc(reads, func(h string) bool { return prog.namesFirstParty(f, h, map[string]bool{}) })
+}
+
 // pathHit is a place a dotted path reaches: a file of the module it names, and the attribute
 // path read in that file.
 type pathHit struct {
@@ -640,7 +663,8 @@ type pathHit struct {
 // the target's path reaches, "" when it reaches none (a dependency's); whole is true when
 // the path names that module and no attribute of it (an entry point that loads a module);
 // missing is true when the path reaches first-party code the lane cannot name in full (no
-// function or class by the name, or a class-based view's base it cannot find).
+// function or class by the name, a class-based view's base it cannot find, or a name the
+// path reads that a file also binds to a value the lane does not follow).
 func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module string, whole, missing bool) {
 	hits, module, whole := prog.resolvePath(t.segs, t.mod)
 	seen := map[string]bool{}
@@ -650,9 +674,10 @@ func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module strin
 			decls = append(decls, fd)
 		}
 	}
-	found, complete := false, true
+	found, complete, rebound := false, true, false
 	visited := map[string]bool{}
 	for _, h := range hits {
+		rebound = rebound || len(h.attrs) > 0 && prog.rebindsFirstParty(&prog.files[h.file], h.attrs[0])
 		if t.view {
 			f, c := prog.viewMethods(h, add, visited)
 			found, complete = found || f, complete && c
@@ -674,6 +699,7 @@ func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module strin
 	} else {
 		missing = module != "" && (!whole || route) && len(decls) == 0
 	}
+	missing = missing || module != "" && rebound
 	return decls, module, whole, missing
 }
 
@@ -783,4 +809,18 @@ func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module
 func (prog *program) unresolved(t launchTarget) bool {
 	_, _, _, missing := prog.launchDecls(t)
 	return t.unread || !t.optional && missing
+}
+
+// storesInto reports whether a store through a module object may bind name in f's namespace.
+func (prog *program) storesInto(f *fileParse, name string) bool {
+	if f.storedAny || f.storedNames[name] {
+		return true
+	}
+	segs := strings.Split(f.module, "/")
+	for a := range segs {
+		if prog.dirStores[strings.Join(segs[a:], "/")][name] {
+			return true
+		}
+	}
+	return false
 }

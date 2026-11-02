@@ -45,6 +45,10 @@ var platformEnv = map[string]struct {
 		dirs: []string{"internal/plugin/dotnetanalysis/assembly"},
 		why:  "the .NET SDK's global-packages folder override, which the restored assemblies live under",
 	},
+	"GOENV": {
+		dirs: []string{"internal/plugin/goanalysis"},
+		why:  "the go command's environment file, which can set GOFLAGS; the run cache keys load results on its contents",
+	},
 	"PATH": {
 		dirs: []string{"artifactcache/artifactcachetest"},
 		why:  "the conformance kit swaps PATH for a spawn-detecting shim and restores it",

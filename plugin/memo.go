@@ -44,6 +44,8 @@ type memoCall struct {
 	// graph is CallGraph's payload decoded once for SharedCallGraph.
 	graphOnce sync.Once
 	graph     *CallGraphResult
+	counted   countedEncoding
+	rev       reverseIndex
 }
 
 var _ LanguagePlugin = (*memoPlugin)(nil)
@@ -155,7 +157,7 @@ func (m *memoPlugin) sharedCallGraph(ctx context.Context, req CallGraphRequest) 
 		}
 		return NewCallGraphView(res), nil
 	}
-	return CallGraphView{cg: c.graph, enc: c.payload}, nil
+	return CallGraphView{cg: c.graph, enc: c.payload, counted: &c.counted, rev: &c.rev}, nil
 }
 
 func (m *memoPlugin) FindIngresses(ctx context.Context, req FindIngressesRequest) (IngressResult, error) {

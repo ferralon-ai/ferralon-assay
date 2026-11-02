@@ -2048,29 +2048,34 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	return err
 }
 
-// moduleVersionFromGoMod parses buildDir/go.mod and returns the version the build selects for
-// module: its require version, or the version a same-module replace directive substitutes.
-//
-// manifestRead separates the reasons the version can come back empty: false means go.mod was
-// absent or unparseable, so nothing about the dependency set was established; true with an
-// empty version and pinned true means go.mod does not require the module, a real fact about the
-// codebase. pinned false means the module is required but replaced by a local directory or by
-// another module, so the build compiles code no upstream version describes.
 // BazelWorkspaceAbove reports whether a Bazel workspace marker file sits in moduleRoot or any
-// directory above it. Bazel (rules_go) takes its Go SDK from the workspace, not from go.mod, so the
-// go line is no floor on the release a Bazel build compiles with. The walk does not stop at the
-// checkout root: a scan target can be a subdirectory of a Bazel monorepo, and a stray marker
-// further up only drops a floor.
+// directory above it up to the git top-level of moduleRoot, inclusive, and never above it; it is false
+// when that top-level cannot be determined. Bazel (rules_go) takes its Go SDK from the workspace, not
+// from go.mod, so the go line is no floor on the release a Bazel build compiles with.
 func BazelWorkspaceAbove(moduleRoot string) bool {
 	if moduleRoot == "" {
 		return false
 	}
-	dir := filepath.Clean(moduleRoot)
+	top, err := gitOutput(context.Background(), moduleRoot, "rev-parse", "--show-toplevel")
+	if err != nil || top == "" {
+		return false
+	}
+	top, err = filepath.EvalSymlinks(top)
+	if err != nil {
+		return false
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Clean(moduleRoot))
+	if err != nil {
+		return false
+	}
 	for {
 		for _, marker := range []string{"MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"} {
 			if fi, err := os.Stat(filepath.Join(dir, marker)); err == nil && !fi.IsDir() {
 				return true
 			}
+		}
+		if dir == top {
+			return false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -2080,6 +2085,14 @@ func BazelWorkspaceAbove(moduleRoot string) bool {
 	}
 }
 
+// moduleVersionFromGoMod parses buildDir/go.mod and returns the version the build selects for
+// module: its require version, or the version a same-module replace directive substitutes.
+//
+// manifestRead separates the reasons the version can come back empty: false means go.mod was
+// absent or unparseable, so nothing about the dependency set was established; true with an
+// empty version and pinned true means go.mod does not require the module, a real fact about the
+// codebase. pinned false means the module is required but replaced by a local directory or by
+// another module, so the build compiles code no upstream version describes.
 func moduleVersionFromGoMod(buildDir, module string) (version string, pinned, manifestRead bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {

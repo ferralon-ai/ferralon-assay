@@ -9,7 +9,25 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
+
+// gitInitRepo makes dir a git repository with one empty commit, the top-level BazelWorkspaceAbove
+// bounds its search at; the commit keeps a checkout that resolves HEAD working.
+func gitInitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		cmd := gittest.Command(args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
 
 // TestResolveToolchainFact_Bazel: inside a Bazel workspace neither directive floors the SDK.
 func TestResolveToolchainFact_Bazel(t *testing.T) {
@@ -122,6 +140,8 @@ go_sdk.download(version = "1.21.13")
 			if tc.above {
 				workspace = filepath.Dir(buildDir)
 			}
+			// The search stops at the git top-level: the workspace is inside it, or is it.
+			gitInitRepo(t, workspace)
 			if err := os.WriteFile(filepath.Join(workspace, "MODULE.bazel"), []byte(tc.module), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -133,5 +153,30 @@ go_sdk.download(version = "1.21.13")
 				t.Errorf("toolchain = %+v, want %+v", inv.Toolchain, tc.want)
 			}
 		})
+	}
+}
+
+// TestCodebaseInventory_BazelMarkerAboveTopLevel: a marker above the repository's top-level is no
+// workspace of the subject, so the go line stays a floor and the contradiction guard still refutes
+// an exact claim below it.
+func TestCodebaseInventory_BazelMarkerAboveTopLevel(t *testing.T) {
+	buildDir := writeGoModFixture(t, "module example.com/target\n\ngo 1.22.0\n")
+	gitInitRepo(t, buildDir)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(buildDir), "MODULE.bazel"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv := runRealInventory(t, codebaseInventory{
+		checkout:         dirCheckout{dir: buildDir, lang: "go"},
+		plugin:           goManifestPlugin{},
+		subjectGoVersion: "go1.21.13",
+	})
+	if inv.Toolchain.Bound == ToolchainBoundExact {
+		t.Errorf("toolchain = %+v, want the claim below the go line refuted, not exact", inv.Toolchain)
+	}
+	if inv.Toolchain.Contradiction == nil {
+		t.Errorf("toolchain = %+v, want a recorded contradiction", inv.Toolchain)
+	}
+	if inv.GoFloor == "" {
+		t.Errorf("go_floor empty, want the go line's floor")
 	}
 }

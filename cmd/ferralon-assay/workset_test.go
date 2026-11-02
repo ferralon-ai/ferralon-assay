@@ -546,15 +546,17 @@ func TestWorkSet_StdlibQueryPointBazel(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		gomod  string
-		marker string // directory, relative to the checkout root, holding MODULE.bazel; "-" for none
+		marker string // directory, relative to the temp root, holding MODULE.bazel; "-" for none
+		top    string // directory, relative to the temp root, that is the git top-level
 		want   string
 	}{
-		{name: "binding go line, no workspace", gomod: "module m\n\ngo 1.22.0\n", marker: "-", want: byName},
-		{name: "binding go line, workspace at the module root", gomod: "module m\n\ngo 1.22.0\n", marker: "svc", want: "1.21.5"},
-		{name: "binding go line, workspace above the module root", gomod: "module m\n\ngo 1.22.0\n", marker: ".", want: "1.21.5"},
-		{name: "toolchain line, workspace above the module root", gomod: "module m\n\ngo 1.22.0\n\ntoolchain go1.24.3\n", marker: ".", want: "1.21.5"},
-		{name: "no go line, workspace above the module root", gomod: "module m\n", marker: ".", want: "1.21.5"},
-		{name: "no go line, no workspace", gomod: "module m\n", marker: "-", want: "1.21.5"},
+		{name: "binding go line, no workspace", gomod: "module m\n\ngo 1.22.0\n", marker: "-", top: ".", want: byName},
+		{name: "binding go line, workspace at the module root", gomod: "module m\n\ngo 1.22.0\n", marker: "svc", top: ".", want: "1.21.5"},
+		{name: "binding go line, workspace above the module root", gomod: "module m\n\ngo 1.22.0\n", marker: ".", top: ".", want: "1.21.5"},
+		{name: "toolchain line, workspace above the module root", gomod: "module m\n\ngo 1.22.0\n\ntoolchain go1.24.3\n", marker: ".", top: ".", want: "1.21.5"},
+		{name: "no go line, workspace above the module root", gomod: "module m\n", marker: ".", top: ".", want: "1.21.5"},
+		{name: "binding go line, workspace above the git top-level", gomod: "module m\n\ngo 1.22.0\n", marker: ".", top: "svc", want: byName},
+		{name: "no go line, no workspace", gomod: "module m\n", marker: "-", top: ".", want: "1.21.5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -570,6 +572,7 @@ func TestWorkSet_StdlibQueryPointBazel(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			gitT(t, filepath.Join(root, tc.top), "init", "-q")
 			acq := goFixture(t, tc.gomod)
 			acq.buildDir = mod
 			acq.goToolchain = subjectGoToolchain{declared: "go1.21.5"}

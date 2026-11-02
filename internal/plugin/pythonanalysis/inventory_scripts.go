@@ -107,7 +107,7 @@ func pipRequirementFiles(args []string) []string {
 }
 
 // pipArchiveExts are the archive suffixes pip installs a local file from.
-var pipArchiveExts = []string{".whl", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tbz2",
+var pipArchiveExts = []string{".whl", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz",
 	".tar.xz", ".txz", ".tar.lz", ".tlz", ".tar.lzma"}
 
 // pipRequirementArg reports whether a, a pip install argument, names a package by name: not a

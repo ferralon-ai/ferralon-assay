@@ -144,6 +144,8 @@ func TestInventory_ScriptInstalls(t *testing.T) {
 		{"a wildcard version is a requirement", map[string]string{"install.sh": "pip install 'transformers==4.51.*'\n"},
 			[]string{"install.sh#transformers pkg:pypi/transformers"}},
 		{"more archives and globs name nothing", map[string]string{"install.sh": "pip install a-1.0.tar.xz b-2.0.tbz c-1.txz d-1.tar.lzma pyjwt* e?\n"}, nil},
+		// pip's archive suffixes stop at .tbz, so it reads a .tbz2 argument as a project name.
+		{"a .tbz2 argument is a project name", map[string]string{"install.sh": "pip install b.tbz2\n"}, []string{"install.sh#b.tbz2 pkg:pypi/b-tbz2"}},
 		{"an expansion names nothing", map[string]string{"install.sh": "pip install $PKG\n"}, nil},
 		{"a sample hook git never runs", map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\npip install evil==1\n"}, nil},
 		{"a self-upgrade in a sample hook", map[string]string{".git/hooks/pre-commit.sample": "#!/bin/sh\npip install -U pip==24.0\n"}, nil},

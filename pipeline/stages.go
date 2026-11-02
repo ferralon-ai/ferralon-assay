@@ -2448,12 +2448,15 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 }
 
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
-// guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
-// inside it, or a require), or a module the go.work in force uses declares it the same way, and
-// whether the manifests were readable at all. manifestKnown=false — no build dir, or an absent /
-// unparseable go.mod or go.work — forces the caller to fail OPEN, because absence is only PROVABLE
-// against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
-// manifest_membership.go.
+// guard: it reports whether module is in the build buildDir/go.mod describes, and whether that
+// could be read at all. module is present when that go.mod, or the go.mod of a module the go.work
+// in force uses, declares it (as the module itself, a package path inside it, or a require); when
+// one of those go.mods or the go.work replaces it, at any go version; or, when one of those go.mods
+// is below go 1.17 and so omits indirect dependencies, when what the build verifies modules
+// against lists it (goSumBuilds). manifestKnown=false — no build dir; an absent / unparseable
+// go.mod or go.work; or, below go 1.17, a vendor/modules.txt or go.sum that does not parse, or a
+// module below 1.17 with no go.sum — forces the caller to fail OPEN, because absence is only
+// PROVABLE against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
@@ -2473,9 +2476,10 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 			return true, true
 		}
 	}
+	under := func(p string) bool { return module == p || strings.HasPrefix(module, p+"/") }
 	declares := func(mf *modfile.File) bool {
 		for _, r := range mf.Require {
-			if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
+			if under(r.Mod.Path) {
 				return true
 			}
 		}
@@ -2484,10 +2488,15 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if declares(mf) {
 		return true, true
 	}
-	uses, _, ok := goWorkUses(buildDir)
+	own, err := filepath.Abs(buildDir)
+	if err != nil {
+		return false, false
+	}
+	uses, replaced, ok := goWorkUses(buildDir)
 	if !ok {
 		return false, false
 	}
+	mods := []goUsedModule{{dir: own, mf: mf}}
 	for _, use := range uses {
 		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
 		if err != nil {
@@ -2497,22 +2506,53 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 		if err != nil || wm.Module == nil {
 			return false, false
 		}
-		if p := wm.Module.Mod.Path; p != root && (module == p || strings.HasPrefix(module, p+"/")) || declares(wm) {
+		if p := wm.Module.Mod.Path; p != root && under(p) || declares(wm) {
+			return true, true
+		}
+		if filepath.Clean(use) != own {
+			mods = append(mods, goUsedModule{dir: use, mf: wm})
+		}
+	}
+	for _, p := range replaced {
+		if under(p) {
 			return true, true
 		}
 	}
-	for _, r := range mf.Replace {
-		if r.Old.Path == module || strings.HasPrefix(module, r.Old.Path+"/") {
-			return true, true
+	complete := true
+	for _, m := range mods {
+		for _, r := range m.mf.Replace {
+			if under(r.Old.Path) {
+				return true, true
+			}
+		}
+		if !m.complete() {
+			complete = false
 		}
 	}
 	// From go 1.17 go.mod lists every module that provides a package to the build, so a missing
-	// require is a proof. Before that it omits indirect dependencies and says nothing: the
-	// build list is what go.sum recorded as downloaded.
-	if mf.Go != nil && goVersionAtLeast(mf.Go.Version, "1.17") {
+	// require is a proof once every go.mod in the build is at 1.17 or later. Before that go.mod
+	// omits indirect dependencies and says nothing: the build list is what the build verifies.
+	if complete {
 		return false, true
 	}
-	return goSumBuilds(buildDir, module)
+	wsDir, ok := goWorkDir(buildDir)
+	if !ok {
+		return false, false
+	}
+	return goSumBuilds(wsDir, mods, module)
+}
+
+// goUsedModule is a module in the build: the build directory's own, or one the go.work in force
+// uses, with the directory its go.mod sits in.
+type goUsedModule struct {
+	dir string
+	mf  *modfile.File
+}
+
+// complete reports whether the module's go.mod lists every module that provides a package to it,
+// which it does from go 1.17.
+func (m goUsedModule) complete() bool {
+	return m.mf.Go != nil && goVersionAtLeast(m.mf.Go.Version, "1.17")
 }
 
 // goVersionAtLeast reports whether the go directive version v is at least min; an unparseable v
@@ -2521,14 +2561,89 @@ func goVersionAtLeast(v, min string) bool {
 	return gover.IsValid("go"+v) && gover.Compare("go"+v, "go"+min) >= 0
 }
 
-// goSumBuilds answers membership for a module whose go.mod is not a complete record: it is
-// present when go.sum holds a module-zip (non-/go.mod) h1: line for it or for a module its path
-// sits under, at any version. Without a go.sum, or with one that does not parse, the build list is
-// unknown and manifestKnown is false (inv.5).
-func goSumBuilds(buildDir, module string) (present bool, manifestKnown bool) {
-	data, err := os.ReadFile(filepath.Join(buildDir, "go.sum"))
+// goWorkDir returns the directory of the go.work goWorkUses reads for buildDir, "" when none is
+// in force; ok is false when that cannot be told.
+func goWorkDir(buildDir string) (string, bool) {
+	dir, err := filepath.Abs(buildDir)
 	if err != nil {
-		return false, false
+		return "", false
+	}
+	for {
+		_, err := os.Stat(filepath.Join(dir, "go.work"))
+		if err == nil {
+			return dir, true
+		}
+		if !os.IsNotExist(err) {
+			return "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", true
+		}
+		dir = parent
+	}
+}
+
+// goSumBuilds answers membership for a build whose go.mods are not a complete record, from what
+// the build verifies modules against. With a vendor/modules.txt (beside the go.work under one, else
+// in the build directory) a -mod=vendor build takes its build list from that file and checks no
+// go.sum, so a module it lists is present. Otherwise the go command checks a module-zip hash in
+// go.work.sum or the go.sum of a module in the build, so module is present when one of them holds
+// a module-zip (non-/go.mod) h1: line for it or for a module its path sits under, at any version.
+// Absent from all of those, no build can use it. A module below go 1.17 with no go.sum, or a
+// modules.txt or go.sum that does not parse, leaves the build list unknown and manifestKnown is
+// false (inv.5); go.work.sum, and the go.sum of a go.work member at 1.17 or later, may be missing.
+func goSumBuilds(wsDir string, mods []goUsedModule, module string) (present bool, manifestKnown bool) {
+	vendorDir := mods[0].dir
+	if wsDir != "" {
+		vendorDir = wsDir
+	}
+	if present, ok := goVendorHas(filepath.Join(vendorDir, "vendor", "modules.txt"), module); !ok || present {
+		return present, ok
+	}
+	if wsDir != "" {
+		if present, ok := goSumHas(filepath.Join(wsDir, "go.work.sum"), module, false); !ok || present {
+			return present, ok
+		}
+	}
+	for _, m := range mods {
+		if present, ok := goSumHas(filepath.Join(m.dir, "go.sum"), module, !m.complete()); !ok || present {
+			return present, ok
+		}
+	}
+	return false, true
+}
+
+// goVendorHas reports whether the vendor/modules.txt at file lists module, or a module its path
+// sits under; ok is false when the file exists but cannot be read or a module line in it does not
+// parse. A missing file lists nothing.
+func goVendorHas(file, module string) (present, ok bool) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false, os.IsNotExist(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "#") || strings.HasPrefix(line, "##") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != "#" {
+			return false, false
+		}
+		if f[1] == module || strings.HasPrefix(module, f[1]+"/") {
+			present = true
+		}
+	}
+	return present, true
+}
+
+// goSumHas reports whether the go.sum at file holds a module-zip (non-/go.mod) h1: line for module
+// or for a module its path sits under, at any version; ok is false when the file does not parse,
+// or is missing and required.
+func goSumHas(file, module string, required bool) (present, ok bool) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false, !required && os.IsNotExist(err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		f := strings.Fields(line)

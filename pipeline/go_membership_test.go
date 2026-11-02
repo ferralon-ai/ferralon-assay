@@ -1,10 +1,6 @@
 package pipeline
 
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 // go-test-bench's shape, trimmed: go 1.16, so go.mod omits indirect modules. go.sum carries
 // x/crypto's module-zip hash (built) and only x/text's /go.mod hash (never built).
@@ -13,7 +9,47 @@ const (
 		"golang.org/x/crypto v0.0.0-20201216223049-8b5274cf687f/go.mod h1:jdWPYTVW=\n" +
 		"golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU=\n" +
 		"github.com/labstack/echo/v4 v4.1.17 h1:abc=\n"
+	// A pre-1.17 vendor/modules.txt: x/text is vendored though go.sum holds only its /go.mod hash.
+	vendorTxt = "# golang.org/x/text v0.3.0\ngolang.org/x/text/unicode/norm\n" +
+		"# golang.org/x/net v0.0.0-20201021035429-f5854403a974 => golang.org/x/net v0.0.0-20210226172049-e18ecbb05110\n" +
+		"## explicit\ngolang.org/x/net/http2\n"
+	goWorkUse = "go 1.22\n\nuse (\n\t.\n\t./lib\n)\n"
 )
+
+// vendored is a go 1.16 module with the given go.sum (none when "") and vendor/modules.txt.
+func vendored(sum, modulesTxt string) map[string]string {
+	files := map[string]string{"go.mod": "module m\n\ngo 1.16\n", "vendor/modules.txt": modulesTxt}
+	if sum != "" {
+		files["go.sum"] = sum
+	}
+	return files
+}
+
+// workspace is a go.work using the root module m and ./lib at the given go versions; the root and
+// lib each get an empty go.sum, lib's replaced by libSum and go.work.sum written when non-empty.
+func workspace(rootGo, libGo, workSum, libSum string) map[string]string {
+	files := map[string]string{
+		"go.work":    goWorkUse,
+		"go.mod":     "module m\n\ngo " + rootGo + "\n",
+		"go.sum":     "",
+		"lib/go.mod": "module example.com/lib\n\ngo " + libGo + "\n",
+		"lib/go.sum": libSum,
+	}
+	if workSum != "" {
+		files["go.work.sum"] = workSum
+	}
+	return files
+}
+
+func withFile(files map[string]string, name, content string) map[string]string {
+	files[name] = content
+	return files
+}
+
+func withoutFile(files map[string]string, name string) map[string]string {
+	delete(files, name)
+	return files
+}
 
 func TestGoModRequires(t *testing.T) {
 	sum116 := map[string]string{"go.mod": "module m\n\ngo 1.16\n\nrequire github.com/labstack/echo/v4 v4.1.17\n", "go.sum": goBenchSum}
@@ -37,17 +73,28 @@ func TestGoModRequires(t *testing.T) {
 		{"1.17 missing require is proof, go.sum ignored", map[string]string{"go.mod": "module m\n\ngo 1.17\n", "go.sum": goBenchSum}, "golang.org/x/crypto", false, true},
 		{"1.21 missing require is proof without go.sum", map[string]string{"go.mod": "module m\n\ngo 1.21\n"}, "golang.org/x/crypto", false, true},
 		{"1.21 require is present", map[string]string{"go.mod": "module m\n\ngo 1.21\n\nrequire golang.org/x/crypto v0.1.0\n"}, "golang.org/x/crypto", true, true},
+		{"1.17 replaced module without a require is present", map[string]string{"go.mod": "module m\n\ngo 1.17\n\nreplace golang.org/x/text => ./text\n"}, "golang.org/x/text", true, true},
+		{"1.16 module in vendor/modules.txt but not go.sum is present", vendored(goBenchSum, vendorTxt), "golang.org/x/text", true, true},
+		{"1.16 package path under a vendored module is present", vendored("", vendorTxt), "golang.org/x/net/http2", true, true},
+		{"1.16 module in neither vendor/modules.txt nor go.sum is provably absent", vendored(goBenchSum, vendorTxt), "golang.org/x/sys", false, true},
+		{"1.16 malformed vendor/modules.txt fails open", vendored(goBenchSum, "#\n"), "golang.org/x/sys", false, false},
+		{"go.work 1.16 member's go.sum is read", workspace("1.16", "1.16", "", goBenchSum), "golang.org/x/crypto", true, true},
+		{"go.work 1.21 root with a 1.16 member reads the member's go.sum", workspace("1.21", "1.16", "", goBenchSum), "golang.org/x/crypto", true, true},
+		{"go.work.sum is read", workspace("1.16", "1.16", goBenchSum, ""), "golang.org/x/crypto", true, true},
+		{"go.work module in no go.sum or go.work.sum is provably absent", workspace("1.21", "1.16", goBenchSum, goBenchSum), "golang.org/x/sys", false, true},
+		{"go.work 1.16 member with no go.sum fails open", withoutFile(workspace("1.21", "1.16", goBenchSum, ""), "lib/go.sum"), "golang.org/x/sys", false, false},
+		{"go.work 1.21 member with no go.sum is not needed", withoutFile(workspace("1.16", "1.21", "", ""), "lib/go.sum"), "golang.org/x/sys", false, true},
+		{"go.work malformed go.work.sum fails open", workspace("1.16", "1.16", "garbage line\n", ""), "golang.org/x/sys", false, false},
+		{"go.work at 1.17 throughout: missing require is proof", workspace("1.21", "1.17", "", goBenchSum), "golang.org/x/crypto", false, true},
+		{"go.work replace is present", withFile(workspace("1.21", "1.21", "", ""), "go.work", goWorkUse+"\nreplace golang.org/x/text => ./text\n"), "golang.org/x/text", true, true},
+		{"go.work member's replace is present", withFile(workspace("1.21", "1.21", "", ""), "lib/go.mod", "module example.com/lib\n\ngo 1.21\n\nreplace golang.org/x/text => ./text\n"), "golang.org/x/text", true, true},
+		{"go.work vendor/modules.txt is read", withFile(workspace("1.16", "1.16", "", ""), "vendor/modules.txt", vendorTxt), "golang.org/x/text", true, true},
 		{"unparseable go.mod fails open", map[string]string{"go.mod": "module"}, "golang.org/x/crypto", false, false},
 		{"no go.mod fails open", map[string]string{}, "golang.org/x/crypto", false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			for n, c := range tc.files {
-				if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
+			dir := writeTree(t, tc.files)
 			present, known := goModRequires(dir, tc.module)
 			if present != tc.wantPresent || known != tc.wantKnown {
 				t.Fatalf("goModRequires(%q) = (%v, %v), want (%v, %v)", tc.module, present, known, tc.wantPresent, tc.wantKnown)
@@ -56,18 +103,13 @@ func TestGoModRequires(t *testing.T) {
 	}
 }
 
-// The wiring: the go.mod/go.sum answer feeds the intake guard, so x/crypto proceeds and x/text
-// is disqualified no_manifest_entry.
+// The wiring: the go.mod/go.sum answer feeds the intake guard through intakeManifestMembership,
+// so x/crypto proceeds and x/text is disqualified no_manifest_entry.
 func TestGoModRequiresFeedsIntakeGuard(t *testing.T) {
-	dir := t.TempDir()
-	for n, c := range map[string]string{"go.mod": "module m\n\ngo 1.16\n", "go.sum": goBenchSum} {
-		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	dir := writeTree(t, map[string]string{"go.mod": "module m\n\ngo 1.16\n", "go.sum": goBenchSum})
 	for mod, wantDisq := range map[string]bool{"golang.org/x/crypto": false, "golang.org/x/text": true} {
-		has, known := goModRequires(dir, mod)
-		disq, reason := intakeDisqualify("go", "go", mod, has, known)
+		coord, has, known := intakeManifestMembership(nil, "", dir, mod)
+		disq, reason := intakeDisqualify("go", "go", coord, has, known)
 		if disq != wantDisq || (disq && reason != ReasonNoManifestEntry) {
 			t.Errorf("%s: intakeDisqualify = (%v, %q), want disqualified=%v", mod, disq, reason, wantDisq)
 		}

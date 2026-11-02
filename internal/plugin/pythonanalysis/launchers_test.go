@@ -1123,6 +1123,17 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "script rebound by another module handing a decorated function's globals to another typing function",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\n\ndef fix(func):\n    typing.cast(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
 			name: "script rebound by another module handing a decorated function's globals to a bare get_type_hints",
 			files: map[string]string{
 				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",

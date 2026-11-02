@@ -471,6 +471,7 @@ func TestCallGraph_ModuleHeldByAssignment(t *testing.T) {
 		{name: "assigned, by the caller's star import", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\ng = y\n", "c.py": "from pkg.sub.a import *\n\ndef go():\n    return g.h(1)\n"}},
 		{name: "assigned in a def that declares it global", files: map[string]string{"pkg/sub/a.py": "from pkg.alt import y\n\ndef init():\n    global g\n    g = y\n", "c.py": chainSite}},
 		{name: "assigned a package, read through its submodule", files: map[string]string{"pkg/sub/a.py": "from pkg import alt\ng = alt\n", "c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.y.h(1)\n"}},
+		{name: "assigned a module that imports a module", files: map[string]string{"pkg/sub/a.py": "from pkg import alt2\ng = alt2\n", "pkg/alt2.py": "from pkg.alt import y\n", "c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g.y.h(1)\n"}},
 		{name: "stored from another module", files: map[string]string{"pkg/sub/a.py": "", "d.py": "import pkg.sub.a\nfrom pkg.alt import y\npkg.sub.a.g = y\n", "c.py": "import d\n" + chainSite}},
 		{name: "stored through a from-imported module", files: map[string]string{"pkg/sub/a.py": "", "d.py": "from pkg.sub import a\nfrom pkg.alt import y\na.g = y\n", "c.py": "import d\n" + chainSite}},
 		{name: "stored by setattr", files: map[string]string{"pkg/sub/a.py": "", "d.py": "from pkg.sub import a\nfrom pkg.alt import y\nsetattr(a, 'g', y)\n", "c.py": "import d\n" + chainSite}},

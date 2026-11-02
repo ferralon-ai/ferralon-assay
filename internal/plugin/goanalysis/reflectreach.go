@@ -5,7 +5,6 @@ import (
 	"maps"
 	"slices"
 
-	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 	"golang.org/x/tools/go/types/typeutil"
@@ -41,19 +40,22 @@ var (
 // reflectReachOf builds res's whole program, dependencies included, and returns its reflectReach. The
 // call graph reconciliation reads holds code for the loaded module's own packages only, and the calls
 // reflection makes are mostly in the standard library (encoding/json, text/template).
-func reflectReachOf(res *LoadResult) (reasons []string, reach map[string][]string, err error) {
+//
+// known lists packages a partial govulncheck run could not load (partialRun.readImports).
+func reflectReachOf(res *LoadResult, known []string) (reasons []string, reach map[string][]string, err error) {
 	sp, err := buildSSAWith(res, ssautil.AllPackages)
 	if err != nil {
 		return nil, nil, err
 	}
 	reasons, reach = sp.reflectReach()
-	// AllPackages builds no bodies for a package that does not type-check, so what the fixpoint did not
-	// see there is unknown: the reach is too.
-	packages.Visit(res.Packages, nil, func(p *packages.Package) {
-		if p.IllTyped {
-			reach = nil
-		}
-	})
+	// AllPackages builds no bodies for a package that does not type-check, or for one importing it, so
+	// what the fixpoint did not see there is unknown: the reach is too. A package in known, and so every
+	// package importing it, lies in the partial run's Hidden closure. Each binary holding one is built
+	// from Hidden alone, and every other binary's code was all seen, so the reach still stands for a
+	// module Hidden holds no package of; a refutation of any other is withheld (withholdForPartialRun).
+	if incompleteLoad(res.Packages, known) {
+		reach = nil
+	}
 	return reasons, reach, nil
 }
 

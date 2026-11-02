@@ -230,7 +230,7 @@ func TestRunCacheKeys(t *testing.T) {
 			CallGraph:    plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}},
 			ReflectReach: map[string][]string{"example.com/m": {"F"}},
 		}
-		if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+		if _, err := runCached(ctx, "reconcile", reconcileCacheKey(buildDir, nil), func() ([]byte, error) {
 			return json.Marshal(seed)
 		}); err != nil {
 			t.Fatal(err)
@@ -240,11 +240,15 @@ func TestRunCacheKeys(t *testing.T) {
 			loads++
 			return nil, errors.New("tree loaded")
 		}
-		if got, err := reconcileCallGraph(ctx, buildDir, load); err != nil || !reflect.DeepEqual(got, seed) || loads != 0 {
+		if got, err := reconcileCallGraph(ctx, buildDir, nil, load); err != nil || !reflect.DeepEqual(got, seed) || loads != 0 {
 			t.Fatalf("same environment: got %+v, %v after %d loads, want the seed and no load", got, err, loads)
 		}
+		if _, err := reconcileCallGraph(ctx, buildDir, []string{"example.com/m/p"}, load); err == nil || loads != 1 {
+			t.Fatalf("other known packages: err %v after %d loads, want a fresh load", err, loads)
+		}
+		loads = 0
 		t.Setenv("ASSAY_RUN_CACHE_KEY_PROBE", "1")
-		if _, err := reconcileCallGraph(ctx, buildDir, load); err == nil || loads != 1 {
+		if _, err := reconcileCallGraph(ctx, buildDir, nil, load); err == nil || loads != 1 {
 			t.Fatalf("changed environment: err %v after %d loads, want a fresh load", err, loads)
 		}
 	})
@@ -261,12 +265,12 @@ func TestRunCacheKeys(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := WithRunCacheDir(context.Background(), t.TempDir())
-				if _, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+				if _, err := runCached(ctx, "reconcile", reconcileCacheKey(buildDir, nil), func() ([]byte, error) {
 					return json.Marshal(reconcileGraph{ReflectReach: tc.reach})
 				}); err != nil {
 					t.Fatal(err)
 				}
-				got, err := reconcileCallGraph(ctx, buildDir, func() (*LoadResult, error) { return nil, errors.New("tree loaded") })
+				got, err := reconcileCallGraph(ctx, buildDir, nil, func() (*LoadResult, error) { return nil, errors.New("tree loaded") })
 				if err != nil {
 					t.Fatal(err)
 				}

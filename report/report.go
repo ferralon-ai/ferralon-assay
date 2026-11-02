@@ -682,6 +682,12 @@ type AdvisoryFinding struct {
 	UndeterminedReason string `json:"undetermined_reason,omitempty"`
 	// Evidence is the compact grounds behind the verdict (see EvidenceSummary).
 	Evidence EvidenceSummary `json:"evidence"`
+	// Annotations are the assumptions the analysis made in reaching this verdict, whatever it is:
+	// something it found and did not count, such as an install command in a file nothing in the
+	// build runs. Each is the plugin's own (Reason starts with plugin.AnnotationAssumptionPrefix),
+	// and each also reaches the scan's Partiality as a note. Unlike Evidence.Assumptions, which are
+	// the caller's declarations, these are the analysis's, and they qualify every verdict.
+	Annotations []plugin.Annotation `json:"annotations,omitempty"`
 	// Priority is the EPSS/KEV prioritization context for this advisory, from the signals
 	// file the run was given, each value carrying its own stamp (see Priority). Nil when
 	// the run had no signals or the file had no stamped value for the advisory's id or

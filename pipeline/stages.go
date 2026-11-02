@@ -1666,6 +1666,9 @@ type depVersions struct {
 	// Presence is the first resolved copy, which maliciousPresence matches against. It stands
 	// without agreement, so it is never read by the not-affected path.
 	Presence string
+	// Annotations are the assumptions the resolver's answer rests on (plugin.Annotation). They
+	// qualify the answer without making it partial, so they gate nothing here.
+	Annotations []plugin.Annotation
 }
 
 // singleVersion is a dependency whose source can carry one version only (a go.mod require, the
@@ -1681,7 +1684,7 @@ func singleVersion(v string) depVersions {
 // MatchesComplete over a complete scan and every copy it lists is resolved; Match may still be
 // unresolved, as it is when the copies disagree.
 func depVersionsOf(vr plugin.DependencyVersionResult) depVersions {
-	dep := depVersions{Found: vr.Found}
+	dep := depVersions{Found: vr.Found, Annotations: vr.Annotations}
 	if vr.Found && vr.Match.Resolved {
 		dep.Version = vr.Match.Version
 		dep.Versions = []string{dep.Version}
@@ -1881,6 +1884,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		resolved        depVersions
 		alsoPresent     []presentPackage
 		partialityFlags []string
+		// annotations is every assumption a resolution of any affected package rested on: an
+		// install command the lane assumed inactive qualifies every version it read in the scan.
+		annotations []plugin.Annotation
 	)
 	// presenceVersion is the version maliciousPresence matches against: the package selection
 	// below run over each package's first resolved copy rather than its agreed Match. It is
@@ -1904,6 +1910,11 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 				return dep, nil, true, nil
 			}
 			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
+			for _, a := range dep.Annotations {
+				if !slices.Contains(annotations, a) {
+					annotations = append(annotations, a)
+				}
+			}
 			return dep, flags, false, err
 		}
 		presenceSelected := false
@@ -1999,6 +2010,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		GoVersion       string   `json:"go_version,omitempty"`
 		BuildCommand    string   `json:"build_command,omitempty"`
 		PartialityFlags []string `json:"partiality_flags,omitempty"`
+		// Annotations are the assumptions the resolved versions rest on. Unlike PartialityFlags
+		// they leave the resolution complete; trigger discloses them on every verdict they qualify.
+		Annotations []plugin.Annotation `json:"annotations,omitempty"`
 		// Toolchain is the subject's Go toolchain resolved to one bounded fact. Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
@@ -2036,6 +2050,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		GoVersion:          goVersion,
 		BuildCommand:       buildCommand,
 		PartialityFlags:    partialityFlags,
+		Annotations:        annotations,
 		Toolchain:          toolchain,
 		GoFloor:            goFloor,
 		SelectedModule:     selectedModule,

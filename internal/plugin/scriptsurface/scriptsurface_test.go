@@ -111,6 +111,10 @@ func writeTree(t *testing.T, files map[string]string) string {
 // testSpec, and each lane's own forms, variables and reads are rowed in that lane.
 func TestVeto_LaneNeutral(t *testing.T) {
 	const docker = "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nRUN "
+	// made creates /opt/venv in one RUN; recopy copies the manifests again after a change
+	// that would taint them, so only the activate decides.
+	const made = docker + "python -m venv /opt/venv\n"
+	const recopy = "COPY inst.toml inst.lock reqs.txt ./\nRUN "
 	tree := func(extra map[string]string) map[string]string {
 		files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n", "reqs.txt": "x==1\n"}
 		for k, v := range extra {
@@ -515,7 +519,7 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"activates a venv uv made under another directory", tree(map[string]string{"install.sh": "uv venv --directory sub\n. .venv/bin/activate\ninst sync\n"}), true, ""},
 		{"activates a venv with two operands", tree(map[string]string{"install.sh": "virtualenv a b\n. a/bin/activate\ninst sync\n"}), true, ""},
 		{"activates a venv with an extra argument", tree(map[string]string{"install.sh": "python -m venv .venv\n. .venv/bin/activate x\ninst sync\n"}), true, ""},
-		{"activates a venv in a Dockerfile RUN after the one that created it", tree(map[string]string{"Dockerfile": "FROM base\nRUN python -m venv /opt/venv\nRUN . /opt/venv/bin/activate\n"}), true, ""},
+		{"activates a venv in a Dockerfile RUN after the one that created it", tree(map[string]string{"Dockerfile": "FROM base\nRUN python -m venv /opt/venv\nRUN . /opt/venv/bin/activate\n"}), false, ""},
 		{"activates a venv in a Dockerfile without WORKDIR, relative", tree(map[string]string{"Dockerfile": "FROM base\nRUN python -m venv .venv && . .venv/bin/activate\n"}), true, ""},
 		{"activates a committed in-tree script that installs", tree(map[string]string{"install.sh": "python -m venv venv\n. venv/bin/activate\ninst sync\n", "venv/bin/activate": "#!/bin/sh\ninst add x\n"}), true, ""},
 		{"activates in one CI step a venv the step before created", tree(map[string]string{".github/workflows/ci.yml": steps("- run: python -m venv .venv\n      - run: |\n          . .venv/bin/activate\n          inst sync\n")}), true, ""},
@@ -596,6 +600,62 @@ func TestVeto_LaneNeutral(t *testing.T) {
 
 		// Binding in a Dockerfile.
 		{"Dockerfile without WORKDIR", tree(map[string]string{"Dockerfile": "FROM base\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv no command created", tree(map[string]string{"Dockerfile": docker + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv a later command may have rewritten", tree(map[string]string{"Dockerfile": made + "RUN tool x\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv a COPY onto its activate replaced", tree(map[string]string{"Dockerfile": made + "COPY act /opt/venv/bin/activate\nRUN . /opt/venv/bin/activate && inst sync\n", "act": "inst add x\n"}), true, ""},
+		{"Dockerfile activates a venv a COPY of a parent directory covers", tree(map[string]string{"Dockerfile": made + "COPY opt/ /opt/\nRUN . /opt/venv/bin/activate && inst sync\n", "opt/keep": ""}), true, ""},
+		{"Dockerfile activates a venv a COPY --from covers", tree(map[string]string{"Dockerfile": made + "COPY --from=other /x /opt/venv\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv a COPY --from of a parent covers", tree(map[string]string{"Dockerfile": made + "COPY --from=other /x /opt\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv an ADD covers", tree(map[string]string{"Dockerfile": made + "ADD https://example.com/act /opt/venv/bin/activate\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv an earlier stage made", tree(map[string]string{"Dockerfile": "FROM base AS b\nRUN python -m venv /opt/venv\nFROM b\nWORKDIR /app\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv created again over one the stage held", tree(map[string]string{"Dockerfile": made + "RUN python -m venv /opt/venv\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv created over a copied one", tree(map[string]string{"Dockerfile": docker + "true\nCOPY venv/ /opt/venv/\nRUN python -m venv /opt/venv\nRUN . /opt/venv/bin/activate && inst sync\n", "venv/bin/activate": "inst add x\n"}), true, ""},
+		{"Dockerfile activates a venv created in an if body", tree(map[string]string{"Dockerfile": docker + "if [ -n \"$X\" ]; then python -m venv /opt/venv; fi\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv a guarded creation may not have made", tree(map[string]string{"Dockerfile": docker + "test -d /opt/venv || python -m venv /opt/venv\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv a backgrounded creation may not have finished", tree(map[string]string{"Dockerfile": docker + "python -m venv /opt/venv &\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv under a RUN mount", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=bind,source=v,target=/opt/venv . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv after a SHELL", tree(map[string]string{"Dockerfile": made + "SHELL [\"/bin/bash\", \"-c\"]\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a relative venv under another WORKDIR", tree(map[string]string{"Dockerfile": docker + "python -m venv .venv\nWORKDIR /srv\n" + recopy + ". .venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv other than the one an earlier RUN created", tree(map[string]string{"Dockerfile": made + "RUN . /opt/other/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile sources activate.fish of a venv an earlier RUN created", tree(map[string]string{"Dockerfile": made + "RUN . /opt/venv/bin/activate.fish && inst sync\n"}), true, ""},
+		{"Dockerfile sources activate_this.py of a venv an earlier RUN created", tree(map[string]string{"Dockerfile": made + "RUN . /opt/venv/bin/activate_this.py && inst sync\n"}), true, ""},
+		{"Dockerfile sources an activate outside bin of a venv an earlier RUN created", tree(map[string]string{"Dockerfile": made + "RUN . /opt/venv/Scripts/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv created into a RUN mount", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN --mount=type=cache,target=/opt/venv python -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv created under a RUN mount of a parent", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN --mount=type=cache,dst=/opt python -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv created under a relative RUN mount", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /opt\nRUN --mount=type=cache,target=venv python -m venv /opt/venv\nWORKDIR /app\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv created beside a RUN mount with no target", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN --mount=type=bind,source=v python -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv created after a VOLUME", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nVOLUME /opt/venv\nRUN python -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv a copied interpreter created", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ tools/\nRUN /app/tools/python3 -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile activates a venv a relative copied interpreter created", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ tools/\nRUN tools/python3 -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile activates a uv venv made with a copied -p interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ tools/\nRUN uv venv -p /app/tools/python3 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile activates a virtualenv made with a copied --python= interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ tools/\nRUN virtualenv --python=tools/python3 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile activates a virtualenv made with a copied -p interpreter named without a /", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY mypy ./\nRUN virtualenv -p mypy /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "mypy": ""}), true, ""},
+		{"Dockerfile activates a uv venv made with a copied -p directory named without a /", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY tools/ ./tools/\nRUN uv venv -p tools /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile activates a uv venv made with -p python over a copied python directory", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY . .\nRUN uv venv -p python /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", "python/bin/python": ""}), true, ""},
+		{"Dockerfile uv venv -p python over a copied python directory, then activate", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY . .\nRUN uv venv -p python /opt/venv && . /opt/venv/bin/activate && inst sync\n", "python/bin/python": ""}), true, ""},
+		{"Dockerfile uv venv -p into a bind mount, then activate", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN --mount=type=bind,target=/src uv venv -p /src/tools/python3 /opt/venv && . /opt/venv/bin/activate && inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile uv venv under a bind-mounted .python-version, then activate", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN --mount=type=bind,source=.python-version,target=.python-version uv venv /opt/venv && . /opt/venv/bin/activate && inst sync\n", ".python-version": "tools/py\n", "tools/py": ""}), true, ""},
+		{"Dockerfile activates a uv venv made after a cd that may not have run, under a copied .python-version", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY .python-version ./\nRUN cd /src || nvm use 18; uv venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", ".python-version": "tools/py\n"}), true, ""},
+		{"Dockerfile activates a venv under the last of two RUN mount targets", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=bind,source=v,target=/tmp/c,target=/opt/venv . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a virtualenv whose -p has no value", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN virtualenv /opt/venv -p\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a uv venv a copied .python-version picks for", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app/sub\nCOPY .python-version /app/\nRUN uv venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", ".python-version": "3.12\n"}), true, ""},
+		{"uv venv then activate the default under a .python-version", tree(map[string]string{"install.sh": "uv venv --seed\n. ./.venv/bin/activate\ninst sync\n", ".python-version": "3.12\n"}), true, ""},
+		{"uv venv then activate the default under a .python-versions", tree(map[string]string{"install.sh": "uv venv --seed\n. ./.venv/bin/activate\ninst sync\n", ".python-versions": "3.12\n"}), true, ""},
+		{"Dockerfile nvm install reinstalling packages", tree(map[string]string{"Dockerfile": docker + "nvm install 20 --reinstall-packages-from=18 && inst sync\n"}), true, ""},
+		{"Dockerfile venv at the WORKDIR the install reads", tree(map[string]string{"Dockerfile": docker + "python -m venv /app && . /app/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile venv at the WORKDIR, relative", tree(map[string]string{"Dockerfile": docker + "python -m venv . && inst sync\n"}), true, ""},
+		{"Dockerfile venv at the root", tree(map[string]string{"Dockerfile": docker + "virtualenv / && inst sync\n"}), true, ""},
+		{"Dockerfile venv over the manifest, installed in a later RUN", tree(map[string]string{"Dockerfile": docker + "uv venv /app\nRUN inst sync\n"}), true, ""},
+		{"Dockerfile venv with a flag not known to write only there", tree(map[string]string{"Dockerfile": docker + "virtualenv --app-data /app /opt/venv && inst sync\n"}), true, ""},
+		{"Dockerfile venv with a known flag given a value it does not take", tree(map[string]string{"Dockerfile": docker + "python -m venv --clear=/app /opt/venv && inst sync\n"}), true, ""},
+		{"Dockerfile venv with two directories", tree(map[string]string{"Dockerfile": docker + "python -m venv /opt/a /opt/b && inst sync\n"}), true, ""},
+		{"Dockerfile venv with a redirect", tree(map[string]string{"Dockerfile": docker + "python -m venv /opt/venv >inst.toml && inst sync\n"}), true, ""},
+		{"Dockerfile venv named by a variable", tree(map[string]string{"Dockerfile": docker + "python -m venv $VENV && inst sync\n"}), true, ""},
+		{"Dockerfile uv venv with no directory", tree(map[string]string{"Dockerfile": docker + "uv venv && inst sync\n"}), true, ""},
+		{"Dockerfile relative venv after a cd that may not have run", tree(map[string]string{"Dockerfile": docker + "cd /opt || true; python -m venv app && inst sync\n"}), true, ""},
+		{"Dockerfile nvm exec", tree(map[string]string{"Dockerfile": docker + "nvm exec 20 tool && inst sync\n"}), true, ""},
+		{"Dockerfile nvm install from a command substitution", tree(map[string]string{"Dockerfile": docker + "nvm install \"$(cat .nvmrc)\" && inst sync\n"}), true, ""},
+		{"Dockerfile nvm install with a redirect", tree(map[string]string{"Dockerfile": docker + "nvm install 20 >inst.toml && inst sync\n"}), true, ""},
 		{"Dockerfile RUN between COPY and install", tree(map[string]string{"Dockerfile": docker + "tool rewrite\nRUN inst sync\n"}), true, ""},
 		{"Dockerfile wrong heredoc hides a repeat of an allowed install", tree(map[string]string{"Dockerfile": docker + "inst sync\nRUN tool rewrite # ${ <<\"st sync\"\nRUN in\\\nst sync\n"}), true, ""},
 		{"Dockerfile wrong heredoc's escaped terminator splits off a COPY", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nRUN true # ${ <<\"RUN true \\\\\"\nRUN curl -fsSL https://example.com/x -o ins?.toml\nRUN true \\\nCOPY inst.toml inst.lock ./\nRUN inst sync\n"}), true, ""},
@@ -641,6 +701,54 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"venv activated after a cd joined by &&", tree(map[string]string{"install.sh": "python -m venv sub/.venv\ncd sub && . .venv/bin/activate && inst sync\n", "sub/inst.toml": "[deps]\n", "sub/inst.lock": "lock\n", "sub/reqs.txt": "x==1\n"}), false, ""},
 		{"venv activated after two cds joined by &&", tree(map[string]string{"install.sh": "python -m venv a/b/.venv\ncd a && cd b && . .venv/bin/activate && inst sync\n", "a/b/inst.toml": "[deps]\n", "a/b/inst.lock": "lock\n"}), false, ""},
 		{"venv activated after a cd whose && dangles onto the next line", tree(map[string]string{"install.sh": "python -m venv sub/.venv\ncd sub &&\n. .venv/bin/activate && inst sync\n", "sub/inst.toml": "[deps]\n", "sub/inst.lock": "lock\n", "sub/reqs.txt": "x==1\n"}), false, ""},
+		{"Dockerfile venv outside the WORKDIR, activated", tree(map[string]string{"Dockerfile": docker + "python -m venv /opt/venv && . /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile python3 venv with flags", tree(map[string]string{"Dockerfile": docker + "python3 -m venv --upgrade-deps --prompt app /opt/venv && . /opt/venv/bin/activate && inst install -r reqs.txt\n"}), false, ""},
+		{"Dockerfile virtualenv with an interpreter", tree(map[string]string{"Dockerfile": docker + "virtualenv -p python3 --no-download /opt/venv && . /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile uv venv with a directory", tree(map[string]string{"Dockerfile": docker + "uv venv --seed --python=3.12 /opt/venv && . /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile venv beside the manifest", tree(map[string]string{"Dockerfile": docker + "python -m venv .venv && . .venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv an earlier RUN created", tree(map[string]string{"Dockerfile": made + "RUN . /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv an earlier RUN created, then installs a copied file", tree(map[string]string{"Dockerfile": made + "COPY reqs.txt .\nRUN . /opt/venv/bin/activate && inst install -r reqs.txt\n"}), false, ""},
+		{"Dockerfile activates a venv past ENV, USER, ARG and LABEL", tree(map[string]string{"Dockerfile": made + "ENV PATH=/opt/venv/bin:$PATH\nUSER app\nARG X=1\nLABEL a=b\nRUN . /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv past a COPY beside it", tree(map[string]string{"Dockerfile": made + "COPY act /opt/other/activate\nRUN . /opt/venv/bin/activate && inst sync\n", "act": "x\n"}), false, ""},
+		{"Dockerfile activates a relative venv under the same WORKDIR", tree(map[string]string{"Dockerfile": docker + "python -m venv .venv\nRUN . .venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates by its absolute path a relative venv from another WORKDIR", tree(map[string]string{"Dockerfile": docker + "python -m venv .venv\nWORKDIR /srv\n" + recopy + ". /app/.venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv spelled with // and ./", tree(map[string]string{"Dockerfile": made + "RUN . /opt//venv/./bin//activate && inst sync\n"}), false, ""},
+		{"Dockerfile venv in its own RUN, not activated", tree(map[string]string{"Dockerfile": docker + "python -m venv /opt/venv\nRUN inst sync\n"}), false, ""},
+		{"Dockerfile nvm install and use", tree(map[string]string{"Dockerfile": docker + ". $NVM_DIR/nvm.sh && nvm install 20 && nvm use 20 && inst sync\n"}), false, ""},
+		{"Dockerfile nvm install of a variable", tree(map[string]string{"Dockerfile": docker + ". $NVM_DIR/nvm.sh && nvm install \"${NODE_VERSION}\" && nvm use $NODE_VERSION && inst sync\n"}), false, ""},
+		{"Dockerfile nvm install and use with flags", tree(map[string]string{"Dockerfile": docker + "nvm install --lts --latest-npm --no-progress && nvm use --silent --lts=iron && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv in a RUN that mounts a cache elsewhere", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=cache,target=/root/.cache/pip . /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv a RUN that mounts a cache elsewhere created", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN --mount=type=cache,target=/root/.cache/pip python -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv an absolute system interpreter created", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN /usr/bin/python3 -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a virtualenv made with an absolute system -p interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN virtualenv -p /usr/bin/python3 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a uv venv made with -p past a copied .python-version", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY .python-version ./\nRUN uv venv -p 3.12 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", ".python-version": "3.12\n"}), false, ""},
+		{"Dockerfile activates a uv venv made with -p cpython@3.12", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN uv venv -p cpython@3.12 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a virtualenv made with --python=pypy3", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN virtualenv --python=pypy3 /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a uv venv made with no .python-version", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN uv venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile uv venv -p / over a stage that holds files, then activate", tree(map[string]string{"Dockerfile": docker + "uv venv -p / /opt/venv && . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile uv venv -p a directory a file copy wrote under", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nCOPY tools/python3 /opt/tools/bin/python3\nRUN uv venv -p /opt/tools /opt/venv\nRUN inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile uv venv -p a directory a directory copy wrote under", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nCOPY tools/ /opt/tools/bin/\nRUN uv venv -p /opt/tools /opt/venv\nRUN inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile uv venv -p a directory a directory copy put there", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nCOPY tools/ /opt/\nRUN uv venv -p /opt/tools /opt/venv\nRUN inst sync\n", "tools/tools/python3": ""}), true, ""},
+		{"Dockerfile uv venv -p / under a RUN mount before anything is copied", tree(map[string]string{"Dockerfile": "FROM base\nRUN --mount=type=bind,source=tools,target=/x uv venv -p / /opt/venv && . /opt/venv/bin/activate\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nRUN inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile uv venv -p a directory beside a copied interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nCOPY tools/ /opt/\nRUN uv venv -p /opt/tools /opt/venv\nRUN inst sync\n", "tools/python3": ""}), false, ""},
+		{"Dockerfile uv venv -p a path only another directory copy's source holds", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nCOPY tools/ /srv/\nRUN uv venv -p /opt/tools /opt/venv\nRUN inst sync\n", "tools/opt/tools/python3": ""}), false, ""},
+		{"Dockerfile uv venv -p a copied interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nCOPY tools/ /opt/tools/\nRUN uv venv -p /opt/tools/python3 /opt/venv\nRUN inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile venv made by a copied interpreter", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nCOPY tools/ /opt/tools/\nRUN /opt/tools/python3 -m venv /opt/venv\nRUN inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile uv venv -p a directory a mount of its RUN lies under", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock reqs.txt ./\nRUN --mount=type=bind,source=tools,target=/opt/tools/bin uv venv -p /opt/tools /opt/venv\nRUN inst sync\n", "tools/python3": ""}), true, ""},
+		{"Dockerfile venv in its own RUN with an unknown flag", tree(map[string]string{"Dockerfile": docker + "virtualenv --never /opt/venv\nRUN inst sync\n"}), true, ""},
+		{"Dockerfile nvm install in its own RUN with an expanding flag value", tree(map[string]string{"Dockerfile": docker + "nvm install --lts=$NODE_LTS\nRUN inst sync\n"}), true, ""},
+		{"Dockerfile activates a uv venv a copied .python-versions picks for", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app/sub\nCOPY .python-versions /app/\nRUN uv venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n", ".python-versions": "3.12\n"}), true, ""},
+		{"Dockerfile activates a venv under a RUN mount at /", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=bind,source=v,target=/ . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv inside one an earlier RUN created at its parent", tree(map[string]string{"Dockerfile": docker + "python -m venv /opt\nRUN . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile activates a venv under a quoted RUN mount target", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=bind,source=v,target=\"/opt/venv\" . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile venv -p a name that is not a version request", tree(map[string]string{"Dockerfile": docker + "virtualenv -p mypython3 /opt/venv && . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile venv -p an implementation name with a suffix", tree(map[string]string{"Dockerfile": docker + "virtualenv -p python-custom /opt/venv && . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile venv -p a version with a suffix", tree(map[string]string{"Dockerfile": docker + "virtualenv -p 3.12-custom /opt/venv && . /opt/venv/bin/activate && inst sync\n"}), true, ""},
+		{"Dockerfile venv with a command substitution in its prompt", tree(map[string]string{"Dockerfile": docker + "python -m venv --prompt \"$(tool x)\" /opt/venv && inst sync\n"}), true, ""},
+		{"uv venv in a subdirectory under the root's .python-version", map[string]string{"sub/inst.toml": "[deps]\n", "sub/inst.lock": "lock\n", ".python-version": "3.12\n", "install.sh": "cd sub\nuv venv --seed\n. ./.venv/bin/activate\ninst sync\n"}, true, ""},
+		{"Dockerfile activates a venv created in a RUN that mounts a cache at dst= elsewhere", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN --mount=type=cache,dst=/root/.cache/pip python -m venv /opt/venv\n" + recopy + ". /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv in a RUN that mounts a cache at destination= elsewhere", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=cache,destination=/root/.cache/pip . /opt/venv/bin/activate && inst sync\n"}), false, ""},
+		{"Dockerfile activates a venv in a RUN that mounts a cache with an uppercase Target= elsewhere", tree(map[string]string{"Dockerfile": made + "RUN --mount=type=cache,Target=/root/.cache/pip . /opt/venv/bin/activate && inst sync\n"}), false, ""},
 		{"activate in a Dockerfile RUN", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN python -m venv .venv && . /app/.venv/bin/activate\n"}), false, ""},
 		{"venv created and activated in a run block", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          . .venv/bin/activate\n          inst install -r reqs.txt\n")}), false, ""},
 		{"venv created and activated in a run block with a working-directory", tree(map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "app/reqs.txt": "x==1\n", ".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          . .venv/bin/activate\n          inst install -r reqs.txt\n        working-directory: app\n")}), false, ""},
@@ -888,6 +996,19 @@ func TestVeto_DataOnlyUnderConcurrent(t *testing.T) {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A .python-version above the build root is not the build's, so it does not withhold uv venv.
+func TestVeto_PythonPinAboveRoot(t *testing.T) {
+	outer := writeTree(t, map[string]string{
+		".python-version": "3.12\n",
+		"repo/inst.toml":  "[deps]\n",
+		"repo/inst.lock":  "lock\n",
+		"repo/install.sh": "uv venv --seed\n. ./.venv/bin/activate\ninst sync\n",
+	})
+	if withheld(filepath.Join(outer, "repo"), testSpec) {
+		t.Fatal("withheld = true, want false")
 	}
 }
 

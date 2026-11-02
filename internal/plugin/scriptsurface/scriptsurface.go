@@ -37,7 +37,10 @@
 // directory is the stage's literal WORKDIR, and a container path binds only to a file COPY'd
 // into it from the build context (the Dockerfile's directory, or the build root) earlier in
 // the stage, with nothing since that could have changed it: a COPY --from, ADD, heredoc or
-// unresolvable COPY over it, or any RUN command that is not itself an allowed form.
+// unresolvable COPY over it, or any RUN command that is not itself an allowed form. Two
+// kinds of command change less: one that creates a virtual environment at one literal place
+// (venvWrites) changes only what is under that place, and nvm use or nvm install (nvmOnly)
+// changes nothing the stage holds.
 //
 // A file run with . or source runs its commands in place, so it withholds unless it is a
 // literal in-tree script surface the walk checks on its own, or only sets PATH: a
@@ -1208,7 +1211,12 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	if !v.segmentHasToken(words) {
 		v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
-		cur.other()
+		switch dir, ok := venvWrites(seg, cur); {
+		case ok:
+			cur.wrote(dir, mark.made == dir)
+		case !nvmOnly(seg):
+			cur.other()
+		}
 		return ""
 	}
 	if seg.expands || hasRedirect(words) {
@@ -1348,9 +1356,9 @@ var pathOnlyScripts = map[string]bool{
 }
 
 // pathOnly reports whether a . or source of a file the walk does not read only sets PATH: one
-// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate of the virtual
-// environment that made, the previous command but for directory changes, created at the same
-// place.
+// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate, // and ./ aside, of
+// the virtual environment that made, the previous command but for directory changes, created
+// at the same place, or of one an earlier shell made there (madeVenv).
 func pathOnly(seg segment, cur cursor, made string) bool {
 	if len(seg.words) != 2 {
 		return false
@@ -1359,12 +1367,12 @@ func pathOnly(seg segment, cur cursor, made string) bool {
 	if pathOnlyScripts[op] {
 		return seg.expands == strings.Contains(op, "$")
 	}
-	dir, ok := strings.CutSuffix(op, "/bin/activate")
-	if seg.expands || !ok {
+	bin, name := path.Split(path.Clean(op))
+	if seg.expands || name != "activate" || path.Base(bin) != "bin" {
 		return false
 	}
-	key, ok := cur.at(dir)
-	return ok && made != "" && key == made
+	key, ok := cur.at(path.Dir(path.Clean(bin)))
+	return ok && (made != "" && key == made || cur.madeVenv(key))
 }
 
 // blockDepth is how far each word opening or closing an if, case or loop moves a command into
@@ -1416,11 +1424,145 @@ func venvMade(seg segment, cur cursor) string {
 		return ""
 	}
 	key, ok := cur.at(dirs[0])
-	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) {
+	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) || interpHeld(head, words, args, cur) {
 		return ""
 	}
 	return key
 }
+
+// interpHeld reports whether the interpreter a venv creation copies may be a file of the build:
+// its command is a path the build holds; a -p/--python value is missing, is a path the build
+// holds, or has no / and is not a version request; or it is uv venv without -p/--python, which reads a
+// request, perhaps a path, from a .python-version or .python-versions in the working
+// directory or above it.
+func interpHeld(head string, words, args []string, cur cursor) bool {
+	if strings.Contains(words[0], "/") && cur.present(words[0]) {
+		return true
+	}
+	named := false
+	for i := 0; i < len(args); i++ {
+		name, val, inline := strings.Cut(args[i], "=")
+		if name != "-p" && name != "--python" {
+			continue
+		}
+		if !inline {
+			if i++; i == len(args) {
+				return true
+			}
+			val = args[i]
+		}
+		// uv reads even a version request as a path when the working directory holds that
+		// name, and virtualenv and uv read any other value as a path or a name on PATH
+		named = true
+		if cur.present(val) || !strings.Contains(val, "/") && !pyRequestRE.MatchString(val) {
+			return true
+		}
+	}
+	return head == "uv" && !named && cur.pinsPython()
+}
+
+// pyRequestRE matches an interpreter request that names a version or implementation: 3.12,
+// python3, pypy3.10, cpython@3.12.
+var pyRequestRE = regexp.MustCompile(`^(?:(?:c?python|pypy|graalpy)[-@]?)?[0-9]+(?:\.[0-9]+)*$|^(?:c?python|pypy|graalpy)$`)
+
+// venvFlags are, per creator, the flags venvWrites accepts, each mapped to whether it takes
+// the next word: none makes the creator write outside its directory.
+var venvFlags = map[string]map[string]bool{
+	"venv": {
+		"--system-site-packages": false, "--symlinks": false, "--copies": false, "--clear": false,
+		"--upgrade": false, "--without-pip": false, "--upgrade-deps": false,
+		"--without-scm-ignore-files": false, "--prompt": true,
+	},
+	"virtualenv": {
+		"--system-site-packages": false, "--symlinks": false, "--copies": false, "--clear": false,
+		"--no-pip": false, "--no-setuptools": false, "--no-wheel": false, "--no-download": false,
+		"--download": false, "--no-vcs-ignore": false, "--no-periodic-update": false, "-q": false,
+		"--quiet": false, "-v": false, "--verbose": false, "-p": true, "--python": true,
+		"--prompt": true,
+	},
+	"uv": {
+		"--seed": false, "--clear": false, "--allow-existing": false, "--system-site-packages": false,
+		"--relocatable": false, "-q": false, "--quiet": false, "-v": false, "--verbose": false,
+		"--no-progress": false, "-p": true, "--python": true, "--prompt": true,
+	},
+}
+
+// venvWrites returns the one place a command that creates a virtual environment writes in the
+// build tree: <dir> of python -m venv <dir>, virtualenv <dir> or uv venv <dir>, with only
+// flags from venvFlags. Each creator also writes its own cache and data directories (pip's,
+// virtualenv's app data, uv's cache and interpreters), which hold only files it names itself.
+// false when the command is none of these, when it expands or redirects, or when its
+// directory is not one place. uv venv with no <dir> picks a project root above the working
+// directory, or wherever UV_PROJECT_ENVIRONMENT points, so it is not one place either.
+func venvWrites(seg segment, cur cursor) (string, bool) {
+	words := seg.words
+	head, ok := CommandName(words[0])
+	if seg.expands || !ok || hasRedirect(words) {
+		return "", false
+	}
+	var tool string
+	var args []string
+	switch {
+	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
+		tool, args = "venv", words[3:]
+	case head == "virtualenv":
+		tool, args = head, words[1:]
+	case head == "uv" && len(words) >= 2 && words[1] == "venv":
+		tool, args = head, words[2:]
+	default:
+		return "", false
+	}
+	var dirs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			dirs = append(dirs, a)
+			continue
+		}
+		name, _, inline := strings.Cut(a, "=")
+		next, known := venvFlags[tool][name]
+		switch {
+		case !known || inline && !next:
+			return "", false
+		case next && !inline:
+			i++
+		}
+	}
+	if len(dirs) != 1 || interpHeld(head, words, args, cur) {
+		return "", false
+	}
+	return cur.at(dirs[0])
+}
+
+// nvmOnly reports whether a command is nvm use or nvm install, which change PATH and write
+// only under NVM_DIR, never the build tree. Its other words are versions, which may expand
+// only as plain variable references, or flags from nvmFlags.
+func nvmOnly(seg segment) bool {
+	w := seg.words
+	if len(w) < 2 || w[0] != "nvm" || w[1] != "use" && w[1] != "install" || hasRedirect(w) {
+		return false
+	}
+	for _, a := range w[2:] {
+		switch {
+		case strings.HasPrefix(a, "-"):
+			if name, val, _ := strings.Cut(a, "="); !nvmFlags[name] || strings.ContainsAny(val, "$`") {
+				return false
+			}
+		case strings.ContainsAny(a, "$`") && !plainVarRE.MatchString(a):
+			return false
+		}
+	}
+	return true
+}
+
+// nvmFlags are the flags of nvm use and nvm install that write nothing outside NVM_DIR.
+var nvmFlags = map[string]bool{
+	"--lts": true, "--latest-npm": true, "--no-progress": true, "--silent": true, "-s": true,
+	"-b": true, "--default": true,
+}
+
+// plainVarRE matches a word that is one variable reference and nothing else.
+var plainVarRE = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$`)
 
 // installVerbs are the subcommands with which a package manager installs or re-locks.
 var installVerbs = map[string]bool{

@@ -53,6 +53,9 @@ type cursor interface {
 	Binder
 	cd(words []string) // nil when the target is not literal
 	other()            // a command that runs no installer and may change files
+	// wrote is a command that runs no installer and writes only under the place key, from at,
+	// names.
+	wrote(key string, venv bool)
 	// fork returns a cursor for a command started from here in a shell of its own, whose
 	// directory changes do not reach this one.
 	fork() cursor
@@ -68,6 +71,12 @@ type cursor interface {
 	present(p string) bool
 	// venv is the state of the venv rule at this command.
 	venv() *venvMark
+	// madeVenv reports whether key, from at, holds the venv a creation in an earlier shell
+	// made, unchanged since.
+	madeVenv(key string) bool
+	// pinsPython reports whether the build may hold a .python-version or .python-versions in
+	// the directory the command runs in or one above it.
+	pinsPython() bool
 }
 
 // venvMark is what the venv rule carries from command to command in one shell.
@@ -119,6 +128,27 @@ func (c *hostCursor) cd(words []string) {
 }
 
 func (c *hostCursor) other() {}
+
+func (c *hostCursor) wrote(string, bool) {}
+
+// madeVenv is false: what runs between two host shells is not seen.
+func (c *hostCursor) madeVenv(string) bool { return false }
+
+func (c *hostCursor) pinsPython() bool {
+	dir, ok := c.loc(".")
+	if !ok {
+		return true
+	}
+	for d := dir; c.v.inRoot(d); d = filepath.Dir(d) {
+		if c.present(filepath.Join(d, ".python-version")) || c.present(filepath.Join(d, ".python-versions")) {
+			return true
+		}
+		if d == c.v.root {
+			break
+		}
+	}
+	return false
+}
 
 func (c *hostCursor) fork() cursor {
 	f := *c

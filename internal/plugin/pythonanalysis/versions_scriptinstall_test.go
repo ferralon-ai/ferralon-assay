@@ -127,6 +127,11 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"activate of a committed script that installs", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv venv\n. venv/bin/activate\npip install -r requirements.txt\n", "venv/bin/activate": "#!/bin/sh\npip install jinja2==3.1.2\n"}, false, ""},
 		{"activate in a step after the one that created the venv", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python -m venv .venv\n      - run: . .venv/bin/activate && pip install -r requirements.txt\n"}, false, ""},
 
+		{"Dockerfile activate of a venv no command created", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + ". /opt/venv/bin/activate && pip install -r requirements.txt\n"}, false, ""},
+		{"Dockerfile venv at the WORKDIR the install reads", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "python -m venv /app && . /app/bin/activate && pip install -r requirements.txt\n"}, false, ""},
+		{"Dockerfile venv activated after a COPY over it", map[string]string{"requirements.txt": reqs, "Dockerfile": "FROM python:3.12\nWORKDIR /app\nRUN python3 -m venv /opt/venv\nCOPY venv/ /opt/venv/\nCOPY requirements.txt .\nRUN . /opt/venv/bin/activate && pip install -r requirements.txt\n", "venv/bin/activate": "pip install jinja2==3.1.2\n"}, false, ""},
+		{"Dockerfile uv venv, an installer here", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "uv venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt\n"}, false, ""},
+
 		// Controls.
 		{"pip install -r of a read file", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --no-cache-dir -r requirements.txt\n"}, true, ""},
 		{"Dockerfile pip install -r after COPY", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "pip install -q -r requirements.txt\nCOPY . .\nCMD [\"python\", \"app.py\"]\n"}, true, ""},
@@ -149,6 +154,10 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"uv venv, then uv sync --locked", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Dockerfile": uvDocker + "uv venv && uv sync --locked\n"}, true, ""},
 		{"uv venv <dir> -p and --prompt, activate, pip install -r", map[string]string{"requirements.txt": reqs, "install.sh": "uv venv venv -p 3.12 --prompt app && . venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
 		{"uv venv --python= and --prompt=", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "Makefile": "install:\n\tuv venv --python=3.12 --prompt=app .venv\n\tuv sync --frozen\n"}, true, ""},
+		{"Dockerfile python -m venv, activate, pip install -r", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "python -m venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
+		{"Dockerfile venv in one RUN, requirements copied, activated and installed in the next", map[string]string{"requirements.txt": reqs, "Dockerfile": "FROM python:3.12\nWORKDIR /app\nRUN python3 -m venv /opt/venv\nCOPY requirements.txt .\nRUN . /opt/venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
+		{"Dockerfile virtualenv in its own RUN", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "virtualenv /opt/venv\nRUN pip install -r requirements.txt\n"}, true, ""},
+		{"Dockerfile nvm before pip install -r", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + ". $NVM_DIR/nvm.sh && nvm install 20 && nvm use 20\nRUN pip install -r requirements.txt\n"}, true, ""},
 		{"pipenv run, an empty scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 	}
 	for _, tt := range tests {

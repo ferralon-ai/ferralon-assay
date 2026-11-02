@@ -11,6 +11,7 @@ import (
 // dockerEvent is one change to a stage's filesystem, by container path: a COPY from the
 // build context (hosts, the host files or directories copied), or a taint at dst, under dst
 // when dir, or everywhere when all; cmd when a command whose words were mentioned made it.
+// venv marks the taint a virtual environment's creation at dst left.
 type dockerEvent struct {
 	dst   string
 	hosts []string
@@ -18,12 +19,20 @@ type dockerEvent struct {
 	taint bool
 	all   bool
 	cmd   bool
+	venv  bool
+}
+
+// covers reports whether the event changes the container path f.
+func (e dockerEvent) covers(f string) bool {
+	return e.all || f == e.dst || e.dir && (e.dst == "/" || strings.HasPrefix(f, e.dst+"/"))
 }
 
 type dockerStage struct {
 	events  []dockerEvent
 	wd      string
 	wdKnown bool
+	shell   bool // a SHELL instruction changed what runs a RUN's command line
+	volume  bool // a VOLUME instruction may discard what a later RUN writes under it
 }
 
 const (
@@ -36,14 +45,10 @@ const (
 func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 	for i := len(st.events) - 1; i >= 0; i-- {
 		e := st.events[i]
-		if e.all {
-			return nil, pathTainted
-		}
-		under := e.dir && (e.dst == "/" || strings.HasPrefix(f, e.dst+"/"))
-		if f != e.dst && !under {
+		if !e.covers(f) {
 			continue
 		}
-		if e.taint {
+		if e.all || e.taint {
 			return nil, pathTainted
 		}
 		if !e.dir {
@@ -114,6 +119,29 @@ func (st *dockerStage) linked(v *Veto, d string) bool {
 	return false
 }
 
+// holdsDir reports whether the stage holds a directory at the container path f: something was
+// written under it, or a directory copy put a directory there.
+func (st *dockerStage) holdsDir(v *Veto, f string) bool {
+	if f == "/" {
+		return len(st.events) > 0
+	}
+	for _, e := range st.events {
+		if strings.HasPrefix(e.dst, f+"/") {
+			return true
+		}
+		if !e.dir || !e.covers(f) {
+			continue
+		}
+		rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(f, e.dst), "/"))
+		for _, h := range e.hosts {
+			if regular, there, known := v.stat(filepath.Join(h, rel)); !known || there && !regular {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (st *dockerStage) taintAll() { st.events = append(st.events, dockerEvent{all: true}) }
 
 // taintCmd taints everything for a command whose words were mentioned.
@@ -134,10 +162,10 @@ func (st *dockerStage) resolve(p string) (string, bool) {
 
 // mountTarget returns the container path a RUN --mount value puts a filesystem at: its
 // target, or for a secret with none, its file under /run/secrets. ok is false when that is
-// not known, a value quoted or escaped inside included.
+// not known, a value quoted, escaped or expanding inside included.
 func (st *dockerStage) mountTarget(m string) (string, bool) {
 	m = strings.Trim(m, `"'`)
-	if strings.ContainsAny(m, `"'\`) {
+	if strings.ContainsAny(m, "\"'\\$`") {
 		return "", false
 	}
 	var typ, target, id string
@@ -290,6 +318,53 @@ func (c *dockerCursor) cd(words []string) {
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintCmd() }
 
+// wrote taints only what is under the container path key. A venv created into a mount is
+// not one a later RUN sees.
+func (c *dockerCursor) wrote(key string, venv bool) {
+	venv = venv && !c.mounted(path.Join(key, "bin", "activate"))
+	c.st.events = append(c.st.events, dockerEvent{dst: key, dir: true, taint: true, venv: venv})
+}
+
+func (c *dockerCursor) pinsPython() bool {
+	dir, ok := c.at(".")
+	if !ok {
+		return true
+	}
+	for d := dir; ; d = path.Dir(d) {
+		if c.present(path.Join(d, ".python-version")) || c.present(path.Join(d, ".python-versions")) {
+			return true
+		}
+		if d == "/" {
+			return false
+		}
+	}
+}
+
+// mounted reports whether a mount of the RUN covers the container path f.
+func (c *dockerCursor) mounted(f string) bool {
+	for _, t := range c.mounts {
+		if t == "/" || f == t || strings.HasPrefix(f, t+"/") {
+			return true
+		}
+	}
+	return !c.mountsKnown
+}
+
+// madeVenv is true when the newest change to key/bin/activate is the creation of a venv at
+// key, and no SHELL, VOLUME or mount of this RUN over it changes what a . of it runs.
+func (c *dockerCursor) madeVenv(key string) bool {
+	f := path.Join(key, "bin", "activate")
+	if c.st.shell || c.st.volume || c.mounted(f) {
+		return false
+	}
+	for i := len(c.st.events) - 1; i >= 0; i-- {
+		if e := c.st.events[i]; e.covers(f) {
+			return e.venv && e.dst == key
+		}
+	}
+	return false
+}
+
 func (c *dockerCursor) fork() cursor {
 	f := *c
 	return &f
@@ -316,15 +391,23 @@ func (c *dockerCursor) at(p string) (string, bool) {
 	return path.Join(c.dir, p), true
 }
 
-// present is true for a path the stage has bound or tainted: a file copied in, or one a
-// command may have written.
+// present is true for a path the stage has bound or tainted, a file copied in or one a
+// command may have written, a directory it holds, or a path a mount of the RUN covers or
+// lies under.
 func (c *dockerCursor) present(p string) bool {
 	f, ok := c.at(p)
 	if !ok {
 		return true
 	}
-	_, state := c.st.lookup(c.v, f)
-	return state != pathAbsent
+	if _, state := c.st.lookup(c.v, f); state != pathAbsent || c.st.holdsDir(c.v, f) || c.mounted(f) {
+		return true
+	}
+	for _, t := range c.mounts {
+		if f == "/" || strings.HasPrefix(t, f+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *dockerCursor) venv() *venvMark { return &c.mark }
@@ -643,6 +726,10 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			if len(f) >= 3 && strings.EqualFold(f[1], "as") {
 				names[strings.ToLower(f[2])] = true
 			}
+		case instr == "SHELL":
+			st.shell = true
+		case instr == "VOLUME":
+			st.volume = true
 		case instr == "WORKDIR":
 			p := strings.Trim(rest, `"`)
 			v.mention([]string{p}) // WORKDIR makes the directory, and what runs there writes into it

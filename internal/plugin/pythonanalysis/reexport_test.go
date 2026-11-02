@@ -399,9 +399,9 @@ func TestCallGraph_HeadBoundByCallersStarImport(t *testing.T) {
 // the module's attribute, so a site in another module that reaches the attribute (by import,
 // through a module attribute, a package's submodule name or a star import) reaches what the
 // import binds. The module also binds the name another way, so the site stays listed and the
-// target escapes (through a caller's star import it draws the edge too). Where the module
-// binds the name at module level as well, both targets stay reached. An import in a def
-// without the declaration binds only the def's name.
+// target escapes; where a caller's star import binds the chain's head, the site draws the
+// edge instead. Where the module binds the name at module level as well, both targets stay
+// reached. An import in a def without the declaration binds only the def's name.
 func TestCallGraph_GlobalImportInADef(t *testing.T) {
 	globalG := "def init():\n    global g\n    from pkg.alt import y as g\n"
 	globalH := "def init():\n    global h\n    from ..v import vuln as h\n"

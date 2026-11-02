@@ -70,8 +70,8 @@ func TestReachabilityReadersOnBadLegs(t *testing.T) {
 				t.Errorf("reachabilityResult = %+v, want %+v", reach, reachOnly.Reachability)
 			}
 			oldFirst := oldReachOK && len(reachOnly.Reachability.Paths) > 0
-			if _, got := firstReachPath(store, aid); got != tc.wantFirstPath || got != oldFirst {
-				t.Errorf("firstReachPath ok = %v, want %v (old decode %v)", got, tc.wantFirstPath, oldFirst)
+			if got := len(reachPaths(store, aid)) > 0; got != tc.wantFirstPath || got != oldFirst {
+				t.Errorf("reachPaths non-empty = %v, want %v (old decode %v)", got, tc.wantFirstPath, oldFirst)
 			}
 		})
 	}

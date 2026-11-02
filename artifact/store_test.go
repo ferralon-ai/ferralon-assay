@@ -1,6 +1,8 @@
 package artifact_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -168,5 +170,106 @@ func TestMemStorePutSetsCreatedAt(t *testing.T) {
 	}
 	if a.CreatedAt.Before(before) || a.CreatedAt.After(after) {
 		t.Errorf("CreatedAt %v not in expected range [%v, %v]", a.CreatedAt, before, after)
+	}
+}
+
+func TestViewDecodesOncePerArtifactAndKey(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000040"
+	fs, err := artifact.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		store artifact.Store
+		// wantDecodes is how many times decode runs over the steps below.
+		wantDecodes int
+	}{
+		// Two reads of key a share one decode, key b gets its own, and replacing the artifact's
+		// payload under the same id decodes the new payload once more.
+		{"mem store shares", artifact.NewMemStore(), 3},
+		// A store that keeps no views decodes on every read.
+		{"other store decodes each read", fs, 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			decodes := 0
+			decode := func(p []byte) any { decodes++; return string(p) }
+			read := func(key string) (any, bool) {
+				t.Helper()
+				v, ok, err := artifact.View(tc.store, aid, artifact.TypeReachability, key, decode)
+				if err != nil {
+					t.Fatalf("View: %v", err)
+				}
+				return v, ok
+			}
+
+			if _, ok := read("a"); ok {
+				t.Fatal("View found an artifact in an empty store")
+			}
+			a := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":1}`)}
+			if _, err := tc.store.Put(a); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"a", "a", "b"} {
+				if v, ok := read(key); !ok || v != `{"v":1}` {
+					t.Fatalf("View(%q) = %v, %v; want the stored payload", key, v, ok)
+				}
+			}
+			if _, err := tc.store.Put(&artifact.Artifact{ID: a.ID, AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":2}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if v, ok := read("a"); !ok || v != `{"v":2}` {
+				t.Fatalf("View after replacing the payload = %v, %v; want the new payload", v, ok)
+			}
+			if decodes != tc.wantDecodes {
+				t.Errorf("decode ran %d times; want %d", decodes, tc.wantDecodes)
+			}
+		})
+	}
+}
+
+// TestViewDecodeCannotChangeStoredPayload pins that a decode which writes into or keeps its input
+// cannot change what Query returns or desynchronise the payload from its hash.
+func TestViewDecodeCannotChangeStoredPayload(t *testing.T) {
+	const aid = "01900000-0000-7000-8000-000000000042"
+	tests := []struct {
+		name   string
+		decode func(p []byte) any
+	}{
+		{"overwrites in place", func(p []byte) any {
+			for i := range p {
+				p[i] = 'x'
+			}
+			return nil
+		}},
+		{"retains and truncates", func(p []byte) any { return p[:0] }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			put := &artifact.Artifact{AssessmentID: aid, Type: artifact.TypeReachability, Payload: []byte(`{"v":1}`)}
+			if _, err := store.Put(put); err != nil {
+				t.Fatal(err)
+			}
+			v, _, err := artifact.View(store, aid, artifact.TypeReachability, "k", tc.decode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept, ok := v.([]byte); ok {
+				_ = append(kept, "mutated"...)
+			}
+			arts, err := store.Query(aid, artifact.TypeReachability)
+			if err != nil || len(arts) != 1 {
+				t.Fatalf("Query = %d artifacts, %v", len(arts), err)
+			}
+			if string(arts[0].Payload) != `{"v":1}` {
+				t.Errorf("stored payload = %q, want it unchanged", arts[0].Payload)
+			}
+			sum := sha256.Sum256(arts[0].Payload)
+			if got := "sha256:" + hex.EncodeToString(sum[:]); got != arts[0].ContentHash || got != put.ContentHash {
+				t.Errorf("payload hash %s disagrees with stored %s / Put %s", got, arts[0].ContentHash, put.ContentHash)
+			}
+		})
 	}
 }

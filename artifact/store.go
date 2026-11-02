@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -30,8 +31,16 @@ type Store interface {
 
 // MemStore is an in-memory Store.
 type MemStore struct {
-	mu   sync.RWMutex
-	byID map[string]*Artifact
+	mu    sync.RWMutex
+	byID  map[string]*Artifact
+	views map[viewKey]*view
+}
+
+type viewKey struct{ id, key string }
+
+type view struct {
+	once  sync.Once
+	value any
 }
 
 // NewMemStore creates an initialised, empty MemStore.
@@ -59,6 +68,11 @@ func (s *MemStore) Put(a *Artifact) (Ref, error) {
 
 	s.mu.Lock()
 	s.byID[cp.ID] = &cp
+	for k := range s.views {
+		if k.id == cp.ID {
+			delete(s.views, k)
+		}
+	}
 	s.mu.Unlock()
 
 	return a.Ref(), nil
@@ -104,6 +118,61 @@ func (s *MemStore) List(t Type) ([]*Artifact, error) {
 		}
 	}
 	return results, nil
+}
+
+// Viewer is a Store that can hold a decoded view of an artifact's payload, so readers that would
+// each decode the same payload share one decode instead.
+type Viewer interface {
+	// View picks an artifact of type t for assessmentID, as Query(assessmentID, t)[0] does, and
+	// returns decode applied to its payload, running decode at most once per artifact and key for
+	// the store's lifetime. decode receives its own copy of the payload. Every caller of the same
+	// artifact and key gets the same value, so callers must not modify it. ok is false when no
+	// artifact matches.
+	View(assessmentID string, t Type, key string, decode func(payload []byte) any) (v any, ok bool)
+}
+
+// View returns decode applied to the payload of an artifact of type t for assessmentID, picked as
+// Query(assessmentID, t)[0] picks it. On a Viewer the decode is shared as Viewer.View describes; on
+// any other Store it runs on a fresh Query copy every call.
+func View(s Store, assessmentID string, t Type, key string, decode func(payload []byte) any) (any, bool, error) {
+	if v, ok := s.(Viewer); ok {
+		got, found := v.View(assessmentID, t, key, decode)
+		return got, found, nil
+	}
+	arts, err := s.Query(assessmentID, t)
+	if err != nil || len(arts) == 0 {
+		return nil, false, err
+	}
+	return decode(arts[0].Payload), true, nil
+}
+
+// View implements Viewer.
+func (s *MemStore) View(assessmentID string, t Type, key string, decode func(payload []byte) any) (any, bool) {
+	s.mu.Lock()
+	var a *Artifact
+	for _, cand := range s.byID {
+		if cand.AssessmentID == assessmentID && cand.Type == t {
+			a = cand
+			break
+		}
+	}
+	if a == nil {
+		s.mu.Unlock()
+		return nil, false
+	}
+	k := viewKey{id: a.ID, key: key}
+	v, found := s.views[k]
+	if !found {
+		if s.views == nil {
+			s.views = make(map[viewKey]*view)
+		}
+		v = &view{}
+		s.views[k] = v
+	}
+	s.mu.Unlock()
+	// a is never modified once stored: Put replaces the map entry with a new copy.
+	v.once.Do(func() { v.value = decode(bytes.Clone(a.Payload)) })
+	return v.value, true
 }
 
 // copyArtifact returns a defensive deep copy (Payload slice copied) so callers

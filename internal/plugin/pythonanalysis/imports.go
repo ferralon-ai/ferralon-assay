@@ -1542,8 +1542,9 @@ func lookupTarget(target string) string {
 	return target
 }
 
-func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values, packages []string, mvals []moduleValue, opaque, computed bool) {
+func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBinding) (roots, values, packages []string, mvals []moduleValue, opaque, computed bool, own ownStores) {
 	r := statementBreaks(clean)
+	inModule := moduleScope(clean)
 	n := len(r)
 	spans, stars := importStatements(r)
 	names := map[string]lookupKind{}
@@ -1603,6 +1604,13 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		w, end := readWordRunes(r, i)
 		pj := skipSpaceBack(r, i-1)
 		dotted := pj >= 0 && r[pj] == '.'
+		if !dotted && (w == "globals" || (w == "vars" || w == "locals") && inModule(i)) && !precededByDef(r, i) {
+			if q := skipAllSpace(r, end); q < n && r[q] == '(' {
+				if c := skipAllSpace(r, q+1); c < n && r[c] == ')' {
+					own.use(r, i, c+1, lits, false)
+				}
+			}
+		}
 		kind := kindOf(w, dotted)
 		if kind == lookupNone || precededByDef(r, i) || assignedTo(r, end) {
 			i = end
@@ -1614,6 +1622,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			switch {
 			case !ok:
 				opaque = true
+				if o := skipAllSpace(r, end); o < n && r[o] == '(' && ownModuleArg(r, o+1, "),") {
+					own.any = true
+				}
 			case kind == lookupDunder:
 				roots = append(roots, name)
 				// Past its module, an __import__ call may take a fromlist, which loads the
@@ -1644,7 +1655,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 			case strings.HasPrefix(attr, "__") && !plainDunders[attr]:
 				opaque = true
 			case kind == lookupNamespace && namerAttrs[attr]:
-				computed = true
+				computed, own.any = true, true
 			case kind == lookupSys && attr == "modules":
 				name, ok := modulesUse(r, i, aend, lits)
 				switch {
@@ -1652,6 +1663,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 					opaque = true
 				case name == "":
 					computed = true
+					if e := ownModuleEnd(r, aend); e > 0 {
+						own.use(r, dottedStart(r, i), e, lits, true)
+					}
 				default:
 					values = append(values, name)
 					if e := modulesEnd(r, aend); e > 0 {
@@ -1663,7 +1677,7 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		case lookupLoader:
 			opaque = true
 		case lookupNamer:
-			computed = true
+			computed, own.any = true, true
 		case lookupModules:
 			name, ok := modulesUse(r, i, end, lits)
 			switch {
@@ -1671,6 +1685,9 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 				opaque = true
 			case name == "":
 				computed = true
+				if e := ownModuleEnd(r, end); e > 0 {
+					own.use(r, i, e, lits, true)
+				}
 			default:
 				values = append(values, name)
 				if e := modulesEnd(r, end); e > 0 {
@@ -1680,7 +1697,8 @@ func moduleLookups(clean string, lits map[int]strLiteral, bindings []scopedBindi
 		}
 		i = end
 	}
-	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed
+	own.names = sortedDedup(own.names)
+	return sortedDedup(roots), sortedDedup(values), sortedDedup(packages), mvals, opaque, computed, own
 }
 
 // dunderImported returns the modules an __import__ of name, whose '(' is r[open], may

@@ -61,6 +61,15 @@ func (prog *program) markModuleStores() {
 		for _, path := range f.modValues {
 			mark(path, "")
 		}
+		if f.own.any {
+			exposed = append(exposed, fi)
+		}
+		for _, name := range f.own.names {
+			if f.storedNames == nil {
+				f.storedNames = map[string]bool{}
+			}
+			f.storedNames[name] = true
+		}
 		for _, runs := range []map[string]bool{f.refs.chains, f.refs.exposed} {
 			for chain := range runs {
 				segs := strings.Split(chain, ".")
@@ -211,4 +220,203 @@ func (prog *program) storedThrough(f *fileParse, cs callSite) bool {
 		}
 	}
 	return false
+}
+
+// ownStores is what a file may bind in its own namespace by computed access: through its
+// module object (sys.modules[__name__], import_module(__name__)) or the dict globals()
+// returns, and vars() or locals() at module scope. names holds the names a store by a
+// literal key binds; any reports a use that may bind any name.
+type ownStores struct {
+	names []string
+	any   bool
+}
+
+// ownModuleEnd returns the index just past a subscript or .get of __name__ on sys.modules,
+// whose name ends at r[end], or -1 when none follows.
+func ownModuleEnd(r []rune, end int) int {
+	p := skipAllSpace(r, end)
+	switch {
+	case p < len(r) && r[p] == '[' && ownModuleArg(r, p+1, "]"):
+		return matchingClose(r, p) + 1
+	case p < len(r) && r[p] == '.':
+		g, e := readWordRunes(r, skipAllSpace(r, p+1))
+		if q := skipAllSpace(r, e); g == "get" && q < len(r) && r[q] == '(' && ownModuleArg(r, q+1, "),") {
+			return callClose(r, q)
+		}
+	}
+	return -1
+}
+
+// readOnlyWrappers are the builtins that only read the namespace passed as their one argument.
+var readOnlyWrappers = map[string]bool{
+	"len": true, "list": true, "set": true, "frozenset": true, "sorted": true, "tuple": true,
+	"iter": true, "dict": true, "repr": true, "str": true, "id": true, "type": true,
+}
+
+// readOnlyMethods are the dict methods that bind no name.
+var readOnlyMethods = map[string]bool{
+	"get": true, "keys": true, "items": true, "values": true, "copy": true, "pop": true,
+	"popitem": true, "clear": true, "__contains__": true,
+}
+
+// use records one use of the file's namespace, the expression running from r[start] to
+// r[end]: its module object when module is set, else its dict. It reads an allow-list: a
+// literal-named attribute store on the module or a setattr of it by literal name, a
+// literal-key store into the dict, a .update of keyword arguments or a .setdefault by literal
+// key, bind those names; an attribute or subscript read, a getattr, hasattr or delattr, a
+// del, a membership test, a ** unpacking, readOnlyWrappers and readOnlyMethods bind none.
+// Any other use may bind any name: a store by a key the scanner cannot read, a dunder of the
+// module, the module replaced in sys.modules, or the namespace handed on as a value.
+func (s *ownStores) use(r []rune, start, end int, lits map[int]strLiteral, module bool) {
+	n := len(r)
+	p := skipAllSpace(r, end)
+	j := skipSpaceBack(r, start-1)
+	switch {
+	case j >= 1 && r[j] == '*' && r[j-1] == '*', precededByWord(r, start, "in"):
+		return
+	case j >= 0 && r[j] == '(' && p < n && (r[p] == ',' || r[p] == ')'):
+		k := skipSpaceBack(r, j-1)
+		e := k + 1
+		for k >= 0 && isIdentPart(r[k]) {
+			k--
+		}
+		switch fn := string(r[k+1 : e]); {
+		case module && fn == "setattr" && r[p] == ',':
+			if name, ok := literalSubscript(r, p+1, lits, ","); ok {
+				s.names = append(s.names, name)
+				return
+			}
+		case module && r[p] == ',' && (fn == "getattr" || fn == "hasattr" || fn == "delattr"),
+			r[p] == ')' && readOnlyWrappers[fn]:
+			return
+		}
+	case module && p < n && r[p] == '.':
+		attr, aend := readWordRunes(r, skipAllSpace(r, p+1))
+		switch {
+		case attr == "" || strings.HasPrefix(attr, "__"):
+		case rebound(r, aend):
+			s.names = append(s.names, attr)
+			return
+		default:
+			return
+		}
+	case module && rebound(r, end):
+	case module:
+		if precededByWord(r, start, "del") {
+			return
+		}
+	case p < n && r[p] == '[':
+		c := matchingClose(r, p)
+		if c < 0 {
+			break
+		}
+		if !rebound(r, c+1) {
+			return
+		}
+		if name, ok := literalSubscript(r, p+1, lits, "]"); ok {
+			s.names = append(s.names, name)
+			return
+		}
+	case p < n && r[p] == '.':
+		m, mend := readWordRunes(r, skipAllSpace(r, p+1))
+		q := skipAllSpace(r, mend)
+		if q >= n || r[q] != '(' {
+			break
+		}
+		switch {
+		case readOnlyMethods[m]:
+			return
+		case m == "setdefault":
+			if name, ok := literalSubscript(r, q+1, lits, ",)"); ok {
+				s.names = append(s.names, name)
+				return
+			}
+		case m == "update":
+			args, ok := callArgs(r, q)
+			var names []string
+			for _, a := range args {
+				w, e := readWordRunes(r, skipAllSpace(r, a[0]))
+				if w == "" || !assignedTo(r, e) {
+					ok = false
+					break
+				}
+				names = append(names, w)
+			}
+			if ok {
+				s.names = append(s.names, names...)
+				return
+			}
+		}
+	}
+	s.any = true
+}
+
+// rebound reports whether the target ending at r[end] is assigned or augmented.
+func rebound(r []rune, end int) bool {
+	if assignedTo(r, end) {
+		return true
+	}
+	k := skipAllSpace(r, end)
+	op := string(r[k:min(k+4, len(r))])
+	for _, o := range []string{"+=", "-=", "*=", "/=", "//=", "%=", "@=", "&=", "|=", "^=", ">>=", "<<=", "**="} {
+		if strings.HasPrefix(op, o) {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleScope reports, for each rune index of a cleaned source, whether the code there runs
+// in the module's own frame rather than a def or class body. A def or class header line, and
+// a line its brackets or a backslash continue, belong to the enclosing scope.
+func moduleScope(clean string) func(i int) bool {
+	r := []rune(clean)
+	var bodies [][2]int
+	var stack []int
+	depth, from, start := 0, -1, 0
+	for i := 0; i <= len(r); i++ {
+		if i < len(r) && r[i] != '\n' {
+			switch r[i] {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				depth--
+			}
+			continue
+		}
+		line := r[start:i]
+		logical := depth <= 0 && (start == 0 || !continuedBreak(r, start-1))
+		if t := strings.TrimLeft(string(line), " \t"); logical && t != "" {
+			indent := len(line) - len([]rune(t))
+			for len(stack) > 0 && indent <= stack[len(stack)-1] {
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) == 0 && from >= 0 {
+				bodies = append(bodies, [2]int{from, start})
+				from = -1
+			}
+			w, rest := firstWord(t)
+			if w == "async" {
+				w, _ = firstWord(strings.TrimSpace(rest))
+			}
+			if w == "def" || w == "class" {
+				if len(stack) == 0 {
+					from = i
+				}
+				stack = append(stack, indent)
+			}
+		}
+		start = i + 1
+	}
+	if from >= 0 {
+		bodies = append(bodies, [2]int{from, len(r)})
+	}
+	return func(i int) bool {
+		for _, b := range bodies {
+			if i >= b[0] && i < b[1] {
+				return false
+			}
+		}
+		return true
+	}
 }

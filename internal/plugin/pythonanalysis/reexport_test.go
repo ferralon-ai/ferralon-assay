@@ -233,6 +233,9 @@ func TestCallGraph_ImportAsChainUnderOneDotChain(t *testing.T) {
 			"pkg/alt/__init__.py": "import pkg.r.y as a\n", "pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f as g\n",
 			"pkg/alt2/__init__.py": "from . import y\n", "pkg/alt2/y.py": "from ..v import vuln as g\n",
 			"c.py": "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n"}},
+		{"one-dot import-as leaf over a deeper chain", map[string]string{
+			"pkg/__init__.py": "from . import r\nfrom . import alt2 as r\nfrom . import f\nimport pkg.r.y as f\n", "pkg/f.py": "", "pkg/r/__init__.py": "", "pkg/r/y.py": "from ..impl import f\n",
+			"pkg/alt2/__init__.py": "from ..v import vuln as y\n", "pkg/m.py": "import pkg.f as g\n", "c.py": "import pkg.m\n\ndef go():\n    return pkg.m.g(1)\n"}},
 	} {
 		files := map[string]string{"pkg/impl.py": "def f(x):\n    return x\n", "pkg/v.py": "def vuln(x):\n    return x\n"}
 		maps.Copy(files, tc.files)

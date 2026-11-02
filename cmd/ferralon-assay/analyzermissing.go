@@ -86,7 +86,7 @@ func (f *runFlags) publishAnalyzerMissing(ctx context.Context, mode string, e *a
 	intel := report.IntelProvenance{WorkSetSource: report.WorkSetBuiltinLanguageSet, FactSource: report.FactSourceBuiltinTable}
 	// Nothing was cut short: the Report is complete in what it says.
 	writeScanTruncated(false, os.Stderr)
-	if err := publishResult(ctx, *f.outDir, rep, intel, e.acq.analyzeRef, nil, nil); err != nil {
+	if err := publishResult(ctx, *f.outDir, rep, intel, e.acq.analyzeRef, nil, nil, nil); err != nil {
 		return err
 	}
 	printSummary(*f.outDir, rep, "none: nothing was assessed")

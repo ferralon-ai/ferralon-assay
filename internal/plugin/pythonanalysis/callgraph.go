@@ -134,9 +134,7 @@ func (p *program) siteLeaves(f *fileParse, cs callSite) (edge, escape []string) 
 			if mid != "" {
 				path += "/" + mid
 			}
-			if p.named[path] {
-				out = append(out, path+"/"+name)
-			}
+			out = append(out, path+"/"+name)
 		}
 		return out
 	}

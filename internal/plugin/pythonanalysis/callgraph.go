@@ -415,8 +415,10 @@ func (p *program) withAliases(leaves, paths []string) []string {
 
 // aliasLeaves follows an import path ("pkg/g") through re-exports to a fixpoint: its leaf
 // names a function, and when the module it is imported from binds that leaf by a first-party
-// import itself, the path that import names is followed in turn. Each path is visited once,
-// so an import cycle ends.
+// import itself, the path that import names is followed in turn. When a package on the path
+// binds its submodule's name to another module by first-party import, the path through that
+// module is followed too: the attribute holds whichever binding ran last. Each path is
+// visited once, so an import cycle ends.
 func (p *program) aliasLeaves(path string) []string {
 	if out, ok := p.leafMemo[path]; ok {
 		return out
@@ -436,6 +438,18 @@ func (p *program) aliasLeaves(path string) []string {
 		for _, i := range p.byModule[mod] {
 			for _, next := range p.files[i].fpBinds[""][leaf] {
 				walk(next)
+			}
+		}
+		segs := strings.Split(path, "/")
+		for j := 1; j < len(segs)-1; j++ {
+			pkg, sub, rest := strings.Join(segs[:j], "/"), segs[j], strings.Join(segs[j+1:], "/")
+			for _, i := range p.byModule[pkg] {
+				g := &p.files[i]
+				for _, b := range g.fpBinds[""][sub] {
+					if b != pkg+"/"+sub && b != g.module+"/"+sub {
+						walk(b + "/" + rest)
+					}
+				}
 			}
 		}
 	}

@@ -9,11 +9,13 @@ import (
 // it keeps its alias edge, and is listed when that module may bind the name another way: an
 // assignment, a star import that may bind it, a store through a module object, or a package
 // attribute stored with another module. Where the module on the path itself binds the name
-// another way, the site has no edge; it is listed and the re-exported function escapes. A plain re-export, a None fallback, a star import
-// that cannot bind the name, or a store of another name leaves the site complete.
+// another way, the site has no edge; it is listed, and both the re-exported function and the
+// binding that may replace it escape. A plain re-export, a None fallback, a star import that
+// cannot bind the name, or a store of another name leaves the site complete.
 func TestCallGraph_ReexportRebinding(t *testing.T) {
 	impl := funcSCIP("pkg/impl", nil, "f", 1)
 	goC := funcSCIP("c", nil, "go", 0)
+	vuln := funcSCIP("pkg/v", nil, "vuln", 1)
 	const reexport = "from .impl import f as g\n"
 	const bare = "from pkg.a import g\n\ndef go():\n    return g(1)\n"
 	const fromPkg = "from pkg import a\n\ndef go():\n    return a.g(1)\n"
@@ -37,31 +39,34 @@ func TestCallGraph_ReexportRebinding(t *testing.T) {
 		// so the site gets no edge. It must still be listed with no Targets and the target
 		// must escape, which keeps it reachable from the site.
 		edgeless bool
+		// vulnWins: the binding that holds the name at runtime is pkg/v.vuln, which must
+		// escape too, or the function the site really calls is unreachable.
+		vulnWins bool
 	}{
-		{name: "assigned after the re-export", a: reexport + "from .v import vuln\ng = vuln\n", c: bare, callee: "g", listed: true, edgeless: true},
-		{name: "star import that binds the name", a: reexport + "from .x import *\n", c: bare, callee: "g", listed: true, edgeless: true,
+		{name: "assigned after the re-export", a: reexport + "from .v import vuln\ng = vuln\n", c: bare, callee: "g", listed: true, edgeless: true, vulnWins: true},
+		{name: "star import that binds the name", a: reexport + "from .x import *\n", c: bare, callee: "g", listed: true, edgeless: true, vulnWins: true,
 			extra: map[string]string{"pkg/x.py": "from .v import vuln as g\n"}},
 		{name: "star import of a dependency", a: reexport + "from os.path import *\n", c: bare, callee: "g", listed: true},
 		{name: "stored through the module object", a: reexport, c: bare, callee: "g", listed: true,
 			extra: map[string]string{"b.py": "import pkg.a\nfrom pkg.v import vuln\npkg.a.g = vuln\n"}},
-		{name: "re-exported twice, assigned at the end", a: "from .b import g\n", c: bare, callee: "g", listed: true, edgeless: true,
+		{name: "re-exported twice, assigned at the end", a: "from .b import g\n", c: bare, callee: "g", listed: true, edgeless: true, vulnWins: true,
 			extra: map[string]string{"pkg/b.py": reexport + "from .v import vuln\ng = vuln\n"}},
-		{name: "qualified through a from-imported module that assigns", a: reexport + "from .v import vuln\ng = vuln\n", c: fromPkg, callee: "a.g", listed: true, edgeless: true},
+		{name: "qualified through a from-imported module that assigns", a: reexport + "from .v import vuln\ng = vuln\n", c: fromPkg, callee: "a.g", listed: true, edgeless: true, vulnWins: true},
 		{name: "from-imported package attribute stored with another module", a: reexport, c: fromPkg, callee: "a.g", listed: true,
 			extra: map[string]string{"b.py": "import pkg\nimport pkg.x\npkg.a = pkg.x\n", "pkg/x.py": "from .v import vuln as g\n"}},
 		{name: "aliased import of a package attribute stored with another module", a: reexport, c: "import pkg.a as m\n\ndef go():\n    return m.g(1)\n", callee: "m.g", listed: true,
 			extra: map[string]string{"b.py": "import pkg\nimport pkg.x\npkg.a = pkg.x\n", "pkg/x.py": "from .v import vuln as g\n"}},
 
-		{name: "star import of a module that defines and assigns the name", a: "from .x import *\n", c: bare, callee: "g", listed: true, edgeless: true, defined: true,
+		{name: "star import of a module that defines and assigns the name", a: "from .x import *\n", c: bare, callee: "g", listed: true, edgeless: true, vulnWins: true, defined: true,
 			extra: map[string]string{"pkg/x.py": "def g(x):\n    return x\n\nfrom .v import vuln\ng = vuln\n"}},
-		{name: "qualified through a package that binds the module twice", c: "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n", callee: "pkg.sub.a.g", listed: true, edgeless: true, extra: sub},
-		{name: "qualified through a from-imported package that binds the module twice", c: "from pkg import sub\nimport pkg.sub.a\n\ndef go():\n    return sub.a.g(1)\n", callee: "sub.a.g", listed: true, edgeless: true, extra: sub},
+		{name: "qualified through a package that binds the module twice", c: "import pkg.sub.a\n\ndef go():\n    return pkg.sub.a.g(1)\n", callee: "pkg.sub.a.g", listed: true, edgeless: true, vulnWins: true, extra: sub},
+		{name: "qualified through a from-imported package that binds the module twice", c: "from pkg import sub\nimport pkg.sub.a\n\ndef go():\n    return sub.a.g(1)\n", callee: "sub.a.g", listed: true, edgeless: true, vulnWins: true, extra: sub},
 		{name: "names computed in the module", a: reexport + "from .v import vuln\nglobals().update(g=vuln)\n", c: bare, callee: "g", listed: true},
 		{name: "class defined after the re-export", a: reexport + "class g:\n    pass\n", c: bare, callee: "g", listed: true, edgeless: true},
 		{name: "namespace stored through from another module", a: reexport, c: bare, callee: "g", listed: true,
 			extra: map[string]string{"b.py": "import pkg.a\nfrom pkg.v import vuln\npkg.a.__dict__['g'] = vuln\n"}},
 		{name: "dependency import of the name", a: reexport + "try:\n    from fastlib import g\nexcept ImportError:\n    pass\n", c: bare, callee: "g", listed: true, edgeless: true},
-		{name: "nested star import that binds the name", a: reexport + "from .x import *\n", c: bare, callee: "g", listed: true, edgeless: true,
+		{name: "nested star import that binds the name", a: reexport + "from .x import *\n", c: bare, callee: "g", listed: true, edgeless: true, vulnWins: true,
 			extra: map[string]string{"pkg/x.py": "from .y import *\n", "pkg/y.py": "from .v import vuln as g\n"}},
 		{name: "star import of an unparsed first-party module", a: reexport + "from .native import *\n", c: bare, callee: "g", listed: true},
 		{name: "star import of a module that computes names", a: reexport + "from .x import *\n", c: bare, callee: "g", listed: true,
@@ -105,6 +110,9 @@ func TestCallGraph_ReexportRebinding(t *testing.T) {
 			if tc.edgeless {
 				if !symbolSet(res.Escaped)[target] {
 					t.Fatalf("%s must escape; escaped %v", target, res.Escaped)
+				}
+				if tc.vulnWins && !symbolSet(res.Escaped)[vuln] {
+					t.Fatalf("%s must escape; escaped %v", vuln, res.Escaped)
 				}
 			} else if !hasEdge(res.Edges, goC, target) {
 				t.Fatalf("missing alias edge %s -> %s; edges %v", goC, target, res.Edges)

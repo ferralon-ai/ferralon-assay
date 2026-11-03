@@ -63,6 +63,9 @@ type VEXStatement struct {
 	ImpactStatement string `json:"impact_statement,omitempty"`
 	// ActionStatement is set for affected (per OpenVEX spec).
 	ActionStatement string `json:"action_statement,omitempty"`
+	// StatusNotes states the assumptions the status rests on (AdvisoryFinding.Annotations), on
+	// any status.
+	StatusNotes string `json:"status_notes,omitempty"`
 	// Timestamp is statement-level (if different from document-level).
 	Timestamp string `json:"timestamp,omitempty"`
 	// Extensions carries scanner-specific metadata.

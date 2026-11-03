@@ -14,6 +14,7 @@ import (
 func TestFindIngresses_Launchers(t *testing.T) {
 	type ing struct{ kind, scip, selector string }
 	cli := "def main():\n    return run()\n\ndef run():\n    return 0\n"
+	fac := "def make():\n    return inner\n\ndef inner():\n    return 0\n\ndef patch(m):\n    setattr(m, \"main\", inner)\n"
 	cases := []struct {
 		name    string
 		files   map[string]string
@@ -612,6 +613,936 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			},
 			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 			partial: true,
+		},
+		{
+			name: "script its own module handed to a first-party function",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\npatch(sys.modules[__name__])\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key assigned",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nglobals()[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script setattr on its own module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsetattr(sys.modules[__name__], \"main\", make())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script an attribute store on its own module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys.modules[__name__].main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal vars key assigned at module scope",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nvars()[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key assigned in a def",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup():\n    globals()[\"main\"] = make()\n\nsetup()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script globals updated by keyword",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nglobals().update(main=make())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a computed globals key assigned",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nname = \"main\"\nglobals()[name] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own module replaced",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass W:\n    main = staticmethod(make())\n\nsys.modules[__name__] = W()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own module imported by name and stored through",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nimport importlib\n\nimportlib.import_module(__name__).main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script an attribute store on its own module from sys.modules imported by name",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nfrom sys import modules\n\nmodules[__name__].main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script an attribute store on its own module got from sys.modules",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys.modules.get(__name__).main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a store into its own module's __dict__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys.modules[__name__].__dict__[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script another literal globals key assigned",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nglobals()[\"other\"] = make()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script a literal vars key assigned in a def",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup():\n    vars()[\"main\"] = make()\n\nsetup()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script a literal vars key assigned across lines after a def",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup():\n    return 0\n\nvars()[\"main\"] = make(\n)\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal vars key assigned in a def whose header spans lines",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup(a=0,\n          b=0):\n    vars()[\"main\"] = make()\n\nsetup()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script a literal vars key assigned in a def after a dedented continuation",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef setup():\n    x = make(\n)\n    vars()[\"main\"] = make()\n\nsetup()\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script its own namespace only read",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\na = globals().get(\"main\")\nb = \"main\" in globals()\nc = getattr(sys.modules[__name__], \"main\")\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script its own namespace handed to __import__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nm = __import__(\"tool.fac\", globals(), locals(), [], 0)\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script its own namespace handed to a method named __import__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\nclass Loader:\n    def __import__(self, name, ns):\n        ns[\"main\"] = inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import Loader\n\nLoader().__import__(\"x\", globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key assigned in a tuple target",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nglobals()[\"main\"], x = make(), 1\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script an attribute of its own module assigned in a tuple target",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys.modules[__name__].main, x = make(), 1\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key assigned with an annotation",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nglobals()[\"main\"]: object = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script an attribute of its own module assigned with an annotation",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys.modules[__name__].main: object = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key bound as a for target",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nfor globals()[\"main\"] in [make()]:\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key bound as a with target",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nimport contextlib\nwith contextlib.nullcontext(make()) as globals()[\"main\"]:\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key assigned in parentheses",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\n(globals()[\"main\"]) = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own module's __dict__ fetched by getattr",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ngetattr(sys.modules[__name__], \"__dict__\")[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own module's __dict__ fetched by vars",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nvars(sys.modules[__name__])[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a dotted first-party set",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\ndef set(ns):\n    ns[\"main\"] = inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nimport tool.fac as fac\nfac.set(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a def named sorted",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef sorted(ns):\n    ns[\"main\"] = make()\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a def named __import__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef __import__(ns, *a):\n    ns[\"main\"] = make()\n\n__import__(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a callee bound through builtins",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\ndef set(ns):\n    ns[\"main\"] = inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nimport builtins\nfrom tool import fac\nbuiltins.store = fac.set\nstore(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to __import__ beside a method named __import__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass App:\n    def __import__(self, m):\n        return __import__(\"tool.fac\", globals(), locals(), [], 0)\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script its own namespace handed to a def named sorted in a class body",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass C:\n    def sorted(ns):\n        ns[\"main\"] = make()\n    sorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to an enclosing def named sorted",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef h():\n    def sorted(ns):\n        ns[\"main\"] = make()\n    def g():\n        sorted(globals())\n    g()\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a def named sorted in a class body after a dedented continuation",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass C:\n    def sorted(ns):\n        ns[\"main\"] = make()\n    x = (1,\n0)\n    sorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script the globals builtin aliased",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nG = globals\nG()[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script the globals builtin handed to a function",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef p(ns):\n    ns()[\"main\"] = make()\n\np(globals)\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal key stored into its frame's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys._getframe().f_globals[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal key stored into a function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef f():\n    pass\n\nf.__globals__[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module's literal store into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool.fac import make\n\ndef fix(func):\n    func.__globals__[\"main\"] = make()\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script beside a test module's literal store into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tests/test_cli.py": "from tool.fac import make\nfrom tool.impl import main\n\ndef fix(func):\n    func.__globals__[\"main\"] = make()\n    return func\n\n@fix\ndef test_h():\n    pass\n",
+				"tool/cli.py":       "from tool.impl import main\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script rebound by another module's computed store into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool.fac import make\n\ndef fix(func, k=\"main\"):\n    func.__globals__[k] = make()\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script beside another module's literal store of another name into a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool.fac import make\n\ndef fix(func):\n    func.__globals__[\"other\"] = make()\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script beside another module's membership test on a decorated function's globals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "def fix(func):\n    if \"main\" in func.__globals__:\n        pass\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script beside another module handing a decorated function's globals to get_type_hints",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing_extensions\n\ndef fix(func):\n    typing_extensions.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to a get_type_hints not typing's",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool import fac as typing\nimport typing\n\ndef fix(func):\n    typing.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to get_type_hints on a typing it rebinds",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\nfrom tool.fac import make\n\ntyping = make()\n\ndef fix(func):\n    typing.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals first to get_type_hints",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\n\ndef fix(func):\n    typing.get_type_hints(func.__globals__, func)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to another typing function",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\n\ndef fix(func):\n    typing.cast(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to a bare get_type_hints",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "from tool.fac import make as get_type_hints\n\ndef fix(func):\n    get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to a bare get_type_hints after an import of typing",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/hints.py": "from tool.fac import inner\n\ndef get_type_hints(func, ns):\n    ns[\"main\"] = inner\n",
+				"tool/deco.py":  "from tool.hints import get_type_hints\n\ndef fix(func):\n    import typing\n    get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":   "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to get_type_hints on an attribute named typing",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\nfrom tool import fac\n\ndef fix(func):\n    fac.typing.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script rebound by another module handing a decorated function's globals to get_type_hints beside a star import",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/deco.py": "import typing\nfrom tool.fac import *\n\ndef fix(func):\n    typing.get_type_hints(func, func.__globals__)\n    return func\n",
+				"tool/cli.py":  "from tool.deco import fix\nfrom tool.impl import main\n\n@fix\ndef h():\n    pass\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound by a literal globals key",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nglobals()[\"sorted\"] = ev\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound by setattr on its module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nsetattr(sys.modules[__name__], \"sorted\", ev)\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to __import__ rebound by a literal globals key",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef ev(m, g, *a):\n    g[\"main\"] = make()\n\nglobals()[\"__import__\"] = ev\n__import__(\"tool.fac\", globals(), locals(), [], 0)\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound in builtins by another module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import builtins\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nbuiltins.sorted = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound in builtins under an alias by another module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import builtins as B\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nB.sorted = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin when another module hands builtins on",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import builtins\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ndef p(b):\n    b.sorted = ev\n\np(builtins)\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin another module names only in annotations",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import builtins\n\ndef names() -> builtins.list[str]:\n    return builtins.list()\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through an imported builtins module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nimport importlib\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nimportlib.import_module(\"builtins\").sorted = ev\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through __builtins__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\n__builtins__[\"sorted\"] = ev\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through another module's __builtins__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\njson.__builtins__[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ key",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nglobals()[\"__builtins__\"][\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by getattr",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ngetattr(json, \"__builtins__\")[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by get",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nvars(json).get(\"__builtins__\")[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by attrgetter",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import operator\nimport json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\noperator.attrgetter(\"__builtins__\")(json)[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by __getattribute__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\njson.__getattribute__(\"__builtins__\")[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a __builtins__ fetched by a parenthesised name",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ngetattr(json, (\"__builtins__\"))[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through a frame's f_builtins",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nsys._getframe().f_builtins[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through an imported __builtins__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nfrom json import __builtins__ as b\n\nb[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through another module's builtins fetched by getattr",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py":   "import tool.helper\nimport json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\ngetattr(tool.helper, \"builtins\").sorted = ev\n",
+				"tool/helper.py": "import builtins\n",
+				"tool/cli.py":    "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin beside a __builtins__ key in a dict display and a comparison",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\n\nexec(\"x = 1\", {\"__builtins__\": {}})\nnames = [k for k in vars(json) if k != \"__builtins__\"]\nhas = \"__builtins__\" in vars(json)\nsame = \"builtins\" == __name__\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script in a package whose __init__ stores computed names into its own namespace",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "import importlib\nfrom tool import impl\n\ndef __getattr__(name):\n    value = getattr(importlib.import_module(\"tool.fac\"), name)\n    globals()[name] = value\n    return value\n",
+				"tool/impl.py":     cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script in a package whose __init__ hands its own namespace to a rebound builtin",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "import tool.boot\nfrom tool import impl\n\nsorted(globals())\n",
+				"tool/boot.py":     "import builtins\n\nbuiltins.sorted = lambda ns: list(ns)\n",
+				"tool/impl.py":     cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through its module's __builtins__",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "import json\nimport sys\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nsys.modules[__name__].__builtins__[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin after __builtins__ is replaced",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\n__builtins__ = {**__builtins__, \"sorted\": ev}\n\ndef h():\n    sorted(globals())\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin after a __builtins__ key is stored",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nglobals()[\"__builtins__\"] = {**__builtins__, \"sorted\": ev}\n\ndef h():\n    sorted(globals())\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin rebound through __builtins__ by another module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/boot.py": "from tool.fac import make\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\n__builtins__[\"sorted\"] = ev\n",
+				"tool/cli.py":  "import tool.boot\nfrom tool.impl import main\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a builtin after __builtins__ is stored by setattr",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli,
+				"tool/fac.py": fac + "\ndef bt(f):\n    return {**len.__self__.__dict__, \"sorted\": f}\n",
+				"tool/cli.py": "from tool.impl import main\nfrom tool.fac import make, bt\n\ndef ev(ns):\n    ns[\"main\"] = make()\n\nimport sys\nsetattr(sys.modules[__name__], \"__builtins__\", bt(ev))\n\ndef h():\n    sorted(globals())\n\nh()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script an attribute stored on its module by __spec__.name",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys.modules[__spec__.name].main = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal globals key augmented by a shift",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\nclass S:\n    def __rrshift__(self, o):\n        return inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nfrom tool.fac import S\nglobals()[\"main\"] >>= S()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a star-imported sorted",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\ndef sorted(ns):\n    ns[\"main\"] = inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nfrom tool.fac import *\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to an import named sorted",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac + "\ndef set(ns):\n    ns[\"main\"] = inner\n",
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nfrom tool.fac import set as sorted\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace handed to a class named sorted",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nclass sorted(dict):\n    def __init__(self, ns):\n        ns[\"main\"] = make()\n\nsorted(globals())\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script a literal key stored into its module frame's locals",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsys._getframe().f_locals[\"main\"] = make()\n",
+			},
+			want:    []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+			partial: true,
+		},
+		{
+			name: "script its own namespace read beside targets",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nimport contextlib\nwith contextlib.nullcontext() as c: v = globals()[\"main\"]\nfor k in [globals()[\"main\"]]:\n    pass\nglobals()[\"main\"].x = 1\nw = getattr(sys.modules[__name__], \"main\")\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
+		},
+		{
+			name: "script another name setattr on its own module",
+			files: map[string]string{
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.scripts]\ntool = \"tool.cli:main\"\n",
+				"tool/__init__.py": "", "tool/impl.py": cli, "tool/fac.py": fac,
+				"tool/cli.py": "import sys\nfrom tool.impl import main\nfrom tool.fac import make, patch\n\nsetattr(sys.modules[__name__], \"other\", make())\n",
+			},
+			want: []ing{{"main", funcSCIP("tool/impl", nil, "main", 0), "tool"}},
 		},
 		{
 			name: "package a store into a namespace package of the same name binds",

@@ -43,6 +43,19 @@ func (c *Context) PostFormArray(key string) []string            { return nil }
 func (c *Context) GetHeader(key string) string                  { return "" }
 func (c *Context) Cookie(name string) (string, error)           { return "", nil }
 func (c *Context) GetRawData() ([]byte, error)                  { return nil, nil }
+func (c *Context) GetQueryArray(key string) ([]string, bool)    { return nil, false }
+func (c *Context) GetQueryMap(key string) (map[string]string, bool) {
+	return nil, false
+}
+func (c *Context) DefaultPostForm(key, defaultValue string) string     { return defaultValue }
+func (c *Context) GetPostFormArray(key string) ([]string, bool)        { return nil, false }
+func (c *Context) PostFormMap(key string) map[string]string            { return nil }
+func (c *Context) GetPostFormMap(key string) (map[string]string, bool) { return nil, false }
+func (c *Context) FormFile(name string) (*http.FileHeader, error)      { return nil, nil }
+func (c *Context) MultipartForm() (*http.Form, error)                  { return nil, nil }
+func (c *Context) ContentType() string                                 { return "" }
+func (c *Context) ClientIP() string                                    { return "" }
+func (c *Context) RemoteIP() string                                    { return "" }
 
 // HandlerName returns the handler's name: no request data.
 func (c *Context) HandlerName() string { return "" }

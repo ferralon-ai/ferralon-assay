@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	gover "go/version"
 	"log"
 	"os"
 	"path/filepath"
@@ -2566,19 +2567,24 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
 // guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
-// inside it, or a require), or a module the go.work in force uses declares it the same way, or —
-// under a go.work — the build list the go command computes holds it, and whether that was readable
-// at all. manifestKnown=false — no build dir, an absent / unparseable go.mod or go.work, or a build
-// list the go command could not compute — forces the caller to fail OPEN, because absence is only
-// PROVABLE against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
+// inside it, or a require), or a module the go.work in force uses declares it the same way, and
+// whether that was readable at all. A module none of them declares is decided by the regime:
+//   - under a go.work, the build list the go command computes: presence when it holds the module,
+//     absence when it does not;
+//   - outside one, goModBuilds: a replace is presence; from go 1.17 the missing require is absence;
+//     below 1.17 or with no go directive, vendor/modules.txt and go.sum's module-zip hashes decide.
+//
+// manifestKnown=false — no build dir; an absent / unparseable go.mod or go.work; a build list the
+// go command could not compute; or, below go 1.17 outside a workspace, a missing or unparseable
+// go.sum or an unparseable vendor/modules.txt — forces the caller to fail OPEN, because absence is
+// only PROVABLE against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
 // manifest_membership.go.
 //
 // Those manifests are the whole build only when no other module of the checkout can build against
 // module, so a module none of them declares is unknown, not absent, when:
 //   - the build runs under ws (its effective GOWORK is on and names ws.File) and the go command's
-//     build list for it cannot be computed. A computed list that holds the module is presence; one
-//     that does not is absence, since the go command computes it over the whole workspace graph,
-//     members below go 1.17 included;
+//     build list for it cannot be computed. A computed list is decisive, since the go command
+//     computes it over the whole workspace graph, members below go 1.17 included;
 //   - the build runs with GOWORK=off and a go.work sits in buildDir: the walk leaves the modules it
 //     uses out, and nothing here reads what their builds draw on;
 //   - nested reports a module outside buildDir's module graph that may require it (gomodtree.Tree's
@@ -2647,11 +2653,90 @@ func goModRequires(ctx context.Context, buildDir string, ws GoWorkspace, module 
 		}
 	} else if fi, err := os.Stat(filepath.Join(buildDir, "go.work")); err == nil && !fi.IsDir() {
 		return false, false
+	} else if present, known := goModBuilds(buildDir, mf, module); present || !known {
+		return present, known
 	}
 	if nested().MayRequire(module) {
 		return false, false
 	}
 	return false, true
+}
+
+// goModBuilds answers membership outside a workspace for a module buildDir/go.mod does not require.
+// A replace of module is presence at any go version. From go 1.17 go.mod lists every module that
+// provides a package to the build, so a missing require is absence. Below that, or with no go
+// directive, go.mod omits indirect dependencies, and the build list is what the build verifies:
+// a module vendor/modules.txt lists, or one go.sum holds a module-zip (non-/go.mod) h1: line for,
+// is present, and one in neither is absent. A go.sum missing or unparseable there, or a
+// vendor/modules.txt that does not parse, leaves it unknown.
+func goModBuilds(buildDir string, mf *modfile.File, module string) (present bool, manifestKnown bool) {
+	for _, r := range mf.Replace {
+		if module == r.Old.Path || strings.HasPrefix(module, r.Old.Path+"/") {
+			return true, true
+		}
+	}
+	if mf.Go != nil && goVersionAtLeast(mf.Go.Version, "1.17") {
+		return false, true
+	}
+	if present, ok := goVendorHas(filepath.Join(buildDir, "vendor", "modules.txt"), module); present || !ok {
+		return present, ok
+	}
+	return goSumHas(filepath.Join(buildDir, "go.sum"), module)
+}
+
+// goVersionAtLeast reports whether the go directive version v is at least min; an unparseable v
+// reads as below it, which sends the caller to the go.sum check and its own fail-open.
+func goVersionAtLeast(v, min string) bool {
+	return gover.IsValid("go"+v) && gover.Compare("go"+v, "go"+min) >= 0
+}
+
+// goVendorHas reports whether the vendor/modules.txt at file lists module, or a module its path
+// sits under; ok is false when the file exists but cannot be read or a module line in it does not
+// parse. A missing file lists nothing.
+func goVendorHas(file, module string) (present, ok bool) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false, os.IsNotExist(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "#") || strings.HasPrefix(line, "##") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != "#" {
+			return false, false
+		}
+		if f[1] == module || strings.HasPrefix(module, f[1]+"/") {
+			present = true
+		}
+	}
+	return present, true
+}
+
+// goSumHas reports whether the go.sum at file holds a module-zip (non-/go.mod) h1: line for module
+// or for a module its path sits under, at any version; ok is false when the file is missing or does
+// not parse.
+func goSumHas(file, module string) (present, ok bool) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 3 || !strings.HasPrefix(f[2], "h1:") {
+			return false, false
+		}
+		if strings.HasSuffix(f[1], "/go.mod") {
+			continue
+		}
+		if f[0] == module || strings.HasPrefix(module, f[0]+"/") {
+			present = true
+		}
+	}
+	return present, true
 }
 
 // disqualify records a not-affected determination ONLY when provably not-affected; every

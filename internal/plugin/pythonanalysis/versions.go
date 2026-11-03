@@ -17,6 +17,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -88,7 +89,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		origins []manifestOrigin
 	)
 	want := normalizePyCoordinate(req.Coordinate)
-	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, configNamed := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfaces(req.BuildDir)
 	if tooling[want] {
 		parseFailed, scriptWithheld = true, true
 	}
@@ -119,9 +120,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 
 	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests, installs, configNamed)
 	res := plugin.DependencyVersionResult{
-		Partiality: part,
-		All:        all,
-		Exhaustive: covers && !installedCopyPresent(req.BuildDir, want, true) && !scriptWithheld,
+		Partiality:  part,
+		All:         all,
+		Exhaustive:  covers && !installedCopyPresent(req.BuildDir, want, true) && !scriptWithheld,
+		Annotations: scriptsurface.Annotations(inactive),
 	}
 	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
 		append(origins[:len(origins):len(origins)], copyOrigins...), want)

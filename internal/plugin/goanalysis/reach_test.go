@@ -110,6 +110,35 @@ func TestStacksToReachPaths_EmptyIngressWhenNoEntry(t *testing.T) {
 	}
 }
 
+// TestFindingsToReachPaths_SinkCarriesImportPath pins that a govulncheck path's sink carries the
+// import path govulncheck reported for it, and nothing when it reported none. The host attributes
+// each path to an affected package by that field.
+func TestFindingsToReachPaths_SinkCarriesImportPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sink vulnFrame
+		want string
+	}{
+		{"stdlib", vulnFrame{Module: "stdlib", Version: "v1.26.3", Package: "net/http", Receiver: "*Client", Function: "Get"}, "net/http"},
+		{"module", vulnFrame{Module: "golang.org/x/net", Version: "v0.25.0", Package: "golang.org/x/net/idna", Function: "ToASCII"}, "golang.org/x/net/idna"},
+		{"no package", vulnFrame{Module: "example.com/m", Function: "F"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := vulnFrame{Module: "example.com/app", Package: "example.com/app", Function: "main"}
+			paths := stacksToReachPaths(findingsToStacks([]vulnFinding{{OSV: "GO-2026-5026", Trace: []vulnFrame{tc.sink, entry}}}))
+			if len(paths) != 1 {
+				t.Fatalf("want 1 path, got %d", len(paths))
+			}
+			if got := paths[0].Sink.Package; got != tc.want {
+				t.Errorf("Sink.Package = %q, want %q", got, tc.want)
+			}
+			if got, want := paths[0].Trace[len(paths[0].Trace)-1], sym(frameSCIP(tc.sink)); got != want {
+				t.Errorf("trace sink frame = %+v, want %+v (the trace keeps the call graph's identity)", got, want)
+			}
+		})
+	}
+}
+
 // TestStacksToReachPaths_SkipsEmptyStacks asserts stacks with no frames produce
 // no path (module/package-level govulncheck findings carry no symbol trace).
 func TestStacksToReachPaths_SkipsEmptyStacks(t *testing.T) {

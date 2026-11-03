@@ -190,11 +190,12 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// SBOM would silently flatten to packages-only, and the next PR diff against it
 	// would see every relationship as newly-absent.
 	b.SetRelationships(baseline.SBOM.Relationships)
+	b.SetGoBuildList(baseline.SBOM)
 	// The head's inventory limits apply to the inherited rows as to fresh ones: a package the head
 	// could not inventory may be installed where the baseline's analysis never looked.
 	rows := make([]report.AdvisoryFinding, 0, len(baseline.Advisories))
 	for i := range baseline.Advisories {
-		f := withInventoryLimits(baseline.Advisories[i], req.DiffLimits)
+		f := withInventoryLimits(baseline.Advisories[i], inheritedLimits(req.DiffLimits, baseline), nil)
 		rows = append(rows, f)
 		b.AddFinding(f)
 	}
@@ -287,7 +288,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
 		// REPLACES the baseline's row below. It has to be harvested ahead of the two skips: a
 		// toolchain advisory carries no SBOM package, so `pkg == nil` would drop it and leave
@@ -323,6 +324,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The re-analyzed Report's SBOM is the PR head's — carry its relationships too, so
 	// the stored head SBOM stays a whole graph and the next diff has edges to compare.
 	b.SetRelationships(req.PRSBOM.Relationships)
+	b.SetGoBuildList(req.PRSBOM)
 
 	var rows []report.AdvisoryFinding
 	for i := range baseline.Advisories {
@@ -336,7 +338,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 			delete(reFindings, key)
 			continue
 		}
-		rows = append(rows, withInventoryLimits(f, req.DiffLimits))
+		rows = append(rows, withInventoryLimits(f, inheritedLimits(req.DiffLimits, baseline), nil))
 	}
 	for _, re := range reFindings {
 		rows = append(rows, re)
@@ -493,7 +495,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		pkg := a.Package
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality), pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather
@@ -516,6 +518,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// relationships) is reused verbatim, so the stored inventory does not flatten
 	// across scheduled watches.
 	b.SetRelationships(prior.SBOM.Relationships)
+	b.SetGoBuildList(prior.SBOM)
 
 	var rows []report.AdvisoryFinding
 	for i := range prior.Advisories {

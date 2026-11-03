@@ -65,6 +65,8 @@ var ginForms = []struct {
 var ginAccessors = []string{
 	"DefaultQuery", "GetQuery", "QueryArray", "QueryMap", "GetPostForm", "PostFormArray",
 	"GetHeader", "Cookie", "GetRawData",
+	"GetQueryArray", "GetQueryMap", "DefaultPostForm", "GetPostFormArray", "PostFormMap",
+	"GetPostFormMap", "FormFile", "MultipartForm", "ContentType", "ClientIP", "RemoteIP",
 	"Bind", "BindJSON", "BindQuery", "BindUri", "MustBindWith",
 	"ShouldBind", "ShouldBindJSON", "ShouldBindQuery", "ShouldBindUri", "ShouldBindHeader",
 	"ShouldBindWith", "ShouldBindBodyWith",

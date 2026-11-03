@@ -170,7 +170,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 			dir := writeTree(t, files)
 			// Seeded under the key Reachability asks for, so no govulncheck runs: a key mismatch
 			// would scan the tree for real, find nothing, and fail the kept case.
-			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv()...), func() ([]byte, error) {
+			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv(ctx)...), func() ([]byte, error) {
 				return []byte(stream), nil
 			}); err != nil {
 				t.Fatal(err)
@@ -187,6 +187,50 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 				if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
 					t.Errorf("advisory %d: excluded_files declared = %v, want %v", i, declared, tc.withheld)
 				}
+			}
+		})
+	}
+}
+
+// TestReachabilityCarriesFloorToLoad pins that the request's GoToolchainFloor reaches the load that
+// judges left-out files: a !go1.22 file that imports the refuted module is ruled out under a go1.22.0
+// floor and withholds the refutation without one.
+func TestReachabilityCarriesFloorToLoad(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "local")
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"old.go":              "//go:build !go1.22\n\npackage main\n\nimport _ \"example.com/vulnmod\"\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	})
+	if r, ok := parseGoRelease(goEnvVersion(context.Background(), dir, reachBaseEnv(context.Background()))); !ok || r.major != 1 || r.minor < 23 {
+		t.Skipf("loader Go %v builds !go1.22 files", r)
+	}
+	const stream = `{"osv":{"id":"GO-2099-0001"}}
+{"finding":{"osv":"GO-2099-0001","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}
+`
+	for _, tc := range []struct {
+		floor    string
+		withheld bool
+	}{
+		{"go1.22.0", false},
+		{"go1.21.0", true},
+		{"", true},
+	} {
+		t.Run("floor "+tc.floor, func(t *testing.T) {
+			ctx := WithRunCacheDir(context.Background(), t.TempDir())
+			if _, err := runCached(ctx, "govulncheck", append([]string{dir}, reachBaseEnv(ctx)...), func() ([]byte, error) {
+				return []byte(stream), nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-2099-0001", GoToolchainFloor: tc.floor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("withheld = %v, want %v (partiality %+v)", withheld, tc.withheld, res.Partiality)
 			}
 		})
 	}
@@ -233,7 +277,7 @@ func TestRunCacheKeys(t *testing.T) {
 			CallGraph:    plugin.CallGraphResult{Algorithm: "vta", Roots: []plugin.Symbol{{SCIP: "seeded"}}},
 			ReflectReach: map[string][]string{"example.com/m": {"F"}},
 		}
-		if _, err := runCached(ctx, "reconcile", reconcileKey(buildDir, nil), func() ([]byte, error) {
+		if _, err := runCached(ctx, "reconcile", reconcileKey(ctx, buildDir, nil), func() ([]byte, error) {
 			return json.Marshal(seed)
 		}); err != nil {
 			t.Fatal(err)
@@ -268,7 +312,7 @@ func TestRunCacheKeys(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := WithRunCacheDir(context.Background(), t.TempDir())
-				if _, err := runCached(ctx, "reconcile", reconcileKey(buildDir, nil), func() ([]byte, error) {
+				if _, err := runCached(ctx, "reconcile", reconcileKey(ctx, buildDir, nil), func() ([]byte, error) {
 					return json.Marshal(reconcileGraph{ReflectReach: tc.reach})
 				}); err != nil {
 					t.Fatal(err)
@@ -325,13 +369,13 @@ func TestLoadCacheKey(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := WithRunCacheDir(context.Background(), t.TempDir())
-			if _, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+			if _, err := runCached(ctx, "taint", loadCacheKey(ctx, buildDir), func() ([]byte, error) {
 				return []byte("seeded"), nil
 			}); err != nil {
 				t.Fatal(err)
 			}
 			tt.change(t)
-			got, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+			got, err := runCached(ctx, "taint", loadCacheKey(ctx, buildDir), func() ([]byte, error) {
 				return []byte("computed"), nil
 			})
 			if err != nil {
@@ -346,7 +390,7 @@ func TestLoadCacheKey(t *testing.T) {
 	// An environment file that cannot be read shares nothing, not even with itself.
 	t.Run("go env file unreadable", func(t *testing.T) {
 		t.Setenv("GOENV", t.TempDir())
-		if a, b := loadCacheKey(buildDir), loadCacheKey(buildDir); slices.Equal(a, b) {
+		if a, b := loadCacheKey(context.Background(), buildDir), loadCacheKey(context.Background(), buildDir); slices.Equal(a, b) {
 			t.Errorf("two keys over an unreadable go env file are equal: %v", a)
 		}
 	})
@@ -418,7 +462,7 @@ func TestResolveDependencySymbolsFromCachedIndex(t *testing.T) {
 			}
 		}
 	}
-	if _, err := runCached(ctx, "symbolindex", append([]string{fixtureDir}, os.Environ()...), func() ([]byte, error) {
+	if _, err := runCached(ctx, "symbolindex", append([]string{fixtureDir}, analyzerEnv(ctx)...), func() ([]byte, error) {
 		t.Fatal("symbol index was not cached")
 		return nil, nil
 	}); err != nil {
@@ -474,7 +518,7 @@ func TestComputeTaintFromCachedClosure(t *testing.T) {
 					}
 				}
 			}
-			if _, err := runCached(cached, "taint", loadCacheKey(dir), func() ([]byte, error) {
+			if _, err := runCached(cached, "taint", loadCacheKey(cached, dir), func() ([]byte, error) {
 				t.Fatal("taint closure was not cached")
 				return nil, nil
 			}); err != nil {
@@ -560,7 +604,7 @@ func TestGovulncheckCachedSettlesFailure(t *testing.T) {
 	const buildDir = "/src"
 	env := []string{"GOWORK=off"}
 	key := append([]string{buildDir}, env...)
-	cause := fmt.Errorf("govulncheck: %w", errors.New("loading packages: olm/olm.h file not found"))
+	cause := fmt.Errorf("govulncheck: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
 	tests := []struct {
 		name       string
 		cacheDir   bool
@@ -639,7 +683,7 @@ func TestGovulncheckCachedSettlesFailure(t *testing.T) {
 
 // TestGovulncheckErrorMessage pins the failure message every caller sees, fresh or replayed.
 func TestGovulncheckErrorMessage(t *testing.T) {
-	cause := errors.New("govulncheck: loading packages: boom")
+	cause := fmt.Errorf("govulncheck: loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/src/a.go:1:1", Msg: "boom"}}})
 	want := fmt.Errorf("govulncheck failed (%q): %w: %s", "/src", cause, "err text").Error()
 	fresh := &govulncheckError{buildDir: "/src", cause: cause, stderr: "err text"}
 	if got := fresh.Error(); got != want {
@@ -731,7 +775,7 @@ func TestLoadPackageErrorsFindsVulnPackageErrors(t *testing.T) {
 	cmd := scan.Command(context.Background(), "-db", "file://"+filepath.ToSlash(db), "-C", dir, "-json", "-mode=source", "-scan=symbol", "./...")
 	cmd.Stdout = &bytes.Buffer{}
 	cmd.Stderr = &stderr
-	cmd.Env = append(reachBaseEnv(), "GOPROXY=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = append(reachBaseEnv(context.Background()), "GOPROXY=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -760,7 +804,7 @@ func TestPackagesResolveOffline(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := writeTree(t, tt.files)
-			if got := packagesResolveOffline(context.Background(), dir, reachBaseEnv()); got != tt.want {
+			if got := packagesResolveOffline(context.Background(), dir, reachBaseEnv(context.Background())); got != tt.want {
 				t.Errorf("packagesResolveOffline = %v, want %v", got, tt.want)
 			}
 		})
@@ -774,7 +818,7 @@ func TestGovulncheckFailureEntryIsolation(t *testing.T) {
 	env := []string{"GOWORK=off"}
 	key := append([]string{buildDir}, env...)
 	const stream = `{"config":{"protocol_version":"v1.0.0"}}` + "\n"
-	record := &govulncheckError{buildDir: buildDir, cause: errors.New("loading packages: x"), stderr: "", settled: true}
+	record := &govulncheckError{buildDir: buildDir, cause: fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/src/a.go:1:1", Msg: "x"}}}), stderr: "", settled: true}
 
 	t.Run("failure not read as a stream", func(t *testing.T) {
 		ctx := WithRunCacheDir(context.Background(), t.TempDir())
@@ -791,6 +835,9 @@ func TestGovulncheckFailureEntryIsolation(t *testing.T) {
 		{"stream", stream},
 		{"record without the marker", `{"cause":"loading packages: x","stderr":""}`},
 		{"truncated record", `{"marker":"` + govulncheckFailureMarker},
+		{"record under the earlier marker", `{"marker":"govulncheck-settled-failure/v1","cause":"loading packages: x","stderr":""}`},
+		{"record under the earlier marker with package errors", `{"marker":"govulncheck-settled-failure/v1","cause":"loading packages: x","stderr":"","package_errors":[{"pos":"/src/a.go:1:1","msg":"x"}]}`},
+		{"record without package errors", `{"marker":"` + govulncheckFailureMarker + `","cause":"loading packages: x","stderr":""}`},
 	} {
 		t.Run(tc.name+" at the failure entry not read as a failure", func(t *testing.T) {
 			dir := t.TempDir()

@@ -233,14 +233,19 @@ func argContains(args []ssa.Value, v ssa.Value) bool {
 // ginContextAccessors are the *gin.Context methods that return attacker-controlled
 // request data. A gin handler's *gin.Context parameter is seeded like every ingress
 // parameter, and its Request field carries taint through the ordinary field and load
-// edges; these accessors are the reads that go through a method instead. FullPath is
+// edges; these accessors are the reads that go through a method instead. ClientIP
+// counts: behind trusted proxies it returns the X-Forwarded-For value the client
+// sent, and otherwise the peer address, neither of which the application wrote. FullPath is
 // not one: it returns the matched route's registered template ("/user/:id"), which
 // the application wrote, not anything the request carries.
 var ginContextAccessors = map[string]bool{
 	"Param": true, "Query": true, "PostForm": true,
 	"DefaultQuery": true, "GetQuery": true, "QueryArray": true, "QueryMap": true,
-	"GetPostForm": true, "PostFormArray": true, "GetHeader": true, "Cookie": true,
-	"GetRawData": true,
+	"GetQueryArray": true, "GetQueryMap": true,
+	"GetPostForm": true, "DefaultPostForm": true, "PostFormArray": true, "GetPostFormArray": true,
+	"PostFormMap": true, "GetPostFormMap": true, "FormFile": true, "MultipartForm": true,
+	"GetHeader": true, "ContentType": true, "Cookie": true, "GetRawData": true,
+	"ClientIP": true, "RemoteIP": true,
 }
 
 // isGinBinder reports whether name is one of *gin.Context's Bind / ShouldBind* family
@@ -252,12 +257,14 @@ func isGinBinder(name string) bool {
 }
 
 // echoContextAccessors are the echo.Context methods that return attacker-controlled
-// request data: path, query and form values, the request itself and its cookies.
+// request data: path, query and form values, uploaded files, the raw query string, the
+// client IP, the request itself and its cookies.
 // echo.Context is an INTERFACE, so these are invoke calls with the context as the
 // receiver, never a static callee.
 var echoContextAccessors = map[string]bool{
-	"Param": true, "QueryParam": true, "QueryParams": true, "FormValue": true,
-	"FormParams": true, "Request": true, "Cookie": true,
+	"Param": true, "ParamValues": true, "QueryParam": true, "QueryParams": true, "FormValue": true,
+	"FormParams": true, "FormFile": true, "MultipartForm": true, "QueryString": true,
+	"RealIP": true, "Request": true, "Cookie": true, "Cookies": true,
 }
 
 // echoContextBinders are the echo.Context methods that decode the request into the

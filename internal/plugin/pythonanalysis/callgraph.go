@@ -804,6 +804,9 @@ type fileParse struct {
 	// file's namespace (markModuleStores): those names, or any name.
 	storedNames map[string]bool
 	storedAny   bool
+	// own is what the file may bind in its own namespace by computed access, which
+	// markModuleStores applies as stores through its own module.
+	own ownStores
 	// plain holds the names a scope rebinds on every path: parameters, straight-line
 	// assignments and straight-line dependency imports or instances.
 	plain map[string]map[string]bool
@@ -992,7 +995,7 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.refs.hidden = true
 		}
 		roots, opaque := dynamicImports(clean, lits)
-		lookupRoots, lookups, lookupPackages, moduleVals, lookupOpaque, lookupComputed := moduleLookups(clean, lits, scan.bindings)
+		lookupRoots, lookups, lookupPackages, moduleVals, lookupOpaque, lookupComputed, own := moduleLookups(clean, lits, scan.bindings)
 		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings, moduleVals)
 		roots = sortedDedup(append(append(roots, lookupRoots...), loaderRoots...))
 		opaque = opaque || lookupOpaque || loaderOpaque
@@ -1079,6 +1082,7 @@ func loadProgram(buildDir string) (*program, error) {
 			unreadValue:   scan.unreadValue,
 			defs:          scan.defs,
 			computed:      scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
+			own:           own,
 			settings:      settingsLaunchers(clean, lits),
 			urlViews:      djangoURLViews(clean, lits, bindings),
 			classes:       classes,

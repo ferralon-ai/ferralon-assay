@@ -15,11 +15,17 @@ import http "tegron.test/nethttp"
 type Context interface {
 	Request() *http.Request
 	Param(name string) string
+	ParamValues() []string
 	QueryParam(name string) string
 	QueryParams() http.Values
 	FormValue(name string) string
 	FormParams() (http.Values, error)
 	Cookie(name string) (*http.Cookie, error)
+	Cookies() []*http.Cookie
+	FormFile(name string) (*http.FileHeader, error)
+	MultipartForm() (*http.Form, error)
+	QueryString() string
+	RealIP() string
 	Bind(i interface{}) error
 	// Path is the registered route path: no request data.
 	Path() string

@@ -100,7 +100,7 @@ git merge-base --is-ancestor "$rev" HEAD
 case $? in
   0) ;;
   1)
-    echo "review-closure-check: the reviewed head $base is not an ancestor of HEAD (rebased since the review?); transcribe the findings against the rebased commits" >&2
+    echo "review-closure-check: the reviewed head $base is not an ancestor of HEAD (rebased since the review?); transcribe the findings against the rebased commits and pass the rebased copy of the reviewed commit as reviewed-sha, with line numbers re-mapped where the rebase moved them" >&2
     exit 2
     ;;
   *)

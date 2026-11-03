@@ -14,7 +14,8 @@ the diff `<reviewed-sha>...HEAD`, which is your revision only while `reviewed-sh
 
 - A rebase onto the default branch. The reviewed commit is no longer an ancestor of `HEAD`, so the
   range widens back to the whole PR and findings could read as closed by changes the review already
-  saw. Transcribe the findings against the rebased commits instead.
+  saw. Transcribe the findings against the rebased commits instead, and pass the rebased copy of
+  the reviewed commit as `reviewed-sha`, with line numbers re-mapped where the rebase moved them.
 - A merge of the default branch into the PR branch. The range then carries the merged changes, so a
   finding on a line only the default branch changed could read as closed. Run the check on the
   revision before the merge.

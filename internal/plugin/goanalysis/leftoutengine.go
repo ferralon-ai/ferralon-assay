@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"go/build/constraint"
 	"go/types"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -170,9 +169,8 @@ func lofCandidates(pkgs []*packages.Package) []lofCandidate {
 // loadLofEngine returns the scan's engine, built once per tree per scan through the run cache. A
 // build that fails or panics yields an engine whose Fail is lofGraphError, so every left-out file
 // counts.
-func loadLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) *lofEngine {
-	key := append([]string{buildDir, fmt.Sprint(release)}, env...)
-	key = append(key, os.Environ()...)
+func loadLofEngine(ctx context.Context, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) *lofEngine {
+	key := append(append(loadCacheKey(buildDir), fmt.Sprint(release)), env...)
 	b, err := runCached(ctx, "leftout", key, func() (b []byte, err error) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -378,10 +376,13 @@ func funcKey(f *types.Func) string {
 
 // buildLofEngine builds the engine: every candidate's closure under the walk's budget, then G0 and
 // G_T.
-func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) (*lofEngine, error) {
-	floor := goDirectiveFloor(pkgs)
-	excluded := func(x constraint.Expr) bool { return ignored(x) || toolchainExcluded(x, release, floor) }
-	goroot, failStd := lofToolchain(ctx, buildDir, env, release)
+func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) (*lofEngine, error) {
+	excluded := func(x constraint.Expr) bool { return ignored(x) || (release != nil && release.excludes(x)) }
+	var exact *goRelease
+	if release != nil && release.exact {
+		exact = &release.release
+	}
+	goroot, failStd := lofToolchain(ctx, buildDir, env, exact)
 	w := newLofWorld(ctx, pkgs, buildDir, env, excluded, goroot, time.Now().Add(lofBudgetTime))
 	w.modcache = lofModCache(ctx, buildDir, env)
 	in := &lofInterner{ids: map[string]int32{}}

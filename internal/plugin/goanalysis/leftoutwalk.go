@@ -67,7 +67,7 @@ type lofWorld struct {
 	// epoch numbers the walks; closures run one at a time.
 	epoch int
 	// excluded reports whether a file with this build constraint compiles in no build the
-	// refutation describes (toolchainExcluded).
+	// refutation describes (releaseBound.excludes).
 	excluded func(constraint.Expr) bool
 	// goroot is the toolchain's root the compiler's intrinsic table is read from; "" reads none.
 	goroot string

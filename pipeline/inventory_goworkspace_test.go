@@ -54,6 +54,7 @@ func TestResolveCodebaseInventory_GoWorkspace(t *testing.T) {
 		{name: "found", declared: "", want: []string{file}},
 		{name: "declared", declared: "go.work", want: []string{file}},
 		{name: "off", declared: "off", want: []string{""}},
+		{name: "auto", declared: "auto", want: []string{file}},
 		{name: "missing", declared: "ci/missing.work", toolFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

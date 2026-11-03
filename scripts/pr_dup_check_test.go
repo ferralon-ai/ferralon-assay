@@ -181,14 +181,12 @@ func TestPRDupCheckLiveGhFallback(t *testing.T) {
 	})
 }
 
-// The path every real run takes: no self-branch override, so the checked-out branch is left out,
-// and a live git ls-remote against a reachable origin.
+// The path every real run takes: no self-branch override, so the checked-out asy-099-mine is left
+// out while asy-099-old is found, through a live git ls-remote against a reachable origin.
 func TestPRDupCheckLiveOrigin(t *testing.T) {
 	runDupLive(t, []dupLiveCase{
-		{"own branch left out by default", "", "", []string{"asy-099-mine"}, 0, "",
-			[]string{"gh not installed"}},
-		{"other branch found", "", "", []string{"asy-099-mine", "asy-099-old"}, 1,
-			"remote branch already carries ASY-099: asy-099-old", nil},
+		{"own branch left out by default", "", "", []string{"asy-099-mine", "asy-099-old"}, 1,
+			"remote branch already carries ASY-099: asy-099-old", []string{"gh not installed"}},
 	})
 }
 
@@ -265,6 +263,9 @@ func runDupLive(t *testing.T, cases []dupLiveCase) {
 			if !strings.Contains(stdout.String(), tc.stdout) {
 				t.Fatalf("stdout does not name %q:\n%s", tc.stdout, stdout.String())
 			}
+			if tc.origin != nil && strings.Contains(stdout.String(), "asy-099-mine") {
+				t.Fatalf("stdout names the checked-out branch:\n%s", stdout.String())
+			}
 			for _, w := range tc.stderr {
 				if !strings.Contains(stderr.String(), w) {
 					t.Fatalf("stderr does not say %q:\n%s", w, stderr.String())
@@ -275,25 +276,32 @@ func runDupLive(t *testing.T, cases []dupLiveCase) {
 }
 
 // dupOrigin makes dir a repository checked out on asy-099-mine, with one commit, and gives it a
-// bare origin holding the named branches.
+// bare origin holding the named branches. The origin borrows dir's objects through an alternates
+// file and gets its refs written directly, which costs far less than a push.
 func dupOrigin(t *testing.T, dir string, branches []string) {
 	t.Helper()
 	origin := filepath.Join(t.TempDir(), "origin.git")
-	push := []string{"-C", dir, "push", "-q", "origin"}
-	for _, b := range branches {
-		push = append(push, "HEAD:refs/heads/"+b)
-	}
-	for _, args := range [][]string{
-		{"init", "-q", "--bare", origin},
-		{"init", "-q", "-b", "asy-099-mine", dir},
-		{"-C", dir, "commit", "-q", "--allow-empty", "-m", "fixture"},
-		{"-C", dir, "remote", "add", "origin", origin},
-		push,
-	} {
-		cmd := gittest.Command(args...)
+	git := func(args ...string) string {
+		cmd := gittest.Command(append([]string{"-c", "maintenance.auto=false"}, args...)...)
 		cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
-		if out, err := cmd.CombinedOutput(); err != nil {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "--bare", origin)
+	git("init", "-q", "-b", "asy-099-mine", dir)
+	git("-C", dir, "commit", "-q", "--allow-empty", "-m", "fixture")
+	git("-C", dir, "config", "remote.origin.url", origin)
+	head := git("-C", dir, "rev-parse", "HEAD")
+	files := map[string]string{"objects/info/alternates": filepath.Join(dir, ".git", "objects")}
+	for _, b := range branches {
+		files["refs/heads/"+b] = head
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(origin, name), []byte(content+"\n"), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

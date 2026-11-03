@@ -134,28 +134,44 @@ func TestPRDupCheckSelfBranch(t *testing.T) {
 // if any, is out of reach.
 var dupLiveTools = []string{"awk", "cat", "cp", "git", "mktemp", "rm", "sed"}
 
-// TestPRDupCheckLiveLookups runs the script with neither listing file set, a PATH holding only
-// dupLiveTools plus an optional fake gh, from a directory with no git repository and so no remote.
-func TestPRDupCheckLiveLookups(t *testing.T) {
+type dupLiveCase struct {
+	name     string
+	gh       string // fake gh's script body; empty means no gh on PATH
+	branches string // a branch listing file; empty means the live git ls-remote
+	want     int
+	stderr   []string
+}
+
+const dupGhRateLimited = "echo 'HTTP 403: API rate limit exceeded' >&2; exit 1"
+
+// With no branch listing there is nothing to stand on, whatever gh does.
+func TestPRDupCheckLiveNoRemote(t *testing.T) {
+	runDupLive(t, []dupLiveCase{
+		{"no gh, no remote", "", "", 2,
+			[]string{"gh not installed", "git ls-remote --heads origin failed", "  fatal:"}},
+		{"gh fails, no remote", dupGhRateLimited, "", 2,
+			[]string{"gh pr list failed", "git ls-remote --heads origin failed"}},
+	})
+}
+
+// A PR listing that fails or is cut short leaves the branches checked, and stderr says why.
+func TestPRDupCheckLiveGhFallback(t *testing.T) {
+	runDupLive(t, []dupLiveCase{
+		{"gh fails, branches read", dupGhRateLimited, "origin/main\n", 0,
+			[]string{"gh pr list failed", "  HTTP 403: API rate limit exceeded"}},
+		{"gh at its listing limit", "cat \"$PR_DUP_TEST_PRS\"", "origin/main\n", 0,
+			[]string{"gh returned 200 open PRs, its listing limit"}},
+	})
+}
+
+// runDupLive runs the script with no PR listing file, a PATH holding only dupLiveTools plus an
+// optional fake gh, from a directory with no git repository and so no remote. The fake gh can
+// print PR_DUP_TEST_PRS, a full page of 200 unrelated PRs.
+func runDupLive(t *testing.T, cases []dupLiveCase) {
+	t.Helper()
 	var full strings.Builder
 	for i := 1; i <= 200; i++ {
 		full.WriteString(dupPR(strconv.Itoa(i), "unrelated", "chore/y", "no order here"))
-	}
-	cases := []struct {
-		name     string
-		gh       string // fake gh's script body; empty means no gh on PATH
-		branches string // a branch listing file; empty means the live git ls-remote
-		want     int
-		stderr   []string
-	}{
-		{"no gh, no remote", "", "", 2,
-			[]string{"gh not installed", "git ls-remote --heads origin failed", "  fatal:"}},
-		{"gh fails, branches read", "echo 'HTTP 403: API rate limit exceeded' >&2; exit 1", "origin/main\n", 0,
-			[]string{"gh pr list failed", "  HTTP 403: API rate limit exceeded"}},
-		{"gh fails, no remote", "echo 'HTTP 403: API rate limit exceeded' >&2; exit 1", "", 2,
-			[]string{"gh pr list failed", "git ls-remote --heads origin failed"}},
-		{"gh at its listing limit", "cat \"$PR_DUP_TEST_PRS\"", "origin/main\n", 0,
-			[]string{"gh returned 200 open PRs, its listing limit"}},
 	}
 	script, err := filepath.Abs("pr-dup-check.sh")
 	if err != nil {

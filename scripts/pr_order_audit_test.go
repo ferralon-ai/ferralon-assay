@@ -331,7 +331,8 @@ func newBranch(name string) string {
 }
 
 // installTemplate builds, once per test, a repository holding a copy of install-githooks.sh (which
-// finds its repository from its own location) with no hooks directory; installClone copies it.
+// finds its repository from its own location) and an empty scripts/githooks, with no hooks
+// directory; installClone copies it.
 func installTemplate(t *testing.T) string {
 	t.Helper()
 	install, err := filepath.Abs("install-githooks.sh")
@@ -339,7 +340,7 @@ func installTemplate(t *testing.T) string {
 		t.Fatal(err)
 	}
 	work := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(work, "scripts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(work, "scripts", "githooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(install)
@@ -355,20 +356,34 @@ func installTemplate(t *testing.T) string {
 	return work
 }
 
-// installClone is a copy of template, with core.hooksPath set to hooksPath unless it is empty and
-// each of hooks (name to mode) written into the hooks directory git would run.
-func installClone(t *testing.T, template, hooksPath string, hooks map[string]os.FileMode) string {
+// installClone is a copy of template, with core.hooksPath set to hooksPath in its local config and to
+// global in a global config file unless either is empty, and each of hooks (name to mode) written into
+// the hooks directory git would run. In hooksPath and global, $WORK stands for the copy's path. It
+// returns the copy and the global config file, which GIT_CONFIG_GLOBAL must name.
+func installClone(t *testing.T, template, hooksPath, global string, hooks map[string]os.FileMode) (work, globalFile string) {
 	t.Helper()
-	work := t.TempDir()
+	work = t.TempDir()
 	if err := os.CopyFS(work, os.DirFS(template)); err != nil {
 		t.Fatal(err)
 	}
+	hooksPath = strings.ReplaceAll(hooksPath, "$WORK", work)
+	global = strings.ReplaceAll(global, "$WORK", work)
+	globalFile = filepath.Join(t.TempDir(), "gitconfig")
 	dir := filepath.Join(work, ".git", "hooks")
-	if hooksPath != "" {
-		dir = filepath.Join(work, hooksPath)
-		f, err := os.OpenFile(filepath.Join(work, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	for _, set := range []struct{ value, file string }{
+		{global, globalFile},
+		{hooksPath, filepath.Join(work, ".git", "config")},
+	} {
+		if set.value == "" {
+			continue
+		}
+		dir = set.value
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(work, dir)
+		}
+		f, err := os.OpenFile(set.file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err == nil {
-			_, err = f.WriteString("[core]\n\thooksPath = " + hooksPath + "\n")
+			_, err = f.WriteString("[core]\n\thooksPath = " + set.value + "\n")
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
@@ -388,13 +403,33 @@ func installClone(t *testing.T, template, hooksPath string, hooks map[string]os.
 			t.Fatal(err)
 		}
 	}
-	return work
+	return work, globalFile
+}
+
+// lastHooksPath is the last core.hooksPath value in the git config file at path, or "".
+func lastHooksPath(t *testing.T, path string) string {
+	t.Helper()
+	config, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := ""
+	for _, line := range strings.Split(string(config), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && strings.EqualFold(strings.TrimSpace(k), "hooksPath") {
+			last = strings.TrimSpace(v)
+		}
+	}
+	return last
 }
 
 func TestInstallGithooksIsIdempotent(t *testing.T) {
-	work := installClone(t, installTemplate(t), "", nil)
+	work, globalFile := installClone(t, installTemplate(t), "", "", nil)
+	env := []string{"GIT_CONFIG_GLOBAL=" + globalFile}
 	for i := 0; i < 2; i++ {
-		if out, code := runScript(t, work, nil, "", "bash", "scripts/install-githooks.sh"); code != 0 {
+		if out, code := runScript(t, work, env, "", "bash", "scripts/install-githooks.sh"); code != 0 {
 			t.Fatalf("install run %d: exit %d:\n%s", i+1, code, out)
 		}
 	}
@@ -405,7 +440,8 @@ func TestInstallGithooksIsIdempotent(t *testing.T) {
 
 type installCase struct {
 	name      string
-	hooksPath string                 // core.hooksPath before the run; "" = unset
+	hooksPath string                 // local core.hooksPath before the run; "" = unset
+	global    string                 // global core.hooksPath, which the run must leave alone; "" = unset
 	hooks     map[string]os.FileMode // files in the hooks directory git runs, by mode
 	args      []string
 	wantCode  int
@@ -419,8 +455,10 @@ func runInstallCases(t *testing.T, cases []installCase) {
 	template := installTemplate(t)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			work := installClone(t, template, tc.hooksPath, tc.hooks)
-			out, code := runScript(t, work, nil, "", "bash", append([]string{"scripts/install-githooks.sh"}, tc.args...)...)
+			work, globalFile := installClone(t, template, tc.hooksPath, tc.global, tc.hooks)
+			env := []string{"GIT_CONFIG_GLOBAL=" + globalFile}
+			out, code := runScript(t, work, env, "", "bash", append([]string{"scripts/install-githooks.sh"}, tc.args...)...)
+			out = strings.ReplaceAll(out, work, "$WORK")
 			if code != tc.wantCode {
 				t.Fatalf("exit %d, want %d:\n%s", code, tc.wantCode, out)
 			}
@@ -434,18 +472,12 @@ func runInstallCases(t *testing.T, cases []installCase) {
 					t.Errorf("output has %q:\n%s", w, out)
 				}
 			}
-			config, err := os.ReadFile(filepath.Join(work, ".git", "config"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			last := ""
-			for _, line := range strings.Split(string(config), "\n") {
-				if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && strings.EqualFold(strings.TrimSpace(k), "hooksPath") {
-					last = strings.TrimSpace(v)
-				}
-			}
+			last := strings.ReplaceAll(lastHooksPath(t, filepath.Join(work, ".git", "config")), work, "$WORK")
 			if last != tc.wantPath {
-				t.Errorf("core.hooksPath = %q, want %q:\n%s", last, tc.wantPath, config)
+				t.Errorf("core.hooksPath = %q, want %q", last, tc.wantPath)
+			}
+			if global := strings.ReplaceAll(lastHooksPath(t, globalFile), work, "$WORK"); global != tc.global {
+				t.Errorf("global core.hooksPath = %q, want it left at %q", global, tc.global)
 			}
 		})
 	}
@@ -457,9 +489,38 @@ func TestInstallGithooksKeepsAnotherHooksPath(t *testing.T) {
 	husky := map[string]os.FileMode{"pre-commit": 0o755}
 	runInstallCases(t, []installCase{
 		{name: "kept without --force", hooksPath: ".husky", hooks: husky, wantCode: 1, wantPath: ".husky",
-			want: []string{"already '.husky'", "--force", "would stop running: pre-commit"}},
+			want: []string{"already '.husky' (local config)", "--force to replace it", "would stop running: pre-commit"}},
 		{name: "replaced with --force", hooksPath: ".husky", hooks: husky, args: []string{"--force"},
 			wantPath: "scripts/githooks", want: []string{"was '.husky'", "no longer runs these hooks", "pre-commit"}},
+	})
+}
+
+// TestInstallGithooksNamesTheScope: a core.hooksPath from global config is reported as global and
+// never changed; --force overrides it in the clone's local config only.
+func TestInstallGithooksNamesTheScope(t *testing.T) {
+	husky := map[string]os.FileMode{"pre-commit": 0o755}
+	runInstallCases(t, []installCase{
+		{name: "global kept without --force", global: ".husky", hooks: husky, wantCode: 1,
+			want: []string{"already '.husky' (global config)", "the global setting itself is left alone", "would stop running: pre-commit"}},
+		{name: "global overridden locally with --force", global: ".husky", hooks: husky, args: []string{"--force"},
+			wantPath: "scripts/githooks",
+			want:     []string{"in local config (overrides '.husky' from global config, which is left unchanged)", "no longer runs these hooks"}},
+		{name: "global already the hook directory", global: "scripts/githooks", want: []string{"already set, global config"}},
+	})
+}
+
+// TestInstallGithooksSameDirectory: another spelling of scripts/githooks is already set and left as
+// it is; a different directory is not.
+func TestInstallGithooksSameDirectory(t *testing.T) {
+	runInstallCases(t, []installCase{
+		{name: "dot slash", hooksPath: "./scripts/githooks", wantPath: "./scripts/githooks",
+			want: []string{"already set, local config"}, notWant: []string{"--force"}},
+		{name: "trailing slash", hooksPath: "scripts/githooks/", wantPath: "scripts/githooks/",
+			want: []string{"already set, local config"}},
+		{name: "absolute path", hooksPath: "$WORK/scripts/githooks", wantPath: "$WORK/scripts/githooks",
+			want: []string{"already set, local config"}},
+		{name: "a sibling directory is another directory", hooksPath: "scripts/githooks-old", wantCode: 1,
+			wantPath: "scripts/githooks-old", want: []string{"already 'scripts/githooks-old' (local config)"}},
 	})
 }
 

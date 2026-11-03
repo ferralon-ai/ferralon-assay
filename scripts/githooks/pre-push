@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# pre-push — refuse a push that creates a second remote branch for an order id.
+#
+# A new remote branch whose name carries an order id (`ASY-<n>` or `eric-req-<slug>`, whole token,
+# case-insensitive) is refused when a different branch on the remote already carries that id.
+# Pushes to an existing branch (revisions), deletions and tags always pass.
+#
+# Exit: 0 allowed; 1 refused; 2 the remote's branches could not be listed (fails closed).
+# Bypass for a deliberate second branch: PR_ORDER_ALLOW=1 git push ...
+# Enable in a clone with scripts/install-githooks.sh.
+set -uo pipefail
+
+remote=${1:-origin}
+
+# ids STRING: print each whole-token order id in STRING, one per line, lower-case.
+ids() {
+  printf '%s\n' "$1" | awk '{
+    s = tolower($0); pos = 1
+    while (pos <= length(s)) {
+      rest = substr(s, pos)
+      if (!match(rest, /(asy-[0-9]+|eric-req-[a-z0-9]+(-[a-z0-9]+)*)/)) break
+      tok = substr(rest, RSTART, RLENGTH)
+      pre = (pos + RSTART - 1 > 1) ? substr(s, pos + RSTART - 2, 1) : ""
+      post = substr(s, pos + RSTART - 1 + RLENGTH, 1)
+      if (pre !~ /[a-z0-9]/ && post !~ /[a-z0-9]/) { print tok; pos += RSTART - 1 + RLENGTH }
+      else pos += RSTART
+    }
+  }'
+}
+
+zeros='^0+$'
+new_branches=()
+while read -r _lref lsha rref rsha; do
+  case "$rref" in refs/heads/*) ;; *) continue ;; esac
+  [[ "$lsha" =~ $zeros ]] && continue      # deleting a branch
+  [[ "$rsha" =~ $zeros ]] || continue      # existing branch: a revision
+  new_branches+=("${rref#refs/heads/}")
+done
+
+[ "${#new_branches[@]}" -gt 0 ] || exit 0
+
+candidates=()
+for b in "${new_branches[@]}"; do
+  [ -n "$(ids "$b")" ] && candidates+=("$b")
+done
+[ "${#candidates[@]}" -gt 0 ] || exit 0
+
+if [ "${PR_ORDER_ALLOW:-}" = 1 ]; then
+  echo "pre-push: PR_ORDER_ALLOW=1, skipping the one-branch-per-order check" >&2
+  exit 0
+fi
+
+heads=$(git ls-remote --heads "$remote") || {
+  echo "pre-push: cannot list branches on '$remote'; refusing (set PR_ORDER_ALLOW=1 to bypass)" >&2
+  exit 2
+}
+existing=$(printf '%s\n' "$heads" | awk '{ sub(/^refs\/heads\//, "", $2); print $2 }')
+
+status=0
+for b in "${candidates[@]}"; do
+  while IFS= read -r id; do
+    while IFS= read -r other; do
+      [ -n "$other" ] && [ "$other" != "$b" ] || continue
+      if ids "$other" | grep -qxF "$id"; then
+        echo "pre-push: refusing '$b': '$other' on $remote already carries order id $id." >&2
+        echo "  Push to '$other' instead, or set PR_ORDER_ALLOW=1 for a deliberate second branch." >&2
+        status=1
+      fi
+    done <<<"$existing"
+  done < <(ids "$b")
+done
+exit $status

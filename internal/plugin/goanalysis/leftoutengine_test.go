@@ -348,6 +348,12 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			if got.withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v (facts %s)", got.withheld, tc.withheld, lofDescribe(got))
 			}
+			// Only a failure of the engine's own steps is a tool failure: a reach, or a construct the
+			// walk does not follow, is not.
+			engineFailure := tc.item == lofParseError || tc.item == lofMissingSource || tc.item == lofBudget
+			if declared := slices.Contains(got.reasons, plugin.PartialReasonToolFailure); declared != (tc.withheld && engineFailure) {
+				t.Errorf("tool_failure declared = %v, want %v (partiality %v)", declared, tc.withheld && engineFailure, got.reasons)
+			}
 			if tc.item != "" {
 				if f := lofFileWith(got, tc.item); f == "" {
 					t.Errorf("no left-out file fails closed on %s (facts %s)", tc.item, lofDescribe(got))
@@ -720,6 +726,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
+		if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+			t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
+		}
 	})
 	t.Run("past the time budget", func(t *testing.T) {
 		saved := lofBudgetTime
@@ -728,6 +737,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		got := lofRun(t, writeTree(t, tree), "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
+		}
+		if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+			t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
 		}
 	})
 	t.Run("an unreadable file of an unloaded package", func(t *testing.T) {
@@ -747,6 +759,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		if !got.withheld || lofFileWith(got, lofMissingSource) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofMissingSource, lofDescribe(got))
 		}
+		if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+			t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
+		}
 	})
 	t.Run("the scan is cancelled", func(t *testing.T) {
 		dir := writeTree(t, tree)
@@ -764,6 +779,15 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		}
 		if f := lofFileWith(got, lofBudget); !strings.HasSuffix(f, "/x.go") {
 			t.Fatalf("x.go does not fail closed on %s (facts %s)", lofBudget, lofDescribe(got))
+		}
+		// sLoaded: the vulnerable package is loaded, so the file is judged on its closure.
+		row := &lofRow{e: e, sLoaded: true}
+		for path := range e.Facts {
+			if strings.HasSuffix(path, "/x.go") {
+				if c, _, failed := row.counts(path); !c || !failed {
+					t.Errorf("x.go counts = %v, engine failed = %v; want both", c, failed)
+				}
+			}
 		}
 	})
 
@@ -791,6 +815,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			})
 			if !got.withheld || lofFileWith(got, tc.item) == "" {
 				t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, tc.item, lofDescribe(got))
+			}
+			if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
 			}
 		})
 	}
@@ -831,6 +858,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			})
 			if !got.withheld || lofFileWith(got, lofMissingSource) == "" {
 				t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofMissingSource, lofDescribe(got))
+			}
+			if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
 			}
 		})
 	}
@@ -878,6 +908,43 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 			if !got.withheld || lofFileWith(got, tc.item) == "" {
 				t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, tc.item, lofDescribe(got))
 			}
+			if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
+			}
+		})
+	}
+	// x.go imports a package no module provides, which the gate counts without reading anything, and
+	// d, which the gate does not follow; the engine's walk of what x.go links reads d too. Only when
+	// d cannot be read does the engine itself fail.
+	for _, tc := range []struct {
+		name    string
+		blocked bool
+	}{
+		{"the vulnerable package is not loaded and a file links an import nothing provides", false},
+		{"the vulnerable package is not loaded and a package the file links cannot be read", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, merge(unlinked, map[string]string{
+				"go.mod":      "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/v v0.0.0\n\texample.com/dep v0.0.0\n)\n\nreplace (\n\texample.com/v => ./_v\n\texample.com/dep => ./_dep\n)\n",
+				"_dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
+				"_dep/d/d.go": "package d\n",
+				"x.go":        "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"example.com/nowhere/p\"\n\t_ \"example.com/dep/d\"\n)\n",
+			}))
+			blocked := filepath.Join(dir, "_dep", "d", "d.go")
+			t.Cleanup(func() { _ = os.Chmod(blocked, 0o644) })
+			got := lofRun(t, dir, "example.com/v", bad, false, func(*LoadResult) {
+				if tc.blocked {
+					if err := os.Chmod(blocked, 0); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			if !got.withheld || lofFileWith(got, lofUnresolvedImport) == "" {
+				t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofUnresolvedImport, lofDescribe(got))
+			}
+			if declared := slices.Contains(got.reasons, plugin.PartialReasonToolFailure); declared != tc.blocked {
+				t.Errorf("tool_failure declared = %v, want %v (partiality %v, facts %s)", declared, tc.blocked, got.reasons, lofDescribe(got))
+			}
 		})
 	}
 	t.Run("the vulnerable package is not loaded and a file that cannot link it fails closed", func(t *testing.T) {
@@ -916,6 +983,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		if !got.withheld || lofFileWith(got, lofMissingSource) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofMissingSource, lofDescribe(got))
 		}
+		if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+			t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
+		}
 	})
 
 	// The walk stops at the budget with a standard-library name nothing declares still open: the
@@ -936,6 +1006,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
 		}
+		if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+			t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
+		}
 	})
 	t.Run("the budget stops the walk of the package's roots with a name still open", func(t *testing.T) {
 		// tool is a directory of the main module the build does not load: a.go's package roots are
@@ -948,6 +1021,9 @@ func TestLeftOutEngine_FailClosed(t *testing.T) {
 		got := lofRun(t, dir, "example.com/v", bad, false, nil)
 		if !got.withheld || lofFileWith(got, lofBudget) == "" {
 			t.Fatalf("withheld = %v, want withheld on %s (facts %s)", got.withheld, lofBudget, lofDescribe(got))
+		}
+		if !slices.Contains(got.reasons, plugin.PartialReasonToolFailure) {
+			t.Errorf("reasons %v, want tool_failure beside excluded_files", got.reasons)
 		}
 	})
 

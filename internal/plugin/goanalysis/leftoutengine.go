@@ -756,7 +756,9 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 // counts reports whether the left-out file at path may reach S. A file the engine does not hold, or
 // any file when the engine could not be built, counts. When the file counts because its closure
 // links assembly, binds a //go:linkname or includes C (lofAnnotated), reasons holds the
-// excluded_files localisations naming them.
+// excluded_files localisations naming them. failed is set when it counts because the engine itself
+// failed: it could not be built, or the walk could not read or parse a file or ran out of budget
+// (lofFailed).
 //
 // Stage 0: when none of S's packages is loaded, the file counts only when it can link one of them
 // (lofWorld.links), or that walk fails closed: S executes only once linked.
@@ -784,22 +786,22 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 // loaded code only as an argument to a loaded function, and loaded code calls into it only through
 // a func- or interface-typed parameter (routed), a method name (method-name-in-R) or a dynamic
 // call (dynamic-call-and-R-address-taken). Each of those is tested against R directly.
-func (row *lofRow) counts(path string) (counts bool, reasons []string) {
+func (row *lofRow) counts(path string) (counts bool, reasons []string, failed bool) {
 	e := row.e
 	if e.Fail != "" {
-		return true, nil
+		return true, nil, true
 	}
 	f, ok := e.file(path)
 	if !ok {
-		return true, nil
+		return true, nil, false
 	}
 	if f.Dropped || f.Excluded {
-		return false, nil
+		return false, nil, false
 	}
 	if !row.sLoaded {
 		linked := slices.ContainsFunc(f.Links, func(id int32) bool { return row.inPkg(e.Strs[id]) })
 		if !linked {
-			return len(f.LinkFC) > 0, nil
+			return len(f.LinkFC) > 0, nil, lofFailed(f.LinkFC)
 		}
 	}
 	fc := f.FC
@@ -807,7 +809,7 @@ func (row *lofRow) counts(path string) (counts bool, reasons []string) {
 		fc = append(slices.Clone(fc), f.FCStd...)
 	}
 	if len(fc) > 0 || (row.stdlib && e.FailStd != "") {
-		return true, lofAnnotated(fc)
+		return true, lofAnnotated(fc), lofFailed(fc)
 	}
 	var r *lofReach
 	if f.Novel {
@@ -824,15 +826,15 @@ func (row *lofRow) counts(path string) (counts bool, reasons []string) {
 	hit := func(ids []int32) bool { return slices.ContainsFunc(ids, func(id int32) bool { return r.syms[id] }) }
 	switch {
 	case hit(f.Funcs), hit(f.TypeMeth), hit(f.NewMeth):
-		return true, nil
+		return true, nil, false
 	case slices.ContainsFunc(f.Methods, func(id int32) bool { return r.names[id] }):
-		return true, nil
+		return true, nil, false
 	case (f.Dyn || f.Vars) && r.addr:
-		return true, nil
+		return true, nil, false
 	case (f.Reflect || f.Sink) && (r.addr || len(r.names) > 0):
-		return true, nil
+		return true, nil, false
 	}
-	return slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) }), nil
+	return slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) }), nil, false
 }
 
 // lofAnnotations maps the fail-closed items the gate names to the reason a withheld refutation
@@ -841,6 +843,21 @@ var lofAnnotations = map[string]string{
 	lofAssembly:   plugin.PartialReasonExcludedFilesAssembly,
 	lofLinkname:   plugin.PartialReasonExcludedFilesLinkname,
 	lofCgoInclude: plugin.PartialReasonExcludedFilesCgoInclude,
+}
+
+// lofEngineFailures holds the fail-closed items that mark a failure of the engine's own steps rather
+// than something in the code: a file or directory it could not read, a file it could not parse, and
+// a walk stopped by the budget or a cancelled scan. A file that counts on one withholds with
+// tool_failure.
+var lofEngineFailures = map[string]bool{
+	lofMissingSource: true,
+	lofParseError:    true,
+	lofBudget:        true,
+}
+
+// lofFailed reports whether fc holds an item of lofEngineFailures.
+func lofFailed(fc []string) bool {
+	return slices.ContainsFunc(fc, func(item string) bool { return lofEngineFailures[item] })
 }
 
 // lofAnnotated returns the reasons lofAnnotations gives the items of fc, sorted, nil when it gives

@@ -503,7 +503,8 @@ func goflagsTags(env []string) []string {
 // compiles under, is a file whose goN.M build tags alone exclude it from every build under that
 // bound (releaseBound.excludes); the files of an unloaded import are read the same way. failed reports
 // that a step of the check itself failed on the way to a file that counts: the module graph, a file
-// or a directory could not be read, `go list` failed, or the left-out engine could not be built.
+// or a directory could not be read, `go list` failed, or the left-out engine failed on the file
+// (lofRow.counts).
 //
 // When module is the standard library, the packages that count are its vulnerable ones, or every
 // standard-library package when vulnerable is empty. Every unloaded import is followed, the standard
@@ -668,10 +669,10 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 			return false
 		}
 		r := row()
-		c, why := r.counts(path)
+		c, why, engineFailed := r.counts(path)
 		if c {
 			reasons = why
-			failed = failed || r.e.Fail != ""
+			failed = failed || engineFailed
 		}
 		return c
 	}

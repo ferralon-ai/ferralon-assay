@@ -606,10 +606,11 @@ func isMain(p *packages.Package) bool {
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
 // packages in the refuted module (countingPackages) was never traced, so the refutation holds only
-// for builds that leave it out. The result then declares excluded_files instead, and tool_failure
-// beside it when the check withholds because one of its own steps failed. An advisory that lists no
-// vulnerable package in the module, or lists the module once with none, makes every package of it
-// count.
+// for builds that leave it out. The result then declares excluded_files instead, or the
+// localisations of it naming the assembly, //go:linkname or cgo #include the file reaches, and
+// tool_failure beside it when the check withholds because one of its own steps failed. An advisory
+// that lists no vulnerable package in the module, or lists the module once with none, makes every
+// package of it count.
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -621,12 +622,19 @@ func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult,
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 		return res
 	}
-	if counts, failed := leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), release, buildDir, env); counts {
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
-		if failed {
-			res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
-		}
+	counts, reasons, failed := leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), scanned.vulnerableSymbols(module), release, buildDir, env)
+	if !counts {
+		return res
+	}
+	res.Refutation = nil
+	if len(reasons) == 0 {
+		reasons = []string{plugin.PartialReasonExcludedFiles}
+	}
+	for _, reason := range reasons {
+		res.Partiality = withReason(res.Partiality, reason)
+	}
+	if failed {
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
 	}
 	return res
 }

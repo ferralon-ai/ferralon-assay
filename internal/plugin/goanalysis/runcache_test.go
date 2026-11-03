@@ -155,7 +155,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 		withheld bool
 	}{
 		{"nothing contradicts the refutation", nil, false},
-		{"a tagged file the build left out imports the module", map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport _ \"example.com/vulnmod\"\n"}, true},
+		{"a tagged file the build left out calls the module", map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -184,7 +184,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 				if withheld := res.Refutation == nil; withheld != tc.withheld {
 					t.Fatalf("advisory %d: withheld = %v, want %v (partiality %+v)", i, withheld, tc.withheld, res.Partiality)
 				}
-				if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+				if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 					t.Errorf("advisory %d: excluded_files declared = %v, want %v", i, declared, tc.withheld)
 				}
 			}
@@ -193,14 +193,14 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 }
 
 // TestReachabilityCarriesFloorToLoad pins that the request's GoToolchainFloor reaches the load that
-// judges left-out files: a !go1.22 file that imports the refuted module is ruled out under a go1.22.0
+// judges left-out files: a !go1.22 file that calls the refuted module is ruled out under a go1.22.0
 // floor and withholds the refutation without one.
 func TestReachabilityCarriesFloorToLoad(t *testing.T) {
 	t.Setenv("GOTOOLCHAIN", "local")
 	dir := writeTree(t, map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
 		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
-		"old.go":              "//go:build !go1.22\n\npackage main\n\nimport _ \"example.com/vulnmod\"\n",
+		"old.go":              "//go:build !go1.22\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
 		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
 		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
 	})

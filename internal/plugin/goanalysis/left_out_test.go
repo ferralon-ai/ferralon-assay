@@ -51,9 +51,17 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 		"_lib/go.mod":      "module example.com/lib\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n",
 		"_lib/lib.go":      "package lib\n\nimport \"example.com/vulnmod\"\n\nfunc Call() {}\n\nfunc use() { vulnmod.Bad() }\n",
 	}
-	// leftOut is a file of plain, a loaded package that does not reach the module.
+	// leftOut is a file of plain, a loaded package that does not reach the module, calling a
+	// function of the package it imports.
+	calls := map[string]string{
+		"example.com/vulnmod": "vulnmod.Bad()",
+		"example.com/m/mid":   "mid.Call()",
+		"example.com/dep":     "dep.Call()",
+		"example.com/other":   "other.Call()",
+		"net/http":            "_ = http.ListenAndServe(\":0\", nil)",
+	}
 	leftOut := func(constraint, imp string) string {
-		return "//go:build " + constraint + "\n\npackage plain\n\nimport _ \"" + imp + "\"\n"
+		return "//go:build " + constraint + "\n\npackage plain\n\nimport \"" + imp + "\"\n\nfunc init() { " + calls[imp] + " }\n"
 	}
 	cases := []struct {
 		name  string
@@ -64,7 +72,12 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 	}{
 		{"no file left out", nil, false, false},
 		{"a tagged file imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/vulnmod")}, false, true},
-		{"another platform's file imports the module", map[string]string{"plain/run_plan9.go": "package plain\n\nimport _ \"example.com/vulnmod\"\n"}, false, true},
+		{"a tagged file imports the module for its side effects, and it has none", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n\nimport _ \"example.com/vulnmod\"\n"}, false, false},
+		{"a tagged file imports the module for its side effects, and its init calls it", map[string]string{
+			"plain/prod.go":    "//go:build prod\n\npackage plain\n\nimport _ \"example.com/vulnmod\"\n",
+			"_vulnmod/init.go": "package vulnmod\n\nfunc init() { Bad() }\n",
+		}, false, true},
+		{"another platform's file imports the module", map[string]string{"plain/run_plan9.go": "package plain\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n"}, false, true},
 		{"a tagged file imports a loaded package that imports the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/m/mid")}, false, true},
 		{"a tagged file imports an unloaded module that requires the module", map[string]string{"plain/prod.go": leftOut("prod", "example.com/dep")}, false, true},
 		{"a tagged file imports an unloaded module that does not require it", map[string]string{"plain/prod.go": leftOut("prod", "example.com/other")}, false, false},
@@ -75,7 +88,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 		{"another platform's file of a dependency calls its own package's helper", map[string]string{"_lib/lib_windows.go": "package lib\n\nfunc init() { use() }\n"}, false, true},
 		{"another platform's file of the module itself", map[string]string{"_vulnmod/vulnmod_windows.go": "package vulnmod\n\nfunc init() { Bad() }\n"}, false, true},
 		{"a tagged file imports nothing and its package does not reach the module", map[string]string{"plain/plain_prod.go": "//go:build prod\n\npackage plain\n\nfunc init() { Call() }\n"}, false, false},
-		{"a tagged package wholly left out imports the module", map[string]string{"prodonly/p.go": "//go:build prod\n\npackage prodonly\n\nimport _ \"example.com/vulnmod\"\n"}, false, true},
+		{"a tagged package wholly left out imports the module", map[string]string{"prodonly/p.go": "//go:build prod\n\npackage prodonly\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n"}, false, true},
 		{"a file only a newer Go release builds", map[string]string{"plain/new.go": leftOut("go1.999", "example.com/vulnmod")}, false, false},
 		{"a file only an older Go release builds", map[string]string{"plain/old.go": leftOut("!go1.1", "example.com/vulnmod")}, false, false},
 		{"a file only an older Go release builds, toolchain not established", map[string]string{"plain/old.go": leftOut("!go1.1", "example.com/vulnmod")}, true, true},
@@ -85,7 +98,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 		{"a tag spelled like a release tag the go command never sets", map[string]string{"plain/p.go": leftOut("plan9 && !go1.01", "example.com/vulnmod")}, false, true},
 		{"a constraint no release satisfies", map[string]string{"plain/p.go": leftOut("go1.1 && !go1.1", "example.com/vulnmod")}, false, true},
 		{"go1.0 is not a release tag the go command sets", map[string]string{"plain/p.go": leftOut("plan9 && !go1.0", "example.com/vulnmod")}, false, true},
-		{"a misplaced plus-build line does not constrain the file", map[string]string{"plain/p_windows.go": "// +build go1.999\npackage plain\n\nimport _ \"example.com/vulnmod\"\n"}, false, true},
+		{"a misplaced plus-build line does not constrain the file", map[string]string{"plain/p_windows.go": "// +build go1.999\npackage plain\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n"}, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,7 +130,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 			if slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) {
@@ -172,7 +185,7 @@ func TestWithholdForLeftOutFiles_StepFails(t *testing.T) {
 		lock   string // made unreadable after the load
 		failed bool
 	}{
-		{"a left-out file that imports the module", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n\nimport _ \"example.com/vulnmod\"\n"}, "", false},
+		{"a left-out file that calls the module", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n"}, "", false},
 		{"an unreadable left-out file", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n"}, "plain/prod.go", true},
 		{"an unreadable directory the load never listed", map[string]string{"tool/t.go": "//go:build tools\n\npackage tool\n"}, "tool", true},
 		{"an unloaded dependency with an unreadable file", map[string]string{"plain/prod.go": "//go:build prod\n\npackage plain\n\nimport _ \"example.com/dep\"\n"}, "_dep/dep.go", true},
@@ -211,6 +224,7 @@ func TestWithholdForLeftOutFiles_StepFails(t *testing.T) {
 // through other packages, loaded or not. A file reaching only other standard-library packages
 // does not count, so another platform's file importing syscall leaves the refutation standing.
 func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/webdep v0.0.0\n\texample.com/other v0.0.0\n\texample.com/tagdep v0.0.0\n\tlocalx v0.0.0\n\tgolang.org/x/net v0.0.0\n)\n\n" +
 			"replace (\n\texample.com/webdep => ./_webdep\n\texample.com/other => ./_other\n\texample.com/tagdep => ./_tagdep\n\tlocalx => ./_localx\n\tgolang.org/x/net => ./_xnet\n)\n",
@@ -276,6 +290,7 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := writeTree(t, merge(base, tc.files))
 			load, err := LoadProgram(context.Background(), dir)
 			if err != nil {
@@ -290,7 +305,7 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
@@ -321,8 +336,21 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 		"_localdep/go.mod":      "module localdep\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n",
 		"_localdep/localdep.go": "package localdep\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc Call() { ssh.Dial() }\n",
 	}
+	// leftOut is a tagged file calling a function of the package it imports.
+	calls := map[string]string{
+		"example.com/vulnmod/ssh":    "ssh.Dial()",
+		"example.com/vulnmod/blake":  "blake.Sum()",
+		"example.com/vulnmod/wrap":   "wrap.Call()",
+		"example.com/vulnmod/nosuch": "nosuch.Call()",
+		"example.com/usesafe":        "usesafe.Call()",
+		"example.com/tagdep":         "tagdep.Call()",
+		"example.com/broken":         "broken.Call()",
+		"localdep":                   "localdep.Call()",
+		"strings":                    "_ = strings.ToUpper(\"x\")",
+		"example.org/nowhere":        "nowhere.Call()",
+	}
 	leftOut := func(imp string) map[string]string {
-		return map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport _ \"" + imp + "\"\n"}
+		return map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport \"" + imp + "\"\n\nfunc init() { " + calls[imp] + " }\n"}
 	}
 	ssh := []string{"example.com/vulnmod/ssh"}
 	cases := []struct {
@@ -334,6 +362,11 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 	}{
 		{"no file left out", nil, ssh, false, false},
 		{"a tagged file imports the vulnerable package", leftOut("example.com/vulnmod/ssh"), ssh, false, true},
+		{"a tagged file imports the unloaded vulnerable package for side effects it does not have", map[string]string{"prod.go": "//go:build prod\n\npackage main\n\nimport _ \"example.com/vulnmod/ssh\"\n"}, ssh, false, false},
+		{"a tagged file imports the unloaded vulnerable package, whose variable initializer calls it", map[string]string{
+			"prod.go":              "//go:build prod\n\npackage main\n\nimport _ \"example.com/vulnmod/ssh\"\n",
+			"_vulnmod/ssh/init.go": "package ssh\n\nvar _ = func() int { Dial(); return 0 }()\n",
+		}, ssh, false, true},
 		{"a tagged file imports another package of the module", leftOut("example.com/vulnmod/blake"), ssh, false, false},
 		{"a tagged file imports an unloaded package of the module that imports the vulnerable package", leftOut("example.com/vulnmod/wrap"), ssh, false, true},
 		{"another platform's file of a loaded package of the module", map[string]string{"_vulnmod/blake/b_amd64.go": "package blake\n\nfunc init() { Sum() }\n"}, ssh, false, false},
@@ -366,7 +399,7 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
@@ -420,7 +453,7 @@ func TestWithholdForLeftOutFiles_NoAdvisoryEntry(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
 		"main.go":             "package main\n\nfunc main() {}\n",
-		"prod.go":             "//go:build prod\n\npackage main\n\nimport _ \"example.com/vulnmod/ssh\"\n",
+		"prod.go":             "//go:build prod\n\npackage main\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc init() { ssh.Dial() }\n",
 		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
 		"_vulnmod/ssh/ssh.go": "package ssh\n\nfunc Dial() {}\n",
 		"_vulnmod/blake/b.go": "package blake\n\nfunc Sum() {}\n",
@@ -588,7 +621,7 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})
@@ -633,7 +666,7 @@ func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})

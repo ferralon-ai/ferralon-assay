@@ -100,7 +100,7 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods); declared != tc.withheld {
 				t.Errorf("unsearched_methods declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
-			if slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles) {
+			if declaresExcluded(res.Partiality.Reasons) {
 				t.Errorf("excluded_files declared with nothing left out (partiality %+v)", res.Partiality)
 			}
 		})

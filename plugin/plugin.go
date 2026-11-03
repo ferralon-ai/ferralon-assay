@@ -271,6 +271,16 @@ const (
 	// tag) may call into the module an analyzer found no path to, and the analyzer never traced
 	// them, so its refutation does not cover the builds that compile them.
 	PartialReasonExcludedFiles = "excluded_files"
+	// PartialReasonExcludedFilesAssembly localises excluded_files: a file the build left out may
+	// run Go assembly, which the analyzer does not read, so what that assembly calls is unknown.
+	// The Go lane declares it in place of the base when a left-out file links assembly.
+	PartialReasonExcludedFilesAssembly = PartialReasonExcludedFiles + ":assembly"
+	// PartialReasonExcludedFilesLinkname localises excluded_files: a file the build left out binds a
+	// symbol by //go:linkname, which the analyzer does not resolve against the link.
+	PartialReasonExcludedFilesLinkname = PartialReasonExcludedFiles + ":linkname"
+	// PartialReasonExcludedFilesCgoInclude localises excluded_files: a file the build left out
+	// includes C headers through cgo, whose code the analyzer does not read.
+	PartialReasonExcludedFilesCgoInclude = PartialReasonExcludedFiles + ":cgo_include"
 	// PartialReasonUnsearchedMethods (loud): exported methods a caller can invoke that the analyzer's
 	// search never started from (Go: a method of a generic type, or one promoted by embedding from a
 	// type outside the search) may call into the module it found no path to, so its refutation does

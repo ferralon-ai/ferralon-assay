@@ -1212,10 +1212,13 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 // not listed: it means `go env` failed, which puts the search's own build configuration in doubt, so
 // it keeps analysis_did_not_run.
 var refutationWithheldReasons = map[string]bool{
-	plugin.PartialReasonExcludedFiles:     true,
-	plugin.PartialReasonUnsearchedMethods: true,
-	plugin.PartialReasonLibraryEscape:     true,
-	plugin.PartialReasonReflectiveCall:    true,
+	plugin.PartialReasonExcludedFiles:           true,
+	plugin.PartialReasonExcludedFilesAssembly:   true,
+	plugin.PartialReasonExcludedFilesLinkname:   true,
+	plugin.PartialReasonExcludedFilesCgoInclude: true,
+	plugin.PartialReasonUnsearchedMethods:       true,
+	plugin.PartialReasonLibraryEscape:           true,
+	plugin.PartialReasonReflectiveCall:          true,
 }
 
 // withoutVersionLimits drops, one occurrence each, the limits the inventory recorded against
@@ -1292,8 +1295,12 @@ var outsideBuildExempt = map[string]bool{
 	// A reflective call runs only code compiled into the build, which comes from a listed module.
 	plugin.PartialReasonReflectiveCall: true,
 	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
-	// every .go file whatever its build constraints.
-	plugin.PartialReasonExcludedFiles: true,
+	// every .go file whatever its build constraints. The assembly, linkname targets and C a left-out
+	// file reaches call only Go code compiled into the build, which comes from a listed module.
+	plugin.PartialReasonExcludedFiles:           true,
+	plugin.PartialReasonExcludedFilesAssembly:   true,
+	plugin.PartialReasonExcludedFilesLinkname:   true,
+	plugin.PartialReasonExcludedFilesCgoInclude: true,
 }
 
 // outsideBuildBlocked reports whether a step outsideBuildGrounds rests on may not have run: the

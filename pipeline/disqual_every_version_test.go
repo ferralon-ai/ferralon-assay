@@ -292,3 +292,47 @@ func TestMaliciousPresence_NestedCopyBesideAClean(t *testing.T) {
 		t.Fatalf("presence = %+v (emitted=%v), want present at 1.3.0", res, ok)
 	}
 }
+
+// TestDisqualify_AlsoPresentToolchainFloor: a toolchain version known only as a floor (the go
+// directive with no toolchain line) cannot be below an introduced bound, so a present stdlib
+// package refutes only on its upper bounds. Without that the advisory is disqualified while the
+// toolchain that actually builds is affected.
+func TestDisqualify_AlsoPresentToolchainFloor(t *testing.T) {
+	xnet := map[string]any{"module": "golang.org/x/net", "affected_ranges": []map[string]any{{"upper_exclusive": "v0.38.0", "scheme": "gomod"}}}
+	stdlib := map[string]any{"coordinate": "stdlib", "affected_ranges": []map[string]any{
+		{"lower_inclusive": "1.24.0", "upper_exclusive": "1.24.4", "scheme": "go-toolchain"},
+	}}
+	for _, tc := range []struct {
+		name      string
+		stdlibVer string
+		toolchain ToolchainFact
+		want      bool
+	}{
+		{"floor below the introduced bound", "1.23.0",
+			ToolchainFact{Version: "go1.23.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, false},
+		{"exact version below the introduced bound", "1.23.0",
+			ToolchainFact{Version: "go1.23.0", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared}, true},
+		{"floor past the fix", "1.24.4",
+			ToolchainFact{Version: "go1.24.4", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, true},
+		{"floor inside the range", "1.24.2",
+			ToolchainFact{Version: "go1.24.2", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			const caseID = "case-floor"
+			putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
+				"language": "go", "selected_module": "golang.org/x/net", "toolchain": tc.toolchain,
+				"also_present": []map[string]any{{"coordinate": "stdlib", "versions": []string{tc.stdlibVer}, "complete": true}},
+			})
+			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
+				"module": "golang.org/x/net", "affected_packages": []map[string]any{xnet, stdlib},
+			})
+			rngs := []affectedRange{{UpperExclusive: "v0.38.0", Scheme: "gomod"}}
+			axis := versionAxis{Versions: []string{"v0.40.0"}, Complete: true}
+			got, reason := disqualifyEvery(rngs, true, axis, true, extractAlsoPresent(store, caseID), "", false, TrustFirstParty)
+			if got != tc.want {
+				t.Fatalf("disqualified = %v (%s), want %v", got, reason, tc.want)
+			}
+		})
+	}
+}

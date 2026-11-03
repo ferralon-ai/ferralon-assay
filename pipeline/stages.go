@@ -3078,6 +3078,8 @@ func extractVersionAxis(store artifact.Store, caseID string) (versionAxis, bool)
 
 // extractAlsoPresent joins each other affected package the inventory recorded to its ranges on the
 // normalized advisory. A package the advisory no longer names keeps no ranges, which keeps the axis open.
+// The toolchain package's ranges lose their lower bounds when the toolchain version is only a floor,
+// as rangesForToolchainFloor says.
 func extractAlsoPresent(store artifact.Store, caseID string) []presentRanges {
 	invArts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(invArts) == 0 {
@@ -3100,6 +3102,9 @@ func extractAlsoPresent(store artifact.Store, caseID string) []presentRanges {
 		pr := presentRanges{presentPackage: p}
 		if a, ok := affectedPackageNamed(adv.AffectedPackages, p.Module, p.Coordinate); ok {
 			pr.Ranges, pr.RangeKnown = validAffectedRanges(a.AffectedRanges)
+			if p.Coordinate == goStdlibPURLName {
+				pr.Ranges = rangesForToolchainFloor(store, caseID, pr.Ranges)
+			}
 		}
 		out = append(out, pr)
 	}
@@ -3483,9 +3488,7 @@ type reachAttribution struct {
 
 // readReachAttribution reads the reachAttribution for a Go assessment. The selected package is the
 // selected affected_packages[] element, else the advisory's module. ok is false for another
-// language or when neither names a package, and every path then counts. A toolchain package's
-// ranges lose their lower bounds when the toolchain version is only a floor, as
-// rangesForToolchainFloor says.
+// language or when neither names a package, and every path then counts.
 func readReachAttribution(store artifact.Store, caseID string) (reachAttribution, bool) {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {
@@ -3510,11 +3513,6 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 	for _, n := range []string{sel.Module, sel.Coordinate} {
 		if n != "" {
 			a.selected = append(a.selected, n)
-		}
-	}
-	for i, o := range a.others {
-		if o.Coordinate == goStdlibPURLName {
-			a.others[i].Ranges = rangesForToolchainFloor(store, caseID, o.Ranges)
 		}
 	}
 	a.trust, _ = extractAdvisoryTrust(store, caseID)

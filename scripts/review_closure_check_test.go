@@ -37,7 +37,7 @@ func TestReviewClosureCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := t.TempDir()
-	closureGit(t, repo, "", "init", "-q", "-b", "main")
+	closureGit(t, repo, "", "init", "-q", "--template=", "-b", "main")
 	// Three commits through one fast-import. The PR commit is the reviewed head: it changes line 9
 	// of a.go and line 2 of p.go. The revision after it changes line 3 of a.go, inserts a line after
 	// line 2 of c.go and adds docs/b.md. origin/main is the main commit.

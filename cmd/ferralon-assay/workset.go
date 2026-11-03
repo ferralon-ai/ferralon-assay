@@ -853,7 +853,8 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 // unfiltered firehose that reads exactly like a real answer.
 //
 // The analyzer's resolved build toolchain is read only under trust, the only state in which the
-// resolution consults it. Its build manifest is read at dir, the module root.
+// resolution consults it. Its build manifest is read at dir, the module root, under ws, as the
+// pipeline reads it: a workspace's go line can select a different toolchain than the module's.
 func stdlibVersion(ctx context.Context, acq *acquired, dir string, ws pipeline.GoWorkspace) string {
 	goLine, toolchain := goDirectives(dir, ws)
 	in := pipeline.ToolchainCandidates{
@@ -865,7 +866,7 @@ func stdlibVersion(ctx context.Context, acq *acquired, dir string, ws pipeline.G
 		ToolchainDirective: toolchain,
 	}
 	if in.TrustCIObserved && acq.plugin != nil {
-		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: dir}); err == nil {
+		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: dir, GoWork: ws.File}); err == nil {
 			if rt, ok := mani.PrimaryRuntime(); ok {
 				in.BuildResolved = rt.Resolved
 			}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
@@ -161,4 +162,43 @@ func TestSubjectGoWorkOff_HandedInBesideACommittedGoWork(t *testing.T) {
 	if want := []report.Package{{Ecosystem: ecosystemGo, Name: goStdlibPackage}}; !reflect.DeepEqual(unresolved, want) {
 		t.Errorf("work set unresolved = %+v, want %+v (the go.mod path, no member)", unresolved, want)
 	}
+}
+
+// TestGoInventory_WorkspaceBuildToolchain: the analyzer's resolved build toolchain is read under the
+// go.work the build runs under, as the pipeline reads it, so the stdlib query point follows the
+// workspace build's toolchain rather than the module's alone. go.work's two-part go line does not
+// bind, so under trust the build's resolution decides.
+func TestGoInventory_WorkspaceBuildToolchain(t *testing.T) {
+	acq := goWorkFixture(t, "")
+	work := filepath.Join(filepath.Dir(acq.buildDir), "go.work")
+	if err := os.WriteFile(work, []byte("go 1.22\n\nuse (\n\t./a\n\t./b\n)\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := &goWorkToolchainAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: "go"},
+		byGoWork: map[string]string{file: "go1.22.9", "": "go1.22.4"}}
+	acq.plugin = build
+	acq.goToolchain = subjectGoToolchain{trustObserved: true}
+
+	resolved, _, _ := dependencyInventory(context.Background(), acq)
+	want := []report.Package{{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: "1.22.9"}}
+	if !reflect.DeepEqual(resolved, want) {
+		t.Errorf("resolved = %+v, want %+v (BuildManifest saw GOWORK %q)", resolved, want, build.seen)
+	}
+}
+
+// goWorkToolchainAnalyzer is an unsearchingAnalyzer whose build manifest resolves the Go toolchain
+// byGoWork[the request's GoWork], recording the GoWork it was asked under.
+type goWorkToolchainAnalyzer struct {
+	unsearchingAnalyzer
+	byGoWork map[string]string
+	seen     []string
+}
+
+func (a *goWorkToolchainAnalyzer) BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	a.seen = append(a.seen, req.GoWork)
+	return plugin.BuildManifestResult{Runtimes: []plugin.RuntimeSpec{{Name: "go", Resolved: a.byGoWork[req.GoWork]}}}, nil
 }

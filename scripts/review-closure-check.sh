@@ -3,16 +3,20 @@
 #
 # Checks that every review finding saved in <findings-file> is closed before a revision is pushed.
 # <reviewed-sha> is the head the review covered, and the revision is the diff `<reviewed-sha>...HEAD`.
+# That diff is the revision only while <reviewed-sha> is an ancestor of HEAD and no merge commit
+# follows it, so a rebase since the review, or a merge into the branch, exits 2.
 # A finding is one line, `path[:line] - text`; backticks around the location are ignored. A finding
 # with `:line` is closed when a hunk of the revision covers that line or is inserted next to it. A
 # finding with only a path prints `TOUCHED` when the path changed: a changed path is a hint, not
-# proof, so it stays unclosed. Any finding is closed when the same line is listed under an
-# `## Answered` heading as `<finding line> => <reason>` with a non-empty reason; a line there with
-# no reason is read as a finding.
+# proof, so it stays unclosed. Any finding is closed when it is listed under an `## Answered`
+# heading as `<finding line> => <reason>` with a non-empty reason, split at the last ` =>`; that
+# entry is itself a finding, so it need not also be listed above the heading. A line there with no
+# reason is read as a finding.
 #
 # Prints one `OPEN: <finding>` or `TOUCHED: <finding>` line per finding that is not closed and
 # exits 1; prints `review-closure-check: OK` and exits 0 when all are closed. Exit 2 is a usage or
-# git error, an unreadable findings file, or a file with no findings in it.
+# git error, an unreadable findings file, a file with no findings in it, a reviewed head that is
+# not an ancestor of HEAD, or a merge commit since the reviewed head.
 set -u
 
 if [ $# -ne 2 ]; then
@@ -64,9 +68,11 @@ while IFS= read -r raw || [ -n "$raw" ]; do
   if [ "$in_answered" = 1 ]; then
     case $line in
       *' =>'*)
-        trim "${line#* =>}" && reason=$trimmed
-        trim "${line%% =>*}" && line=$trimmed
+        # Split at the last arrow, so a finding whose own text holds ` =>` can still be answered.
+        trim "${line##* =>}" && reason=$trimmed
+        trim "${line% =>*}" && line=$trimmed
         if [ -n "$reason" ]; then
+          add_finding "$line"
           answered+=("$line")
           continue
         fi
@@ -85,6 +91,29 @@ fi
 # read as an option.
 if ! rev=$(git rev-parse --verify --quiet --end-of-options "$base^{commit}"); then
   echo "review-closure-check: not a commit: $base" >&2
+  exit 2
+fi
+# `<rev>...HEAD` diffs from the merge base. After a rebase the reviewed head is no longer an
+# ancestor and the merge base falls back to the branch point, and after a merge of the default
+# branch the diff carries its changes, so either would close findings the revision never touched.
+git merge-base --is-ancestor "$rev" HEAD
+case $? in
+  0) ;;
+  1)
+    echo "review-closure-check: the reviewed head $base is not an ancestor of HEAD (rebased since the review?); transcribe the findings against the rebased commits" >&2
+    exit 2
+    ;;
+  *)
+    echo "review-closure-check: git merge-base --is-ancestor $rev HEAD failed" >&2
+    exit 2
+    ;;
+esac
+if ! merges=$(git rev-list --merges "$rev..HEAD" 2>&1); then
+  echo "review-closure-check: git rev-list --merges $rev..HEAD failed: $merges" >&2
+  exit 2
+fi
+if [ -n "$merges" ]; then
+  echo "review-closure-check: merge commits since the reviewed head $base would put the merged changes in the diff; run the check on the revision before the merge" >&2
   exit 2
 fi
 diff=$(git diff --no-color --no-ext-diff --no-relative --src-prefix=a/ --dst-prefix=b/ -U0 "$rev...HEAD" 2>&1) || {

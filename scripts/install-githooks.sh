@@ -37,14 +37,17 @@ resolve() {
   if [ -d "$p" ]; then (cd "$p" && pwd -P); else printf '%s\n' "${p%/}"; fi
 }
 
-if [ -n "$current" ] && [ "$(resolve "$current")" = "$(resolve "$want")" ]; then
-  echo "core.hooksPath = $current (already set, $scope config)"
-  exit 0
-fi
-
 # The directory git runs hooks from today: core.hooksPath if set, else the clone's hooks directory.
-dir=$(git -C "$root" rev-parse --git-path hooks)
-case "$dir" in /*) ;; *) dir="$root/$dir" ;; esac
+if [ -n "$current" ]; then
+  dir=$(resolve "$current")
+  if [ "$dir" = "$(resolve "$want")" ]; then
+    echo "core.hooksPath = $current (already set, $scope config)"
+    exit 0
+  fi
+else
+  dir=$(git -C "$root" rev-parse --git-path hooks)
+  case "$dir" in /*) ;; *) dir="$root/$dir" ;; esac
+fi
 active=()
 if [ -d "$dir" ]; then
   for f in "$dir"/*; do

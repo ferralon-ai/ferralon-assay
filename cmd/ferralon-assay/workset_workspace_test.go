@@ -202,3 +202,37 @@ func (a *goWorkToolchainAnalyzer) BuildManifest(_ context.Context, req plugin.Bu
 	a.seen = append(a.seen, req.GoWork)
 	return plugin.BuildManifestResult{Runtimes: []plugin.RuntimeSpec{{Name: "go", Resolved: a.byGoWork[req.GoWork]}}}, nil
 }
+
+// TestGoInventory_UnreadableWorkspace: when the workspace's build list cannot be read, here a used
+// member's go.mod that does not parse, the module's go.mod requires are named but given no version:
+// under the workspace's MVS a require is a lower bound, not the version built.
+func TestGoInventory_UnreadableWorkspace(t *testing.T) {
+	acq := goWorkFixture(t, "")
+	tree := filepath.Dir(acq.buildDir)
+	for name, body := range map[string]string{
+		"a/go.mod": "module example.com/mono/a\n\ngo 1.22\n\nrequire example.com/dep v1.2.3\n",
+		"b/go.mod": "this is not a go.mod\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tree, filepath.FromSlash(name)), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := pipeline.GoWorkspaceModules(context.Background(), acq.buildDir, goWorkspace(context.Background(), acq, acq.buildDir)); err == nil {
+		t.Fatal("GoWorkspaceModules read the workspace; the fixture must make it fail")
+	}
+
+	resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
+	if len(notes) != 0 {
+		t.Errorf("notes = %+v, want none", notes)
+	}
+	if len(resolved) != 0 {
+		t.Errorf("resolved = %+v, want none: no module or stdlib version is known", resolved)
+	}
+	want := []report.Package{
+		{Ecosystem: ecosystemGo, Name: "example.com/dep"},
+		{Ecosystem: ecosystemGo, Name: goStdlibPackage},
+	}
+	if !reflect.DeepEqual(unresolved, want) {
+		t.Errorf("unresolved = %+v, want %+v", unresolved, want)
+	}
+}

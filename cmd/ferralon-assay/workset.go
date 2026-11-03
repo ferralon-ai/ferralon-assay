@@ -781,35 +781,44 @@ func versionlessPURL(purlType, name string) string {
 // go.work no go.mod states what the build holds, so the build list decides instead
 // (pipeline.GoWorkspaceModules): each module at the version the build selects, and unresolved, so
 // admitted by name but never queried by version, every module the workspace uses or replaces, and
-// every module when the go command cannot compute the list. Without a go.work, go.mod's requires
-// are read; a tree with no go.mod within that search gets a no_manifest note.
+// every module when the go command cannot compute the list. When the workspace cannot be read at
+// all, go.mod's requires are unresolved too: under a workspace's MVS a require is a lower bound,
+// not the version built. Without a go.work, go.mod's requires are read; a tree with no go.mod
+// within that search gets a no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	dir := manifestDir(acq)
 	ws := goWorkspace(ctx, acq, dir)
 	if ws.File != "" {
-		if pinned, unpinned, err := pipeline.GoWorkspaceModules(ctx, dir, ws); err == nil {
-			for name, version := range pinned {
-				resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: name, Version: version})
+		pinned, unpinned, err := pipeline.GoWorkspaceModules(ctx, dir, ws)
+		if err != nil {
+			mf, ok := readGoMod(dir)
+			if !ok {
+				return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 			}
-			for _, name := range unpinned {
-				unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: name})
+			pinned, unpinned = nil, nil
+			for _, r := range mf.Require {
+				if r != nil && r.Mod.Path != "" {
+					unpinned = append(unpinned, r.Mod.Path)
+				}
 			}
-			if v := stdlibVersion(ctx, acq, dir, ws); v != "" {
-				resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: v})
-			} else {
-				unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
-			}
-			sortPackages(resolved)
-			sortPackages(unresolved)
-			return resolved, unresolved, nil
 		}
+		for name, version := range pinned {
+			resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: name, Version: version})
+		}
+		for _, name := range unpinned {
+			unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: name})
+		}
+		if v := stdlibVersion(ctx, acq, dir, ws); v != "" {
+			resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: v})
+		} else {
+			unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
+		}
+		sortPackages(resolved)
+		sortPackages(unresolved)
+		return resolved, unresolved, nil
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
-	if err != nil {
-		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
-	}
-	mf, err := modfile.Parse("go.mod", data, nil)
-	if err != nil {
+	mf, ok := readGoMod(dir)
+	if !ok {
 		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
 	}
 
@@ -840,6 +849,16 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 
 	sortPackages(resolved)
 	return resolved, unresolved, nil
+}
+
+// readGoMod parses the go.mod at dir; ok is false when it cannot be read or does not parse.
+func readGoMod(dir string) (*modfile.File, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return nil, false
+	}
+	mf, err := modfile.Parse("go.mod", data, nil)
+	return mf, err == nil
 }
 
 // stdlibVersion returns the subject's Go toolchain in the form OSV's Go ecosystem expects for the

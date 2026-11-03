@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -157,4 +158,67 @@ func resetBuildLists(t *testing.T) {
 	reset := func() { buildLists.Range(func(k, _ any) bool { buildLists.Delete(k); return true }) }
 	reset()
 	t.Cleanup(reset)
+}
+
+// TestGoWorkspaceModules: the build list decides what a workspace build holds and at what version.
+// buildDir's own module is not a dependency; a module the workspace uses or replaces is held at no
+// required version; and when the go command cannot say, every module the workspace uses or
+// requires is held, none at a version.
+func TestGoWorkspaceModules(t *testing.T) {
+	const work = "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n\nreplace example.com/r1 => example.com/r1 v1.0.1\n"
+	files := map[string]string{
+		"go.work":  work,
+		"a/go.mod": "module example.com/mono/a\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.6\n",
+		"b/go.mod": "module example.com/mono/b\n\ngo 1.22\n\nrequire example.com/r2 v1.0.0\n\nreplace example.com/r2 => ../r2\n",
+	}
+	listed := []listedModule{
+		{Path: "example.com/mono/a", Main: true},
+		{Path: "example.com/mono/b", Main: true},
+		{Path: "golang.org/x/text", Version: "v0.3.9"},
+		{Path: "example.com/n", Version: "v1.2.0"},
+		{Path: "example.com/r1", Version: "v1.0.0"},
+		{Path: "example.com/r2", Version: "v1.0.0"},
+		{Path: "example.com/listreplaced", Version: "v1.0.0", Replace: &struct{ Path, Version string }{Path: "../x"}},
+		{Path: "example.com/versionless"},
+	}
+
+	t.Run("the build list", func(t *testing.T) {
+		stubGoList(t, func(context.Context, string, GoWorkspace) ([]listedModule, error) { return listed, nil })
+		tree := writeTree(t, files)
+		pinned, unpinned, err := GoWorkspaceModules(context.Background(), filepath.Join(tree, "a"), GoWorkspace{File: filepath.Join(tree, "go.work")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]string{"golang.org/x/text": "v0.3.9", "example.com/n": "v1.2.0"}; !reflect.DeepEqual(pinned, want) {
+			t.Errorf("pinned = %v, want %v", pinned, want)
+		}
+		if want := []string{"example.com/listreplaced", "example.com/mono/b", "example.com/r1", "example.com/r2", "example.com/versionless"}; !reflect.DeepEqual(unpinned, want) {
+			t.Errorf("unpinned = %v, want %v", unpinned, want)
+		}
+	})
+
+	t.Run("the go command cannot say", func(t *testing.T) {
+		stubGoList(t, func(context.Context, string, GoWorkspace) ([]listedModule, error) {
+			return nil, errors.New("go: module lookup disabled by GOPROXY=off")
+		})
+		tree := writeTree(t, files)
+		pinned, unpinned, err := GoWorkspaceModules(context.Background(), filepath.Join(tree, "a"), GoWorkspace{File: filepath.Join(tree, "go.work")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pinned) != 0 {
+			t.Errorf("pinned = %v, want none", pinned)
+		}
+		if want := []string{"example.com/mono/b", "example.com/r1", "example.com/r2", "golang.org/x/text"}; !reflect.DeepEqual(unpinned, want) {
+			t.Errorf("unpinned = %v, want %v", unpinned, want)
+		}
+	})
+
+	t.Run("a member with no go.mod", func(t *testing.T) {
+		stubGoList(t, func(context.Context, string, GoWorkspace) ([]listedModule, error) { return listed, nil })
+		tree := writeTree(t, map[string]string{"go.work": work, "a/go.mod": files["a/go.mod"]})
+		if _, _, err := GoWorkspaceModules(context.Background(), filepath.Join(tree, "a"), GoWorkspace{File: filepath.Join(tree, "go.work")}); err == nil {
+			t.Fatal("GoWorkspaceModules read a workspace with a member missing its go.mod")
+		}
+	})
 }

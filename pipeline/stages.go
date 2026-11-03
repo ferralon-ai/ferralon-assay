@@ -1894,7 +1894,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		if goWork.File != "" {
 			// A workspace build runs under the go.work's go and toolchain lines and ignores its
 			// modules' own toolchain lines, so those are what bound its toolchain and its floor.
-			goDirective, toolchainDirective = goWork.directives()
+			goDirective, toolchainDirective = goWork.Directives()
 		}
 		cands := ToolchainCandidates{
 			SubjectDeclared:    s.subjectGoVersion,

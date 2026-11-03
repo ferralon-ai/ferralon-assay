@@ -23,7 +23,7 @@ Go's call graph is built from whole-build SSA that spans first-party and depende
 
 | Language | 1 Inventory | 2 Versions | 3 Build graph | 4 Call graph | 5 Clearing | 6 Frameworks | 7 Hazard bounding | 8 Runtime handoff |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| [Go](go.md) | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 0 / 🟥 1 |
+| [Go](go.md) | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 0 | 🟩 2 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 0 / 🟥 1 |
 | [Java](java.md) | 🟩 3 / 🟨 3 / 🟥 2 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 3 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 5 / 🟥 3 | 🟩 3 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 0 / 🟥 1 |
 | [Kotlin](kotlin.md) | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 0 / 🟥 0 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 6 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 0 |
 | [JavaScript / TypeScript](javascript.md) | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 6 / 🟥 1 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 2 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 |
@@ -38,7 +38,7 @@ A binding caveat withholds `not_exploitable` across the whole run when a project
 
 | Language | Binding caveats |
 |---|---|
-| Go | [GO-REFLECT-CALL](go.md#go-reflect-call), [GO-CGO](go.md#go-cgo), [GO-WORKSPACE](go.md#go-workspace), [GO-PLUGIN-LOAD](go.md#go-plugin-load) |
+| Go | [GO-CGO](go.md#go-cgo), [GO-WORKSPACE](go.md#go-workspace), [GO-PLUGIN-LOAD](go.md#go-plugin-load) |
 | Java | [JAVA-MULTI-MODULE-NO-SEARCH](java.md#java-multi-module-no-search), [JAVA-LAUNCH-ENTRY-UNLICENSED](java.md#java-launch-entry-unlicensed), [JAVA-FRAMEWORK-HAZARD](java.md#java-framework-hazard), [JAVA-GRAPH-PRECONDITION](java.md#java-graph-precondition), [JAVA-OTHER-TOOL-BUILD](java.md#java-other-tool-build) |
 | Kotlin | [KOTLIN-MULTI-PROJECT](kotlin.md#kotlin-multi-project), [KOTLIN-LAUNCH-ENTRY](kotlin.md#kotlin-launch-entry), [KOTLIN-BUILD-GRAPH-ABSENT](kotlin.md#kotlin-build-graph-absent), [KOTLIN-BUILD-OUTPUT-LAYOUT](kotlin.md#kotlin-build-output-layout) |
 | JavaScript / TypeScript | [JS-UNINSPECTABLE-RUNWIDE](javascript.md#js-uninspectable-runwide), [JS-NO-CLEAR-GROUNDS](javascript.md#js-no-clear-grounds)†, [JS-LOADTIME-CODEGEN](javascript.md#js-loadtime-codegen) |
@@ -53,4 +53,4 @@ A caveat is a named, stable ID such as `GO-REFLECT-CALL` or `KOTLIN-MULTI-PROJEC
 
 The five verdict values, and how they map to OpenVEX, are in [Language support](../language-support.md#verdicts).
 
-C/C++ is in development and is not in the scanner release asset. A scan of a C/C++ tree stops at the empty-work-set gate and fails the run, so it never publishes a Report that reads as clean.
+C/C++ is in development and is not in the scanner release asset. A scan of a C/C++ tree on the release publishes a Report with no findings and one `did_not_run` note naming the missing analyzer, and the run exits 0. The job summary and the PR comment lead with "Not analyzed", so the Report never reads as clean. With a C/C++ analyzer installed from a source build, the scan stops at the empty-work-set gate and fails the run ([Language support](../language-support.md)).

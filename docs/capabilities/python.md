@@ -164,7 +164,7 @@ The lane hands the paid tier a call-graph path and the sink's package coordinate
 
 ### PYTHON-IMPORT-MAP-GAP
 
-**Trigger.** An import name that differs from the distribution name, is not in the curated mapping (for example sklearn, cv2, yaml) and is not PEP 503 identical.
+**Trigger.** An import name that differs from the distribution name, is not in the curated mapping (for example sklearn, cv2) and is not PEP 503 identical.
 
 **Effect.** No boundary edge for calls into that dependency (silent recall loss); if manifests were partly read, `tool_failure` instead.
 

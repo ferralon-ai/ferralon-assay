@@ -46,7 +46,7 @@ The lane statically reconstructs how the build resolves packages from the lock a
 | Build/install command emitted for the build | Partial | [JS-INSTALL-CMD-NPM-ONLY](#js-install-cmd-npm-only) |
 | `.npmrc` / registry credential sourcing (build root + `NPM_CONFIG_USERCONFIG`) | Partial | [JS-NPMRC-PARITY](#js-npmrc-parity) |
 | Private registries / scoped registries | Partial | [JS-NPMRC-PARITY](#js-npmrc-parity), [JS-LOCK-URL-UNPLUMBED](#js-lock-url-unplumbed) |
-| Dependency tree reconstruction (lock-pinned, SRI-verified tarballs) | Partial | [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off), [JS-SHA1-INTEGRITY](#js-sha1-integrity) |
+| Dependency tree reconstruction (lock-pinned, SRI-verified tarballs) | Partial | [JS-DEPCODE-UNREAD](#js-depcode-unread), [JS-SHA1-INTEGRITY](#js-sha1-integrity) |
 | yarn berry dependency code | Planned | [JS-YARN-BERRY-WITHHELD](#js-yarn-berry-withheld) |
 | Bundler/framework config awareness (webpack, rollup, vite, esbuild, swc) | Partial | [JS-STYLESHEET-EXEMPTION](#js-stylesheet-exemption) |
 | Parse budget determinism | Partial | [JS-PARSE-TIMEOUT-WALLCLOCK](#js-parse-timeout-wallclock) |
@@ -63,7 +63,7 @@ The call graph is a source-lexical graph over first-party TS/JS: an import-scope
 | Declined-site and escaped-frame lists (`Unresolved`, `Escaped`, `unlisted_sites`) | Partial | [JS-UNLISTED-RESIDUE](#js-unlisted-residue) |
 | Opaque callees (call-on-call, computed member, comma, tagged template, `new C`, `super`, decorator) declared, unbounded | Complete |  |
 | Package-boundary nodes for dependency calls | Complete |  |
-| Dependency-code edges (lock-pinned tarballs) | Partial | [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off), [JS-UNINSPECTABLE-RUNWIDE](#js-uninspectable-runwide) |
+| Dependency-code edges (lock-pinned tarballs) | Partial | [JS-DEPCODE-UNREAD](#js-depcode-unread), [JS-UNINSPECTABLE-RUNWIDE](#js-uninspectable-runwide) |
 | Out-of-tree package loads recorded | Partial | [JS-UNINSPECTABLE-RUNWIDE](#js-uninspectable-runwide) |
 | TypeScript handling | Partial | [JS-TS-NO-TYPE-RESOLUTION](#js-ts-no-type-resolution) |
 | Type-aware call resolution | Partial | [JS-NO-TYPES](#js-no-types) |
@@ -116,17 +116,17 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 | Taint (call-path presence ingress to sink) | Partial | [JS-TAINT-PATH-ONLY](#js-taint-path-only) |
 | Capability manifest | Planned | [JS-MANIFEST-UNPUBLISHED](#js-manifest-unpublished) |
 | Value-flow / sanitizer modeling | N/A |  |
-| Dependency-code fetch is a network step, on by default | Partial | [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off) |
+| Dependency-code fetch is a network step, on by default | Partial | [JS-DEPCODE-UNREAD](#js-depcode-unread) |
 
 ## Caveats
 
 ### JS-UNINSPECTABLE-RUNWIDE
 
-**Trigger.** Any first-party import of a bare specifier while no dependency code is read: dependency code off, or a fetch that fell back (see [JS-DEPCODE-DEFAULT-OFF](#js-depcode-default-off)). With dependency code read, the limit stays run-wide when the reconstructed layout can't bound what a load reaches (yarn berry, an incomplete layout, a bundler alias that may replace the specifier, a load inside dependency code that can't be bounded), and for an install script (a `binding.gyp` counts as one), an unread package whose lock doesn't record install scripts, a computed load inside dependency code, or a copy bundled in a pnpm or yarn classic package's tarball.
+**Trigger.** Any first-party import of a bare specifier while no dependency code is read: dependency code off, or a fetch that fell back (see [JS-DEPCODE-UNREAD](#js-depcode-unread)). With dependency code read, the limit stays run-wide when the reconstructed layout can't bound what a load reaches (yarn berry, an incomplete layout, a bundler alias that may replace the specifier, a load inside dependency code that can't be bounded), and for an install script (a `binding.gyp` counts as one), an unread package whose lock doesn't record install scripts, a computed load inside dependency code, or a copy bundled in a pnpm or yarn classic package's tarball.
 
 **Effect.** Run-wide `uninspectable_package` (did_not_run) blocks `not_exploitable` for every advisory.
 
-### JS-DEPCODE-DEFAULT-OFF
+### JS-DEPCODE-UNREAD
 
 **Trigger.** Running with `-dependency-code=off` (the Action's `dependency-code: off`), or a fetch that failed and fell back to reading no dependency code (`dependency_code.cause` set, with a `tool_failure:dependency_code_unavailable` note).
 

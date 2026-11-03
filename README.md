@@ -95,8 +95,8 @@ receives it, and what the cache exposes.
 **`@v0.6` floats** to the newest 0.6.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
 `vX.Y.Z` scanner it was cut with, so `@v0.6` fetches the scanner of the patch it currently points at.
-Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the current
-minor alias. A full tag (`@v0.6.0`) or a commit SHA freezes the Action source and, through it, that
+Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the `vX.Y`
+minor alias that branch's `action.yml` names. A full tag (`@v0.6.0`) or a commit SHA freezes the Action source and, through it, that
 scanner release. To freeze the exact bytes as well, set
 **`scanner-sha256`** yourself — each release publishes the value as a `.sha256` asset — and the run
 verifies the fetched tarball against your pin, failing loudly on any mismatch. It is off by default and
@@ -207,11 +207,14 @@ ordered.
 ### Expected scan duration
 
 No published benchmark exists yet, so this section names what dominates the cost rather than a
-number. Two fetches drive most of it on a default `baseline` or `pr-inherit` run: resolving the
-subject module graph against `proxy.golang.org`, and the Go analyzer's uncached fetch of the
-`vuln.go.dev` vulnerability database on every run (see [Network egress](#network-egress) and
-[docs/threat-model.md](docs/threat-model.md)). Both scale with the size of the target's module
-graph and dependency set, so timing varies by repository rather than being fixed by the tool.
+number. What drives most of it on a default `baseline` or `pr-inherit` run depends on the
+language: for Go, resolving the subject module graph against `proxy.golang.org` and the Go
+analyzer's uncached fetch of the `vuln.go.dev` vulnerability database on every run; for Java and
+Kotlin, the repository's own Maven or Gradle resolving the dependency graph; for JavaScript,
+fetching each lock-pinned dependency tarball the cache does not already hold (see
+[Network egress](#network-egress) and [docs/threat-model.md](docs/threat-model.md)). Each scales
+with the size of the target's module graph and dependency set, so timing varies by repository
+rather than being fixed by the tool.
 
 ### Limiting scan time
 
@@ -365,8 +368,9 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 
 ## Network egress
 
-**Your code never leaves the runner, and a registry token leaves it only for the npm registry
-host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a default
+**Your code never leaves the runner, and a registry credential leaves it only for a host the
+scanned branch's own configuration names: the npm registry its `.npmrc` binds a token to, or, for
+a Java or Kotlin scan, the repositories its Maven or Gradle build configures.** No run mode is offline: a default
 `baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
@@ -379,7 +383,10 @@ configured registry, unless it runs with `-dependency-code=off` or `offline` (th
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
 is presented only to the host it is bound to. Fetch is the default, and the scanned branch's
 `.npmrc` chooses that host, exactly as with `npm ci`: a branch that rewrites its `.npmrc` sends any
-of those tokens the job exports to the host it names. To keep tokens out of a scan, set
+of those tokens the job exports to the host it names. A Java or Kotlin scan runs the repository's
+own Maven or Gradle (`-build-graph auto`, the default), which fetches from the repositories the
+build configures with the job's credentials, as `mvn` or `gradle` would; a branch that rewrites
+those repositories sends those credentials to the host it names. To keep tokens out of a scan, set
 `dependency-code: off`, or don't export `NODE_AUTH_TOKEN`/`NPM_TOKEN` on pull-request jobs. On a
 private or internal repository the Action saves the fetched tarballs, private packages included, to
 the GitHub Actions cache, where any workflow run allowed to restore it can read them. On a public

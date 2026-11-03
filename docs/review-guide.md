@@ -199,7 +199,7 @@ breaks, because a break such as a struct losing comparability is invisible in a 
 
 A release is minted by `.github/workflows/release.yml` from a pushed tag, never from a workstation
 ([AGENTS.md](../AGENTS.md), [docs/releases/README.md](releases/README.md)). A review never suggests
-`gh release create`, a hand-made tag or a locally built asset as a way to ship.
+`gh release create`, a hand-minted tag or leaf, or a locally built asset as a way to ship.
 
 - `LICENSE` keeps `Change Date: TBD` on every branch; `license-guard.yml` fails any push or pull
   request whose `LICENSE` names a Change Date.

@@ -21,7 +21,7 @@ Java dependencies come from the repository's own Maven or Gradle build: Assay as
 | Maven/Gradle multi-module and Gradle included builds | Complete |  |
 | Inventory without a graph | Partial | [JAVA-GRAPH-PRECONDITION](#java-graph-precondition) |
 | Gradle file dependencies, Android toolchain | Planned | Android JDK toolchain never known |
-| Action inputs for graph/JDK/profiles | Planned | set env in the step meanwhile |
+| Action inputs for graph/JDK/profiles | Planned | the Action runs `-build-graph auto`; set `ASSAY_SUBJECT_JAVA_VERSION`, `ASSAY_SUBJECT_MAVEN_PROFILES` or `ASSAY_BUILD_GRAPH_TOOL` in the step's `env:` |
 
 ## 2. Version clearing
 
@@ -122,7 +122,7 @@ The Java lane hands candidate paths and resolved sink coordinates to the paid ti
 
 ### JAVA-GRAPH-PRECONDITION
 
-**Trigger.** A scan with no build graph: toolchain absent, JDK mismatch, credentials missing for a private registry, or the build tool failing; also any Action user, since the Action has no inputs for graph/JDK/profiles (env only).
+**Trigger.** A scan with no build graph: `-build-graph off`, the build tool absent from the runner, a JDK other than the stated `-subject-java-version`, credentials missing for a private registry, or the build tool failing.
 
 **Effect.** Typed failure, no fallback. Every op declares `tool_failure:build_graph_absent`; inventory is empty and no clear is possible.
 

@@ -4,7 +4,7 @@ Every feature in every capability group for Go, with its status and the caveats 
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 3 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 0 / 🟥 1 |
+| C / P / L | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 4 / 🟨 2 / 🟥 0 | 🟩 2 / 🟨 4 / 🟥 0 | 🟩 6 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 0 / 🟥 1 |
 
 🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
@@ -35,16 +35,16 @@ Advisory ranges are placed against the resolved module version with the semver c
 | Stdlib/toolchain ranges (`go1.X.Y`), multi-range backport | Complete |  |
 | Toolchain fact from `go` / `toolchain` directive | Partial | [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
 | Module found at multiple versions in the build | Complete |  |
+| Module absent from the build (`no_manifest_entry`): under a `go.work`, the go command's build list; outside one, a `replace` is presence, from `go 1.17` a missing `require` is absence, and below `go 1.17` or with no `go` line `vendor/modules.txt` and `go.sum` module hashes decide; a missing or unparseable file fails open | Complete |  |
 
 ## 3. Build-graph fidelity
 
-The graph is the one `go` computes: `GOWORK=off`, `./...`, test files excluded, imports enumerated for linux, darwin and windows. The subject's own toolchain is selected through GOTOOLCHAIN so the code is typed the way the subject builds it.
+The graph is the one `go` computes for the job's GOOS and GOARCH: `./...` under the `go.work` the build runs under (`subject-gowork`, or the one the go command finds that uses the module; otherwise `GOWORK=off`), test files excluded. A file left out for another platform or behind a build tag is read for calls into the advisory's module ([GO-EXCLUDED-FILES](#go-excluded-files)). With `subject-toolchain-reachability` on and an exact toolchain, the subject's own Go release is selected through GOTOOLCHAIN, so the code is typed the way the subject builds it.
 
 | Feature | Status | Caveats |
 |---|---|---|
 | Toolchain-resolved package graph (`go/packages`) | Complete |  |
-| `GOWORK=off` forced, no ambient pin | Complete |  |
-| Multi-GOOS import enumeration | Complete |  |
+| The build's own `go.work` (`subject-gowork`), never an ambient one | Complete |  |
 | Files excluded by build constraints on the analysed platform | Partial | [GO-EXCLUDED-FILES](#go-excluded-files) |
 | Subject-toolchain switching (GOTOOLCHAIN, loader floor go1.20) | Partial | [GO-TOOLCHAIN-NOT-SCANNED](#go-toolchain-not-scanned) |
 | cgo packages | Partial | [GO-CGO](#go-cgo) |
@@ -79,11 +79,11 @@ A Go dependency advisory gets per-advisory govulncheck evidence. `reachable_cand
 | Outside-build first-party advisory ground (module search) | Partial | [GO-VENDORED](#go-vendored), [GO-MULTIPACKAGE-ADVISORY](#go-multipackage-advisory), [GO-LOCAL-REPLACE](#go-local-replace) |
 | Advisories with no symbol coordinates | Partial | [GO-NO-SYMBOLS](#go-no-symbols) |
 | Go stdlib / toolchain advisories | Partial | [GO-TOOLCHAIN-NOT-SCANNED](#go-toolchain-not-scanned), [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
-| Run-wide did-not-run gate on `not_exploitable` | Partial | [GO-REFLECT-CALL](#go-reflect-call), [GO-CGO](#go-cgo), [GO-PLUGIN-LOAD](#go-plugin-load) |
+| Run-wide did-not-run gate on `not_exploitable` | Partial | [GO-CGO](#go-cgo), [GO-PLUGIN-LOAD](#go-plugin-load) |
 
 ## 6. Framework & dynamic-dispatch modeling
 
-Ingress discovery recognises net/http handlers and route registrars, the macaron router and SSH server handlers. Reachability does not depend on ingress for dependency advisories (govulncheck supplies the entry roots), so ingress only decides whether a first-party path is rooted at a network surface. Taint is tracked at variable level over SSA, with an explicit sanitizer allow-list.
+Ingress discovery recognises net/http handlers and route registrars, the macaron, go-chi, gin and echo/v4 routers, and SSH server handlers. Reachability does not depend on ingress for dependency advisories (govulncheck supplies the entry roots), so ingress only decides whether a first-party path is rooted at a network surface. Taint is tracked at variable level over SSA, with an explicit sanitizer allow-list.
 
 | Feature | Status | Caveats |
 |---|---|---|
@@ -92,7 +92,7 @@ Ingress discovery recognises net/http handlers and route registrars, the macaron
 | SSH server handlers | Complete |  |
 | go-chi router (`chi` and `chi/v5`: verb methods, Handle/HandleFunc, Method/MethodFunc, Mount; Route/Group/With closures via interface calls) | Complete |  |
 | chi catch-all handlers, handlers bound through var/field/factory, composed Mount prefixes | Planned |  |
-| gin and echo route registration | Planned |  |
+| gin and echo/v4 route registration (verb methods, Handle/Any/Match/Add, groups, gin NoRoute/NoMethod and WrapF/WrapH) | Complete |  |
 | gRPC, Connect, Cobra/CLI entry points | Planned |  |
 | Variable-level SSA taint with sanitizer allow-list | Partial | [GO-TAINT-ECHO](#go-taint-echo) |
 | Reflection and text/html template Execute | Partial | [GO-REFLECT-CALL](#go-reflect-call) |
@@ -100,7 +100,7 @@ Ingress discovery recognises net/http handlers and route registrars, the macaron
 
 ## 7. Hazard bounding
 
-Go limits are mostly scoped to the advisory they affect: the withholds in group 5 act on one refutation, and cgo limits are carried per package or path where the loader can bound them. Two limits are run-wide today (reflective calls and plugin loading), and a run-wide did-not-run reason blocks `not_exploitable` for every advisory in the scan. `reachable_candidate` is unaffected, because a govulncheck path outranks the did-not-run gate.
+Go limits are mostly scoped to the advisory they affect: the withholds in group 5 and reflective calls act on one refutation, and cgo limits are carried per package or path where the loader can bound them. Plugin loading is run-wide, and a run-wide did-not-run reason blocks `not_exploitable` for every advisory in the scan. `reachable_candidate` is unaffected, because a govulncheck path outranks the did-not-run gate.
 
 | Feature | Status | Caveats |
 |---|---|---|
@@ -125,9 +125,9 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 ### GO-WORKSPACE
 
-**Trigger.** The repo root has a `go.work`.
+**Trigger.** The scanned module's directory holds a `go.work` while the build runs with `GOWORK=off` (`subject-gowork: off`), or the `go.work` the build runs under cannot be read or does not use the scanned module.
 
-**Effect.** The inventory declares workspaces unsupported, which blocks `not_exploitable` for the scan. `reachable_candidate` is unaffected.
+**Effect.** With `GOWORK=off` beside a `go.work`, the inventory declares the workspace unsupported, which blocks `not_exploitable` for the scan; `reachable_candidate` is unaffected. A `go.work` that cannot be read or does not use the scanned module withholds every verdict. Under a `go.work` that uses the module, the inventory is the workspace's build list, and its other members are main modules, not dependencies.
 
 ### GO-MANIFEST-REPLACE
 
@@ -161,21 +161,21 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 ### GO-TOOLCHAIN-PRE121
 
-**Trigger.** Go.mod `go` directive below 1.21 with no `toolchain` line, on a stdlib/toolchain-ranged advisory, where the runner's Go may be older than the directive.
+**Trigger.** A stdlib/toolchain-ranged advisory on a module whose `go.mod` has no `toolchain` line and a `go` line that is two-part (`go 1.21`) or below 1.21.
 
-**Effect.** The `go` directive is taken as the build toolchain version, which below 1.21 is a floor rather than the exact toolchain.
+**Effect.** The `go` line is not a minimum, because a go command before 1.21 does not enforce it, so it is left out of the toolchain fact. The Go the build's own go command resolves stands in only with `ASSAY_TRUST_OBSERVED_GO=true`; without that, or a declaration, the fact is unresolved and the advisory is `undetermined` with `go_toolchain_unresolved`.
 
 ### GO-TOOLCHAIN-NOT-SCANNED
 
-**Trigger.** Subject toolchain cannot be selected for analysis (below the loader floor go1.20, or the toolchain unobtainable offline).
+**Trigger.** A Go standard-library advisory whose search found no path while the analysis ran under the scanner's toolchain: `subject-toolchain-reachability` is off (the default), the toolchain fact is only a minimum, or the subject's release could not be run (below go1.20, or not obtainable).
 
-**Effect.** `go_toolchain_not_scanned`, a did-not-run reason; stdlib advisories become `undetermined`.
+**Effect.** The row is `undetermined` with `undetermined_reason` `go_toolchain_not_scanned`. A version range the toolchain fact clears still disqualifies the advisory.
 
 ### GO-EXCLUDED-FILES
 
 **Trigger.** A first-party file excluded by build constraints on the analysed platform (or otherwise left out of the load) that calls into the refuted module.
 
-**Effect.** The refutation is withheld (`excluded_files`, did-not-run). Scoped to the advisory by the withhold, but the reason is a did-not-run class.
+**Effect.** The refutation is withheld with `excluded_files`, or `excluded_files:assembly`, `excluded_files:linkname` or `excluded_files:cgo_include` naming what the file reaches. The withhold is scoped to the advisory, and the row is `undetermined` with `refutation_withheld`.
 
 ### GO-CGO
 
@@ -187,7 +187,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** The call graph, from govulncheck entry roots and the unsearched exported methods, reaches `reflect.Value.Call/CallSlice/Method/MethodByName` or `text/template` / `html/template` `Execute`/`ExecuteTemplate`.
 
-**Effect.** `reflection:call`, did-not-run, emitted run-wide (Targets nil); blocks `not_exploitable` for every advisory in the scan. Does not affect `reachable_candidate`.
+**Effect.** `reflection:call`, declared per advisory: when what those calls can reach holds one of the advisory's vulnerable symbols, or cannot be computed, that advisory's refutation and searched sinks are withheld and the row is `undetermined` with `refutation_withheld`. Other advisories are unaffected. Does not affect `reachable_candidate`.
 
 ### GO-PLUGIN-LOAD
 
@@ -197,9 +197,9 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 ### GO-LIBRARY-ESCAPE
 
-**Trigger.** The project exports an importable package (a library, or an application with public packages) that reaches the refuted module.
+**Trigger.** A library entry point reaches one of the refuted module's vulnerable packages. `library-entrypoints` (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) names the entry points: `auto` (the default) takes every importable package outside `cmd/`, `example(s)/`, `test(s)/` and `testdata/`, `none` takes none, and a list of paths relative to the repository root names them, with `!path` taking a path out.
 
-**Effect.** The refutation is withheld, since external callers may reach it.
+**Effect.** The refutation is withheld with `library_escape`, and the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that stands only because of what you declared carries that declaration on the report as an assumption.
 
 ### GO-NO-SYMBOLS
 

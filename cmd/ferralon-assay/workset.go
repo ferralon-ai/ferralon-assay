@@ -330,7 +330,7 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 	}
 	var goWork pipeline.GoWorkspace
 	if root.PURLType == "golang" {
-		goWork = goWorkspace(ctx, acq, dir)
+		goWork, _ = goWorkspace(ctx, acq, dir)
 	}
 	return func(k pipeline.PackageKey) bool {
 		if k.Ecosystem != "" && k.Ecosystem != root.PURLType {
@@ -347,14 +347,15 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 }
 
 // goWorkspace resolves the go.work the build of the Go module at dir runs under, as
-// codebase_inventory resolves it. One that cannot be resolved fails codebase_inventory for every
-// advisory admitted, so the module's go.mod alone decides admission: it reads as no workspace.
-func goWorkspace(ctx context.Context, acq *acquired, dir string) pipeline.GoWorkspace {
+// codebase_inventory resolves it; ok is false when it cannot be resolved. That fails
+// codebase_inventory for every advisory admitted, so the module's go.mod alone decides admission:
+// it reads as no workspace.
+func goWorkspace(ctx context.Context, acq *acquired, dir string) (ws pipeline.GoWorkspace, ok bool) {
 	ws, err := pipeline.ResolveGoWorkspace(ctx, dir, acq.buildDir, acq.goWork)
 	if err != nil {
-		return pipeline.GoWorkspace{}
+		return pipeline.GoWorkspace{}, false
 	}
-	return ws
+	return ws, true
 }
 
 // manifestDir is the directory the work set reads the project's own manifest from. For Go that is
@@ -783,14 +784,24 @@ func versionlessPURL(purlType, name string) string {
 // admitted by name but never queried by version, every module the workspace uses or replaces, and
 // every module when the go command cannot compute the list. When the workspace cannot be read at
 // all, go.mod's requires are unresolved too: under a workspace's MVS a require is a lower bound,
-// not the version built. Without a go.work, go.mod's requires are read; a tree with no go.mod
-// within that search gets a no_manifest note.
+// not the version built. When the build's workspace cannot be resolved (a declared go.work that is
+// missing, does not parse or does not use the module), nothing says what the build holds or which
+// go lines bind its toolchain, so go.mod's requires and the standard library are all unresolved.
+// Without a go.work, go.mod's requires are read; a tree with no go.mod within that search gets a
+// no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	dir := manifestDir(acq)
-	ws := goWorkspace(ctx, acq, dir)
-	if ws.File != "" {
-		pinned, unpinned, err := pipeline.GoWorkspaceModules(ctx, dir, ws)
-		if err != nil {
+	ws, wsOK := goWorkspace(ctx, acq, dir)
+	if !wsOK || ws.File != "" {
+		var pinned map[string]string
+		var unpinned []string
+		listed := false
+		if wsOK {
+			var err error
+			pinned, unpinned, err = pipeline.GoWorkspaceModules(ctx, dir, ws)
+			listed = err == nil
+		}
+		if !listed {
 			mf, ok := readGoMod(dir)
 			if !ok {
 				return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
@@ -808,8 +819,12 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 		for _, name := range unpinned {
 			unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: name})
 		}
-		if v := stdlibVersion(ctx, acq, dir, ws); v != "" {
-			resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: v})
+		stdlib := ""
+		if wsOK {
+			stdlib = stdlibVersion(ctx, acq, dir, ws)
+		}
+		if stdlib != "" {
+			resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: stdlib})
 		} else {
 			unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
 		}

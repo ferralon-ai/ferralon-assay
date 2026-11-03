@@ -217,7 +217,8 @@ func TestGoInventory_UnreadableWorkspace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := pipeline.GoWorkspaceModules(context.Background(), acq.buildDir, goWorkspace(context.Background(), acq, acq.buildDir)); err == nil {
+	ws, _ := goWorkspace(context.Background(), acq, acq.buildDir)
+	if _, _, err := pipeline.GoWorkspaceModules(context.Background(), acq.buildDir, ws); err == nil {
 		t.Fatal("GoWorkspaceModules read the workspace; the fixture must make it fail")
 	}
 
@@ -234,5 +235,54 @@ func TestGoInventory_UnreadableWorkspace(t *testing.T) {
 	}
 	if !reflect.DeepEqual(unresolved, want) {
 		t.Errorf("unresolved = %+v, want %+v", unresolved, want)
+	}
+}
+
+// TestGoInventory_UnresolvedWorkspace: a declared go.work the build's workspace cannot be resolved
+// from (missing, or not using the module) leaves what the build holds unknown, so the module's
+// go.mod requires are named with no version, and so is the standard library, even under a declared
+// toolchain the module's own go lines would admit: which go lines bind the build is unknown too.
+func TestGoInventory_UnresolvedWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared func(tree string) string
+	}{
+		{name: "missing", declared: func(string) string { return "nope/go.work" }},
+		{name: "does not use the module", declared: func(tree string) string {
+			other := filepath.Join(tree, "other.work")
+			if err := os.WriteFile(other, []byte("go 1.22.3\n\nuse ./b\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return "other.work"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acq := goWorkFixture(t, "")
+			tree := filepath.Dir(acq.buildDir)
+			mod := "module example.com/mono/a\n\ngo 1.22\n\nrequire example.com/dep v1.2.3\n"
+			if err := os.WriteFile(filepath.Join(acq.buildDir, "go.mod"), []byte(mod), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			acq.goWork = tc.declared(tree)
+			acq.goToolchain = subjectGoToolchain{declared: "go1.22.1"}
+			if _, ok := goWorkspace(context.Background(), acq, acq.buildDir); ok {
+				t.Fatal("the declared go.work resolved; the fixture must make it fail")
+			}
+
+			resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
+			if len(notes) != 0 {
+				t.Errorf("notes = %+v, want none", notes)
+			}
+			if len(resolved) != 0 {
+				t.Errorf("resolved = %+v, want none: no module or stdlib version is known", resolved)
+			}
+			want := []report.Package{
+				{Ecosystem: ecosystemGo, Name: "example.com/dep"},
+				{Ecosystem: ecosystemGo, Name: goStdlibPackage},
+			}
+			if !reflect.DeepEqual(unresolved, want) {
+				t.Errorf("unresolved = %+v, want %+v", unresolved, want)
+			}
+		})
 	}
 }

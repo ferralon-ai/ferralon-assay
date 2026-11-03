@@ -187,8 +187,8 @@ inputs:
     default: "false"
   subject-gowork:
     description: >-
-      The GOWORK your Go build runs under: 'off', or the path of its go.work relative to
-      `target`. Empty takes the GOWORK set in the job's environment, the one your own Go steps
+      The GOWORK your Go build runs under: 'off', 'auto' (the same as leaving it unset), or the
+      path of its go.work relative to `target`. Empty takes the GOWORK set in the job's environment, the one your own Go steps
       see. When neither is set, the scan uses the go.work the go command would find from the
       scanned module, searched no higher than the repository, when that go.work uses the module.
       A named go.work the scan cannot read, or one that does not use the scanned module, leaves

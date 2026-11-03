@@ -3401,9 +3401,11 @@ type reachAttribution struct {
 	trust    TrustTier
 }
 
-// readReachAttribution reads the reachAttribution for a Go assessment that selected an affected
-// package. ok is false otherwise, and every path then counts. A toolchain package's ranges lose
-// their lower bounds when the toolchain version is only a floor, as rangesForToolchainFloor says.
+// readReachAttribution reads the reachAttribution for a Go assessment. The selected package is the
+// selected affected_packages[] element, else the advisory's module. ok is false for another
+// language or when neither names a package, and every path then counts. A toolchain package's
+// ranges lose their lower bounds when the toolchain version is only a floor, as
+// rangesForToolchainFloor says.
 func readReachAttribution(store artifact.Store, caseID string) (reachAttribution, bool) {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {
@@ -3418,7 +3420,11 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 	}
 	sel, ok := extractSelectedPackage(store, caseID)
 	if !ok {
-		return reachAttribution{}, false
+		module, ok := extractAdvisoryModule(store, caseID)
+		if !ok {
+			return reachAttribution{}, false
+		}
+		sel = advisoryAffectedPackage{Module: module}
 	}
 	a := reachAttribution{project: inv.Module, others: extractAlsoPresent(store, caseID)}
 	for _, n := range []string{sel.Module, sel.Coordinate} {
@@ -3435,49 +3441,59 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 	return a, true
 }
 
-// countedReachPaths returns the reach paths that count toward the selected package, those
-// attributed to it first, each group in its input order. A path is attributed by its sink's import
-// path to the affected package owning the longest name that is the import path or a prefix of it
-// at a "/" boundary; stdlib owns an import path whose first element has no dot, and the selected
-// package wins a tie. A sink with no import path, one inside the scanned project, or one no
-// affected package owns is attributed to the selected package. A path is dropped only when its
-// owner is another affected package whose every version in the build is provably outside that
-// package's ranges (everyVersionOutside).
+// countedReachPaths returns the reach paths that count toward the selected package. A path is
+// attributed by its sink's import path to the affected package owning the longest name that is the
+// import path or a prefix of it at a "/" boundary; stdlib owns an import path whose first element
+// has no dot, and the selected package wins a tie. A sink with no import path, one inside the
+// scanned project, or one no affected package owns is unattributed and counts as the selected
+// package's. A path is dropped only when its owner is another affected package whose every version
+// in the build is provably outside that package's ranges (everyVersionOutside). The kept paths are
+// ordered the selected package's own, then unattributed, then other packages', each group in its
+// input order.
 func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.ReachPath {
-	var own, other []plugin.ReachPath
+	var own, unattributed, other []plugin.ReachPath
 	for _, p := range paths {
-		o, ok := a.owner(p.Sink.Package)
+		o, owner := a.owner(p.Sink.Package)
 		switch {
-		case !ok:
+		case owner == ownerSelected:
 			own = append(own, p)
+		case owner == ownerNone:
+			unattributed = append(unattributed, p)
 		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown, a.trust):
 		default:
 			other = append(other, p)
 		}
 	}
-	return append(own, other...)
+	return slices.Concat(own, unattributed, other)
 }
 
-// owner returns the other affected package an import path is attributed to, or false when it is
-// attributed to the selected package.
-func (a reachAttribution) owner(pkg string) (presentRanges, bool) {
+// pathOwner is which package a reach path's sink is attributed to.
+type pathOwner int
+
+const (
+	ownerNone pathOwner = iota
+	ownerSelected
+	ownerOther
+)
+
+// owner attributes an import path. For ownerOther it also returns that package.
+func (a reachAttribution) owner(pkg string) (presentRanges, pathOwner) {
 	if pkg == "" || a.project != "" && (pkg == a.project || strings.HasPrefix(pkg, a.project+"/")) {
-		return presentRanges{}, false
+		return presentRanges{}, ownerNone
 	}
-	best := 0
+	best, owner := 0, ownerNone
 	for _, n := range a.selected {
-		best = max(best, ownedLength(n, pkg))
-	}
-	var (
-		owner presentRanges
-		found bool
-	)
-	for _, o := range a.others {
-		if l := max(ownedLength(o.Module, pkg), ownedLength(o.Coordinate, pkg)); l > best {
-			best, owner, found = l, o, true
+		if l := ownedLength(n, pkg); l > best {
+			best, owner = l, ownerSelected
 		}
 	}
-	return owner, found
+	var other presentRanges
+	for _, o := range a.others {
+		if l := max(ownedLength(o.Module, pkg), ownedLength(o.Coordinate, pkg)); l > best {
+			best, owner, other = l, ownerOther, o
+		}
+	}
+	return other, owner
 }
 
 // ownedLength is the length of the match by which the package named name owns import path pkg,

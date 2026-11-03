@@ -141,6 +141,12 @@ func TestCountedReachPaths(t *testing.T) {
 			want: []string{"Transport", "Opaque", "Get", "Dial"},
 		},
 		{
+			name:     "advisory module orders first without a selection",
+			packages: nil,
+			paths:    []plugin.ReachPath{reachTo("net/http", "Get"), reachTo("golang.org/x/net/idna", "ToASCII")},
+			want:     []string{"ToASCII", "Get"},
+		},
+		{
 			name:     "longer other module owns its subtree",
 			selected: "golang.org/x/net",
 			present:  []map[string]any{idnaAt("v0.55.0")},
@@ -178,7 +184,7 @@ func TestCountedReachPaths(t *testing.T) {
 				inv["toolchain"] = tt.toolchain
 			}
 			putJSON(t, store, caseID, artifact.TypeInventory, inv)
-			adv := map[string]any{"affected_packages": tt.packages, "trust_tier": string(TrustFirstParty)}
+			adv := map[string]any{"module": "golang.org/x/net", "affected_packages": tt.packages, "trust_tier": string(TrustFirstParty)}
 			if tt.untrusted {
 				delete(adv, "trust_tier")
 			}
@@ -199,13 +205,13 @@ func TestCountedReachPaths(t *testing.T) {
 	}
 }
 
-func TestReadReachAttribution_CountsEveryPathOutsideAGoSelection(t *testing.T) {
+func TestReadReachAttribution_CountsEveryPathWithoutAGoPackage(t *testing.T) {
 	tests := []struct {
 		name string
 		inv  map[string]any
 	}{
 		{"non-Go assessment", map[string]any{"language": "java", "selected_coordinate": "org.example:lib"}},
-		{"no selected package", map[string]any{"language": "go"}},
+		{"no package named", map[string]any{"language": "go"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

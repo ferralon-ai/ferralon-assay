@@ -1097,10 +1097,13 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 // not listed: it means `go env` failed, which puts the search's own build configuration in doubt, so
 // it keeps analysis_did_not_run.
 var refutationWithheldReasons = map[string]bool{
-	plugin.PartialReasonExcludedFiles:     true,
-	plugin.PartialReasonUnsearchedMethods: true,
-	plugin.PartialReasonLibraryEscape:     true,
-	plugin.PartialReasonReflectiveCall:    true,
+	plugin.PartialReasonExcludedFiles:           true,
+	plugin.PartialReasonExcludedFilesAssembly:   true,
+	plugin.PartialReasonExcludedFilesLinkname:   true,
+	plugin.PartialReasonExcludedFilesCgoInclude: true,
+	plugin.PartialReasonUnsearchedMethods:       true,
+	plugin.PartialReasonLibraryEscape:           true,
+	plugin.PartialReasonReflectiveCall:          true,
 }
 
 // withoutVersionLimits drops, one occurrence each, the limits the inventory recorded against

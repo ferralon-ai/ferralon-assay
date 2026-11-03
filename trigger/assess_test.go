@@ -396,6 +396,17 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 			wantReason: report.ReasonRefutationWithheld,
 		},
 		{
+			name: "a left-out file's assembly, linkname or C include withheld the refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{
+					plugin.PartialReasonExcludedFilesAssembly, plugin.PartialReasonExcludedFilesLinkname,
+					plugin.PartialReasonExcludedFilesCgoInclude,
+				}
+			},
+			wantReason: report.ReasonRefutationWithheld,
+		},
+		{
 			name: "unsearched methods withheld the refutation",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil

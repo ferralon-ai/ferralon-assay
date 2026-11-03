@@ -5,22 +5,35 @@ costs another full review round. Before pushing a revision, check that every fin
 changed in your diff or answered in writing:
 
 ```
-scripts/review-closure-check.sh <findings-file> [base-ref]
+scripts/review-closure-check.sh <findings-file> <reviewed-sha>
 ```
 
-`base-ref` defaults to `origin/main`. The script compares against the diff `base-ref...HEAD`.
+`reviewed-sha` is required: it is the head commit the review covered. The script compares against
+the diff `<reviewed-sha>...HEAD`, which is your revision only. After a rebase that range widens back
+to the whole PR, so findings can read as closed by changes the review already saw.
 
 ## Findings file
 
-Save the review's findings as plain text or markdown, one per line:
+The script does not read a review as posted. Transcribe each finding by hand into one line: each
+summary line with its **major**, **minor** or **nit** label, and each inline comment, becomes
 
 ```
 path[:line] - text
 ```
 
-A finding is closed when its `path` appears in the diff. A finding that needs no code change, or
-has no path, is closed by an entry under an `## Answered` heading: the finding line, then ` => `,
-then the reason. An entry without a reason does not close it.
+For example, the review summary line `**minor**: any change to a file closes every finding on that
+file (scripts/review-closure-check.sh:64-71)` becomes
+`scripts/review-closure-check.sh:64 - any change to a file closes every finding on that file`.
+`line` is one number, so a range is written as its first line. Backticks around the location are
+ignored. A line of one or more `#` followed by a space is a heading, so `#409 duplicates the
+parser` is a finding.
+
+A finding with `:line` is closed when a hunk of the diff covers that line of the reviewed file, or
+inserts lines next to it. A finding with only a path prints `TOUCHED` when the path changed: a
+changed path is a hint, not proof that the finding is fixed, so it stays unclosed until answered.
+A finding that needs no code change, or has no path, is closed by an entry under an `## Answered`
+heading: the finding line, then ` => `, then the reason. An entry without a reason, or a line there
+without ` => `, does not close anything and is checked as a finding.
 
 ```
 docs/floor.md:12 - matrix wording is wrong
@@ -34,7 +47,8 @@ Title is too long => renamed on the PR, no file change
 
 ## Output
 
-Each unaddressed finding prints its own `OPEN: <finding>` line and the script exits 1. When all
-are closed it prints `review-closure-check: OK` and exits 0. Exit 2 means a usage or git error.
+Each finding that is not closed prints its own `OPEN: <finding>` or `TOUCHED: <finding>` line and
+the script exits 1. When all are closed it prints `review-closure-check: OK` and exits 0. Exit 2
+means a usage or git error, a findings file that cannot be read, or a file with no findings in it.
 
 The check shortens revision rounds only. It does not change how quickly a PR is merged.

@@ -157,7 +157,11 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 // ScanToolchain. It never fails the scan and never silently claims the subject was
 // scanned — the caller decides what an empty path set is evidence of.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	baseEnv := reachBaseEnv()
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.ReachabilityResult{}, err
+	}
+	baseEnv := reachBaseEnv(ctx)
 	env, scanToolchain, switched := subjectToolchainEnv(ctx, baseEnv, req.BuildDir, req.GoToolchain)
 
 	scanned, err := runGovulncheck(ctx, req, env, !switched)
@@ -728,19 +732,13 @@ func envOr(env []string, key, def string) string {
 //
 // govulncheck loads packages via go/packages, which spawns `go list` with THIS Env
 // (x/vuln passes cfg.env straight through to packages.Config.Env). The analyzed module
-// is NEVER a member of any workspace the plugin process happens to sit inside — e.g.
-// an enclosing repository's go.work when assessing an in-repo corpus repro. Force
-// GOWORK=off LOCALLY here so the load resolves the target module standalone, mirroring
-// LoadProgram (packages.go). This keeps the reachability path workspace-blind on its own
-// merits rather than relying solely on the process-global GOWORK=off set far away at
-// plugin entry (cmd/assay-plugin-go/main.go) — and an unset cmd.Env would otherwise
-// default to os.Environ(), reintroducing the ambient leak if any code path runs before
-// that entry-point Setenv.
-func reachBaseEnv() []string {
-	env := os.Environ()
-	out := make([]string, len(env), len(env)+1)
-	copy(out, env)
-	return append(out, "GOWORK=off")
+// loads under the build's own workspace (withGoWork), NEVER one the plugin process happens
+// to sit inside — e.g. an enclosing repository's go.work when assessing an in-repo corpus
+// repro — mirroring LoadProgram (packages.go). GOWORK is set LOCALLY here rather than left to
+// the process-global GOWORK=off set at plugin entry (cmd/assay-plugin-go/main.go): an unset
+// cmd.Env would default to os.Environ() and lose the build's workspace.
+func reachBaseEnv(ctx context.Context) []string {
+	return analyzerEnv(ctx)
 }
 
 // subjectToolchainEnv resolves the child environment for a run the caller wants executed under
@@ -1164,9 +1162,10 @@ type reconcileSummary struct {
 }
 
 // reconcileKey is the run-cache key of every reconcile entry for buildDir under known, which is as
-// reflectReachOf takes it. The program load reads the process environment, so that is part of it.
-func reconcileKey(buildDir string, known []string) []string {
-	return append([]string{buildDir, "known=" + strings.Join(known, ",")}, os.Environ()...)
+// reflectReachOf takes it. The program load reads the process environment and the build's GOWORK,
+// so that is part of it.
+func reconcileKey(ctx context.Context, buildDir string, known []string) []string {
+	return append([]string{buildDir, "known=" + strings.Join(known, ",")}, analyzerEnv(ctx)...)
 }
 
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
@@ -1177,7 +1176,7 @@ func reconcileKey(buildDir string, known []string) []string {
 // reflectReachOf takes it.
 func reconcileCallGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
 	dir := RunCacheDir(ctx)
-	key := reconcileKey(buildDir, known)
+	key := reconcileKey(ctx, buildDir, known)
 	if dir != "" {
 		if b, err := os.ReadFile(runCachePath(dir, "reconcile", key)); err == nil {
 			return decodeReconcileGraph(b)
@@ -1258,7 +1257,7 @@ func storeReconcileSummary(dir string, key []string, g reconcileGraph) {
 // back to the whole graph.
 func reconcileSummaryGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
 	if dir := RunCacheDir(ctx); dir != "" {
-		if s, ok := readReconcileSummary(dir, reconcileKey(buildDir, known)); ok {
+		if s, ok := readReconcileSummary(dir, reconcileKey(ctx, buildDir, known)); ok {
 			return reconcileGraph{CallGraph: plugin.CallGraphResult{Partiality: s.Partiality}, ReflectReach: s.ReflectReach}, nil
 		}
 	}

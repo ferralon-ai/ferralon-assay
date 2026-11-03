@@ -330,9 +330,9 @@ func newBranch(name string) string {
 	return "refs/heads/" + name + " " + fakeSHA + " refs/heads/" + name + " " + zeroSHA
 }
 
-// installClone is a fresh repository holding a copy of install-githooks.sh, which finds its
-// repository from its own location; it stands in for a checkout.
-func installClone(t *testing.T) string {
+// installTemplate builds, once per test, a repository holding a copy of install-githooks.sh (which
+// finds its repository from its own location) with no hooks directory; installClone copies it.
+func installTemplate(t *testing.T) string {
 	t.Helper()
 	install, err := filepath.Abs("install-githooks.sh")
 	if err != nil {
@@ -349,14 +349,50 @@ func installClone(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(work, "scripts", "install-githooks.sh"), b, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := runScript(t, work, nil, "", "git", "init", "-q"); code != 0 {
+	if out, code := runScript(t, work, nil, "", "git", "init", "-q", "--template="); code != 0 {
 		t.Fatalf("git init: exit %d:\n%s", code, out)
 	}
 	return work
 }
 
+// installClone is a copy of template, with core.hooksPath set to hooksPath unless it is empty and
+// each of hooks (name to mode) written into the hooks directory git would run.
+func installClone(t *testing.T, template, hooksPath string, hooks map[string]os.FileMode) string {
+	t.Helper()
+	work := t.TempDir()
+	if err := os.CopyFS(work, os.DirFS(template)); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(work, ".git", "hooks")
+	if hooksPath != "" {
+		dir = filepath.Join(work, hooksPath)
+		f, err := os.OpenFile(filepath.Join(work, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+		if err == nil {
+			_, err = f.WriteString("[core]\n\thooksPath = " + hooksPath + "\n")
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, mode := range hooks {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(dir, name), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return work
+}
+
 func TestInstallGithooksIsIdempotent(t *testing.T) {
-	work := installClone(t)
+	work := installClone(t, installTemplate(t), "", nil)
 	for i := 0; i < 2; i++ {
 		if out, code := runScript(t, work, nil, "", "bash", "scripts/install-githooks.sh"); code != 0 {
 			t.Fatalf("install run %d: exit %d:\n%s", i+1, code, out)
@@ -367,48 +403,23 @@ func TestInstallGithooksIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestInstallGithooksExistingHooks: a core.hooksPath set elsewhere is printed and kept unless
-// --force, and the executable non-sample hooks git would stop running are named.
-func TestInstallGithooksExistingHooks(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		hooksPath string            // core.hooksPath before the run; "" = unset
-		hooks     map[string]uint32 // files in the active hooks directory, by mode
-		args      []string
-		wantCode  int
-		wantPath  string
-		want      []string
-		notWant   []string
-	}{
-		{name: "other hooksPath is kept", hooksPath: ".husky", hooks: map[string]uint32{"pre-commit": 0o755},
-			wantCode: 1, wantPath: ".husky", want: []string{"already '.husky'", "--force", "would stop running: pre-commit"}},
-		{name: "other hooksPath with --force is replaced", hooksPath: ".husky", hooks: map[string]uint32{"pre-commit": 0o755},
-			args: []string{"--force"}, wantPath: "scripts/githooks", want: []string{"was '.husky'", "no longer runs these hooks", "pre-commit"}},
-		{name: "unset lists the clone's executable hooks",
-			hooks:    map[string]uint32{"pre-commit": 0o755, "commit-msg.sample": 0o755, "post-merge": 0o644},
-			wantPath: "scripts/githooks", want: []string{"no longer runs these hooks", "pre-commit"},
-			notWant: []string{"commit-msg.sample", "post-merge"}},
-		{name: "unset with no hooks says nothing more", wantPath: "scripts/githooks",
-			notWant: []string{"no longer runs"}},
-		{name: "unknown flag", args: []string{"--frce"}, wantCode: 2, want: []string{"usage"}},
-	} {
+type installCase struct {
+	name      string
+	hooksPath string                 // core.hooksPath before the run; "" = unset
+	hooks     map[string]os.FileMode // files in the hooks directory git runs, by mode
+	args      []string
+	wantCode  int
+	wantPath  string // core.hooksPath after the run, read from .git/config
+	want      []string
+	notWant   []string
+}
+
+func runInstallCases(t *testing.T, cases []installCase) {
+	t.Helper()
+	template := installTemplate(t)
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			work := installClone(t)
-			dir := filepath.Join(work, ".git", "hooks")
-			if tc.hooksPath != "" {
-				dir = filepath.Join(work, tc.hooksPath)
-				if out, code := runScript(t, work, nil, "", "git", "config", "core.hooksPath", tc.hooksPath); code != 0 {
-					t.Fatalf("git config: exit %d:\n%s", code, out)
-				}
-			}
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			for name, mode := range tc.hooks {
-				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), os.FileMode(mode)); err != nil {
-					t.Fatal(err)
-				}
-			}
+			work := installClone(t, template, tc.hooksPath, tc.hooks)
 			out, code := runScript(t, work, nil, "", "bash", append([]string{"scripts/install-githooks.sh"}, tc.args...)...)
 			if code != tc.wantCode {
 				t.Fatalf("exit %d, want %d:\n%s", code, tc.wantCode, out)
@@ -423,12 +434,46 @@ func TestInstallGithooksExistingHooks(t *testing.T) {
 					t.Errorf("output has %q:\n%s", w, out)
 				}
 			}
-			got, _ := runScript(t, work, nil, "", "git", "config", "--get", "core.hooksPath")
-			if strings.TrimSpace(got) != tc.wantPath {
-				t.Errorf("core.hooksPath = %q, want %q", strings.TrimSpace(got), tc.wantPath)
+			config, err := os.ReadFile(filepath.Join(work, ".git", "config"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := ""
+			for _, line := range strings.Split(string(config), "\n") {
+				if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && strings.EqualFold(strings.TrimSpace(k), "hooksPath") {
+					last = strings.TrimSpace(v)
+				}
+			}
+			if last != tc.wantPath {
+				t.Errorf("core.hooksPath = %q, want %q:\n%s", last, tc.wantPath, config)
 			}
 		})
 	}
+}
+
+// TestInstallGithooksKeepsAnotherHooksPath: a core.hooksPath set elsewhere is printed and kept
+// unless --force, which replaces it; either way the hooks there that would stop running are named.
+func TestInstallGithooksKeepsAnotherHooksPath(t *testing.T) {
+	husky := map[string]os.FileMode{"pre-commit": 0o755}
+	runInstallCases(t, []installCase{
+		{name: "kept without --force", hooksPath: ".husky", hooks: husky, wantCode: 1, wantPath: ".husky",
+			want: []string{"already '.husky'", "--force", "would stop running: pre-commit"}},
+		{name: "replaced with --force", hooksPath: ".husky", hooks: husky, args: []string{"--force"},
+			wantPath: "scripts/githooks", want: []string{"was '.husky'", "no longer runs these hooks", "pre-commit"}},
+	})
+}
+
+// TestInstallGithooksListsHooksThatStopRunning: with core.hooksPath unset, the clone's executable
+// hooks other than *.sample are named, since git stops running them once it is set.
+func TestInstallGithooksListsHooksThatStopRunning(t *testing.T) {
+	runInstallCases(t, []installCase{
+		{name: "executable non-sample hooks are named",
+			hooks:    map[string]os.FileMode{"pre-commit": 0o755, "commit-msg.sample": 0o755, "post-merge": 0o644},
+			wantPath: "scripts/githooks", want: []string{"no longer runs these hooks", "pre-commit"},
+			notWant: []string{"commit-msg.sample", "post-merge"}},
+		{name: "no hooks, no list", wantPath: "scripts/githooks", notWant: []string{"no longer runs"}},
+		{name: "unknown flag changes nothing", args: []string{"--frce"}, wantCode: 2, want: []string{"usage"}},
+	})
 }
 
 // TestPrePushHookFiresOnRealPush is the one end-to-end check: with core.hooksPath on the tracked

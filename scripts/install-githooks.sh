@@ -42,8 +42,7 @@ if [ -n "$current" ] && [ "$force" != 1 ]; then
 fi
 
 git -C "$root" config core.hooksPath "$want"
-echo "core.hooksPath = $(git -C "$root" config --get core.hooksPath)"
-[ -n "$current" ] && echo "  (was '$current')"
+if [ -n "$current" ]; then echo "core.hooksPath = $want (was '$current')"; else echo "core.hooksPath = $want"; fi
 if [ "${#active[@]}" -gt 0 ]; then
   echo "install-githooks: git no longer runs these hooks in $dir: ${active[*]}" >&2
 fi

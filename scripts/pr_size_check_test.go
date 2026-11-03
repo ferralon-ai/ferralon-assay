@@ -1,6 +1,6 @@
-// Self-test for pr-size-check.sh. Each case builds its own throwaway repository (a base commit and
-// one branch commit, plus an orphan branch where a case needs one), so nothing touches the network or
-// the real checkout.
+// Self-test for pr-size-check.sh. Each case builds its own throwaway repository in one git
+// fast-import (a base commit, one branch commit, and an unrelated root commit where a case needs
+// one), so nothing touches the network or the real checkout.
 package scripts
 
 import (
@@ -12,61 +12,75 @@ import (
 	"testing"
 )
 
-func sizeGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
+type sizeCase struct {
+	baseTexts map[string]string // extra files in the base commit, path -> content
+	files     map[string]int    // files the branch writes, path -> line count
+	texts     map[string]string // files the branch writes, path -> content
+	moves     map[string]string // files the branch moves, old path -> new path
+	deletes   []string          // files the branch deletes
+	orphan    bool              // add branch "lonely", a root commit sharing no history with HEAD
+	env       []string
+	base      string
+	wantCode  int
+	want      []string
+	notWant   []string
+}
+
+// sizeQuote writes a path as fast-import's C-style quoted string.
+func sizeQuote(path string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\t", `\t`, "\n", `\n`).Replace(path) + `"`
+}
+
+// sizeCommit appends one fast-import commit to branch: the moves and deletes, then files written
+// (path -> content).
+func sizeCommit(s *strings.Builder, branch, from string, files, moves map[string]string, deletes []string) {
+	fmt.Fprintf(s, "commit refs/heads/%s\ncommitter t <t@example.com> 0 +0000\ndata 1\n%s\n", branch, branch[:1])
+	if from != "" {
+		fmt.Fprintf(s, "from %s\n", from)
+	}
+	for old, to := range moves {
+		fmt.Fprintf(s, "R %s %s\n", sizeQuote(old), sizeQuote(to))
+	}
+	for _, rel := range deletes {
+		fmt.Fprintf(s, "D %s\n", sizeQuote(rel))
+	}
+	for rel, text := range files {
+		fmt.Fprintf(s, "M 100644 inline %s\ndata %d\n%s\n", sizeQuote(rel), len(text), text)
 	}
 }
 
-// sizeWrite writes a file of n lines under dir.
-func sizeWrite(t *testing.T, dir, rel string, n int) {
+// sizeRepo builds the case's repository: main holds README.md and the base files, and topic, which
+// HEAD names, changes them.
+func sizeRepo(t *testing.T, c sizeCase) string {
 	t.Helper()
-	p := filepath.Join(dir, rel)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", "-b", "topic", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
 	}
-	if err := os.WriteFile(p, []byte(strings.Repeat("line\n", n)), 0o644); err != nil {
-		t.Fatal(err)
+	base := map[string]string{"README.md": "line\n"}
+	for rel, text := range c.baseTexts {
+		base[rel] = text
 	}
-}
-
-// sizeWriteText writes a file with the given content under dir.
-func sizeWriteText(t *testing.T, dir, rel, text string) {
-	t.Helper()
-	p := filepath.Join(dir, rel)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// sizeBranch cuts a branch from main, moves and deletes files, writes the rest (path -> line count,
-// or path -> content) and commits them.
-func sizeBranch(t *testing.T, dir, name string, c sizeCase) {
-	t.Helper()
-	sizeGit(t, dir, "checkout", "-q", "-B", name, "main")
-	for from, to := range c.moves {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, to)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		sizeGit(t, dir, "mv", from, to)
-	}
-	for _, rel := range c.deletes {
-		sizeGit(t, dir, "rm", "-q", rel)
-	}
+	topic := map[string]string{}
 	for rel, n := range c.files {
-		sizeWrite(t, dir, rel, n)
+		topic[rel] = strings.Repeat("line\n", n)
 	}
 	for rel, text := range c.texts {
-		sizeWriteText(t, dir, rel, text)
+		topic[rel] = text
 	}
-	sizeGit(t, dir, "add", "-A")
-	sizeGit(t, dir, "commit", "-q", "--allow-empty", "-m", name)
+	var s strings.Builder
+	sizeCommit(&s, "main", "", base, nil, nil)
+	sizeCommit(&s, "topic", "refs/heads/main", topic, c.moves, c.deletes)
+	if c.orphan {
+		sizeCommit(&s, "lonely", "", map[string]string{"other.txt": "line\n"}, nil, nil)
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(s.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import: %v\n%s", err, out)
+	}
+	return dir
 }
 
 func runSize(t *testing.T, dir string, env []string, args ...string) (string, int) {
@@ -88,35 +102,9 @@ func runSize(t *testing.T, dir string, env []string, args ...string) (string, in
 	return string(out), code
 }
 
-type sizeCase struct {
-	baseTexts map[string]string // extra files in the base commit, path -> content
-	files     map[string]int    // files the branch writes, path -> line count
-	texts     map[string]string // files the branch writes, path -> content
-	moves     map[string]string // files the branch moves, old path -> new path
-	deletes   []string          // files the branch deletes
-	setup     func(t *testing.T, dir string)
-	env       []string
-	base      string
-	wantCode  int
-	want      []string
-	notWant   []string
-}
-
 func checkSize(t *testing.T, c sizeCase) {
 	t.Helper()
-	dir := t.TempDir()
-	sizeGit(t, dir, "init", "-q", "-b", "main")
-	sizeWrite(t, dir, "README.md", 1)
-	for rel, text := range c.baseTexts {
-		sizeWriteText(t, dir, rel, text)
-	}
-	sizeGit(t, dir, "add", "-A")
-	sizeGit(t, dir, "commit", "-q", "-m", "base")
-	sizeBranch(t, dir, "topic", c)
-	if c.setup != nil {
-		c.setup(t, dir)
-	}
-	out, code := runSize(t, dir, c.env, c.base)
+	out, code := runSize(t, sizeRepo(t, c), c.env, c.base)
 	if code != c.wantCode {
 		t.Fatalf("exit %d, want %d\n%s", code, c.wantCode, out)
 	}
@@ -239,13 +227,8 @@ func TestPRSizeOptionShapedBase(t *testing.T) {
 
 // A base that shares no history with HEAD, as on a shallow clone, is a git error, not an empty diff.
 func TestPRSizeNoMergeBase(t *testing.T) {
-	checkSize(t, sizeCase{files: map[string]int{"a/x.go": 1}, base: "lonely", wantCode: 2,
-		want: []string{"no merge base", "--unshallow"},
-		setup: func(t *testing.T, dir string) {
-			sizeGit(t, dir, "checkout", "-q", "--orphan", "lonely")
-			sizeGit(t, dir, "commit", "-q", "--allow-empty", "-m", "lonely")
-			sizeGit(t, dir, "checkout", "-q", "-f", "topic")
-		}})
+	checkSize(t, sizeCase{files: map[string]int{"a/x.go": 1}, orphan: true, base: "lonely", wantCode: 2,
+		want: []string{"no merge base", "--unshallow"}})
 }
 
 func TestPRSizeBadLimit(t *testing.T) {

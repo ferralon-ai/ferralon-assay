@@ -46,6 +46,7 @@ base_sha="$(git rev-parse --verify --quiet --end-of-options "$base^{commit}")" |
 merge_base="$(git merge-base "$base_sha" HEAD)" ||
   usage_error "no merge base between '$base' and HEAD; a shallow clone needs more history (git fetch --deepen=<n> or git fetch --unshallow)"
 
+tab="$(printf '\t')"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 # -z: paths come NUL-terminated and unquoted. diff.renames=true keeps a user's "copies" setting from
@@ -53,12 +54,17 @@ trap 'rm -rf "$work"' EXIT
 git -c diff.renames=true diff --numstat -z -M "$merge_base" HEAD >"$work/numstat" ||
   usage_error "git diff $base...HEAD failed"
 
-# is_generated_go <commit> <path>: the file carries Go's generated-code marker before its package clause.
+# is_generated_go <path>: the file carries Go's generated-code marker before its package clause. A
+# deleted file is read where it last existed.
 is_generated_go() {
-  git cat-file blob "$1:$2" 2>/dev/null | awk '
-    /^package[ \t]/ { past = 1 }
-    !past && /^\/\/ Code generated .* DO NOT EDIT\.$/ { found = 1 }
-    END { exit !found }'
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      'package '* | 'package'"$tab"*) return 1 ;;
+      '// Code generated '*' DO NOT EDIT.') return 0 ;;
+    esac
+  done < <(git cat-file blob "HEAD:$1" 2>/dev/null || git cat-file blob "$merge_base:$1" 2>/dev/null)
+  return 1
 }
 
 excluded() {
@@ -66,20 +72,12 @@ excluded() {
   case "${1##*/}" in
     go.sum | package-lock.json | yarn.lock | pnpm-lock.yaml | \
       *.pb.go | *_gen.go | *.gen.go | *.generated.* | zz_generated.*) return 0 ;;
-    *.go)
-      # A deleted file is read where it last existed.
-      if git cat-file -e "HEAD:$1" 2>/dev/null; then
-        is_generated_go HEAD "$1"
-      else
-        is_generated_go "$merge_base" "$1"
-      fi
-      ;;
+    *.go) is_generated_go "$1" ;;
     *) return 1 ;;
   esac
 }
 
 # One "<lines> <area>" line per counted file. A file at the repository root is area "(root)".
-tab="$(printf '\t')"
 files=0
 lines=0
 while IFS= read -r -d '' rec; do

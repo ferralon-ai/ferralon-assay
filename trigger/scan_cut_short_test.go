@@ -303,6 +303,13 @@ func TestRunBaseline_CutInventoryKeepsStoredSBOM(t *testing.T) {
 		wantPkgs []report.Package
 	}{
 		{name: "stored SBOM kept", store: func() *memStore { s, _ := groundedBaseline(); return s }, wantPkgs: []report.Package{wiringPkg}},
+		{name: "stored Go build list dropped", store: func() *memStore {
+			s, _ := groundedBaseline()
+			for _, sbom := range []*report.SBOM{&s.state.SBOM, &s.state.Report.SBOM} {
+				sbom.GoBuildList, sbom.GoMainModule, sbom.GoWorkspaceModules = plugin.BuildListGoModGraph, "example.com/app", []string{"example.com/a"}
+			}
+			return s
+		}, wantPkgs: []report.Package{wiringPkg}},
 		{name: "nothing stored", store: func() *memStore { return &memStore{} }},
 	}
 	for _, tc := range cases {
@@ -324,6 +331,12 @@ func TestRunBaseline_CutInventoryKeepsStoredSBOM(t *testing.T) {
 			}
 			if !slices.Equal(store.state.SBOM.Packages, tc.wantPkgs) || !slices.Equal(rep.SBOM.Packages, tc.wantPkgs) {
 				t.Errorf("stored SBOM %+v, Report SBOM %+v; want %+v", store.state.SBOM.Packages, rep.SBOM.Packages, tc.wantPkgs)
+			}
+			// The kept SBOM is another commit's, so it never stands as this build's module list.
+			for _, sbom := range []report.SBOM{rep.SBOM, store.state.SBOM} {
+				if sbom.GoBuildList != "" || sbom.GoMainModule != "" || len(sbom.GoWorkspaceModules) != 0 {
+					t.Errorf("kept SBOM carries a Go build list: %q %q %v", sbom.GoBuildList, sbom.GoMainModule, sbom.GoWorkspaceModules)
+				}
 			}
 			got := slices.ContainsFunc(rep.Partiality, func(n report.PartialityNote) bool { return n.Detail == priorSBOMNote.Detail })
 			if got != (len(tc.wantPkgs) > 0) {

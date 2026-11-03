@@ -39,6 +39,9 @@ type acquired struct {
 	// graph is the Java or Kotlin scan's build graph; nil for every other language.
 	graph *jvmGraph
 
+	// goWork is the caller's statement of the GOWORK a Go build runs under (-subject-gowork).
+	goWork string
+
 	// goToolchain is the caller's statement of the subject's Go toolchain: the declared and observed
 	// versions and the observation's trust, as runAssessOptions hands them to the pipeline. The zero
 	// value states nothing.

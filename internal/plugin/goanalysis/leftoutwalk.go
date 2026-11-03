@@ -838,7 +838,7 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 	}
 	// The package's files are named by the directory go list reports; path may reach the same
 	// directory by another name (a symbolic link).
-	if own.dir != "" && sameDir(filepath.Dir(path), own.dir) {
+	if own.dir != "" && sameFileDir(filepath.Dir(path), own.dir) {
 		path = filepath.Join(own.dir, filepath.Base(path))
 	}
 	if w.dropped[path] {
@@ -935,8 +935,8 @@ func (w *lofWorld) continued(own *lofPkg) *lofWalk {
 	return &lofWalk{w: w, out: b.out.clone(), epoch: w.epoch, base: b.epoch, own: own, touched: maps.Clone(b.touched), entered: maps.Clone(b.entered), called: maps.Clone(b.called), stopped: b.stopped}
 }
 
-// sameDir reports whether a and b name the same directory.
-func sameDir(a, b string) bool {
+// sameFileDir reports whether a and b name the same directory.
+func sameFileDir(a, b string) bool {
 	if a == b {
 		return true
 	}

@@ -170,7 +170,7 @@ func lofCandidates(pkgs []*packages.Package) []lofCandidate {
 // build that fails or panics yields an engine whose Fail is lofGraphError, so every left-out file
 // counts.
 func loadLofEngine(ctx context.Context, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) *lofEngine {
-	key := append(append(loadCacheKey(buildDir), fmt.Sprint(release)), env...)
+	key := append(append(loadCacheKey(ctx, buildDir), fmt.Sprint(release)), env...)
 	b, err := runCached(ctx, "leftout", key, func() (b []byte, err error) {
 		defer func() {
 			if r := recover(); r != nil {

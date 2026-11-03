@@ -659,6 +659,15 @@ func TestDependencyHolds_UnreadableBuildList(t *testing.T) {
 	}
 }
 
+// TestSameDir_Unresolvable: a main module whose directory cannot be resolved is not buildDir's own, so
+// a path it holds is measured as a dependency's rather than resolved name-wide as first-party.
+func TestSameDir_Unresolvable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	if sameDir(missing, missing) {
+		t.Fatal("sameDir counts a directory it cannot resolve as buildDir's own module")
+	}
+}
+
 // TestDependencyHolds_VendorMode reads vendor/modules.txt only when the go command reads the build
 // from vendor/. A vendor/ it does not read can be stale: it may name a nested module whose path has
 // since moved into the main module, and taking it would scope a first-party advisory to nothing.

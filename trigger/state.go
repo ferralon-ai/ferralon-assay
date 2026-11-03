@@ -195,6 +195,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// SBOM would silently flatten to packages-only, and the next PR diff against it
 	// would see every relationship as newly-absent.
 	b.SetRelationships(baseline.SBOM.Relationships)
+	b.SetGoBuildList(baseline.SBOM)
 	// A baseline row a fresh row stands in for (a scan_cut_short row unrowedAdvisories skipped) is
 	// dropped. The head's inventory limits apply to the inherited rows as to fresh ones: a package
 	// the head could not inventory may be installed where the baseline's analysis never looked.
@@ -432,6 +433,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The re-analyzed Report's SBOM is the PR head's — carry its relationships too, so
 	// the stored head SBOM stays a whole graph and the next diff has edges to compare.
 	b.SetRelationships(req.PRSBOM.Relationships)
+	b.SetGoBuildList(req.PRSBOM)
 
 	var rows []report.AdvisoryFinding
 	for i := range baseline.Advisories {
@@ -625,6 +627,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// relationships) is reused verbatim, so the stored inventory does not flatten
 	// across scheduled watches.
 	b.SetRelationships(prior.SBOM.Relationships)
+	b.SetGoBuildList(prior.SBOM)
 
 	var rows []report.AdvisoryFinding
 	for i := range prior.Advisories {

@@ -206,9 +206,9 @@ func goCommand(ctx context.Context, buildDir string, args ...string) *exec.Cmd {
 }
 
 // buildKey is the run cache key of a go command's answer for buildDir, which depends on the
-// build and the environment programEnv derives from the process's.
-func buildKey(buildDir string, extra ...string) []string {
-	return append(append([]string{buildDir}, extra...), os.Environ()...)
+// build and the environment programEnv derives from the process's and the build's GOWORK.
+func buildKey(ctx context.Context, buildDir string, extra ...string) []string {
+	return append(append([]string{buildDir}, extra...), analyzerEnv(ctx)...)
 }
 
 // goflagsBlockSearch reports whether the GOFLAGS the go command uses in buildDir, from the
@@ -216,7 +216,7 @@ func buildKey(buildDir string, extra ...string) []string {
 // search does not read (goflagsBlock). GOFLAGS that cannot be read blocks the search. It is read
 // once per build per scan; a read cut short by ctx is not kept.
 func goflagsBlockSearch(ctx context.Context, buildDir string) bool {
-	b, err := runCached(ctx, "goflagsblock", buildKey(buildDir), func() ([]byte, error) {
+	b, err := runCached(ctx, "goflagsblock", buildKey(ctx, buildDir), func() ([]byte, error) {
 		// GOFLAGS applies to go env's own flags too: -u, -w or -json there would print nothing or
 		// something other than GOFLAGS, so they are set on the command line, which overrides it.
 		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "-json=false", "-u=false", "-w=false", "GOFLAGS"))
@@ -234,9 +234,10 @@ func goflagsBlockSearch(ctx context.Context, buildDir string) bool {
 	return err != nil || string(b) != "false"
 }
 
-// dependencyHolds reports whether a module of buildDir's build list other than the main module
+// dependencyHolds reports whether a module of buildDir's build list other than buildDir's own
 // holds import path p: the module holding it with the longest path, by its own path or its
-// replacement's, is not the main module. A build the go command reads from vendor/, whose build
+// replacement's, is not the main module holding buildDir. Under a go.work the other modules it uses
+// are main modules too, but not buildDir's. A build the go command reads from vendor/, whose build
 // list it does not list, is read from vendor/modules.txt; a vendor/ the go command does not read
 // is not. A build list that cannot be read holds nothing.
 func dependencyHolds(ctx context.Context, buildDir, p string) bool {
@@ -250,6 +251,17 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	if err != nil {
 		return false
 	}
+	own := ""
+	if dir, err := filepath.EvalSymlinks(buildDir); err == nil {
+		for _, m := range mods {
+			if !m.Main || m.Dir == "" {
+				continue
+			}
+			if d, err := filepath.EvalSymlinks(m.Dir); err == nil && len(d) > len(own) && pathWithin(dir, d) {
+				own = d
+			}
+		}
+	}
 	held, main, mainPath := 0, false, ""
 	for _, m := range mods {
 		if m.Main {
@@ -261,7 +273,7 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 		}
 		for _, path := range paths {
 			if len(path) > held && pathHolds(path, p) {
-				held, main = len(path), m.Main
+				held, main = len(path), m.Main && (own == "" || sameDir(m.Dir, own))
 			}
 		}
 	}
@@ -350,6 +362,18 @@ func vendoredModules(buildDir string) ([]listedModule, error) {
 	return mods, nil
 }
 
+// sameDir reports whether dir, once its symlinks are evaluated, is resolved; a dir that cannot be
+// evaluated is not.
+func sameDir(dir, resolved string) bool {
+	d, err := filepath.EvalSymlinks(dir)
+	return err == nil && d == resolved
+}
+
+// pathWithin reports whether dir is root or lies below it.
+func pathWithin(dir, root string) bool {
+	return strings.HasPrefix(dir+string(filepath.Separator), root+string(filepath.Separator))
+}
+
 // pathHolds reports whether module path mod holds import path p, ignoring case.
 func pathHolds(mod, p string) bool {
 	return len(p) >= len(mod) && strings.EqualFold(p[:len(mod)], mod) && (len(p) == len(mod) || p[len(mod)] == '/')
@@ -380,7 +404,7 @@ func vendorRefusal(err error) bool {
 // kept as that refusal, errVendorMode when it refused because it is in vendor mode; one cut short
 // by ctx is not kept, so a later advisory lists again.
 func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
-	b, err := runCached(ctx, "modlist", buildKey(buildDir), func() ([]byte, error) {
+	b, err := runCached(ctx, "modlist", buildKey(ctx, buildDir), func() ([]byte, error) {
 		var l moduleListing
 		out, err := modsearchGo(goCommand(ctx, buildDir, "list", "-m", "-json", "all"))
 		if err == nil {
@@ -467,7 +491,7 @@ func downloadModules(ctx context.Context, buildDir string, mods []listedModule) 
 		return nil
 	}
 	var unfinished map[string]string
-	b, err := runCached(ctx, "moddownload", buildKey(buildDir, args...), func() ([]byte, error) {
+	b, err := runCached(ctx, "moddownload", buildKey(ctx, buildDir, args...), func() ([]byte, error) {
 		dirs, err := download(ctx, buildDir, args)
 		if err != nil {
 			unfinished = dirs
@@ -504,7 +528,11 @@ func download(ctx context.Context, buildDir string, args []string) (map[string]s
 	// A module that fails to download is reported in its own JSON entry and makes the command
 	// exit non-zero, so the output is read whatever the exit status. A checksum mismatch stops the
 	// command before it reports any module, which leaves every module it was to download unread.
-	out, _ := modsearchGo(goCommand(ctx, buildDir, append([]string{"mod", "download", "-json", "-modfile=" + modfile}, args...)...))
+	cmd := goCommand(ctx, buildDir, append([]string{"mod", "download", "-json", "-modfile=" + modfile}, args...)...)
+	// The go command refuses -modfile in workspace mode, and every module is named at its version,
+	// so the download selects nothing a workspace would change.
+	cmd.Env = append(cmd.Env, "GOWORK=off")
+	out, _ := modsearchGo(cmd)
 	dirs := make(map[string]string, len(args))
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for {

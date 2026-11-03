@@ -223,7 +223,8 @@ const (
 
 // TestGoModRequires: absence is proven only against the whole manifest. Every other module of the
 // checkout that the build root's graph leaves out, and that may build against the module, makes
-// the root's silence unknown, never absent; one whose complete require list omits it does not.
+// the root's silence unknown, never absent; one whose complete require list omits it does not. A
+// go.work that does not use the root is not the build's, so its members prove nothing.
 func TestGoModRequires(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -263,8 +264,11 @@ func TestGoModRequires(t *testing.T) {
 			"go.mod": stubRootGoMod, "testdata/a/go.mod": nestedCryptoGoMod,
 		}, "golang.org/x/crypto", nil, false, true},
 		{"a go.work member requires it", map[string]string{
-			"go.mod": stubRootGoMod, "go.work": "go 1.21\n\nuse ./receiver/a\n", "receiver/a/go.mod": nestedCryptoGoMod,
+			"go.mod": stubRootGoMod, "go.work": "go 1.21\n\nuse (\n\t.\n\t./receiver/a\n)\n", "receiver/a/go.mod": nestedCryptoGoMod,
 		}, "golang.org/x/crypto", nil, true, true},
+		{"a go.work that does not use the root, a member requires it", map[string]string{
+			"go.mod": stubRootGoMod, "go.work": "go 1.21\n\nuse ./receiver/a\n", "receiver/a/go.mod": nestedCryptoGoMod,
+		}, "golang.org/x/crypto", nil, false, false},
 		{"a go.work whose members do not name it", map[string]string{
 			"go.mod": stubRootGoMod, "go.work": "go 1.21\n\nuse ./receiver/a\n", "receiver/a/go.mod": "module example.com/stub/receiver/a\n\ngo 1.16\n",
 		}, "golang.org/x/crypto", nil, false, false},
@@ -281,7 +285,11 @@ func TestGoModRequires(t *testing.T) {
 			if tc.tree != nil {
 				nested = func() gomodtree.Tree { return *tc.tree }
 			}
-			present, known := goModRequires(dir, tc.module, nested)
+			ws, err := ResolveGoWorkspace(context.Background(), dir, dir, "")
+			if err != nil {
+				t.Fatalf("ResolveGoWorkspace: %v", err)
+			}
+			present, known := goModRequires(context.Background(), dir, ws, tc.module, nested)
 			if present != tc.wantPresent || known != tc.known {
 				t.Fatalf("goModRequires = (present %v, known %v), want (%v, %v)", present, known, tc.wantPresent, tc.known)
 			}

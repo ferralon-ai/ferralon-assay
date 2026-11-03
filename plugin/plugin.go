@@ -335,12 +335,14 @@ func Unsupported() Partiality { return Partial(PartialReasonUnsupported) }
 
 // IndexSymbolsRequest carries the buildable module to index.
 type IndexSymbolsRequest struct {
-	BuildDir string `json:"build_dir"` // checked-out module root (contains go.mod)
+	BuildDir string `json:"build_dir"`         // checked-out module root (contains go.mod)
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // CallGraphRequest carries the buildable module and the desired graph algorithm.
 type CallGraphRequest struct {
 	BuildDir  string `json:"build_dir"`
+	GoWork    string `json:"go_work,omitempty"`   // see ReachabilityRequest.GoWork
 	Algorithm string `json:"algorithm,omitempty"` // "vta" (default) | "rta" | "cha"
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
@@ -350,14 +352,16 @@ type CallGraphRequest struct {
 // FindIngressesRequest carries the buildable module to scan for entry points.
 type FindIngressesRequest struct {
 	BuildDir string `json:"build_dir"`
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // ResolveSymbolsRequest carries advisory identifiers from authoritative sources (inv.7).
 type ResolveSymbolsRequest struct {
 	BuildDir        string   `json:"build_dir"`
-	PURL            string   `json:"purl"`             // e.g. pkg:golang/github.com/x/y@v1.2.3
-	AdvisorySymbols []string `json:"advisory_symbols"` // vulnerable symbols from the advisory
-	VulnID          string   `json:"vuln_id"`          // e.g. GO-2021-0001 (for govulncheck)
+	GoWork          string   `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
+	PURL            string   `json:"purl"`              // e.g. pkg:golang/github.com/x/y@v1.2.3
+	AdvisorySymbols []string `json:"advisory_symbols"`  // vulnerable symbols from the advisory
+	VulnID          string   `json:"vuln_id"`           // e.g. GO-2021-0001 (for govulncheck)
 	// TargetEnv is the run's stated target-environment conditions, as on ReachabilityRequest:
 	// a lane that resolves the inventory to choose which dependency versions to read resolves it
 	// under these. Nil means none were stated.
@@ -464,9 +468,12 @@ type Annotation struct {
 
 // ReachabilityRequest carries the resolved sinks to trace toward.
 type ReachabilityRequest struct {
-	BuildDir string   `json:"build_dir"`
-	VulnID   string   `json:"vuln_id"` // drives govulncheck's advisory selection
-	Symbols  []string `json:"symbols"` // resolved SCIP/symbol strings to confirm reachable
+	BuildDir string `json:"build_dir"`
+	// GoWork is the GOWORK a Go build runs under, as the host resolved it: "" or "off" for none,
+	// else the absolute path of its go.work. The Go analyzer loads under it and never under its own.
+	GoWork  string   `json:"go_work,omitempty"`
+	VulnID  string   `json:"vuln_id"` // drives govulncheck's advisory selection
+	Symbols []string `json:"symbols"` // resolved SCIP/symbol strings to confirm reachable
 	// GoToolchain is the SUBJECT's Go toolchain the analysis must execute under, normalized
 	// "go1.21.3". Empty — the default and the only value any non-Go lane ever sees —
 	// means "run under whatever toolchain the analyzer already has", i.e. today's behavior.
@@ -709,7 +716,8 @@ const (
 
 // ResolveInventoryRequest carries the buildable module to resolve the whole dependency graph for.
 type ResolveInventoryRequest struct {
-	BuildDir string `json:"build_dir"` // checked-out module/workspace root
+	BuildDir string `json:"build_dir"`         // checked-out module/workspace root
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 
 	// TargetEnv is the §4.6 target-environment override the resolver evaluates environment-conditional
 	// dependencies against (onyx-q6). It rides on the REQUEST, not on BuildDir: the override is Assay
@@ -743,6 +751,9 @@ type DependencyInventory struct {
 	// MainModule is the path of the module the build list was resolved for (Go), which is part of
 	// the build but not one of Nodes; set with BuildList.
 	MainModule string `json:"main_module,omitempty"`
+	// WorkspaceModules are the other modules of the go.work the build list was resolved under (Go),
+	// sorted: main modules like MainModule, part of the build but not among Nodes; set with BuildList.
+	WorkspaceModules []string `json:"workspace_modules,omitempty"`
 }
 
 // BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected
@@ -803,7 +814,8 @@ type DependencyProvenance struct {
 // source→sink flows toward.
 type ComputeTaintRequest struct {
 	BuildDir string   `json:"build_dir"`
-	Sinks    []string `json:"sinks,omitempty"` // resolved sink SCIP ids to trace toward
+	GoWork   string   `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
+	Sinks    []string `json:"sinks,omitempty"`   // resolved sink SCIP ids to trace toward
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
 	DependencyCache string `json:"dependency_cache,omitempty"`
@@ -840,6 +852,7 @@ type HarnessResult struct {
 // BuildManifestRequest carries the buildable module to derive a build manifest for.
 type BuildManifestRequest struct {
 	BuildDir string `json:"build_dir"`
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // RuntimeSource records where a resolved toolchain identity came from.

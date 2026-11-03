@@ -46,3 +46,15 @@ type HandlerFunc func(ResponseWriter, *Request)
 
 // ServeHTTP calls f(w, r).
 func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) { f(w, r) }
+
+// FileHeader mirrors mime/multipart.FileHeader.
+type FileHeader struct {
+	Filename string
+	Size     int64
+}
+
+// Form mirrors mime/multipart.Form.
+type Form struct {
+	Value map[string][]string
+	File  map[string][]*FileHeader
+}

@@ -30,15 +30,14 @@ import (
 const envRunCacheDir = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
 
 func main() {
-	// This process exists ONLY to analyze a single standalone module dir (the analyzed
-	// target's own module) — it must NEVER consult an ambient Go workspace, e.g. the
-	// go.work of an enclosing repository when the plugin runs during development or from the live corpus suite
-	// (whose repro modules live UNDER the ferralon-assay module tree and are not go.work
-	// members). LoadProgram already forces GOWORK=off per-call, but Reachability runs
-	// govulncheck in-process via x/vuln/scan, which reads the ambient GOWORK and would
-	// fail with "directory prefix . does not contain modules listed in go.work". Neutralize
-	// it once at entry so every in-process analyzer is workspace-blind. The environment as it was is
-	// still the build's, under which the manifest resolves the build's toolchain, go.work included.
+	// This process analyzes one module under the workspace the host resolved for its build and
+	// names on each request — it must NEVER consult an ambient Go workspace, e.g. the go.work of an
+	// enclosing repository when the plugin runs during development or from the live corpus suite
+	// (whose repro modules live UNDER the ferralon-assay module tree and are not go.work members).
+	// Every go command the analyzer runs sets GOWORK from the request; neutralize the ambient value
+	// once at entry as well, so anything in-process that reads the environment directly is
+	// workspace-blind rather than bound to whatever go.work encloses the plugin. The environment as
+	// it was still carries the build's toolchain settings, under which the manifest resolves it.
 	ctx := goanalysis.WithBuildEnviron(context.Background(), os.Environ())
 	_ = os.Setenv("GOWORK", "off")
 	if err := run(analyzerContext(ctx), os.Stdin, os.Stdout); err != nil {

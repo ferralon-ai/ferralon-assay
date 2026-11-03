@@ -33,6 +33,10 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // (no_known_ingress). It NEVER renders an unknown as "safe" (inv.5). A load/SSA
 // failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.TaintResult{}, err
+	}
 	c, err := taintClosureOf(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.TaintResult{}, err
@@ -55,7 +59,7 @@ type taintClosure struct {
 // taintClosureOf returns buildDir's taint closure, computed once per tree per scan through the run
 // cache. A failed load is never cached, so it fails every run that asks (inv.4).
 func taintClosureOf(ctx context.Context, buildDir string) (taintClosure, error) {
-	b, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+	b, err := runCached(ctx, "taint", loadCacheKey(ctx, buildDir), func() ([]byte, error) {
 		c, err := computeTaintClosure(ctx, buildDir)
 		if err != nil {
 			return nil, err

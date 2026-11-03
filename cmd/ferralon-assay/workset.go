@@ -328,18 +328,33 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 	if !ok {
 		return nil
 	}
+	var goWork pipeline.GoWorkspace
+	if root.PURLType == "golang" {
+		goWork = goWorkspace(ctx, acq, dir)
+	}
 	return func(k pipeline.PackageKey) bool {
 		if k.Ecosystem != "" && k.Ecosystem != root.PURLType {
 			return false
 		}
 		var ok bool
 		if root.PURLType == "golang" {
-			_, ok = root.Matches(dir, k.Name, "", "")
+			_, ok = root.Matches(dir, goWork, k.Name, "", "")
 		} else {
-			_, ok = root.Matches(dir, "", k.Name, "")
+			_, ok = root.Matches(dir, goWork, "", k.Name, "")
 		}
 		return ok
 	}
+}
+
+// goWorkspace resolves the go.work the build of the Go module at dir runs under, as
+// codebase_inventory resolves it. One that cannot be resolved fails codebase_inventory for every
+// advisory admitted, so the module's go.mod alone decides admission: it reads as no workspace.
+func goWorkspace(ctx context.Context, acq *acquired, dir string) pipeline.GoWorkspace {
+	ws, err := pipeline.ResolveGoWorkspace(ctx, dir, acq.buildDir, acq.goWork)
+	if err != nil {
+		return pipeline.GoWorkspace{}
+	}
+	return ws
 }
 
 // manifestDir is the directory the work set reads the project's own manifest from. For Go that is
@@ -596,8 +611,8 @@ func aliasIndex() map[string]string {
 // only ever return advisories about packages the existing work set already named, which is precisely
 // the set we are trying to grow beyond. Widening needs an inventory built from the manifest instead.
 //
-// Go is read here from go.mod (the Go analyzer plugin declares resolve_versions Unsupported — Go
-// dependency versions are resolved in-pipeline from go.mod). Every other language reuses its
+// Go is read here from go.mod, or under a go.work from the workspace's build list (the Go analyzer
+// plugin declares resolve_versions Unsupported — Go dependency versions are resolved in-pipeline). Every other language reuses its
 // plugin's existing whole-manifest parse: ResolveDependencyVersions already parses every
 // manifest/lockfile under the build dir into DependencyVersionResult.All and only then selects the
 // requested coordinate, so an EMPTY coordinate returns the full inventory with no plugin change.
@@ -761,10 +776,34 @@ func versionlessPURL(purlType, name string) string {
 // reach them. It is resolved at the subject's toolchain when that is exact (stdlibVersion), and is
 // otherwise unresolved: named, with no version.
 //
-// go.mod is read at the module root (manifestDir), the module the pipeline analyzes; a tree
-// with no go.mod within that search gets a no_manifest note.
+// The module is the one at the module root (manifestDir), the module the pipeline analyzes, under
+// the go.work its build runs under (goWorkspace), as codebase_inventory resolves both. Under a
+// go.work no go.mod states what the build holds, so the build list decides instead
+// (pipeline.GoWorkspaceModules): each module at the version the build selects, and unresolved, so
+// admitted by name but never queried by version, every module the workspace uses or replaces, and
+// every module when the go command cannot compute the list. Without a go.work, go.mod's requires
+// are read; a tree with no go.mod within that search gets a no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	dir := manifestDir(acq)
+	ws := goWorkspace(ctx, acq, dir)
+	if ws.File != "" {
+		if pinned, unpinned, err := pipeline.GoWorkspaceModules(ctx, dir, ws); err == nil {
+			for name, version := range pinned {
+				resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: name, Version: version})
+			}
+			for _, name := range unpinned {
+				unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: name})
+			}
+			if v := stdlibVersion(ctx, acq, dir, ws); v != "" {
+				resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage, Version: v})
+			} else {
+				unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
+			}
+			sortPackages(resolved)
+			sortPackages(unresolved)
+			return resolved, unresolved, nil
+		}
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return nil, nil, []report.PartialityNote{{Reason: plugin.PartialReasonNoManifest, Ecosystem: ecosystemGo}}
@@ -793,7 +832,7 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 		}
 		add(r.Mod.Path, r.Mod.Version)
 	}
-	if v := stdlibVersion(ctx, acq, dir, mf); v != "" {
+	if v := stdlibVersion(ctx, acq, dir, ws); v != "" {
 		add(goStdlibPackage, v)
 	} else {
 		unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: goStdlibPackage})
@@ -806,27 +845,24 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 // stdlibVersion returns the subject's Go toolchain in the form OSV's Go ecosystem expects for the
 // "stdlib" package — a bare semver, NO "go" prefix — when the toolchain fact resolves EXACT, and ""
 // otherwise. The fact is pipeline.ResolveToolchain over the caller's declared and observed versions
-// and go.mod's directives, the fact the version axis adjudicates stdlib advisories against. A
-// directive is never exact, so a go.mod alone yields "".
+// and the go and toolchain lines the build runs under (goDirectives), the fact the version axis
+// adjudicates stdlib advisories against. A directive is never exact, so directives alone yield "".
 //
 // The prefix is not cosmetic. OSV cannot parse "go1.21.0" as a version and answers the query with
 // every stdlib advisory it has ever recorded instead of those that affect that release — an
 // unfiltered firehose that reads exactly like a real answer.
 //
 // The analyzer's resolved build toolchain is read only under trust, the only state in which the
-// resolution consults it. Its build manifest is read at dir, the module root mf was read from.
-func stdlibVersion(ctx context.Context, acq *acquired, dir string, mf *modfile.File) string {
+// resolution consults it. Its build manifest is read at dir, the module root.
+func stdlibVersion(ctx context.Context, acq *acquired, dir string, ws pipeline.GoWorkspace) string {
+	goLine, toolchain := goDirectives(dir, ws)
 	in := pipeline.ToolchainCandidates{
-		SubjectDeclared: acq.goToolchain.declared,
-		CIObserved:      acq.goToolchain.observed,
-		TrustCIObserved: acq.goToolchain.trustObserved,
-		BazelWorkspace:  pipeline.BazelWorkspaceAbove(dir),
-	}
-	if mf.Go != nil {
-		in.GoDirective = mf.Go.Version
-	}
-	if mf.Toolchain != nil {
-		in.ToolchainDirective = mf.Toolchain.Name
+		SubjectDeclared:    acq.goToolchain.declared,
+		CIObserved:         acq.goToolchain.observed,
+		TrustCIObserved:    acq.goToolchain.trustObserved,
+		BazelWorkspace:     pipeline.BazelWorkspaceAbove(dir),
+		GoDirective:        goLine,
+		ToolchainDirective: toolchain,
 	}
 	if in.TrustCIObserved && acq.plugin != nil {
 		if mani, err := acq.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: dir}); err == nil {
@@ -840,6 +876,30 @@ func stdlibVersion(ctx context.Context, acq *acquired, dir string, mf *modfile.F
 		return ""
 	}
 	return strings.TrimPrefix(fact.Version, "go")
+}
+
+// goDirectives returns the go and toolchain lines the build of the Go module at dir runs under: the
+// go.work's under a workspace (ws), which a workspace build obeys in place of its modules' own, and
+// otherwise the go.mod's at dir. A line not declared, or a file that cannot be read, is "".
+func goDirectives(dir string, ws pipeline.GoWorkspace) (goLine, toolchain string) {
+	if ws.File != "" {
+		return ws.Directives()
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return "", ""
+	}
+	mf, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", ""
+	}
+	if mf.Go != nil {
+		goLine = mf.Go.Version
+	}
+	if mf.Toolchain != nil {
+		toolchain = mf.Toolchain.Name
+	}
+	return goLine, toolchain
 }
 
 // Ecosystem tags, matching both report.Package.Ecosystem and OSV.dev's ecosystem vocabulary (they

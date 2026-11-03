@@ -46,7 +46,7 @@ base_sha="$(git rev-parse --verify --quiet --end-of-options "$base^{commit}")" |
 merge_base="$(git merge-base "$base_sha" HEAD)" ||
   usage_error "no merge base between '$base' and HEAD; a shallow clone needs more history (git fetch --deepen=<n> or git fetch --unshallow)"
 
-tab="$(printf '\t')"
+tab=$'\t'
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 # -z: paths come NUL-terminated and unquoted. diff.renames=true keeps a user's "copies" setting from
@@ -102,7 +102,10 @@ done <"$work/numstat" >"$work/areas"
 split="$(awk '
   { n = $1; sub(/^[0-9]+ /, ""); byarea[$0] += n }
   END { for (a in byarea) printf "%d %s\n", byarea[a], a }' "$work/areas" | LC_ALL=C sort -k1,1nr -k2)"
-areas="$(printf '%s' "$split" | grep -c '' || true)"
+areas=0
+if [ -n "$split" ]; then
+  while IFS= read -r _; do areas=$((areas + 1)); done <<<"$split"
+fi
 
 over=0
 if [ "$lines" -gt "$max_lines" ]; then
@@ -119,7 +122,7 @@ if [ "$areas" -gt "$max_areas" ]; then
 fi
 
 if [ "$over" -eq 1 ]; then
-  printf '%s\n' "$split" | sed 's/^\([0-9]*\) \(.*\)$/SPLIT: \2: \1 lines/'
+  while IFS= read -r l; do echo "SPLIT: ${l#* }: ${l%% *} lines"; done <<<"$split"
   exit 1
 fi
 echo "pr-size-check: OK"

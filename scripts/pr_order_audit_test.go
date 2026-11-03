@@ -505,12 +505,11 @@ func TestInstallGithooksNamesTheScope(t *testing.T) {
 		{name: "global overridden locally with --force", global: ".husky", hooks: husky, args: []string{"--force"},
 			wantPath: "scripts/githooks",
 			want:     []string{"in local config (overrides '.husky' from global config, which is left unchanged)", "no longer runs these hooks"}},
-		{name: "global already the hook directory", global: "scripts/githooks", want: []string{"already set, global config"}},
 	})
 }
 
 // TestInstallGithooksSameDirectory: another spelling of scripts/githooks is already set and left as
-// it is; a different directory is not.
+// it is.
 func TestInstallGithooksSameDirectory(t *testing.T) {
 	runInstallCases(t, []installCase{
 		{name: "dot slash", hooksPath: "./scripts/githooks", wantPath: "./scripts/githooks",
@@ -519,6 +518,14 @@ func TestInstallGithooksSameDirectory(t *testing.T) {
 			want: []string{"already set, local config"}},
 		{name: "absolute path", hooksPath: "$WORK/scripts/githooks", wantPath: "$WORK/scripts/githooks",
 			want: []string{"already set, local config"}},
+	})
+}
+
+// TestInstallGithooksComparesTheDirectory: the directory decides, in any scope: a global value naming
+// scripts/githooks is already set, and a directory that only shares its prefix is another one.
+func TestInstallGithooksComparesTheDirectory(t *testing.T) {
+	runInstallCases(t, []installCase{
+		{name: "global already the hook directory", global: "scripts/githooks", want: []string{"already set, global config"}},
 		{name: "a sibling directory is another directory", hooksPath: "scripts/githooks-old", wantCode: 1,
 			wantPath: "scripts/githooks-old", want: []string{"already 'scripts/githooks-old' (local config)"}},
 	})

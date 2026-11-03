@@ -28,6 +28,7 @@ func TestActionHandsOverTheJobsGOWORK(t *testing.T) {
 		{name: "neither", want: ""},
 		{name: "job off", job: "off", want: "off"},
 		{name: "job go.work", job: "/work/repo/go.work", want: "/work/repo/go.work"},
+		{name: "job auto", job: "auto", want: "auto"}, // the go command's own name for none; the scanner reads it so
 		{name: "input over job", input: "go.work", job: "off", want: "go.work"},
 		{name: "input alone", input: "off", want: "off"},
 	} {

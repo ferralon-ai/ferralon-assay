@@ -37,7 +37,8 @@ func (w GoWorkspace) GOWORK() string {
 // ResolveGoWorkspace resolves the go.work the build of the Go module at buildDir runs under.
 //
 // declared is the caller's statement of the build's GOWORK: "off", a path to the go.work (relative
-// to checkoutRoot unless absolute), or "" for none. The scanner's own GOWORK is never read; run
+// to checkoutRoot unless absolute), or "" for none. "auto" is the go command's own name for none
+// and reads the same. The scanner's own GOWORK is never read; run
 // conditions are handed in, not resolved from the analyzer's environment. With nothing declared the
 // go.work is the one the go command finds, the nearest at or above buildDir, searched no higher than
 // the git work tree holding buildDir (else checkoutRoot when it holds buildDir, else buildDir): a
@@ -55,7 +56,7 @@ func ResolveGoWorkspace(ctx context.Context, buildDir, checkoutRoot, declared st
 	switch declared {
 	case "off":
 		return GoWorkspace{}, nil
-	case "":
+	case "", "auto":
 		file, found, err := findGoWork(ctx, own, checkoutRoot)
 		if err != nil || !found {
 			return GoWorkspace{}, err

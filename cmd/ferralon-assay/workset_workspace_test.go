@@ -87,6 +87,24 @@ func TestGoInventory_Workspace(t *testing.T) {
 	}
 }
 
+// TestGoInventory_WorkspaceAuto: GOWORK=auto is the go command's own name for none, so a job that
+// sets it builds under the go.work the go command finds, and the inventory is that workspace's.
+func TestGoInventory_WorkspaceAuto(t *testing.T) {
+	acq := goWorkFixture(t, "auto")
+	gitT(t, filepath.Dir(acq.buildDir), "init", "-q")
+	resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
+	if len(notes) != 0 {
+		t.Errorf("notes = %+v, want none", notes)
+	}
+	if len(resolved) != 0 {
+		t.Errorf("resolved = %+v, want none", resolved)
+	}
+	want := []report.Package{{Ecosystem: ecosystemGo, Name: "example.com/mono/b"}, {Ecosystem: ecosystemGo, Name: goStdlibPackage}}
+	if !reflect.DeepEqual(unresolved, want) {
+		t.Errorf("unresolved = %+v, want %+v", unresolved, want)
+	}
+}
+
 // TestPolicyWorkSet_AdmitsWorkspaceMembers: a policy advisory against a module the build's go.work
 // uses is admitted, and one against a module outside the build is not; with the workspace off the
 // member is outside the build.

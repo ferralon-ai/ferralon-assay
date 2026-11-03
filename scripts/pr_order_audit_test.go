@@ -1,6 +1,9 @@
 // Offline tests for pr-order-audit.sh (open-PR duplicate report) and githooks/pre-push (refuse a
 // second remote branch for an order id), plus install-githooks.sh. The hook runs against throwaway
 // git repositories with a local bare "origin". No network.
+//
+// The audit tests need jq, as the audit itself does, and skip when it is not on PATH: on such a host
+// `go test ./scripts/` passes without running the audit. CI's runner has jq.
 package scripts
 
 import (
@@ -9,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -97,6 +101,13 @@ func TestPROrderAuditDuplicates(t *testing.T) {
 			listing: auditList(auditPR("1", "asy-5-x", "t"), auditPR("2", "y", "[ASY-5] t"))},
 		{name: "eric-req slug", wantCode: 1, want: []string{"eric-req-fix-184-docs"},
 			listing: auditList(auditPR("1", "eric-req-fix-184-docs", "a"), auditPR("2", "z", "eric-req-fix-184-docs docs"))},
+		{name: "eric-req suffix after a non-hyphen delimiter", wantCode: 1,
+			want:    []string{"eric-req-x: 2 open PRs: #1 (eric-req-x/r1), #2 (eric-req-x_r2)"},
+			listing: auditList(auditPR("1", "eric-req-x/r1", "a"), auditPR("2", "eric-req-x_r2", "b"))},
+		{name: "duplicates print sorted", wantCode: 1,
+			want: []string{"ASY-5: 2 open PRs: #3 (asy-5-a), #4 (asy-5-b)\nASY-7: 2 open PRs: #1 (asy-7-a), #2 (asy-7-b)\n"},
+			listing: auditList(auditPR("1", "asy-7-a", "t"), auditPR("2", "asy-7-b", "t"),
+				auditPR("3", "asy-5-a", "t"), auditPR("4", "asy-5-b", "t"))},
 	})
 }
 
@@ -113,6 +124,8 @@ func TestPROrderAuditNoDuplicates(t *testing.T) {
 			listing: auditList(auditPR("1", "xasy-9", "t"), auditPR("2", "asy-9", "t"))},
 		{name: "eric-req prefix slug does not match", wantCode: 0,
 			listing: auditList(auditPR("1", "eric-req-fix-184", "t"), auditPR("2", "eric-req-fix-184-docs", "t"))},
+		{name: "eric-req hyphen suffix is part of the slug", wantCode: 0,
+			listing: auditList(auditPR("1", "eric-req-x-r1", "t"), auditPR("2", "eric-req-x-r2", "t"))},
 	})
 }
 
@@ -139,6 +152,43 @@ func TestPROrderAuditFailingGh(t *testing.T) {
 	out, code := runScript(t, ".", []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "PR_ORDER_AUDIT_JSON="}, "", script)
 	if code != 2 {
 		t.Fatalf("exit %d, want 2 (a failed read is never safe):\n%s", code, out)
+	}
+}
+
+// TestPROrderAuditWarnsAtListLimit: a live listing of exactly gh's 500-row limit may be short, and
+// stderr says so; one row fewer is complete and says nothing.
+func TestPROrderAuditWarnsAtListLimit(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not on PATH")
+	}
+	script, err := filepath.Abs("pr-order-audit.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\ncat \"$FAKE_GH_JSON\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		rows int
+		warn bool
+	}{{500, true}, {499, false}} {
+		prs := make([]string, tc.rows)
+		for i := range prs {
+			prs[i] = auditPR(strconv.Itoa(i+1), "asy-"+strconv.Itoa(i+1)+"-a", "t")
+		}
+		listing := filepath.Join(bin, strconv.Itoa(tc.rows)+".json")
+		if err := os.WriteFile(listing, []byte(auditList(prs...)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "PR_ORDER_AUDIT_JSON=", "FAKE_GH_JSON=" + listing}
+		out, code := runScript(t, ".", env, "", script)
+		if code != 0 {
+			t.Fatalf("%d rows: exit %d, want 0:\n%s", tc.rows, code, out)
+		}
+		if got := strings.Contains(out, "listing limit"); got != tc.warn {
+			t.Errorf("%d rows: limit warning printed = %v, want %v:\n%s", tc.rows, got, tc.warn, out)
+		}
 	}
 }
 
@@ -207,6 +257,8 @@ func TestPrePushRefusesSecondBranch(t *testing.T) {
 			line: newBranch("asy-104-second"), wantCode: 1, want: "asy-104-first"},
 		{name: "taken id matches case-insensitively", remote: []string{"ASY-104-first"},
 			line: newBranch("asy-104-second"), wantCode: 1, want: "ASY-104-first"},
+		{name: "two new branches for one id in one push",
+			line: newBranch("asy-104-a") + "\n" + newBranch("asy-104-b"), wantCode: 1, want: "in this same push"},
 	})
 }
 
@@ -214,6 +266,12 @@ func TestPrePushRefusesSecondEricReqBranch(t *testing.T) {
 	runHookCases(t, []hookCase{
 		{name: "taken eric-req id", remote: []string{"eric-req-fix-184-docs"},
 			line: newBranch("work/eric-req-fix-184-docs"), wantCode: 1, want: "eric-req-fix-184-docs"},
+		{name: "suffix after a slash", remote: []string{"eric-req-fix-184-docs/r731864"},
+			line: newBranch("eric-req-fix-184-docs/r999999"), wantCode: 1, want: "eric-req-fix-184-docs/r731864"},
+		{name: "suffix after an underscore", remote: []string{"eric-req-fix-184-docs_r731864"},
+			line: newBranch("eric-req-fix-184-docs_r999999"), wantCode: 1, want: "eric-req-fix-184-docs_r731864"},
+		{name: "suffix after a dot", remote: []string{"eric-req-fix-184-docs.r731864"},
+			line: newBranch("eric-req-fix-184-docs.r999999"), wantCode: 1, want: "eric-req-fix-184-docs.r731864"},
 	})
 }
 
@@ -230,6 +288,8 @@ func TestPrePushAllowsUnrelatedBranches(t *testing.T) {
 	runHookCases(t, []hookCase{
 		{name: "no id", remote: []string{"asy-104-first"}, line: newBranch("cleanup")},
 		{name: "different id", remote: []string{"asy-104-first"}, line: newBranch("asy-105-first")},
+		{name: "two new branches for different ids in one push",
+			line: newBranch("asy-104-a") + "\n" + newBranch("asy-105-a")},
 	})
 }
 
@@ -244,6 +304,8 @@ func TestPrePushLongerIdIsAnotherOrder(t *testing.T) {
 		{name: "longer id", remote: []string{"asy-09-first"}, line: newBranch("asy-099-second")},
 		{name: "longer eric-req slug", remote: []string{"eric-req-fix-184-docs"},
 			line: newBranch("eric-req-fix-184-docs-take2")},
+		{name: "hyphen suffix is part of the eric-req slug", remote: []string{"eric-req-fix-184-docs-r731864"},
+			line: newBranch("eric-req-fix-184-docs-r999999")},
 	})
 }
 
@@ -268,12 +330,14 @@ func newBranch(name string) string {
 	return "refs/heads/" + name + " " + fakeSHA + " refs/heads/" + name + " " + zeroSHA
 }
 
-func TestInstallGithooksIsIdempotent(t *testing.T) {
+// installClone is a fresh repository holding a copy of install-githooks.sh, which finds its
+// repository from its own location; it stands in for a checkout.
+func installClone(t *testing.T) string {
+	t.Helper()
 	install, err := filepath.Abs("install-githooks.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Stand in for the checkout: the script finds its repository from its own location.
 	work := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(work, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
@@ -288,6 +352,11 @@ func TestInstallGithooksIsIdempotent(t *testing.T) {
 	if out, code := runScript(t, work, nil, "", "git", "init", "-q"); code != 0 {
 		t.Fatalf("git init: exit %d:\n%s", code, out)
 	}
+	return work
+}
+
+func TestInstallGithooksIsIdempotent(t *testing.T) {
+	work := installClone(t)
 	for i := 0; i < 2; i++ {
 		if out, code := runScript(t, work, nil, "", "bash", "scripts/install-githooks.sh"); code != 0 {
 			t.Fatalf("install run %d: exit %d:\n%s", i+1, code, out)
@@ -295,6 +364,70 @@ func TestInstallGithooksIsIdempotent(t *testing.T) {
 	}
 	if out, code := runScript(t, work, nil, "", "git", "config", "--get-all", "core.hooksPath"); code != 0 || out != "scripts/githooks\n" {
 		t.Fatalf("core.hooksPath = %q (exit %d), want exactly one scripts/githooks", out, code)
+	}
+}
+
+// TestInstallGithooksExistingHooks: a core.hooksPath set elsewhere is printed and kept unless
+// --force, and the executable non-sample hooks git would stop running are named.
+func TestInstallGithooksExistingHooks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		hooksPath string            // core.hooksPath before the run; "" = unset
+		hooks     map[string]uint32 // files in the active hooks directory, by mode
+		args      []string
+		wantCode  int
+		wantPath  string
+		want      []string
+		notWant   []string
+	}{
+		{name: "other hooksPath is kept", hooksPath: ".husky", hooks: map[string]uint32{"pre-commit": 0o755},
+			wantCode: 1, wantPath: ".husky", want: []string{"already '.husky'", "--force", "would stop running: pre-commit"}},
+		{name: "other hooksPath with --force is replaced", hooksPath: ".husky", hooks: map[string]uint32{"pre-commit": 0o755},
+			args: []string{"--force"}, wantPath: "scripts/githooks", want: []string{"was '.husky'", "no longer runs these hooks", "pre-commit"}},
+		{name: "unset lists the clone's executable hooks",
+			hooks:    map[string]uint32{"pre-commit": 0o755, "commit-msg.sample": 0o755, "post-merge": 0o644},
+			wantPath: "scripts/githooks", want: []string{"no longer runs these hooks", "pre-commit"},
+			notWant: []string{"commit-msg.sample", "post-merge"}},
+		{name: "unset with no hooks says nothing more", wantPath: "scripts/githooks",
+			notWant: []string{"no longer runs"}},
+		{name: "unknown flag", args: []string{"--frce"}, wantCode: 2, want: []string{"usage"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := installClone(t)
+			dir := filepath.Join(work, ".git", "hooks")
+			if tc.hooksPath != "" {
+				dir = filepath.Join(work, tc.hooksPath)
+				if out, code := runScript(t, work, nil, "", "git", "config", "core.hooksPath", tc.hooksPath); code != 0 {
+					t.Fatalf("git config: exit %d:\n%s", code, out)
+				}
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, mode := range tc.hooks {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), os.FileMode(mode)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, code := runScript(t, work, nil, "", "bash", append([]string{"scripts/install-githooks.sh"}, tc.args...)...)
+			if code != tc.wantCode {
+				t.Fatalf("exit %d, want %d:\n%s", code, tc.wantCode, out)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("output lacks %q:\n%s", w, out)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(out, w) {
+					t.Errorf("output has %q:\n%s", w, out)
+				}
+			}
+			got, _ := runScript(t, work, nil, "", "git", "config", "--get", "core.hooksPath")
+			if strings.TrimSpace(got) != tc.wantPath {
+				t.Errorf("core.hooksPath = %q, want %q", strings.TrimSpace(got), tc.wantPath)
+			}
+		})
 	}
 }
 

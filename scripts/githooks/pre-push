@@ -2,8 +2,19 @@
 # pre-push — refuse a push that creates a second remote branch for an order id.
 #
 # A new remote branch whose name carries an order id (`ASY-<n>` or `eric-req-<slug>`, whole token,
-# case-insensitive) is refused when a different branch on the remote already carries that id.
-# Pushes to an existing branch (revisions), deletions and tags always pass.
+# case-insensitive) is refused when a different branch on the remote, or another new branch in the
+# same push, already carries that id. Pushes to an existing branch (revisions), deletions and tags
+# always pass.
+#
+# An eric-req slug is the whole hyphenated run after `eric-req-`, so a suffix joined with a hyphen
+# becomes part of the id: `eric-req-x-r1` and `eric-req-x-r2` are two different orders. Name a branch
+# for an eric-req order `eric-req-<slug>`, or end the slug with a delimiter other than a hyphen before
+# any suffix: `eric-req-<slug>/<suffix>`, `eric-req-<slug>_<suffix>` or `eric-req-<slug>.<suffix>`.
+# scripts/pr-order-audit.sh reads ids by the same rule.
+#
+# The check is against the remote's branches, not its pull requests: a branch left on the remote by a
+# merged or closed PR still carries its id and refuses a new branch for that order. Push to that
+# branch, delete it (git push origin --delete <branch>) to clear the id, or set PR_ORDER_ALLOW=1.
 #
 # Exit: 0 allowed; 1 refused; 2 the remote's branches could not be listed (fails closed).
 # Bypass for a deliberate second branch: PR_ORDER_ALLOW=1 git push ...
@@ -55,18 +66,26 @@ heads=$(git ls-remote --heads "$remote") || {
   exit 2
 }
 existing=$(printf '%s\n' "$heads" | awk '{ sub(/^refs\/heads\//, "", $2); print $2 }')
+pushed=$(printf '%s\n' "${new_branches[@]}")
 
 status=0
+# refuse_against BRANCH ID WHERE OTHERS: refuse BRANCH when any other name in OTHERS carries ID.
+refuse_against() {
+  local other
+  while IFS= read -r other; do
+    [ -n "$other" ] && [ "$other" != "$1" ] || continue
+    if ids "$other" | grep -qxF "$2"; then
+      echo "pre-push: refusing '$1': '$other' $3 carries order id $2." >&2
+      echo "  Push to '$other' instead, or set PR_ORDER_ALLOW=1 for a deliberate second branch." >&2
+      status=1
+    fi
+  done <<<"$4"
+}
+
 for b in "${candidates[@]}"; do
   while IFS= read -r id; do
-    while IFS= read -r other; do
-      [ -n "$other" ] && [ "$other" != "$b" ] || continue
-      if ids "$other" | grep -qxF "$id"; then
-        echo "pre-push: refusing '$b': '$other' on $remote already carries order id $id." >&2
-        echo "  Push to '$other' instead, or set PR_ORDER_ALLOW=1 for a deliberate second branch." >&2
-        status=1
-      fi
-    done <<<"$existing"
+    refuse_against "$b" "$id" "on $remote already" "$existing"
+    refuse_against "$b" "$id" "in this same push also" "$pushed"
   done < <(ids "$b")
 done
 exit $status

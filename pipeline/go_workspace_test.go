@@ -29,6 +29,7 @@ func TestResolveGoWorkspace(t *testing.T) {
 		{"a go.work that does not use the module", map[string]string{"go.work": "go 1.22\n\nuse ./b\n", "a/go.mod": modA, "b/go.mod": modB}, "", "", false},
 		{"a go.work that does not parse", map[string]string{"go.work": "go 1.22\n\nuse (\n", "a/go.mod": modA}, "", "", true},
 		{"declared off", map[string]string{"go.work": members, "a/go.mod": modA, "b/go.mod": modB}, "off", "", false},
+		{"declared auto", map[string]string{"go.work": members, "a/go.mod": modA, "b/go.mod": modB}, "auto", "go.work", false},
 		{"declared relative to the checkout", map[string]string{"ci/ws.work": "go 1.22\n\nuse ../a\n", "a/go.mod": modA}, "ci/ws.work", "ci/ws.work", false},
 		{"declared and missing", map[string]string{"a/go.mod": modA}, "ci/ws.work", "", true},
 		{"declared and not using the module", map[string]string{"ci/ws.work": "go 1.22\n\nuse ../b\n", "a/go.mod": modA, "b/go.mod": modB}, "ci/ws.work", "", true},

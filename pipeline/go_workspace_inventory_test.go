@@ -43,6 +43,7 @@ func TestCodebaseInventory_GoWorkspace(t *testing.T) {
 		{"a go.work using the module", "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n", "", "go.work", false},
 		{"a go.work not using the module", "go 1.22\n\nuse ./b\n", "", "", false},
 		{"declared off over a go.work using the module", "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n", "off", "", false},
+		{"declared auto over a go.work using the module", "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n", "auto", "go.work", false},
 		{"declared and missing", "", "/no/such/go.work", "", true},
 	}
 	for _, tc := range cases {

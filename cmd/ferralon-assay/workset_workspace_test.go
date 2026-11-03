@@ -126,3 +126,39 @@ func TestOSVWorkSet_WorkspaceMemberIsNamedNotQueried(t *testing.T) {
 		t.Errorf("unversioned = %v, want the member named", ws.unversioned)
 	}
 }
+
+// TestSubjectGoWorkOff_HandedInBesideACommittedGoWork: GOWORK=off handed in on the env channel the
+// Action fills from the job's GOWORK, beside a committed go.work that uses the module, puts the
+// pipeline and the work set on the module's go.mod: the pipeline resolves no workspace, and the work
+// set holds no workspace member.
+func TestSubjectGoWorkOff_HandedInBesideACommittedGoWork(t *testing.T) {
+	t.Setenv(envAdvisoryCorpusDir, "")
+	t.Setenv(envAdvisoryCorpusPolicy, "")
+	t.Setenv(envSubjectGoWork, "off")
+	f := runFlagsFor(t)
+	acq := goWorkFixture(t, "")
+	tree := filepath.Dir(acq.buildDir)
+
+	for name, build := range map[string]func() ([]pipeline.AssessOption, error){
+		"baseline": func() ([]pipeline.AssessOption, error) {
+			return f.baselineAssessOptions(func(*pipeline.AssessConfig) {})
+		},
+		"run": func() ([]pipeline.AssessOption, error) { return f.runAssessOptions(func(*pipeline.AssessConfig) {}) },
+	} {
+		opts, err := build()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		declared := applyAll(opts).SubjectGoWork
+		ws, err := pipeline.ResolveGoWorkspace(context.Background(), acq.buildDir, tree, declared)
+		if err != nil || ws.File != "" {
+			t.Errorf("%s: pipeline workspace = %+v, %v (declared %q), want none", name, ws, err, declared)
+		}
+	}
+
+	acq.goWork = f.declaredGoWork()
+	_, unresolved, _ := dependencyInventory(context.Background(), acq)
+	if want := []report.Package{{Ecosystem: ecosystemGo, Name: goStdlibPackage}}; !reflect.DeepEqual(unresolved, want) {
+		t.Errorf("work set unresolved = %+v, want %+v (the go.mod path, no member)", unresolved, want)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -17,8 +18,7 @@ func closureGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := gittest.Command(args...)
 	cmd.Dir = dir
-	cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
@@ -30,42 +30,43 @@ func TestReviewClosureCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := t.TempDir()
-	write := func(rel, body string) {
-		p := filepath.Join(repo, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 	closureGit(t, repo, "init", "-q", "-b", "main")
-	write("a.go", "1\n")
-	write("c.go", "1\n")
-	closureGit(t, repo, "add", "-A")
-	closureGit(t, repo, "commit", "-q", "-m", "base")
-	write("a.go", "2\n")
-	write("docs/b.md", "new\n")
-	closureGit(t, repo, "add", "-A")
-	closureGit(t, repo, "commit", "-q", "-m", "revision")
+	// Two commits through one fast-import: a base, then a revision that changes a.go and adds docs/b.md.
+	commit := func(msg string, files map[string]string) string {
+		out := "commit refs/heads/main\ncommitter t <t@example.com> 1700000000 +0000\ndata " + strconv.Itoa(len(msg)) + "\n" + msg + "\n"
+		for _, name := range []string{"a.go", "c.go", "docs/b.md"} {
+			if body, ok := files[name]; ok {
+				out += "M 100644 inline " + name + "\ndata " + strconv.Itoa(len(body)) + "\n" + body + "\n"
+			}
+		}
+		return out
+	}
+	stream := commit("base", map[string]string{"a.go": "1\n", "c.go": "1\n"}) +
+		commit("revision", map[string]string{"a.go": "2\n", "docs/b.md": "new\n"})
+	imp := gittest.Command("fast-import", "--quiet")
+	imp.Dir = repo
+	imp.Stdin = strings.NewReader(stream)
+	if out, err := imp.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import: %v\n%s", err, out)
+	}
 
+	// Each case is one script run, so a file carries several findings and wantOpen is the exact
+	// set of OPEN lines expected.
 	cases := []struct {
 		name     string
 		findings string
 		wantExit int
-		wantOut  []string // substrings required in stdout
-		noOut    []string // substrings forbidden in stdout
+		wantOpen []string
 	}{
-		{"all changed", "a.go:3 - rename\ndocs/b.md - typo\n", 0, []string{"review-closure-check: OK"}, []string{"OPEN:"}},
-		{"one unaddressed", "a.go - rename\nc.go:9 - missing nil check\n", 1, []string{"OPEN: c.go:9 - missing nil check"}, []string{"OK", "OPEN: a.go"}},
-		{"two unaddressed", "c.go - x\nd.go - y\n", 1, []string{"OPEN: c.go - x", "OPEN: d.go - y"}, nil},
-		{"answered with reason", "c.go:9 - why?\n\n## Answered\nc.go:9 - why? => kept on purpose, see comment\n", 0, []string{"OK"}, nil},
-		{"answered bare", "c.go:9 - why?\n\n## Answered\nc.go:9 - why?\n", 1, []string{"OPEN: c.go:9 - why?"}, nil},
-		{"answered empty reason", "c.go:9 - why?\n\n## Answered\nc.go:9 - why? =>   \n", 1, []string{"OPEN: c.go:9 - why?"}, nil},
-		{"no path open", "Title is too long\n", 1, []string{"OPEN: Title is too long"}, nil},
-		{"no path answered", "Title is too long\n\n## Answered\nTitle is too long => retitled\n", 0, []string{"OK"}, nil},
-		{"bulleted and crlf", "- a.go - rename\r\n* c.go - x\r\n", 1, []string{"OPEN: c.go - x"}, []string{"OPEN: a.go"}},
-		{"empty file", "", 0, []string{"OK"}, nil},
+		{"empty file", "", 0, nil},
+		{"all closed", "a.go:3 - rename\ndocs/b.md - typo\n- a.go - bulleted\r\n" +
+			"c.go:9 - why?\nTitle is too long\n\n## Answered\n" +
+			"c.go:9 - why? => kept on purpose\nTitle is too long => retitled\n", 0, nil},
+		{"open findings", "a.go - rename\nc.go:9 - missing nil check\nd.go - y\n" +
+			"c.go - bare\ne.go - blank reason\nTitle is too long\n\n## Answered\n" +
+			"c.go - bare\ne.go - blank reason =>   \n", 1,
+			[]string{"OPEN: c.go:9 - missing nil check", "OPEN: d.go - y", "OPEN: c.go - bare",
+				"OPEN: e.go - blank reason", "OPEN: Title is too long"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -86,15 +87,17 @@ func TestReviewClosureCheck(t *testing.T) {
 			if code != c.wantExit {
 				t.Errorf("exit %d, want %d\n%s", code, c.wantExit, out)
 			}
-			for _, s := range c.wantOut {
-				if !strings.Contains(string(out), s) {
-					t.Errorf("stdout missing %q:\n%s", s, out)
+			var open []string
+			for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if strings.HasPrefix(l, "OPEN: ") {
+					open = append(open, l)
 				}
 			}
-			for _, s := range c.noOut {
-				if strings.Contains(string(out), s) {
-					t.Errorf("stdout has %q:\n%s", s, out)
-				}
+			if strings.Join(open, "|") != strings.Join(c.wantOpen, "|") {
+				t.Errorf("OPEN lines %q, want %q", open, c.wantOpen)
+			}
+			if ok := strings.Contains(string(out), "review-closure-check: OK"); ok != (c.wantExit == 0) {
+				t.Errorf("OK line present=%v with exit %d:\n%s", ok, c.wantExit, out)
 			}
 		})
 	}

@@ -67,7 +67,7 @@ for f in ${findings[@]+"${findings[@]}"}; do
       # A path is a single token; anything with spaces before " - " is prose, not a location.
       case $path in
         *[[:space:]]* | '') ;;
-        *) printf '%s\n' "$changed" | grep -Fxq -- "$path" && closed=1 ;;
+        *) case $'\n'"$changed"$'\n' in *$'\n'"$path"$'\n'*) closed=1 ;; esac ;;
       esac
       ;;
   esac

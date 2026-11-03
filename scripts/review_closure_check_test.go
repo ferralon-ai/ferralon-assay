@@ -40,7 +40,7 @@ func TestReviewClosureCheck(t *testing.T) {
 	closureGit(t, repo, "", "init", "-q", "-b", "main")
 	// Three commits through one fast-import. The PR commit is the reviewed head: it changes line 9
 	// of a.go and line 2 of p.go. The revision after it changes line 3 of a.go, inserts a line after
-	// line 2 of c.go and adds docs/b.md.
+	// line 2 of c.go and adds docs/b.md. origin/main is the main commit.
 	commit := func(mark, msg string, files map[string]string) string {
 		out := "commit refs/heads/main\nmark :" + mark + "\ncommitter t <t@example.com> 1700000000 +0000\ndata " + strconv.Itoa(len(msg)) + "\n" + msg + "\n"
 		for _, name := range []string{"a.go", "c.go", "p.go", "docs/b.md"} {
@@ -64,7 +64,8 @@ func TestReviewClosureCheck(t *testing.T) {
 	stream := commit("1", "main", map[string]string{"a.go": lines(10, nil), "c.go": lines(3, nil), "p.go": lines(10, nil)}) +
 		commit("2", "pr", map[string]string{"a.go": lines(10, map[int]string{9: "nine"}), "p.go": lines(10, map[int]string{2: "two"})}) +
 		commit("3", "revision", map[string]string{"a.go": lines(10, map[int]string{3: "three", 9: "nine"}),
-			"c.go": "1\n2\nnew\n3\n", "docs/b.md": "new\n"})
+			"c.go": "1\n2\nnew\n3\n", "docs/b.md": "new\n"}) +
+		"reset refs/remotes/origin/main\nfrom :1\n\n"
 	marks := filepath.Join(t.TempDir(), "marks")
 	closureGit(t, repo, stream, "fast-import", "--quiet", "--export-marks="+marks)
 	m, err := os.ReadFile(marks)
@@ -89,7 +90,8 @@ func TestReviewClosureCheck(t *testing.T) {
 		wantExit int
 		want     []string
 	}{
-		{"no base", "a.go:3 - rename\n", "", 0o644, 2, nil},
+		// origin/main...HEAD is the whole PR, so with origin/main as a default this would read closed.
+		{"no base", "p.go - missing nil check\n", "", 0o644, 2, nil},
 		{"base read as an option", "a.go:3 - rename\n", "--output=" + pwn, 0o644, 2, nil},
 		{"empty file", "", reviewed, 0o644, 2, nil},
 		{"headings only", "# Review of #412\n### Findings\n\n## Answered\n", reviewed, 0o644, 2, nil},

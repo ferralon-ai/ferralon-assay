@@ -96,11 +96,11 @@ var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
-// install_requires), any word starting pip or conda, and an interpreter option that runs one
-// as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
-// file not read here defines, or installs into the environments it makes (poe, invoke and its
-// inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
-// candidate whenever a session installs.
+// install_requires), a pip or conda family name (pipFamilyRE), and an interpreter option that
+// runs one as a module with its name attached (-mpip, -Impip); or a task runner that runs
+// commands a file not read here defines, or installs into the environments it makes (poe,
+// invoke and its inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it
+// runs is a candidate whenever a session installs.
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
@@ -110,8 +110,16 @@ func laneToken(word string) bool {
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
 		return true
 	}
-	return strings.HasPrefix(word, "pip") || strings.HasPrefix(word, "conda")
+	return pipFamilyRE.MatchString(word)
 }
+
+// pipFamilyRE matches a pip or conda family name: pip, pipN or pipN.M; pipenv, pipx, piptools
+// (pip-tools' module), pipwin, pipsi, pipupgrade, conda or condax; any of them followed by
+// ., - or _ and more, so a Windows .exe, a zipapp (pip.pyz), a module path (pip._internal), a
+// config file (pip.conf, conda.yml) and every hyphenated or underscored entry point or module
+// (pip-sync, pip-compile, pip_run, conda-lock, conda-env, conda_lock) match too. A word that
+// only starts with the letters (pipefail, pipeline, pipes, condarc) names none.
+var pipFamilyRE = regexp.MustCompile(`^(?:pip[0-9]*|pipenv|pipx|piptools|pipwin|pipsi|pipupgrade|conda|condax)(?:[._-].*)?$`)
 
 // attachedModuleRE matches a cluster of interpreter short options ending in -m with the
 // module name attached, which CPython reads as -m <name>.

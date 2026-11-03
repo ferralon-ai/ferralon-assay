@@ -1,6 +1,6 @@
 // Offline test for pr-dup-check.sh. The PR and branch listings are fixture files named by env
-// vars, or the live lookups run against a fake gh and a directory with no git remote, so no
-// network is involved.
+// vars, or the live lookups run against a fake gh and either a directory with no git remote or a
+// local bare origin, so no network is involved.
 package scripts
 
 import (
@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 const (
@@ -130,43 +132,70 @@ func TestPRDupCheckSelfBranch(t *testing.T) {
 	}, "PR_DUP_SELF_BRANCH=other")
 }
 
+// An unexpected failure (here mktemp, with TMPDIR unusable) exits 2, never 1: the branch listing
+// matches, so a set -e failure that kept its own status would read as "found".
+func TestPRDupCheckUnexpectedFailure(t *testing.T) {
+	runDupCases(t, []dupCase{
+		{"mktemp fails", "ASY-050", "", dupBranches, 2, ""},
+	}, "TMPDIR="+filepath.Join(t.TempDir(), "missing"))
+}
+
 // dupLiveTools are the tools the script runs, linked into a PATH of their own so the runner's gh,
 // if any, is out of reach.
 var dupLiveTools = []string{"awk", "cat", "cp", "git", "mktemp", "rm", "sed"}
 
 type dupLiveCase struct {
 	name     string
-	gh       string // fake gh's script body; empty means no gh on PATH
-	branches string // a branch listing file; empty means the live git ls-remote
+	gh       string   // fake gh's script body; empty means no gh on PATH
+	branches string   // a branch listing file; empty means the live git ls-remote
+	origin   []string // when set, run from a repository on asy-099-mine whose bare origin holds these
 	want     int
+	stdout   string // in stdout; empty means stdout must be empty
 	stderr   []string
 }
 
-const dupGhRateLimited = "echo 'HTTP 403: API rate limit exceeded' >&2; exit 1"
+const (
+	dupGhRateLimited = "echo 'HTTP 403: API rate limit exceeded' >&2; exit 1"
+	dupGhMatch       = `printf '12\037scanner: ASY-099 duplicate check\037feature/x\037body\036'`
+)
 
 // With no branch listing there is nothing to stand on, whatever gh does.
 func TestPRDupCheckLiveNoRemote(t *testing.T) {
 	runDupLive(t, []dupLiveCase{
-		{"no gh, no remote", "", "", 2,
+		{"no gh, no remote", "", "", nil, 2, "",
 			[]string{"gh not installed", "git ls-remote --heads origin failed", "  fatal:"}},
-		{"gh fails, no remote", dupGhRateLimited, "", 2,
+		{"gh fails, no remote", dupGhRateLimited, "", nil, 2, "",
 			[]string{"gh pr list failed", "git ls-remote --heads origin failed"}},
+		{"PR match still named", dupGhMatch, "", nil, 2, "open PR #12",
+			[]string{"git ls-remote --heads origin failed"}},
 	})
 }
 
 // A PR listing that fails or is cut short leaves the branches checked, and stderr says why.
 func TestPRDupCheckLiveGhFallback(t *testing.T) {
 	runDupLive(t, []dupLiveCase{
-		{"gh fails, branches read", dupGhRateLimited, "origin/main\n", 0,
+		{"gh fails, branches read", dupGhRateLimited, "origin/main\n", nil, 0, "",
 			[]string{"gh pr list failed", "  HTTP 403: API rate limit exceeded"}},
-		{"gh at its listing limit", "cat \"$PR_DUP_TEST_PRS\"", "origin/main\n", 0,
+		{"gh at its listing limit", "cat \"$PR_DUP_TEST_PRS\"", "origin/main\n", nil, 0, "",
 			[]string{"gh returned 200 open PRs, its listing limit"}},
 	})
 }
 
-// runDupLive runs the script with no PR listing file, a PATH holding only dupLiveTools plus an
-// optional fake gh, from a directory with no git repository and so no remote. The fake gh can
-// print PR_DUP_TEST_PRS, a full page of 200 unrelated PRs.
+// The path every real run takes: no self-branch override, so the checked-out branch is left out,
+// and a live git ls-remote against a reachable origin.
+func TestPRDupCheckLiveOrigin(t *testing.T) {
+	runDupLive(t, []dupLiveCase{
+		{"own branch left out by default", "", "", []string{"asy-099-mine"}, 0, "",
+			[]string{"gh not installed"}},
+		{"other branch found", "", "", []string{"asy-099-mine", "asy-099-old"}, 1,
+			"remote branch already carries ASY-099: asy-099-old", nil},
+	})
+}
+
+// runDupLive runs the script with no PR listing file and no self-branch override, a PATH holding
+// only dupLiveTools plus an optional fake gh, from a directory with no git repository and so no
+// remote, or from a repository with a local bare origin. The fake gh can print PR_DUP_TEST_PRS, a
+// full page of 200 unrelated PRs.
 func runDupLive(t *testing.T, cases []dupLiveCase) {
 	t.Helper()
 	var full strings.Builder
@@ -199,10 +228,13 @@ func runDupLive(t *testing.T, cases []dupLiveCase) {
 				t.Fatal(err)
 			}
 			env := []string{"PATH=" + bin, "PR_DUP_TEST_PRS=" + prsFile, "GIT_CEILING_DIRECTORIES=" + filepath.Dir(dir)}
-			for _, kv := range os.Environ() {
-				if !strings.HasPrefix(kv, "PR_DUP_") && !strings.HasPrefix(kv, "GIT_") && !strings.HasPrefix(kv, "PATH=") {
+			for _, kv := range gittest.Scrub(os.Environ()) {
+				if !strings.HasPrefix(kv, "PR_DUP_") && !strings.HasPrefix(kv, "PATH=") {
 					env = append(env, kv)
 				}
+			}
+			if tc.origin != nil {
+				dupOrigin(t, dir, tc.origin)
 			}
 			if tc.branches != "" {
 				p := filepath.Join(dir, "branches")
@@ -227,8 +259,11 @@ func runDupLive(t *testing.T, cases []dupLiveCase) {
 			if code != tc.want {
 				t.Fatalf("exit = %d, want %d; stdout:\n%s\nstderr:\n%s", code, tc.want, stdout.String(), stderr.String())
 			}
-			if stdout.Len() != 0 {
+			if tc.stdout == "" && stdout.Len() != 0 {
 				t.Fatalf("stdout names a match where none exists:\n%s", stdout.String())
+			}
+			if !strings.Contains(stdout.String(), tc.stdout) {
+				t.Fatalf("stdout does not name %q:\n%s", tc.stdout, stdout.String())
 			}
 			for _, w := range tc.stderr {
 				if !strings.Contains(stderr.String(), w) {
@@ -236,5 +271,29 @@ func runDupLive(t *testing.T, cases []dupLiveCase) {
 				}
 			}
 		})
+	}
+}
+
+// dupOrigin makes dir a repository checked out on asy-099-mine, with one commit, and gives it a
+// bare origin holding the named branches.
+func dupOrigin(t *testing.T, dir string, branches []string) {
+	t.Helper()
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	push := []string{"-C", dir, "push", "-q", "origin"}
+	for _, b := range branches {
+		push = append(push, "HEAD:refs/heads/"+b)
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "--bare", origin},
+		{"init", "-q", "-b", "asy-099-mine", dir},
+		{"-C", dir, "commit", "-q", "--allow-empty", "-m", "fixture"},
+		{"-C", dir, "remote", "add", "origin", origin},
+		push,
+	} {
+		cmd := gittest.Command(args...)
+		cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
 	}
 }

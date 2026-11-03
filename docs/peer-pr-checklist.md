@@ -16,13 +16,17 @@ one `FAIL:` line per cause, when:
 
 - a changed non-test Go package has no changed `_test.go` file in it;
 - the description file is missing, empty, or still the template (comments, headings, rules
-  and task-list lines do not count as a description);
+  and the task-list lines of `.github/PULL_REQUEST_TEMPLATE.md`, ticked or not, do not count
+  as a description);
 - `gofmt -l` or `go vet` reports on the changed Go files or packages. `go vet` runs from each
-  package's nearest `go.mod`, so a change under `plugins/cfamily` is vetted in that module.
+  package's nearest `go.mod`, so a change under `plugins/cfamily` is vetted in that module. A
+  package that only lost a file is vetted too.
 
-It exits 2, and checks nothing, when it cannot run: the base ref is unknown, the base and
-`HEAD` share no merge base (fetch more history), `perl` is missing, or a Go file in a changed
-package has uncommitted changes. `gofmt` and `go vet` read the working tree, so commit or
+It exits 2, and checks nothing, when it cannot run: it is not run inside a git repository, the
+base ref is unknown, the base and `HEAD` share no merge base (fetch more history), `perl` is
+missing, `go` or `gofmt` is missing while there are Go files to check, any tracked Go file has
+uncommitted changes, or a changed package holds an untracked Go file. `gofmt` and `go vet` read
+the working tree, and `go vet` also compiles the packages the changed ones import, so commit or
 stash those first.
 
 Fix each line, commit, and re-run until it prints `pr-ready-check: OK`. If a package needs no

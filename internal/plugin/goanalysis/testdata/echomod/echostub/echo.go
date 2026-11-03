@@ -15,6 +15,7 @@ import http "tegron.test/nethttp"
 type Context interface {
 	Request() *http.Request
 	Param(name string) string
+	ParamValues() []string
 	QueryParam(name string) string
 	QueryParams() http.Values
 	FormValue(name string) string

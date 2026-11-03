@@ -54,6 +54,7 @@ func sinkWrapH(v any)      { sunk = append(sunk, v) }
 func sinkWrapF(v any)      { sunk = append(sunk, v) }
 
 // One sink per modeled echo.Context accessor, reached from accessorsForm.
+func sinkParamValues(v any)   { sunk = append(sunk, v) }
 func sinkParam(v any)         { sunk = append(sunk, v) }
 func sinkQueryParam(v any)    { sunk = append(sunk, v) }
 func sinkQueryParams(v any)   { sunk = append(sunk, v) }
@@ -103,6 +104,7 @@ func (s *server) dynamicForm(c echo.Context) error { sinkDynamic(c.Param("id"));
 
 func (s *server) accessorsForm(c echo.Context) error {
 	sinkParam(c.Param("id"))
+	sinkParamValues(c.ParamValues())
 	sinkQueryParam(c.QueryParam("q"))
 	sinkQueryParams(c.QueryParams())
 	sinkFormValue(c.FormValue("f"))

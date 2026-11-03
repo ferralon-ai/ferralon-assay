@@ -123,11 +123,12 @@ ferralon.floor-summary.v1`), and the artifact includes every `report.json` and `
 ## The caveat tally
 
 The language capability matrix names the caveats that stop Assay from reaching a verdict in each
-language, such as `JS-UNINSPECTABLE-RUNWIDE` or `JAVA-GRAPH-PRECONDITION`. The matrix is not on
-`main` yet: it is proposed in [#246](https://github.com/ferralon-ai/ferralon-assay/pull/246) as
-`docs/capabilities/`, one page per language. The floor run measures which of its caveats fire on
-each demo repository, every night, so the matrix's prevalence figures come from real scans instead
-of estimates. [Caveat ids](#caveat-ids) lists the ids the tally uses.
+language, such as `JS-UNINSPECTABLE-RUNWIDE` or `JAVA-GRAPH-PRECONDITION`. The matrix is
+`docs/capabilities/`, one page per language. It is not on `main` yet: it reaches `main` with the
+v0.6.0 release ([#184](https://github.com/ferralon-ai/ferralon-assay/pull/184)), which carries the
+pages [#246](https://github.com/ferralon-ai/ferralon-assay/pull/246) added. The floor run measures
+which of its caveats fire on each demo repository, every night, so the matrix's prevalence figures
+come from real scans instead of estimates. [Caveat ids](#caveat-ids) lists the ids the tally uses.
 
 **What it counts.** `floorcheck check` reads every machine-readable reason a readable
 `report.json` carries:
@@ -173,8 +174,9 @@ unaffected.
 ### Caveat ids
 
 These are the caveat ids `floor/caveats.json` may name, and where each is defined. A matrix page is
-a page of `docs/capabilities/` in #246. `TestShippedCaveatIDs` fails if a mapping's `caveat` or a
-`structural` caveat is not in this table, so a misspelt id fails the tests.
+a page of `docs/capabilities/`, which reaches `main` with the v0.6.0 release (#184).
+`TestShippedCaveatIDs` fails if a mapping's `caveat` or a `structural` caveat is not in this
+table, so a misspelt id fails the tests.
 
 | Caveat | Language | Defined in |
 |---|---|---|

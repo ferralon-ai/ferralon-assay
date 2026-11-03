@@ -4,8 +4,10 @@
 #
 # Usage: scripts/pr-dup-check.sh <order-id>
 #
-# Exit 0: nothing found. Exit 1: found; each existing PR or branch is named on stdout.
-# Exit 2: usage error or a listing could not be read.
+# Exit 0: nothing found, and the remote branches were read (open PRs too, unless stderr says not).
+# Exit 1: found; each existing PR or branch is named on stdout.
+# Exit 2: usage error, a listing file could not be read, or the remote branches could not be
+# listed. The branch listing is never skipped, so exit 0 always means at least it was checked.
 #
 # The id matches as a whole token, case-insensitively, in a PR's title, body or head branch, or in
 # a remote branch name: "ASY-09" does not match "ASY-099" or "XASY-09". A token is bounded by
@@ -19,8 +21,10 @@
 #   PR_DUP_SELF_BRANCH    the branch being checked from, left out of the branch matches
 #                         (default: the current branch)
 #
-# Live lookups: `gh pr list` when gh is installed and signed in, otherwise the PR check is skipped
-# with a note on stderr and only branches are checked; branches come from `git ls-remote --heads origin`.
+# Live lookups: open PRs come from `gh pr list` (the first 200; a note on stderr says when the
+# listing hits that limit). When gh is not installed or fails, the PR check is skipped with a note
+# on stderr, carrying gh's own error text, and only branches are checked. Branches come from
+# `git ls-remote --heads origin`; when that fails the script exits 2 with git's error text.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -58,35 +62,43 @@ matches() {
 
 found=0
 
-# Open PRs.
+# Open PRs. gh lists at most $pr_limit; a full page means some open PRs may not have been checked.
+pr_limit=200
 prs="$tmp/prs"
 if [ -n "${PR_DUP_PRS_FILE:-}" ]; then
   cp "$PR_DUP_PRS_FILE" "$prs" || { echo "pr-dup-check: cannot read $PR_DUP_PRS_FILE" >&2; exit 2; }
-elif command -v gh >/dev/null 2>&1 && gh pr list --state open --limit 200 \
+elif ! command -v gh >/dev/null 2>&1; then
+  echo "pr-dup-check: gh not installed; open PRs not checked, branches only" >&2
+  : >"$prs"
+elif gh pr list --state open --limit "$pr_limit" \
   --json number,title,headRefName,body \
   --template '{{range .}}{{.number}}{{"\u001f"}}{{.title}}{{"\u001f"}}{{.headRefName}}{{"\u001f"}}{{.body}}{{"\u001e"}}{{end}}' \
-  >"$prs" 2>/dev/null; then
-  :
+  >"$prs" 2>"$tmp/gh-err"; then
+  if [ "$(awk -v RS="$RS" 'END { print NR }' "$prs")" -ge "$pr_limit" ]; then
+    echo "pr-dup-check: gh returned $pr_limit open PRs, its listing limit; PRs past it were not checked" >&2
+  fi
 else
-  echo "pr-dup-check: gh unavailable or not signed in; open PRs not checked, branches only" >&2
+  echo "pr-dup-check: gh pr list failed; open PRs not checked, branches only. gh said:" >&2
+  sed 's/^/  /' "$tmp/gh-err" >&2
   : >"$prs"
 fi
+
+# Remote branches. Unlike the PR listing this one is required: without it nothing was checked.
+branches="$tmp/branches"
+if [ -n "${PR_DUP_BRANCHES_FILE:-}" ]; then
+  cp "$PR_DUP_BRANCHES_FILE" "$branches" || { echo "pr-dup-check: cannot read $PR_DUP_BRANCHES_FILE" >&2; exit 2; }
+elif ! git ls-remote --heads origin >"$branches" 2>"$tmp/git-err"; then
+  echo "pr-dup-check: git ls-remote --heads origin failed; remote branches could not be checked. git said:" >&2
+  sed 's/^/  /' "$tmp/git-err" >&2
+  exit 2
+fi
+
 while IFS=$'\t' read -r num title; do
   [ -n "$num" ] || continue
   echo "open PR #$num already mentions $id: $title"
   found=1
 done < <(matches <"$prs")
 
-# Remote branches.
-branches="$tmp/branches"
-if [ -n "${PR_DUP_BRANCHES_FILE:-}" ]; then
-  cp "$PR_DUP_BRANCHES_FILE" "$branches" || { echo "pr-dup-check: cannot read $PR_DUP_BRANCHES_FILE" >&2; exit 2; }
-else
-  git ls-remote --heads origin >"$branches" 2>/dev/null || {
-    echo "pr-dup-check: git ls-remote failed; remote branches not checked" >&2
-    : >"$branches"
-  }
-fi
 self="${PR_DUP_SELF_BRANCH-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
 while IFS= read -r line; do
   name="${line##*refs/heads/}"

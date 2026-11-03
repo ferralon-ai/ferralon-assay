@@ -261,6 +261,11 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"toolchain unknown: a file for releases before the go directive's", map[string]string{
 			"x.go": "//go:build !go1.22\n\npackage main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",
 		}, nil, true, "", true},
+		{"a left-out file reaches the symbol only through a file the release bound excludes", map[string]string{
+			"x.go":          off("package main\n\nimport \"example.com/v/um2\"\n\nfunc init() { um2.F() }\n"),
+			"_v/um2/um2.go": "//go:build go1.1\n\npackage um2\n\nfunc F() {}\n",
+			"_v/um2/old.go": "//go:build !go1.1\n\npackage um2\n\nimport \"example.com/v/vuln\"\n\nfunc F() { vuln.Bad() }\n",
+		}, nil, false, "", false},
 		{"a left-out file for no compiler but gc under more tags than are judged", map[string]string{
 			"x.go": "//go:build !gc && t1 && t2 && t3 && t4 && t5 && t6 && t7 && t8 && t9 && t10 && t11 && t12 && t13 && t14 && t15 && t16\n\n" +
 				"package main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Bad() }\n",

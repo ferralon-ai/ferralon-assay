@@ -64,7 +64,8 @@ var echoForms = []struct {
 // echoAccessors lists each modeled echo.Context accessor; accessorsForm hands its
 // result (for Bind, its bound target) to sink<name>.
 var echoAccessors = []string{
-	"Param", "QueryParam", "QueryParams", "FormValue", "FormParams", "Request", "Cookie", "Bind",
+	"Param", "ParamValues", "QueryParam", "QueryParams", "FormValue", "FormParams", "Request", "Cookie", "Bind",
+	"Cookies", "FormFile", "MultipartForm", "QueryString", "RealIP",
 }
 
 func echoIngresses(t *testing.T) []plugin.Ingress {

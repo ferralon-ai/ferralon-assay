@@ -84,8 +84,10 @@ type Partiality struct {
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
-	// Targets exclude the advisory's package (trigger/assess.go). Only the ingress, reachability
-	// and vulnerable-symbol results' Scoped limits reach the verdict; set on any other result, they
+	// Targets exclude the advisory's package (trigger/assess.go). The ingress, reachability and
+	// vulnerable-symbol results' Scoped limits reach the verdict that way. The dependency inventory's
+	// reach it too: each is disclosed on the Report's inventory note for its reason, whose Targets
+	// bound which rows the limit demotes (trigger/inventory_sbom.go). Set on any other result, they
 	// are dropped.
 	Scoped []ScopedReason `json:"scoped,omitempty"`
 }
@@ -180,10 +182,11 @@ const (
 	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
 
 	// unrecognised_install_surface names a file the script-surface rule does not read as a
-	// surface that runs a lane installer at a command position (scriptsurface.Veto.Unrecognised):
-	// the lane withholds as it would on an unreadable install surface. A lane appends ":" and
-	// the file and line, relative to the build ("Earthfile:12"), and lists it after a bare
-	// tool_failure, so a reader matching that base exactly sees no change.
+	// surface that runs a lane installer at a command position, and that something in the build
+	// may run (scriptsurface.Veto.Unrecognised): the lane withholds as it would on an unreadable
+	// install surface. A lane appends ":" and the file and line, relative to the build
+	// ("Earthfile:12"), and lists it after a bare tool_failure, so a reader matching that base
+	// exactly sees no change.
 	PartialReasonUnrecognisedInstallSurface = PartialReasonToolFailure + ":unrecognised_install_surface"
 
 	// --- module-resolution reason localisers ---
@@ -268,6 +271,16 @@ const (
 	// tag) may call into the module an analyzer found no path to, and the analyzer never traced
 	// them, so its refutation does not cover the builds that compile them.
 	PartialReasonExcludedFiles = "excluded_files"
+	// PartialReasonExcludedFilesAssembly localises excluded_files: a file the build left out may
+	// run Go assembly, which the analyzer does not read, so what that assembly calls is unknown.
+	// The Go lane declares it in place of the base when a left-out file links assembly.
+	PartialReasonExcludedFilesAssembly = PartialReasonExcludedFiles + ":assembly"
+	// PartialReasonExcludedFilesLinkname localises excluded_files: a file the build left out binds a
+	// symbol by //go:linkname, which the analyzer does not resolve against the link.
+	PartialReasonExcludedFilesLinkname = PartialReasonExcludedFiles + ":linkname"
+	// PartialReasonExcludedFilesCgoInclude localises excluded_files: a file the build left out
+	// includes C headers through cgo, whose code the analyzer does not read.
+	PartialReasonExcludedFilesCgoInclude = PartialReasonExcludedFiles + ":cgo_include"
 	// PartialReasonUnsearchedMethods (loud): exported methods a caller can invoke that the analyzer's
 	// search never started from (Go: a method of a generic type, or one promoted by embedding from a
 	// type outside the search) may call into the module it found no path to, so its refutation does
@@ -312,6 +325,11 @@ const (
 	// call graph. A limit of the method's source-level reading, not a per-run failure, so it
 	// is classified inherent alongside native_link_boundary.
 	PartialReasonMacroExpansion = "macro_expansion"
+	// PartialReasonNestedModule is the Go inventory's limit for a module in the checkout that the
+	// build root's module graph does not include, so neither are its requirements. A did-not-run
+	// limit: each such module is a scoped limit naming its directory, whose Targets are what its
+	// go.mod requires when that list is complete (go 1.17 or later), and unbounded otherwise.
+	PartialReasonNestedModule = PartialReasonUnsupported + ":nested_module"
 )
 
 // Complete is the constructor for a fully-resolved result.
@@ -327,12 +345,14 @@ func Unsupported() Partiality { return Partial(PartialReasonUnsupported) }
 
 // IndexSymbolsRequest carries the buildable module to index.
 type IndexSymbolsRequest struct {
-	BuildDir string `json:"build_dir"` // checked-out module root (contains go.mod)
+	BuildDir string `json:"build_dir"`         // checked-out module root (contains go.mod)
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // CallGraphRequest carries the buildable module and the desired graph algorithm.
 type CallGraphRequest struct {
 	BuildDir  string `json:"build_dir"`
+	GoWork    string `json:"go_work,omitempty"`   // see ReachabilityRequest.GoWork
 	Algorithm string `json:"algorithm,omitempty"` // "vta" (default) | "rta" | "cha"
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
@@ -342,14 +362,16 @@ type CallGraphRequest struct {
 // FindIngressesRequest carries the buildable module to scan for entry points.
 type FindIngressesRequest struct {
 	BuildDir string `json:"build_dir"`
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // ResolveSymbolsRequest carries advisory identifiers from authoritative sources (inv.7).
 type ResolveSymbolsRequest struct {
 	BuildDir        string   `json:"build_dir"`
-	PURL            string   `json:"purl"`             // e.g. pkg:golang/github.com/x/y@v1.2.3
-	AdvisorySymbols []string `json:"advisory_symbols"` // vulnerable symbols from the advisory
-	VulnID          string   `json:"vuln_id"`          // e.g. GO-2021-0001 (for govulncheck)
+	GoWork          string   `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
+	PURL            string   `json:"purl"`              // e.g. pkg:golang/github.com/x/y@v1.2.3
+	AdvisorySymbols []string `json:"advisory_symbols"`  // vulnerable symbols from the advisory
+	VulnID          string   `json:"vuln_id"`           // e.g. GO-2021-0001 (for govulncheck)
 	// TargetEnv is the run's stated target-environment conditions, as on ReachabilityRequest:
 	// a lane that resolves the inventory to choose which dependency versions to read resolves it
 	// under these. Nil means none were stated.
@@ -430,13 +452,38 @@ type DependencyVersionResult struct {
 	// False (the default, and every plugin that does not set it) means absence from All proves
 	// nothing and a consumer must fail open.
 	Exhaustive bool `json:"exhaustive,omitempty"`
+	// Annotations are assumptions the result rests on without being partial: what the plugin
+	// found and chose not to count, which a reader should see beside the verdict. They never
+	// clear Complete or Exhaustive.
+	Annotations []Annotation `json:"annotations,omitempty"`
+}
+
+// AnnotationAssumptionPrefix starts every Annotation.Reason: an assumption the analysis made,
+// stated so a reader can check it.
+const AnnotationAssumptionPrefix = "assumption:"
+
+// AnnotationInstallSurfaceInactive is the reason for an install command found in a file the
+// rule does not read as a script surface and nothing in the build invokes: the result assumes
+// the command is not active.
+const AnnotationInstallSurfaceInactive = AnnotationAssumptionPrefix + "install_surface_inactive"
+
+// Annotation is one assumption a result rests on. Reason is an AnnotationAssumptionPrefix
+// reason; Path is where it applies, relative to the build and slash-separated, with ":" and a
+// 1-based line when known ("examples/setup.yml:4"); Detail is why, in prose.
+type Annotation struct {
+	Reason string `json:"reason"`
+	Path   string `json:"path,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // ReachabilityRequest carries the resolved sinks to trace toward.
 type ReachabilityRequest struct {
-	BuildDir string   `json:"build_dir"`
-	VulnID   string   `json:"vuln_id"` // drives govulncheck's advisory selection
-	Symbols  []string `json:"symbols"` // resolved SCIP/symbol strings to confirm reachable
+	BuildDir string `json:"build_dir"`
+	// GoWork is the GOWORK a Go build runs under, as the host resolved it: "" or "off" for none,
+	// else the absolute path of its go.work. The Go analyzer loads under it and never under its own.
+	GoWork  string   `json:"go_work,omitempty"`
+	VulnID  string   `json:"vuln_id"` // drives govulncheck's advisory selection
+	Symbols []string `json:"symbols"` // resolved SCIP/symbol strings to confirm reachable
 	// GoToolchain is the SUBJECT's Go toolchain the analysis must execute under, normalized
 	// "go1.21.3". Empty — the default and the only value any non-Go lane ever sees —
 	// means "run under whatever toolchain the analyzer already has", i.e. today's behavior.
@@ -446,6 +493,11 @@ type ReachabilityRequest struct {
 	// here. A plugin that cannot honor the request must fall back and say so via
 	// ReachabilityResult.ScanToolchain rather than failing the scan.
 	GoToolchain string `json:"go_toolchain,omitempty"`
+	// GoToolchainFloor is a release no go command that builds the subject is below, normalized
+	// "go1.22.0": the go.mod `go` line when it binds. Unlike GoToolchain it names no release to run
+	// under; a lane reads it only to rule out files whose goN.M build tags exclude them from every
+	// build at or above it. Empty means no floor is known.
+	GoToolchainFloor string `json:"go_toolchain_floor,omitempty"`
 	// Package is the PURL of the package the advisory was admitted on, pinned to the version the
 	// inventory resolved ("pkg:npm/lodash@4.17.20"). A lane that can prove that package's code never
 	// loads answers with a RefutationPackageNotLoaded ReachabilityResult.Refutation. Package is
@@ -674,7 +726,8 @@ const (
 
 // ResolveInventoryRequest carries the buildable module to resolve the whole dependency graph for.
 type ResolveInventoryRequest struct {
-	BuildDir string `json:"build_dir"` // checked-out module/workspace root
+	BuildDir string `json:"build_dir"`         // checked-out module/workspace root
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 
 	// TargetEnv is the §4.6 target-environment override the resolver evaluates environment-conditional
 	// dependencies against (onyx-q6). It rides on the REQUEST, not on BuildDir: the override is Assay
@@ -708,6 +761,9 @@ type DependencyInventory struct {
 	// MainModule is the path of the module the build list was resolved for (Go), which is part of
 	// the build but not one of Nodes; set with BuildList.
 	MainModule string `json:"main_module,omitempty"`
+	// WorkspaceModules are the other modules of the go.work the build list was resolved under (Go),
+	// sorted: main modules like MainModule, part of the build but not among Nodes; set with BuildList.
+	WorkspaceModules []string `json:"workspace_modules,omitempty"`
 }
 
 // BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected
@@ -768,7 +824,8 @@ type DependencyProvenance struct {
 // source→sink flows toward.
 type ComputeTaintRequest struct {
 	BuildDir string   `json:"build_dir"`
-	Sinks    []string `json:"sinks,omitempty"` // resolved sink SCIP ids to trace toward
+	GoWork   string   `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
+	Sinks    []string `json:"sinks,omitempty"`   // resolved sink SCIP ids to trace toward
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
 	DependencyCache string `json:"dependency_cache,omitempty"`
@@ -805,6 +862,7 @@ type HarnessResult struct {
 // BuildManifestRequest carries the buildable module to derive a build manifest for.
 type BuildManifestRequest struct {
 	BuildDir string `json:"build_dir"`
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // RuntimeSource records where a resolved toolchain identity came from.
@@ -823,7 +881,7 @@ const (
 type RuntimeSpec struct {
 	Name      string        `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
 	Version   string        `json:"version,omitempty"`   // declared/minimum runtime version (JS: node engine range)
-	Toolchain string        `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one; a stronger floor than Version
+	Toolchain string        `json:"toolchain,omitempty"` // the manifest's toolchain directive, recorded as declared; not a bound (Go: its presence implies go1.21 or later, its version does not)
 	Source    RuntimeSource `json:"source,omitempty"`    // provenance of this identity
 	Target    string        `json:"target,omitempty"`    // this toolchain's target platform/architecture ("linux/amd64", "x86_64-linux-gnu")
 	Lang      string        `json:"lang,omitempty"`      // language mode this toolchain compiles ("c", "c++")

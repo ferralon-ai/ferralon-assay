@@ -349,8 +349,11 @@ type Veto struct {
 	triggered bool            // a surface's text may reach a sample hook (trigger)
 	// unrecognisedAt is where the backstop first withheld (Unrecognised).
 	unrecognisedAt string
-	actions        *bool       // a workflow uses an action from the tree (localActions), once known
-	build          *buildFiles // the files the build reads (buildRead), once known
+	// inactive are the backstop's hits in files nothing in the build invokes (Inactive).
+	inactive []Site
+	named    map[string]bool // whether a file names each backstop hit (namedIn), once known
+	actions  *bool           // a workflow uses an action from the tree (localActions), once known
+	build    *buildFiles     // the files the build reads (buildRead), once known
 }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but

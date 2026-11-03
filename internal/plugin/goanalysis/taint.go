@@ -20,8 +20,11 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // ingress input reaches a tainted argument of the sink via VARIABLE-LEVEL SSA
 // value flow (not call-graph path presence). Sources are the parameters of the
 // discovered ingress functions; taint propagates over SSA def-use edges
-// (assignment, phi, field/element access, extract, conversions, tainted-operand
-// binops) and inter-procedurally from actual arg to callee formal param. A
+// (assignment, phi, field/element access, map lookup, type assertion, extract,
+// conversions, tainted-operand binops, a store through a field or element
+// address to every base under it, the append and copy builtins),
+// inter-procedurally from actual arg to callee formal param, and from a tainted
+// argument to the result of a library call with no built body. A
 // modeled sanitizer (sanitizers.go) clears taint on its result, so a value that
 // reaches a sink only through a sanitizer is a true negative and is NOT reported.
 //
@@ -33,6 +36,10 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // (no_known_ingress). It NEVER renders an unknown as "safe" (inv.5). A load/SSA
 // failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.TaintResult{}, err
+	}
 	c, err := taintClosureOf(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.TaintResult{}, err
@@ -55,7 +62,7 @@ type taintClosure struct {
 // taintClosureOf returns buildDir's taint closure, computed once per tree per scan through the run
 // cache. A failed load is never cached, so it fails every run that asks (inv.4).
 func taintClosureOf(ctx context.Context, buildDir string) (taintClosure, error) {
-	b, err := runCached(ctx, "taint", loadCacheKey(buildDir), func() ([]byte, error) {
+	b, err := runCached(ctx, "taint", loadCacheKey(ctx, buildDir), func() ([]byte, error) {
 		c, err := computeTaintClosure(ctx, buildDir)
 		if err != nil {
 			return nil, err
@@ -139,6 +146,10 @@ func (c taintClosure) result(sinks []string) plugin.TaintResult {
 // by indexing every built function's SCIP id once. Ingresses whose function is
 // not in the SSA program (e.g. a handler value with no static body) are dropped:
 // absence of a source is honestly no source, never a fabricated one.
+//
+// A method's synthetic wrappers and a generic function's instantiations share its SCIP
+// id, and AllFunctions is a map, so the function a shared id resolves to is chosen by
+// preferIngressFunc, never by iteration order.
 func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]*ssa.Function {
 	bySymbol := map[string]*ssa.Function{}
 	for fn := range ssautil.AllFunctions(s.prog) {
@@ -146,10 +157,9 @@ func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]
 			continue
 		}
 		id := s.scipFunc(fn)
-		if prev, ok := bySymbol[id]; ok && !resolvesBefore(fn, prev) {
-			continue
+		if prev, ok := bySymbol[id]; !ok || s.preferIngressFunc(fn, prev) {
+			bySymbol[id] = fn
 		}
-		bySymbol[id] = fn
 	}
 
 	out := map[string]*ssa.Function{}
@@ -164,13 +174,20 @@ func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]
 	return out
 }
 
-// resolvesBefore reports whether a, rather than b, is the function their shared SCIP id names. A
-// method's bound wrapper and thunk, and each instance of a generic function, carry the declared
-// function's id. The id names the declared function, so it wins; among synthetic functions alone
-// the lowest name does, so the choice never follows map order.
-func resolvesBefore(a, b *ssa.Function) bool {
-	if (a.Synthetic == "") != (b.Synthetic == "") {
-		return a.Synthetic == ""
+// preferIngressFunc reports whether a is preferred over b as the function behind one
+// SCIP id: the declared function (neither a synthetic wrapper nor a generic
+// instantiation) over the others, then the first by compareFuncs, then by the SSA
+// function's own name, which tells apart instantiations and wrappers of one function.
+func (s *ssaProgram) preferIngressFunc(a, b *ssa.Function) bool {
+	if da, db := declaredFunc(a), declaredFunc(b); da != db {
+		return da
 	}
-	return a.String() < b.String()
+	if c := s.compareFuncs(a, b); c != 0 {
+		return c < 0
+	}
+	return a.Synthetic+"\x00"+a.Name() < b.Synthetic+"\x00"+b.Name()
+}
+
+func declaredFunc(fn *ssa.Function) bool {
+	return fn.Synthetic == "" && fn.Origin() == nil
 }

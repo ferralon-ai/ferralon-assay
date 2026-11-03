@@ -16,6 +16,17 @@ func sinkPostFormArray(v any)      { accessorSunk = append(accessorSunk, v) }
 func sinkGetHeader(v any)          { accessorSunk = append(accessorSunk, v) }
 func sinkCookie(v any)             { accessorSunk = append(accessorSunk, v) }
 func sinkGetRawData(v any)         { accessorSunk = append(accessorSunk, v) }
+func sinkGetQueryArray(v any)      { accessorSunk = append(accessorSunk, v) }
+func sinkGetQueryMap(v any)        { accessorSunk = append(accessorSunk, v) }
+func sinkDefaultPostForm(v any)    { accessorSunk = append(accessorSunk, v) }
+func sinkGetPostFormArray(v any)   { accessorSunk = append(accessorSunk, v) }
+func sinkPostFormMap(v any)        { accessorSunk = append(accessorSunk, v) }
+func sinkGetPostFormMap(v any)     { accessorSunk = append(accessorSunk, v) }
+func sinkFormFile(v any)           { accessorSunk = append(accessorSunk, v) }
+func sinkMultipartForm(v any)      { accessorSunk = append(accessorSunk, v) }
+func sinkContentType(v any)        { accessorSunk = append(accessorSunk, v) }
+func sinkClientIP(v any)           { accessorSunk = append(accessorSunk, v) }
+func sinkRemoteIP(v any)           { accessorSunk = append(accessorSunk, v) }
 func sinkBind(v any)               { accessorSunk = append(accessorSunk, v) }
 func sinkBindJSON(v any)           { accessorSunk = append(accessorSunk, v) }
 func sinkBindQuery(v any)          { accessorSunk = append(accessorSunk, v) }
@@ -52,6 +63,23 @@ func (s *server) accessorsForm(c *gin.Context) {
 	sinkCookie(ck)
 	raw, _ := c.GetRawData()
 	sinkGetRawData(string(raw))
+	qa, _ := c.GetQueryArray("ids")
+	sinkGetQueryArray(qa)
+	qm, _ := c.GetQueryMap("m")
+	sinkGetQueryMap(qm)
+	sinkDefaultPostForm(c.DefaultPostForm("f", "none"))
+	fa, _ := c.GetPostFormArray("fs")
+	sinkGetPostFormArray(fa)
+	sinkPostFormMap(c.PostFormMap("fm"))
+	fm, _ := c.GetPostFormMap("fm")
+	sinkGetPostFormMap(fm)
+	fh, _ := c.FormFile("upload")
+	sinkFormFile(fh.Filename)
+	mf, _ := c.MultipartForm()
+	sinkMultipartForm(mf.Value)
+	sinkContentType(c.ContentType())
+	sinkClientIP(c.ClientIP())
+	sinkRemoteIP(c.RemoteIP())
 	sinkFullPath(c.FullPath())
 	sinkNotRequestData(c.HandlerName())
 

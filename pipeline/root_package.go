@@ -71,12 +71,12 @@ func ReadRootPackage(ctx context.Context, buildDir, language string) (RootPackag
 // module the project requires or replaces under its own path makes it a different module, and a
 // path whose module the scan cannot tell apart from the root matches with no version. Every other
 // ecosystem matches by normalized name, and an advisory PURL of another type never matches.
-func (r RootPackage) Matches(buildDir, module, coordinate, purl string) (string, bool) {
+func (r RootPackage) Matches(buildDir string, ws GoWorkspace, module, coordinate, purl string) (string, bool) {
 	if typ := purlEcosystem(purl); typ != "" && typ != r.PURLType {
 		return "", false
 	}
 	if r.PURLType == "golang" {
-		switch goPathOwner(buildDir, r.Name, module) {
+		switch goPathOwner(buildDir, ws, r.Name, module) {
 		case goOwnedByRoot:
 			return r.Version, true
 		case goOwnerAmbiguous:
@@ -104,13 +104,13 @@ const (
 // go.mod in buildDir declares. p is the root's when it is mod itself, or a path under it whose
 // first element is not a major-version suffix (example.com/m/v2 is a different module from
 // example.com/m) and that no other module claims: none another go.mod below buildDir declares, none
-// a go.work at or above buildDir uses, and none go.mod requires or replaces. A longer module path
+// the workspace ws uses, and none go.mod requires or replaces. A longer module path
 // go.sum records but go.mod does not name, or one a go.mod elsewhere in the repository declares,
 // leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
 // in the build, so the path may still be the root's, but it may also be the other module's at
 // another version. So does one a go.work member requires or replaces, or the go.work replaces: the
 // workspace build may serve the path from that module instead.
-func goPathOwner(buildDir, mod, p string) goOwner {
+func goPathOwner(buildDir string, ws GoWorkspace, mod, p string) goOwner {
 	if p == mod {
 		return goOwnedByRoot
 	}
@@ -132,7 +132,7 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 	if !ok {
 		return goOwnerAmbiguous
 	}
-	members, ok := goWorkModules(buildDir)
+	members, ok := goWorkModules(ws)
 	if !ok {
 		return goOwnerAmbiguous
 	}
@@ -159,7 +159,7 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 			return goOwnedElsewhere
 		}
 	}
-	work, ok := goWorkRequires(buildDir)
+	work, ok := goWorkRequires(ws)
 	if !ok {
 		return goOwnerAmbiguous
 	}
@@ -225,11 +225,10 @@ func goIgnoredDir(name string) bool {
 	return name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
 }
 
-// goWorkModules returns the module path of every module the go.work the go command would find
-// from buildDir (the nearest at or above it) uses; ok is false when that go.work does not parse or
-// a module it uses declares no module path.
-func goWorkModules(buildDir string) ([]string, bool) {
-	uses, _, ok := goWorkUses(buildDir)
+// goWorkModules returns the module path of every module the workspace uses; ok is false when its
+// go.work does not parse or a module it uses declares no module path.
+func goWorkModules(ws GoWorkspace) ([]string, bool) {
+	uses, _, ok := ws.uses()
 	if !ok {
 		return nil, false
 	}
@@ -244,10 +243,10 @@ func goWorkModules(buildDir string) ([]string, bool) {
 	return mods, true
 }
 
-// goWorkRequires returns the module path every go.mod of a module the go.work in force uses
-// requires or replaces, and every one that go.work replaces; ok is false when one cannot be read.
-func goWorkRequires(buildDir string) ([]string, bool) {
-	uses, paths, ok := goWorkUses(buildDir)
+// goWorkRequires returns the module path every go.mod of a module the workspace uses requires or
+// replaces, and every one its go.work replaces; ok is false when one cannot be read.
+func goWorkRequires(ws GoWorkspace) ([]string, bool) {
+	uses, paths, ok := ws.uses()
 	if !ok {
 		return nil, false
 	}
@@ -268,44 +267,6 @@ func goWorkRequires(buildDir string) ([]string, bool) {
 		}
 	}
 	return paths, true
-}
-
-// goWorkUses returns the directory of every module the go.work the go command would find from
-// buildDir uses, and the module path of everything it replaces; ok is false when that go.work
-// cannot be read or does not parse.
-func goWorkUses(buildDir string) (uses, replaced []string, ok bool) {
-	dir, err := filepath.Abs(buildDir)
-	if err != nil {
-		return nil, nil, false
-	}
-	for {
-		data, err := os.ReadFile(filepath.Join(dir, "go.work"))
-		if err == nil {
-			wf, err := modfile.ParseWork("go.work", data, nil)
-			if err != nil {
-				return nil, nil, false
-			}
-			for _, r := range wf.Replace {
-				replaced = append(replaced, r.Old.Path)
-			}
-			for _, u := range wf.Use {
-				use := filepath.FromSlash(u.Path)
-				if !filepath.IsAbs(use) {
-					use = filepath.Join(dir, use)
-				}
-				uses = append(uses, use)
-			}
-			return uses, replaced, true
-		}
-		if !os.IsNotExist(err) {
-			return nil, nil, false
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return nil, nil, true
-		}
-		dir = parent
-	}
 }
 
 func goModFileModule(gomod string) string {

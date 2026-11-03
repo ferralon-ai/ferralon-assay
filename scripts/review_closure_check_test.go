@@ -1,6 +1,6 @@
-// Hermetic test for review-closure-check.sh. It builds one throwaway git repository (a main commit,
-// the reviewed PR commit, then a revision commit) and runs the script against a table of findings
-// files. No network, and no git command reads the developer's git config.
+// Hermetic test for review-closure-check.sh. It builds one throwaway bare git repository (a main
+// commit, the reviewed PR commit, then a revision commit) and runs the script against a table of
+// findings files. No network, and no git command reads the developer's git config.
 package scripts
 
 import (
@@ -20,24 +20,22 @@ func closureEnv() []string {
 	return append(gittest.Env(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 }
 
-func closureGit(t *testing.T, dir, stdin string, args ...string) {
-	t.Helper()
-	cmd := gittest.Command(args...)
-	cmd.Dir = dir
-	cmd.Env = closureEnv()
-	cmd.Stdin = strings.NewReader(stdin)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
 func TestReviewClosureCheck(t *testing.T) {
 	script, err := filepath.Abs("review-closure-check.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The script only compares commits, so a bare repository laid out by hand (HEAD, objects/,
+	// refs/) is enough, and costs less CPU than a git init.
 	repo := t.TempDir()
-	closureGit(t, repo, "", "init", "-q", "--template=", "-b", "main")
+	for _, d := range []string{"objects", "refs"} {
+		if err := os.Mkdir(filepath.Join(repo, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// Three commits through one fast-import. The PR commit is the reviewed head: it changes line 9
 	// of a.go and line 2 of p.go. The revision after it changes line 3 of a.go, inserts a line after
 	// line 2 of c.go and adds docs/b.md. origin/main is the main commit.
@@ -67,7 +65,13 @@ func TestReviewClosureCheck(t *testing.T) {
 			"c.go": "1\n2\nnew\n3\n", "docs/b.md": "new\n"}) +
 		"reset refs/remotes/origin/main\nfrom :1\n\n"
 	marks := filepath.Join(t.TempDir(), "marks")
-	closureGit(t, repo, stream, "fast-import", "--quiet", "--export-marks="+marks)
+	imp := gittest.Command("fast-import", "--quiet", "--export-marks="+marks)
+	imp.Dir = repo
+	imp.Env = closureEnv()
+	imp.Stdin = strings.NewReader(stream)
+	if out, err := imp.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import: %v\n%s", err, out)
+	}
 	m, err := os.ReadFile(marks)
 	if err != nil {
 		t.Fatal(err)

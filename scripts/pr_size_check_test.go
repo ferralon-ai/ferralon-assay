@@ -164,7 +164,7 @@ func TestPRSizeExcludesGenerated(t *testing.T) {
 func TestPRSizeExcludesVendorAndLockFiles(t *testing.T) {
 	checkSize(t, sizeCase{
 		files: map[string]int{
-			"a/x.go": 5,
+			"a/x.txt": 5,
 			"corpus/testdata/repros/r/vendor/golang.org/x/text/tables.go": 50,
 			"vendor/modules.txt":    50,
 			"web/package-lock.json": 50, "yarn.lock": 50, "web/pnpm-lock.yaml": 50,
@@ -190,8 +190,8 @@ func TestPRSizeExcludesGeneratedHeader(t *testing.T) {
 // A pure move is one file with no changed lines, in the directory it moved to.
 func TestPRSizeMoveCountsOnce(t *testing.T) {
 	checkSize(t, sizeCase{
-		baseTexts: map[string]string{"a/big.go": strings.Repeat("line\n", 400)},
-		moves:     map[string]string{"a/big.go": "b/big.go"},
+		baseTexts: map[string]string{"a/big.txt": strings.Repeat("line\n", 400)},
+		moves:     map[string]string{"a/big.txt": "b/big.txt"},
 		env:       []string{"PR_SIZE_MAX_LINES=0", "PR_SIZE_MAX_FILES=0", "PR_SIZE_MAX_AREAS=0"}, base: "main",
 		wantCode: 1, want: []string{"OVER: 1 files changed (limit 0)", "OVER: 1 top-level directories touched (limit 0)",
 			"SPLIT: b: 0 lines"},
@@ -201,7 +201,7 @@ func TestPRSizeMoveCountsOnce(t *testing.T) {
 // A path with a quote, a backslash or a tab is read whole: its directory is right and its name still
 // matches the generated pattern.
 func TestPRSizeOddPath(t *testing.T) {
-	checkSize(t, sizeCase{files: map[string]int{"a/x.go": 5, "a/we\"i\\rd\tq.pb.go": 5000, "b\"c/y.go": 3},
+	checkSize(t, sizeCase{files: map[string]int{"a/x.txt": 5, "a/we\"i\\rd\tq.pb.go": 5000, "b\"c/y.txt": 3},
 		env: []string{"PR_SIZE_MAX_AREAS=1"}, base: "main", wantCode: 1,
 		want:    []string{"OVER: 2 top-level directories touched (limit 1)", "SPLIT: a: 5 lines", "SPLIT: b\"c: 3 lines"},
 		notWant: []string{"changed lines", "files changed"}})

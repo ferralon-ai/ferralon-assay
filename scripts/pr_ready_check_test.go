@@ -155,6 +155,11 @@ func TestPRReadyCheck(t *testing.T) {
 			want: "commit or stash", code: 2},
 		{name: "deleted file breaks its package", del: []string{"b/h.go"}, desc: ptr(realDesc), want: "go vet reports problems in module .", code: 1},
 		{name: "deleted package", del: []string{"b/b.go", "b/h.go"}, desc: ptr(realDesc)},
+		// git sees this as a rename to c/h.go, so the old package b must still be vetted.
+		{name: "file moved out of its package", del: []string{"b/h.go"},
+			files: map[string]string{"c/h.go": "package c\n\nfunc h() int { return 1 }\n",
+				"c/h_test.go": "package c\n\nimport \"testing\"\n\nfunc TestH(t *testing.T) { _ = h() }\n"},
+			desc: ptr(realDesc), want: "go vet reports problems in module .", code: 1},
 		{name: "gofmt", files: map[string]string{"a/a.go": unformatted, "a/a_test.go": goodTest}, desc: ptr(realDesc), want: "gofmt reports a/a.go", code: 1},
 		{name: "testdata skipped", files: map[string]string{"a/a.go": good, "a/a_test.go": goodTest, "a/testdata/f.go": "package f\nfunc F() {return}\n"}, desc: ptr(realDesc)},
 		{name: "vendor skipped", files: map[string]string{"a/a.go": good, "a/a_test.go": goodTest, "vendor/example.com/x/x.go": "package x\nfunc X() {return}\n"}, desc: ptr(realDesc)},

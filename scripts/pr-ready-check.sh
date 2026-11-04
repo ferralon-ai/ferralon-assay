@@ -7,7 +7,8 @@
 #   (b) the PR description file is missing, empty, or still the template placeholder,
 #   (c) gofmt -l or go vet reports on the changed Go files/packages.
 # Like CI, files under testdata/ and vendor/ are skipped, and go vet runs from each
-# package's nearest go.mod. A package that only lost a file is vetted too. gofmt and go vet
+# package's nearest go.mod. A package that only lost a file is vetted too, including one a
+# file was moved out of (renames count as a delete plus an add). gofmt and go vet
 # read the working tree, so the script refuses to run while any tracked Go file has
 # uncommitted changes or a changed package holds an untracked Go file.
 # Exit 0 means none of the three fired, 1 that at least one did, and 2 that the check could
@@ -33,10 +34,10 @@ if ! git merge-base "$base" HEAD >/dev/null 2>&1; then
   cannot "no merge base between '$base' and HEAD (unrelated history, or a shallow clone: fetch more history)"
 fi
 
-if ! changed=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD -- '*.go'); then
+if ! changed=$(git diff --no-renames --name-only --diff-filter=ACMR "$base"...HEAD -- '*.go'); then
   cannot "cannot diff '$base'...HEAD"
 fi
-if ! deleted=$(git diff --name-only --diff-filter=D "$base"...HEAD -- '*.go'); then
+if ! deleted=$(git diff --no-renames --name-only --diff-filter=D "$base"...HEAD -- '*.go'); then
   cannot "cannot diff '$base'...HEAD"
 fi
 skip='(^|/)(testdata|vendor)/'

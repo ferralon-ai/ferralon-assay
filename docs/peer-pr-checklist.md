@@ -20,7 +20,9 @@ one `FAIL:` line per cause, when:
   as a description);
 - `gofmt -l` or `go vet` reports on the changed Go files or packages. `go vet` runs from each
   package's nearest `go.mod`, so a change under `plugins/cfamily` is vetted in that module. A
-  package that only lost a file is vetted too.
+  package that only lost a file is vetted too, including one a file was moved out of.
+  Only changed packages are vetted: an unchanged package that imports a changed or removed
+  one is not, and can still fail CI's full `go vet ./...`.
 
 It exits 2, and checks nothing, when it cannot run: it is not run inside a git repository, the
 base ref is unknown, the base and `HEAD` share no merge base (fetch more history), `perl` is

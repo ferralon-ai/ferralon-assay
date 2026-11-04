@@ -3102,7 +3102,7 @@ func extractAlsoPresent(store artifact.Store, caseID string) []presentRanges {
 		pr := presentRanges{presentPackage: p}
 		if a, ok := affectedPackageNamed(adv.AffectedPackages, p.Module, p.Coordinate); ok {
 			pr.Ranges, pr.RangeKnown = validAffectedRanges(a.AffectedRanges)
-			if p.Coordinate == goStdlibPURLName {
+			if toolchainSubject(a.PURL, pr.Ranges) {
 				pr.Ranges = rangesForToolchainFloor(store, caseID, pr.Ranges)
 			}
 		}

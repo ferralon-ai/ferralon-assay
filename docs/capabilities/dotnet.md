@@ -4,7 +4,7 @@ Every feature in every capability group for .NET, with its status and the caveat
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 3 / 🟥 0 | 🟩 1 / 🟨 4 / 🟥 2 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 0 / 🟥 3 |
+| C / P / L | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 3 / 🟥 0 | 🟩 1 / 🟨 5 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 0 / 🟥 3 |
 
 🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 

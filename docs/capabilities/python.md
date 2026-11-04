@@ -4,7 +4,7 @@ Every feature in every capability group for Python, with its status and the cave
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 1 | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 0 |
+| C / P / L | 🟩 5 / 🟨 3 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 1 | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 0 |
 
 🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
@@ -22,7 +22,7 @@ The lane reads the declared Python dependency surface directly from the checkout
 | Import-name to distribution mapping (curated ~37 rows + PEP 503 identity for declared dists) | Partial | [PYTHON-IMPORT-MAP-GAP](#python-import-map-gap) |
 | First-party import packages derived from source layout (DeriveFirstParty) | Complete |  |
 | Workspace / multi-root enumeration | Planned | [PYTHON-SINGLE-ROOT-BUILD](#python-single-root-build) |
-| SBOM projection from inventory | Partial |  |
+| SBOM projection from inventory | Complete |  |
 
 ## 2. Version clearing
 

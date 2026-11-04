@@ -141,8 +141,8 @@ binary. The CLI resolves the analyzer for the detected language on `PATH` under 
 so the quickstart installs it with `go install` (keep `go env GOBIN`, or `$(go env GOPATH)/bin` when
 that is unset, on `PATH`). The other analyzers install the same way from
 `./cmd/assay-plugin-<lang>` for `java`, `kotlin`, `js`, `python` and `dotnet`; install one
-and a default scan of that ecosystem completes against the same populated advisory corpus the shipped
-Action uses. What halts a run is a *resolved* work set of zero advisories — for example pointing
+and a default scan of that ecosystem completes against the built-in test-case advisories, as a default
+run of the shipped Action does. What halts a run is a *resolved* work set of zero advisories — for example pointing
 `-advisory-corpus` at a table that has nothing for your detected language. See [Scope](#scope).
 
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan

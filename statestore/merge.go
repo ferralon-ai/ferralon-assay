@@ -30,6 +30,8 @@ import (
 //   - VEXLog: append-union — base's log followed by any of mine's entries not
 //     already present (dedup by exact bytes), preserving the winner's history and
 //     adding mine's new statements.
+//   - DepFetch: per registry the larger held count, the earliest first-held time and
+//     either side's has-served; reassess lists unioned (mergeDepFetch).
 //
 // The returned State carries base.CommitSHA as its CAS token so the caller retries
 // the CAS against the winner's commit.
@@ -54,6 +56,7 @@ func Merge(base, mine *State) *State {
 	if mine.RevokeCount > out.RevokeCount {
 		out.RevokeCount = mine.RevokeCount
 	}
+	out.DepFetch = mergeDepFetch(base.DepFetch, mine.DepFetch)
 	return out
 }
 

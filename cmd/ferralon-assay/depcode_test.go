@@ -62,6 +62,9 @@ func TestDependencyCodeOption(t *testing.T) {
 			if f.depRun == nil || f.depRun.source != tt.wantSource {
 				t.Fatalf("depRun = %+v, want source %q", f.depRun, tt.wantSource)
 			}
+			if opt != nil && f.depRun.failsRun != fetchFailureFailsRun {
+				t.Fatalf("depRun.failsRun = %v, want fetchFailureFailsRun", f.depRun.failsRun)
+			}
 		})
 	}
 }
@@ -117,7 +120,7 @@ func TestDependencyCodeStampAndExit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			run := &depCodeRun{source: report.DependencyCodeSourceFetch}
+			run := &depCodeRun{source: report.DependencyCodeSourceFetch, failsRun: fetchFailureFailsRun}
 			if tt.fell != nil {
 				run.observe(pipeline.DependencyAcquisitionResult{Fallback: tt.fell})
 			}

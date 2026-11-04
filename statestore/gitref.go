@@ -99,9 +99,11 @@ func (s *GitRefStore) Read(ctx context.Context) (*State, error) {
 	}
 	st := &State{CommitSHA: sha}
 
+	var reportJSON []byte
 	if b, ok, err := s.readFile(ctx, sha, fileReport); err != nil {
 		return nil, err
 	} else if ok {
+		reportJSON = b
 		r, err := decodeReport(b)
 		if err != nil {
 			return nil, err
@@ -143,6 +145,15 @@ func (s *GitRefStore) Read(ctx context.Context) (*State, error) {
 			return nil, err
 		}
 		st.RevokeCount = n
+	}
+
+	if b, ok, err := s.readFile(ctx, sha, fileDepFetch); err != nil {
+		return nil, err
+	} else if ok {
+		st.DepFetch, err = decodeDepFetch(b, reportJSON)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return st, nil
 }
@@ -249,11 +260,13 @@ func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) 
 	}
 	var entries []entry
 
+	var reportJSON []byte
 	if st.Report != nil {
 		b, err := marshalCanonical(st.Report)
 		if err != nil {
 			return "", fmt.Errorf("statestore: marshal report: %w", err)
 		}
+		reportJSON = b
 		entries = append(entries, entry{fileReport, b})
 	}
 	// Persist the SBOM as its own file. When a Report is present its SBOM is the
@@ -279,6 +292,11 @@ func (s *GitRefStore) buildTree(ctx context.Context, st *State) (string, error) 
 	// drops the blob (read-absent → 0), and a repo that never revokes writes none.
 	if st.RevokeCount > 0 {
 		entries = append(entries, entry{fileRevoke, []byte(strconv.Itoa(st.RevokeCount))})
+	}
+	if b, ok, err := encodeDepFetch(st.DepFetch, reportJSON); err != nil {
+		return "", err
+	} else if ok {
+		entries = append(entries, entry{fileDepFetch, b})
 	}
 
 	var mktree bytes.Buffer

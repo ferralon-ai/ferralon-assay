@@ -55,8 +55,8 @@ jobs:
           # Recommended: consume the public advisory corpus for real coverage.
           # Left on its default ref (main) on purpose — new advisories land there
           # continuously, so pinning this ref would freeze your vulnerability intel.
-          # Omit it and the scan falls back to a small built-in table (a standalone
-          # floor, not coverage).
+          # Omit it and the scan falls back to a small built-in table (a few
+          # hand-picked test cases, not advisory coverage).
           advisory-corpus-repo: ferralon-ai/vulnerability-corpus
 
       # The Action materializes report.sarif.json; the upload to code scanning is this
@@ -141,7 +141,7 @@ binary. The CLI resolves the analyzer for the detected language on `PATH` under 
 so the quickstart installs it with `go install` (keep `go env GOBIN`, or `$(go env GOPATH)/bin` when
 that is unset, on `PATH`). The other analyzers install the same way from
 `./cmd/assay-plugin-<lang>` for `java`, `kotlin`, `js`, `python` and `dotnet`; install one
-and a default scan of that ecosystem completes against the same populated advisory floor the shipped
+and a default scan of that ecosystem completes against the same populated advisory corpus the shipped
 Action uses. What halts a run is a *resolved* work set of zero advisories — for example pointing
 `-advisory-corpus` at a table that has nothing for your detected language. See [Scope](#scope).
 
@@ -238,7 +238,7 @@ advisories it carries for whichever languages it covers, and the `Report` record
 scan falls back to a small built-in table so the engine still runs standalone — Go carries 10 of
 these, and each of the other five languages carries 3
 ([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)); that built-in table is a
-standalone default floor, so consume the corpus for real coverage.
+set of hand-picked test cases, so consume the corpus for advisory coverage.
 
 Let the corpus track its default `main` (`advisory-corpus-ref` defaults to `main`). New advisories land
 in it continuously, so pinning the corpus ref would freeze your vulnerability intel and miss everything
@@ -255,7 +255,7 @@ no manifest, so a scan that reads a bundle records its digest without this block
 
 To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
 example `published-7d` or `full`). The policy then defines what the scan evaluates, not only which
-advisory facts are available: the work set is the built-in floor plus every advisory in the policy
+advisory facts are available: the work set is the built-in test-case advisories plus every advisory in the policy
 whose affected package is one of your repository's own dependencies — matched by package identity
 (the Go module path, or the Go standard library for a toolchain advisory; otherwise the ecosystem
 coordinate) — and each advisory's affected version range is then checked during the scan. Choosing
@@ -312,8 +312,9 @@ onto vulnerable symbols, builds a call graph, and computes reachability, then re
 What each of the six languages resolves is laid out in the
 [language capability matrix](docs/capabilities/README.md).
 
-It stops at reachability — there is no execution of the target codebase, no exploit synthesis, and no
-live confirmation step, and it neither generates nor validates patches. It produces the evidence those
+It stops at reachability: it never runs the program it scans (a Java or Kotlin scan runs only the
+project's own Maven or Gradle, to resolve the dependency graph), it has no exploit synthesis or live
+confirmation step, and it neither generates nor validates patches. It produces the evidence those
 steps build on.
 
 A scan will never emit a findings-free `Report` from a work set that resolved to nothing: that halts
@@ -338,8 +339,8 @@ Python traces first-party calls to the dependency boundary; all of them resolve 
 and disqualify advisories your pinned version is provably outside. The
 [language capability matrix](docs/capabilities/README.md) has the per-language specifics.
 
-**Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not execute the
-scanned codebase or synthesize an exploit; a `reachable_candidate`
+**Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not run the
+program it scans or synthesize an exploit; a `reachable_candidate`
 verdict is a candidate, never a proof of exploitability. It is pre-1.0 — see
 [API stability](#api-stability) before depending on it as a Go library.
 

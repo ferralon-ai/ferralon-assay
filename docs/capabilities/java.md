@@ -190,7 +190,7 @@ The Java lane hands candidate paths and resolved sink coordinates to the paid ti
 
 **Trigger.** An advisory without a vetted symbol set (not osv-declared, curated, or built-in).
 
-**Effect.** The trigger does not emit `not_exploitable` even from a Searched result. The built-in Java advisory floor is 3 and is a floor, not coverage; real advisories come from the external opt-in corpus.
+**Effect.** The trigger does not emit `not_exploitable` even from a Searched result. The three built-in Java advisories are hand-picked test cases so a default scan completes; advisories come from the external opt-in corpus.
 
 ### JAVA-INGRESS-LIST
 

@@ -139,7 +139,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** A `replace` pointing at a filesystem path or a fork.
 
-**Effect.** The inventory declares `source_unpinned` and the version axis stays open. The outside-build module search cannot apply, so the advisory ends `undetermined`.
+**Effect.** Version resolution declares `source_unpinned` and the version axis stays open. The outside-build module search cannot apply, so the advisory ends `undetermined`.
 
 ### GO-VENDORED
 
@@ -163,7 +163,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** A stdlib/toolchain-ranged advisory on a module whose `go.mod` has no `toolchain` line and a `go` line that is two-part (`go 1.21`) or below 1.21.
 
-**Effect.** The `go` line is not a minimum, because a go command before 1.21 does not enforce it, so it is left out of the toolchain fact. The Go the build's own go command resolves stands in only with `ASSAY_TRUST_OBSERVED_GO=true`; without that, or a declaration, the fact is unresolved and the advisory is `undetermined` with `go_toolchain_unresolved`.
+**Effect.** The `go` line is not a minimum, because a go command before 1.21 does not enforce it, so it is left out of the toolchain fact. The toolchain the caller reports in `ASSAY_CI_GO_VERSION` stands in only when `ASSAY_TRUST_OBSERVED_GO=true`; without that, or a declaration (`-subject-go-version`), the fact is unresolved and the advisory is `undetermined` with `go_toolchain_unresolved`.
 
 ### GO-TOOLCHAIN-NOT-SCANNED
 

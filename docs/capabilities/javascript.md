@@ -4,7 +4,7 @@ Every feature in every capability group for JavaScript / TypeScript, with its st
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 6 / 🟥 1 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 2 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 |
+| C / P / L | 🟩 5 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 6 / 🟥 1 | 🟩 4 / 🟨 6 / 🟥 0 | 🟩 3 / 🟨 0 / 🟥 2 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 2 / 🟥 1 |
 
 🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
@@ -116,7 +116,6 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 | Taint (call-path presence ingress to sink) | Partial | [JS-TAINT-PATH-ONLY](#js-taint-path-only) |
 | Capability manifest | Planned | [JS-MANIFEST-UNPUBLISHED](#js-manifest-unpublished) |
 | Value-flow / sanitizer modeling | N/A |  |
-| Dependency-code fetch is a network step, on by default | Partial | [JS-DEPCODE-UNREAD](#js-depcode-unread) |
 
 ## Caveats
 
@@ -140,7 +139,7 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 
 ### JS-LOADTIME-CODEGEN
 
-**Trigger.** Express + body-parser/depd/bluebird/mongoose/morgan dependency trees that run `eval`/`new Function` at load.
+**Trigger.** A dependency read into the graph that runs `eval` or `new Function` at load time.
 
 **Effect.** Run-wide dynamic-code limit even with dependency code read.
 

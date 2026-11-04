@@ -10,7 +10,7 @@ the release publishes a Report with no findings and one `did_not_run` note sayin
 analyzed and naming the missing analyzer, and the run exits 0: the host lacks an analyzer, the
 repository is not at fault. The job summary and the PR comment lead with "Not analyzed", so the Report
 never reads as clean. With a C/C++ analyzer you installed yourself from a source build, the scan
-instead stops at the empty-work-set gate and fails the run, because there is no C/C++ advisory floor
+instead stops at the empty-work-set gate and fails the run, because there is no C/C++ built-in advisory
 yet.
 
 A missing analyzer for a language the release does ship is an install fault, not an unsupported

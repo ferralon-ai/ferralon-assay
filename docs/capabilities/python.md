@@ -4,7 +4,7 @@ Every feature in every capability group for Python, with its status and the cave
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 1 | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 2 / 🟥 2 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 0 |
+| C / P / L | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 4 / 🟨 4 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 1 | 🟩 5 / 🟨 4 / 🟥 0 | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 2 / 🟨 0 / 🟥 0 |
 
 🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
@@ -22,7 +22,7 @@ The lane reads the declared Python dependency surface directly from the checkout
 | Import-name to distribution mapping (curated ~37 rows + PEP 503 identity for declared dists) | Partial | [PYTHON-IMPORT-MAP-GAP](#python-import-map-gap) |
 | First-party import packages derived from source layout (DeriveFirstParty) | Complete |  |
 | Workspace / multi-root enumeration | Planned | [PYTHON-SINGLE-ROOT-BUILD](#python-single-root-build) |
-| SBOM projection from inventory | Partial | [PYTHON-SBOM-OTHER-BRANCH](#python-sbom-other-branch) |
+| SBOM projection from inventory | Partial |  |
 
 ## 2. Version clearing
 
@@ -82,12 +82,12 @@ The Python lane cannot clear a finding as `not_exploitable`. The plugin returns 
 
 ## 6. Framework & dynamic-dispatch modeling
 
-Entry points are recognised for the three common Python web frameworks by decorator. Everything else dynamic is covered by a single standing hazard rather than modeled.
+Entry points are recognised from Flask and FastAPI/Starlette route decorators, Celery task decorators, WSGI/ASGI callables, Django URL patterns and manifest-declared launchers. Everything else dynamic is covered by a single standing hazard rather than modeled.
 
 | Feature | Status | Caveats |
 |---|---|---|
 | Flask / FastAPI route decorators as ingress (route/get/post/put/delete/patch/options/head/trace/websocket/api_route) | Partial | [PYTHON-INGRESS-LEAF-MATCH](#python-ingress-leaf-match), [PYTHON-INGRESS-FRAMEWORKS](#python-ingress-frameworks) |
-| Django URLconf, Celery tasks, raw WSGI/ASGI callables as ingress | Planned | [PYTHON-INGRESS-FRAMEWORKS](#python-ingress-frameworks) |
+| Django URL-pattern views, Celery tasks, WSGI/ASGI callables and manifest-declared launchers as ingress | Partial | [PYTHON-INGRESS-FRAMEWORKS](#python-ingress-frameworks) |
 | getattr / eval / exec / decorator rewriting / monkeypatching | Partial | [PYTHON-DYNAMIC-DISPATCH](#python-dynamic-dispatch) |
 | Dependency-injection / middleware modeling | Planned | [PYTHON-DYNAMIC-DISPATCH](#python-dynamic-dispatch) |
 
@@ -218,21 +218,15 @@ The lane hands the paid tier a call-graph path and the sink's package coordinate
 
 ### PYTHON-INGRESS-FRAMEWORKS
 
-**Trigger.** Django, Celery or raw WSGI/ASGI entry points.
+**Trigger.** A Django, Celery or WSGI/ASGI entry point the recognizers do not match: a callable whose parameters are not `(environ, start_response)` or `(scope, receive, send)`, a task not registered by `@task`, `@shared_task` or `@periodic_task`, or a view that neither a URL pattern nor a manifest launcher names.
 
-**Effect.** No ingress recognised; reachability falls back to module-init roots; path-to-ingress may be absent (`no_known_ingress`).
+**Effect.** No ingress is recognised for it; reachability falls back to module-init roots and the path-to-ingress may be absent (`no_known_ingress`).
 
 ### PYTHON-SINGLE-ROOT-BUILD
 
 **Trigger.** Monorepo with several Python projects.
 
 **Effect.** One build manifest per run; multi-root enumeration not available.
-
-### PYTHON-SBOM-OTHER-BRANCH
-
-**Trigger.** `analyze.ref` is a branch other than the checked-out one.
-
-**Effect.** Python SBOM resolves 0-1 packages.
 
 ### PYTHON-NO-REGISTRY-MODEL
 

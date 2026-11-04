@@ -168,9 +168,8 @@ should say why the gap cannot be closed in this change. The review asks whether 
 ### Compatibility and versions
 
 Assay versions are `vMAJOR.MINOR.PATCH`. While the module is pre-1.0
-([api-stability.md](api-stability.md)), any change since the last release that breaks a consumer
-makes the next release a minor bump; compatible fixes and additions make it a patch. "Consumer"
-covers every surface:
+([api-stability.md](api-stability.md)), a release that carries a consumer-visible break names it in
+its notes under *Breaking (library API)*. "Consumer" covers every surface:
 
 - the exported Go API of every non-`internal` package;
 - the Report's JSON shape and `report.SchemaVersion`, SARIF and OpenVEX output;
@@ -207,12 +206,13 @@ A release is minted by `.github/workflows/release.yml` from a pushed tag, never 
 - `action.yml`'s `scanner-version` default stays a `vX.Y` minor alias. A branch moves the alias in
   the change that needs the new minor's scanner, never as a release step.
 
-### The built-in advisory table is a floor
+### The built-in advisory table is a set of test cases
 
 Real runs read advisories from an external corpus. With no corpus configured, the scan falls back
 to a small built-in table so the engine still runs standalone
-([README, Advisory corpus](../README.md#advisory-corpus)). The table is a default floor. A doc,
-release note or comment that presents its counts as Assay's advisory coverage is a finding.
+([README, Advisory corpus](../README.md#advisory-corpus)). The entries are hand-picked test cases
+that let a default scan complete; they are not Assay's advisory coverage. A doc, release note or
+comment that presents the table as coverage is a finding.
 
 ### Performance and size
 
@@ -354,8 +354,8 @@ Release PRs are titled `Release: vA.B.C` and carry `docs/releases/vA.B.C.md`
 - [ ] **Set difference.** List the PRs merged since the previous tag
       (`git log --first-parent <prev-tag>..<head>`) and compare them with the PRs the notes cite.
       Each missing one is either listed or knowingly left out.
-- [ ] **API diff.** Run `apidiff -incompatible` from the previous tag to the head and compare it with
-      *Breaking (library API)*.
+- [ ] **API diff.** Run the `apidiff` recipe under *Set up* with the previous release tag as the base and
+      compare its output with *Breaking (library API)*.
 - [ ] Every Action input added or removed since the previous tag is listed.
 - [ ] Every change that can move a verdict is listed under the change, not only in a summary.
 - [ ] The notes are written for someone deciding whether to adopt the release

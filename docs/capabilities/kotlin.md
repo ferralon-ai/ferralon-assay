@@ -4,7 +4,7 @@ Every feature in every capability group for Kotlin, with its status and the cave
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 0 / 🟥 0 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 3 / 🟨 4 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 6 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 0 |
+| C / P / L | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 4 / 🟨 0 / 🟥 0 | 🟩 4 / 🟨 1 / 🟥 0 | 🟩 4 / 🟨 4 / 🟥 0 | 🟩 5 / 🟨 2 / 🟥 0 | 🟩 3 / 🟨 6 / 🟥 1 | 🟩 2 / 🟨 1 / 🟥 1 | 🟩 1 / 🟨 1 / 🟥 0 |
 
 🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
@@ -56,7 +56,7 @@ The call graph is built from bytecode with class-hierarchy analysis (CHA) over t
 | Spring DI edges (unique resolution only) | Complete |  |
 | CallGraph op: indy edges dropped, `dynamic_dispatch` declared | Partial | [KOTLIN-CALLGRAPH-OP-INDY](#kotlin-callgraph-op-indy) |
 | Multi-release JAR overrides | Partial | [KOTLIN-MULTI-RELEASE](#kotlin-multi-release) |
-| `@kotlin.Metadata` awareness | N/A | JVM semantics are complete in bytecode; metadata only carries source-level names |
+| `@kotlin.Metadata` read for inline functions (a sink its owner declares inline, or whose metadata is unreadable, is never Searched) | Complete | [KOTLIN-INLINE](#kotlin-inline) |
 
 ## 5. Reachability clearing
 
@@ -152,7 +152,7 @@ The Kotlin lane produces the build manifest and symbol evidence the paid tier co
 
 **Trigger.** Calls to Kotlin `inline` functions (stdlib or library).
 
-**Effect.** Bodies are copied into the caller's bytecode, so calls inside appear as ordinary edges; the declared `inline_function` boundary has no emitted signal. Risk is symbol identity (an advisory naming an inline function that leaves no call to its own symbol), not missed edges.
+**Effect.** Bodies are copied into the caller's bytecode, so calls inside appear as ordinary edges. A sink the owner's `@kotlin.Metadata` declares inline, or whose metadata cannot be read, is never listed Searched, and an empty search for it is `reachability_undetermined`.
 
 ### KOTLIN-BUILD-OUTPUT-LAYOUT
 

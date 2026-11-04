@@ -4,7 +4,7 @@ Every feature in every capability group for .NET, with its status and the caveat
 
 | Group | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
-| C / P / L | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 2 / 🟥 1 | 🟩 1 / 🟨 4 / 🟥 2 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 1 / 🟥 3 |
+| C / P / L | 🟩 2 / 🟨 2 / 🟥 1 | 🟩 3 / 🟨 2 / 🟥 3 | 🟩 1 / 🟨 2 / 🟥 1 | 🟩 0 / 🟨 5 / 🟥 1 | 🟩 4 / 🟨 3 / 🟥 0 | 🟩 1 / 🟨 4 / 🟥 2 | 🟩 0 / 🟨 3 / 🟥 1 | 🟩 0 / 🟨 0 / 🟥 3 |
 
 🟩 Complete, 🟨 Partial, 🟥 Planned. Features marked N/A do not apply to the language and are not counted.
 
@@ -72,7 +72,7 @@ Two tiers. The IL tier reads the compiled first-party assembly and its NuGet dep
 | Degrade to lexical on IL failure with `tool_failure` (never a clear) | Complete |  |
 | Clear grounds (resolved version, vetted symbols and a Searched sink; any did-not-run reason blocks) | Complete |  |
 | Lexical fallback paths for first-party sinks (candidate only) | Complete |  |
-| IL search rooted at recognized ingresses (controllers, handlers) | Planned |  |
+| IL search rooted at ASP.NET Core entry points (controller actions, Razor Pages handlers, delegates passed to Map*/Use/Run); candidate paths only, never licenses `not_exploitable` | Partial | [DOTNET-IL-FRAMEWORK-HAZARD](#dotnet-il-framework-hazard) |
 
 ## 6. Framework & dynamic-dispatch modeling
 
@@ -82,7 +82,7 @@ ASP.NET ingress is recognized from controller/action attributes and from minimal
 |---|---|---|
 | ASP.NET attribute ingress (`[HttpGet]` etc.) | Partial | [DOTNET-INGRESS-SHAPES](#dotnet-ingress-shapes) |
 | Minimal API `MapGet/Post/Put/Delete/Patch/Methods` with a named method-group handler | Partial | [DOTNET-INGRESS-SHAPES](#dotnet-ingress-shapes) |
-| Minimal API inline lambdas; top-level statements (default modern template) | Planned |  |
+| Minimal API inline lambdas; top-level statements | Partial | IL tier roots the delegates; the lexical graph has no ingress (see [DOTNET-INGRESS-SHAPES](#dotnet-ingress-shapes)) |
 | Blazor, gRPC, SignalR | Planned |  |
 | Reflection / DLR dynamic / P-Invoke / calli / out-of-set receiver as completeness hazards | Complete |  |
 | Interface / virtual / DI dispatch in the lexical graph | Partial | [DOTNET-LEXICAL-DYNAMIC-DISPATCH](#dotnet-lexical-dynamic-dispatch) |
@@ -109,7 +109,6 @@ The .NET lane does not generate harnesses; confirmation rides the corpus repro-r
 | Sink-scheme mapping for the paid tier's proof of non-exploitability | Planned |  |
 | Patch-synthesis locator for .NET | Planned |  |
 | Published capability manifest | Planned |  |
-| Built-in advisory floor (3 public advisories) is a default floor, not coverage | Partial | [DOTNET-FLOOR-NOT-COVERAGE](#dotnet-floor-not-coverage) |
 
 ## Caveats
 
@@ -165,7 +164,7 @@ The .NET lane does not generate harnesses; confirmation rides the corpus repro-r
 
 **Trigger.** Minimal-API inline lambdas, top-level statements, Blazor, gRPC, SignalR.
 
-**Effect.** No ingress recognized (lexical graph roots empty for top-level-statement programs).
+**Effect.** No ingress recognized in the lexical graph (its roots are empty for top-level-statement programs); the IL tier roots delegates handed to ASP.NET Core APIs.
 
 ### DOTNET-UNPINNED-VERSION
 
@@ -202,9 +201,3 @@ The .NET lane does not generate harnesses; confirmation rides the corpus repro-r
 **Trigger.** SCIP symbols use a local placeholder coordinate (`scip-dotnet nuget . . Ns/Type#Method(arity).`).
 
 **Effect.** Symbol matching against external symbol sources does not apply.
-
-### DOTNET-FLOOR-NOT-COVERAGE
-
-**Trigger.** Advisory source is the built-in floor.
-
-**Effect.** 3 advisories only; real coverage comes from the external opt-in corpus.

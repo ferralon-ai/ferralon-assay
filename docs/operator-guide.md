@@ -24,8 +24,8 @@ symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything s
 
 In Go, a refutation also has to hold for code outside the build that imports your packages. The
 `library-entrypoints` input (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) says which packages
-those are: `auto` (the default) takes every importable package outside `cmd/`, `examples/` and test
-directories, `none` says the build ships programs only, and a list of paths relative to the repository
+those are: `auto` (the default) takes every importable package outside a `cmd`, `example`, `examples`,
+`test`, `tests` or `testdata` path element, `none` says the build ships programs only, and a list of paths relative to the repository
 root names them, with `!path` taking a path out. When one of them reaches the advisory's vulnerable
 package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that holds only
 because of what you declared carries that declaration on the report as an assumption, and the Report
@@ -314,7 +314,7 @@ Writing through the Refs API needs `contents: write`.
 
 ### `baseline`
 
-A full scan of every advisory in the work set: the built-in floor, plus — when an advisory policy is
+A full scan of every advisory in the work set: the built-in test-case advisories, plus — when an advisory policy is
 declared (`advisory-corpus-policy`) — every advisory in that policy whose affected package is one of
 the repository's own dependencies. With a store selected, the result is persisted so later
 runs can read it. With **no** store selected, `baseline` uses a throwaway store in a temporary

@@ -22,6 +22,15 @@ module in the build holds the advisory's package, and none of the build's module
 symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
 `undetermined`, with the missing ground as its reason.
 
+In Go, a refutation also has to hold for code outside the build that imports your packages. The
+`library-entrypoints` input (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) says which packages
+those are: `auto` (the default) takes every importable package outside a `cmd`, `example`, `examples`,
+`test`, `tests` or `testdata` path element, `none` says the build ships programs only, and a list of paths relative to the repository
+root names them, with `!path` taking a path out. When one of them reaches the advisory's vulnerable
+package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that holds only
+because of what you declared carries that declaration on the report as an assumption, and the Report
+lists the sets under `library_entrypoints`.
+
 In Go, the call-graph search does not follow calls made through `reflect` or a template's `Execute`,
 so Assay bounds them per advisory. From the build's entry points it collects every type the program
 converts to an interface, closed over the types those are built from (fields, elements, map keys and
@@ -232,8 +241,10 @@ toolchain from `go.mod` alone.
 
 ## Subject build conditions for Java and Maven
 
-Maven profile activation depends on the JVM and the profile selection your build runs with, which the
-scan does not look up. State them:
+With `-build-graph auto` (the default) the scan runs your repository's own Maven or Gradle with the
+job's JDK, and Maven activates profiles as your build does; the graph records the JVM the build tool
+ran on and each module's active profiles. State the JDK and the profile selection when your build runs
+under conditions the job does not reproduce:
 
 | What you state | CLI flag | Environment variable |
 |---|---|---|
@@ -241,9 +252,9 @@ scan does not look up. State them:
 | The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
 
 The flag wins over the environment variable. The Action has no inputs for these; set the variables in
-the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. Profiles activated by `<jdk>`
-stay undecided until you state the Java version, and every profile of the reactor and its parents stays
-undecided until you state the selection.
+the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. With `-build-graph auto`, a
+stated profile selection is passed to Maven as `-P`, and stating one for a Gradle build fails the run.
+With a graph file, the file must record the same statements.
 
 The Java version you state is also the JDK your program runs on. It must be the same major version
 as the JVM that runs the build, or the run fails. When your program runs on another JDK than the build,
@@ -303,7 +314,7 @@ Writing through the Refs API needs `contents: write`.
 
 ### `baseline`
 
-A full scan of every advisory in the work set: the built-in floor, plus — when an advisory policy is
+A full scan of every advisory in the work set: the built-in test-case advisories, plus — when an advisory policy is
 declared (`advisory-corpus-policy`) — every advisory in that policy whose affected package is one of
 the repository's own dependencies. With a store selected, the result is persisted so later
 runs can read it. With **no** store selected, `baseline` uses a throwaway store in a temporary
@@ -363,7 +374,7 @@ jobs:
       - name: Run the Ferralon Assay
         id: assay
         # Use the same ref as your main workflow (see the README Quickstart).
-        uses: ferralon-ai/ferralon-assay@v0.5
+        uses: ferralon-ai/ferralon-assay@v0.6
         with:
           mode: cve-watch
           state-repo: ${{ github.repository }}

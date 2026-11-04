@@ -113,7 +113,7 @@ func parseGoToolchainBound(s string) (goToolchainVersion, bool) {
 	case strings.HasPrefix(pre, "rc."):
 		num := strings.TrimPrefix(pre, "rc.")
 		n, nok := atoiNonNeg(num)
-		if !nok || (len(num) > 1 && num[0] == '0') {
+		if !nok || num[0] == '-' || (len(num) > 1 && num[0] == '0') {
 			return goToolchainVersion{}, false
 		}
 		v.pre = goPrerelease{set: true, rank: n}

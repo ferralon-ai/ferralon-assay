@@ -2797,8 +2797,9 @@ func everyVersionOutside(vers []string, complete bool, rngs []affectedRange, ran
 // affects<upper, under the given comparator scheme ("" / "gomod" | "maven" | "npm").
 // It is the exported seam external callers use to
 // share the disqualification axis's exact version semantics: ok=false means the
-// version or bound is invalid/prerelease/unparseable and the predicate must fail
-// OPEN (inv.5), never fabricate a not-affected. Single-sources versionOutsideRange.
+// version or bound is invalid, a prerelease the scheme cannot order, or unparseable,
+// and the predicate must fail OPEN (inv.5), never fabricate a not-affected.
+// Single-sources versionOutsideRange.
 func VersionOutsideRange(ver, upperExclusive, scheme string) (outside bool, ok bool) {
 	return versionOutsideRange(ver, affectedRange{UpperExclusive: upperExclusive, Scheme: scheme})
 }

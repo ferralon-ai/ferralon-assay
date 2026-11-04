@@ -63,6 +63,7 @@ func TestGoToolchainVersionOutsideRange(t *testing.T) {
 		// --- every other suffix stays open ---
 		{"bare -rc", "1.27.0", "1.27.0-rc", false, false},
 		{"rc.x", "1.27.0", "1.27.0-rc.x", false, false},
+		{"signed rc number", "1.27.0", "1.27.0-rc.-0", false, false},
 		{"rc. empty", "1.27.0", "1.27.0-rc.", false, false},
 		{"rc.-1", "1.27.0", "1.27.0-rc.-1", false, false},
 		{"rc leading zero", "1.27.0", "1.27.0-rc.01", false, false},

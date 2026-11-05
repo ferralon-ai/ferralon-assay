@@ -489,7 +489,7 @@ func TestUntrackedConstraint(t *testing.T) {
 
 // TestRequirementsDecls_DirectReferences: a URL or VCS line that names its project declares the
 // name as a direct reference with no specifier, so the file is fully read; one that names no
-// project, an editable and a file: install leave it not fully read, as before.
+// project, an editable and a file: install leave it not fully read.
 func TestRequirementsDecls_DirectReferences(t *testing.T) {
 	const sha = "6fdee8f2727f4506cfbbe553e23b895e27956588"
 	for _, tc := range []struct {

@@ -82,6 +82,9 @@ type RepoResult struct {
 	Unverifiable []string  `json:"unverifiable,omitempty"`
 	Pass         bool      `json:"pass"`
 	Failures     []Failure `json:"failures,omitempty"`
+	// Caveats are the capability-matrix caveats the report fired (caveats.go). Informational:
+	// they never fail the repository. Nil when there is no readable report.
+	Caveats []CaveatHit `json:"caveats"`
 }
 
 // topReasons is how many undetermined_reason codes a repository's line names.

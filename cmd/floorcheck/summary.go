@@ -20,6 +20,10 @@ type Summary struct {
 	Languages   []LanguageResult `json:"languages"`
 	Repos       []RepoResult     `json:"repos"`
 	Excluded    []Excluded       `json:"excluded,omitempty"`
+	// Caveats is the per-language caveat roll-up (caveats.go), one entry per language with a target.
+	Caveats []LanguageCaveats `json:"caveats"`
+	// CaveatMappingError is why floor/caveats.json could not be read, when it could not.
+	CaveatMappingError string `json:"caveat_mapping_error,omitempty"`
 }
 
 // LanguageResult is the per-language line: how many targets the language has and how they fared.
@@ -183,6 +187,7 @@ func (s Summary) markdown() string {
 		fmt.Fprintf(&b, "\n`disqualified` with no version or symbol basis to check (counted, not failed): %s.\n",
 			strings.Join(unverifiable, ", "))
 	}
+	b.WriteString(s.caveatMarkdown())
 	if len(s.Excluded) > 0 {
 		b.WriteString("\n### Not scanned\n\n")
 		for _, e := range s.Excluded {

@@ -1,0 +1,152 @@
+{
+  "mappings": [
+    {
+      "reason": "relationship_unexpressed:uninspectable_package",
+      "language": "js",
+      "run_wide": true,
+      "caveat": "JS-UNINSPECTABLE-RUNWIDE",
+      "defined_in": "plugin/plugin.go",
+      "note": "jsanalysis declares it run-wide for an unread package whose install script may run, a berry or incomplete layout, or bundled copies (depgraph.go, callgraph.go); the per-package form is scoped and stays unmapped"
+    },
+    {
+      "reason": "relationship_unexpressed:evaluated_code",
+      "language": "js",
+      "run_wide": true,
+      "caveat": "JS-LOADTIME-CODEGEN",
+      "defined_in": "plugin/plugin.go",
+      "note": "jsanalysis declares it run-wide for code built from a string (eval, new Function) in first-party or dependency code (callgraph.go, depgraph.go); the report does not say which"
+    },
+    {
+      "reason": "relationship_unexpressed:unlisted_sites",
+      "language": "js",
+      "run_wide": true,
+      "caveat": "JS-UNLISTED-RESIDUE",
+      "defined_in": "plugin/plugin.go",
+      "note": "jsanalysis callGraphPartiality: a declined call or load missing from the call graph's Unresolved list"
+    },
+    {
+      "reason": "tool_failure:build_graph_absent",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-GRAPH-PRECONDITION",
+      "defined_in": "internal/plugin/javaanalysis/graph.go",
+      "note": "every Java op without a build graph declares it (graph.go, inventory.go, depsymbols.go, reachclosure.go, manifest.go)"
+    },
+    {
+      "reason": "relationship_unexpressed:launch_entry_unnamed",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-LAUNCH-ENTRY-UNLICENSED",
+      "defined_in": "internal/plugin/javaanalysis/launchentry.go",
+      "note": "no named launch entry and no main the Spring Boot plugin finds"
+    },
+    {
+      "reason": "relationship_unexpressed:launch_entry_unmapped",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-LAUNCH-ENTRY-UNLICENSED",
+      "defined_in": "internal/plugin/javaanalysis/launchentry.go",
+      "note": "a named entry that is not a first-party main, an unresolved ${...}, or packaging other than jar"
+    },
+    {
+      "reason": "relationship_unexpressed:launch_entry_profile_property",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-LAUNCH-ENTRY-UNLICENSED",
+      "defined_in": "internal/plugin/javaanalysis/launchentry.go",
+      "note": "a ${...} entry whose property a Maven profile sets"
+    },
+    {
+      "reason": "relationship_unexpressed:launch_entry_profile_plugin",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-LAUNCH-ENTRY-UNLICENSED",
+      "defined_in": "internal/plugin/javaanalysis/launchentry.go",
+      "note": "a Maven profile that names a launch class itself"
+    },
+    {
+      "reason": "relationship_unexpressed:launch_entry_cli_property",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-LAUNCH-ENTRY-UNLICENSED",
+      "defined_in": "internal/plugin/javaanalysis/launchentry.go",
+      "note": "a ${...} entry whose property a -D or --define sets somewhere in the checkout"
+    },
+    {
+      "reason": "relationship_unexpressed:war_packaging",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-LAUNCH-ENTRY-UNLICENSED",
+      "defined_in": "internal/plugin/javaanalysis/launchentry.go",
+      "note": "war packaging or a built .war"
+    },
+    {
+      "reason": "relationship_unexpressed:container_callback",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-LAUNCH-ENTRY-UNLICENSED",
+      "defined_in": "internal/plugin/javaanalysis/launchentry.go",
+      "note": "a first-party class a servlet, JMS, EJB or WebSocket container calls back"
+    },
+    {
+      "reason": "other_tool_build",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-OTHER-TOOL-BUILD",
+      "defined_in": "internal/plugin/javaanalysis/graph.go",
+      "note": "a Maven graph beside a Gradle build, or the reverse (graph.go, reachclosure.go)"
+    },
+    {
+      "reason": "first_party_bytecode_absent",
+      "language": "java",
+      "run_wide": false,
+      "caveat": "JAVA-FIRST-PARTY-BYTECODE-ABSENT",
+      "defined_in": "internal/plugin/javaanalysis/bytecode.go",
+      "note": "no compiled main classes, or a class output that does not cover the sources; scoped to first-party code (a path, no package) and unbounded"
+    },
+    {
+      "reason": "unlisted_install",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-INSTALL-UNLISTED",
+      "defined_in": "internal/plugin/javaanalysis/graph.go",
+      "note": "the build installs something its graph does not list"
+    },
+    {
+      "reason": "dependency_not_in_build",
+      "language": "java",
+      "run_wide": false,
+      "caveat": "JAVA-INSTALL-UNLISTED",
+      "defined_in": "internal/plugin/javaanalysis/graph.go",
+      "note": "scoped to the advisory's package: a complete graph resolves no version of it; the row stays undetermined rather than refuted"
+    },
+    {
+      "reason": "reflection",
+      "language": "java",
+      "run_wide": true,
+      "caveat": "JAVA-FRAMEWORK-HAZARD",
+      "defined_in": "plugin/plugin.go",
+      "note": "in the Java lane only the bytecode search declares it, when its frontier met a reflection hazard (reachability_bytecode.go hazardReason); the other hazard kinds share reachability_undetermined or dynamic_dispatch with other causes and are not mapped"
+    },
+    {
+      "reason": "relationship_unexpressed:dynamic_import",
+      "language": "python",
+      "run_wide": true,
+      "caveat": "PYTHON-DYNAMIC-IMPORT-RUNWIDE",
+      "defined_in": "plugin/plugin.go",
+      "note": "pythonanalysis dynamicImportReasons: a non-literal dynamic import (imports.go, callgraph.go)"
+    },
+    {
+      "reason": "scan_cut_short",
+      "language": "any",
+      "run_wide": false,
+      "caveat": "SCAN-CUT-SHORT",
+      "defined_in": "report/report.go",
+      "note": "the scan stopped at its time limit; a run-wide note and each row it left unassessed (trigger/cutshort.go)"
+    }
+  ],
+  "structural": [
+    { "caveat": "JS-NO-CLEAR-GROUNDS", "language": "js" },
+    { "caveat": "PYTHON-NO-CLEAR-PRODUCER", "language": "python" }
+  ]
+}

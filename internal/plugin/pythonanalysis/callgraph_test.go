@@ -1504,6 +1504,8 @@ func TestCallGraph_TestModuleHazards(t *testing.T) {
 		{"loader in an f-string", map[string]string{"app.py": "import runpy\n\ndef run(p):\n    return f\"{runpy.run_path(p)}\"\n"}, true, false},
 		{"dynamic import in an unclosed f-string substitution", map[string]string{"app.py": "import importlib\n\ndef run(n):\n    return f\"{importlib.import_module(n)\"\n"}, true, true},
 		{"string loader in an unclosed f-string substitution", map[string]string{"app.py": "from werkzeug.utils import import_string\n\ndef run(n):\n    return f\"{import_string(n)\"\n"}, true, true},
+		{"__import__ in an unclosed f-string substitution", map[string]string{"app.py": "def run(n):\n    return f\"{__import__(n)\"\n"}, true, true},
+		{"loader in an unclosed f-string substitution", map[string]string{"app.py": "import runpy\n\ndef run(p):\n    return f\"{runpy.run_path(p)\"\n"}, true, true},
 		{"plain call in an unclosed f-string substitution", map[string]string{"app.py": "def run(s):\n    return f\"{len(s)\"\n"}, false, true},
 		{"method named eval", map[string]string{"app.py": "def run(m):\n    m.eval()\n"}, false, false},
 	}
@@ -1631,6 +1633,7 @@ func TestCallGraph_TestModuleIngresses(t *testing.T) {
 		{"relative import by production", "pkg/tests/routes", nil, 0, map[string]string{"pkg/__init__.py": "", "pkg/app.py": "from .tests import routes\n", "pkg/tests/routes.py": route}, true},
 		{"fastapi imported by production", "tests/routes", nil, 0, map[string]string{"app.py": "from tests.routes import router\n", "tests/routes.py": fastapi}, true},
 		{"method handler imported by production", "tests/views", []string{"Views"}, 1, map[string]string{"app.py": "from tests.views import Views\n", "tests/views.py": method}, true},
+		{"launched by a manifest entry point", "tests/server", nil, 0, map[string]string{"pyproject.toml": "[project.scripts]\nsrv = \"tests.server:main\"\n", "tests/server.py": mainApp + "\n" + route}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

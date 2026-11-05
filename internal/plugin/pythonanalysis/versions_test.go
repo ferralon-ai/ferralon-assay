@@ -484,8 +484,8 @@ func mustResolvedCompletePy(t *testing.T, dir, coordinate, want string) {
 	}
 }
 
-// A -r or -c include is not followed, so it vetoes whatever the included file is called
-// and whatever it holds.
+// A -c include, or a -r include of a file the walk does not parse as a requirements file, is
+// not followed, so it vetoes whatever the included file holds.
 func TestResolveVersions_IncludeFollowedWhateverItsName(t *testing.T) {
 	for name, tc := range map[string]struct{ line, file, body string }{
 		"r-space":         {"-r deps/common.in\n", "deps/common.in", "flask>=2.0\n"},
@@ -548,6 +548,121 @@ func TestResolveVersions_UnreadableIncludeUnresolved(t *testing.T) {
 				files[k] = v
 			}
 			mustVetoedPy(t, filepath.Join(writeTree(t, files), "build"), "flask")
+		})
+	}
+}
+
+// followedInclude follows a -r include only into a requirements file the walk itself parses:
+// relative, never climbing, through real directories by their exact names, never a symlink.
+func TestFollowedInclude(t *testing.T) {
+	outside := writeTree(t, map[string]string{"requirements.txt": "flask==2.3.0\n"})
+	root := writeTree(t, map[string]string{
+		"requirements-min.txt":       "flask==2.3.0\n",
+		"base.txt":                   "flask==2.3.0\n",
+		"sub/requirements-x.txt":     "flask==2.3.0\n",
+		"build/requirements-b.txt":   "flask==2.3.0\n",
+		".config/requirements-c.txt": "flask==2.3.0\n",
+	})
+	for link, target := range map[string]string{
+		"requirements-link.txt": "requirements-min.txt",
+		"requirements-out.txt":  filepath.Join(outside, "requirements.txt"),
+		"linked":                "sub",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"-r requirements-min.txt", true},
+		{"-rrequirements-min.txt", true},
+		{"--requirement requirements-min.txt", true},
+		{"--requirement=requirements-min.txt", true},
+		{"-r ./requirements-min.txt", true},
+		{"-r 'sub/requirements-x.txt'", true},
+
+		{"-r ../" + filepath.Base(outside) + "/requirements.txt", false},
+		{"-r sub/../requirements-min.txt", false},
+		{"-r " + filepath.Join(root, "requirements-min.txt"), false},
+		{"-r requirements-link.txt", false},
+		{"-r requirements-out.txt", false},
+		{"-r linked/requirements-x.txt", false},
+		{"-r SUB/requirements-x.txt", false},
+		{"-r build/requirements-b.txt", false},
+		{"-r .config/requirements-c.txt", false},
+		{"-r https://example.com/requirements.txt", false},
+		{"-r file:requirements-min.txt", false},
+		{"-r ${DIR}/requirements-min.txt", false},
+		{"-r base.txt", false},
+		{"-r requirements-missing.txt", false},
+		{"-r sub", false},
+		{"-r requirements-min.txt --pre", false},
+		{"-c requirements-min.txt", false},
+		{"-r", false},
+	} {
+		if got := followedInclude(tc.line, root); got != tc.want {
+			t.Errorf("followedInclude(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+// A -r chain and a -r cycle between requirements files the walk parses read completely: each
+// file is parsed on its own, so a pin in the last file of the chain resolves.
+func TestResolveVersions_RequirementsIncludeFollowed(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"two-level chain": {
+			"requirements-dev.txt": "-r requirements-min.txt\npytest==8.0.0\n",
+			"requirements-min.txt": "-r requirements.txt\nnumpy==1.26.0\n",
+			"requirements.txt":     "flask==2.3.0\n",
+		},
+		"cycle": {
+			"requirements.txt":     "-r requirements-dev.txt\nflask==2.3.0\n",
+			"requirements-dev.txt": "-r requirements.txt\n-r requirements-dev.txt\n",
+		},
+		"subdirectory": {
+			"requirements.txt":           "-r reqs/requirements-base.txt\n",
+			"reqs/requirements-base.txt": "flask==2.3.0\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, files), "flask")
+			if !res.Match.Resolved || res.Match.Version != "2.3.0" || !res.Partiality.Complete {
+				t.Fatalf("want 2.3.0 resolved and complete; got %+v %+v", res.Match, res.Partiality)
+			}
+		})
+	}
+}
+
+// A named URL or VCS requirement never gives its project a version, and is a direct reference,
+// so a lock pin of the same name cannot stand for what it installs: neither Match nor a complete
+// Matches set can place the package on version grounds. Each file is in hash-checking mode, so
+// coverage holds and only the direct reference keeps Matches incomplete.
+func TestResolveVersions_NamedDirectReferenceNeverAVersion(t *testing.T) {
+	const sha = "6fdee8f2727f4506cfbbe553e23b895e27956588"
+	for name, line := range map[string]string{
+		"pep508 vcs": "flask @ git+https://github.com/pallets/flask@" + sha,
+		"egg vcs":    "git+https://github.com/pallets/flask@" + sha + "#egg=flask",
+		"pep508 url": "flask @ https://example.com/flask-3.0.0.tar.gz --hash=sha256:abc",
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, map[string]string{
+				"pyproject.toml":   poetryProject,
+				"poetry.lock":      "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n",
+				"requirements.txt": "--require-hashes\n" + line + "\n",
+			}), "flask")
+			if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+				t.Fatalf("Match = %+v (found %v), want found with no version", res.Match, res.Found)
+			}
+			for _, d := range res.All {
+				if d.Source == "requirements.txt" && (d.Resolved || d.Version != "") {
+					t.Fatalf("the direct reference was given a version: %+v", d)
+				}
+			}
+			if !res.Exhaustive || res.MatchesComplete {
+				t.Fatalf("Exhaustive %v, MatchesComplete %v (Matches %+v), want covered and incomplete", res.Exhaustive, res.MatchesComplete, res.Matches)
+			}
 		})
 	}
 }

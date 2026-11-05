@@ -42,8 +42,9 @@ type listedModule struct {
 
 // searchBuildModules searches the source of every module in buildDir's build list for a
 // declaration named like one of symbols, for an advisory on pkgPath. It returns nil when the
-// search does not apply or cannot start: no symbols, a module in the build holds pkgPath, or the
-// build list cannot be listed (a vendored build, for one).
+// search does not apply or cannot start: no symbols, a module in the build holds pkgPath, GOFLAGS
+// may change the module list or the source the build compiles (goflagsBlock), or the build list
+// cannot be listed (a vendored build, for one).
 //
 // A module whose source is not in the module cache is downloaded the way the go command would,
 // honoring the caller's GOPROXY, GOPRIVATE, GONOSUMDB and GOFLAGS, and verified against go.sum
@@ -56,7 +57,7 @@ func searchBuildModules(ctx context.Context, buildDir, pkgPath string, symbols [
 	}
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
-	if modfileFlagSet(ctx, buildDir) {
+	if goflagsBlockSearch(ctx, buildDir) {
 		return nil
 	}
 	mods, err := listModules(ctx, buildDir)
@@ -109,6 +110,88 @@ func symbolNames(symbols []string) map[string]bool {
 	return names
 }
 
+// searchSafeGoflags are the go command flags GOFLAGS may set without changing what the module
+// search reads for the build: the module list `go list -m all` answers, and every .go file of
+// each module whatever its build constraints (declaresName). Build tags, platform, compiler,
+// instrumentation (-race, -cover, -asan, -msan), PGO and linker or compiler options pick among or
+// compile that source, and test flags only run what was built; neither changes the list or the
+// files. Every other flag blocks the search, so a flag the go command adds later fails closed.
+// Left out on purpose: -modfile (another module list), -overlay (other file contents), -toolexec
+// (a wrapper that can rewrite or add source as it compiles), -linkshared and -pkgdir (packages
+// built from source the build does not show), and -C. -mod is decided by its value (goflagsBlock).
+var searchSafeGoflags = map[string]bool{
+	// build
+	"a": true, "asan": true, "asmflags": true, "buildmode": true, "buildvcs": true,
+	"compiler": true, "cover": true, "covermode": true, "coverpkg": true, "gccgoflags": true,
+	"gcflags": true, "installsuffix": true, "json": true, "ldflags": true, "modcacherw": true,
+	"msan": true, "n": true, "p": true, "pgo": true, "race": true, "tags": true, "trimpath": true,
+	"v": true, "work": true, "x": true,
+	// test
+	"bench": true, "benchmem": true, "benchtime": true, "count": true, "cpu": true,
+	"failfast": true, "fullpath": true, "parallel": true, "run": true, "short": true,
+	"shuffle": true, "skip": true, "timeout": true, "vet": true,
+}
+
+// goflagsBlock reports whether goflags, a GOFLAGS value, may make the build compile a module list
+// or file contents the module search does not read: it names a flag searchSafeGoflags does not
+// list, or -mod with any value but readonly. -mod=mod lets the build add modules `go list -m all`
+// did not list, and -mod=vendor compiles vendor/, which the search does not read. GOFLAGS is split
+// as the go command splits it, quotes included; one it would reject (a value set apart from its
+// flag, as in "-mod mod", or an unterminated quote) blocks.
+func goflagsBlock(goflags string) bool {
+	fields, ok := splitGoflags(goflags)
+	if !ok {
+		return true
+	}
+	for _, f := range fields {
+		name, ok := strings.CutPrefix(f, "-")
+		if !ok {
+			return true
+		}
+		name = strings.TrimPrefix(name, "-")
+		name, value, hasValue := strings.Cut(name, "=")
+		if name == "mod" {
+			if !hasValue || value != "readonly" {
+				return true
+			}
+		} else if !searchSafeGoflags[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// splitGoflags splits GOFLAGS into fields the way the go command does (cmd/internal/quoted.Split):
+// on spaces, tabs and newlines, a field that opens with a single or double quote running to the
+// matching quote. It reports false for an unterminated quote.
+func splitGoflags(s string) ([]string, bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	var fields []string
+	for {
+		for len(s) > 0 && isSpace(s[0]) {
+			s = s[1:]
+		}
+		if len(s) == 0 {
+			return fields, true
+		}
+		if q := s[0]; q == '"' || q == '\'' {
+			i := strings.IndexByte(s[1:], q)
+			if i < 0 {
+				return nil, false
+			}
+			fields = append(fields, s[1:1+i])
+			s = s[2+i:]
+			continue
+		}
+		i := 0
+		for i < len(s) && !isSpace(s[i]) {
+			i++
+		}
+		fields = append(fields, s[:i])
+		s = s[i:]
+	}
+}
+
 // modsearchGo runs a go command and returns its standard output. Tests replace it to observe the
 // commands a module search issues.
 var modsearchGo = func(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
@@ -123,37 +206,38 @@ func goCommand(ctx context.Context, buildDir string, args ...string) *exec.Cmd {
 }
 
 // buildKey is the run cache key of a go command's answer for buildDir, which depends on the
-// build and the environment programEnv derives from the process's.
-func buildKey(buildDir string, extra ...string) []string {
-	return append(append([]string{buildDir}, extra...), os.Environ()...)
+// build and the environment programEnv derives from the process's and the build's GOWORK.
+func buildKey(ctx context.Context, buildDir string, extra ...string) []string {
+	return append(append([]string{buildDir}, extra...), analyzerEnv(ctx)...)
 }
 
-// modfileFlagSet reports whether the GOFLAGS the go command uses in buildDir, from the
-// environment or the go env file, names a -modfile, which the download below replaces with its
-// own copy and so would not honor. GOFLAGS that cannot be read counts as naming one. It is read
-// once per build per scan.
-func modfileFlagSet(ctx context.Context, buildDir string) bool {
-	b, err := runCached(ctx, "modfileflag", buildKey(buildDir), func() ([]byte, error) {
-		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "GOFLAGS"))
+// goflagsBlockSearch reports whether the GOFLAGS the go command uses in buildDir, from the
+// environment or the go env file, may make the build compile a module list or file contents the
+// search does not read (goflagsBlock). GOFLAGS that cannot be read blocks the search. It is read
+// once per build per scan; a read cut short by ctx is not kept.
+func goflagsBlockSearch(ctx context.Context, buildDir string) bool {
+	b, err := runCached(ctx, "goflagsblock", buildKey(ctx, buildDir), func() ([]byte, error) {
+		// GOFLAGS applies to go env's own flags too: -u, -w or -json there would print nothing or
+		// something other than GOFLAGS, so they are set on the command line, which overrides it.
+		out, err := modsearchGo(goCommand(ctx, buildDir, "env", "-json=false", "-u=false", "-w=false", "GOFLAGS"))
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, err
 			}
 			return []byte("true"), nil
 		}
-		for _, f := range strings.Fields(string(out)) {
-			if strings.HasPrefix(strings.TrimLeft(f, "-"), "modfile") {
-				return []byte("true"), nil
-			}
+		if goflagsBlock(string(out)) {
+			return []byte("true"), nil
 		}
 		return []byte("false"), nil
 	})
 	return err != nil || string(b) != "false"
 }
 
-// dependencyHolds reports whether a module of buildDir's build list other than the main module
+// dependencyHolds reports whether a module of buildDir's build list other than buildDir's own
 // holds import path p: the module holding it with the longest path, by its own path or its
-// replacement's, is not the main module. A build the go command reads from vendor/, whose build
+// replacement's, is not the main module holding buildDir. Under a go.work the other modules it uses
+// are main modules too, but not buildDir's. A build the go command reads from vendor/, whose build
 // list it does not list, is read from vendor/modules.txt; a vendor/ the go command does not read
 // is not. A build list that cannot be read holds nothing.
 func dependencyHolds(ctx context.Context, buildDir, p string) bool {
@@ -167,6 +251,17 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	if err != nil {
 		return false
 	}
+	own := ""
+	if dir, err := filepath.EvalSymlinks(buildDir); err == nil {
+		for _, m := range mods {
+			if !m.Main || m.Dir == "" {
+				continue
+			}
+			if d, err := filepath.EvalSymlinks(m.Dir); err == nil && len(d) > len(own) && pathWithin(dir, d) {
+				own = d
+			}
+		}
+	}
 	held, main, mainPath := 0, false, ""
 	for _, m := range mods {
 		if m.Main {
@@ -178,7 +273,7 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 		}
 		for _, path := range paths {
 			if len(path) > held && pathHolds(path, p) {
-				held, main = len(path), m.Main
+				held, main = len(path), m.Main && (own == "" || sameDir(m.Dir, own))
 			}
 		}
 	}
@@ -267,6 +362,18 @@ func vendoredModules(buildDir string) ([]listedModule, error) {
 	return mods, nil
 }
 
+// sameDir reports whether dir, once its symlinks are evaluated, is resolved; a dir that cannot be
+// evaluated is not.
+func sameDir(dir, resolved string) bool {
+	d, err := filepath.EvalSymlinks(dir)
+	return err == nil && d == resolved
+}
+
+// pathWithin reports whether dir is root or lies below it.
+func pathWithin(dir, root string) bool {
+	return strings.HasPrefix(dir+string(filepath.Separator), root+string(filepath.Separator))
+}
+
 // pathHolds reports whether module path mod holds import path p, ignoring case.
 func pathHolds(mod, p string) bool {
 	return len(p) >= len(mod) && strings.EqualFold(p[:len(mod)], mod) && (len(p) == len(mod) || p[len(mod)] == '/')
@@ -297,7 +404,7 @@ func vendorRefusal(err error) bool {
 // kept as that refusal, errVendorMode when it refused because it is in vendor mode; one cut short
 // by ctx is not kept, so a later advisory lists again.
 func listModules(ctx context.Context, buildDir string) ([]listedModule, error) {
-	b, err := runCached(ctx, "modlist", buildKey(buildDir), func() ([]byte, error) {
+	b, err := runCached(ctx, "modlist", buildKey(ctx, buildDir), func() ([]byte, error) {
 		var l moduleListing
 		out, err := modsearchGo(goCommand(ctx, buildDir, "list", "-m", "-json", "all"))
 		if err == nil {
@@ -384,7 +491,7 @@ func downloadModules(ctx context.Context, buildDir string, mods []listedModule) 
 		return nil
 	}
 	var unfinished map[string]string
-	b, err := runCached(ctx, "moddownload", buildKey(buildDir, args...), func() ([]byte, error) {
+	b, err := runCached(ctx, "moddownload", buildKey(ctx, buildDir, args...), func() ([]byte, error) {
 		dirs, err := download(ctx, buildDir, args)
 		if err != nil {
 			unfinished = dirs
@@ -421,7 +528,11 @@ func download(ctx context.Context, buildDir string, args []string) (map[string]s
 	// A module that fails to download is reported in its own JSON entry and makes the command
 	// exit non-zero, so the output is read whatever the exit status. A checksum mismatch stops the
 	// command before it reports any module, which leaves every module it was to download unread.
-	out, _ := modsearchGo(goCommand(ctx, buildDir, append([]string{"mod", "download", "-json", "-modfile=" + modfile}, args...)...))
+	cmd := goCommand(ctx, buildDir, append([]string{"mod", "download", "-json", "-modfile=" + modfile}, args...)...)
+	// The go command refuses -modfile in workspace mode, and every module is named at its version,
+	// so the download selects nothing a workspace would change.
+	cmd.Env = append(cmd.Env, "GOWORK=off")
+	out, _ := modsearchGo(cmd)
 	dirs := make(map[string]string, len(args))
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for {

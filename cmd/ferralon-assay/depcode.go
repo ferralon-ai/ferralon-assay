@@ -463,8 +463,10 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 // A lost CAS can leave the count higher than the runs that held since the registry last served:
 // Merge keeps the larger held_runs and the earliest first_held_at, so a reset written by a
 // concurrent run that read can be lost, reviving the streak it ended, and the next held run after
-// the registry recovered can fail at once. The error is only ever toward failing early, never
-// late: no merge lowers a count or moves a first hold later.
+// the registry recovered can fail at once. Overlapping runs that both hold also write one more than
+// the same prior, and Merge keeps that larger count, so two holds count as one. The count can
+// therefore be off in either direction, and the stall red can fire one run late per overlap. The
+// wall-clock leg is unaffected: no merge moves a first hold later.
 func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFetchRun, now time.Time) *statestore.DepFetch {
 	d.mu.Lock()
 	defer d.mu.Unlock()

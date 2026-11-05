@@ -216,9 +216,9 @@ type goModules map[string]bool
 
 // goModulesOf returns the Go modules of a scan's SBOM, or nil unless they are the build's whole
 // module list. Only the module build list `go mod graph` resolves qualifies (a vendored module
-// resolves to the same list); go.mod's require block alone does not, and a go.work workspace is
-// declared unsupported by the inventory, so it carries no build list. The main module counts, and
-// each dependency counts under its own path and under the path of the module a replace directive
+// resolves to the same list); go.mod's require block alone does not, and neither does the graph of
+// one go.work member resolved without its workspace, which the inventory declares unsupported. The
+// main module and a workspace's other main modules count, and each dependency counts under its own path and under the path of the module a replace directive
 // substitutes for it.
 //
 // The module graph can list more than the build compiles (a module whose packages nothing imports),
@@ -235,6 +235,9 @@ func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
 		}
 	}
 	mods := goModules{sbom.GoMainModule: true}
+	for _, path := range sbom.GoWorkspaceModules {
+		mods[path] = true
+	}
 	for _, p := range sbom.Packages {
 		if p.Ecosystem != "Go" {
 			continue

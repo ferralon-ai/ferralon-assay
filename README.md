@@ -13,7 +13,7 @@ the repository without running it.
 
 Point it at a **Go, Java, Kotlin, JavaScript, Python or .NET** repository and every one gets a full scan
 and a `Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory
-names — and the [Language support](docs/language-support.md) fit matrix shows at a glance how far the
+names — and the [language capability matrix](docs/capabilities/README.md) shows at a glance how far the
 analysis reaches in each.
 
 ## Quickstart — GitHub Action
@@ -48,15 +48,15 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        uses: ferralon-ai/ferralon-assay@v0.5
+        uses: ferralon-ai/ferralon-assay@v0.6
         with:
           mode: baseline
           target: .
           # Recommended: consume the public advisory corpus for real coverage.
           # Left on its default ref (main) on purpose — new advisories land there
           # continuously, so pinning this ref would freeze your vulnerability intel.
-          # Omit it and the scan falls back to a small built-in table (a standalone
-          # floor, not coverage).
+          # Omit it and the scan falls back to a small built-in table (a few
+          # hand-picked test cases, not advisory coverage).
           advisory-corpus-repo: ferralon-ai/vulnerability-corpus
 
       # The Action materializes report.sarif.json; the upload to code scanning is this
@@ -107,11 +107,11 @@ the pull-request comment never name a registry host. Before a pull-request job e
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host
 receives it, and what the cache exposes.
 
-**`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
+**`@v0.6` floats** to the newest 0.6.x release, and no binary is ever committed into your
 repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
-`vX.Y.Z` scanner it was cut with, so `@v0.5` fetches the scanner of the patch it currently points at.
-Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the current
-minor alias. A full tag (`@v0.5.0`) or a commit SHA freezes the Action source and, through it, that
+`vX.Y.Z` scanner it was cut with, so `@v0.6` fetches the scanner of the patch it currently points at.
+Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the `vX.Y`
+minor alias that branch's `action.yml` names. A full tag (`@v0.6.0`) or a commit SHA freezes the Action source and, through it, that
 scanner release. To freeze the exact bytes as well, set
 **`scanner-sha256`** yourself — each release publishes the value as a `.sha256` asset — and the run
 verifies the fetched tarball against your pin, failing loudly on any mismatch. It is off by default and
@@ -156,8 +156,8 @@ binary. The CLI resolves the analyzer for the detected language on `PATH` under 
 so the quickstart installs it with `go install` (keep `go env GOBIN`, or `$(go env GOPATH)/bin` when
 that is unset, on `PATH`). The other analyzers install the same way from
 `./cmd/assay-plugin-<lang>` for `java`, `kotlin`, `js`, `python` and `dotnet`; install one
-and a default scan of that ecosystem completes against the same populated advisory floor the shipped
-Action uses. What halts a run is a *resolved* work set of zero advisories — for example pointing
+and a default scan of that ecosystem completes against the built-in test-case advisories, as a default
+run of the shipped Action does. What halts a run is a *resolved* work set of zero advisories — for example pointing
 `-advisory-corpus` at a table that has nothing for your detected language. See [Scope](#scope).
 
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
@@ -222,11 +222,14 @@ ordered.
 ### Expected scan duration
 
 No published benchmark exists yet, so this section names what dominates the cost rather than a
-number. Two fetches drive most of it on a default `baseline` or `pr-inherit` run: resolving the
-subject module graph against `proxy.golang.org`, and the Go analyzer's uncached fetch of the
-`vuln.go.dev` vulnerability database on every run (see [Network egress](#network-egress) and
-[docs/threat-model.md](docs/threat-model.md)). Both scale with the size of the target's module
-graph and dependency set, so timing varies by repository rather than being fixed by the tool.
+number. What drives most of it on a default `baseline` or `pr-inherit` run depends on the
+language: for Go, resolving the subject module graph against `proxy.golang.org` and the Go
+analyzer's uncached fetch of the `vuln.go.dev` vulnerability database on every run; for Java and
+Kotlin, the repository's own Maven or Gradle resolving the dependency graph; for JavaScript,
+fetching each lock-pinned dependency tarball the cache does not already hold (see
+[Network egress](#network-egress) and [docs/threat-model.md](docs/threat-model.md)). Each scales
+with the size of the target's module graph and dependency set, so timing varies by repository
+rather than being fixed by the tool.
 
 ### Limiting scan time
 
@@ -250,7 +253,7 @@ advisories it carries for whichever languages it covers, and the `Report` record
 scan falls back to a small built-in table so the engine still runs standalone — Go carries 10 of
 these, and each of the other five languages carries 3
 ([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)); that built-in table is a
-standalone default floor, so consume the corpus for real coverage.
+set of hand-picked test cases, so consume the corpus for advisory coverage.
 
 Let the corpus track its default `main` (`advisory-corpus-ref` defaults to `main`). New advisories land
 in it continuously, so pinning the corpus ref would freeze your vulnerability intel and miss everything
@@ -267,7 +270,7 @@ no manifest, so a scan that reads a bundle records its digest without this block
 
 To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
 example `published-7d` or `full`). The policy then defines what the scan evaluates, not only which
-advisory facts are available: the work set is the built-in floor plus every advisory in the policy
+advisory facts are available: the work set is the built-in test-case advisories plus every advisory in the policy
 whose affected package is one of your repository's own dependencies — matched by package identity
 (the Go module path, or the Go standard library for a toolchain advisory; otherwise the ecosystem
 coordinate) — and each advisory's affected version range is then checked during the scan. Choosing
@@ -321,11 +324,12 @@ declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 
 Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
 onto vulnerable symbols, builds a call graph, and computes reachability, then reports what it found.
-What each of the six languages resolves today is laid out in
-[Language support](docs/language-support.md).
+What each of the six languages resolves is laid out in the
+[language capability matrix](docs/capabilities/README.md).
 
-It stops at reachability — there is no execution of the target codebase, no exploit synthesis, and no
-live confirmation step, and it neither generates nor validates patches. It produces the evidence those
+It stops at reachability: it never runs the program it scans (a Java or Kotlin scan runs only the
+project's own Maven or Gradle, to resolve the dependency graph), it has no exploit synthesis or live
+confirmation step, and it neither generates nor validates patches. It produces the evidence those
 steps build on.
 
 A scan will never emit a findings-free `Report` from a work set that resolved to nothing: that halts
@@ -345,13 +349,13 @@ and reserved for implementation.
 **Fit:** CI reachability triage — resolving whether a CVE's vulnerable code is actually callable in
 your build, not just present in your dependency tree. Go gets the deepest analysis, dependency-level
 reachability into the code an advisory names. Java and Kotlin reach into dependency JARs, .NET into
-restored NuGet assemblies, and Python and JavaScript trace first-party calls to the dependency
-boundary; all of them resolve dependency versions and disqualify advisories your pinned version is
-provably outside. [Language
-support](docs/language-support.md) has the per-language specifics.
+restored NuGet assemblies, JavaScript into lock-pinned dependency code it reads and verifies, and
+Python traces first-party calls to the dependency boundary; all of them resolve dependency versions
+and disqualify advisories your pinned version is provably outside. The
+[language capability matrix](docs/capabilities/README.md) has the per-language specifics.
 
-**Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not execute the
-scanned codebase or synthesize an exploit; a `reachable_candidate`
+**Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not run the
+program it scans or synthesize an exploit; a `reachable_candidate`
 verdict is a candidate, never a proof of exploitability. It is pre-1.0 — see
 [API stability](#api-stability) before depending on it as a Go library.
 
@@ -380,8 +384,9 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 
 ## Network egress
 
-**Your code never leaves the runner, and a registry token leaves it only for the npm registry
-host your scanned branch's `.npmrc` binds it to.** No run mode is offline: a default
+**Your code never leaves the runner, and a registry credential leaves it only for a host the
+scanned branch's own configuration names: the npm registry its `.npmrc` binds a token to, or, for
+a Java or Kotlin scan, the repositories its Maven or Gradle build configures.** No run mode is offline: a default
 `baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
@@ -394,7 +399,10 @@ configured registry, unless it runs with `-dependency-code=off` or `offline` (th
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token
 is presented only to the host it is bound to. Fetch is the default, and the scanned branch's
 `.npmrc` chooses that host, exactly as with `npm ci`: a branch that rewrites its `.npmrc` sends any
-of those tokens the job exports to the host it names. To keep tokens out of a scan, set
+of those tokens the job exports to the host it names. A Java or Kotlin scan runs the repository's
+own Maven or Gradle (`-build-graph auto`, the default), which fetches from the repositories the
+build configures with the job's credentials, as `mvn` or `gradle` would; a branch that rewrites
+those repositories sends those credentials to the host it names. To keep tokens out of a scan, set
 `dependency-code: off`, or don't export `NODE_AUTH_TOKEN`/`NPM_TOKEN` on pull-request jobs. On a
 private or internal repository the Action saves the fetched tarballs, private packages included, to
 the GitHub Actions cache, where any workflow run allowed to restore it can read them. On a public
@@ -584,3 +592,9 @@ bot; you can reply on any of them with questions.
 ## License
 
 Business Source License 1.1. See [LICENSE](LICENSE).
+
+You can run Assay in production solely to analyze, test and patch software that you or your
+organization develop, or operate for your organization's own use. That includes commercial software and software you develop for a
+client, and its output is yours to use however you like. The license doesn't cover offering
+analysis, testing, or patching of software as a product or service, or building Assay into a product
+or service you provide to others. For those, write to operators@ferralon.com.

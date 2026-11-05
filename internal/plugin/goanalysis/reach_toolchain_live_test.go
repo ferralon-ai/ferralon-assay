@@ -65,7 +65,7 @@ func TestReachability_SubjectToolchainExecutes(t *testing.T) {
 // toolchain: asking for the analyzer's own release must report a full-fidelity subject scan without
 // pinning GOTOOLCHAIN, so the common CI shape (a runner whose Go is the scanner's Go) costs nothing.
 func TestReachability_SubjectToolchainSameAsAnalyzerIsNotAFetch(t *testing.T) {
-	local := goEnvVersion(context.Background(), liveFixtureDir, reachBaseEnv())
+	local := goEnvVersion(context.Background(), liveFixtureDir, reachBaseEnv(context.Background()))
 	if local == "" {
 		t.Skip("cannot resolve the analyzer's own toolchain")
 	}

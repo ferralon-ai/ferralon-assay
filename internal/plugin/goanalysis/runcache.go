@@ -81,10 +81,10 @@ func writeRunCacheEntry(dir, kind, path string, b []byte) bool {
 // loadCacheKey is the run cache key for a result derived from loading the program at buildDir. The
 // load runs the go command under this process's environment, which also names the go command's
 // environment file (GOENV), and that file can set GOFLAGS, build tags included, without any
-// variable in the environment changing. The analyzer binary decides what is computed from the load.
-// The key carries all four.
-func loadCacheKey(buildDir string) []string {
-	return append([]string{buildDir, analyzerIdentity(), goEnvFileIdentity()}, os.Environ()...)
+// variable in the environment changing. The analyzer binary decides what is computed from the load,
+// and the build's GOWORK which workspace it loads. The key carries all five.
+func loadCacheKey(ctx context.Context, buildDir string) []string {
+	return append([]string{buildDir, analyzerIdentity(), goEnvFileIdentity()}, analyzerEnv(ctx)...)
 }
 
 // analyzerIdentity names the running analyzer binary by the digest of its executable, read once per

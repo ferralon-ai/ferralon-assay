@@ -29,6 +29,9 @@ func TestClassifyPartialityReason(t *testing.T) {
 		plugin.PartialReasonNativeLinkBoundary + ":dlopen":     report.PartialityInherentLimit,
 		plugin.PartialReasonNativeLinkBoundary + ":inline_asm": report.PartialityInherentLimit,
 
+		// An assumption the analysis made about this build: disclosed, but no step failed.
+		plugin.AnnotationInstallSurfaceInactive: report.PartialityInherentLimit,
+
 		plugin.PartialReasonCgo:                      report.PartialityDidNotRun,
 		plugin.PartialReasonUnsupported:              report.PartialityDidNotRun,
 		plugin.PartialReasonToolFailure:              report.PartialityDidNotRun,

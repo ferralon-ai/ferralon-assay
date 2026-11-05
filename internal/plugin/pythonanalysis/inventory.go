@@ -260,7 +260,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // seeds and those an allowed pip self-upgrade or ensurepip installs, is never left out, nor is
 // what a seeded distribution requires (seededRequirements).
 func inventoryUninstalled(buildDir string) func(path string) map[string]bool {
-	_, _, scriptWithheld, installs, poetry, tooling, unrecognised, _ := versionSurfaces(buildDir)
+	_, _, scriptWithheld, installs, poetry, tooling, unrecognised, _, _ := versionSurfaces(buildDir)
 	if scriptWithheld || unrecognised != "" || len(installs) > 0 {
 		return func(string) map[string]bool { return nil }
 	}

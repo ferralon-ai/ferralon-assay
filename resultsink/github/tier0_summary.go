@@ -257,6 +257,7 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 	// Only the did-not-run arm sits here; inherent limits go to the footer below.
 	b.WriteString(partialityBlock(r))
 	b.WriteString(dependencyFetchBlock(fetch))
+	b.WriteString(assumptionsBlock(r))
 
 	b.WriteString(countsTable(c))
 
@@ -491,7 +492,7 @@ func didNotRunLines(r report.Report) []string {
 func inherentLimitLines(r report.Report) []string {
 	out := make([]string, 0, len(r.Partiality))
 	for _, n := range r.Partiality {
-		if n.EffectiveClass() != report.PartialityInherentLimit {
+		if n.EffectiveClass() != report.PartialityInherentLimit || assumption(n) {
 			continue
 		}
 		if line := limitLine(n); line != "" {
@@ -502,6 +503,59 @@ func inherentLimitLines(r report.Report) []string {
 		return nil
 	}
 	return out
+}
+
+// assumption reports whether the note states an assumption the analysis made (plugin.Annotation).
+// It is inherent, but it is about this codebase, so it is shown beside the counts it qualifies
+// (assumptionLines) rather than in the footer, whose copy says it holds for every scan.
+func assumption(n report.PartialityNote) bool {
+	return strings.HasPrefix(n.Reason, plugin.AnnotationAssumptionPrefix)
+}
+
+// assumptionLines renders one sentence per assumption the scan made, in the Report's stable
+// order. Returns nil when it made none.
+func assumptionLines(r report.Report) []string {
+	var out []string
+	for _, n := range r.Partiality {
+		if assumption(n) {
+			out = append(out, assumptionLine(n))
+		}
+	}
+	return out
+}
+
+// assumptionLine phrases one assumption from its code and path, not its Detail, so nothing the
+// scanned repository names reaches the comment outside a code span.
+func assumptionLine(n report.PartialityNote) string {
+	var line string
+	switch {
+	case n.Reason == plugin.AnnotationInstallSurfaceInactive && n.Path != "":
+		line = fmt.Sprintf("Install commands were found at %s, which nothing in the build was found to run; the verdicts assume they are not active.", mdCode(n.Path))
+	case n.Path != "":
+		line = fmt.Sprintf("The verdicts rest on an assumption (%s at %s).", mdCode(n.Reason), mdCode(n.Path))
+	default:
+		line = fmt.Sprintf("The verdicts rest on an assumption (%s).", mdCode(n.Reason))
+	}
+	if n.Ecosystem != "" {
+		return n.Ecosystem + ": " + line
+	}
+	return line
+}
+
+// assumptionsBlock renders the scan's assumptions for the Tier-0 job-summary panel, or "" when it
+// made none.
+func assumptionsBlock(r report.Report) string {
+	lines := assumptionLines(r)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Assumptions.** These verdicts hold under assumptions this scan made:\n\n")
+	for _, l := range lines {
+		fmt.Fprintf(&b, "- %s\n", l)
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // partialityLine phrases one DID-NOT-RUN limit for a customer: what could not be

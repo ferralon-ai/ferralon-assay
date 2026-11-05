@@ -25,6 +25,7 @@ import (
 	"html/template"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
@@ -97,6 +98,8 @@ type reportHTMLFinding struct {
 	Detail   string
 	// Assumptions are the stated assumptions a not_exploitable holds under, one line each.
 	Assumptions []string
+	// Annotations are the assumptions the analysis made in reaching the verdict, one line each.
+	Annotations []string
 	Path        string
 	// UndeterminedReason is the machine-readable code behind a "not assessed" row, rendered
 	// alongside the human sentence so a reader can match it to the coverage limit above and to
@@ -245,6 +248,7 @@ func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 		Severity:           severity,
 		Detail:             f.Evidence.Detail,
 		Assumptions:        f.Evidence.Assumptions,
+		Annotations:        annotationDetails(f.Annotations),
 		Path:               f.Evidence.ReachablePath,
 		UndeterminedReason: f.UndeterminedReason,
 	}
@@ -328,6 +332,9 @@ func reportHTMLLimitLabel(reason string) string {
 			"curated, so finding no path to them is not reported as a verdict."
 	case report.ReasonAdvisoryUnknownToAnalyzer:
 		return "The call-tracing analyzer reported nothing about some advisories, so no verdict is reported for them."
+	case report.ReasonRefutationWithheld:
+		return "The analysis found no path to some advisories' vulnerable code, but code the search did not " +
+			"cover may reach it, so no verdict is reported for them."
 	case report.ReasonAdvisoryRangeAbsent:
 		return "Some advisories record no affected version range that can be checked against the installed " +
 			"version, so a path to their code is reported as evidence without a verdict."
@@ -373,4 +380,13 @@ func reportHTMLLabel(v report.Verdict) (label, severity string) {
 	default:
 		return string(v), "info"
 	}
+}
+
+// annotationDetails returns each annotation's Detail, the line a reader checks it by.
+func annotationDetails(annotations []plugin.Annotation) []string {
+	var out []string
+	for _, a := range annotations {
+		out = append(out, a.Detail)
+	}
+	return out
 }

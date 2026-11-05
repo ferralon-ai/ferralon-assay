@@ -104,11 +104,11 @@ func extractManifestMembership(store artifact.Store, caseID string) (manifestMem
 }
 
 // intakeManifestMembership supplies intakeDisqualify's coordinate and manifest-membership inputs.
-// A Go module keeps its go.mod oracle, which walks the whole checkout for the modules buildDir's
-// graph leaves out (from the recorded checkout root, or buildDir when none is recorded); otherwise
-// the recorded plugin membership fact is used, and with none recorded the coordinate is empty so
-// the guard cannot fire.
-func intakeManifestMembership(ctx context.Context, store artifact.Store, caseID, buildDir, advModule string) (coordinate string, present, known bool) {
+// A Go module keeps its go.mod oracle under the go.work ws the build runs under, which walks the
+// whole checkout for the modules buildDir's graph leaves out (from the recorded checkout root, or
+// buildDir when none is recorded); otherwise the recorded plugin membership fact is used, and with
+// none recorded the coordinate is empty so the guard cannot fire.
+func intakeManifestMembership(ctx context.Context, store artifact.Store, caseID, buildDir string, ws GoWorkspace, advModule string) (coordinate string, present, known bool) {
 	if advModule != "" {
 		root, err := InventoryCheckoutRoot(store, caseID)
 		if err != nil {
@@ -117,7 +117,7 @@ func intakeManifestMembership(ctx context.Context, store artifact.Store, caseID,
 		if root == "" {
 			root = buildDir
 		}
-		present, known = goModRequires(buildDir, advModule, func() gomodtree.Tree { return nestedModules(ctx, root, buildDir) })
+		present, known = goModRequires(ctx, buildDir, ws, advModule, func() gomodtree.Tree { return nestedModules(ctx, root, buildDir) })
 		return advModule, present, known
 	}
 	m, ok := extractManifestMembership(store, caseID)

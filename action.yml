@@ -967,19 +967,45 @@ runs:
         # bash runs a trap only once its foreground child exits. So the scanner runs in the
         # background and the trap forwards TERM (a background job ignores INT); the scanner then
         # stops analysis and publishes what it has. Only the first signal is forwarded: the runner
-        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished. A
-        # trap interrupts wait, so wait again until the scanner itself has exited.
-        "$BIN" "${args[@]}" &
-        scan_pid=$!
-        signalled=0
+        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished.
+        #
+        # The scanner's exit status is taken by a waiter subshell that has no trap and is never
+        # signalled, not by this shell: a trap that interrupts bash's wait can discard the status of
+        # a child that exits at that moment, and wait then returns -1 (exit 255). Nor does this
+        # shell decide from wait's return whether a trap fired, which bash does not order reliably:
+        # it waits again for as long as the waiter is alive. The trap is set before the launch and
+        # forwards as soon as the scanner's pid is known, so an early signal is not lost.
+        scan_pid_file="$(mktemp "$RUNNER_TEMP/scan-pid.XXXXXX")"
+        scan_status_file="$(mktemp "$RUNNER_TEMP/scan-status.XXXXXX")"
+        scan_pid=
+        stop=0
         forwarded=0
-        trap 'signalled=1; if [ "$forwarded" = 0 ]; then forwarded=1; kill -TERM "$scan_pid" 2>/dev/null || true; fi' INT TERM
-        while :; do
-          signalled=0
-          rc=0
-          wait "$scan_pid" || rc=$?
-          [ "$signalled" = 1 ] || break
+        forward() {
+          if [ "$stop" = 1 ] && [ "$forwarded" = 0 ] && [ -n "$scan_pid" ]; then
+            forwarded=1
+            kill -TERM "$scan_pid" 2>/dev/null || true
+          fi
+        }
+        trap 'stop=1; forward' INT TERM
+        (
+          "$BIN" "${args[@]}" &
+          echo "$!" > "$scan_pid_file"
+          st=0
+          wait "$!" || st=$?
+          echo "$st" > "$scan_status_file"
+        ) &
+        waiter_pid=$!
+        until [ -s "$scan_pid_file" ] || ! kill -0 "$waiter_pid" 2>/dev/null; do sleep 0.01; done
+        read -r scan_pid < "$scan_pid_file" || true
+        forward
+        while kill -0 "$waiter_pid" 2>/dev/null; do
+          wait "$waiter_pid" || true
         done
+        rc=1
+        if [ -s "$scan_status_file" ]; then
+          read -r rc < "$scan_status_file"
+        fi
+        rm -f "$scan_pid_file" "$scan_status_file"
 
         # Set on every exit, stopped or failed, but only for files this run wrote, so an always()
         # step never gets a path to a missing file or to one an earlier run left in `out`.

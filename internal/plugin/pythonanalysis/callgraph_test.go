@@ -1641,6 +1641,8 @@ func TestCallGraph_TestModuleIngresses(t *testing.T) {
 		{"fastapi imported by production", "tests/routes", nil, 0, map[string]string{"app.py": "from tests.routes import router\n", "tests/routes.py": fastapi}, true},
 		{"method handler imported by production", "tests/views", []string{"Views"}, 1, map[string]string{"app.py": "from tests.views import Views\n", "tests/views.py": method}, true},
 		{"launched by a manifest entry point", "tests/server", nil, 0, map[string]string{"pyproject.toml": "[project.scripts]\nsrv = \"tests.server:main\"\n", "tests/server.py": mainApp + "\n" + route}, true},
+		{"manifest entry point naming the module whole", "tests/server", nil, 0, map[string]string{"pyproject.toml": "[project.scripts]\nsrv = \"tests.server\"\n", "tests/server.py": route}, true},
+		{"manifest entry point naming a missing function", "tests/server", nil, 0, map[string]string{"pyproject.toml": "[project.scripts]\nsrv = \"tests.server:app\"\n", "tests/server.py": route}, true},
 		{"test-only Django urlconf", "tests/views", nil, 0, map[string]string{"app.py": mainApp, "tests/urls.py": testURLs, "tests/views.py": route + testView}, false},
 	}
 	for _, c := range cases {
@@ -1689,6 +1691,7 @@ func TestFindIngresses_HiddenRouteDynamicImport(t *testing.T) {
 		{"hidden route and production f-string dynamic import", map[string]string{"app.py": "import importlib\n\ndef run(n):\n    return f\"{importlib.import_module(n)}\"\n", "tests/routes.py": route}, true},
 		{"hidden route and production getattr", map[string]string{"app.py": "def run(o, n):\n    return getattr(o, n)\n", "tests/routes.py": route}, false},
 		{"hidden route and production f-string call", map[string]string{"app.py": "def run(s):\n    return f\"{len(s)}\"\n", "tests/routes.py": route}, false},
+		{"launched whole test module", map[string]string{"pyproject.toml": "[project.scripts]\nsrv = \"tests.server\"\n", "tests/server.py": route}, false},
 		{"test-only Django urlconf view with a dynamic import", map[string]string{"app.py": "def main():\n    return 1\n", "tests/urls.py": testURLs, "tests/views.py": opaque + testView, "tests/routes.py": route}, false},
 	}
 	for _, c := range cases {

@@ -1679,16 +1679,17 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 }
 
 // productionReached reports, per file, whether production code may run it: every file
-// outside test code (isTestModule), every file declaring a function a manifest launcher
-// names (production by construction), the same for each launch target a reached file names
-// (its settings and URL views; an unreached test urlconf seeds nothing), and every file a
-// reached file imports (importPaths, matched like any import path through byModule) or has
-// an edge into (calls, per caller file). A star import or an __import__ fromlist may load
-// any submodule of its package (packagePaths), so it reaches every file under that
-// package, and a file with an import statement importedModules could not read reaches
-// every file. Test code runs in production only that way: no escape names a test function,
-// so a test module only test modules import or call stays unreached, and its dynamic
-// imports and evaluated code withhold nothing.
+// outside test code (isTestModule), every file a manifest launcher names (production by
+// construction: the file declaring the function it names, or the module's own file when it
+// names the module whole or a function the lane does not find), the same for each launch
+// target a reached file names (its settings and URL views; an unreached test urlconf seeds
+// nothing), and every file a reached file imports (importPaths, matched like any import
+// path through byModule) or has an edge into (calls, per caller file). A star import or an
+// __import__ fromlist may load any submodule of its package (packagePaths), so it reaches
+// every file under that package, and a file with an import statement importedModules could
+// not read reaches every file. Test code runs in production only that way: no escape names
+// a test function, so a test module only test modules import or call stays unreached, and
+// its dynamic imports and evaluated code withhold nothing.
 func (prog *program) productionReached(calls [][]int) []bool {
 	reached := make([]bool, len(prog.files))
 	var work []int
@@ -1710,10 +1711,15 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 	}
 	launch := func(t launchTarget) {
-		decls, _, _, _ := prog.launchDecls(t)
+		decls, module, whole, missing := prog.launchDecls(t)
 		for _, fd := range decls {
 			if fi, ok := declFile[fd.scip()]; ok {
 				reach(fi)
+			}
+		}
+		if module != "" && (whole || missing) {
+			for _, j := range prog.byModule[module] {
+				reach(j)
 			}
 		}
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/resultsink"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 	"github.com/ferralon-ai/ferralon-assay/trigger"
 )
@@ -70,7 +71,7 @@ func (e *depFetchError) Error() string {
 			"(such as Artifactory curation or a Nexus firewall) may be blocking the package", e.Kind, e.Registry, e.Detail)
 	case kindFetchStalled:
 		return fmt.Sprintf("dependency code not read: %s: registry %s has served nothing on %d cve-watch runs since %s, "+
-			"holding the advisory cursor; the advisories those runs found stay new until a run reads from it",
+			"holding the advisory cursor; any advisories those runs found stay new until a run reads from it",
 			e.Kind, e.Registry, e.HeldRuns, e.Since.UTC().Format(time.RFC3339))
 	}
 	return "dependency code not read: " + e.Kind
@@ -197,6 +198,8 @@ type depCodeRun struct {
 	fell     *report.DependencyCodeCause
 	hinted   map[string]bool
 	stalled  *depFetchError
+	// held is the registries record counted one more held run against, stalled ones included.
+	held []depFetchError
 }
 
 func (d *depCodeRun) observe(res pipeline.DependencyAcquisitionResult) {
@@ -282,6 +285,11 @@ func (d *depCodeRun) cause() *report.DependencyCodeCause {
 // the verdicts are the ones the scan reached reading no dependency code. A partial read adds
 // neither: it read the code it fetched, and the JS lane withholds each package it did not as
 // uninspectable_package.
+//
+// A writing run stamps twice: before the state write (disclose), so the stored report.json and
+// every later run that publishes its rows carry the note, and again on publish, which also covers a
+// run that writes nothing (pr-inherit). The second adds nothing: the notes deduplicate and the field
+// is set to the same value.
 func (d *depCodeRun) stamp(rep *report.Report) {
 	if d == nil {
 		return
@@ -292,6 +300,15 @@ func (d *depCodeRun) stamp(rep *report.Report) {
 		rep.AddPartiality(report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: describeCause(c)})
 	}
 	rep.DependencyCode = dc
+}
+
+// disclose is the run's trigger Disclosure, or nil for a scan with no dependency code to record
+// (not JS).
+func (d *depCodeRun) disclose() trigger.Disclosure {
+	if d == nil {
+		return nil
+	}
+	return d.stamp
 }
 
 // err is the run's exit error once its Report is published: a *depFetchError when a registry
@@ -313,6 +330,68 @@ func (d *depCodeRun) err() error {
 		return d.stalled
 	}
 	return nil
+}
+
+// fetchNotes is what the run's dependency code fetch needs from the operator, per registry, for the
+// job summary: a refused token, a token the run did not have, a cursor record held or a hold that
+// stalled. A registry appears once, under the outcome that decides the run: refused, then stalled,
+// then held, then missing a token. It reads what record left, so a caller consults it after the
+// state write.
+func (d *depCodeRun) fetchNotes() []resultsink.DependencyFetchNote {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	held := map[string]depFetchError{}
+	for _, h := range d.held {
+		held[h.Registry] = h
+	}
+	missing := map[string]acquire.TokenEnv{}
+	for _, o := range d.outcomes {
+		if o.Registry == "" || o.Outcome != pipeline.UnreadPolicyRefused || o.Detail != artifactcache.PolicyMissingCredential {
+			continue
+		}
+		if _, ok := missing[o.Registry]; !ok {
+			missing[o.Registry] = o.TokenEnv
+		}
+	}
+	regs := d.tallyLocked()
+	var notes []resultsink.DependencyFetchNote
+	for _, key := range slices.Sorted(maps.Keys(regs)) {
+		h, wasHeld := held[key]
+		env, wasMissing := missing[key]
+		// A registry that held or stalled the cursor while asking for a token it did not get is
+		// told what would give it the token, as it would be had it not held.
+		var token string
+		if wasMissing {
+			hint := missingTokenHint(key, env)
+			token = " " + strings.ToUpper(hint[:1]) + hint[1:] + "."
+		}
+		switch t := regs[key]; {
+		case t.rejected != "":
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchCredentialRejected, Package: t.rejected,
+				Hint: "Renew the token or give it read access to the package. If a curation proxy such as Artifactory curation or a Nexus firewall fronts the registry, check whether it blocks the package.",
+			})
+		case d.stalled != nil && d.stalled.Registry == key:
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchStalled, HeldRuns: d.stalled.HeldRuns, Since: d.stalled.Since,
+				Hint: "Check that the registry is up and reachable from the runner. Until a run reads from it, any advisories these runs found stay new and any verdicts they withheld stay withheld." + token,
+			})
+		case wasHeld:
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchHeld, HeldRuns: h.HeldRuns, Since: h.Since,
+				Hint: fmt.Sprintf("Any advisories this run found stay new, and any verdicts it withheld are assessed again on the next run. If the registry still serves nothing after %d held runs over %d hours, the run fails.", stallRuns, int(stallAge.Hours())) + token,
+			})
+		case wasMissing:
+			notes = append(notes, resultsink.DependencyFetchNote{
+				Registry: key, Outcome: resultsink.DependencyFetchMissingCredential,
+				Hint: missingTokenHint(key, env) + ".",
+			})
+		}
+	}
+	return notes
 }
 
 // holds reports whether the dependency-code policy holds a cve-watch cursor, given the stored
@@ -343,7 +422,9 @@ func holdsRegistry(t registryTally, stored *statestore.DepFetch, key string) boo
 }
 
 // fetchUpdate is the run's depfetch.json hook, or nil for a scan with no dependency acquisition to
-// record (not JS), which carries the stored record.
+// record (not JS), which carries the stored record. Such a scan sharing the state ref neither adds to
+// nor clears the reassess list and retries no stored row, a row withheld as dependency_not_fetched
+// included; the trigger still withholds every row of its own whose advisory the list names.
 func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 	if d == nil {
 		return nil
@@ -354,7 +435,10 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 }
 
 // record is the depfetch.json a writing run leaves, from the stored record prior, which it does not
-// modify. A run that observed no acquisition (dependency code off, or none reached) carries prior.
+// modify. A run with dependency code off carries prior's registries and drops its reassess list: the
+// verdicts it reached are the declared off verdicts, which its dependency_code field discloses, and
+// a list it kept would make every later cve-watch run under off assess the same rows again to the
+// same off verdicts. Any other run that observed no acquisition (none reached) carries prior.
 // Otherwise, per registry: a network fetch sets has_served; on a cve-watch earnest run whose cursor
 // held, a registry holdsRegistry holds counts one more held run, stamping first_held_at at now on
 // the first, and otherwise reading anything from the registry resets its count. A held count of
@@ -363,20 +447,28 @@ func (d *depCodeRun) fetchUpdate() trigger.DependencyFetchUpdate {
 // lock pins (it fell back, or a registry failed some fetches) adds the IDs of the advisories it
 // assessed to reassess, and a run of either kind that read all of it removes them: a baseline every
 // entry naming one by ID or alias, since it rebuilds every row, and a cve-watch run only entries
-// naming one by ID, since it replaces only the rows of the IDs it assessed.
+// naming one by ID, since it replaces only the rows of the IDs it assessed. An advisory whose
+// assessment fails is not among the assessed, so an assessment that fails on every run leaves its
+// entry listed and its row retried on every cve-watch run: the failure leaves the row undetermined,
+// and nothing reached with all the dependency code has replaced it.
 //
 // A lost CAS can leave the count higher than the runs that held since the registry last served:
 // Merge keeps the larger held_runs and the earliest first_held_at, so a reset written by a
 // concurrent run that read can be lost, reviving the streak it ended, and the next held run after
-// the registry recovered can fail at once. The error is only ever toward failing early, never
-// late: no merge lowers a count or moves a first hold later.
+// the registry recovered can fail at once. Overlapping runs that both hold also write one more than
+// the same prior, and Merge keeps that larger count, so two holds count as one. The count can
+// therefore be off in either direction, and the stall red can fire one run late per overlap. The
+// wall-clock leg is unaffected: no merge moves a first hold later.
 func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFetchRun, now time.Time) *statestore.DepFetch {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.observed {
-		return prior
+		if d.source != report.DependencyCodeSourceOff || prior == nil || len(prior.Reassess) == 0 {
+			return prior
+		}
+		return &statestore.DepFetch{Registries: maps.Clone(prior.Registries)}
 	}
-	d.stalled = nil
+	d.stalled, d.held = nil, nil
 	next := &statestore.DepFetch{}
 	if prior != nil {
 		next.Registries = maps.Clone(prior.Registries)
@@ -396,6 +488,7 @@ func (d *depCodeRun) record(prior *statestore.DepFetch, run trigger.DependencyFe
 				if e.FirstHeldAt.IsZero() {
 					e.FirstHeldAt = now
 				}
+				d.held = append(d.held, depFetchError{Kind: kindFetchStalled, Registry: key, HeldRuns: e.HeldRuns, Since: e.FirstHeldAt})
 				if d.stalled == nil && e.HeldRuns >= stallRuns && now.Sub(e.FirstHeldAt) >= stallAge {
 					d.stalled = &depFetchError{Kind: kindFetchStalled, Registry: key, HeldRuns: e.HeldRuns, Since: e.FirstHeldAt}
 				}

@@ -71,7 +71,18 @@ type BaselineRequest struct {
 	// DependencyFetch, when set, computes the dependency-fetch record the run writes from the
 	// stored one, after every assessment and before the write. Nil carries the stored record.
 	DependencyFetch DependencyFetchUpdate
+	// Disclose, when set, records on the run's Report what the caller observed of the run that the
+	// pipeline does not report itself, after every assessment and before the write. See Disclosure.
+	Disclose Disclosure
 }
+
+// Disclosure records on a writing run's Report a disclosure only the caller can make: the dependency
+// code the run read, which the caller observed through its acquisition hook. It runs before the
+// state write so the stored report.json carries it, and with it every later run that publishes the
+// stored rows: a cve-watch earnest run carries the stored partiality into its Report, and a
+// pr-inherit run publishes the stored Report. It may add partiality and set disclosure fields; it
+// must not change a verdict.
+type Disclosure func(rep *report.Report)
 
 // DependencyFetchUpdate computes the dependency-fetch record a writing run leaves in state from
 // the stored record (nil when there is none) and what the run did. It must not modify prior.
@@ -113,6 +124,9 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 	if err != nil {
 		return nil, err
 	}
+	if req.Disclose != nil {
+		req.Disclose(rep)
+	}
 
 	next, err := readForUpdate(ctx, store)
 	if err != nil {
@@ -124,6 +138,12 @@ func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineR
 	if req.DependencyFetch != nil {
 		next.DepFetch = req.DependencyFetch(next.DepFetch, DependencyFetchRun{Baseline: true, Assessed: assessed})
 	}
+	// A baseline that read all the dependency code cleared what it assessed from the list; what is
+	// left was not assessed with it, so this Report does not refute it either.
+	if next.Report, err = withNotFetched(next.Report, next.DepFetch); err != nil {
+		return nil, err
+	}
+	next.Remerge = remergeNotFetched()
 
 	committed, err := store.Write(ctx, next)
 	if err != nil {
@@ -423,6 +443,9 @@ type CVEWatchRequest struct {
 	// the stored one, after the hold is decided and before the write. A heartbeat never calls it
 	// and carries the stored record. Nil carries the stored record.
 	DependencyFetch DependencyFetchUpdate
+	// Disclose, when set, records the caller's disclosure on an earnest run's Report before the
+	// write (Disclosure). A heartbeat writes the stored Report unchanged and never calls it.
+	Disclose Disclosure
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -434,6 +457,10 @@ type CVEWatchResult struct {
 	// NewAdvisories are the advisory IDs OSV.dev reported that were NOT in the stored
 	// cursor — the forcing function for an earnest run. Empty on a heartbeat.
 	NewAdvisories []string
+	// Reassessed are the advisory IDs the earnest run assessed again although they were not new:
+	// their stored verdict was reached without the dependency code it rests on (notFetchedRetry).
+	// An earnest run with no new advisory runs for these alone. Empty on a heartbeat.
+	Reassessed []string
 	// Report is the re-analyzed Report on an earnest run; nil on a heartbeat.
 	Report *report.Report
 	// Truncated is true when the Report left in state discloses a scan cut short: the earnest
@@ -457,10 +484,13 @@ type CVEWatchResult struct {
 //  1. Query OSV.dev querybatch over the stored SBOM (this package's only network
 //     egress; see the Rung 0 package doc for the tool's others).
 //  2. Diff the returned advisory IDs against the stored cursor.
-//  3. No new IDs → heartbeat: write only the cursor (set to the full current ID set);
-//     report/sbom/vex blobs are reused (zero new objects). Returns Heartbeat=true.
-//  4. New IDs overlap the SBOM → earnest run: re-analyze S1–S6 scoped to the newly-
-//     relevant advisories, build a Report, write it with the bumped cursor.
+//  3. No new IDs and nothing to assess again → heartbeat: write only the cursor (set to the
+//     full current ID set); report/sbom/vex blobs are reused (zero new objects). Returns
+//     Heartbeat=true.
+//  4. Otherwise → earnest run: re-analyze S1–S6 scoped to the newly-relevant advisories and
+//     those assessed earlier without their dependency code (notFetchedRetry), build a Report,
+//     withhold every refuting verdict the dependency-fetch record still lists
+//     (withNotFetched), and write it with the bumped cursor.
 //
 // The cursor is the canonical sorted advisory-ID set; "new" means present in the OSV
 // result but absent from the stored cursor.
@@ -493,8 +523,18 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		}
 	}
 
-	if len(newIDs) == 0 {
+	// A run that records no dependency acquisition retries nothing, a row withheld as
+	// dependency_not_fetched included. It cannot clear the list, so a listed row it re-assessed
+	// would be withheld again; and a marked row whose record was lost would get back a verdict
+	// reached without reading the dependency code it was withheld for.
+	var retry []report.AdvisoryFinding
+	if req.DependencyFetch != nil {
+		retry = notFetchedRetry(state.Report, state.DepFetch, newIDs)
+	}
+
+	if len(newIDs) == 0 && len(retry) == 0 {
 		state.Cursor = newCursor
+		state.Remerge = remergeNotFetched()
 		committed, err := store.Write(ctx, state)
 		if err != nil {
 			return nil, fmt.Errorf("trigger: cve-watch heartbeat: %w", err)
@@ -514,23 +554,30 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	if req.HoldCursor {
 		cursor = state.Cursor
 	}
-	rep, assessed, err := earnestRun(ctx, state, req, osvResult, newIDs, cursor)
+	rep, assessed, err := earnestRun(ctx, state, req, osvResult, newIDs, retry, cursor)
 	if err != nil {
 		return nil, err
 	}
+	if req.Disclose != nil {
+		req.Disclose(rep)
+	}
 	held := rep.Provenance.AdvisoryCursor == state.Cursor
-	state.Report = rep
 	state.SBOM = rep.SBOM
 	state.Cursor = rep.Provenance.AdvisoryCursor
 	if req.DependencyFetch != nil {
 		state.DepFetch = req.DependencyFetch(state.DepFetch, DependencyFetchRun{Held: held, Assessed: assessed})
 	}
+	if state.Report, err = withNotFetched(rep, state.DepFetch); err != nil {
+		return nil, err
+	}
+	state.Remerge = remergeNotFetched()
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)
 	}
 	return &CVEWatchResult{
 		NewAdvisories: newIDs,
+		Reassessed:    retriedIDs(retry),
 		Report:        committed.Report,
 		Cursor:        committed.Cursor,
 		Truncated:     hasCutShort(committed.Report.Partiality),

@@ -80,8 +80,17 @@ func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
 // from a floor to every version above it; being below a lower bound does not, so a floor can be
 // excluded only by its upper bounds.
 func rangesForFloorVersion(store artifact.Store, caseID string, rngs []affectedRange) []affectedRange {
+	if !ToolchainSubject(store, caseID) {
+		return rngs
+	}
+	return rangesForToolchainFloor(store, caseID, rngs)
+}
+
+// rangesForToolchainFloor drops the LowerInclusive bounds of a toolchain package's ranges when the
+// subject's ToolchainFact is a minimum, for the reason rangesForFloorVersion gives.
+func rangesForToolchainFloor(store artifact.Store, caseID string, rngs []affectedRange) []affectedRange {
 	tc, ok := Toolchain(store, caseID)
-	if !ok || tc.Bound != ToolchainBoundMinimum || !ToolchainSubject(store, caseID) {
+	if !ok || tc.Bound != ToolchainBoundMinimum {
 		return rngs
 	}
 	out := make([]affectedRange, len(rngs))
@@ -121,8 +130,8 @@ func compareVersions(a, b, scheme string) (int, bool) {
 		}
 		return compareNuGetVersion(x, y), true
 	case "go-toolchain":
-		x, xok := parseGoToolchainVersion(a)
-		y, yok := parseGoToolchainVersion(b)
+		x, xok := parseGoToolchainBound(a)
+		y, yok := parseGoToolchainBound(b)
 		if !xok || !yok {
 			return 0, false
 		}

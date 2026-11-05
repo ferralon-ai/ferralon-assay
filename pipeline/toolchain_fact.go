@@ -142,6 +142,10 @@ type toolchainInputs struct {
 	buildResolved      string
 	toolchainDirective string
 	goDirective        string
+	// bazelWorkspace is set when a Bazel workspace sits at or above the module root
+	// (BazelWorkspaceAbove). rules_go then compiles with the SDK the workspace declares, which
+	// go.mod's directives do not bound.
+	bazelWorkspace bool
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
@@ -160,6 +164,24 @@ func directivesBindToolchain(in toolchainInputs) bool {
 	}
 	v, ok := parseGoToolchainVersion(raw)
 	return ok && (v.major > 1 || v.minor >= 21)
+}
+
+// goLineFloor returns the go.mod `go` line, normalized goX.Y.Z, when it binds (directivesBindToolchain):
+// then no go command below it builds the module, whatever GOTOOLCHAIN says. A go command before 1.21
+// rejects the directives at parse, and one from 1.21 on refuses a go line newer than itself unless it
+// switches to a toolchain that is not. The `toolchain` line is no such floor: under GOTOOLCHAIN=local,
+// or with a toolchain named without +auto, the go command ignores it and builds with any release at
+// or above the go line. The premise is a module-mode go command; GOPATH mode ignores go.mod. ""
+// when the go line does not bind or does not parse.
+func goLineFloor(in toolchainInputs) string {
+	if !directivesBindToolchain(in) {
+		return ""
+	}
+	v, ok := parseGoToolchainVersion(in.goDirective)
+	if !ok {
+		return ""
+	}
+	return formatGoToolchainVersion(v)
 }
 
 // resolveToolchainFact reduces the candidate sources to one fact: the
@@ -183,7 +205,8 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 	}
 	if in.trustCIObserved {
 		exactSources = append(exactSources, struct{ raw, source string }{in.ciObserved, ToolchainSourceCIObserved})
-		if !directivesBindToolchain(in) {
+		// Under Bazel the host go command's resolution says nothing about the SDK rules_go compiles with.
+		if !directivesBindToolchain(in) && !in.bazelWorkspace {
 			exactSources = append(exactSources, struct{ raw, source string }{in.buildResolved, ToolchainSourceBuildResolved})
 		}
 	}
@@ -251,9 +274,12 @@ var firstToolchainLineRelease = goToolchainVersion{major: 1, minor: 21}
 // `toolchain` line's version is never a candidate (see the file comment). ok is false when the go
 // line does not bind or does not parse, in which case the returned fact is the explicit unresolved
 // one and no exact claim can be refuted.
+//
+// Inside a Bazel workspace (bazelWorkspace) rules_go compiles with the SDK the workspace declares, so
+// no directive is a floor: the result is the same as when the go line does not bind.
 func resolveToolchainFloor(in toolchainInputs) (ToolchainFact, goToolchainVersion, bool) {
 	unresolved := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
-	if !directivesBindToolchain(in) {
+	if in.bazelWorkspace || !directivesBindToolchain(in) {
 		return unresolved, goToolchainVersion{}, false
 	}
 	parsed, ok := parseGoToolchainVersion(in.goDirective)

@@ -18,6 +18,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
+	gover "go/version"
 	"log"
 	"os"
 	"path/filepath"
@@ -49,6 +51,9 @@ type AssessConfig struct {
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
+	// SubjectGoWork is the caller's statement of the GOWORK the subject's Go build runs under. See
+	// WithSubjectGoWork.
+	SubjectGoWork string
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
 	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
 	// WithSubjectToolchainReachability.
@@ -128,6 +133,15 @@ func WithSubjectToolchain(declared, observed string, trustObserved bool) AssessO
 	}
 }
 
+// WithSubjectGoWork states the GOWORK the subject's Go build runs under: "off", or the path of its
+// go.work, relative to the checkout root unless absolute. Unstated, the build runs under the go.work
+// the go command finds from the module, searched no higher than its repository. Never pass the
+// scanner's own GOWORK: it describes the analysis environment, not the subject. A stated go.work
+// that does not exist, does not parse or does not use the module withholds every verdict.
+func WithSubjectGoWork(declared string) AssessOption {
+	return func(c *AssessConfig) { c.SubjectGoWork = declared }
+}
+
 // WithSubjectToolchainReachability opts the Go reachability analysis into running under the
 // SUBJECT's Go toolchain instead of the analyzer's, when — and only when — the subject's toolchain
 // resolved to an EXACT bound. It is OFF by default and ships that way for one release
@@ -172,7 +186,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork},
 		maliciousPresence{},
 		disqualificationDiscovery{},
 	}
@@ -198,7 +212,7 @@ func SBOMStages(opts ...AssessOption) []Stage {
 	}
 	return []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork},
 	}
 }
 
@@ -1560,6 +1574,10 @@ type codebaseInventory struct {
 	subjectGoVersion string
 	ciGoVersion      string
 	trustCIGoVersion bool
+	// subjectGoWork is the caller's statement of the GOWORK the subject's build runs under: "off", a
+	// go.work path relative to the checkout root, or "" to take the go.work the go command finds.
+	// See ResolveGoWorkspace.
+	subjectGoWork string
 }
 
 func (codebaseInventory) Name() string              { return "codebase_inventory" }
@@ -1590,7 +1608,7 @@ func (codebaseInventory) Status() assessment.Status { return assessment.StatusIn
 // U7 comparator had no reachable input and the axis was dark for exactly the advisory class whose
 // verdict depends on the toolchain. There is no "separate comparator path off the
 // AdvisoryTable" — the AdvisoryTable supplies the affected RANGE, never a version.
-func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir, language, module, coordinate, scheme string, toolchain ToolchainFact) (dep depVersions, partiality []string, err error) {
+func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir string, goWork GoWorkspace, language, module, coordinate, scheme string, toolchain ToolchainFact) (dep depVersions, partiality []string, err error) {
 	if scheme == "go-toolchain" {
 		switch toolchain.Bound {
 		case ToolchainBoundExact, ToolchainBoundMinimum:
@@ -1610,7 +1628,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		// stays open); and a go.mod that parses and simply does not require the module means the
 		// codebase genuinely does not depend on it (honest absence — no disclosure, so a true
 		// not_exploitable stays unqualified).
-		v, pinned, manifestRead := moduleVersionFromGoMod(buildDir, module)
+		v, pinned, manifestRead := moduleVersionFromBuild(ctx, buildDir, goWork, module)
 		if !manifestRead {
 			return depVersions{}, []string{plugin.PartialReasonNoManifest}, nil
 		}
@@ -1666,6 +1684,9 @@ type depVersions struct {
 	// Presence is the first resolved copy, which maliciousPresence matches against. It stands
 	// without agreement, so it is never read by the not-affected path.
 	Presence string
+	// Annotations are the assumptions the resolver's answer rests on (plugin.Annotation). They
+	// qualify the answer without making it partial, so they gate nothing here.
+	Annotations []plugin.Annotation
 }
 
 // singleVersion is a dependency whose source can carry one version only (a go.mod require, the
@@ -1681,7 +1702,7 @@ func singleVersion(v string) depVersions {
 // MatchesComplete over a complete scan and every copy it lists is resolved; Match may still be
 // unresolved, as it is when the copies disagree.
 func depVersionsOf(vr plugin.DependencyVersionResult) depVersions {
-	dep := depVersions{Found: vr.Found}
+	dep := depVersions{Found: vr.Found, Annotations: vr.Annotations}
 	if vr.Found && vr.Match.Resolved {
 		dep.Version = vr.Match.Version
 		dep.Versions = []string{dep.Version}
@@ -1828,9 +1849,21 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		}
 	}
 
+	// The go.work the build runs under, resolved once here and recorded for every later reader, so the
+	// analyzer loads the same workspace ownership, presence and the version axis read. A workspace
+	// that cannot be established fails the stage: no fact about the build may rest on a guess at it.
+	var goWork GoWorkspace
+	if language == checkout.LangGo && buildDir != "" {
+		ws, err := ResolveGoWorkspace(ctx, buildDir, checkoutRoot, s.subjectGoWork)
+		if err != nil {
+			return fmt.Errorf("resolve the build's go.work: %w", err)
+		}
+		goWork = ws
+	}
+
 	module, goVersion, buildCommand, toolchainDirective, buildToolchain := "", "", "", "", ""
 	if s.plugin != nil && buildDir != "" && s.plugin.Language() == language {
-		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir})
+		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir, GoWork: goWork.File})
 		if err != nil {
 			return err
 		}
@@ -1856,15 +1889,27 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// the RUNNER's Go as the subject's — the same category error the fact exists to close. Other
 	// ecosystems' runtime versions (e.g. a node engine range) live in RuntimeSpec{Name:"node"}, not here.
 	toolchain := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
+	goFloor := ""
 	if language == "go" {
-		toolchain = resolveToolchainFact(toolchainInputs{
-			subjectDeclared:    s.subjectGoVersion,
-			ciObserved:         s.ciGoVersion,
-			trustCIObserved:    s.trustCIGoVersion,
-			buildResolved:      buildToolchain,
-			toolchainDirective: toolchainDirective,
-			goDirective:        goVersion,
-		})
+		goDirective := goVersion
+		if goWork.File != "" {
+			// A workspace build runs under the go.work's go and toolchain lines and ignores its
+			// modules' own toolchain lines, so those are what bound its toolchain and its floor.
+			goDirective, toolchainDirective = goWork.Directives()
+		}
+		cands := ToolchainCandidates{
+			SubjectDeclared:    s.subjectGoVersion,
+			CIObserved:         s.ciGoVersion,
+			TrustCIObserved:    s.trustCIGoVersion,
+			BuildResolved:      buildToolchain,
+			ToolchainDirective: toolchainDirective,
+			GoDirective:        goDirective,
+			BazelWorkspace:     BazelWorkspaceAbove(buildDir),
+		}
+		toolchain = ResolveToolchain(cands)
+		if !cands.BazelWorkspace {
+			goFloor = goLineFloor(toolchainInputs{toolchainDirective: cands.ToolchainDirective, goDirective: cands.GoDirective})
+		}
 	}
 
 	src := s.src
@@ -1876,6 +1921,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		resolved        depVersions
 		alsoPresent     []presentPackage
 		partialityFlags []string
+		// annotations is every assumption a resolution of any affected package rested on: an
+		// install command the lane assumed inactive qualifies every version it read in the scan.
+		annotations []plugin.Annotation
 	)
 	// presenceVersion is the version maliciousPresence matches against: the package selection
 	// below run over each package's first resolved copy rather than its agreed Match. It is
@@ -1893,12 +1941,17 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	if buildDir != "" {
 		root, hasRoot := ReadRootPackage(ctx, buildDir, language)
 		resolve := func(module, coordinate, purl, scheme string) (depVersions, []string, bool, error) {
-			if v, ok := root.Matches(buildDir, module, coordinate, purl); hasRoot && ok {
+			if v, ok := root.Matches(buildDir, goWork, module, coordinate, purl); hasRoot && ok {
 				dep := singleVersion(v)
 				dep.Found = true
 				return dep, nil, true, nil
 			}
-			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
+			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, goWork, language, module, coordinate, scheme, toolchain)
+			for _, a := range dep.Annotations {
+				if !slices.Contains(annotations, a) {
+					annotations = append(annotations, a)
+				}
+			}
 			return dep, flags, false, err
 		}
 		presenceSelected := false
@@ -1973,7 +2026,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// a nested Go module (TEG-062) reassigns BuildDir to the module root. Equal to BuildDir for
 		// every non-Go and non-nested-Go tree. Read back by InventoryCheckoutRoot (F39, TEG-064).
 		CheckoutRoot string `json:"checkout_root,omitempty"`
-		Language     string `json:"language,omitempty"`
+		// GoWork is the go.work the Go build runs under, read back by InventoryGoWorkspace.
+		GoWork   GoWorkspace `json:"go_work"`
+		Language string      `json:"language,omitempty"`
 		// WorkspacePlan is the full enumeration of detected projects (one today; PLAN-400 makes it
 		// hold true monorepos). It is PERSISTED but not yet read by any downstream stage — the scalar
 		// build_dir/language above remain the primary-project projection S3–S6 consume. Landing the
@@ -1994,12 +2049,18 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		GoVersion       string   `json:"go_version,omitempty"`
 		BuildCommand    string   `json:"build_command,omitempty"`
 		PartialityFlags []string `json:"partiality_flags,omitempty"`
+		// Annotations are the assumptions the resolved versions rest on. Unlike PartialityFlags
+		// they leave the resolution complete; trigger discloses them on every verdict they qualify.
+		Annotations []plugin.Annotation `json:"annotations,omitempty"`
 		// Toolchain is the subject's Go toolchain resolved to one bounded fact. Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
 		// stayed dark. Read back by Toolchain() (the version axis, and the scan-level disclosure
 		// trigger/assess.go emits for a toolchain advisory it could not adjudicate).
 		Toolchain ToolchainFact `json:"toolchain"`
+		// GoFloor is the go.mod `go` line when it binds (goLineFloor): no build of the subject runs a
+		// Go below it. Read back by toolchainFloor for the reachability request.
+		GoFloor string `json:"go_floor,omitempty"`
 		// SelectedModule/SelectedCoordinate name the v3 affected_packages[] element select-by-target
 		// picked (the package the target depends on). They are the join key extractSelectedPackage
 		// uses to read the selected element off the normalized-advisory artifact. Both empty ⇒ scalar
@@ -2017,6 +2078,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Revision:           c.Request.Codebase.Revision,
 		BuildDir:           buildDir,
 		CheckoutRoot:       checkoutRoot,
+		GoWork:             goWork,
 		Language:           language,
 		WorkspacePlan:      plan,
 		ResolvedVersion:    resolved.Version,
@@ -2028,7 +2090,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		GoVersion:          goVersion,
 		BuildCommand:       buildCommand,
 		PartialityFlags:    partialityFlags,
+		Annotations:        annotations,
 		Toolchain:          toolchain,
+		GoFloor:            goFloor,
 		SelectedModule:     selectedModule,
 		SelectedCoordinate: selectedCoordinate,
 		Root:               isRoot,
@@ -2036,6 +2100,43 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	}
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeInventory, "codebase inventory", inv)
 	return err
+}
+
+// BazelWorkspaceAbove reports whether a Bazel workspace marker file sits in moduleRoot or any
+// directory above it up to the git top-level of moduleRoot, inclusive, and never above it; it is false
+// when that top-level cannot be determined. Bazel (rules_go) takes its Go SDK from the workspace, not
+// from go.mod, so the go line is no floor on the release a Bazel build compiles with.
+func BazelWorkspaceAbove(moduleRoot string) bool {
+	if moduleRoot == "" {
+		return false
+	}
+	top, err := gitOutput(context.Background(), moduleRoot, "rev-parse", "--show-toplevel")
+	if err != nil || top == "" {
+		return false
+	}
+	top, err = filepath.EvalSymlinks(top)
+	if err != nil {
+		return false
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Clean(moduleRoot))
+	if err != nil {
+		return false
+	}
+	for {
+		for _, marker := range []string{"MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"} {
+			if fi, err := os.Stat(filepath.Join(dir, marker)); err == nil && !fi.IsDir() {
+				return true
+			}
+		}
+		if dir == top {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // moduleVersionFromGoMod parses buildDir/go.mod and returns the version the build selects for
@@ -2089,6 +2190,22 @@ func InventoryBuildDir(store artifact.Store, caseID string) (string, error) {
 		return "", err
 	}
 	return inv.BuildDir, nil
+}
+
+// InventoryGoWorkspace returns the go.work codebase_inventory resolved for the Go build; the zero
+// workspace (GOWORK=off) when none was recorded.
+func InventoryGoWorkspace(store artifact.Store, caseID string) (GoWorkspace, error) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return GoWorkspace{}, err
+	}
+	var inv struct {
+		GoWork GoWorkspace `json:"go_work"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
+		return GoWorkspace{}, err
+	}
+	return inv.GoWork, nil
 }
 
 // InventoryCheckoutRoot returns the checkout root recorded by codebase_inventory — the directory
@@ -2451,21 +2568,31 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
 // guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
 // inside it, or a require), or a module the go.work in force uses declares it the same way, and
-// whether the manifests were readable at all. manifestKnown=false — no build dir, or an absent /
-// unparseable go.mod or go.work — forces the caller to fail OPEN, because absence is only PROVABLE
-// against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
+// whether that was readable at all. A module none of them declares is decided by the regime:
+//   - under a go.work, the build list the go command computes: presence when it holds the module,
+//     absence when it does not;
+//   - outside one, goModBuilds: a replace is presence; from go 1.17 the missing require is absence;
+//     below 1.17 or with no go directive, vendor/modules.txt and go.sum's module-zip hashes decide.
+//
+// manifestKnown=false — no build dir; an absent / unparseable go.mod or go.work; a build list the
+// go command could not compute; or, below go 1.17 outside a workspace, a missing or unparseable
+// go.sum or an unparseable vendor/modules.txt — forces the caller to fail OPEN, because absence is
+// only PROVABLE against a manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in
 // manifest_membership.go.
 //
 // Those manifests are the whole build only when no other module of the checkout can build against
 // module, so a module none of them declares is unknown, not absent, when:
-//   - a go.work sits in buildDir: the walk leaves the modules it uses out, and a member's go.mod
-//     need not name every module its build draws on (one below go 1.17 does not);
+//   - the build runs under ws (its effective GOWORK is on and names ws.File) and the go command's
+//     build list for it cannot be computed. A computed list is decisive, since the go command
+//     computes it over the whole workspace graph, members below go 1.17 included;
+//   - the build runs with GOWORK=off and a go.work sits in buildDir: the walk leaves the modules it
+//     uses out, and nothing here reads what their builds draw on;
 //   - nested reports a module outside buildDir's module graph that may require it (gomodtree.Tree's
 //     MayRequire: one whose go.mod names it, declares go below 1.17 or does not parse), or a walk that
-//     could not read the whole tree.
+//     could not read the whole tree. This holds under a workspace too.
 //
 // nested is called only when no manifest declares module.
-func goModRequires(buildDir, module string, nested func() gomodtree.Tree) (present bool, manifestKnown bool) {
+func goModRequires(ctx context.Context, buildDir string, ws GoWorkspace, module string, nested func() gomodtree.Tree) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
 	}
@@ -2480,7 +2607,7 @@ func goModRequires(buildDir, module string, nested func() gomodtree.Tree) (prese
 	var root string
 	if mf.Module != nil {
 		root = mf.Module.Mod.Path
-		if goPathOwner(buildDir, root, module) != goOwnedElsewhere {
+		if goPathOwner(buildDir, ws, root, module) != goOwnedElsewhere {
 			return true, true
 		}
 	}
@@ -2495,7 +2622,7 @@ func goModRequires(buildDir, module string, nested func() gomodtree.Tree) (prese
 	if declares(mf) {
 		return true, true
 	}
-	uses, _, ok := goWorkUses(buildDir)
+	uses, _, ok := ws.uses()
 	if !ok {
 		return false, false
 	}
@@ -2512,13 +2639,104 @@ func goModRequires(buildDir, module string, nested func() gomodtree.Tree) (prese
 			return true, true
 		}
 	}
-	if fi, err := os.Stat(filepath.Join(buildDir, "go.work")); err == nil && !fi.IsDir() {
+	if ws.File != "" {
+		// Under a go.work no go.mod states what is in the build: a dependency the workspace selects at
+		// a higher version can bring in a module none of them lists. Only the build list decides.
+		mods, err := workspaceBuildList(ctx, buildDir, ws)
+		if err != nil {
+			return false, false
+		}
+		for _, m := range mods {
+			if !m.Main && (module == m.Path || strings.HasPrefix(module, m.Path+"/")) {
+				return true, true
+			}
+		}
+	} else if fi, err := os.Stat(filepath.Join(buildDir, "go.work")); err == nil && !fi.IsDir() {
 		return false, false
+	} else if present, known := goModBuilds(buildDir, mf, module); present || !known {
+		return present, known
 	}
 	if nested().MayRequire(module) {
 		return false, false
 	}
 	return false, true
+}
+
+// goModBuilds answers membership outside a workspace for a module buildDir/go.mod does not require.
+// A replace of module is presence at any go version. From go 1.17 go.mod lists every module that
+// provides a package to the build, so a missing require is absence. Below that, or with no go
+// directive, go.mod omits indirect dependencies, and the build list is what the build verifies:
+// a module vendor/modules.txt lists, or one go.sum holds a module-zip (non-/go.mod) h1: line for,
+// is present, and one in neither is absent. A go.sum missing or unparseable there, or a
+// vendor/modules.txt that does not parse, leaves it unknown.
+func goModBuilds(buildDir string, mf *modfile.File, module string) (present bool, manifestKnown bool) {
+	for _, r := range mf.Replace {
+		if module == r.Old.Path || strings.HasPrefix(module, r.Old.Path+"/") {
+			return true, true
+		}
+	}
+	if mf.Go != nil && goVersionAtLeast(mf.Go.Version, "1.17") {
+		return false, true
+	}
+	if present, ok := goVendorHas(filepath.Join(buildDir, "vendor", "modules.txt"), module); present || !ok {
+		return present, ok
+	}
+	return goSumHas(filepath.Join(buildDir, "go.sum"), module)
+}
+
+// goVersionAtLeast reports whether the go directive version v is at least min; an unparseable v
+// reads as below it, which sends the caller to the go.sum check and its own fail-open.
+func goVersionAtLeast(v, min string) bool {
+	return gover.IsValid("go"+v) && gover.Compare("go"+v, "go"+min) >= 0
+}
+
+// goVendorHas reports whether the vendor/modules.txt at file lists module, or a module its path
+// sits under; ok is false when the file exists but cannot be read or a module line in it does not
+// parse. A missing file lists nothing.
+func goVendorHas(file, module string) (present, ok bool) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false, os.IsNotExist(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "#") || strings.HasPrefix(line, "##") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != "#" {
+			return false, false
+		}
+		if f[1] == module || strings.HasPrefix(module, f[1]+"/") {
+			present = true
+		}
+	}
+	return present, true
+}
+
+// goSumHas reports whether the go.sum at file holds a module-zip (non-/go.mod) h1: line for module
+// or for a module its path sits under, at any version; ok is false when the file is missing or does
+// not parse.
+func goSumHas(file, module string) (present, ok bool) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 3 || !strings.HasPrefix(f[2], "h1:") {
+			return false, false
+		}
+		if strings.HasSuffix(f[1], "/go.mod") {
+			continue
+		}
+		if f[0] == module || strings.HasPrefix(module, f[0]+"/") {
+			present = true
+		}
+	}
+	return present, true
 }
 
 // disqualify records a not-affected determination ONLY when provably not-affected; every
@@ -2579,8 +2797,9 @@ func everyVersionOutside(vers []string, complete bool, rngs []affectedRange, ran
 // affects<upper, under the given comparator scheme ("" / "gomod" | "maven" | "npm").
 // It is the exported seam external callers use to
 // share the disqualification axis's exact version semantics: ok=false means the
-// version or bound is invalid/prerelease/unparseable and the predicate must fail
-// OPEN (inv.5), never fabricate a not-affected. Single-sources versionOutsideRange.
+// version or bound is invalid, a prerelease the scheme cannot order, or unparseable,
+// and the predicate must fail OPEN (inv.5), never fabricate a not-affected.
+// Single-sources versionOutsideRange.
 func VersionOutsideRange(ver, upperExclusive, scheme string) (outside bool, ok bool) {
 	return versionOutsideRange(ver, affectedRange{UpperExclusive: upperExclusive, Scheme: scheme})
 }
@@ -2945,6 +3164,8 @@ func extractVersionAxis(store artifact.Store, caseID string) (versionAxis, bool)
 
 // extractAlsoPresent joins each other affected package the inventory recorded to its ranges on the
 // normalized advisory. A package the advisory no longer names keeps no ranges, which keeps the axis open.
+// The toolchain package's ranges lose their lower bounds when the toolchain version is only a floor,
+// as rangesForToolchainFloor says.
 func extractAlsoPresent(store artifact.Store, caseID string) []presentRanges {
 	invArts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(invArts) == 0 {
@@ -2967,6 +3188,9 @@ func extractAlsoPresent(store artifact.Store, caseID string) []presentRanges {
 		pr := presentRanges{presentPackage: p}
 		if a, ok := affectedPackageNamed(adv.AffectedPackages, p.Module, p.Coordinate); ok {
 			pr.Ranges, pr.RangeKnown = validAffectedRanges(a.AffectedRanges)
+			if toolchainSubject(a.PURL, pr.Ranges) {
+				pr.Ranges = rangesForToolchainFloor(store, caseID, pr.Ranges)
+			}
 		}
 		out = append(out, pr)
 	}
@@ -3059,8 +3283,12 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	if err != nil {
 		return err
 	}
+	goWork, err := InventoryGoWorkspace(store, c.ID)
+	if err != nil {
+		return err
+	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
-	coordinate, manifestHas, manifestKnown := intakeManifestMembership(ctx, store, c.ID, buildDir, advModule)
+	coordinate, manifestHas, manifestKnown := intakeManifestMembership(ctx, store, c.ID, buildDir, goWork, advModule)
 	if disq, reason := intakeDisqualify(
 		extractAdvisoryEcosystem(store, c.ID),
 		extractCodebaseEcosystem(store, c.ID),
@@ -3123,9 +3351,14 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 		if err != nil {
 			return err
 		}
+		goWork, err := InventoryGoWorkspace(store, c.ID)
+		if err != nil {
+			return err
+		}
 		purl, advisorySymbols := advisoryPURLAndSymbols(store, c.ID)
 		req := plugin.ResolveSymbolsRequest{
 			BuildDir:        buildDir,
+			GoWork:          goWork.File,
 			VulnID:          c.Request.Vulnerability.ID,
 			PURL:            purl,
 			AdvisorySymbols: advisorySymbols,
@@ -3296,6 +3529,23 @@ func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID str
 	return fact.Version
 }
 
+// toolchainFloor returns the subject's binding go line (goLineFloor) as codebase_inventory recorded
+// it, or "" when it recorded none. It only ever narrows the files the analyzer reads as compiled, so
+// unlike requestedToolchain it needs neither the flag nor an exact fact.
+func (s reachabilityIngress) toolchainFloor(store artifact.Store, caseID string) string {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return ""
+	}
+	var inv struct {
+		GoFloor string `json:"go_floor"`
+	}
+	if json.Unmarshal(arts[0].Payload, &inv) != nil {
+		return ""
+	}
+	return inv.GoFloor
+}
+
 // entrypointsFor is the run's library-entrypoints statement with its paths based at the checkout
 // root, which for a nested module lies above the build directory. A record with no checkout root
 // leaves Base empty, so the lane reads the paths from the build directory.
@@ -3312,6 +3562,121 @@ func (s reachabilityIngress) entrypointsFor(store artifact.Store, caseID string)
 	return &e, nil
 }
 
+// reachAttribution is what countedReachPaths attributes a Go reach path by: the names of the
+// selected affected package, every other affected package the build carries joined to its ranges,
+// the scanned project's module path, and the advisory's trust tier.
+type reachAttribution struct {
+	selected []string
+	others   []presentRanges
+	project  string
+	trust    TrustTier
+}
+
+// readReachAttribution reads the reachAttribution for a Go assessment. The selected package is the
+// selected affected_packages[] element, else the advisory's module. ok is false for another
+// language or when neither names a package, and every path then counts.
+func readReachAttribution(store artifact.Store, caseID string) (reachAttribution, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return reachAttribution{}, false
+	}
+	var inv struct {
+		Language string `json:"language"`
+		Module   string `json:"module"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil || inv.Language != "go" {
+		return reachAttribution{}, false
+	}
+	sel, ok := extractSelectedPackage(store, caseID)
+	if !ok {
+		module, ok := extractAdvisoryModule(store, caseID)
+		if !ok {
+			return reachAttribution{}, false
+		}
+		sel = advisoryAffectedPackage{Module: module}
+	}
+	a := reachAttribution{project: inv.Module, others: extractAlsoPresent(store, caseID)}
+	for _, n := range []string{sel.Module, sel.Coordinate} {
+		if n != "" {
+			a.selected = append(a.selected, n)
+		}
+	}
+	a.trust, _ = extractAdvisoryTrust(store, caseID)
+	return a, true
+}
+
+// countedReachPaths returns the reach paths that count toward the selected package. A path is
+// attributed by its sink's import path to the affected package owning the longest name that is the
+// import path or a prefix of it at a "/" boundary; stdlib owns an import path whose first element
+// has no dot, and the selected package wins a tie. A sink with no import path, one inside the
+// scanned project, or one no affected package owns is unattributed and counts as the selected
+// package's. A path is dropped only when its owner is another affected package whose every version
+// in the build is provably outside that package's ranges (everyVersionOutside). The kept paths are
+// ordered the selected package's own, then unattributed, then other packages', each group in its
+// input order.
+func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.ReachPath {
+	var own, unattributed, other []plugin.ReachPath
+	for _, p := range paths {
+		o, owner := a.owner(p.Sink.Package)
+		switch {
+		case owner == ownerSelected:
+			own = append(own, p)
+		case owner == ownerNone:
+			unattributed = append(unattributed, p)
+		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown, a.trust):
+		default:
+			other = append(other, p)
+		}
+	}
+	return slices.Concat(own, unattributed, other)
+}
+
+// pathOwner is which package a reach path's sink is attributed to.
+type pathOwner int
+
+const (
+	ownerNone pathOwner = iota
+	ownerSelected
+	ownerOther
+)
+
+// owner attributes an import path. For ownerOther it also returns that package.
+func (a reachAttribution) owner(pkg string) (presentRanges, pathOwner) {
+	if pkg == "" || a.project != "" && (pkg == a.project || strings.HasPrefix(pkg, a.project+"/")) {
+		return presentRanges{}, ownerNone
+	}
+	best, owner := 0, ownerNone
+	for _, n := range a.selected {
+		if l := ownedLength(n, pkg); l > best {
+			best, owner = l, ownerSelected
+		}
+	}
+	var other presentRanges
+	for _, o := range a.others {
+		if l := max(ownedLength(o.Module, pkg), ownedLength(o.Coordinate, pkg)); l > best {
+			best, owner, other = l, ownerOther, o
+		}
+	}
+	return other, owner
+}
+
+// ownedLength is the length of the match by which the package named name owns import path pkg,
+// or 0 when it does not own it.
+func ownedLength(name, pkg string) int {
+	switch {
+	case name == "":
+		return 0
+	case name == goStdlibPURLName:
+		if first, _, _ := strings.Cut(pkg, "/"); !strings.Contains(first, ".") {
+			return len(first)
+		}
+		return 0
+	case pkg == name || strings.HasPrefix(pkg, name+"/"):
+		return len(name)
+	}
+	return 0
+}
+
 func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.Assessment, store artifact.Store, sinkRef artifact.Ref) error {
 	buildDir, err := InventoryBuildDir(store, c.ID)
 	if err != nil {
@@ -3324,13 +3689,17 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// reachable path AND bypassing the inv.5 fail-open. Resolve the GO- match id from the
 	// normalized-advisory artifact's aliases.
 	vulnID := govulnMatchID(store, c.ID, c.Request.Vulnerability.ID)
-
-	depCache := s.deps.cacheFor(store, c.ID)
-	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, DependencyCache: depCache})
+	goWork, err := InventoryGoWorkspace(store, c.ID)
 	if err != nil {
 		return err
 	}
-	ingresses, err := s.plugin.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir})
+
+	depCache := s.deps.cacheFor(store, c.ID)
+	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache})
+	if err != nil {
+		return err
+	}
+	ingresses, err := s.plugin.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir, GoWork: goWork.File})
 	if err != nil {
 		return err
 	}
@@ -3345,9 +3714,11 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
 		BuildDir:           buildDir,
+		GoWork:             goWork.File,
 		VulnID:             vulnID,
 		Symbols:            sinks,
 		GoToolchain:        requestedToolchain,
+		GoToolchainFloor:   s.toolchainFloor(store, c.ID),
 		Package:            admittedPackagePURL(store, c.ID),
 		DependencyCache:    depCache,
 		LibraryEntrypoints: entrypoints,
@@ -3376,8 +3747,17 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// onto a positional pick from the shared, sorted ingress map and collapses every
 	// advisory's entry point onto whichever ingress sorts first (the SSRF→expandHandler
 	// mis-attribution). The CallGraph leg is unchanged (guard discovery reads it).
+	// Candidate pairs are written for the counted paths only. When none count, the reachability
+	// artifact keeps every path, so the record never reads as an absence of paths.
+	counted := paths
+	if a, ok := readReachAttribution(store, c.ID); ok {
+		counted = countedReachPaths(paths, a)
+	}
 	reachOut := reach
-	reachOut.Paths = paths
+	reachOut.Paths = counted
+	if len(counted) == 0 {
+		reachOut.Paths = paths
+	}
 	reachRef, err := putReachability(store, c, s.Name(), reachOut, cg, toolchainScan)
 	if err != nil {
 		return err
@@ -3388,7 +3768,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 
-	for _, p := range paths {
+	for _, p := range counted {
 		pair := artifact.CandidatePair{
 			SchemaVersion: artifact.CandidatePairSchemaVersion,
 			Sink:          sinkRef,
@@ -3412,7 +3792,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, Sinks: []string{sink}, DependencyCache: depCache})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: []string{sink}, DependencyCache: depCache})
 		if err != nil {
 			return err
 		}

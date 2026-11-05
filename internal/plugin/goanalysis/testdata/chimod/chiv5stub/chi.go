@@ -80,3 +80,6 @@ func (mx *Mux) Patch(pattern string, h http.HandlerFunc)   {}
 func (mx *Mux) Post(pattern string, h http.HandlerFunc)    {}
 func (mx *Mux) Put(pattern string, h http.HandlerFunc)     {}
 func (mx *Mux) Trace(pattern string, h http.HandlerFunc)   {}
+
+// URLParam mirrors chi.URLParam: the URL parameter key of the routed request.
+func URLParam(r *http.Request, key string) string { return "" }

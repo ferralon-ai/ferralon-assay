@@ -185,6 +185,17 @@ inputs:
       undetermined, because that absence describes the scanner's own toolchain, not yours.
     required: false
     default: "false"
+  subject-gowork:
+    description: >-
+      The GOWORK your Go build runs under: 'off', 'auto', or the path of its go.work relative to
+      `target`. Empty takes the GOWORK set in the job's environment, the one your own Go steps
+      see. When neither is set, or the value is 'auto', the scan uses the go.work the go command
+      would find from the scanned module, searched no higher than the repository, when that
+      go.work uses the module. A named go.work the scan cannot read, or one that does not use the
+      scanned module, leaves the scan's advisories undetermined rather than guessed. The scanner
+      itself never reads GOWORK; this step hands it over.
+    required: false
+    default: ""
   library-entrypoints:
     description: >-
       Which of your packages code outside this build may import, and so call past your build's own
@@ -783,6 +794,8 @@ runs:
         # explicit affirmative ('true') enables it — the ternary yields the literal 'false'
         # otherwise, which envEnabled reads as off.
         ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability == 'true' }}
+        # Read by run.go (-subject-gowork falls back to it); data, never parsed by the shell.
+        ASSAY_SUBJECT_GOWORK: ${{ inputs.subject-gowork }}
         # Read by run.go (-library-entrypoints falls back to it); data, never parsed by the shell.
         ASSAY_LIBRARY_ENTRYPOINTS: ${{ inputs.library-entrypoints }}
         # JS dependency code. Empty inherits the scanner's default. The directories come from the
@@ -886,6 +899,12 @@ runs:
         # plugin path would exec the Go analyzer against a Python or JS tree. Pass it ONLY when the
         # caller explicitly set the plugin-go input (an escape hatch for a prebuilt Go plugin).
         export PATH="$PLUGIN_PATH_DIR:$PATH"
+
+        # subject-gowork defaults to the job's GOWORK, the one the job's own Go build sees: this
+        # step inherits the job's env, and the scanner never reads GOWORK itself. Data only.
+        if [ -z "${ASSAY_SUBJECT_GOWORK:-}" ]; then
+          export ASSAY_SUBJECT_GOWORK="${GOWORK:-}"
+        fi
 
         mkdir -p "$IN_OUT"
         args=(

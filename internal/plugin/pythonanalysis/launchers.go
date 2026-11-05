@@ -522,45 +522,51 @@ func keywordArg(s string) (name, value string, kw bool) {
 }
 
 // launchTargets is every launcher target of the build: the manifests', and each file's
-// settings and URL patterns, its view names read through the file's module-level imports.
-// A view the file neither defines nor imports from first-party code is a dependency's; a
-// wrapper or unread argument naming first-party code is an unread target.
+// (fileLaunchTargets).
 func (prog *program) launchTargets() []launchTarget {
 	out := slices.Clone(prog.launchers)
 	for i := range prog.files {
-		f := &prog.files[i]
-		out = append(out, f.settings...)
-		for _, v := range f.urlViews {
-			if slices.ContainsFunc(v.heads, func(h string) bool {
-				return prog.namesFirstParty(f, h, map[string]bool{})
-			}) {
+		out = append(out, prog.fileLaunchTargets(&prog.files[i])...)
+	}
+	return out
+}
+
+// fileLaunchTargets is the launcher targets a file names: its settings and URL patterns, its
+// view names read through the file's module-level imports. A view the file neither defines
+// nor imports from first-party code is a dependency's; a wrapper or unread argument naming
+// first-party code is an unread target.
+func (prog *program) fileLaunchTargets(f *fileParse) []launchTarget {
+	out := slices.Clone(f.settings)
+	for _, v := range f.urlViews {
+		if slices.ContainsFunc(v.heads, func(h string) bool {
+			return prog.namesFirstParty(f, h, map[string]bool{})
+		}) {
+			out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+		}
+		if v.chain == nil {
+			continue
+		}
+		var bases [][]string
+		if paths := f.attrBinds(v.chain[0]); len(paths) > 0 {
+			for _, p := range paths {
+				bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
+			}
+			if prog.rebindsFirstParty(f, v.chain[0]) {
 				out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
 			}
-			if v.chain == nil {
-				continue
+		} else if prog.definesFirstParty(f, v.chain[0]) {
+			bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
+		} else {
+			paths, open := prog.starBinds(f, v.chain[0])
+			for _, p := range paths {
+				bases = append(bases, append(strings.Split(p, "/"), v.chain...))
 			}
-			var bases [][]string
-			if paths := f.attrBinds(v.chain[0]); len(paths) > 0 {
-				for _, p := range paths {
-					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
-				}
-				if prog.rebindsFirstParty(f, v.chain[0]) {
-					out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
-				}
-			} else if prog.definesFirstParty(f, v.chain[0]) {
-				bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
-			} else {
-				paths, open := prog.starBinds(f, v.chain[0])
-				for _, p := range paths {
-					bases = append(bases, append(strings.Split(p, "/"), v.chain...))
-				}
-				if open {
-					out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
-				}
+			if open {
+				out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
 			}
-			for _, segs := range bases {
-				out = append(out, launchTarget{segs: segs, kind: "http_route", selector: v.selector, view: v.asView})
-			}
+		}
+		for _, segs := range bases {
+			out = append(out, launchTarget{segs: segs, kind: "http_route", selector: v.selector, view: v.asView})
 		}
 	}
 	return out

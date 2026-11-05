@@ -106,6 +106,14 @@ func (p *program) declsNamed(leaves []string) []funcDecl {
 	return out
 }
 
+// siteCallee resolves a call site to the one declaration its edge ends at, if any, and
+// returns the leaf names the escape scan uses for it (siteLeaves).
+func (p *program) siteCallee(f *fileParse, cs callSite) (callee string, ok bool, escape []string) {
+	edge, escape := p.siteLeaves(f, cs)
+	callee, ok = resolveCallee(p.siteDecls(f, cs, edge), cs.calleeArity, cs.calleeStar)
+	return callee, ok, escape
+}
+
 // siteLeaves is the leaf names a call site may stand for. A name stands for the
 // declarations under it unless the scope that decides it binds it only by dependency import
 // (depOnly). It stands for a first-party function an import binds to it under another name
@@ -993,12 +1001,13 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.refs.scanRunes([]rune(text), false, true)
 			// The literal's text after an unclosed substitution goes unread, whatever it holds.
 			scan.refs.hidden = true
+			scan.refs.hiddenImport = scan.refs.hiddenImport || namesDynamicImport([]rune(text))
 		}
 		roots, opaque := dynamicImports(clean, lits)
 		lookupRoots, lookups, lookupPackages, moduleVals, lookupOpaque, lookupComputed, own := moduleLookups(clean, lits, scan.bindings)
 		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings, moduleVals)
 		roots = sortedDedup(append(append(roots, lookupRoots...), loaderRoots...))
-		opaque = opaque || lookupOpaque || loaderOpaque
+		opaque = opaque || lookupOpaque || loaderOpaque || scan.refs.hiddenImport
 
 		var fds []funcDecl
 		topNames := map[string]bool{}
@@ -1378,8 +1387,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
-			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
-			callee, ok := resolveCallee(prog.siteDecls(f, cs, edgeLeaves), cs.calleeArity, cs.calleeStar)
+			callee, ok, escapeLeaves := prog.siteCallee(f, cs)
 			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true
@@ -1411,9 +1419,17 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				calls[fi] = append(calls[fi], declFile[callee])
 			}
 		}
-		// Framework ingress handler functions are call-graph roots (static-reachability
-		// entry points), so a reverse BFS can terminate at them even when no caller in the
-		// source invokes them.
+	}
+
+	// Framework ingress handler functions are call-graph roots (static-reachability entry
+	// points), so a reverse BFS can terminate at them even when no caller in the source
+	// invokes them. A handler in test code production never runs (productionReached) is
+	// registered by no production app, so it is no entry point.
+	reached := prog.productionReached(calls)
+	for fi, f := range prog.files {
+		if !reached[fi] {
+			continue
+		}
 		for _, in := range f.ingresses {
 			rootsSet[funcSCIP(f.module, in.enclosing, in.name, in.arity)] = true
 		}
@@ -1442,7 +1458,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	})
 
 	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, prog.productionReached(calls)),
+		Partiality: callGraphPartiality(prog, reached),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      sortedSymbols(rootsSet),
@@ -1663,14 +1679,17 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 }
 
 // productionReached reports, per file, whether production code may run it: every file
-// outside test code (isTestModule), and every file a reached file imports (importPaths,
-// matched like any import path through byModule) or has an edge into (calls, per caller
-// file). A star import or an __import__ fromlist may load any submodule of its package
-// (packagePaths), so it reaches every file under that package, and a file with an import
-// statement importedModules could not read reaches every file. Test code runs in
-// production only that way: no escape names a test function, so a test module only test
-// modules import or call stays unreached, and its dynamic imports and evaluated code
-// withhold nothing.
+// outside test code (isTestModule), every file a manifest launcher names (production by
+// construction: the file declaring the function it names, or the module's own file when it
+// names the module whole or a function the lane does not find), the same for each launch
+// target a reached file names (its settings and URL views; an unreached test urlconf seeds
+// nothing), and every file a reached file imports (importPaths, matched like any import
+// path through byModule) or has an edge into (calls, per caller file). A star import or an
+// __import__ fromlist may load any submodule of its package (packagePaths), so it reaches
+// every file under that package, and a file with an import statement importedModules could
+// not read reaches every file. Test code runs in production only that way: no escape names
+// a test function, so a test module only test modules import or call stays unreached, and
+// its dynamic imports and evaluated code withhold nothing.
 func (prog *program) productionReached(calls [][]int) []bool {
 	reached := make([]bool, len(prog.files))
 	var work []int
@@ -1685,10 +1704,35 @@ func (prog *program) productionReached(calls [][]int) []bool {
 			reach(i)
 		}
 	}
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	launch := func(t launchTarget) {
+		decls, module, whole, missing := prog.launchDecls(t)
+		for _, fd := range decls {
+			if fi, ok := declFile[fd.scip()]; ok {
+				reach(fi)
+			}
+		}
+		if module != "" && (whole || missing) {
+			for _, j := range prog.byModule[module] {
+				reach(j)
+			}
+		}
+	}
+	for _, t := range prog.launchers {
+		launch(t)
+	}
 	for len(work) > 0 {
 		i := work[len(work)-1]
 		work = work[:len(work)-1]
 		f := prog.files[i]
+		for _, t := range prog.fileLaunchTargets(&f) {
+			launch(t)
+		}
 		for _, path := range f.importPaths {
 			for _, j := range prog.byModule[path] {
 				reach(j)
@@ -1708,6 +1752,29 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 	}
 	return reached
+}
+
+// resolvedCallFiles lists, per caller file, the files declaring the function each call site
+// with an edge resolves to (siteCallee): the calls argument productionReached takes, for a
+// caller that does not build the graph. callGraphOf collects the same lists as it adds the
+// edges.
+func (prog *program) resolvedCallFiles() [][]int {
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	calls := make([][]int, len(prog.files))
+	for fi := range prog.files {
+		f := &prog.files[fi]
+		for _, cs := range f.calls {
+			if callee, ok, _ := prog.siteCallee(f, cs); ok {
+				calls[fi] = append(calls[fi], declFile[callee])
+			}
+		}
+	}
+	return calls
 }
 
 // isTestModule reports whether a module path names test code: a test_*.py, *_test.py or

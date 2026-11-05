@@ -1679,7 +1679,8 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 }
 
 // productionReached reports, per file, whether production code may run it: every file
-// outside test code (isTestModule), and every file a reached file imports (importPaths,
+// outside test code (isTestModule), every file declaring a function a launch target names
+// (production by construction), and every file a reached file imports (importPaths,
 // matched like any import path through byModule) or has an edge into (calls, per caller
 // file). A star import or an __import__ fromlist may load any submodule of its package
 // (packagePaths), so it reaches every file under that package, and a file with an import
@@ -1699,6 +1700,20 @@ func (prog *program) productionReached(calls [][]int) []bool {
 	for i, f := range prog.files {
 		if !isTestModule(f.module) {
 			reach(i)
+		}
+	}
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	for _, t := range prog.launchTargets() {
+		decls, _, _, _ := prog.launchDecls(t)
+		for _, fd := range decls {
+			if fi, ok := declFile[fd.scip()]; ok {
+				reach(fi)
+			}
 		}
 	}
 	for len(work) > 0 {

@@ -486,3 +486,39 @@ func TestUntrackedConstraint(t *testing.T) {
 		}
 	}
 }
+
+// TestRequirementsDecls_DirectReferences: a URL or VCS line that names its project declares the
+// name as a direct reference with no specifier, so the file is fully read; one that names no
+// project, an editable and a file: install leave it not fully read, as before.
+func TestRequirementsDecls_DirectReferences(t *testing.T) {
+	const sha = "6fdee8f2727f4506cfbbe553e23b895e27956588"
+	for _, tc := range []struct {
+		line   string
+		want   pyDecl // zero when the file is not read
+		hashed bool
+	}{
+		{"segment-anything @ git+https://github.com/facebookresearch/segment-anything.git@" + sha, pyDecl{Name: "segment-anything", Direct: true}, false},
+		{"git+https://github.com/Project-MONAI/MetricsReloaded@" + sha + "#egg=MetricsReloaded", pyDecl{Name: "metricsreloaded", Direct: true}, false},
+		{"git+https://github.com/Project-MONAI/MetricsReloaded@monai-support#egg=MetricsReloaded", pyDecl{Name: "metricsreloaded", Direct: true}, false},
+		{"Requests[socks] @ https://example.com/requests-2.32.3.tar.gz ; python_version > '3.8' --hash=sha256:abc", pyDecl{Name: "requests", Extras: []string{"socks"}, Marked: true, Direct: true}, true},
+
+		{"git+https://github.com/facebookresearch/segment-anything.git@" + sha, pyDecl{}, false},
+		{"https://example.com/dist/pkg-1.0.tar.gz", pyDecl{}, false},
+		{"pkg @ file:///src/pkg", pyDecl{}, false},
+		{"-e git+https://github.com/Project-MONAI/MetricsReloaded#egg=MetricsReloaded", pyDecl{}, false},
+	} {
+		path := filepath.Join(writeTree(t, map[string]string{"requirements.txt": "torch>=2.8.0\n" + tc.line + "\n"}), "requirements.txt")
+		d, ok := manifestDecls(path)
+		if want := tc.want.Name != ""; ok != want || newPySurface(filepath.Dir(path)).fullyRead(path) != want {
+			t.Errorf("%q: read = %v, want %v", tc.line, ok, want)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if got := d.reqs[len(d.reqs)-1]; got.Name != tc.want.Name || got.Specifier != "" || !got.Direct || got.Marked != tc.want.Marked ||
+			strings.Join(got.Extras, ",") != strings.Join(tc.want.Extras, ",") || d.hashed != tc.hashed {
+			t.Errorf("%q: decl %+v (hashed %v), want %+v (hashed %v)", tc.line, got, d.hashed, tc.want, tc.hashed)
+		}
+	}
+}

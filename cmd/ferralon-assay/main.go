@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -179,12 +180,18 @@ func runBaseline(args []string) error {
 	budget := startScanBudget(timeout)
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
-	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+	stages, clock := startRunClock(budget.analysis)
+	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
+	var missing *analyzerMissingError
+	if errors.As(err, &missing) {
+		return f.publishAnalyzerMissing(ctx, "baseline", missing)
+	}
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}
+	acq.goWork = f.declaredGoWork()
 	defer acq.cleanup()
 
 	store, cleanup, err := baselineStore(f.sf)
@@ -220,11 +227,12 @@ func runBaseline(args []string) error {
 			Revision:    revision,
 			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
 		},
-		Advisories:    ws.advisories,
-		WorkSetLimits: ws.partiality,
-		AssessOptions: assessOptions,
-		Signals:       f.resolvedSignals,
-		Analysis:      analysis,
+		Advisories:      ws.advisories,
+		WorkSetLimits:   ws.partiality,
+		AssessOptions:   assessOptions,
+		Signals:         f.resolvedSignals,
+		Analysis:        analysis,
+		DependencyFetch: f.depRun.forLanguage(acq.language).fetchUpdate(),
 	}
 
 	rep, err := trigger.RunBaseline(ctx, store, req)
@@ -236,7 +244,7 @@ func runBaseline(args []string) error {
 
 	rescan := rescanFromEnv()
 	publishStart := time.Now()
-	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph, f.depRun.forLanguage(acq.language)); err != nil {
+	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph, f.depRun.forLanguage(acq.language), clock); err != nil {
 		return err
 	}
 	logPhase(os.Stderr, "publish", time.Since(publishStart))

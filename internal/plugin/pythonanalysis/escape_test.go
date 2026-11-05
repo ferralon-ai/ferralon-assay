@@ -263,21 +263,22 @@ func TestReachability_HiddenEdgesReachTheSink(t *testing.T) {
 }
 
 // TestCallGraph_AmbiguousSiteIsUnresolvedNotAnEdge: a callee name two first-party
-// declarations share gets no edge, is listed in Unresolved with dynamic_dispatch and no
-// Targets, and both declarations escape so a reader of the listed site can reach them.
+// declarations share, which no binding in the caller's file decides, gets no edge, is
+// listed in Unresolved with dynamic_dispatch and no Targets, and both declarations escape
+// so a reader of the listed site can reach them.
 func TestCallGraph_AmbiguousSiteIsUnresolvedNotAnEdge(t *testing.T) {
 	res := mustCallGraph(t, map[string]string{
 		"pkg/__init__.py": "from .impl import f\n",
 		"pkg/impl.py":     "def f(x):\n    return x\n",
 		"other.py":        "def f(x):\n    return x\n",
-		"app.py":          "import pkg\n\ndef index():\n    return pkg.f(1)\n",
+		"app.py":          "import pkg\n\ndef index():\n    return pkg.g.f(1)\n",
 	})
 	caller := funcSCIP("app", nil, "index", 0)
 	impl, other := funcSCIP("pkg/impl", nil, "f", 1), funcSCIP("other", nil, "f", 1)
 	if hasEdge(res.Edges, caller, impl) || hasEdge(res.Edges, caller, other) {
 		t.Fatalf("an ambiguous callee must get no edge; edges %v", res.Edges)
 	}
-	want := plugin.UnresolvedCall{Caller: sym(caller), Callee: "pkg.f", Arity: 1, Reason: plugin.PartialReasonDynamicDispatch}
+	want := plugin.UnresolvedCall{Caller: sym(caller), Callee: "pkg.g.f", Arity: 1, Reason: plugin.PartialReasonDynamicDispatch}
 	if !slices.ContainsFunc(res.Unresolved, func(u plugin.UnresolvedCall) bool {
 		return u.Caller == want.Caller && u.Callee == want.Callee && u.Arity == want.Arity && u.Reason == want.Reason && u.Targets == nil
 	}) {
@@ -385,7 +386,7 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 		},
 		{
 			name:    "call with no arity match escapes the candidate",
-			files:   map[string]string{"m.py": "def target(x, y=1, z=2):\n    return x\n\ndef caller():\n    return target(1)\n"},
+			files:   map[string]string{"m.py": "def target(x, y=1, z=2):\n    return x\n\ndef caller():\n    return target(1, 2, 3, 4)\n"},
 			escaped: []string{funcSCIP("m", nil, "target", 3)},
 		},
 		{
@@ -395,11 +396,11 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			kept:    []string{funcSCIP("n", nil, "target", 3)},
 		},
 		{
-			name: "defaulted callee edged from one site escapes from another",
+			name: "defaulted callee edged from one site escapes from another that misses its arity",
 			files: map[string]string{
 				"a.py": "def g(x, y=1, z=2):\n    return x\n",
 				"c.py": "from a import g\n\ndef one():\n    return g(1, 2)\n",
-				"d.py": "from a import g\n\ndef two():\n    return g(1)\n",
+				"d.py": "from a import g\n\ndef two():\n    return g(1, 2, 3, 4)\n",
 			},
 			escaped: []string{funcSCIP("a", nil, "g", 3)},
 		},
@@ -428,6 +429,31 @@ func TestCallGraph_EscapeTriggers(t *testing.T) {
 			name:    "f-string substitution",
 			files:   map[string]string{"m.py": plain + "def other():\n    return f\"{target}\"\n"},
 			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:  "f-string substitution reusing its quote is a call",
+			files: map[string]string{"m.py": plain + "def other(d):\n    return f\"{target(d[\"k\"])}\"\n"},
+			kept:  []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:    "f-string substitution never closed",
+			files:   map[string]string{"m.py": plain + "def other(d):\n    return f\"{target(d)\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:    "f-string debug substitution",
+			files:   map[string]string{"m.py": plain + "def other():\n    return f\"{target=} {target = !r}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:    "raw f-string brace after \\N",
+			files:   map[string]string{"m.py": plain + "def other():\n    return rf\"\\N{target}\"\n"},
+			escaped: []string{funcSCIP("m", nil, "target", 1)},
+		},
+		{
+			name:  "f-string named escape",
+			files: map[string]string{"m.py": plain + "def other():\n    return f\"\\N{target} \\\\N{other}\"\n"},
+			kept:  []string{funcSCIP("m", nil, "target", 1)},
 		},
 		{
 			name:  "test module neither escapes nor makes escape",
@@ -600,8 +626,8 @@ func TestCallGraph_AliasUnion(t *testing.T) {
 			callee: funcSCIP("pkg/impl", nil, "f", 1),
 		},
 		{
-			name:   "import cycle ends",
-			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "from a import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
+			name:   "re-export through an import cycle",
+			files:  map[string]string{"a/__init__.py": "from b import y as x\n", "b/__init__.py": "import a\nfrom impl import x as y\n", "impl.py": "def x(v):\n    return v\n", "app.py": "from a import x\n\ndef c():\n    return x(1)\n"},
 			caller: funcSCIP("app", nil, "c", 0),
 			callee: funcSCIP("impl", nil, "x", 1),
 		},
@@ -1312,6 +1338,42 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"sys.modules computed", "import sys\n\ndef load(name):\n    return sys.modules[name]\n", false, false, true},
 		{"sys.modules values", "import sys\n\ndef go(n, x):\n    for m in list(sys.modules.values()):\n        fn = getattr(m, n, None)\n        if fn:\n            return fn(x)\n", false, false, true},
 		{"from sys import modules computed", "from sys import modules\n\ndef go(mod, n, x):\n    return getattr(modules[mod], n)(x)\n", false, false, true},
+		{"from sys import modules continued before import", "from sys \\\n    import modules\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"from sys import modules continued after import", "from sys import \\\n    modules\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"from sys import modules continued with CRLF", "from sys \\\r\n    import modules\r\n\r\ndef go(mod):\r\n    return modules[mod]\r\n", false, false, true},
+		{"import_module continued", "from importlib \\\n    import import_module\n\ndef go(mod, n, x):\n    return getattr(import_module(mod), n)(x)\n", false, false, true},
+		{"import_module continued literal", "from importlib \\\n    import import_module\n\ndef load():\n    return import_module('plugins.x')\n", true, false, false},
+		{"import_module continued before the attribute", "import importlib\n\ndef load():\n    return importlib \\\n        .import_module('plugins.x')\n", true, false, false},
+		{"import_module continued before the call", "import importlib\n\ndef load():\n    return importlib.import_module \\\n        ('plugins.x')\n", true, false, false},
+		{"import_module continued before the call with CRLF", "import importlib\r\n\r\ndef load():\r\n    return importlib.import_module \\\r\n        ('plugins.x')\r\n", true, false, false},
+		{"import_module continued inside the call", "import importlib\n\ndef load():\n    return importlib.import_module( \\\n        'plugins.x' \\\n    )\n", true, false, false},
+		{"sys.modules continued before the attribute", "import sys\n\ndef load():\n    return sys \\\n        .modules['plugins.x']\n", true, false, false},
+		{"sys.modules continued before the subscript", "import sys\n\ndef load():\n    return sys.modules \\\n        ['plugins.x']\n", true, false, false},
+		{"membership test continued", "import sys\n\ndef known(name):\n    return name in \\\n        sys.modules\n", false, false, false},
+		{"from sys import modules literal continued with CRLF", "from sys \\\r\n    import modules\r\n\r\ndef load():\r\n    return modules['plugins.x']\r\n", true, false, false},
+		{"attribute named like a renamed import_module, continued", "from importlib import import_module as load\n\ndef go(obj, mod):\n    return obj. \\\n        load(mod)\n", false, false, false},
+		{"attribute named like a renamed import_module, spaced", "from importlib import import_module as load\n\ndef go(obj, mod):\n    return obj . load(mod)\n", false, false, false},
+		{"import_module continued computed", "import importlib\n\ndef go(mod):\n    return importlib.import_module \\\n        (mod)\n", false, false, true},
+		{"backslash before a blank line ends the call", "import importlib\n\ndef go():\n    return importlib.import_module \\\n\n('plugins.x')\n", false, false, true},
+		{"backslash before a blank CRLF line ends the call", "import importlib\r\n\r\ndef go():\r\n    return importlib.import_module \\\r\n\r\n('plugins.x')\r\n", false, false, true},
+		{"import_module as a value before a parenthesised line", "import importlib\n\nLOAD = importlib.import_module\n('plugins.x')\n", false, false, true},
+		{"sys.modules as a value before a bracketed line", "import sys\n\nMODS = sys.modules\n['plugins.x']\n", false, false, true},
+		{"import_module call split inside brackets", "import importlib\n\ndef load():\n    return (importlib.import_module\n        ('plugins.x'))\n", true, false, false},
+		{"star import of sys continued before import", "from sys \\\n    import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"star import of sys continued after import with CRLF", "from sys import \\\r\n    *\r\n\r\ndef go(mod):\r\n    return modules[mod]\r\n", false, false, true},
+		{"import_module continued after import with CRLF literal", "from importlib import \\\r\n    import_module\r\n\r\ndef load():\r\n    return import_module('plugins.x')\r\n", true, false, false},
+		{"hasattr of sys continued", "import sys\n\nP = hasattr( \\\n    sys, 'platform')\n", false, false, false},
+		{"def named import_module continued", "def \\\n    import_module(n):\n    return n\n", false, false, false},
+		// The ")" sits inside the f-string, so the call really loads plugins.x, and the
+		// loader-literal read finds it.
+		{"call split inside brackets after a stray closer reads the literal", "import importlib\n\ns = f\"{d[\")\"]}\"\n\ndef load():\n    return importlib.import_module(\n        'plugins.x')\n", true, false, false},
+		{"value use after stray closer and opener", "import importlib\n\ns = f\"{d[\")\"]}\"\nt = f\"{d[\"(\"]}\"\n\nLOAD = importlib.import_module\n('plugins.x')\n", false, false, true},
+		{"star import of sys with the backslash after import", "from sys import\\\n    *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"star import of sys with the backslash after import and CRLF", "from sys import\\\r\n    *\r\n\r\ndef go(mod):\r\n    return modules[mod]\r\n", false, false, true},
+		{"star import of sys with the backslash after the module", "from sys\\\n    import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"star import of sys with the backslash after the star", "from sys import *\\\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
+		{"sys.modules after lone CRs", "from os import path\rimport sys\rdef go(m):\r    return sys.modules[m]\r", false, false, true},
+		{"import_module literal after lone CRs", "import importlib\r\rdef load():\r    return importlib.import_module('plugins.x')\r", true, false, false},
 		{"star import of sys", "from sys import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
 		{"star import of sys continued before import", "from sys \\\n    import *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
 		{"star import of sys continued after import", "from sys import \\\n    *\n\ndef go(mod):\n    return modules[mod]\n", false, false, true},
@@ -1325,6 +1387,7 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"sys dunder attribute", "import sys\n\nD = sys.__dict__\n", false, false, true},
 		{"concatenated key", "import sys\n\ndef go(m):\n    return sys.modules['plugins.' + m]\n", false, false, true},
 		{"f-string key", "import sys\n\ndef go(m):\n    return sys.modules[f'plugins.{m}']\n", false, false, true},
+		{"import_module literal in an f-string substitution", "import importlib\n\ndef load():\n    return f\"{importlib.import_module('plugins.x')}\"\n", true, false, false},
 		{"relative import_module computed package", "import importlib\n\ndef go(p):\n    return importlib.import_module('.x', p)\n", false, false, true},
 		{"__import__ with a level", "def go():\n    return __import__('x', globals(), None, [], 1)\n", false, false, true},
 		{"__import__ with a level keyword", "def go():\n    return __import__('x', level=1)\n", false, false, true},
@@ -1351,6 +1414,38 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"__import__ package with a positional fromlist", "def go(n, x):\n    m = __import__('plugins', globals(), locals(), [n])\n    return getattr(getattr(m, n), n)(x)\n", true, true, false},
 		{"getattr of a lookup attribute", "import sys\n\ndef go(m):\n    return getattr(sys, 'modules')[m]\n", false, false, true},
 		{"getattr of a plain attribute", "import sys\n\nP = getattr(sys, 'platform')\n", false, false, false},
+		{"del sys", "import sys\n\nV = sys.version\ndel sys\n", false, false, false},
+		{"del sys among bare names", "import os, sys\n\nif True: del os, sys\n", false, false, false},
+		{"del sys in parentheses", "import sys\n\ndel (sys)\n", false, false, false},
+		{"sys is None", "import sys as _sys\n\ndef go():\n    if _sys is None:\n        return 1\n", false, false, false},
+		{"sys is not None in an expression", "import sys\n\ndef go(x):\n    return x and sys is not None\n", false, false, false},
+		{"importlib is None assigned", "import importlib\n\nGONE = importlib is None\n", false, false, false},
+		{"is sys", "import sys\n\ndef go(m):\n    return m is sys\n", false, false, false},
+		{"is not sys before a comma", "import sys\n\ndef go(m):\n    return f(m is not sys, m)\n", false, false, false},
+		{"del of a subscript by sys", "import sys\n\ndef go(d):\n    del d[sys]\n", false, false, true},
+		{"del of an attribute beside sys", "import sys\n\ndef go(d):\n    del d.x, sys\n", false, false, true},
+		{"is operand also compared", "import sys\n\ndef go(m):\n    return m < sys is None\n", false, false, true},
+		{"is operand after equality", "import sys\n\ndef go(m):\n    return m == sys is None\n", false, false, true},
+		{"is operand after another word", "import sys\n\nasync def go(m):\n    return await sys is None\n", false, false, true},
+		{"is operand to an operator", "import sys\n\ndef go(m):\n    return m is sys + m\n", false, false, true},
+		{"is operand called", "import sys\n\ndef go(m):\n    return m is not sys(m)\n", false, false, true},
+		{"is operand compared across a bracketed line", "import sys\n\ndef go(m):\n    return (m <\n            sys is None)\n", false, false, true},
+		{"is operand compared across a backslash", "import sys\n\ndef go(m):\n    return m < \\\n        sys is None\n", false, false, true},
+		{"is operand compared across a comment", "import sys\n\ndef go(m):\n    return (m <  # c\n            sys is None)\n", false, false, true},
+		{"is operand to an operator on the next line", "import sys\n\ndef go(m):\n    return (m is sys\n            + m)\n", false, false, true},
+		{"is operand to an operator across a backslash", "import sys\n\ndef go(m):\n    return m is sys \\\n        + m\n", false, false, true},
+		{"is operand compared on the next line", "import sys\n\ndef go(m):\n    return (m is sys\n            < m)\n", false, false, true},
+		{"is operand to an operator in a continued call", "import sys\n\ndef go(m):\n    return f(m is sys\n             * 2)\n", false, false, true},
+		{"is operand ending a bracketed line", "import sys\n\ndef go(m):\n    return (m is sys\n            or m)\n", false, false, false},
+		{"is operand compared across a CRLF backslash", "import sys\r\n\r\ndef go(m):\r\n    return m < \\\r\n        sys is None\r\n", false, false, true},
+		{"is operand in CRLF source", "import sys\r\n\r\ndef go(m):\r\n    return (m is sys\r\n            or m)\r\n", false, false, false},
+		{"is operand after a CRLF string continuation", "import sys\r\n\r\ndef go(m):\r\n    return (m < f('a\\\r\nb', '))') <\r\n            sys is None)\r\n", false, false, true},
+		{"lookup in CR source", "import sys\r\rdef go(m):\r    return sys.modules[m]\r", false, false, true},
+		{"is operand on both sides", "import sys\n\ndef go(m):\n    return m is sys is None\n", false, false, false},
+		{"is operand opening a statement after a call", "import sys\n\ndef go(m):\n    m()\n    sys is None or m()\n", false, false, false},
+		{"is right operand ending a line", "import sys\n\ndef go(m):\n    ok = m is sys\n    return ok\n", false, false, false},
+		{"del sys before an attribute", "import sys\n\ndef go(d):\n    del sys, d.x\n", false, false, true},
+		{"not sys is no identity test", "import sys\n\ndef go():\n    return not sys\n", false, false, true},
 		{"spec from a file location", "import importlib.util\n\ndef load(path):\n    spec = importlib.util.spec_from_file_location('plugin', path)\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n", false, false, true},
 		{"module from spec renamed", "from importlib.util import module_from_spec as mfs\n\ndef load(spec):\n    return mfs(spec)\n", false, false, true},
 		{"exec_module alone", "def load(spec, mod):\n    spec.loader.exec_module(mod)\n", false, false, true},
@@ -1371,6 +1466,8 @@ func TestCallGraph_ModuleLookups(t *testing.T) {
 		{"imp load_compiled", "import imp\n\ndef go(path):\n    return imp.load_compiled('plugin', path)\n", false, false, true},
 		{"extension file loader", "from importlib.machinery import ExtensionFileLoader\n\ndef load(path):\n    return ExtensionFileLoader('plugin', path)\n", false, false, true},
 		{"zipimport module as a value", "import zipimport\n\nZI = zipimport\n", false, false, true},
+		{"lookup inside an f-string substitution", "import sys\n\ndef go(m):\n    return f\"{sys.modules[m].run()}\"\n", false, false, true},
+		{"lookup inside a multi-line f-string substitution", "import sys\n\ndef go(m):\n    return f'''x\n{sys.modules[m]}'''\n", false, false, true},
 		{"loader imports alone", "import runpy\nimport zipimport\nfrom importlib.util import spec_from_file_location\nfrom importlib.machinery import SourceFileLoader as SFL\n", false, false, false},
 		{"def named like a loader", "def run_path(p):\n    return p\n", false, false, false},
 	}
@@ -1455,11 +1552,17 @@ func TestCallGraph_UnlistedSites(t *testing.T) {
 	}{
 		{"every site listed", "def f(x):\n    return g(x)\n", false},
 		{"f-string without a call", "def f(x):\n    return f\"{x}\"\n", false},
-		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", true},
+		{"f-string with a call", "def f(x):\n    return f\"{g(x)}\"\n", false},
+		{"f-string substitution reusing its quote", "def f(d):\n    return f\"{g(d[\"k\"])}\"\n", false},
+		{"f-string reusing its quote before a later call", "def f(d):\n    return f\"{d[\"k\"]}{g(1)}\"\n", false},
+		{"f-string nested in a substitution reusing its quote", "def f(d):\n    return f\"{f'{g(d['k'])}'}\"\n", false},
+		{"f-string nested in a format spec reusing its quote", "def f(x, d):\n    return f\"{x:{f'{g(d['k'])}'}}\"\n", false},
+		{"f-string substitution never closed", "def f(d):\n    return f\"{g(d)\"\n", true},
+		{"f-string never closed before a later call", "def f(d):\n    return f\"{d[0]\" + g(1)\n", true},
 		{"evaluated code", "def f(src):\n    return eval(src)\n", true},
 		{"t-string without a call", "def f(x):\n    return t\"{x}\"\n", false},
-		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", true},
-		{"raw t-string with a call", "def f(x):\n    return rt\"{g(x)}\"\n", true},
+		{"t-string with a call", "def f(x):\n    return t\"{g(x)}\"\n", false},
+		{"raw t-string with a call", "def f(x):\n    return rt\"{g(x)}\"\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

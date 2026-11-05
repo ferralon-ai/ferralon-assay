@@ -88,6 +88,9 @@ type AcquisitionRecord struct {
 	Digest     string    `json:"digest"`    // wire form (algorithm:base64|hex)
 	Canonical  string    `json:"canonical"` // "<algo>:<hex>"
 	AcquiredAt time.Time `json:"acquiredAt"`
+	// Fetched is set when this Acquire fetched the bytes from the registry; a cache hit
+	// leaves it false. It is not persisted.
+	Fetched bool `json:"-"`
 }
 
 // Acquirer is the write side of the cache. It fetches, verifies in-process, and publishes
@@ -497,6 +500,7 @@ func (a *Acquirer) verifyAndPublish(resp *http.Response, ref artifactcache.Ref, 
 		Digest:     ref.Digest,
 		Canonical:  canonical,
 		AcquiredAt: a.now().UTC(),
+		Fetched:    true,
 	}
 	a.writeRecord(path, rec)
 	return rec, nil

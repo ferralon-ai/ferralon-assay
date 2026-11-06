@@ -40,6 +40,7 @@ func main() {
 	// it was still carries the build's toolchain settings, under which the manifest resolves it.
 	ctx := goanalysis.WithBuildEnviron(context.Background(), os.Environ())
 	_ = os.Setenv("GOWORK", "off")
+	applyMemoryLimit()
 	if err := run(analyzerContext(ctx), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -85,10 +85,9 @@ default the scan runs fully standalone. See the README's
 [self-cleanup / console-link disclosure](../README.md#self-cleanup--console-link-disclosure) for
 what that switch does when it is on, including the self-cleanup side effects.
 
-A Java or Kotlin scan resolves its dependency graph with the repository's own Maven or Gradle. That is
-the default, `-build-graph auto`, and the `resolve-graph` command does the same ahead of a scan. Either
-way the build's scripts and plugins run on the runner, and the build tool contacts whatever
-repositories the build configures. This is the only point at which the CLI executes the scanned
-repository's code. To keep the build tool out of the scan, resolve the graph in an earlier step and
-pass it with `-build-graph <file>`, or run with `-build-graph off`; the scan then runs no build tool.
-The `Report` records which of the three the scan used in `build_graph.source`.
+A Java or Kotlin scan runs the repository's own Maven or Gradle (`-build-graph auto`, the default), and
+so does the `resolve-graph` command. The build's scripts and plugins run on the runner, and the tool
+fetches from the repositories the build configures with the job's credentials, as `mvn` or `gradle`
+would; a branch that rewrites those repositories sends those credentials to the host it names. A scan
+with `-build-graph off`, or one that reads a graph resolved ahead of the scan, does not run the build
+tool.

@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -27,9 +30,11 @@ import (
 // SCIP is the symbol's id emitted by the SAME emitter the call graph uses
 // (packages.go / callgraph.go), so a derived trace shares an identity space with
 // CallGraph edges by construction. IsEntry marks the frame as a recognized
-// program entry point (the top of a complete stack).
+// program entry point (the top of a complete stack). Package is the frame's import
+// path as govulncheck reports it, or "" when it reports none.
 type StackFrame struct {
 	SCIP    string
+	Package string
 	IsEntry bool
 }
 
@@ -41,9 +46,9 @@ type CallStack struct {
 }
 
 // stacksToReachPaths is the PURE derivation: each call stack -> one ReachPath.
-// Sink is the bottom frame, Ingress is the top frame ONLY when it is a
-// recognized entry (otherwise empty, feeding the nil-Ingress CandidatePair),
-// and Trace is the ordered SCIP ids ingress->sink. Empty stacks (module/package
+// Sink is the bottom frame, carrying its import path, Ingress is the top frame
+// ONLY when it is a recognized entry (otherwise empty, feeding the nil-Ingress
+// CandidatePair), and Trace is the ordered SCIP ids ingress->sink. Empty stacks (module/package
 // level findings with no symbol trace) produce no path. No I/O — hermetically
 // testable with synthetic stacks.
 func stacksToReachPaths(stacks []CallStack) []plugin.ReachPath {
@@ -61,8 +66,11 @@ func stacksToReachPaths(stacks []CallStack) []plugin.ReachPath {
 		if top.IsEntry {
 			ingress = sym(top.SCIP)
 		}
+		bottom := st.Frames[len(st.Frames)-1]
+		sink := sym(bottom.SCIP)
+		sink.Package = bottom.Package
 		paths = append(paths, plugin.ReachPath{
-			Sink:    sym(st.Frames[len(st.Frames)-1].SCIP),
+			Sink:    sink,
 			Ingress: ingress,
 			Trace:   trace,
 		})
@@ -154,10 +162,14 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 // ScanToolchain. It never fails the scan and never silently claims the subject was
 // scanned — the caller decides what an empty path set is evidence of.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	baseEnv := reachBaseEnv()
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.ReachabilityResult{}, err
+	}
+	baseEnv := reachBaseEnv(ctx)
 	env, scanToolchain, switched := subjectToolchainEnv(ctx, baseEnv, req.BuildDir, req.GoToolchain)
 
-	scanned, err := runGovulncheck(ctx, req, env)
+	scanned, err := runGovulncheck(ctx, req, env, !switched)
 	if err != nil && switched {
 		// The subject's toolchain materialized but could not complete the scan — its stdlib
 		// cannot build this module, or the older go command rejects the go.mod. Fall back to
@@ -167,7 +179,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		// The failed switched run is not cached, so every advisory retries it before reading the
 		// cached fallback stream; that costs time only, and caching the failure would not be safe.
 		env, scanToolchain, switched = baseEnv, goEnvVersion(ctx, req.BuildDir, baseEnv), false
-		scanned, err = runGovulncheck(ctx, req, env)
+		scanned, err = runGovulncheck(ctx, req, env, true)
 	}
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
@@ -176,7 +188,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
 	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
 	load := sync.OnceValues(func() (*LoadResult, error) {
-		return loadForBuild(ctx, req.BuildDir, req.GoToolchain)
+		return loadForBuild(ctx, req.BuildDir, req.GoToolchain, req.GoToolchainFloor)
 	})
 	var entry plugin.LibraryEntrypoints
 	if req.LibraryEntrypoints != nil {
@@ -197,11 +209,23 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // supplies the loaded program, and is asked for it only to build the graph or to withhold a
 // refutation. entry is the caller's statement of the build's library entry points.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
-	g, err := reconcileCallGraph(ctx, buildDir, load)
+	// reconcile reads the graph's edges only to corroborate a path, so a result evidenceResult derives
+	// no path for reads the summary instead. A result with a path reads the whole graph, every field
+	// of it from the one edges entry.
+	graph := reconcileCallGraph
+	if len(stacksToReachPaths(findingsToStacks(scanned.findings))) == 0 {
+		graph = reconcileSummaryGraph
+	}
+	g, err := graph(ctx, buildDir, scanned.partial.readImports(), load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res := evidenceResult(scanned.findings, g.CallGraph, env)
+	return resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+}
+
+// resultFromGraph is reconciledResult over the reconcile graph g.
+func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
+	res := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
 	if res.Refutation != nil {
 		loaded, err := load()
 		if err != nil {
@@ -270,10 +294,10 @@ func searchedReflectMayReach(reach map[string][]string, scanned vulnScan) bool {
 }
 
 // withholdRefutation withholds res's refutation when files the build left out, exported methods
-// govulncheck never searched, or a library's callers may contradict it. release is the Go release the
-// build compiles under, or nil when the load is not established to have run under it. entry is the
+// govulncheck never searched, or a library's callers may contradict it. release bounds the Go release
+// the build compiles under (LoadResult.buildRelease), or is nil when nothing does. entry is the
 // build's resolved library entry points.
-func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
+func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
 	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, buildDir, env)
 	res = withholdForUnsearchedMethods(res, scanned, pkgs)
 	return withholdForLibraryEscape(res, scanned, pkgs, entry)
@@ -281,8 +305,9 @@ func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scan
 
 // withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
 // (unsearchedMethods) may contradict. A caller of the package can still invoke one, so when the
-// package that declares it imports the refuted module (for the standard library, a vulnerable
-// package), directly or through other packages, the search that found no path never covered it.
+// package that declares it imports one of the refuted module's packages that count
+// (countingPackages), directly or through other packages, the search that found no path never
+// covered it.
 // Reach is read off the import graph, never the call graph, which is what misses these methods.
 // The result then declares unsearched_methods instead.
 func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
@@ -291,15 +316,16 @@ func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnSca
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || unsearchedCallers(pkgs, module, scanned.vulnerablePackages(module)) {
+	if !ok || unsearchedCallers(pkgs, module, scanned.countingPackages(module)) {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
 	}
 	return res
 }
 
-// unsearchedCallers reports whether an unsearched method may call into module. A method whose
-// declaring package the load does not hold counts.
+// unsearchedCallers reports whether an unsearched method may call into module's packages that count:
+// vulnerable, or every package of module when that is empty. A method whose declaring package the
+// load does not hold counts.
 func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []string) bool {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	for _, m := range unsearchedMethods(pkgs) {
@@ -316,10 +342,10 @@ func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []str
 // importer (a function, an interface value, a struct carrying either, through a result, an exported
 // var or field, or an embedded type) can still run the module's code once the importer calls it, and
 // that call is outside the search, whether or not the build also has a main package. So when any
-// entry point reaches the refuted module (for the standard library, a vulnerable package), or the
+// entry point reaches one of the refuted module's packages that count (countingPackages), or the
 // entry points or their reach are unknown, the result declares library_escape instead. A refutation
 // that stands only because the caller declared a package no entry point carries that declaration
-// as an assumption.
+// as an assumption. A withhold the incomplete load contributes to declares tool_failure beside it.
 func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -331,12 +357,15 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
 		return res
 	}
-	vulnerable := scanned.vulnerablePackages(module)
-	incomplete := incompleteLoad(pkgs)
+	vulnerable := scanned.countingPackages(module)
+	incomplete := incompleteLoad(pkgs, scanned.partial.readImports())
 	if len(entry.unmatchedIncludes()) > 0 || incomplete && !entry.removes() ||
 		len(reaching(pkgs, entry.pkgs, incomplete, module, vulnerable)) > 0 {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+		if incomplete {
+			res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
+		}
 		return res
 	}
 	// With the load complete, auto's own exclusions are the inferred rule and need no statement.
@@ -355,18 +384,21 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 }
 
 // incompleteLoad reports whether a package failed to load or type-check, so that its imports, and
-// what reaches through them, may be incomplete.
-func incompleteLoad(pkgs []*packages.Package) bool {
+// what reaches through them, may be incomplete. A package in known does not count: it, and every
+// package importing it, lies in the partial run's Hidden closure, whose modules' refutations are
+// withheld anyway (withholdForPartialRun, and reflectReachOf on why the rest stand).
+func incompleteLoad(pkgs []*packages.Package, known []string) bool {
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.Types == nil || len(p.Errors) > 0 {
+		if (p.Types == nil || len(p.Errors) > 0) && !slices.Contains(known, p.PkgPath) {
 			incomplete = true
 		}
 	})
 	return incomplete
 }
 
-// reaching returns the packages of set that reach module, or all of set when the load is incomplete.
+// reaching returns the packages of set that reach module's packages that count (vulnerable, or every
+// package of module when that is empty), or all of set when the load is incomplete.
 func reaching(pkgs, set []*packages.Package, incomplete bool, module string, vulnerable []string) []*packages.Package {
 	if incomplete || len(set) == 0 {
 		return set
@@ -573,22 +605,36 @@ func isMain(p *packages.Package) bool {
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
-// packages in the refuted module was never traced, so the refutation holds only for builds that
-// leave it out. The result then declares excluded_files instead. An advisory that lists no vulnerable
-// package in the module, or lists the module once with none, makes every package of it count.
-func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *goRelease, buildDir string, env []string) plugin.ReachabilityResult {
+// packages in the refuted module (countingPackages) was never traced, so the refutation holds only
+// for builds that leave it out. The result then declares excluded_files instead, or the
+// localisations of it naming the assembly, //go:linkname or cgo #include the file reaches, and
+// tool_failure beside it when the check withholds because one of its own steps failed. An advisory
+// that lists no vulnerable package in the module, or lists the module once with none, makes every
+// package of it count.
+func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	vulnerable := scanned.vulnerablePackages(module)
-	if scanned.wholeModule[module] || len(scanned.imports[module]) == 0 {
-		vulnerable = nil
-	}
-	if !ok || leftOutCallers(ctx, pkgs, module, vulnerable, release, buildDir, env) {
+	if !ok {
 		res.Refutation = nil
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+		return res
+	}
+	counts, reasons, failed := leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), scanned.vulnerableSymbols(module), release, buildDir, env)
+	if !counts {
+		return res
+	}
+	res.Refutation = nil
+	if len(reasons) == 0 {
+		reasons = []string{plugin.PartialReasonExcludedFiles}
+	}
+	for _, reason := range reasons {
+		res.Partiality = withReason(res.Partiality, reason)
+	}
+	if failed {
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
 	}
 	return res
 }
@@ -699,19 +745,13 @@ func envOr(env []string, key, def string) string {
 //
 // govulncheck loads packages via go/packages, which spawns `go list` with THIS Env
 // (x/vuln passes cfg.env straight through to packages.Config.Env). The analyzed module
-// is NEVER a member of any workspace the plugin process happens to sit inside — e.g.
-// an enclosing repository's go.work when assessing an in-repo corpus repro. Force
-// GOWORK=off LOCALLY here so the load resolves the target module standalone, mirroring
-// LoadProgram (packages.go). This keeps the reachability path workspace-blind on its own
-// merits rather than relying solely on the process-global GOWORK=off set far away at
-// plugin entry (cmd/assay-plugin-go/main.go) — and an unset cmd.Env would otherwise
-// default to os.Environ(), reintroducing the ambient leak if any code path runs before
-// that entry-point Setenv.
-func reachBaseEnv() []string {
-	env := os.Environ()
-	out := make([]string, len(env), len(env)+1)
-	copy(out, env)
-	return append(out, "GOWORK=off")
+// loads under the build's own workspace (withGoWork), NEVER one the plugin process happens
+// to sit inside — e.g. an enclosing repository's go.work when assessing an in-repo corpus
+// repro — mirroring LoadProgram (packages.go). GOWORK is set LOCALLY here rather than left to
+// the process-global GOWORK=off set at plugin entry (cmd/assay-plugin-go/main.go): an unset
+// cmd.Env would default to os.Environ() and lose the build's workspace.
+func reachBaseEnv(ctx context.Context) []string {
+	return analyzerEnv(ctx)
 }
 
 // subjectToolchainEnv resolves the child environment for a run the caller wants executed under
@@ -779,11 +819,12 @@ func goEnvVersion(ctx context.Context, buildDir string, env []string) string {
 }
 
 // loadForBuild loads dir for reconciling its findings. toolchain, when set, is the subject's own
-// Go toolchain and so the build's.
-func loadForBuild(ctx context.Context, dir, toolchain string) (*LoadResult, error) {
+// Go toolchain and so the build's; floor, when set, is a release no build of the subject is below.
+func loadForBuild(ctx context.Context, dir, toolchain, floor string) (*LoadResult, error) {
 	loaded, err := LoadProgram(ctx, dir)
-	if err == nil && toolchain != "" {
+	if err == nil {
 		loaded.buildGoVersion = toolchain
+		loaded.buildGoFloor = floor
 	}
 	return loaded, err
 }
@@ -871,12 +912,14 @@ func (r goRelease) toolchain() string {
 // runGovulncheck performs one govulncheck run under env and returns what it says about req.VulnID.
 // A govulncheck FAILURE (build broke, non-zero exit, timeout) is a HARD error (inv.4) — never a
 // silent empty result; only the caller may decide that a failure under a switched toolchain is
-// retryable.
-func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string) (vulnScan, error) {
-	// The scan covers every advisory govulncheck knows for the tree; the advisory is selected only
-	// when the stream is parsed. So one stream per tree and environment answers every advisory.
-	out, err := runCached(ctx, "govulncheck", append([]string{req.BuildDir}, env...), func() ([]byte, error) {
-		return govulncheckStream(ctx, req.BuildDir, env)
+// retryable. settle lets the run cache keep a settled failure; the caller withholds it for a run it
+// may retry. A settled failure is answered by a partial run when one can be made
+// (govulncheckOrPartial); the result says so in its partial field.
+func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string, settle bool) (vulnScan, error) {
+	out, partial, err := govulncheckOrPartial(ctx, req.BuildDir, env, settle, func() ([]byte, error) {
+		return govulncheckStream(ctx, req.BuildDir, env, []string{"./..."})
+	}, func(failure error) ([]byte, error) {
+		return partialGovulncheck(ctx, req.BuildDir, env, failure)
 	})
 	if err != nil {
 		return vulnScan{}, err
@@ -886,13 +929,136 @@ func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []s
 	if err != nil {
 		return vulnScan{}, fmt.Errorf("parse govulncheck json: %w", err)
 	}
+	scanned.partial = partial
 	return scanned, nil
 }
 
-// govulncheckStream runs govulncheck over buildDir under env and returns its -json stream.
-func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]byte, error) {
+// govulncheckCached returns the govulncheck stream for buildDir under env, running stream only when
+// the run cache holds neither the stream nor, when settle is set, a settled failure. The scan covers
+// every advisory govulncheck knows for the tree; the advisory is selected only when the stream is
+// parsed. So one stream per tree and environment answers every advisory, and a failure that tree and
+// environment reproduce fails every advisory with the same error.
+func govulncheckCached(ctx context.Context, buildDir string, env []string, settle bool, stream func() ([]byte, error)) ([]byte, error) {
+	key := append([]string{buildDir}, env...)
+	return runCached(ctx, "govulncheck", key, func() ([]byte, error) {
+		if !settle {
+			return stream()
+		}
+		if err := replayGovulncheckFailure(ctx, buildDir, key); err != nil {
+			return nil, err
+		}
+		out, err := stream()
+		var failed *govulncheckError
+		if errors.As(err, &failed) && failed.settled {
+			recordGovulncheckFailure(ctx, key, failed)
+		}
+		return out, err
+	})
+}
+
+// govulncheckError is a govulncheck run that failed after it started. settled marks a failure that
+// every later run over the same tree and environment in this scan reproduces (see
+// settledLoadFailure), so the run cache may answer those runs with it. The text need not repeat
+// exactly — cgo compiles a package's files in parallel and reports whichever fails first — so a
+// replay carries the settling run's text, one of the texts a fresh run could have produced.
+type govulncheckError struct {
+	buildDir string
+	cause    error
+	stderr   string
+	settled  bool
+	perrs    []packages.Error // a replay's package errors, which its cause no longer carries
+}
+
+func (e *govulncheckError) Error() string {
+	return fmt.Sprintf("govulncheck failed (%q): %v: %s", e.buildDir, e.cause, e.stderr)
+}
+
+func (e *govulncheckError) Unwrap() error { return e.cause }
+
+// govulncheckFailureKind names the run cache entry that holds a settled govulncheck failure. It is
+// a separate entry from the stream under the same key, so a stream is never read as a failure nor a
+// failure as a stream.
+const govulncheckFailureKind = "govulncheck-failure"
+
+// govulncheckFailureMarker identifies a settled failure record; an entry without it is no record.
+// A record under an earlier marker carries no package errors, so a replay of it could not rebuild
+// the partial run; it is no record either, and the next run settles the failure afresh.
+const govulncheckFailureMarker = "govulncheck-settled-failure/v2"
+
+type govulncheckFailureRecord struct {
+	Marker        string                 `json:"marker"`
+	Cause         string                 `json:"cause"`
+	Stderr        string                 `json:"stderr"`
+	PackageErrors []recordedPackageError `json:"package_errors"`
+}
+
+// recordedPackageError is what a partial run reads of a package error (unloadablePackages).
+type recordedPackageError struct {
+	Pos string `json:"pos"`
+	Msg string `json:"msg"`
+}
+
+// recordGovulncheckFailure stores a settled failure for key with the package errors that bound its
+// partial run. A failure without them is not stored, since its replay could bound no partial run. A
+// record that cannot be written only costs the next run its replay.
+func recordGovulncheckFailure(ctx context.Context, key []string, failed *govulncheckError) {
+	dir := RunCacheDir(ctx)
+	perrs := failurePackageErrors(failed)
+	if dir == "" || len(perrs) == 0 {
+		return
+	}
+	rec := govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: failed.cause.Error(), Stderr: failed.stderr}
+	for _, pe := range perrs {
+		rec.PackageErrors = append(rec.PackageErrors, recordedPackageError{Pos: pe.Pos, Msg: pe.Msg})
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return
+	}
+	writeRunCacheEntry(dir, govulncheckFailureKind, runCachePath(dir, govulncheckFailureKind, key), b)
+}
+
+// replayGovulncheckFailure returns the settled failure stored for key, carrying the message and the
+// package errors of the run that settled it, or nil when none is stored. A record that carries no
+// package errors is none.
+func replayGovulncheckFailure(ctx context.Context, buildDir string, key []string) error {
+	dir := RunCacheDir(ctx)
+	if dir == "" {
+		return nil
+	}
+	b, err := os.ReadFile(runCachePath(dir, govulncheckFailureKind, key))
+	if err != nil {
+		return nil
+	}
+	var rec govulncheckFailureRecord
+	if json.Unmarshal(b, &rec) != nil || rec.Marker != govulncheckFailureMarker || len(rec.PackageErrors) == 0 {
+		return nil
+	}
+	failed := &govulncheckError{buildDir: buildDir, cause: errors.New(rec.Cause), stderr: rec.Stderr, settled: true}
+	for _, pe := range rec.PackageErrors {
+		failed.perrs = append(failed.perrs, packages.Error{Pos: pe.Pos, Msg: pe.Msg})
+	}
+	return failed
+}
+
+// failurePackageErrors returns the package errors of a govulncheck failure: those its load reported,
+// or, for a replayed failure, those its record kept.
+func failurePackageErrors(err error) []packages.Error {
+	if perrs := loadPackageErrors(err); len(perrs) > 0 {
+		return perrs
+	}
+	var failed *govulncheckError
+	if errors.As(err, &failed) {
+		return failed.perrs
+	}
+	return nil
+}
+
+// govulncheckStream runs govulncheck over patterns in buildDir under env and returns its -json
+// stream.
+func govulncheckStream(ctx context.Context, buildDir string, env, patterns []string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := scan.Command(ctx, "-C", buildDir, "-json", "-mode=source", "-scan=symbol", "./...")
+	cmd := scan.Command(ctx, append([]string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}, patterns...)...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = env
@@ -907,11 +1073,87 @@ func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]by
 		// (inv.4) — never a silent empty result.
 		var ec interface{ ExitCode() int }
 		if !errors.As(err, &ec) || (ec.ExitCode() != 0 && ec.ExitCode() != 3) {
-			return nil, fmt.Errorf("govulncheck failed (%q): %w: %s",
-				buildDir, err, strings.TrimSpace(stderr.String()))
+			return nil, &govulncheckError{
+				buildDir: buildDir,
+				cause:    err,
+				stderr:   strings.TrimSpace(stderr.String()),
+				settled:  settledLoadFailure(ctx, err) && packagesResolveOffline(ctx, buildDir, env),
+			}
 		}
 	}
 	return stdout.Bytes(), nil
+}
+
+// settledLoadFailure reports whether err is a govulncheck failure whose cause lies in the packages
+// themselves: the package load ran to completion and go/packages reported errors on the loaded
+// packages (a cgo header that is missing, a type error). govulncheck loads before it makes any
+// vulnerability database request, so no database answer is part of such a failure. Excluded are a
+// cancelled or expired ctx, anything killed by a signal or starved of a machine resource, and any
+// load that did not complete — a go command that failed outright reaches govulncheck as a plain
+// error, not as package errors.
+func settledLoadFailure(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var ec interface{ ExitCode() int }
+	if errors.As(err, &ec) && ec.ExitCode() == -1 {
+		return false
+	}
+	perrs := loadPackageErrors(err)
+	if len(perrs) == 0 {
+		return false
+	}
+	for _, pe := range perrs {
+		msg := strings.ToLower(pe.Msg)
+		for _, transient := range transientLoadFaults {
+			if strings.Contains(msg, transient) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// transientLoadFaults are texts in a package error that name a fault of the machine rather than of
+// the packages, so the same load could succeed on a retry. They are lower case: a message is
+// lowered before matching, since cc and ld report errno in libc's capitalised form.
+var transientLoadFaults = []string{
+	"signal: ",
+	"resource temporarily unavailable",
+	"no space left on device",
+	"too many open files",
+	"cannot allocate memory",
+	"out of memory",
+}
+
+var packageErrorsType = reflect.TypeFor[[]packages.Error]()
+
+// loadPackageErrors returns the package errors a failed govulncheck load carries in err's chain.
+// x/vuln reports them in a type it does not export, as its Errors field; nothing else in the chain
+// has that field.
+func loadPackageErrors(err error) []packages.Error {
+	for ; err != nil; err = errors.Unwrap(err) {
+		v := reflect.ValueOf(err)
+		if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		if f := v.Elem().FieldByName("Errors"); f.IsValid() && f.Type() == packageErrorsType && f.CanInterface() {
+			return f.Interface().([]packages.Error)
+		}
+	}
+	return nil
+}
+
+// packagesResolveOffline reports whether every package a govulncheck load of buildDir reads
+// resolves from local files: `go list` of the same packages under env, with module fetching turned
+// off, reports no error. A package error of the failed load then cannot be a module fetch that a
+// later run might complete; what remains (cgo, type checking) reads only files already on disk.
+func packagesResolveOffline(ctx context.Context, buildDir string, env []string) bool {
+	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-f", "{{with .Error}}{{.Err}}{{end}}", "./...")
+	cmd.Dir = buildDir
+	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
+	out, err := cmd.Output()
+	return err == nil && len(bytes.TrimSpace(out)) == 0
 }
 
 // reconcileGraph is the call graph Reachability reconciles paths against, with what reflection's
@@ -921,39 +1163,139 @@ type reconcileGraph struct {
 	ReflectReach map[string][]string    `json:"reflect_reach"`
 }
 
+// reconcileSummary is the part of a reconcileGraph a result with no path reads: reconcile reads
+// edges only to corroborate a path. ID names the compute that wrote it; the reconcile marker entry
+// holds the same ID only after that compute stored an edges entry of this key. A later compute may
+// replace that edges entry, so a trusted summary relies on every compute of a key building the same
+// graph, as every reader of the edges entry already does.
+type reconcileSummary struct {
+	ID           string              `json:"id"`
+	Partiality   plugin.Partiality   `json:"partiality"`
+	ReflectReach map[string][]string `json:"reflect_reach"`
+}
+
+// reconcileKey is the run-cache key of every reconcile entry for buildDir under known, which is as
+// reflectReachOf takes it. The program load reads the process environment and the build's GOWORK,
+// so that is part of it.
+func reconcileKey(ctx context.Context, buildDir string, known []string) []string {
+	return append([]string{buildDir, "known=" + strings.Join(known, ",")}, analyzerEnv(ctx)...)
+}
+
 // reconcileCallGraph returns the call graph Reachability reconciles paths against, built from load
-// once per tree per scan through the run cache. The program load reads the process environment, so
-// that is part of the key. Reflection's calls are bounded per advisory (withholdForReflectReach), so
-// the graph does not declare them run-wide.
-func reconcileCallGraph(ctx context.Context, buildDir string, load func() (*LoadResult, error)) (reconcileGraph, error) {
-	b, err := runCached(ctx, "reconcile", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		loaded, err := load()
-		if err != nil {
-			return nil, err
+// once per tree per scan through the run cache. Reflection's calls are bounded per advisory
+// (withholdForReflectReach), so the graph does not declare them run-wide. The compute that stores the
+// graph then stores its summary (reconcileSummaryGraph): the edges entry, then the marker, then the
+// summary, each through a rename and each only once the one before it is stored. known is as
+// reflectReachOf takes it.
+func reconcileCallGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+	dir := RunCacheDir(ctx)
+	key := reconcileKey(ctx, buildDir, known)
+	if dir != "" {
+		if b, err := os.ReadFile(runCachePath(dir, "reconcile", key)); err == nil {
+			return decodeReconcileGraph(b)
 		}
-		cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
-		if err != nil {
-			return nil, err
-		}
-		reasons, reach, err := reflectReachOf(loaded)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range reasons {
-			if declaredRunWide(r) {
-				cg.Partiality = withReason(cg.Partiality, r)
-			}
-		}
-		return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
-	})
+	}
+	b, err := computeReconcileGraph(load, known)
 	if err != nil {
 		return reconcileGraph{}, err
 	}
+	if dir == "" {
+		return decodeReconcileGraph(b)
+	}
+	return storeReconcileGraph(dir, key, b)
+}
+
+// storeReconcileGraph decodes the graph one compute encoded as b and stores it in the run cache in
+// dir under key: the edges entry, then its summary.
+func storeReconcileGraph(dir string, key []string, b []byte) (reconcileGraph, error) {
+	g, err := decodeReconcileGraph(b)
+	if err != nil {
+		return reconcileGraph{}, err
+	}
+	if writeRunCacheEntry(dir, "reconcile", runCachePath(dir, "reconcile", key), b) {
+		storeReconcileSummary(dir, key, g)
+	}
+	return g, nil
+}
+
+// computeReconcileGraph builds the reconcile graph from load and encodes it as the edges entry holds it.
+func computeReconcileGraph(load func() (*LoadResult, error), known []string) ([]byte, error) {
+	loaded, err := load()
+	if err != nil {
+		return nil, err
+	}
+	cg, err := callGraphDeclaring(loaded, "vta", declaredRunWide)
+	if err != nil {
+		return nil, err
+	}
+	reasons, reach, err := reflectReachOf(loaded, known)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range reasons {
+		if declaredRunWide(r) {
+			cg.Partiality = withReason(cg.Partiality, r)
+		}
+	}
+	return json.Marshal(reconcileGraph{CallGraph: cg, ReflectReach: reach})
+}
+
+func decodeReconcileGraph(b []byte) (reconcileGraph, error) {
 	var g reconcileGraph
 	if err := json.Unmarshal(b, &g); err != nil {
 		return reconcileGraph{}, fmt.Errorf("decode cached call graph: %w", err)
 	}
 	return g, nil
+}
+
+// storeReconcileSummary stores g's summary under a fresh compute id: the marker first, then the
+// summary, so a summary the marker names was written after the edges entry of the same compute.
+func storeReconcileSummary(dir string, key []string, g reconcileGraph) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return
+	}
+	id := hex.EncodeToString(raw[:])
+	s, err := json.Marshal(reconcileSummary{ID: id, Partiality: g.CallGraph.Partiality, ReflectReach: g.ReflectReach})
+	if err != nil {
+		return
+	}
+	if writeRunCacheEntry(dir, "reconcile-marker", runCachePath(dir, "reconcile-marker", key), []byte(id)) {
+		writeRunCacheEntry(dir, "reconcile-summary", runCachePath(dir, "reconcile-summary", key), s)
+	}
+}
+
+// reconcileSummaryGraph returns the reconcile graph without its edges, for a result with no path.
+// It reads the summary when the marker names it and the edges entry is present, and otherwise falls
+// back to the whole graph.
+func reconcileSummaryGraph(ctx context.Context, buildDir string, known []string, load func() (*LoadResult, error)) (reconcileGraph, error) {
+	if dir := RunCacheDir(ctx); dir != "" {
+		if s, ok := readReconcileSummary(dir, reconcileKey(ctx, buildDir, known)); ok {
+			return reconcileGraph{CallGraph: plugin.CallGraphResult{Partiality: s.Partiality}, ReflectReach: s.ReflectReach}, nil
+		}
+	}
+	return reconcileCallGraph(ctx, buildDir, known, load)
+}
+
+// readReconcileSummary returns the cached summary for key, and whether it can be trusted: it decodes,
+// the marker holds its id, and the edges entry is present.
+func readReconcileSummary(dir string, key []string) (reconcileSummary, bool) {
+	b, err := os.ReadFile(runCachePath(dir, "reconcile-summary", key))
+	if err != nil {
+		return reconcileSummary{}, false
+	}
+	var s reconcileSummary
+	if err := json.Unmarshal(b, &s); err != nil {
+		return reconcileSummary{}, false
+	}
+	marker, err := os.ReadFile(runCachePath(dir, "reconcile-marker", key))
+	if err != nil || s.ID == "" || string(marker) != s.ID {
+		return reconcileSummary{}, false
+	}
+	if _, err := os.Stat(runCachePath(dir, "reconcile", key)); err != nil {
+		return reconcileSummary{}, false
+	}
+	return s, true
 }
 
 // --- LOCAL structs for govulncheck's -json stream schema ---
@@ -993,6 +1335,8 @@ type vulnScan struct {
 	imports     map[string][]string
 	symbols     map[string][]string
 	wholeModule map[string]bool
+	// partial is the partial run the stream came from, or nil for a run over the whole build.
+	partial *partialRun
 }
 
 // vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols
@@ -1005,6 +1349,17 @@ func (s vulnScan) vulnerableSymbols(module string) map[string][]string {
 		out[p] = s.symbols[p]
 	}
 	return out
+}
+
+// countingPackages returns the packages of module whose reach withholds a refutation of it: its
+// vulnerable packages (vulnerablePackages), or none, standing for every package of module, when an
+// OSV entry lists module with no packages or no entry lists it at all. Findings alone name only the
+// packages the build traced, never all the vulnerable ones.
+func (s vulnScan) countingPackages(module string) []string {
+	if s.wholeModule[module] || len(s.imports[module]) == 0 {
+		return nil
+	}
+	return s.vulnerablePackages(module)
 }
 
 // vulnerablePackages returns the advisory's vulnerable packages in module: those its OSV entries
@@ -1117,6 +1472,7 @@ func findingsToStacks(findings []vulnFinding) []CallStack {
 			}
 			frames = append(frames, StackFrame{
 				SCIP:    frameSCIP(fr),
+				Package: fr.Package,
 				IsEntry: i == len(f.Trace)-1,
 			})
 		}
@@ -1139,6 +1495,9 @@ func compareStacks(a, b CallStack) int {
 	for i := range a.Frames {
 		fa, fb := a.Frames[i], b.Frames[i]
 		if c := strings.Compare(fa.SCIP, fb.SCIP); c != 0 {
+			return c
+		}
+		if c := strings.Compare(fa.Package, fb.Package); c != 0 {
 			return c
 		}
 		if fa.IsEntry != fb.IsEntry {

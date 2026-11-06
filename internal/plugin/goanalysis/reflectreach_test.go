@@ -74,6 +74,7 @@ func TestReconciledResult_WithholdsForReflectReach(t *testing.T) {
 // used as a value is reached once reflect's Call is live or a dynamic call matches its signature, and
 // an exported method once reflect's MethodByName is live; neither is reached without them.
 func TestReflectReachOf(t *testing.T) {
+	t.Parallel()
 	const hidden = "func hidden(n int8) string { vulnmod.Bad(); return \"\" }\n\n"
 	const hook = "type S struct{}\n\nfunc (S) Hook() { vulnmod.Bad() }\n\n"
 	main := func(imports, body string) string {
@@ -124,7 +125,7 @@ func TestReflectReachOf(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, reach, err := reflectReachOf(load)
+			_, reach, err := reflectReachOf(load, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,16 +169,21 @@ func TestWithholdForReflectReach_UnknownReach(t *testing.T) {
 }
 
 // TestReflectReachOf_IllTyped: the whole-program build makes no bodies for a package that does not
-// type-check, so what reflection reaches through one is unknown.
+// type-check, so what reflection reaches through one is unknown, unless a partial run could not load
+// that package and reads the reach only outside what imports it.
 func TestReflectReachOf_IllTyped(t *testing.T) {
 	main := "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n"
+	illTyped := "package vulnmod\n\nfunc Safe() { var x int = \"s\"; _ = x }\n\nfunc Bad() {}\n"
 	for _, tc := range []struct {
 		name    string
 		vulnmod string
+		known   []string
 		unknown bool
 	}{
-		{"every package type-checks", "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n", false},
-		{"a dependency does not type-check", "package vulnmod\n\nfunc Safe() { var x int = \"s\"; _ = x }\n\nfunc Bad() {}\n", true},
+		{"every package type-checks", "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n", nil, false},
+		{"a dependency does not type-check", illTyped, nil, true},
+		{"a partial run could not load it", illTyped, []string{"example.com/vulnmod"}, false},
+		{"a partial run could not load another", illTyped, []string{"example.com/other"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTree(t, merge(reflectBase, map[string]string{"main.go": main, "_vulnmod/vulnmod.go": tc.vulnmod}))
@@ -185,7 +191,7 @@ func TestReflectReachOf_IllTyped(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, reach, _ := reflectReachOf(load); (reach == nil) != tc.unknown {
+			if _, reach, _ := reflectReachOf(load, tc.known); (reach == nil) != tc.unknown {
 				t.Errorf("reflectReachOf reach unknown = %v, want %v", reach == nil, tc.unknown)
 			}
 		})
@@ -236,7 +242,7 @@ func reconcileFor(t *testing.T, files map[string]string, scanned vulnScan, entry
 		t.Fatal(err)
 	}
 	loadFn := func() (*LoadResult, error) { return load, nil }
-	g, err := reconcileCallGraph(context.Background(), dir, loadFn)
+	g, err := reconcileCallGraph(context.Background(), dir, nil, loadFn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +259,7 @@ func reconcileFor(t *testing.T, files map[string]string, scanned vulnScan, entry
 // refutation stands and nothing declares reflection:call, so a program that runs templates or
 // reflection and never calls the vulnerable symbol keeps its not_exploitable ground.
 func TestReconciledResult_ReflectAdmission(t *testing.T) {
+	t.Parallel()
 	const imports = "package main\n\nimport (\n\t\"os\"\n\t\"reflect\"\n\t\"text/template\"\n\n\t\"example.com/vulnmod\"\n)\n\nvar _, _, _ = os.Stdout, reflect.TypeOf, template.New\n\n"
 	cases := []struct{ name, main string }{
 		{"a value reflect builds from an interface method's parameter type",
@@ -298,6 +305,7 @@ func TestReconciledResult_ReflectAdmission(t *testing.T) {
 		for _, callee := range []string{"Bad", "Safe"} {
 			withheld := callee == "Bad"
 			t.Run(tc.name+"/"+callee, func(t *testing.T) {
+				t.Parallel()
 				_, res := reconcileFor(t, map[string]string{"main.go": strings.ReplaceAll(tc.main, "CALLEE", callee)}, vulnmodFinding, plugin.LibraryEntrypoints{})
 				if got := res.Refutation == nil; got != withheld {
 					t.Fatalf("refutation withheld = %v, want %v (result %+v)", got, withheld, res)

@@ -51,6 +51,9 @@ func poetryLockOf(flask string) string {
 	return "[[package]]\nname = \"flask\"\nversion = \"" + flask + "\"\n"
 }
 
+// poetryProject is the pyproject.toml a poetry.lock sits beside, declaring only the main group.
+const poetryProject = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
 func lockWithLeftPads(top, nested string) string {
 	return `{
   "name": "app",
@@ -102,10 +105,12 @@ func TestDisqualify_EveryResolvedVersion(t *testing.T) {
 			"package-lock.json": lockWithLeftPads("1.4.0", "1.5.0"),
 		}, want: true},
 		{name: "pypi: one service lock patched, another affected", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
-			"poetry.lock": poetryLockOf("2.3.2"), "worker/poetry.lock": poetryLockOf("2.3.1"),
+			"poetry.lock": poetryLockOf("2.3.2"), "pyproject.toml": poetryProject,
+			"worker/poetry.lock": poetryLockOf("2.3.1"), "worker/pyproject.toml": poetryProject,
 		}, want: false},
 		{name: "pypi: every service lock patched", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
-			"poetry.lock": poetryLockOf("2.3.2"), "worker/poetry.lock": poetryLockOf("2.3.3"),
+			"poetry.lock": poetryLockOf("2.3.2"), "pyproject.toml": poetryProject,
+			"worker/poetry.lock": poetryLockOf("2.3.3"), "worker/pyproject.toml": poetryProject,
 		}, want: true},
 		{name: "pypi: every requirements pin patched, nothing locked", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
 			"requirements.txt": "flask==2.3.2\n", "worker/requirements.txt": "flask==2.3.3\n",
@@ -285,5 +290,54 @@ func TestMaliciousPresence_NestedCopyBesideAClean(t *testing.T) {
 	res, ok := queryMaliciousPresence(t, store, c.ID)
 	if !ok || !res.Present || res.MatchedVersion != "1.3.0" {
 		t.Fatalf("presence = %+v (emitted=%v), want present at 1.3.0", res, ok)
+	}
+}
+
+// TestDisqualify_AlsoPresentToolchainFloor: a toolchain version known only as a floor (the go
+// directive with no toolchain line) cannot be below an introduced bound, so a present stdlib
+// package refutes only on its upper bounds. Without that the advisory is disqualified while the
+// toolchain that actually builds is affected.
+func TestDisqualify_AlsoPresentToolchainFloor(t *testing.T) {
+	xnet := map[string]any{"module": "golang.org/x/net", "affected_ranges": []map[string]any{{"upper_exclusive": "v0.38.0", "scheme": "gomod"}}}
+	toolchainPkg := func(coord string) map[string]any {
+		return map[string]any{"coordinate": coord, "affected_ranges": []map[string]any{
+			{"lower_inclusive": "1.24.0", "upper_exclusive": "1.24.4", "scheme": "go-toolchain"},
+		}}
+	}
+	for _, tc := range []struct {
+		name      string
+		coord     string
+		stdlibVer string
+		toolchain ToolchainFact
+		want      bool
+	}{
+		{"floor below the introduced bound", "stdlib", "1.23.0",
+			ToolchainFact{Version: "go1.23.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, false},
+		{"exact version below the introduced bound", "stdlib", "1.23.0",
+			ToolchainFact{Version: "go1.23.0", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared}, true},
+		{"floor past the fix", "stdlib", "1.24.4",
+			ToolchainFact{Version: "go1.24.4", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, true},
+		{"floor inside the range", "stdlib", "1.24.2",
+			ToolchainFact{Version: "go1.24.2", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, false},
+		{"toolchain coordinate, floor below the introduced bound", "toolchain", "1.23.0",
+			ToolchainFact{Version: "go1.23.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			const caseID = "case-floor"
+			putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
+				"language": "go", "selected_module": "golang.org/x/net", "toolchain": tc.toolchain,
+				"also_present": []map[string]any{{"coordinate": tc.coord, "versions": []string{tc.stdlibVer}, "complete": true}},
+			})
+			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
+				"module": "golang.org/x/net", "affected_packages": []map[string]any{xnet, toolchainPkg(tc.coord)},
+			})
+			rngs := []affectedRange{{UpperExclusive: "v0.38.0", Scheme: "gomod"}}
+			axis := versionAxis{Versions: []string{"v0.40.0"}, Complete: true}
+			got, reason := disqualifyEvery(rngs, true, axis, true, extractAlsoPresent(store, caseID), "", false, TrustFirstParty)
+			if got != tc.want {
+				t.Fatalf("disqualified = %v (%s), want %v", got, reason, tc.want)
+			}
+		})
 	}
 }

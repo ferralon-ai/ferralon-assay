@@ -179,6 +179,11 @@ type Package struct {
 	// build compiles that module's code under Name. Empty when not replaced or replaced by a
 	// directory.
 	Replace string `json:"replace,omitempty"`
+	// NotInstalled marks a package a lockfile declares that every install the build is known to
+	// run leaves out (plugin.DependencyNode.NotInstalled). Version is still the declared pin.
+	// It says this lock entry is not what the build installs, not that no copy of the package is
+	// present: a tool the environment seeds, such as pip, may still be there at another version.
+	NotInstalled bool `json:"not_installed,omitempty"`
 }
 
 // Label is the package as a finding row names it: name@version for a resolved package. A
@@ -238,6 +243,9 @@ type SBOM struct {
 	GoBuildList string `json:"go_build_list,omitempty"`
 	// GoMainModule is the path of the module GoBuildList was resolved for; set with it.
 	GoMainModule string `json:"go_main_module,omitempty"`
+	// GoWorkspaceModules are the go.work's other main modules when GoBuildList was resolved under one;
+	// set with it.
+	GoWorkspaceModules []string `json:"go_workspace_modules,omitempty"`
 }
 
 // Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are
@@ -677,6 +685,12 @@ type AdvisoryFinding struct {
 	UndeterminedReason string `json:"undetermined_reason,omitempty"`
 	// Evidence is the compact grounds behind the verdict (see EvidenceSummary).
 	Evidence EvidenceSummary `json:"evidence"`
+	// Annotations are the assumptions the analysis made in reaching this verdict, whatever it is:
+	// something it found and did not count, such as an install command in a file nothing in the
+	// build runs. Each is the plugin's own (Reason starts with plugin.AnnotationAssumptionPrefix),
+	// and each also reaches the scan's Partiality as a note. Unlike Evidence.Assumptions, which are
+	// the caller's declarations, these are the analysis's, and they qualify every verdict.
+	Annotations []plugin.Annotation `json:"annotations,omitempty"`
 	// Priority is the EPSS/KEV prioritization context for this advisory, from the signals
 	// file the run was given, each value carrying its own stamp (see Priority). Nil when
 	// the run had no signals or the file had no stamped value for the advisory's id or
@@ -711,6 +725,31 @@ type Provenance struct {
 	// Nil on a Report built without it (additive; a reader that predates the field is
 	// unaffected). See IntelProvenance.
 	Intel *IntelProvenance `json:"intel,omitempty"`
+	// Timings records how long this pass took. Nil on a Report built without it (additive). It is
+	// operational disclosure, never a verdict input: no finding depends on it, and two runs with
+	// identical findings will differ here.
+	Timings *RunTimings `json:"timings,omitempty"`
+}
+
+// RunTimings is the wall time of one scan pass: end to end, and per pipeline stage summed over
+// every advisory the pass assessed. The gap between WallSeconds and the stage sum is the work done
+// outside the per-advisory pipeline (acquisition, work-set resolution, publication).
+type RunTimings struct {
+	// WallSeconds is the elapsed time from the start of the run mode to the publication of this
+	// Report.
+	WallSeconds float64 `json:"wall_seconds"`
+	// Stages lists each pipeline stage in the order it first ran.
+	Stages []StageTiming `json:"stages,omitempty"`
+}
+
+// StageTiming is one pipeline stage's accumulated wall time over a pass.
+type StageTiming struct {
+	// Stage is the pipeline stage name (e.g. "reachability_ingress").
+	Stage string `json:"stage"`
+	// Runs is how many times the stage ran — once per advisory that reached it.
+	Runs int `json:"runs"`
+	// Seconds is the stage's total wall time across those runs.
+	Seconds float64 `json:"seconds"`
 }
 
 // IntelProvenance records the intel inputs a scan pass actually used: which set of
@@ -868,6 +907,11 @@ type PartialityNote struct {
 	// limit) and the location inside it. Disclosure only, and part of the note's identity.
 	Package string `json:"package,omitempty"`
 	Path    string `json:"path,omitempty"`
+	// Targets bounds which packages the limit could hide, as PURLs without a version: a reader
+	// applies it only to a row whose package could be one of them. Empty (nil or []) is unbounded,
+	// which applies to every row, and is what every note carried before the field existed. Not
+	// part of the note's identity: notes merged on it keep the widest bound (Builder.Build).
+	Targets []string `json:"targets,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report
@@ -968,6 +1012,11 @@ const (
 	// reported nothing about the advisory at all. It may not know the advisory, or may never have
 	// analyzed the affected module. Its silence is not a search that came back empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// ReasonRefutationWithheld: the analysis ran and found no path to the advisory's vulnerable
+	// code, but code that search did not cover may reach it (files the build left out, methods it
+	// never started from, importers of a library package, calls made through reflection), so the
+	// refutation was withheld. The scan-level PartialityNote list names which.
+	ReasonRefutationWithheld = "refutation_withheld"
 	// ReasonAdvisoryRangeAbsent: a path reaches the advisory's vulnerable code, but the advisory
 	// records no affected version range the version axis can bound, so it was admitted at every installed
 	// version and nothing establishes that this version is affected. The path stays on the finding
@@ -987,6 +1036,12 @@ const (
 	// the row says nothing about the codebase. As a scan-level note it names the cause, how many
 	// advisories were not assessed, and how to give the scan more time.
 	ReasonScanCutShort = "scan_cut_short"
+	// ReasonDependencyNotFetched: the advisory was last assessed on a run that read less of the
+	// dependency code its lock pins (the fetch fell back, or a registry failed some packages),
+	// and no run that read it has assessed the advisory since. The verdict that run reached rests
+	// on code it did not read, so it is not kept. As a scan-level note, scoped to the package
+	// ecosystem, it says that rows were withheld for this reason.
+	ReasonDependencyNotFetched = "dependency_not_fetched"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is
@@ -1048,6 +1103,12 @@ type Report struct {
 	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
 }
 
+// SetAdvisories replaces the findings of a built Report, ordered as Build orders them.
+func (r *Report) SetAdvisories(adv []AdvisoryFinding) {
+	r.Advisories = append([]AdvisoryFinding(nil), adv...)
+	sortFindings(r.Advisories)
+}
+
 // AddPartiality records notes on a built Report, classified, de-duplicated and sorted as
 // Builder.AddPartiality and Build would have them.
 func (r *Report) AddPartiality(notes ...PartialityNote) {
@@ -1068,9 +1129,15 @@ const (
 )
 
 // PartialReasonDependencyCodeUnavailable is the scan-level reason a JS scan carries when a fetch
-// failed and it read no dependency code. It is plugin.PartialReasonToolFailure narrowed the way
+// failed and it read no dependency code. A scan whose registry served some packages and failed
+// others reads what it fetched and does not carry it; each package it could not fetch is withheld
+// on its own. It is plugin.PartialReasonToolFailure narrowed the way
 // the JVM lane narrows it to build_graph_absent: the step that did not run is the dependency
 // code read, whatever stopped it (the registry, a credential, the deadline).
+//
+// The note is stored with the Report, and a cve-watch earnest run carries it into its own Report
+// with the rest of the stored partiality: it re-assesses only some rows, so the rest are still the
+// verdicts the run that fell back reached. Only a baseline, which rebuilds every row, drops it.
 const PartialReasonDependencyCodeUnavailable = plugin.PartialReasonToolFailure + ":dependency_code_unavailable"
 
 // DependencyCode is the provenance of the dependency code a JS scan read.

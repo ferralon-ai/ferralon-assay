@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -95,7 +96,7 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		parsed[l] = info
 		all = append(all, info.deps...)
 	}
-	unread, scriptWithheld := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
+	unread, scriptWithheld, unrecognised, inactive := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
 	parseFailed = parseFailed || unread
 
 	part := plugin.Complete()
@@ -106,14 +107,17 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		// as "not a dependency".
 		all = declaredDependencies(req.BuildDir)
 		part = plugin.Partial(plugin.PartialReasonNoManifest)
+	case parseFailed && unrecognised != "":
+		part = plugin.Partial(plugin.PartialReasonToolFailure, plugin.PartialReasonUnrecognisedInstallSurface+":"+unrecognised)
 	case parseFailed:
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
 	res := plugin.DependencyVersionResult{
-		Partiality: part,
-		All:        all,
-		Exhaustive: exhaustiveLockSet(req.BuildDir, req.Coordinate, parsed, lockFailed) && !scriptWithheld,
+		Partiality:  part,
+		All:         all,
+		Exhaustive:  exhaustiveLockSet(req.BuildDir, req.Coordinate, parsed, lockFailed) && !scriptWithheld,
+		Annotations: scriptsurface.Annotations(inactive),
 	}
 	want := normalizeNPMCoordinate(req.Coordinate)
 	installs := append(all[:len(all):len(all)], copies...)

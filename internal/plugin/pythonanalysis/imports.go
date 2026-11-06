@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"context"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -411,7 +412,7 @@ func firstPartyTops(modules []string) map[string]bool {
 // read by the coverage check (ManifestCandidates): a name only that file holds is missing, so
 // an import of it reaches no boundary node. read is false when a manifest cannot be read at
 // all.
-func declaredDistributions(buildDir string) (names map[string]bool, complete, read bool) {
+func declaredDistributions(ctx context.Context, buildDir string) (names map[string]bool, complete, read bool) {
 	names, complete, read = map[string]bool{}, true, true
 	add := func(deps []plugin.ResolvedDependency) {
 		for _, d := range deps {
@@ -420,7 +421,7 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete, re
 			}
 		}
 	}
-	manifests, unread, _, _, _, tooling, _, _, _ := versionSurfaces(buildDir)
+	manifests, unread, _, _, _, tooling, _, _, _ := versionSurfacesCached(ctx, buildDir)
 	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
 	for n := range tooling {
 		names[n] = true // the build may hold it as surely as if a manifest declared it

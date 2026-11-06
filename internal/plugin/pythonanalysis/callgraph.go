@@ -1004,6 +1004,11 @@ func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s}
 // the (name, arity) → SCIP resolution index. A missing/empty build dir is a hard error
 // (inv.4), matching IndexSymbols; read failures and skipped constructs degrade partiality.
 func loadProgram(buildDir string) (*program, error) {
+	return loadProgramCtx(context.Background(), buildDir)
+}
+
+// loadProgramCtx is loadProgram reading the tree's manifests through the run cache in ctx.
+func loadProgramCtx(ctx context.Context, buildDir string) (*program, error) {
 	info, err := os.Stat(buildDir)
 	if err != nil {
 		return nil, fmt.Errorf("pythonanalysis: stat build dir %q: %w", buildDir, err)
@@ -1153,7 +1158,7 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
-	declared, declaredComplete, read := declaredDistributions(buildDir)
+	declared, declaredComplete, read := declaredDistributions(ctx, buildDir)
 	if !read {
 		prog.readFailed = true
 	}
@@ -1397,7 +1402,7 @@ type treeGraph struct {
 // partiality inside Graph, into every replay.
 func treeGraphOf(ctx context.Context, buildDir string) (treeGraph, error) {
 	return cachedResult(ctx, "callgraph", []string{buildDir}, func() (treeGraph, error) {
-		prog, err := loadProgram(buildDir)
+		prog, err := loadProgramCtx(ctx, buildDir)
 		if err != nil {
 			return treeGraph{}, err
 		}

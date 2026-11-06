@@ -43,25 +43,25 @@ func TestRunCacheOpsReplayWithoutComputing(t *testing.T) {
 	}{
 		{"call graph", func(ctx context.Context) (any, error) {
 			return CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
-		}, []string{"callgraph"}},
+		}, []string{"callgraph", "versurf"}},
 		{"find ingresses", func(ctx context.Context) (any, error) {
 			return FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
-		}, []string{"ingress"}},
+		}, []string{"ingress", "versurf"}},
 		{"index symbols", func(ctx context.Context) (any, error) {
 			return IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: dir})
 		}, []string{"index"}},
 		{"reachability", func(ctx context.Context) (any, error) {
 			return Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{sink}})
-		}, []string{"callgraph", "ingress", "reachability"}},
+		}, []string{"callgraph", "ingress", "reachability", "versurf"}},
 		{"reachability without symbols", func(ctx context.Context) (any, error) {
 			return Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir})
-		}, []string{"callgraph", "ingress", "reachability"}},
+		}, []string{"callgraph", "ingress", "reachability", "versurf"}},
 		{"resolve first party", func(ctx context.Context) (any, error) {
 			return ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{BuildDir: dir, AdvisorySymbols: []string{"open_conn"}})
 		}, []string{"index", "resolve"}},
 		{"resolve dependency", func(ctx context.Context) (any, error) {
 			return ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.encode"}})
-		}, []string{"index", "resolve", "callgraph"}},
+		}, []string{"index", "resolve", "callgraph", "versurf"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

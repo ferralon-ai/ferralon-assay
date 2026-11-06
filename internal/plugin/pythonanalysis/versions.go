@@ -75,7 +75,7 @@ import (
 // "plugin resolves, pipeline ranges" symmetry: this op resolves only the concrete installed
 // literal version. Advisory RANGE matching (PEP 440 specifiers, ordering) is applied by the
 // pipeline disqualification predicate (pipeline/pypi_version.go), never here.
-func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
 		return plugin.DependencyVersionResult{}, fmt.Errorf("pythonanalysis: stat build dir %q: %w", req.BuildDir, err)
@@ -89,11 +89,11 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		origins []manifestOrigin
 	)
 	want := normalizePyCoordinate(req.Coordinate)
-	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfacesCached(ctx, req.BuildDir)
 	if tooling[want] {
 		parseFailed, scriptWithheld = true, true
 	}
-	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
+	copies, copyOrigins, copiesRead := installedCopiesCached(ctx, req.BuildDir)
 	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
 		deps, o, ok := parseManifest(m)

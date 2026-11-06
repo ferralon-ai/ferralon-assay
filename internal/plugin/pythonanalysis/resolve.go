@@ -31,6 +31,11 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		return plugin.SymbolResolutionResult{}, err
 	}
 
+	// No wanted symbol means no branch below can resolve one.
+	if !slices.ContainsFunc(req.AdvisorySymbols, func(s string) bool { return strings.TrimSpace(s) != "" }) {
+		return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
+	}
+
 	wanted := make(map[string]bool, len(req.AdvisorySymbols))
 	for _, s := range req.AdvisorySymbols {
 		wanted[strings.TrimSpace(s)] = true

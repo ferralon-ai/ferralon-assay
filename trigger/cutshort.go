@@ -24,6 +24,12 @@ func analysisOr(analysis, ctx context.Context) context.Context {
 	return pipeline.WithNestedModuleMemo(analysis)
 }
 
+// scanOptions is opts with one inventory memo for the scan that calls it, so the advisories of a
+// scan share their checkout-constant reads. Call it once per scan, over the one checkout it assesses.
+func scanOptions(opts []pipeline.AssessOption) []pipeline.AssessOption {
+	return append(opts[:len(opts):len(opts)], pipeline.WithInventoryMemo(pipeline.NewInventoryMemo()))
+}
+
 // assessWithin runs one advisory's assessment under analysis and reports stopped when the scan
 // stopped before the assessment returned. A stopped assessment's result is discarded whether it
 // succeeded or failed: a stage may swallow the cancellation and return a result built on work it

@@ -960,8 +960,15 @@ runs:
           args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
         fi
 
-        # The marker dates the launch, so the outputs below name only files this run wrote.
-        scan_marker="$(mktemp "$RUNNER_TEMP/scan-start.XXXXXX")"
+        # The outputs below name only files this run wrote: one this run wrote has a different mtime
+        # from the one it had before the launch, kept here on a reference file. Compared for a
+        # change, not for order, as a clock stepped back during the scan dates a new file earlier.
+        scan_refs="$(mktemp -d "$RUNNER_TEMP/scan-refs.XXXXXX")"
+        for f in report.json report.sarif.json; do
+          if [ -f "$IN_OUT/$f" ]; then
+            touch -r "$IN_OUT/$f" "$scan_refs/$f"
+          fi
+        done
 
         # On a job timeout or cancellation the runner signals this shell, not the scanner, and
         # bash runs a trap only once its foreground child exits. So the scanner runs in the
@@ -1018,11 +1025,15 @@ runs:
         # Set on every exit, stopped or failed, but only for files this run wrote, so an always()
         # step never gets a path to a missing file or to one an earlier run left in `out`.
         OUT_ABS="$(cd "$IN_OUT" && pwd)"
-        if [ -f "$OUT_ABS/report.json" ] && [ ! "$OUT_ABS/report.json" -ot "$scan_marker" ]; then
+        wrote() {
+          [ -f "$OUT_ABS/$1" ] && { [ ! -e "$scan_refs/$1" ] || [ "$OUT_ABS/$1" -nt "$scan_refs/$1" ] || [ "$OUT_ABS/$1" -ot "$scan_refs/$1" ]; }
+        }
+        if wrote report.json; then
           echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
         fi
-        if [ -f "$OUT_ABS/report.sarif.json" ] && [ ! "$OUT_ABS/report.sarif.json" -ot "$scan_marker" ]; then
+        if wrote report.sarif.json; then
           echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
         fi
-        rm -f "$scan_marker"
+        rm -f "$scan_refs/report.json" "$scan_refs/report.sarif.json"
+        rmdir "$scan_refs"
         exit "$rc"

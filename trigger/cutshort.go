@@ -44,6 +44,7 @@ func assessWithin(analysis context.Context, areq assessment.Request, opts ...pip
 		return nil, "", true, nil
 	}
 	observePhase(analysis, "advisory", start)
+	observeAdvisory(analysis, areq.Vulnerability.ID, start)
 	return st, assessmentID, false, err
 }
 

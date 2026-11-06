@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -27,18 +28,27 @@ func TestBaseline_Timing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, analysis := stoppingOptions(t, tc.stopAt, tc.mode)
 			got := map[string]int{}
+			var ids []string
 			_, err := buildBaselineReport(context.Background(), BaselineRequest{
 				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
 				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
 				Advisories:    cutShortCorpus,
 				AssessOptions: opts,
-				Analysis:      WithTiming(analysis, func(phase string, _ time.Duration) { got[phase]++ }),
+				Analysis: WithAdvisoryTiming(
+					WithTiming(analysis, func(phase string, _ time.Duration) { got[phase]++ }),
+					func(id string, _ time.Duration) { ids = append(ids, id) }),
 			})
 			if err != nil {
 				t.Fatalf("buildBaselineReport: %v", err)
 			}
 			if !maps.Equal(got, tc.want) {
 				t.Fatalf("phases observed = %v, want %v", got, tc.want)
+			}
+			if len(ids) != tc.want["advisory"] {
+				t.Fatalf("advisory ids observed = %v, want %d of them", ids, tc.want["advisory"])
+			}
+			if tc.name == "finished" && !slices.Equal(ids, []string{"GO-T-1", "GO-T-2", "GO-T-3"}) {
+				t.Fatalf("advisory ids = %v, want the corpus ids in order", ids)
 			}
 		})
 	}

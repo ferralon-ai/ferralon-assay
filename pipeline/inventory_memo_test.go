@@ -192,3 +192,71 @@ func TestInventoryMemo_UnsettledAnswersAreNotKept(t *testing.T) {
 		}
 	})
 }
+
+// failFirstGit puts a git on PATH that fails the first invocation whose arguments contain match
+// and runs the real one otherwise, standing in for a transient git failure.
+func failFirstGit(t *testing.T, match string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	bin, flag := t.TempDir(), filepath.Join(t.TempDir(), "failed")
+	script := "#!/bin/sh\ncase \"$*\" in *'" + match + "'*)\n  if [ ! -e '" + flag + "' ]; then : > '" + flag + "'; echo transient >&2; exit 1; fi;;\nesac\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestInventoryMemo_GitErrorIsNotKept: a git read that fails inside an answer affects only the
+// caller that hit it; the next caller asks again and gets the real answer.
+func TestInventoryMemo_GitErrorIsNotKept(t *testing.T) {
+	t.Run("root package tag lookup", func(t *testing.T) {
+		tree, _ := filepath.EvalSymlinks(writeTree(t, map[string]string{"go.mod": "module example.com/target\n\ngo 1.22\n"}))
+		gitTree(t, tree, "v1.2.3")
+		failFirstGit(t, "--points-at")
+		memo := NewInventoryMemo()
+		if got, _ := memo.readRootPackage(context.Background(), tree, checkout.LangGo); got.Version != "" {
+			t.Fatalf("first read with a failing git = %+v; want no version", got)
+		}
+		if got, ok := memo.readRootPackage(context.Background(), tree, checkout.LangGo); !ok || got.Version != "v1.2.3" {
+			t.Errorf("second read = %+v, %v; want version v1.2.3 (the failure was cached)", got, ok)
+		}
+	})
+	t.Run("bazel workspace above the module", func(t *testing.T) {
+		tree, _ := filepath.EvalSymlinks(writeTree(t, map[string]string{
+			"MODULE.bazel": "module(name = \"top\")\n",
+			"sub/go.mod":   "module example.com/target\n\ngo 1.22\n",
+		}))
+		gitTree(t, tree)
+		failFirstGit(t, "--show-toplevel")
+		memo := NewInventoryMemo()
+		root := filepath.Join(tree, "sub")
+		if memo.bazelWorkspaceAbove(root) {
+			t.Fatal("first answer with a failing git = true; want false")
+		}
+		if !memo.bazelWorkspaceAbove(root) {
+			t.Error("second answer = false; want true (the undetermined answer was cached)")
+		}
+	})
+}
+
+// TestInventoryMemo_RootPackageIsKeyedByLanguage: one directory read as two languages gives each
+// its own root package.
+func TestInventoryMemo_RootPackageIsKeyedByLanguage(t *testing.T) {
+	tree, _ := filepath.EvalSymlinks(writeTree(t, map[string]string{
+		"go.mod":       "module example.com/target\n\ngo 1.22\n",
+		"package.json": "{\"name\":\"npm-target\",\"version\":\"1.0.0\"}\n",
+	}))
+	gitTree(t, tree, "v1.2.3")
+	memo := NewInventoryMemo()
+	ctx := context.Background()
+	goPkg, goOK := memo.readRootPackage(ctx, tree, checkout.LangGo)
+	jsPkg, jsOK := memo.readRootPackage(ctx, tree, checkout.LangJS)
+	wantGo, _ := ReadRootPackage(ctx, tree, checkout.LangGo)
+	wantJS, _ := ReadRootPackage(ctx, tree, checkout.LangJS)
+	if !goOK || !jsOK || !reflect.DeepEqual(goPkg, wantGo) || !reflect.DeepEqual(jsPkg, wantJS) || reflect.DeepEqual(goPkg, jsPkg) {
+		t.Errorf("go = %+v, js = %+v; want %+v and %+v", goPkg, jsPkg, wantGo, wantJS)
+	}
+}

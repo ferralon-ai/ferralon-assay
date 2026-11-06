@@ -18,9 +18,10 @@ import (
 // sound while that tree does not change. It is meant to live for one scan over one checkout, as
 // plugin.Memoize is; never share one across scans or keep one after the checkout is rewritten.
 //
-// A call that fails is not cached, and neither is one that ran under a cancelled context, since a
-// cancelled git subprocess is indistinguishable from a tree with nothing to report. The next caller
-// retries it exactly as it would without the memo. The zero value is ready to use, and a nil
+// A call that fails is not cached. Neither is one that absorbed a failed git read into its answer
+// (an unknown version, the checkout root for the repository's top-level, no Bazel marker) or ran under
+// a cancelled context: a failed git read is indistinguishable from a tree with nothing to report. The
+// next caller retries it exactly as it would without the memo. The zero value is ready to use, and a nil
 // *InventoryMemo reads through to the underlying call.
 type InventoryMemo struct {
 	vendored   memoTable[string, checkout.WorkspacePlan]
@@ -136,9 +137,9 @@ func (m *InventoryMemo) goWorkspace(ctx context.Context, buildDir, checkoutRoot,
 	}
 	var runErr error
 	ws := m.workspace.do(workspaceKey{buildDir, checkoutRoot, declared}, func() (GoWorkspace, bool) {
-		w, err := ResolveGoWorkspace(ctx, buildDir, checkoutRoot, declared)
+		w, settled, err := resolveGoWorkspace(ctx, buildDir, checkoutRoot, declared)
 		runErr = err
-		return w, err == nil && ctx.Err() == nil
+		return w, settled && err == nil && ctx.Err() == nil
 	})
 	return ws, runErr
 }
@@ -160,8 +161,8 @@ func (m *InventoryMemo) readRootPackage(ctx context.Context, buildDir, language 
 		return ReadRootPackage(ctx, buildDir, language)
 	}
 	e := m.rootPkg.do(rootPkgKey{buildDir, language}, func() (rootPkgEntry, bool) {
-		pkg, ok := ReadRootPackage(ctx, buildDir, language)
-		return rootPkgEntry{pkg, ok}, ctx.Err() == nil
+		pkg, ok, settled := readRootPackage(ctx, buildDir, language)
+		return rootPkgEntry{pkg, ok}, settled && ctx.Err() == nil
 	})
 	return e.pkg, e.ok
 }

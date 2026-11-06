@@ -49,23 +49,32 @@ func (w GoWorkspace) GOWORK() string {
 // An error means the build's workspace cannot be established: a declared go.work that does not
 // exist, does not parse or does not use buildDir's module, or a found one that does not parse.
 func ResolveGoWorkspace(ctx context.Context, buildDir, checkoutRoot, declared string) (GoWorkspace, error) {
+	ws, _, err := resolveGoWorkspace(ctx, buildDir, checkoutRoot, declared)
+	return ws, err
+}
+
+// resolveGoWorkspace is ResolveGoWorkspace, also reporting whether the answer is settled: false when
+// git could not name the repository's top-level and the search fell back to the checkout root.
+func resolveGoWorkspace(ctx context.Context, buildDir, checkoutRoot, declared string) (ws GoWorkspace, settled bool, err error) {
+	settled = true
 	own, err := filepath.EvalSymlinks(buildDir)
 	if err != nil {
-		return GoWorkspace{}, err
+		return GoWorkspace{}, settled, err
 	}
 	switch declared {
 	case "off":
-		return GoWorkspace{}, nil
+		return GoWorkspace{}, settled, nil
 	case "", "auto":
-		file, found, err := findGoWork(ctx, own, checkoutRoot)
+		file, found, gitKnown, err := findGoWorkIn(ctx, own, checkoutRoot)
+		settled = gitKnown
 		if err != nil || !found {
-			return GoWorkspace{}, err
+			return GoWorkspace{}, settled, err
 		}
 		member, err := goWorkUsesDir(file, own)
 		if err != nil || !member {
-			return GoWorkspace{}, err
+			return GoWorkspace{}, settled, err
 		}
-		return GoWorkspace{File: file}, nil
+		return GoWorkspace{File: file}, settled, nil
 	}
 	file := declared
 	if !filepath.IsAbs(file) {
@@ -73,24 +82,31 @@ func ResolveGoWorkspace(ctx context.Context, buildDir, checkoutRoot, declared st
 	}
 	file, err = filepath.EvalSymlinks(file)
 	if err != nil {
-		return GoWorkspace{}, fmt.Errorf("subject go.work %q: %w", declared, err)
+		return GoWorkspace{}, settled, fmt.Errorf("subject go.work %q: %w", declared, err)
 	}
 	member, err := goWorkUsesDir(file, own)
 	if err != nil {
-		return GoWorkspace{}, err
+		return GoWorkspace{}, settled, err
 	}
 	if !member {
-		return GoWorkspace{}, fmt.Errorf("subject go.work %q does not use the module at %s", declared, buildDir)
+		return GoWorkspace{}, settled, fmt.Errorf("subject go.work %q does not use the module at %s", declared, buildDir)
 	}
-	return GoWorkspace{File: file}, nil
+	return GoWorkspace{File: file}, settled, nil
 }
 
 // findGoWork returns the nearest go.work at or above own, searched no higher than its repository.
 func findGoWork(ctx context.Context, own, checkoutRoot string) (string, bool, error) {
+	file, found, _, err := findGoWorkIn(ctx, own, checkoutRoot)
+	return file, found, err
+}
+
+// findGoWorkIn is findGoWork, also reporting whether git named the repository's top-level, the bound
+// the search otherwise replaces with the checkout root.
+func findGoWorkIn(ctx context.Context, own, checkoutRoot string) (file string, found, gitKnown bool, err error) {
 	top := own
-	if t, err := gitOutput(ctx, own, "rev-parse", "--show-toplevel"); err == nil && t != "" {
-		top = t
-	} else if root, err := filepath.EvalSymlinks(checkoutRoot); err == nil && within(own, root) {
+	if t, gerr := gitOutput(ctx, own, "rev-parse", "--show-toplevel"); gerr == nil && t != "" {
+		top, gitKnown = t, true
+	} else if root, rerr := filepath.EvalSymlinks(checkoutRoot); rerr == nil && within(own, root) {
 		top = root
 	}
 	for dir := own; ; dir = filepath.Dir(dir) {
@@ -98,12 +114,12 @@ func findGoWork(ctx context.Context, own, checkoutRoot string) (string, bool, er
 		fi, err := os.Stat(file)
 		switch {
 		case err == nil && !fi.IsDir():
-			return file, true, nil
+			return file, true, gitKnown, nil
 		case err != nil && !os.IsNotExist(err):
-			return "", false, err
+			return "", false, gitKnown, err
 		}
 		if dir == top || filepath.Dir(dir) == dir {
-			return "", false, nil
+			return "", false, gitKnown, nil
 		}
 	}
 }

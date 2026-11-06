@@ -169,6 +169,56 @@ func TestRunCacheKeysSeparateRequests(t *testing.T) {
 	}
 }
 
+// TestRunCacheTreesDoNotShareEntries pins that the per-tree ops replay only their own tree: two
+// trees with different content, one cache, and each tree must still get its own uncached result.
+// A key that dropped BuildDir would replay the first tree's bytes for the second.
+func TestRunCacheTreesDoNotShareEntries(t *testing.T) {
+	dirA := writeTree(t, map[string]string{"app.py": flaskApp})
+	dirB := writeTree(t, map[string]string{"other.py": "def lone():\n    return 1\n\ndef caller():\n    return lone()\n"})
+	ops := []struct {
+		name string
+		op   func(ctx context.Context, dir string) (any, error)
+	}{
+		{"call graph", func(ctx context.Context, dir string) (any, error) {
+			return CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+		}},
+		{"find ingresses", func(ctx context.Context, dir string) (any, error) {
+			return FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
+		}},
+		{"index symbols", func(ctx context.Context, dir string) (any, error) {
+			return IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: dir})
+		}},
+	}
+	for _, tt := range ops {
+		t.Run(tt.name, func(t *testing.T) {
+			wantA, err := tt.op(context.Background(), dirA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantB, err := tt.op(context.Background(), dirB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reflect.DeepEqual(wantA, wantB) {
+				t.Fatal("the two trees give equal results, so the test cannot tell a wrong replay")
+			}
+			ctx := cachedCtx(t)
+			for i, c := range []struct {
+				dir  string
+				want any
+			}{{dirA, wantA}, {dirB, wantB}, {dirA, wantA}, {dirB, wantB}} {
+				got, err := tt.op(ctx, c.dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, c.want) {
+					t.Fatalf("call %d on %s replayed another tree's result:\n got %+v\nwant %+v", i, c.dir, got, c.want)
+				}
+			}
+		})
+	}
+}
+
 // TestRunCacheKeysCoverEveryRequestField fails when a request type gains a field, so whoever adds
 // it decides whether the op reads it and, if so, adds it to the run cache key.
 func TestRunCacheKeysCoverEveryRequestField(t *testing.T) {

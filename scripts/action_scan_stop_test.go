@@ -17,13 +17,15 @@ import (
 
 // stoppableScanner stands in for the scanner: it says "ready", says "TERM" each time it gets
 // SIGTERM, and once the test writes to $STUB_RELEASE writes its Report and SARIF when
-// $STUB_PUBLISHES is set, says "exit", and exits 7. Its stdout is the step's.
+// $STUB_PUBLISHES is set, says "exit", and exits 7. Its stdout is the step's. It polls its
+// reader rather than waiting on it: under bash 3.2 a TERM that lands as wait is entered can crash
+// the shell, or be held until wait returns.
 const stoppableScanner = `#!/usr/bin/env bash
 trap 'echo TERM' TERM
 head -c 1 "$STUB_RELEASE" >/dev/null &
 c=$!
 echo ready
-while kill -0 "$c" 2>/dev/null; do wait "$c"; done
+while kill -0 "$c" 2>/dev/null; do sleep 0.01; done
 if [ -n "$STUB_PUBLISHES" ]; then
   : > "$IN_OUT/report.json"
   : > "$IN_OUT/report.sarif.json"

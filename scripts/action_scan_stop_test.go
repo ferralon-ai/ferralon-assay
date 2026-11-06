@@ -22,7 +22,7 @@ import (
 // $STUB_READY, when set, as it says "ready".
 const stoppableScanner = `#!/usr/bin/env bash
 trap 'echo TERM' TERM
-cat "$STUB_RELEASE" >/dev/null &
+head -c 1 "$STUB_RELEASE" >/dev/null &
 c=$!
 if [ -n "$STUB_READY" ]; then : > "$STUB_READY"; fi
 echo ready
@@ -178,8 +178,13 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 					expect("TERM")
 				}
 			}
+			// Release with a byte, not with EOF: on macOS a reader blocked opening a FIFO can miss
+			// the EOF of a writer that opens and closes it straight away, and then reads forever.
 			w, err := os.OpenFile(release, os.O_WRONLY, 0)
 			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.Write([]byte{'x'}); err != nil {
 				t.Fatal(err)
 			}
 			if err := w.Close(); err != nil {

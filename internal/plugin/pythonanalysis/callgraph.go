@@ -1343,12 +1343,17 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // Python plugin therefore never claims a Complete call graph. Read failures add
 // tool_failure; skipped constructs add unsupported_phase1; a dynamic import whose module
 // the scanner cannot name adds dynamic_import.
-func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
-	prog, err := loadProgram(req.BuildDir)
-	if err != nil {
-		return plugin.CallGraphResult{}, err
-	}
-	return callGraphOf(prog), nil
+//
+// The result depends on the tree at req.BuildDir alone, so with a run cache (WithRunCacheDir)
+// it is computed once per scan.
+func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+	return cachedResult(ctx, "callgraph", []string{req.BuildDir}, func() (plugin.CallGraphResult, error) {
+		prog, err := loadProgram(req.BuildDir)
+		if err != nil {
+			return plugin.CallGraphResult{}, err
+		}
+		return callGraphOf(prog), nil
+	})
 }
 
 // callGraphOf builds the call graph of an already-loaded program.

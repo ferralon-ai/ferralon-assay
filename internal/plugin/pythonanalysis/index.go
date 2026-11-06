@@ -21,7 +21,16 @@ import (
 //   - A file that cannot be read degrades Partiality to declared-partial
 //     (PartialReasonToolFailure). The result NEVER renders an unknown as a complete
 //     index.
-func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
+//
+// The result depends on the tree at req.BuildDir alone, so with a run cache (WithRunCacheDir)
+// it is computed once per scan.
+func IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
+	return cachedResult(ctx, "index", []string{req.BuildDir}, func() (plugin.SymbolIndexResult, error) {
+		return indexSymbols(req)
+	})
+}
+
+func indexSymbols(req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
 	files, readFailed, skipped, err := loadFiles(req.BuildDir)
 	if err != nil {
 		return plugin.SymbolIndexResult{}, err

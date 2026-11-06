@@ -58,7 +58,7 @@ func roundTrip(t *testing.T, req plugin.Request) plugin.Response {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run(context.Background(), in, out); err != nil {
+	if err := run(analyzerContext(context.Background()), in, out); err != nil {
 		t.Fatalf("run returned a hard error: %v", err)
 	}
 	if _, err := out.Seek(0, 0); err != nil {
@@ -309,4 +309,32 @@ func hasReason(reasons []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestRunCacheDirEnvReachesTheAnalyzer pins that the directory the host sets on this subprocess's
+// environment, under the name plugin.WithPythonRunCacheDir writes, is where the analyzer keeps
+// its per-tree results, and that an empty value leaves nothing cached.
+func TestRunCacheDirEnvReachesTheAnalyzer(t *testing.T) {
+	dir := fixtureDir(t)
+	req := plugin.Request{Op: plugin.OpCallGraph, CallGraph: &plugin.CallGraphRequest{BuildDir: dir}}
+	for _, tc := range []struct {
+		name    string
+		cache   string
+		entries int
+	}{
+		{"set", t.TempDir(), 1},
+		{"empty", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ASSAY_PY_RUN_CACHE_DIR", tc.cache)
+			roundTrip(t, req)
+			if tc.cache == "" {
+				return
+			}
+			got, _ := filepath.Glob(filepath.Join(tc.cache, "callgraph-*"))
+			if len(got) != tc.entries {
+				t.Errorf("cache entries = %v, want %d", got, tc.entries)
+			}
+		})
+	}
 }

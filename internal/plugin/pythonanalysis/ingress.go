@@ -20,7 +20,16 @@ import (
 // resolved against the build's modules; one that names a dependency's function is no
 // first-party ingress. A handler in test code production never runs (productionReached) is
 // registered by no production app, so it is no ingress.
-func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
+//
+// The result depends on the tree at req.BuildDir alone, so with a run cache (WithRunCacheDir)
+// it is computed once per scan.
+func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
+	return cachedResult(ctx, "ingress", []string{req.BuildDir}, func() (plugin.IngressResult, error) {
+		return findIngresses(req)
+	})
+}
+
+func findIngresses(req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err

@@ -170,7 +170,7 @@ func laneEnvKeeps(name string) bool {
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
 // install_requires), ensurepip, mypy's --install-types or a prefix of it from --install-,
-// a pip or conda family name (pipFamilyRE), and an interpreter option that runs one as a module
+// any word starting pip or conda except the ones pipNotInstaller names, and an interpreter option that runs one as a module
 // with its name attached (-mpip, -Impip); or a task runner that runs commands a file not read
 // here defines, or installs into the environments it makes (poe and its module poethepoet,
 // invoke and its inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it
@@ -187,16 +187,24 @@ func laneToken(word string) bool {
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
 		return true
 	}
-	return pipFamilyRE.MatchString(word)
+	if !strings.HasPrefix(word, "pip") && !strings.HasPrefix(word, "conda") {
+		return false
+	}
+	return !pipNotInstaller(word)
 }
 
-// pipFamilyRE matches a pip or conda family name: pip, pipN or pipN.M; pipenv, pipx, piptools
-// (pip-tools' module), pipwin, pipsi, pipupgrade, conda or condax; any of them followed by
-// ., - or _ and more, so a Windows .exe, a zipapp (pip.pyz), a module path (pip._internal), a
-// config file (pip.conf, conda.yml) and every hyphenated or underscored entry point or module
-// (pip-sync, pip-compile, pip_run, conda-lock, conda-env, conda_lock) match too. A word that
-// only starts with the letters (pipefail, pipeline, pipes, condarc) names none.
-var pipFamilyRE = regexp.MustCompile(`^(?:pip[0-9]*|pipenv|pipx|piptools|pipwin|pipsi|pipupgrade|conda|condax)(?:[._-].*)?$`)
+// pipNotInstaller reports whether word, which starts with pip or conda, is a known word that
+// installs nothing; any other such word is an installer or an unknown tool, and stays one.
+// pipefail is the bash option; pipe, pipes and piped are the shell and filter vocabulary; a
+// word starting pipeline (pipeline, pipelines, pipelineAgg) is a CI or data pipeline; condarc
+// is conda's config file, not a command.
+func pipNotInstaller(word string) bool {
+	switch word {
+	case "pipefail", "pipe", "pipes", "piped", "condarc":
+		return true
+	}
+	return strings.HasPrefix(word, "pipeline")
+}
 
 // installTypesMin is the shortest prefix of installTypesFlag that no other common tool's flag
 // shares.

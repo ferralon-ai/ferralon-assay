@@ -92,6 +92,11 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"python -mpip_run, module attached", map[string]string{"requirements.txt": reqs, "install.sh": "python -mpip_run jinja2==3.1.2 -- app.py\n"}, false, ""},
 		{"conda-lock install", map[string]string{"requirements.txt": reqs, "install.sh": "conda-lock install -n app conda-lock.yml\n"}, false, ""},
 		{"get-pip.py", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "python get-pip.py && pip install -r requirements.txt\n"}, false, ""},
+		{"pipdate", map[string]string{"requirements.txt": reqs, "install.sh": "pipdate\n"}, false, ""},
+		{"pipm install", map[string]string{"requirements.txt": reqs, "install.sh": "pipm install jinja2==3.1.2\n"}, false, ""},
+		{"pipup", map[string]string{"requirements.txt": reqs, "install.sh": "pipup jinja2==3.1.2\n"}, false, ""},
+		{"pipxu install", map[string]string{"requirements.txt": reqs, "install.sh": "pipxu install black\n"}, false, ""},
+		{"python -m pipdate", map[string]string{"requirements.txt": reqs, "install.sh": "python -m pipdate\n"}, false, ""},
 		{"pip zipapp", map[string]string{"requirements.txt": reqs, "install.sh": "python pip.pyz install jinja2==3.1.2\n"}, false, ""},
 
 		// Expansions, variables and lines that do not tokenise.
@@ -172,7 +177,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"Dockerfile nvm before pip install -r", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + ". $NVM_DIR/nvm.sh && nvm install 20 && nvm use 20\nRUN pip install -r requirements.txt\n"}, true, ""},
 		{"pipenv run, an empty scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 		{"set -euo pipefail before an allowed install", map[string]string{"requirements.txt": reqs, "install.sh": "#!/usr/bin/env bash\nset -euo pipefail\npip install -r requirements.txt\n"}, true, ""},
-		{"a module named pipelineAgg", map[string]string{"requirements.txt": reqs, "Makefile": "agg:\n\tpython -m app.pipelineAgg --since 7d\n"}, true, ""},
+		{"a module named pipelineAgg, run with -m", map[string]string{"requirements.txt": reqs, "Makefile": "agg:\n\tpython -m pipelineAgg --since 7d\n"}, true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -447,8 +452,8 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 	})
 }
 
-// laneToken names every pip and conda family spelling a build runs, and no word that only
-// starts with the same letters.
+// laneToken names every word that starts with pip or conda except the known non-installers, so
+// an unknown pip-prefixed word is withheld.
 func TestLaneToken(t *testing.T) {
 	tests := []struct {
 		word string
@@ -480,6 +485,14 @@ func TestLaneToken(t *testing.T) {
 		{"conda-env", true},
 		{"conda_lock", true},
 		{"condax", true},
+		{"pipdate", true},
+		{"pipm", true},
+		{"pipup", true},
+		{"pipxu", true},
+		{"pipette", true},
+		{"condaenv", true},
+		{"-mpipdate", true},
+		{"pipe-x", true},
 		{"-mpip", true},
 		{"-Impip", true},
 		{"-mpip3.12", true},
@@ -493,11 +506,11 @@ func TestLaneToken(t *testing.T) {
 		{"pipeline", false},
 		{"pipelineAgg", false},
 		{"pipelines", false},
+		{"pipeline.run", false},
+		{"pipe", false},
 		{"pipes", false},
 		{"piped", false},
-		{"pipette", false},
 		{"condarc", false},
-		{"condaenv", false},
 		{"-mpipeline", false},
 		{"mypip", false},
 		{"setup-pip", false},

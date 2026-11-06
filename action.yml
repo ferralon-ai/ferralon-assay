@@ -961,35 +961,80 @@ runs:
           args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
         fi
 
-        # The marker dates the launch, so the outputs below name only files this run wrote.
-        scan_marker="$(mktemp "$RUNNER_TEMP/scan-start.XXXXXX")"
+        # The outputs below name only files this run wrote: one this run wrote has a different mtime
+        # from the one it had before the launch, kept here on a reference file. Compared for a
+        # change, not for order, as a clock stepped back during the scan dates a new file earlier.
+        scan_refs="$(mktemp -d "$RUNNER_TEMP/scan-refs.XXXXXX")"
+        for f in report.json report.sarif.json; do
+          if [ -f "$IN_OUT/$f" ]; then
+            touch -r "$IN_OUT/$f" "$scan_refs/$f"
+          fi
+        done
 
         # On a job timeout or cancellation the runner signals this shell, not the scanner, and
         # bash runs a trap only once its foreground child exits. So the scanner runs in the
         # background and the trap forwards TERM (a background job ignores INT); the scanner then
         # stops analysis and publishes what it has. Only the first signal is forwarded: the runner
-        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished. A
-        # trap interrupts wait, so wait again until the scanner itself has exited.
-        "$BIN" "${args[@]}" &
-        scan_pid=$!
-        signalled=0
+        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished.
+        #
+        # The scanner's exit status is taken by a waiter subshell that has no trap and is never
+        # signalled, not by this shell: a trap that interrupts bash's wait can discard the status of
+        # a child that exits at that moment, and wait then returns -1 (exit 255). Nor does this
+        # shell decide from wait's return whether a trap fired, which bash does not order reliably:
+        # it waits again for as long as the waiter is alive. The trap is set before anything here
+        # starts, and a stop that lands before the scanner's pid is known is forwarded once it is.
+        #
+        # Bash 3.2, the bash on macOS runners, constrains the rest. A trap set off by a second
+        # signal as wait is entered can crash it, so the trap's first act is to ignore both
+        # signals; the waiter restores TERM so the scanner can still be stopped. Its SIGINT trap can
+        # be lost while a foreground command runs, so the wait for the pid spins on builtins rather
+        # than polling with sleep. And a signal that lands as wait blocks may be held until wait
+        # ends, so this shell blocks in wait while the scanner is still starting, not once it runs.
+        scan_pid=
+        stop=0
         forwarded=0
-        trap 'signalled=1; if [ "$forwarded" = 0 ]; then forwarded=1; kill -TERM "$scan_pid" 2>/dev/null || true; fi' INT TERM
-        while :; do
-          signalled=0
-          rc=0
-          wait "$scan_pid" || rc=$?
-          [ "$signalled" = 1 ] || break
+        forward() {
+          if [ "$stop" = 1 ] && [ "$forwarded" = 0 ] && [ -n "$scan_pid" ]; then
+            forwarded=1
+            kill -TERM "$scan_pid" 2>/dev/null || true
+          fi
+        }
+        trap 'trap "" INT TERM; stop=1; forward' INT TERM
+        scan_pid_file="$(mktemp "$RUNNER_TEMP/scan-pid.XXXXXX")"
+        scan_status_file="$(mktemp "$RUNNER_TEMP/scan-status.XXXXXX")"
+        (
+          trap - TERM
+          "$BIN" "${args[@]}" &
+          echo "$!" > "$scan_pid_file"
+          st=0
+          wait "$!" || st=$?
+          echo "$st" > "$scan_status_file"
+        ) &
+        waiter_pid=$!
+        until [ -s "$scan_pid_file" ] || ! kill -0 "$waiter_pid" 2>/dev/null; do :; done
+        read -r scan_pid < "$scan_pid_file" || true
+        forward
+        while kill -0 "$waiter_pid" 2>/dev/null; do
+          wait "$waiter_pid" || true
         done
+        rc=1
+        if [ -s "$scan_status_file" ]; then
+          read -r rc < "$scan_status_file"
+        fi
+        rm -f "$scan_pid_file" "$scan_status_file"
 
         # Set on every exit, stopped or failed, but only for files this run wrote, so an always()
         # step never gets a path to a missing file or to one an earlier run left in `out`.
         OUT_ABS="$(cd "$IN_OUT" && pwd)"
-        if [ -f "$OUT_ABS/report.json" ] && [ ! "$OUT_ABS/report.json" -ot "$scan_marker" ]; then
+        wrote() {
+          [ -f "$OUT_ABS/$1" ] && { [ ! -e "$scan_refs/$1" ] || [ "$OUT_ABS/$1" -nt "$scan_refs/$1" ] || [ "$OUT_ABS/$1" -ot "$scan_refs/$1" ]; }
+        }
+        if wrote report.json; then
           echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
         fi
-        if [ -f "$OUT_ABS/report.sarif.json" ] && [ ! "$OUT_ABS/report.sarif.json" -ot "$scan_marker" ]; then
+        if wrote report.sarif.json; then
           echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
         fi
-        rm -f "$scan_marker"
+        rm -f "$scan_refs/report.json" "$scan_refs/report.sarif.json"
+        rmdir "$scan_refs"
         exit "$rc"

@@ -321,14 +321,32 @@ func (f *fileParse) topDefs(scope, name string) []funcDecl {
 // first-party imports and star imports bind f to, followed in turn. A path through a
 // module's attribute ("pkg/x/f", pkg binding x) follows what the module binds x to the same
 // way. Each path is visited once, so an import cycle ends, and a re-export through the cycle
-// is still followed to its def. decided is false when a module on the way binds f, the
-// attribute by anything but defs at module level,
+// is still followed to its def. A path that meets a module's binding the walk is following,
+// with a longer path left after the attribute, is not followed: the path only lengthens
+// through an import whose module part names no parsed module (from pkg.hooks.after import
+// after, with no pkg/hooks/after), read as an attribute path that leads back to the binding
+// itself. decided is false then, and when a module on the way binds f, the attribute by
+// anything but defs at module level,
 // first-party imports and star imports (bindsOtherwise), or a package on the way rebinds its
 // submodule's name (rebound): what it holds there is not a declaration the walk can name.
 // open is true when the path leaves the modules the lane reads: a module no file is, or a
 // class's member; the name then decides the candidates, beside any the walk found.
 func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 	visited := map[string]bool{}
+	// follows holds, for each (module, attribute) binding being followed, the length of the
+	// path left after the attribute at its outermost follow.
+	follows := map[string]int{}
+	following := func(mod, attr, rest string) (ok bool, done func()) {
+		key, left := mod+"|"+attr, strings.Count(rest, "/")
+		if rest != "" {
+			left++
+		}
+		if n, on := follows[key]; on {
+			return left <= n, func() {}
+		}
+		follows[key] = left
+		return true, func() { delete(follows, key) }
+	}
 	var out []funcDecl
 	decided = true
 	var walk func(string)
@@ -356,6 +374,12 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 				return
 			}
 			attr, rest := segs[k], strings.Join(segs[k+1:], "/")
+			ok, done := following(strings.Join(segs[:k], "/"), attr, rest)
+			defer done()
+			if !ok {
+				decided = false
+				return
+			}
 			for _, i := range p.byModule[strings.Join(segs[:k], "/")] {
 				g := &p.files[i]
 				switch {
@@ -375,6 +399,12 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 			return
 		}
 		if p.rebound(strings.Split(mod, "/")) {
+			decided = false
+			return
+		}
+		ok, done := following(mod, leaf, "")
+		defer done()
+		if !ok {
 			decided = false
 			return
 		}

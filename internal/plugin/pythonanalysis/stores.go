@@ -205,18 +205,29 @@ func (prog *program) attrTargetsSeen(i int, name string, seen map[int]bool) []st
 // names no module ("from pkg import mod" where pkg binds mod by import) is read as an
 // attribute chain from its first segment.
 func (prog *program) modulesAt(base string, rest []string) []string {
-	return prog.modulesAtSeen(base, rest, map[string]bool{})
+	return prog.modulesAtSeen(base, rest, &chainWalk{seen: map[string]bool{}, follows: map[string]int{}})
 }
 
-// modulesAtSeen is modulesAt, skipping a (base, chain) already being resolved: suffix-indexed
-// paths let a module re-export from itself (scripts/app/models.py importing app.models), and
-// the re-split above lengthens the chain, so without it a cycle never ends.
-func (prog *program) modulesAtSeen(base string, rest []string, seen map[string]bool) []string {
+// chainWalk is the state of one modulesAt walk. seen holds the (base, chain) pairs already
+// resolved: suffix-indexed paths let a module re-export from itself (scripts/app/models.py
+// importing app.models), and the re-split lengthens the chain. follows holds, for each
+// (module, attribute) binding the walk is following, the length of the chain left after the
+// attribute at its outermost follow.
+type chainWalk struct {
+	seen    map[string]bool
+	follows map[string]int
+}
+
+// modulesAtSeen is modulesAt within the walk w. Re-entering a binding it is following with a
+// longer chain left ends that branch: the chain only lengthens through an import whose
+// module part names no parsed module (from pkg.hooks.after import after, with no
+// pkg/hooks/after), read as an attribute chain that leads back to the binding itself.
+func (prog *program) modulesAtSeen(base string, rest []string, w *chainWalk) []string {
 	key := base + "|" + strings.Join(rest, "/")
-	if seen[key] {
+	if w.seen[key] {
 		return nil
 	}
-	seen[key] = true
+	w.seen[key] = true
 	for k := len(rest); k >= 0; k-- {
 		path := base
 		if k > 0 {
@@ -225,17 +236,26 @@ func (prog *program) modulesAtSeen(base string, rest []string, seen map[string]b
 		if !prog.named[path] {
 			if k == 0 && strings.Contains(base, "/") {
 				segs := strings.Split(base, "/")
-				return prog.modulesAtSeen(segs[0], append(segs[1:], rest...), seen)
+				return prog.modulesAtSeen(segs[0], append(segs[1:], rest...), w)
 			}
 			continue
 		}
 		if k == len(rest) {
 			return []string{path}
 		}
+		follow, left := path+"|"+rest[k], len(rest)-k-1
+		if n, ok := w.follows[follow]; ok {
+			if left > n {
+				return nil
+			}
+		} else {
+			w.follows[follow] = left
+			defer delete(w.follows, follow)
+		}
 		var out []string
 		for _, i := range prog.byModule[path] {
 			for _, p := range prog.attrTargets(i, rest[k]) {
-				out = append(out, prog.modulesAtSeen(p, rest[k+1:], seen)...)
+				out = append(out, prog.modulesAtSeen(p, rest[k+1:], w)...)
 			}
 		}
 		return out

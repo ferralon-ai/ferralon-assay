@@ -1,9 +1,14 @@
 package pythonanalysis
 
 import (
+	"context"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // TestCallGraph_ModuleObjectStores: a store into a module's namespace through a module
@@ -228,4 +233,165 @@ func TestCallGraph_ModuleStoresImportCycles(t *testing.T) {
 			mustCallGraph(t, files)
 		})
 	}
+}
+
+// TestCallGraph_SelfNamedOptionalImport: a package that binds a name from its own missing
+// submodule of the same name (try: from pkg.hooks.after import after, except ImportError) is
+// walked to an end, for a call through the name, a store through it, and the package handed
+// over whole. The missing submodule contributes nothing, a first-party fallback keeps its
+// store, and a call through the name is listed. A chain that meets a binding it is following
+// again with no longer chain left is still followed to its end.
+func TestCallGraph_SelfNamedOptionalImport(t *testing.T) {
+	const optional = "try:\n    from pkg.hooks.after import after\nexcept ImportError:\n    %s\n\ndef helper():\n    pass\n"
+	hooks := func(fallback string) string { return strings.Replace(optional, "%s", fallback, 1) }
+	run := funcSCIP("pkg/app", nil, "run", 0)
+	reg := funcSCIP("pkg/b", nil, "reg", 1)
+	helper := funcSCIP("pkg/hooks", nil, "helper", 0)
+	g := funcSCIP("pkg/fallback", nil, "g", 0)
+	const fallbackG = "def g():\n    pass\n"
+	const runG = "from pkg import fallback\n\ndef run():\n    fallback.g()\n"
+	f := funcSCIP("pkg/s", nil, "f", 0)
+	// pkg.a is pkg.q, whose y reads back through pkg.a with as long a chain left: pkg.a.y.f
+	// is pkg.q.r.f, which is pkg.s.f.
+	equal := map[string]string{
+		"pkg/__init__.py": "from pkg import q as a\n",
+		"pkg/q.py":        "from pkg.a import r as y\nfrom pkg import s as r\n",
+		"pkg/s.py":        "def f():\n    pass\n",
+	}
+	cases := []struct {
+		name  string
+		files map[string]string
+		// edges are the caller and callee of every edge drawn; unresolved are the caller and
+		// callee as written of every listed site.
+		edges, unresolved [][2]string
+	}{
+		{
+			name: "call through the name",
+			files: map[string]string{
+				"pkg/hooks/__init__.py": hooks("after = None"),
+				"pkg/app.py":            "from pkg import hooks\n\ndef run():\n    hooks.after(1)\n    hooks.helper()\n",
+			},
+			edges:      [][2]string{{run, helper}},
+			unresolved: [][2]string{{run, "hooks.after"}},
+		},
+		{
+			name: "call through the name with a first-party fallback",
+			files: map[string]string{
+				"pkg/hooks/__init__.py": hooks("from pkg.fallback import after"),
+				"pkg/fallback.py":       "def after(x):\n    return x\n",
+				"pkg/app.py":            "from pkg import hooks\n\ndef run():\n    hooks.after(1)\n",
+			},
+			unresolved: [][2]string{{run, "hooks.after"}},
+		},
+		{
+			name: "store through the name",
+			files: map[string]string{
+				"pkg/hooks/__init__.py": hooks("after = None"),
+				"pkg/b.py":              "from pkg import hooks\nhooks.after.helper = 1\n",
+				"pkg/app.py":            "from pkg import hooks\n\ndef run():\n    hooks.helper()\n",
+			},
+			edges: [][2]string{{run, helper}},
+		},
+		{
+			name: "store through the name with a first-party fallback module",
+			files: map[string]string{
+				"pkg/hooks/__init__.py": hooks("from pkg import fallback as after"),
+				"pkg/fallback.py":       fallbackG,
+				"pkg/b.py":              "from pkg import hooks\nhooks.after.g = 1\n",
+				"pkg/app.py":            runG,
+			},
+			edges:      [][2]string{{run, g}},
+			unresolved: [][2]string{{run, "fallback.g"}},
+		},
+		{
+			name: "package handed over whole",
+			files: map[string]string{
+				"pkg/hooks/__init__.py": hooks("from pkg import fallback as after"),
+				"pkg/fallback.py":       fallbackG,
+				"pkg/b.py":              "from pkg import hooks\n\ndef reg(register):\n    register(hooks)\n",
+				"pkg/app.py":            runG,
+			},
+			edges:      [][2]string{{run, g}},
+			unresolved: [][2]string{{run, "fallback.g"}, {reg, "register"}},
+		},
+		{
+			name: "two packages naming each other's missing submodule",
+			files: map[string]string{
+				"pkg/hooks/__init__.py": "from pkg.other.after import after\n",
+				"pkg/other/__init__.py": "from pkg.hooks.after import after\n",
+				"pkg/b.py":              "from pkg import hooks\nhooks.after.x = 1\n\ndef reg(register):\n    register(hooks)\n",
+				"pkg/app.py":            "from pkg import hooks\n\ndef run():\n    hooks.after(1)\n",
+			},
+			unresolved: [][2]string{{run, "hooks.after"}, {reg, "register"}},
+		},
+		{
+			name:  "call reading a binding again with as long a path left",
+			files: with(equal, "pkg/app.py", "import pkg\n\ndef run():\n    pkg.a.y.f()\n"),
+			edges: [][2]string{{run, f}},
+		},
+		{
+			name: "store reading a binding again with as long a chain left",
+			files: with(with(equal, "pkg/b.py", "import pkg\npkg.a.y.f = 1\n"),
+				"pkg/app.py", "from pkg import s\n\ndef run():\n    s.f()\n"),
+			edges:      [][2]string{{run, f}},
+			unresolved: [][2]string{{run, "s.f"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := maps.Clone(tc.files)
+			if _, ok := files["pkg/__init__.py"]; !ok {
+				files["pkg/__init__.py"] = ""
+			}
+			dir := writeTree(t, files)
+			type result struct {
+				res plugin.CallGraphResult
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+				done <- result{res, err}
+			}()
+			var res plugin.CallGraphResult
+			select {
+			case r := <-done:
+				if r.err != nil {
+					t.Fatalf("CallGraph: %v", r.err)
+				}
+				res = r.res
+			case <-time.After(20 * time.Second):
+				t.Fatal("CallGraph did not return within 20s")
+			}
+			var edges, unresolved [][2]string
+			for _, e := range res.Edges {
+				edges = append(edges, [2]string{e.Caller.SCIP, e.Callee.SCIP})
+			}
+			for _, u := range res.Unresolved {
+				if len(u.Targets) != 0 {
+					t.Errorf("%s: %s listed with targets %v", u.Caller.SCIP, u.Callee, u.Targets)
+				}
+				unresolved = append(unresolved, [2]string{u.Caller.SCIP, u.Callee})
+			}
+			byPair := func(a, b [2]string) int { return strings.Compare(a[0]+" "+a[1], b[0]+" "+b[1]) }
+			for _, got := range [][][2]string{edges, unresolved, tc.edges, tc.unresolved} {
+				slices.SortFunc(got, byPair)
+			}
+			if !slices.Equal(edges, tc.edges) {
+				t.Errorf("edges %v, want %v", edges, tc.edges)
+			}
+			if !slices.Equal(unresolved, tc.unresolved) {
+				t.Errorf("unresolved %v, want %v", unresolved, tc.unresolved)
+			}
+			if !slices.Equal(res.Partiality.Reasons, []string{"dynamic_dispatch"}) {
+				t.Errorf("partiality reasons %v, want [dynamic_dispatch]", res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+func with(files map[string]string, path, src string) map[string]string {
+	out := maps.Clone(files)
+	out[path] = src
+	return out
 }

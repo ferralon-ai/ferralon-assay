@@ -94,11 +94,14 @@ the token the scan sent fails the run: the token is expired or wrong, or a curat
 blocking a package. On `cve-watch`, a registry that has served the repository and now serves
 nothing, or answers with a transient error, holds the advisory cursor, and the run fails once that
 has lasted 3 runs and 24 hours. A `cve-watch` run that read less dependency code than the
-lockfile pins does not keep a disqualified or not-exploitable verdict it reached: the advisory
+lockfile pins does not keep a disqualified or not-exploitable verdict it reached on an advisory
+affecting a package it could not fetch, or one it cannot tie to the packages it fetched: the advisory
 shows as undetermined with reason `dependency_not_fetched`, and the next `cve-watch` run assesses
-it again, even when OSV reports nothing new; while its registry still serves nothing, that run
-counts toward the 3-run limit too. A run with `dependency-code: off` stops the reassessment: its
-verdicts are the ones a scan without dependency code reaches. The job summary names the registry
+it again, even when OSV reports nothing new. So does an advisory that run left undetermined, as a
+not-exploitable verdict on a package it did fetch is left undetermined while any package went
+unread. While a registry still serves nothing, the next run counts toward the 3-run limit too. A
+run with `dependency-code: off` stops the reassessment: its verdicts are the ones a scan without
+dependency code reaches. The job summary names the registry
 and the fix when a token is missing or refused, or the cursor is held or stalled; the Report and
 the pull-request comment never name a registry host. Before a pull-request job exports a registry
 token, read [Network egress](#network-egress): the scanned branch's `.npmrc` decides which host

@@ -566,10 +566,12 @@ const osvSource = "osv"
 // findings, and build a Report stamped with the new cursor. The prior Report's SBOM
 // is reused (CVE-watch does not re-resolve dependencies — only advisories changed).
 //
-// It also returns the advisories whose re-assessment completed, sorted by ID. The cursor is held,
+// It also returns what a DependencyFetchUpdate sees of the run, Held aside: the advisories whose
+// re-assessment completed, sorted by ID, the packages each concerns, and the IDs with a fresh
+// finding that is undetermined, cut short or failed included. The cursor is held,
 // the stored one written to provenance, when newCursor already is the stored one, when an
 // advisory was cut short, or when req.Hold, consulted after every re-assessment, says so.
-func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, retry []report.AdvisoryFinding, newCursor string) (*report.Report, []report.Advisory, error) {
+func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchRequest, osvResult OSVResult, newIDs []string, retry []report.AdvisoryFinding, newCursor string) (*report.Report, DependencyFetchRun, error) {
 	prior := state.Report
 
 	newSet := make(map[string]struct{}, len(newIDs))
@@ -587,6 +589,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	analysis := analysisOr(req.Analysis, ctx)
 	cut := 0
 	var assessed []report.Advisory
+	packages := map[string][]string{}
+	undetermined := map[string]bool{}
 	// assess assesses ref against pkg and keys the finding under key, the row it replaces.
 	assess := func(ref assessment.VulnRef, pkg *report.Package, key string) {
 		areq := assessment.Request{Vulnerability: ref, Codebase: req.Codebase}
@@ -595,6 +599,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if stopped {
 			reFindings[key] = cutShortFinding(ref)
 			freshIDs[ref.ID] = struct{}{}
+			undetermined[ref.ID] = true
 			cut++
 			return
 		}
@@ -602,6 +607,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			notes = append(notes, assessFailureNote(ref, err))
 			reFindings[key] = assessFailureFinding(ref, err)
 			freshIDs[ref.ID] = struct{}{}
+			undetermined[ref.ID] = true
 			return
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
@@ -619,6 +625,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		reFindings[key] = f
 		freshIDs[advisory.ID] = struct{}{}
 		assessed = append(assessed, advisory)
+		packages[advisory.ID] = append(packages[advisory.ID], assessedPackages(st, assessmentID, f.Package)...)
+		if f.Verdict == report.VerdictUndetermined {
+			undetermined[advisory.ID] = true
+		}
 	}
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
@@ -698,9 +708,31 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 
 	rep, err := b.BuildValidated()
 	if err != nil {
-		return nil, nil, err
+		return nil, DependencyFetchRun{}, err
 	}
-	return &rep, sortedAdvisories(assessed), nil
+	return &rep, DependencyFetchRun{Assessed: sortedAdvisories(assessed), Packages: packages, Undetermined: undetermined}, nil
+}
+
+// assessedPackages names every package an assessment concerns, as DependencyFetchRun.Packages
+// spells them: the finding's package (pkg, nil when it names none) and every package the
+// normalized advisory names.
+func assessedPackages(store artifact.Store, assessmentID string, pkg *report.Package) []string {
+	var purls []string
+	if pkg != nil {
+		switch {
+		case pkg.PURL != "":
+			purls = append(purls, pkg.PURL)
+		case pkg.Ecosystem == "npm" && pkg.Name != "":
+			purls = append(purls, "pkg:npm/"+pkg.Name)
+		default:
+			purls = append(purls, "")
+		}
+	}
+	purls = append(purls, pipeline.AdvisoryPackagePURLs(store, assessmentID)...)
+	if !pipeline.AdvisoryListsAffectedPackages(store, assessmentID) {
+		purls = append(purls, "")
+	}
+	return purls
 }
 
 // sortedAdvisories is advs sorted by ID, keeping the first of each ID; nil when empty.

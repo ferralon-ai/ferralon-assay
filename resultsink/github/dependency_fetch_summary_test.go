@@ -152,7 +152,11 @@ func TestBothSurfaces_DependencyCodeNotes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for name, s := range bothSurfaces(t, emptyReport(tc.note)) {
+			r := emptyReport(tc.note)
+			if tc.note.Reason == report.PartialReasonDependencyCodeUnavailable {
+				r.DependencyCode = fellBack(tc.note.Detail)
+			}
+			for name, s := range bothSurfaces(t, r) {
 				for _, w := range append([]string{"Partial coverage"}, tc.want...) {
 					if !strings.Contains(s, w) {
 						t.Errorf("%s: missing %q\n---\n%s", name, w, s)
@@ -165,6 +169,99 @@ func TestBothSurfaces_DependencyCodeNotes(t *testing.T) {
 				}
 				if strings.Contains(s, "analysis was incomplete") {
 					t.Errorf("%s: fell to the generic arm\n---\n%s", name, s)
+				}
+			}
+		})
+	}
+}
+
+// fellBack is the DependencyCode of a run whose own fetch fell back for the cause detail names,
+// as stamp records it alongside its dependency_code_unavailable note.
+func fellBack(detail string) *report.DependencyCode {
+	kind, rest, _ := strings.Cut(detail, ": ")
+	return &report.DependencyCode{Source: report.DependencyCodeSourceFetch, Cause: &report.DependencyCodeCause{Kind: kind, Detail: rest}}
+}
+
+// A cve-watch run carries the dependency_code_unavailable notes of the earlier runs whose verdicts
+// it keeps. Only the run's own fall-back says this scan read none of its code, and every note of
+// the ecosystem renders as one line.
+func TestBothSurfaces_CarriedDependencyCodeNotes(t *testing.T) {
+	note := func(detail string) report.PartialityNote {
+		return report.PartialityNote{Reason: report.PartialReasonDependencyCodeUnavailable, Ecosystem: "npm", Detail: detail}
+	}
+	const (
+		unreachable = "registry_unreachable: pkg:npm/left-pad@1.3.0"
+		missing     = "policy_refused: pkg:npm/left-pad@1.3.0: missing-credential"
+		rejected    = "policy_refused: pkg:npm/%40corp/b@2.0.0: credential-rejected"
+	)
+	read := &report.DependencyCode{Source: report.DependencyCodeSourceFetch}
+	cases := []struct {
+		name    string
+		dc      *report.DependencyCode
+		notes   []report.PartialityNote
+		want    []string
+		not     []string
+		earlier int
+		readNo  int
+	}{
+		{
+			name:    "run read its code, one carried note",
+			dc:      read,
+			notes:   []report.PartialityNote{note(unreachable)},
+			want:    []string{"Some verdicts below were reached on an earlier run that did not read its npm dependency code (`" + unreachable + "`)", "check that it is up and reachable from the runner"},
+			earlier: 1,
+		},
+		{
+			name:    "run read its code, carried notes with different causes",
+			dc:      read,
+			notes:   []report.PartialityNote{note(missing), note(rejected)},
+			want:    []string{"(`" + rejected + "`; `" + missing + "`)", "give the scan step the registry's token variable", "renew the token"},
+			earlier: 1,
+		},
+		{
+			name:    "non-JS run on a shared ref carries the note",
+			dc:      nil,
+			notes:   []report.PartialityNote{note(unreachable)},
+			want:    []string{"reached on an earlier run that did not read its npm dependency code (`" + unreachable + "`)"},
+			earlier: 1,
+		},
+		{
+			name:    "run fell back and carries an earlier note",
+			dc:      fellBack(rejected),
+			notes:   []report.PartialityNote{note(missing), note(rejected)},
+			want:    []string{"The scan read none of its npm dependency code (`" + rejected + "`)", "Some were reached on an earlier run that did not read it either (`" + missing + "`)", "give the scan step the registry's token variable", "renew the token"},
+			earlier: 1,
+			readNo:  1,
+		},
+		{
+			name:   "run fell back, no earlier note",
+			dc:     fellBack(unreachable),
+			notes:  []report.PartialityNote{note(unreachable)},
+			want:   []string{"The scan read none of its npm dependency code (`" + unreachable + "`)"},
+			not:    []string{"earlier run"},
+			readNo: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := emptyReport(tc.notes...)
+			r.DependencyCode = tc.dc
+			for name, s := range bothSurfaces(t, r) {
+				for _, w := range tc.want {
+					if !strings.Contains(s, w) {
+						t.Errorf("%s: missing %q\n---\n%s", name, w, s)
+					}
+				}
+				for _, w := range tc.not {
+					if strings.Contains(s, w) {
+						t.Errorf("%s: has %q\n---\n%s", name, w, s)
+					}
+				}
+				if got := strings.Count(s, "earlier run that did not read"); got != tc.earlier {
+					t.Errorf("%s: %d earlier-run lines, want %d\n---\n%s", name, got, tc.earlier, s)
+				}
+				if got := strings.Count(s, "The scan read none of its"); got != tc.readNo {
+					t.Errorf("%s: %d read-none lines, want %d\n---\n%s", name, got, tc.readNo, s)
 				}
 			}
 		})

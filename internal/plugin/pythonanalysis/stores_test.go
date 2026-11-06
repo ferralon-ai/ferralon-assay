@@ -240,7 +240,8 @@ func TestCallGraph_ModuleStoresImportCycles(t *testing.T) {
 // walked to an end, for a call through the name, a store through it, and the package handed
 // over whole. The missing submodule contributes nothing, a first-party fallback keeps its
 // store, and a call through the name is listed. A chain that meets a binding it is following
-// again with no longer chain left is still followed to its end.
+// again with no longer chain left is still followed to its end, and so is a chain that meets
+// what another branch cut, or a binding a sibling branch followed.
 func TestCallGraph_SelfNamedOptionalImport(t *testing.T) {
 	const optional = "try:\n    from pkg.hooks.after import after\nexcept ImportError:\n    %s\n\ndef helper():\n    pass\n"
 	hooks := func(fallback string) string { return strings.Replace(optional, "%s", fallback, 1) }
@@ -253,6 +254,33 @@ func TestCallGraph_SelfNamedOptionalImport(t *testing.T) {
 	f := funcSCIP("pkg/s", nil, "f", 0)
 	// pkg.a is pkg.q, whose y reads back through pkg.a with as long a chain left: pkg.a.y.f
 	// is pkg.q.r.f, which is pkg.s.f.
+	// pkg.c is pkg.hooks or pkg.hooks.after, in that order. Read through pkg.hooks, pkg.c.after.after
+	// meets the missing pkg.hooks.after while following pkg.hooks's after; read through
+	// pkg.hooks.after, it is pkg.real.after's after, which is pkg.sink.
+	poison := map[string]string{
+		"pkg/__init__.py":       "try:\n    from pkg import hooks as c\nexcept ImportError:\n    from pkg.hooks import after as c\n",
+		"pkg/hooks/__init__.py": "try:\n    from pkg.hooks.after import after\nexcept ImportError:\n    from pkg.real import after\n",
+		"pkg/real/__init__.py":  "",
+		"pkg/real/after.py":     "from pkg import leaf as after\n",
+		"pkg/leaf.py":           "from pkg import sink as after\n",
+		"pkg/sink.py":           "def g():\n    pass\n",
+		"pkg/b.py":              "import pkg\npkg.c.after.after.g = 1\n",
+		"pkg/app.py":            "from pkg import sink\n\ndef run():\n    sink.g()\n",
+	}
+	sink := funcSCIP("pkg/sink", nil, "g", 0)
+	// pkg.c is pkg.w or pkg.m.x, in that order. Through pkg.w, pkg.c.x.y follows pkg.sink's x
+	// with nothing left; through pkg.m.x, it follows the same binding again, on a sibling
+	// branch, with y left, to pkg.tgt.
+	siblings := map[string]string{
+		"pkg/__init__.py": "try:\n    from pkg import w as c\nexcept ImportError:\n    from pkg.m import x as c\n",
+		"pkg/w.py":        "from pkg import q as x\n",
+		"pkg/q.py":        "from pkg.sink import x as y\n",
+		"pkg/m.py":        "from pkg import sink as x\n",
+		"pkg/sink.py":     "from pkg import deep as x\n",
+		"pkg/deep.py":     "from pkg import tgt as y\n",
+		"pkg/tgt.py":      "def g():\n    pass\n",
+	}
+	tgt := funcSCIP("pkg/tgt", nil, "g", 0)
 	equal := map[string]string{
 		"pkg/__init__.py": "from pkg import q as a\n",
 		"pkg/q.py":        "from pkg.a import r as y\nfrom pkg import s as r\n",
@@ -335,6 +363,24 @@ func TestCallGraph_SelfNamedOptionalImport(t *testing.T) {
 				"pkg/app.py", "from pkg import s\n\ndef run():\n    s.f()\n"),
 			edges:      [][2]string{{run, f}},
 			unresolved: [][2]string{{run, "s.f"}},
+		},
+		{
+			name:       "store through a chain another branch met under a cut",
+			files:      poison,
+			edges:      [][2]string{{run, sink}},
+			unresolved: [][2]string{{run, "sink.g"}},
+		},
+		{
+			name: "store following a binding a sibling branch followed",
+			files: with(with(siblings, "pkg/b.py", "import pkg\npkg.c.x.y.g = 1\n"),
+				"pkg/app.py", "from pkg import tgt\n\ndef run():\n    tgt.g()\n"),
+			edges:      [][2]string{{run, tgt}},
+			unresolved: [][2]string{{run, "tgt.g"}},
+		},
+		{
+			name:  "call following a binding a sibling branch followed",
+			files: with(siblings, "pkg/app.py", "import pkg\n\ndef run():\n    pkg.c.x.y.g()\n"),
+			edges: [][2]string{{run, tgt}},
 		},
 	}
 	for _, tc := range cases {

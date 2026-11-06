@@ -208,26 +208,36 @@ func (prog *program) modulesAt(base string, rest []string) []string {
 	return prog.modulesAtSeen(base, rest, &chainWalk{seen: map[string]bool{}, follows: map[string]int{}})
 }
 
-// chainWalk is the state of one modulesAt walk. seen holds the (base, chain) pairs already
-// resolved: suffix-indexed paths let a module re-export from itself (scripts/app/models.py
-// importing app.models), and the re-split lengthens the chain. follows holds, for each
-// (module, attribute) binding the walk is following, the length of the chain left after the
-// attribute at its outermost follow.
+// chainWalk is the state of one modulesAt walk. seen holds the (base, chain) pairs being
+// resolved or already resolved in full: suffix-indexed paths let a module re-export from
+// itself (scripts/app/models.py importing app.models), and the re-split lengthens the chain.
+// follows holds, for each (module, attribute) binding the walk is following, the length of
+// the chain left after the attribute at its outermost follow. cuts counts the branches ended
+// by re-entering one of those bindings.
 type chainWalk struct {
 	seen    map[string]bool
 	follows map[string]int
+	cuts    int
 }
 
 // modulesAtSeen is modulesAt within the walk w. Re-entering a binding it is following with a
 // longer chain left ends that branch: the chain only lengthens through an import whose
 // module part names no parsed module (from pkg.hooks.after import after, with no
-// pkg/hooks/after), read as an attribute chain that leads back to the binding itself.
+// pkg/hooks/after), read as an attribute chain that leads back to the binding itself. What a
+// pair resolves to under such a cut depends on the bindings followed on the way to it, so the
+// pair is not kept as resolved, and a later branch that reaches it resolves it again.
 func (prog *program) modulesAtSeen(base string, rest []string, w *chainWalk) []string {
 	key := base + "|" + strings.Join(rest, "/")
 	if w.seen[key] {
 		return nil
 	}
 	w.seen[key] = true
+	cuts := w.cuts
+	defer func() {
+		if w.cuts > cuts {
+			delete(w.seen, key)
+		}
+	}()
 	for k := len(rest); k >= 0; k-- {
 		path := base
 		if k > 0 {
@@ -246,6 +256,7 @@ func (prog *program) modulesAtSeen(base string, rest []string, w *chainWalk) []s
 		follow, left := path+"|"+rest[k], len(rest)-k-1
 		if n, ok := w.follows[follow]; ok {
 			if left > n {
+				w.cuts++
 				return nil
 			}
 		} else {

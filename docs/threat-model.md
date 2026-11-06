@@ -14,6 +14,10 @@ A default `baseline` or `pr-inherit` run contacts two public hosts:
 
 These are the same fetches `go build` and `govulncheck` perform.
 
+A Java or Kotlin scan also runs the repository's own Maven or Gradle to resolve its dependency graph,
+and the build tool contacts whatever repositories the build configures; the last paragraph of this
+page covers what that executes.
+
 A run configured with `advisory-corpus-repo` (recommended — see the README's
 [Advisory corpus](../README.md#advisory-corpus)) additionally clones that public corpus repository
 from **`github.com`** before the scan: unauthenticated (it presents no token), shallow (`--depth 1`)

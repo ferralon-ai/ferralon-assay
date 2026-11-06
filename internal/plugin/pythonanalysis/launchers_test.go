@@ -70,7 +70,7 @@ func TestFindIngresses_Launchers(t *testing.T) {
 		{
 			name: "pyproject plugin entry point is a root, no ingress",
 			files: map[string]string{
-				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.entry-points.\"pytest11\"]\ntool = \"tool.cli:main\"\n",
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.entry-points.\"tool.plugins\"]\ntool = \"tool.cli:main\"\n",
 				"tool/__init__.py": "", "tool/cli.py": cli,
 			},
 			absent: []string{funcSCIP("tool/cli", nil, "main", 0)},
@@ -79,7 +79,7 @@ func TestFindIngresses_Launchers(t *testing.T) {
 		{
 			name: "entry point naming a module loads all of it",
 			files: map[string]string{
-				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.entry-points.pytest11]\ntool = \"tool.cli\"\n",
+				"pyproject.toml":   "[project]\nname = \"tool\"\n\n[project.entry-points.\"tool.plugins\"]\ntool = \"tool.cli\"\n",
 				"tool/__init__.py": "", "tool/cli.py": cli,
 			},
 			roots: []string{funcSCIP("tool/cli", nil, "main", 0), funcSCIP("tool/cli", nil, "run", 0)},

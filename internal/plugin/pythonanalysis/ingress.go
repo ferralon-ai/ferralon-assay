@@ -18,7 +18,8 @@ import (
 //
 // A decorated handler is known at its def. A launcher names its function by dotted path,
 // resolved against the build's modules; one that names a dependency's function is no
-// first-party ingress.
+// first-party ingress. A handler in test code production never runs (productionReached) is
+// registered by no production app, so it is no ingress.
 func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
@@ -26,9 +27,16 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 	}
 	prog.markModuleStores()
 
+	reached := prog.productionReached(prog.resolvedCallFiles())
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress
-	for _, f := range prog.files {
+	hidden, opaque := false, false
+	for fi, f := range prog.files {
+		if !reached[fi] {
+			hidden = hidden || len(f.ingresses) > 0
+			continue
+		}
+		opaque = opaque || f.importOpaque || f.refs.evaluated
 		for _, in := range f.ingresses {
 			scip := funcSCIP(f.module, in.enclosing, in.name, in.arity)
 			key := in.kind + "\x00" + scip + "\x00" + in.selector
@@ -70,17 +78,20 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 		return ingresses[i].Selector < ingresses[j].Selector
 	})
 
-	return plugin.IngressResult{Partiality: ingressPartiality(prog), Ingresses: ingresses}, nil
+	return plugin.IngressResult{Partiality: ingressPartiality(prog, hidden && opaque), Ingresses: ingresses}, nil
 }
 
 // ingressPartiality declares completeness of ingress discovery. Unlike the call graph
 // (always partial), ingress discovery over a cleanly parsed source IS complete for the
-// idioms the scanner models. A read failure or a skipped construct degrades to partial with
-// the matching machine-readable reason, as does a launcher whose first-party module
-// declares no function by the name it gives (an instance, a class, an attribute set at run
-// time): its entry point is there but not as a function the lane can name.
-func ingressPartiality(prog *program) plugin.Partiality {
-	var reasons []string
+// idioms the scanner models, in code production may run. A read failure or a skipped
+// construct degrades to partial with the matching machine-readable reason, as does a
+// launcher whose first-party module declares no function by the name it gives (an instance,
+// a class, an attribute set at run time): its entry point is there but not as a function
+// the lane can name. So does a handler left out as unreached (hidden) when a reached file
+// holds a dynamic import the scanner cannot name, or evaluates code (eval/exec), either of
+// which may load it.
+func ingressPartiality(prog *program, mayLoadHidden bool) plugin.Partiality {
+	reasons := dynamicImportReasons(mayLoadHidden)
 	if prog.readFailed || prog.launchersUnread {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}

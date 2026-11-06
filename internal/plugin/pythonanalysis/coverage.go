@@ -46,9 +46,9 @@ type pyDecls struct {
 // and setup.py install_requires and extras_require, and Pipfile.lock pins. Build-time
 // requirements ([build-system].requires, setup_requires) are not among them: they install into
 // an isolated build environment, not the runtime one, and no lockfile records them. ok is
-// false when anything the file declares cannot be read as a requirement: an editable, VCS or
-// URL requirements line, an unreadable entry, a pyproject that does not decode or configures
-// pixi, a computed setup.py, any hatch_build.py, a pyproject.toml or hatch.toml whose hatch config
+// false when anything the file declares cannot be read as a requirement: an editable
+// requirements line, a VCS or URL one that names no project, an unreadable entry, a pyproject
+// that does not decode or configures pixi, a computed setup.py, any hatch_build.py, a pyproject.toml or hatch.toml whose hatch config
 // can install past its environments' lists.
 func manifestDecls(path string) (pyDecls, bool) {
 	data, err := readRegular(path)
@@ -111,8 +111,11 @@ func manifestDecls(path string) (pyDecls, bool) {
 }
 
 // requirementsDecls reads a pip requirements file. Each -r/-c include is recorded for the caller
-// to check on its own; other option lines (--index-url, --hash, ...) declare nothing. An
-// editable, VCS, URL or local-path line, or any line that is not a requirement, is not read.
+// to check on its own; other option lines (--index-url, --hash, ...) declare nothing. A URL or
+// VCS line that names its project ("name @ url", "url#egg=name"; directReferenceName) declares
+// that name as a direct reference, with no specifier: a VCS ref or URL is not a release version.
+// An editable, local-path or file: line, a URL or VCS line that names no project, or any line
+// that is not a requirement, is not read.
 func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 	for _, raw := range joinContinuations(string(data)) {
 		line := strings.TrimSpace(stripReqCommentSafe(raw))
@@ -175,15 +178,18 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			continue
 		}
 		if _, isURL := urlKind(line); isURL {
-			return out, false
-		}
-		if i := strings.Index(line, " --"); i >= 0 {
-			for _, f := range strings.Fields(line[i:]) {
-				out.hashed = out.hashed || f == "--hash" || strings.HasPrefix(f, "--hash=")
+			name := directReferenceName(line)
+			if _, isFile := fileURLPath(line); name == "" || isFile {
+				return out, false
 			}
-			line = strings.TrimSpace(line[:i])
+			d := pyDecl{Name: normalizePyCoordinate(name), Direct: true}
+			if r, ok := parsePEP508(trimLineOptions(line, &out)); ok && r.URL != "" {
+				d.Extras, d.Marked = r.Extras, r.Marker != ""
+			}
+			out.reqs = append(out.reqs, d)
+			continue
 		}
-		r, ok := parsePEP508(line)
+		r, ok := parsePEP508(trimLineOptions(line, &out))
 		if !ok || r.URL != "" {
 			return out, false
 		}
@@ -195,6 +201,19 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 		})
 	}
 	return out, true
+}
+
+// trimLineOptions returns a requirement line without the options after it, noting a --hash
+// among them.
+func trimLineOptions(line string, out *pyDecls) string {
+	i := strings.Index(line, " --")
+	if i < 0 {
+		return line
+	}
+	for _, f := range strings.Fields(line[i:]) {
+		out.hashed = out.hashed || f == "--hash" || strings.HasPrefix(f, "--hash=")
+	}
+	return strings.TrimSpace(line[:i])
 }
 
 // indexOption reports whether an option-line field is -i/--index-url, --extra-index-url or

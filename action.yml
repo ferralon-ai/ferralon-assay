@@ -973,10 +973,15 @@ runs:
         # signalled, not by this shell: a trap that interrupts bash's wait can discard the status of
         # a child that exits at that moment, and wait then returns -1 (exit 255). Nor does this
         # shell decide from wait's return whether a trap fired, which bash does not order reliably:
-        # it waits again for as long as the waiter is alive. The trap is set before the launch and
-        # forwards as soon as the scanner's pid is known, so an early signal is not lost.
-        scan_pid_file="$(mktemp "$RUNNER_TEMP/scan-pid.XXXXXX")"
-        scan_status_file="$(mktemp "$RUNNER_TEMP/scan-status.XXXXXX")"
+        # it waits again for as long as the waiter is alive. The trap is set before anything here
+        # starts, and a stop that lands before the scanner's pid is known is forwarded once it is.
+        #
+        # Bash 3.2, the bash on macOS runners, constrains the rest. A trap set off by a second
+        # signal as wait is entered can crash it, so the trap's first act is to ignore both
+        # signals; the waiter restores TERM so the scanner can still be stopped. Its SIGINT trap can
+        # be lost while a foreground command runs, so the wait for the pid spins on builtins rather
+        # than polling with sleep. And a signal that lands as wait blocks may be held until wait
+        # ends, so this shell blocks in wait while the scanner is still starting, not once it runs.
         scan_pid=
         stop=0
         forwarded=0
@@ -986,8 +991,11 @@ runs:
             kill -TERM "$scan_pid" 2>/dev/null || true
           fi
         }
-        trap 'stop=1; forward' INT TERM
+        trap 'trap "" INT TERM; stop=1; forward' INT TERM
+        scan_pid_file="$(mktemp "$RUNNER_TEMP/scan-pid.XXXXXX")"
+        scan_status_file="$(mktemp "$RUNNER_TEMP/scan-status.XXXXXX")"
         (
+          trap - TERM
           "$BIN" "${args[@]}" &
           echo "$!" > "$scan_pid_file"
           st=0
@@ -995,7 +1003,7 @@ runs:
           echo "$st" > "$scan_status_file"
         ) &
         waiter_pid=$!
-        until [ -s "$scan_pid_file" ] || ! kill -0 "$waiter_pid" 2>/dev/null; do sleep 0.01; done
+        until [ -s "$scan_pid_file" ] || ! kill -0 "$waiter_pid" 2>/dev/null; do :; done
         read -r scan_pid < "$scan_pid_file" || true
         forward
         while kill -0 "$waiter_pid" 2>/dev/null; do

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -18,13 +17,11 @@ import (
 
 // stoppableScanner stands in for the scanner: it says "ready", says "TERM" each time it gets
 // SIGTERM, and once the test writes to $STUB_RELEASE writes its Report and SARIF when
-// $STUB_PUBLISHES is set, says "exit", and exits 7. Its stdout is the step's. It creates
-// $STUB_READY, when set, as it says "ready".
+// $STUB_PUBLISHES is set, says "exit", and exits 7. Its stdout is the step's.
 const stoppableScanner = `#!/usr/bin/env bash
 trap 'echo TERM' TERM
 head -c 1 "$STUB_RELEASE" >/dev/null &
 c=$!
-if [ -n "$STUB_READY" ]; then : > "$STUB_READY"; fi
 echo ready
 while kill -0 "$c" 2>/dev/null; do wait "$c"; done
 if [ -n "$STUB_PUBLISHES" ]; then
@@ -51,8 +48,8 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 		publishes bool
 		// stale leaves a Report and SARIF from an earlier run in the out dir.
 		stale bool
-		// earlyStop has a stub sleep send the first SIGINT while the step is still polling for the
-		// scanner's pid, so the stop lands before the pid is known.
+		// earlyStop stops the step while a stub mktemp holds it just before the scanner's launch,
+		// so the stop lands before the scanner's pid is known.
 		earlyStop bool
 	}{
 		{name: "not stopped", publishes: true},
@@ -60,7 +57,7 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 		{name: "scanner fails before writing", signals: []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}},
 		{name: "scanner fails, earlier run's files left", stale: true},
 		{name: "scanner rewrites an earlier run's files", stale: true, publishes: true},
-		{name: "stopped before the scanner's pid is known", signals: []syscall.Signal{syscall.SIGTERM}, publishes: true, earlyStop: true},
+		{name: "stopped before the scanner's pid is known", earlyStop: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,11 +75,12 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 			}
 			output := filepath.Join(root, "github_output")
 			pluginPath := bin
-			sleepOnce := filepath.Join(root, "sleep-once")
-			ready := filepath.Join(root, "ready")
+			atLaunch := filepath.Join(root, "at-launch")
+			launch := filepath.Join(root, "launch")
 			if tc.earlyStop {
-				if signal.Ignored(syscall.SIGINT) {
-					t.Skip("SIGINT is ignored here, so the step cannot trap it")
+				realMktemp, err := exec.LookPath("mktemp")
+				if err != nil {
+					t.Skip("mktemp not on PATH")
 				}
 				realSleep, err := exec.LookPath("sleep")
 				if err != nil {
@@ -92,12 +90,19 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 				if err := os.MkdirAll(pluginPath, 0o755); err != nil {
 					t.Fatal(err)
 				}
-				// The stop waits for the scanner to be running, so the forwarded TERM reaches a scanner
-				// that has its handler installed; the step still has not read the scanner's pid.
-				stub := "#!/bin/sh\nif mkdir \"" + sleepOnce + "\" 2>/dev/null; then\n" +
-					"  n=0; while [ ! -e \"$STUB_READY\" ] && [ $n -lt 1000 ]; do \"" + realSleep + "\" 0.005; n=$((n+1)); done\n" +
-					"  kill -INT \"$PPID\"\nfi\nexec \"" + realSleep + "\" \"$@\"\n"
-				if err := os.WriteFile(filepath.Join(pluginPath, "sleep"), []byte(stub), 0o755); err != nil {
+				// The step's last command before the launch makes the status file; the stub holds it
+				// there until the test has sent the stop.
+				stub := "#!/bin/sh\ncase \"$1\" in\n*/scan-status.*)\n" +
+					"  : > \"" + atLaunch + "\"\n" +
+					"  n=0; while [ ! -e \"" + launch + "\" ] && [ $n -lt 2000 ]; do \"" + realSleep + "\" 0.005; n=$((n+1)); done\n" +
+					";;\nesac\nexec \"" + realMktemp + "\" \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(pluginPath, "mktemp"), []byte(stub), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				// The forwarded TERM reaches this scanner as it starts, before any handler could be
+				// installed, so it is one that TERM kills at any point and that otherwise outlasts the test.
+				early := "#!/bin/sh\nexec \"" + realSleep + "\" 600\n"
+				if err := os.WriteFile(filepath.Join(bin, "ferralon-assay-scan"), []byte(early), 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -133,9 +138,6 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 			cmd.Env = append(cmd.Env,
 				"STUB_RELEASE="+release, "BIN_DIR="+bin, "PLUGIN_PATH_DIR="+pluginPath, "RUNNER_TEMP="+root,
 				"GITHUB_OUTPUT="+output, "IN_MODE=baseline", "IN_TARGET=.", "IN_OUT="+filepath.Join(root, "out"))
-			if tc.earlyStop {
-				cmd.Env = append(cmd.Env, "STUB_READY="+ready)
-			}
 			if tc.publishes {
 				cmd.Env = append(cmd.Env, "STUB_PUBLISHES=1")
 			}
@@ -154,27 +156,46 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 				}
 			}
 
-			expect("ready")
 			if tc.earlyStop {
-				// The stop is sent by the step's first poll. If the pid file was already written by
-				// then, the path under test was not reached this run.
-				deadline := time.Now().Add(5 * time.Second)
+				deadline := time.Now().Add(30 * time.Second)
 				for {
-					if _, err := os.Stat(sleepOnce); err == nil {
+					if _, err := os.Stat(atLaunch); err == nil {
 						break
 					}
 					if time.Now().After(deadline) {
-						t.Skip("the scanner's pid was known before the first poll; the early-stop path was not reached")
+						t.Fatal("the step never reached the scanner's launch")
 					}
 					time.Sleep(5 * time.Millisecond)
 				}
-				expect("TERM")
+				if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(launch, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				var exit *exec.ExitError
+				if err := cmd.Wait(); !errors.As(err, &exit) || exit.ExitCode() != 128+int(syscall.SIGTERM) {
+					t.Fatalf("step ended %v, want the status of a scanner stopped by TERM, %d", err, 128+int(syscall.SIGTERM))
+				}
+				deadline = time.Now().Add(5 * time.Second)
+				for syscall.Kill(-cmd.Process.Pid, 0) == nil {
+					if time.Now().After(deadline) {
+						t.Fatal("a process from the step's group outlived it")
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				if got, err := os.ReadFile(output); err == nil && (strings.Contains(string(got), "out-dir=") || strings.Contains(string(got), "sarif-file=")) {
+					t.Errorf("step output %q names files this run never wrote", got)
+				}
+				return
 			}
+
+			expect("ready")
 			for i, sig := range tc.signals {
 				if err := cmd.Process.Signal(sig); err != nil {
 					t.Fatal(err)
 				}
-				if i == 0 && !tc.earlyStop {
+				if i == 0 {
 					expect("TERM")
 				}
 			}
@@ -196,16 +217,6 @@ func TestScanStepForwardsTheRunnersStop(t *testing.T) {
 			var exit *exec.ExitError
 			if err := cmd.Wait(); !errors.As(err, &exit) || exit.ExitCode() != 7 {
 				t.Fatalf("step ended %v, want the scanner's own exit status 7", err)
-			}
-			if tc.earlyStop {
-				// expect("exit") above would have failed on a second TERM; nothing may outlive the step.
-				deadline := time.Now().Add(5 * time.Second)
-				for syscall.Kill(-cmd.Process.Pid, 0) == nil {
-					if time.Now().After(deadline) {
-						t.Fatal("a process from the step's group outlived it")
-					}
-					time.Sleep(5 * time.Millisecond)
-				}
 			}
 			got, err := os.ReadFile(output)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {

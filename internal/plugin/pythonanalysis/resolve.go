@@ -25,7 +25,17 @@ import (
 // symbol that happens to share the name is never the advisory's symbol. The symbol
 // resolves only onto a dependency boundary node the call graph actually contains for that
 // distribution, matched on the full dotted import path (see resolveBoundary).
+//
+// The result is a function of req.BuildDir, req.PURL and req.AdvisorySymbols and of nothing
+// else in the request, so with a run cache (WithRunCacheDir) it is computed once per distinct
+// triple per scan.
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+	return cachedResult(ctx, "resolve", []string{req.BuildDir, req.PURL, symbolsKey(req.AdvisorySymbols)}, func() (plugin.SymbolResolutionResult, error) {
+		return resolveDependencySymbols(ctx, req)
+	})
+}
+
+func resolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
 	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err

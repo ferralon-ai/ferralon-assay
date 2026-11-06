@@ -198,7 +198,16 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		}
 		jsOpts = append(jsOpts, plugin.WithJSRunCacheDir(dir))
 	}
-	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, cfOpts...)
+	var pyOpts []plugin.PythonOption
+	if language == checkout.LangPython {
+		dir := scanRunCacheDir("python")
+		if dir != "" {
+			prev := cleanup
+			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
+		}
+		pyOpts = append(pyOpts, plugin.WithPythonRunCacheDir(dir))
+	}
+	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, pyOpts, cfOpts...)
 	if err != nil {
 		cleanup()
 		var missing *plugin.NotInstalledError
@@ -265,7 +274,7 @@ func (e *analyzerMissingError) Unwrap() error { return e.missing }
 // not there is a *plugin.NotInstalledError. Only one plugin runs per scan (the tree is a single
 // language), so a single override suffices. cfOpts apply to the C-family plugin only, goOpts to the
 // Go plugin only.
-func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
+func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, pyOpts []plugin.PythonOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
 	var graphFile string
 	if graph != nil {
 		graphFile = graph.file
@@ -295,9 +304,9 @@ func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option,
 		return plugin.NewJSPlugin(jsOpts...)
 	case checkout.LangPython:
 		if bin != "" {
-			return plugin.NewPythonPlugin(plugin.WithPythonBinaryPath(bin))
+			pyOpts = append(pyOpts, plugin.WithPythonBinaryPath(bin))
 		}
-		return plugin.NewPythonPlugin()
+		return plugin.NewPythonPlugin(pyOpts...)
 	case checkout.LangDotNet:
 		if bin != "" {
 			return plugin.NewDotNetPlugin(plugin.WithDotNetBinaryPath(bin))
@@ -334,7 +343,7 @@ func scanWasmCacheDir() string {
 }
 
 // scanRunCacheDir creates the private directory one scan's analyzer subprocesses for lang share
-// per-tree results through (plugin.WithRunCacheDir, plugin.WithJSRunCacheDir). The caller removes
+// per-tree results through (plugin.WithRunCacheDir, plugin.WithJSRunCacheDir, plugin.WithPythonRunCacheDir). The caller removes
 // it when the scan ends.
 // Unlike the wasm cache it is never taken from the operator: its entries are keyed on the build
 // directory's path, so a directory that outlived one scan could answer for another tree at that

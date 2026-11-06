@@ -21,7 +21,17 @@ import (
 // NARROWER, not an adjudicator: the effect trial adjudicates. "Not reached" is UNKNOWN
 // (no_known_ingress), NEVER a confident "safe"/not-affected. A load failure in
 // CallGraph/FindIngresses is a hard error (inv.4).
+//
+// The result is a function of req.BuildDir and req.Symbols and of nothing else in the
+// request, so with a run cache (WithRunCacheDir) it is computed once per distinct pair per
+// scan, however many advisories ask.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	return cachedResult(ctx, "reachability", []string{req.BuildDir, symbolsKey(req.Symbols)}, func() (plugin.ReachabilityResult, error) {
+		return reachability(ctx, req)
+	})
+}
+
+func reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.ReachabilityResult{}, err

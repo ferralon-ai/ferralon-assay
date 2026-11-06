@@ -204,6 +204,32 @@ func TestWithRunCacheDir(t *testing.T) {
 	}
 }
 
+// TestWithPythonRunCacheDir pins the same contract for the Python client: the run cache travels on
+// the subprocess environment under the name cmd/assay-plugin-python reads, and is otherwise set
+// empty, so a value inherited from the host's environment cannot turn the cache on.
+func TestWithPythonRunCacheDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    []PythonOption
+		wantEnv []string
+	}{
+		{name: "no option", wantEnv: []string{"ASSAY_PY_RUN_CACHE_DIR="}},
+		{name: "dir set", opts: []PythonOption{WithPythonRunCacheDir("/tmp/run-cache")}, wantEnv: []string{"ASSAY_PY_RUN_CACHE_DIR=", "ASSAY_PY_RUN_CACHE_DIR=/tmp/run-cache"}},
+		{name: "empty dir", opts: []PythonOption{WithPythonRunCacheDir("")}, wantEnv: []string{"ASSAY_PY_RUN_CACHE_DIR=", "ASSAY_PY_RUN_CACHE_DIR="}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := NewPythonPlugin(append([]PythonOption{WithPythonBinaryPath("/bin/true")}, tt.opts...)...)
+			if err != nil {
+				t.Fatalf("NewPythonPlugin: %v", err)
+			}
+			if got := p.(*pythonPlugin).env; !reflect.DeepEqual(got, tt.wantEnv) {
+				t.Errorf("env = %q, want %q", got, tt.wantEnv)
+			}
+		})
+	}
+}
+
 func TestBinaryName(t *testing.T) {
 	for _, tc := range []struct {
 		language string

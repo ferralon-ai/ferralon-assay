@@ -53,6 +53,12 @@ type launchTarget struct {
 	optional bool
 	view     bool
 	unread   bool
+	// exact marks a target that names a module by its full path from the build root
+	// (a declared entrypoint, entrypoints.go): only the file of that module, not another
+	// that merely ends in the path. loadOnly one whose module is run for its own sake, so
+	// its file is reached but no function of it is a root the target does not name.
+	exact    bool
+	loadOnly bool
 }
 
 // urlView is a Django URL pattern's view as its file writes it: the dotted name (nil when
@@ -115,6 +121,9 @@ func readManifestLaunchers(buildDir string) (targets []launchTarget, ok, support
 		return base == "pyproject.toml" || base == "setup.cfg"
 	})
 	for _, f := range manifests {
+		if rel, err := filepath.Rel(buildDir, filepath.Dir(f)); err == nil && inTestDir(filepath.ToSlash(rel)) {
+			continue // a declaration inside a test directory describes test tooling
+		}
 		data, err := readRegular(f)
 		if err != nil {
 			ok = false
@@ -156,6 +165,9 @@ func pyprojectLaunchers(data []byte) ([]launchTarget, bool) {
 	var out []launchTarget
 	ok := true
 	add := func(group string, entries map[string]any) {
+		if testPluginGroup(group) {
+			return
+		}
 		for _, name := range slices.Sorted(mapKeys(entries)) {
 			spec, isString := entries[name].(string)
 			if table, isTable := entries[name].(map[string]any); isTable {
@@ -235,6 +247,9 @@ func declaresEntryPoints(data []byte) bool {
 
 // entryLines reads the "name = spec" lines of one entry-point group, skipping blank lines.
 func entryLines(group, text string) ([]launchTarget, bool) {
+	if testPluginGroup(group) {
+		return nil, true
+	}
 	var out []launchTarget
 	ok := true
 	for _, line := range strings.Split(text, "\n") {
@@ -262,8 +277,12 @@ func setupPyLaunchers(clean string, lits map[int]strLiteral) (out []launchTarget
 	starts := slices.Sorted(mapIntKeys(lits))
 	supported = true
 	group := ""
+	groups := setupPyGroups(clean, lits)
 	for _, at := range starts {
 		lit := lits[at]
+		if testPluginGroup(groups[at]) {
+			continue
+		}
 		if k := skipAllSpace(r, lit.end); k < len(r) && r[k] == ':' {
 			group = lit.body
 			continue
@@ -295,7 +314,7 @@ func setupPyLaunchers(clean string, lits map[int]strLiteral) (out []launchTarget
 // dotted string beside an "=" is too common in a setup.py to be read as an entry point.
 func setupPySpec(group, s string) (launchTarget, bool) {
 	name, spec, found := strings.Cut(s, "=")
-	if !found || !strings.Contains(spec, ":") || strings.TrimSpace(name) == "" {
+	if testPluginGroup(group) || !found || !strings.Contains(spec, ":") || strings.TrimSpace(name) == "" {
 		return launchTarget{}, false
 	}
 	return entryTarget(spec, entryKind(group), strings.TrimSpace(name))
@@ -672,7 +691,7 @@ type pathHit struct {
 // function or class by the name, a class-based view's base it cannot find, or a name the
 // path reads that a file also binds to a value the lane does not follow).
 func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module string, whole, missing bool) {
-	hits, module, whole := prog.resolvePath(t.segs, t.mod)
+	hits, module, whole := prog.resolvePath(t.segs, t.mod, t.exact)
 	seen := map[string]bool{}
 	add := func(fd funcDecl) {
 		if !seen[fd.scip()] {
@@ -742,7 +761,7 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 		var next []pathHit
 		if paths := g.attrBinds(segs[0]); len(paths) > 0 {
 			for _, p := range paths {
-				hs, _, _ := prog.resolvePath(append(strings.Split(p, "/"), segs[1:]...), 0)
+				hs, _, _ := prog.resolvePath(append(strings.Split(p, "/"), segs[1:]...), 0, false)
 				next = append(next, hs...)
 			}
 		} else if prog.definesFirstParty(g, segs[0]) {
@@ -751,7 +770,7 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 			continue // a dependency's base
 		} else if len(g.starPaths) > 0 {
 			for _, sp := range g.starPaths {
-				hs, _, _ := prog.resolvePath(append(strings.Split(sp, "/"), segs...), 0)
+				hs, _, _ := prog.resolvePath(append(strings.Split(sp, "/"), segs...), 0, false)
 				next = append(next, hs...)
 			}
 		} else if segs[0] == "object" || len(g.stars) > 0 {
@@ -774,10 +793,23 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 // module, or 0 for the longest prefix that names one; module and whole are as for
 // launchDecls. The attribute is followed through first-party re-exports of the module it
 // is read from; a path is tried once, so a re-export cycle ends.
-func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module string, whole bool) {
+func (prog *program) resolvePath(segs []string, mod int, exact bool) (hits []pathHit, module string, whole bool) {
+	// filesOf is the files a path names: with exact, only the module of that path; for a
+	// path a re-export is followed to (follow), that module when it exists, else any file
+	// the path ends.
+	filesOf := func(path string, follow bool) []int {
+		if !exact && !follow {
+			return prog.byModule[path]
+		}
+		own := slices.DeleteFunc(slices.Clone(prog.byModule[path]), func(i int) bool { return prog.files[i].module != path })
+		if len(own) == 0 && !exact {
+			return prog.byModule[path]
+		}
+		return own
+	}
 	visited := map[string]bool{}
-	var walk func(segs []string, mod int)
-	walk = func(segs []string, mod int) {
+	var walk func(segs []string, mod int, follow bool)
+	walk = func(segs []string, mod int, follow bool) {
 		key := strings.Join(segs, "/")
 		if visited[key] {
 			return
@@ -785,11 +817,11 @@ func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module
 		visited[key] = true
 		k := mod
 		if k == 0 {
-			for k = len(segs); k > 0 && len(prog.byModule[strings.Join(segs[:k], "/")]) == 0; k-- {
+			for k = len(segs); k > 0 && len(filesOf(strings.Join(segs[:k], "/"), follow)) == 0; k-- {
 			}
 		}
 		path := strings.Join(segs[:k], "/")
-		if k == 0 || len(prog.byModule[path]) == 0 {
+		if k == 0 || len(filesOf(path, follow)) == 0 {
 			return
 		}
 		attrs := segs[k:]
@@ -799,14 +831,14 @@ func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module
 		if len(attrs) == 0 {
 			return
 		}
-		for _, i := range prog.byModule[path] {
+		for _, i := range filesOf(path, follow) {
 			hits = append(hits, pathHit{file: i, attrs: attrs})
 			for _, next := range prog.files[i].attrBinds(attrs[0]) {
-				walk(append(strings.Split(next, "/"), attrs[1:]...), 0)
+				walk(append(strings.Split(next, "/"), attrs[1:]...), 0, true)
 			}
 		}
 	}
-	walk(segs, mod)
+	walk(segs, mod, false)
 	return hits, module, whole
 }
 

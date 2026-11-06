@@ -55,14 +55,24 @@ type program struct {
 	// per attribute, the attributes whose modules read it.
 	modVals map[modKey][]string
 	modDeps map[modKey][]modKey
-	// launchers are the entry points the build's manifests declare (launchers.go);
-	// launchersUnread records a manifest whose entry points could not be read in full, so
-	// ingress discovery may miss a script; launchersUnsupported one that declares entry
-	// points in a form the readers do not model.
+	// launchers are the entry points the build's manifests declare (launchers.go) and the
+	// ones its launch files declare (entrypoints.go); launchersUnread records a manifest
+	// whose entry points could not be read in full, so ingress discovery may miss a script;
+	// launchersUnsupported one that declares entry points in a form the readers do not
+	// model.
 	launchers            []launchTarget
 	launchersUnread      bool
 	launchersUnsupported bool
 	attrMemo             map[attrKey][]string
+	// entryModules holds the modules a declared entrypoint runs (entrypoints.go), which
+	// are production code whatever their name.
+	entryModules map[string]bool
+}
+
+// testCode reports whether a module is test code: named as a test (isTestModule) and run
+// by no declared entrypoint.
+func (prog *program) testCode(module string) bool {
+	return isTestModule(module) && !prog.entryModules[module]
 }
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
@@ -983,6 +993,10 @@ func loadProgram(buildDir string) (*program, error) {
 	var rawBindings [][]scopedBinding
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
+	eps, epsUnread := declaredEntrypoints(buildDir)
+	if epsUnread {
+		prog.readFailed = true
+	}
 	for _, p := range paths {
 		src, readErr := readPythonSource(p)
 		if readErr != nil {
@@ -1064,7 +1078,7 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.wrapped[i].module = module
 		}
 		bindings := indexBindings(scan.bindings)
-		if filepath.Base(p) == "setup.py" {
+		if filepath.Base(p) == "setup.py" && !inTestDir(module) {
 			ts, supported := setupPyLaunchers(clean, lits)
 			prog.launchers = append(prog.launchers, ts...)
 			prog.launchersUnsupported = prog.launchersUnsupported || !supported
@@ -1092,7 +1106,7 @@ func loadProgram(buildDir string) (*program, error) {
 			defs:          scan.defs,
 			computed:      scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
 			own:           own,
-			settings:      settingsLaunchers(clean, lits),
+			settings:      append(settingsLaunchers(clean, lits), settingTargets(clean, lits)...),
 			urlViews:      djangoURLViews(clean, lits, bindings),
 			classes:       classes,
 			importOpaque:  opaque,
@@ -1128,6 +1142,7 @@ func loadProgram(buildDir string) (*program, error) {
 	for i := range prog.files {
 		prog.bindFirstParty(i, rawBindings[i], relBindings[i], modRefs[i])
 	}
+	prog.resolveEntrypoints(eps)
 	return prog, nil
 }
 
@@ -1388,11 +1403,11 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			callee, ok, escapeLeaves := prog.siteCallee(f, cs)
-			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
+			if !prog.testCode(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true
 					for _, fd := range prog.declsNamed(escapeLeaves) {
-						if s := fd.scip(); s != callee && !isTestModule(fd.module) {
+						if s := fd.scip(); s != callee && !prog.testCode(fd.module) {
 							escapedSet[s] = true
 						}
 					}
@@ -1468,12 +1483,13 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 }
 
 // escapeFrames adds to out the frames code the lane does not see may call (escape.go):
-// every runtime module's top-level frame and every escaping function outside test code.
+// every runtime module's top-level frame, every escaping function outside test code, and
+// every callable a declared entrypoint names.
 // The call sites' own contribution (a declaration a site names without an edge to it) is
 // added by callGraphOf.
 func (prog *program) escapeFrames(out map[string]bool) {
 	escape := func(fd funcDecl) {
-		if !isTestModule(fd.module) {
+		if !prog.testCode(fd.module) {
 			out[fd.scip()] = true
 		}
 	}
@@ -1515,7 +1531,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 	}
 	for fi := range prog.files {
 		f := &prog.files[fi]
-		if isTestModule(f.module) {
+		if prog.testCode(f.module) {
 			continue
 		}
 		out[moduleInitSCIP(f.module)] = true
@@ -1550,7 +1566,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 		for _, fd := range decls {
 			escape(fd)
 		}
-		if module != "" && (whole || missing) {
+		if module != "" && (whole || missing) && !t.loadOnly {
 			escapeModule(module)
 		}
 	}
@@ -1679,7 +1695,7 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 }
 
 // productionReached reports, per file, whether production code may run it: every file
-// outside test code (isTestModule), every file a manifest launcher names (production by
+// outside test code (testCode), every file a manifest launcher names (production by
 // construction: the file declaring the function it names, or the module's own file when it
 // names the module whole or a function the lane does not find), the same for each launch
 // target a reached file names (its settings and URL views; an unreached test urlconf seeds
@@ -1700,7 +1716,7 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 	}
 	for i, f := range prog.files {
-		if !isTestModule(f.module) {
+		if !prog.testCode(f.module) {
 			reach(i)
 		}
 	}
@@ -1719,7 +1735,9 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 		if module != "" && (whole || missing) {
 			for _, j := range prog.byModule[module] {
-				reach(j)
+				if !t.exact || prog.files[j].module == module {
+					reach(j)
+				}
 			}
 		}
 	}
@@ -1780,12 +1798,12 @@ func (prog *program) resolvedCallFiles() [][]int {
 // isTestModule reports whether a module path names test code: a test_*.py, *_test.py or
 // conftest.py file, or any module under a tests/ or test/ directory.
 func isTestModule(module string) bool {
-	segs := strings.Split(module, "/")
-	for _, s := range segs {
-		if s == "tests" || s == "test" {
-			return true
-		}
-	}
-	leaf := segs[len(segs)-1]
-	return strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
+	leaf := module[strings.LastIndexByte(module, '/')+1:]
+	return inTestDir(module) || strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
+}
+
+// inTestDir reports whether a slash path names, or lies under, a tests/ or test/
+// directory.
+func inTestDir(p string) bool {
+	return slices.ContainsFunc(strings.Split(p, "/"), func(s string) bool { return s == "tests" || s == "test" })
 }

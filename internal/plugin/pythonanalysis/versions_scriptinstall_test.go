@@ -499,6 +499,10 @@ func TestLaneToken(t *testing.T) {
 		{"condarc", false},
 		{"condaenv", false},
 		{"-mpipeline", false},
+		{"mypip", false},
+		{"setup-pip", false},
+		{"my.pipx", false},
+		{"xconda", false},
 		{"pi", false},
 		{"", false},
 	}

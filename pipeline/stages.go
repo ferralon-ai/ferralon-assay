@@ -68,6 +68,9 @@ type AssessConfig struct {
 	// LibraryEntrypoints is the caller's statement of which of the build's packages code outside
 	// the build may import; nil is auto. See WithLibraryEntrypoints.
 	LibraryEntrypoints *plugin.LibraryEntrypoints
+	// InventoryMemo is the scan's memo of codebase_inventory's checkout-constant reads; nil repeats
+	// them per advisory. See WithInventoryMemo.
+	InventoryMemo *InventoryMemo
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -186,7 +189,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, memo: cfg.InventoryMemo},
 		maliciousPresence{},
 		disqualificationDiscovery{},
 	}
@@ -212,7 +215,7 @@ func SBOMStages(opts ...AssessOption) []Stage {
 	}
 	return []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, memo: cfg.InventoryMemo},
 	}
 }
 
@@ -1560,6 +1563,8 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 type codebaseInventory struct {
 	checkout checkout.Checkout
 	plugin   plugin.LanguagePlugin
+	// memo carries the scan's checkout-constant reads across advisories; nil recomputes them.
+	memo *InventoryMemo
 	// src is the AdvisorySource this stage reads advisory facts through (U8a intake seam). A nil
 	// src falls back to defaultAdvisorySource() — the in-memory AdvisoryTable — so the default path
 	// is byte-identical to the historical inline AdvisoryTable[id] lookup.
@@ -1787,7 +1792,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	acq := c.Request.Codebase.Acquisition
 	switch {
 	case acq.Mode == "vendored_repro":
-		p, err := checkout.ResolveVendored(acq.Path)
+		p, err := s.memo.resolveVendored(acq.Path)
 		if err != nil {
 			return err
 		}
@@ -1827,7 +1832,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// proof_verdicts.subject_repo_ref). Fails soft to "" for the vendored_repro path (not a git
 	// tree); only an explicit ResolvedCommit on the request (OSS --commit) takes precedence.
 	if buildDir != "" && c.Subject.ResolvedCommit == "" {
-		if sha, err := checkout.ResolveHead(ctx, buildDir); err != nil {
+		if sha, err := s.memo.resolveHead(ctx, buildDir); err != nil {
 			return err
 		} else if sha != "" {
 			c.Subject.ResolvedCommit = sha
@@ -1844,7 +1849,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// root (where .git lives) to pin ResolvedCommit, and reassigning buildDir first would silently
 	// lose that anchor for a nested module.
 	if language == checkout.LangGo {
-		if root, ok := checkout.FindGoModuleRoot(buildDir); ok {
+		if root, ok := s.memo.goModuleRoot(buildDir); ok {
 			buildDir = root
 		}
 	}
@@ -1854,7 +1859,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// that cannot be established fails the stage: no fact about the build may rest on a guess at it.
 	var goWork GoWorkspace
 	if language == checkout.LangGo && buildDir != "" {
-		ws, err := ResolveGoWorkspace(ctx, buildDir, checkoutRoot, s.subjectGoWork)
+		ws, err := s.memo.goWorkspace(ctx, buildDir, checkoutRoot, s.subjectGoWork)
 		if err != nil {
 			return fmt.Errorf("resolve the build's go.work: %w", err)
 		}
@@ -1904,7 +1909,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			BuildResolved:      buildToolchain,
 			ToolchainDirective: toolchainDirective,
 			GoDirective:        goDirective,
-			BazelWorkspace:     BazelWorkspaceAbove(buildDir),
+			BazelWorkspace:     s.memo.bazelWorkspaceAbove(buildDir),
 		}
 		toolchain = ResolveToolchain(cands)
 		if !cands.BazelWorkspace {
@@ -1939,7 +1944,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// identity), so its vulnerable code is first-party and its version is the project's.
 	isRoot := false
 	if buildDir != "" {
-		root, hasRoot := ReadRootPackage(ctx, buildDir, language)
+		root, hasRoot := s.memo.readRootPackage(ctx, buildDir, language)
 		resolve := func(module, coordinate, purl, scheme string) (depVersions, []string, bool, error) {
 			if v, ok := root.Matches(buildDir, goWork, module, coordinate, purl); hasRoot && ok {
 				dep := singleVersion(v)
@@ -2107,33 +2112,40 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 // when that top-level cannot be determined. Bazel (rules_go) takes its Go SDK from the workspace, not
 // from go.mod, so the go line is no floor on the release a Bazel build compiles with.
 func BazelWorkspaceAbove(moduleRoot string) bool {
+	found, _ := bazelWorkspaceAbove(moduleRoot)
+	return found
+}
+
+// bazelWorkspaceAbove is BazelWorkspaceAbove, also reporting whether the git top-level it searches
+// to could be determined; found is false when it could not.
+func bazelWorkspaceAbove(moduleRoot string) (found, determined bool) {
 	if moduleRoot == "" {
-		return false
+		return false, true
 	}
 	top, err := gitOutput(context.Background(), moduleRoot, "rev-parse", "--show-toplevel")
 	if err != nil || top == "" {
-		return false
+		return false, false
 	}
 	top, err = filepath.EvalSymlinks(top)
 	if err != nil {
-		return false
+		return false, false
 	}
 	dir, err := filepath.EvalSymlinks(filepath.Clean(moduleRoot))
 	if err != nil {
-		return false
+		return false, false
 	}
 	for {
 		for _, marker := range []string{"MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"} {
 			if fi, err := os.Stat(filepath.Join(dir, marker)); err == nil && !fi.IsDir() {
-				return true
+				return true, true
 			}
 		}
 		if dir == top {
-			return false
+			return false, true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return false
+			return false, true
 		}
 		dir = parent
 	}

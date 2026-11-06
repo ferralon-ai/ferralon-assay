@@ -319,10 +319,11 @@ func unrowedAdvisories(baseline *report.Report, advisories []assessment.VulnRef)
 // pass cut none.
 func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []assessment.VulnRef) (findings []report.AdvisoryFinding, notes []report.PartialityNote, cause string) {
 	analysis := analysisOr(req.Analysis, ctx)
+	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
 	for _, adv := range advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
 		if stopped {
 			findings = append(findings, cutShortFinding(adv))
 			cut++
@@ -373,10 +374,11 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	var notes []report.PartialityNote
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	analysis := analysisOr(req.Analysis, ctx)
+	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
 	for _, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
 		if stopped {
 			reFindings[adv.ID+"\x00"+adv.Source] = cutShortFinding(adv)
 			freshIDs[adv.ID] = struct{}{}
@@ -585,13 +587,14 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	analysis := analysisOr(req.Analysis, ctx)
+	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
 	var assessed []report.Advisory
 	// assess assesses ref against pkg and keys the finding under key, the row it replaces.
 	assess := func(ref assessment.VulnRef, pkg *report.Package, key string) {
 		areq := assessment.Request{Vulnerability: ref, Codebase: req.Codebase}
 		workSet = append(workSet, ref)
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
 		if stopped {
 			reFindings[key] = cutShortFinding(ref)
 			freshIDs[ref.ID] = struct{}{}

@@ -192,6 +192,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	// later CVE-watch a shrunken query set. Coordinate-specific advisory resolution is RETAINED
 	// unchanged in the loop below (advisoryFromArtifacts still serves the finding path — §4.1 / C5).
 	analysis := analysisOr(req.Analysis, ctx)
+	assessOpts := scanOptions(req.AssessOptions)
 	inv, invLanguage, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
@@ -219,7 +220,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	var assessed []report.Advisory
 	for _, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, req.AssessOptions...)
+		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
 		if stopped {
 			b.AddFinding(cutShortFinding(adv))
 			cut++

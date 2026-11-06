@@ -1004,6 +1004,11 @@ func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s}
 // the (name, arity) → SCIP resolution index. A missing/empty build dir is a hard error
 // (inv.4), matching IndexSymbols; read failures and skipped constructs degrade partiality.
 func loadProgram(buildDir string) (*program, error) {
+	return loadProgramCtx(context.Background(), buildDir)
+}
+
+// loadProgramCtx is loadProgram reading the tree's manifests through the run cache in ctx.
+func loadProgramCtx(ctx context.Context, buildDir string) (*program, error) {
 	info, err := os.Stat(buildDir)
 	if err != nil {
 		return nil, fmt.Errorf("pythonanalysis: stat build dir %q: %w", buildDir, err)
@@ -1153,7 +1158,7 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
-	declared, declaredComplete, read := declaredDistributions(buildDir)
+	declared, declaredComplete, read := declaredDistributions(ctx, buildDir)
 	if !read {
 		prog.readFailed = true
 	}
@@ -1378,7 +1383,7 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // it is computed once per scan.
 func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
 	return cachedResult(ctx, "callgraph", []string{req.BuildDir}, func() (plugin.CallGraphResult, error) {
-		prog, err := loadProgram(req.BuildDir)
+		prog, err := loadProgramCtx(ctx, req.BuildDir)
 		if err != nil {
 			return plugin.CallGraphResult{}, err
 		}

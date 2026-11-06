@@ -25,12 +25,12 @@ import (
 // it is computed once per scan.
 func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	return cachedResult(ctx, "ingress", []string{req.BuildDir}, func() (plugin.IngressResult, error) {
-		return findIngresses(req)
+		return findIngresses(ctx, req)
 	})
 }
 
-func findIngresses(req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
-	prog, err := loadProgram(req.BuildDir)
+func findIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
+	prog, err := loadProgramCtx(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err
 	}

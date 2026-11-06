@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -350,7 +351,7 @@ func TestResolveVersions_PipSelfUpgradeExhaustive(t *testing.T) {
 	if r := resolveVersion(t, dir, "pip"); r.Found || r.Exhaustive {
 		t.Fatalf("pip = found %v exhaustive %v, want absent and not exhaustive", r.Found, r.Exhaustive)
 	}
-	names, complete, read := declaredDistributions(dir)
+	names, complete, read := declaredDistributions(context.Background(), dir)
 	if !names["pip"] || !complete || !read {
 		t.Fatalf("declaredDistributions = %v complete %v read %v, want pip declared, complete and read", names, complete, read)
 	}
@@ -485,7 +486,7 @@ func TestResolveVersions_EnsurepipExhaustive(t *testing.T) {
 			t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)
 		}
 	}
-	names, complete, read := declaredDistributions(dir)
+	names, complete, read := declaredDistributions(context.Background(), dir)
 	if !names["pip"] || !names["setuptools"] || !complete || !read {
 		t.Fatalf("declaredDistributions = %v complete %v read %v, want pip and setuptools declared, complete and read", names, complete, read)
 	}
@@ -697,7 +698,7 @@ func TestResolveVersions_SeededExhaustive(t *testing.T) {
 			if r := resolveVersion(t, dir, "PyJWT"); r.Found || !r.Exhaustive {
 				t.Fatalf("PyJWT = found %v exhaustive %v, want absent and exhaustive", r.Found, r.Exhaustive)
 			}
-			names, _, _ := declaredDistributions(dir)
+			names, _, _ := declaredDistributions(context.Background(), dir)
 			for _, c := range []string{"pip", "setuptools", "wheel"} {
 				if r := resolveVersion(t, dir, c); r.Found || r.Exhaustive {
 					t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)

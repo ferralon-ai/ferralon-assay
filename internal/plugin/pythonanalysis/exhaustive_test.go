@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -693,7 +694,7 @@ func TestDeclaredDistributions_ReadsPastMalformedEntry(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"hatch.toml": "[envs.default]\ndependencies = [\"not a requirement!!\", 3, \"pyjwt==2.8.0\"]\n",
 	})
-	names, complete, _ := declaredDistributions(root)
+	names, complete, _ := declaredDistributions(context.Background(), root)
 	if !names["pyjwt"] {
 		t.Errorf("declared %v, want pyjwt", names)
 	}

@@ -61,7 +61,7 @@ func TestRunCacheOpsReplayWithoutComputing(t *testing.T) {
 		}, []string{"index", "resolve"}},
 		{"resolve dependency", func(ctx context.Context) (any, error) {
 			return ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.encode"}})
-		}, []string{"index", "resolve", "versurf"}},
+		}, []string{"index", "resolve", "callgraph", "versurf"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -358,5 +358,113 @@ func TestRunCacheResultsDoNotDependOnOrder(t *testing.T) {
 		if got, _ := ResolveDependencySymbols(ctx, resolve); !reflect.DeepEqual(got, wantResolve) {
 			t.Errorf("%v: resolve = %+v, want %+v", order, got, wantResolve)
 		}
+	}
+}
+
+// TestResolveSharesTheTreeGraphAcrossSymbolSets pins that resolving different symbols, or for
+// different packages, against one tree builds the tree's program and call graph once, and that
+// CallGraph reads the same entry in either order. Each result must equal the uncached one.
+func TestResolveSharesTheTreeGraphAcrossSymbolSets(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"app.py":       "import jwt\nimport yaml\n\ndef issue(c):\n    yaml.safe_load(c)\n    return jwt.encode(c)\n",
+		"myapp/use.py": runCacheCallsEncode,
+	})
+	reqs := []plugin.ResolveSymbolsRequest{
+		{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.encode"}},
+		{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.decode"}},
+		{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.encode", "jwt.decode"}},
+		{BuildDir: dir, PURL: "pkg:pypi/pyyaml", AdvisorySymbols: []string{"yaml.safe_load"}},
+		{BuildDir: dir, PURL: "pkg:pypi/myapp", AdvisorySymbols: []string{"issue"}},
+	}
+	want := make([]plugin.SymbolResolutionResult, len(reqs))
+	for i, r := range reqs {
+		var err error
+		if want[i], err = ResolveDependencySymbols(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(want[0].Resolved) == 0 || len(want[3].Resolved) == 0 || len(want[4].Resolved) == 0 {
+		t.Fatalf("the fixture resolves no boundary node, so the test cannot tell a wrong graph: %+v %+v", want[0], want[3])
+	}
+	wantGraph, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, graphFirst := range []bool{false, true} {
+		counts := countComputes(t)
+		ctx := cachedCtx(t)
+		graph := func() {
+			got, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil || !reflect.DeepEqual(got, wantGraph) {
+				t.Fatalf("graphFirst=%v: call graph = %+v, %v; want the uncached one", graphFirst, got, err)
+			}
+		}
+		if graphFirst {
+			graph()
+		}
+		for i, r := range reqs {
+			got, err := ResolveDependencySymbols(ctx, r)
+			if err != nil || !reflect.DeepEqual(got, want[i]) {
+				t.Fatalf("graphFirst=%v: request %d = %+v, %v; want %+v", graphFirst, i, got, err, want[i])
+			}
+		}
+		if !graphFirst {
+			graph()
+		}
+		if counts["callgraph"] != 1 {
+			t.Errorf("graphFirst=%v: the tree's graph computed %d times, want 1", graphFirst, counts["callgraph"])
+		}
+		if counts["resolve"] != len(reqs) {
+			t.Errorf("graphFirst=%v: resolve computed %d times, want %d (the symbols work stays per request)", graphFirst, counts["resolve"], len(reqs))
+		}
+	}
+}
+
+// TestResolveReplaysAPartialGraphAsPartial pins that a tree that could not be fully read gives
+// resolve the same declared partiality from a replayed graph as from a fresh one, and that the
+// replayed graph still says so.
+func TestResolveReplaysAPartialGraphAsPartial(t *testing.T) {
+	dir := writeTree(t, map[string]string{"app.py": runCacheCallsEncode, "locked.py": "def f():\n    return 1\n"})
+	locked := filepath.Join(dir, "locked.py")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
+	if f, err := os.Open(locked); err == nil {
+		_ = f.Close()
+		t.Skip("file stays readable with mode 0 (running as root)")
+	}
+	req := plugin.ResolveSymbolsRequest{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.encode"}}
+	want, err := ResolveDependencySymbols(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasToolFailure(want.Partiality) || len(want.Resolved) == 0 {
+		t.Fatalf("fixture: want a resolved node under tool_failure partiality, got %+v", want)
+	}
+
+	ctx := cachedCtx(t)
+	for _, syms := range [][]string{{"jwt.encode"}, {"jwt.encode", "jwt.decode"}} {
+		r := req
+		r.AdvisorySymbols = syms
+		fresh, err := ResolveDependencySymbols(context.Background(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ResolveDependencySymbols(ctx, r)
+		if err != nil || !reflect.DeepEqual(got, fresh) {
+			t.Fatalf("symbols %v = %+v, %v; want %+v", syms, got, err, fresh)
+		}
+		if got.Partiality.Complete || !hasToolFailure(got.Partiality) {
+			t.Fatalf("symbols %v: partiality = %+v, want declared partial with tool_failure", syms, got.Partiality)
+		}
+	}
+	graph, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graph.Partiality.Complete || !hasToolFailure(graph.Partiality) {
+		t.Fatalf("replayed graph partiality = %+v, want declared partial with tool_failure", graph.Partiality)
 	}
 }

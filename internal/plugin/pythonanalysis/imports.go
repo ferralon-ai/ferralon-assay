@@ -376,6 +376,16 @@ func (d distResolver) providesFirstParty(dist string) bool {
 	return false
 }
 
+// providesFirstParty reports whether dist names the build's own code, per the top-level import
+// names its sources provide.
+func (t treeGraph) providesFirstParty(dist string) bool {
+	firstParty := make(map[string]bool, len(t.FirstParty))
+	for _, top := range t.FirstParty {
+		firstParty[top] = true
+	}
+	return distResolver{curated: NewDistImportMap(CuratedContributions()...), firstParty: firstParty}.providesFirstParty(dist)
+}
+
 // firstPartyTops returns the top-level import names the build's own modules provide: each
 // module path's first segment, plus the segment after a "src" directory (src layout).
 func firstPartyTops(modules []string) map[string]bool {

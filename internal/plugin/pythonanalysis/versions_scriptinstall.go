@@ -170,11 +170,11 @@ func laneEnvKeeps(name string) bool {
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
 // mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
 // install_requires), ensurepip, mypy's --install-types or a prefix of it from --install-,
-// any word starting pip or conda, and an interpreter option that runs one as a module with its
-// name attached (-mpip, -Impip); or a task runner that runs commands a file not read here
-// defines, or installs into the environments it makes (poe and its module poethepoet, invoke
-// and its inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
-// candidate whenever a session installs.
+// any word starting pip or conda except the ones pipNotInstaller names, and an interpreter option that runs one as a module
+// with its name attached (-mpip, -Impip); or a task runner that runs commands a file not read
+// here defines, or installs into the environments it makes (poe and its module poethepoet,
+// invoke and its inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it
+// runs is a candidate whenever a session installs.
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
@@ -187,7 +187,23 @@ func laneToken(word string) bool {
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {
 		return true
 	}
-	return strings.HasPrefix(word, "pip") || strings.HasPrefix(word, "conda")
+	if !strings.HasPrefix(word, "pip") && !strings.HasPrefix(word, "conda") {
+		return false
+	}
+	return !pipNotInstaller(word)
+}
+
+// pipNotInstaller reports whether word, which starts with pip or conda, is a known word that
+// installs nothing; any other such word is an installer or an unknown tool, and stays one.
+// pipefail is the bash option; pipe, pipes and piped are the shell and filter vocabulary; a
+// word starting pipeline (pipeline, pipelines, pipelineAgg) is a CI or data pipeline; condarc
+// is conda's config file, not a command.
+func pipNotInstaller(word string) bool {
+	switch word {
+	case "pipefail", "pipe", "pipes", "piped", "condarc":
+		return true
+	}
+	return strings.HasPrefix(word, "pipeline")
 }
 
 // installTypesMin is the shortest prefix of installTypesFlag that no other common tool's flag

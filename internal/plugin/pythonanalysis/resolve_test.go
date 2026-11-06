@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -164,4 +166,52 @@ func TestResolveDependencySymbols_DependencyBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An advisory naming no non-blank symbol resolves to the empty result on every branch,
+// whatever the PURL or tree, and fails on a bad build dir exactly as a populated one does.
+func TestResolveDependencySymbols_NoNamedSymbol(t *testing.T) {
+	jwtTree := map[string]string{"app.py": "import jwt\n\ndef run(t):\n    return jwt.decode(t, 'k')\n"}
+	big := map[string]string{"app.py": "import jwt\n\ndef run(t):\n    return jwt.decode(t, 'k')\n"}
+	for i := 0; i < 40; i++ {
+		big[fmt.Sprintf("pkg/m%d.py", i)] = fmt.Sprintf("import jwt\n\nclass C%d:\n    def f(self, t):\n        return jwt.decode(t, 'k')\n", i)
+	}
+	trees := []struct {
+		name string
+		dir  string
+		purl string
+	}{
+		{"dist empty", writeTree(t, jwtTree), ""},
+		{"first-party dist", writeTree(t, map[string]string{"myapp/__init__.py": "def f():\n    pass\n"}), "pkg:pypi/myapp@1.0"},
+		{"boundary dist", writeTree(t, jwtTree), "pkg:pypi/pyjwt@2.8.0"},
+		{"large tree", writeTree(t, big), "pkg:pypi/pyjwt@2.8.0"},
+	}
+	symbols := map[string][]string{"nil": nil, "empty": {}, "blank": {"", "  "}}
+	for _, tr := range trees {
+		want := plugin.SymbolResolutionResult{Partiality: indexOf(t, tr.dir).Partiality}
+		for name, syms := range symbols {
+			t.Run(tr.name+"/"+name, func(t *testing.T) {
+				got, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+					BuildDir: tr.dir, PURL: tr.purl, AdvisorySymbols: syms,
+				})
+				if err != nil {
+					t.Fatalf("ResolveDependencySymbols: %v", err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("got %+v, want %+v", got, want)
+				}
+			})
+		}
+	}
+
+	t.Run("bad build dir", func(t *testing.T) {
+		for _, dir := range []string{filepath.Join(t.TempDir(), "missing"), t.TempDir()} {
+			_, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir: dir, PURL: "pkg:pypi/pyjwt@2.8.0", AdvisorySymbols: []string{""},
+			})
+			if err == nil {
+				t.Errorf("build dir %q: want an error", dir)
+			}
+		}
+	})
 }

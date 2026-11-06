@@ -374,7 +374,7 @@ func TestResolveSharesTheTreeGraphAcrossSymbolSets(t *testing.T) {
 		{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.decode"}},
 		{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.encode", "jwt.decode"}},
 		{BuildDir: dir, PURL: "pkg:pypi/pyyaml", AdvisorySymbols: []string{"yaml.safe_load"}},
-		{BuildDir: dir, PURL: "pkg:pypi/myapp", AdvisorySymbols: []string{"encode"}},
+		{BuildDir: dir, PURL: "pkg:pypi/myapp", AdvisorySymbols: []string{"issue"}},
 	}
 	want := make([]plugin.SymbolResolutionResult, len(reqs))
 	for i, r := range reqs {
@@ -383,7 +383,7 @@ func TestResolveSharesTheTreeGraphAcrossSymbolSets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(want[0].Resolved) == 0 || len(want[3].Resolved) == 0 {
+	if len(want[0].Resolved) == 0 || len(want[3].Resolved) == 0 || len(want[4].Resolved) == 0 {
 		t.Fatalf("the fixture resolves no boundary node, so the test cannot tell a wrong graph: %+v %+v", want[0], want[3])
 	}
 	wantGraph, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})

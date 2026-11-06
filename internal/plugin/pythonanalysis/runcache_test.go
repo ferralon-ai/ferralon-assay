@@ -258,3 +258,55 @@ func TestRunCacheDegrades(t *testing.T) {
 		}
 	})
 }
+
+// TestRunCacheResultsDoNotDependOnOrder pins that what a request returns is the same whichever
+// requests populated the cache before it.
+func TestRunCacheResultsDoNotDependOnOrder(t *testing.T) {
+	dir := writeTree(t, map[string]string{"app.py": flaskApp, "myapp/auth.py": "def encode(c):\n    return c\n", "myapp/use.py": runCacheCallsEncode})
+	sink := funcSCIP("app", nil, "open_conn", 1)
+	reach := plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{sink}}
+	resolve := plugin.ResolveSymbolsRequest{BuildDir: dir, PURL: "pkg:pypi/pyjwt", AdvisorySymbols: []string{"jwt.encode"}}
+	steps := map[string]func(context.Context) error{
+		"call graph": func(ctx context.Context) error {
+			_, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+			return err
+		},
+		"ingresses": func(ctx context.Context) error {
+			_, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
+			return err
+		},
+		"index": func(ctx context.Context) error {
+			_, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: dir})
+			return err
+		},
+		"resolve": func(ctx context.Context) error { _, err := ResolveDependencySymbols(ctx, resolve); return err },
+		"reach":   func(ctx context.Context) error { _, err := Reachability(ctx, reach); return err },
+	}
+	wantReach, err := Reachability(context.Background(), reach)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantResolve, err := ResolveDependencySymbols(context.Background(), resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := [][]string{
+		{"call graph", "ingresses", "index", "resolve", "reach"},
+		{"reach", "resolve", "index", "ingresses", "call graph"},
+		{"index", "call graph", "reach", "ingresses", "resolve"},
+	}
+	for _, order := range orders {
+		ctx := cachedCtx(t)
+		for _, name := range order {
+			if err := steps[name](ctx); err != nil {
+				t.Fatalf("%v: %s: %v", order, name, err)
+			}
+		}
+		if got, _ := Reachability(ctx, reach); !reflect.DeepEqual(got, wantReach) {
+			t.Errorf("%v: reachability = %+v, want %+v", order, got, wantReach)
+		}
+		if got, _ := ResolveDependencySymbols(ctx, resolve); !reflect.DeepEqual(got, wantResolve) {
+			t.Errorf("%v: resolve = %+v, want %+v", order, got, wantResolve)
+		}
+	}
+}

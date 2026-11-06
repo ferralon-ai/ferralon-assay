@@ -19,7 +19,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 
 	t.Run("no go.mod discloses no_manifest", func(t *testing.T) {
 		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), t.TempDir(), "go", "golang.org/x/text", "", "", ToolchainFact{})
+			context.Background(), t.TempDir(), GoWorkspace{}, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -34,7 +34,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	t.Run("unparseable go.mod discloses no_manifest", func(t *testing.T) {
 		dir := writeGoMod(t, "this is not a go.mod {{{\n")
 		_, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), dir, "go", "golang.org/x/text", "", "", ToolchainFact{})
+			context.Background(), dir, GoWorkspace{}, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -49,7 +49,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	t.Run("readable go.mod without the module discloses nothing", func(t *testing.T) {
 		dir := writeGoMod(t, gomod)
 		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), dir, "go", "github.com/not/required", "", "", ToolchainFact{})
+			context.Background(), dir, GoWorkspace{}, "go", "github.com/not/required", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -64,7 +64,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	t.Run("resolved module discloses nothing", func(t *testing.T) {
 		dir := writeGoMod(t, gomod)
 		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
-			context.Background(), dir, "go", "golang.org/x/text", "", "", ToolchainFact{})
+			context.Background(), dir, GoWorkspace{}, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 // "not installed" and disqualifies the advisory on a comparison that never ran.
 func TestResolveDependencyVersion_NoAnalyzerDisclosesAbsence(t *testing.T) {
 	_, flags, err := codebaseInventory{}.resolveDependencyVersion(
-		context.Background(), t.TempDir(), "java", "", "com.example:widget", "", ToolchainFact{})
+		context.Background(), t.TempDir(), GoWorkspace{}, "java", "", "com.example:widget", "", ToolchainFact{})
 	if err != nil {
 		t.Fatalf("resolveDependencyVersion: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestResolveDependencyVersion_NoAnalyzerDisclosesAbsence(t *testing.T) {
 // limit that was never attempted.
 func TestResolveDependencyVersion_GoToolchainStaysSilent(t *testing.T) {
 	_, flags, err := codebaseInventory{}.resolveDependencyVersion(
-		context.Background(), t.TempDir(), "go", "", "stdlib", "go-toolchain", ToolchainFact{})
+		context.Background(), t.TempDir(), GoWorkspace{}, "go", "", "stdlib", "go-toolchain", ToolchainFact{})
 	if err != nil {
 		t.Fatalf("resolveDependencyVersion: %v", err)
 	}
@@ -203,5 +203,54 @@ func TestExposureFootprint_HarvestsScopedPartiality(t *testing.T) {
 	}
 	if len(fp.PartialityFlags) != 0 {
 		t.Errorf("PartialityFlags = %v, want scoped limits kept out of the run-wide flags", fp.PartialityFlags)
+	}
+}
+
+// The exposure footprint harvests partiality and counts paths only when both the reachability and
+// the call-graph legs decode, as the single two-leg decode it was built on did. A malformed graph
+// must not let the reachability leg's limits or paths through on their own.
+func TestExposureFootprint_HarvestNeedsBothLegs(t *testing.T) {
+	reach := `{"partiality":{"complete":false,"reasons":["r"]},"paths":[{}]}`
+	cg := `{"partiality":{"complete":false,"reasons":["c"]},"edges":[]}`
+	tests := []struct {
+		name      string
+		payload   string
+		wantFlags []string
+		wantPaths int
+	}{
+		{"both legs decode", `{"reachability":` + reach + `,"call_graph":` + cg + `}`, []string{"r", "c"}, 1},
+		{"call graph malformed", `{"reachability":` + reach + `,"call_graph":{"edges":7}}`, nil, 0},
+		{"reachability malformed", `{"reachability":{"paths":"x"},"call_graph":` + cg + `}`, nil, 0},
+		{"call graph malformed, stub flag set", `{"reachability":` + reach + `,"call_graph":{"edges":7},"reachable":true}`, nil, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assessments := assessment.NewMemStore()
+			store := artifact.NewMemStore()
+			a, err := assessments.Create(assessment.Request{Vulnerability: assessment.VulnRef{ID: "GO-2021-0113"}})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if _, err := store.Put(&artifact.Artifact{AssessmentID: a.ID, Type: artifact.TypeReachability, ProducedBy: "test", Payload: []byte(tc.payload)}); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if err := (exposureFootprintStage{}).Run(context.Background(), a, store); err != nil {
+				t.Fatalf("exposureFootprintStage.Run: %v", err)
+			}
+			arts, err := store.Query(a.ID, artifact.TypeExposureFootprint)
+			if err != nil || len(arts) == 0 {
+				t.Fatalf("Query footprint: %v (%d artifacts)", err, len(arts))
+			}
+			var fp artifact.ExposureFootprintPayload
+			if err := json.Unmarshal(arts[0].Payload, &fp); err != nil {
+				t.Fatalf("unmarshal footprint: %v", err)
+			}
+			if !reflect.DeepEqual(fp.PartialityFlags, tc.wantFlags) {
+				t.Errorf("PartialityFlags = %v, want %v", fp.PartialityFlags, tc.wantFlags)
+			}
+			if fp.ReachablePathCount != tc.wantPaths {
+				t.Errorf("ReachablePathCount = %d, want %d", fp.ReachablePathCount, tc.wantPaths)
+			}
+		})
 	}
 }

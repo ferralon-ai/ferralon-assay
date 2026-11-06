@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -269,10 +270,33 @@ var entryLine = regexp.MustCompile(`^\s*[\w.-]+(?:\s*\[[^\]]*\])?\s*=\s*([A-Za-z
 // or ini header ("[pytest11]") before it, and a test runner's group is skipped.
 func setupPyEntrypoints(src string) []entrypoint {
 	clean, lits := stripPythonLiterals(src)
-	cr := []rune(clean)
 	var specs []string
-	// A group holds until the bracket that opened its value closes: depth is the bracket
-	// nesting at the literal, groupDepth the nesting just inside the group's value.
+	for _, start := range slices.Sorted(maps.Keys(lits)) {
+		group, ok := setupPyGroups(clean, lits)[start]
+		if !ok {
+			continue
+		}
+		for _, line := range strings.Split(lits[start].body, "\n") {
+			if t := strings.TrimSpace(line); strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
+				group = strings.TrimSpace(t[1 : len(t)-1])
+				continue
+			}
+			if m := entryLine.FindStringSubmatch(line); m != nil && !testPluginGroup(group) {
+				specs = append(specs, m[1])
+			}
+		}
+	}
+	return specEntrypoints(specs)
+}
+
+// setupPyGroups gives, for each string literal of a setup.py that is no dict key, the
+// entry-point group it sits in: the dict key ('pytest11': [...]) or keyword (pytest11=[...])
+// before it. A group holds until the bracket that opened its value closes.
+func setupPyGroups(clean string, lits map[int]strLiteral) map[int]string {
+	cr := []rune(clean)
+	groups := map[int]string{}
+	// depth is the bracket nesting at the literal, groupDepth the nesting just inside the
+	// group's value.
 	group, prev := "", 0
 	depth, groupDepth, keyed := 0, 0, false
 	for _, start := range slices.Sorted(maps.Keys(lits)) {
@@ -313,18 +337,9 @@ func setupPyEntrypoints(src string) []entrypoint {
 			group, keyed = lit.body, true
 			continue
 		}
-		g := group
-		for _, line := range strings.Split(lit.body, "\n") {
-			if t := strings.TrimSpace(line); strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
-				g = strings.TrimSpace(t[1 : len(t)-1])
-				continue
-			}
-			if m := entryLine.FindStringSubmatch(line); m != nil && !testPluginGroup(g) {
-				specs = append(specs, m[1])
-			}
-		}
+		groups[start] = group
 	}
-	return specEntrypoints(specs)
+	return groups
 }
 
 // keywordList is a keyword argument opening a list or tuple at the end of the text before a
@@ -1039,10 +1054,12 @@ func (prog *program) entryFiles(ep entrypoint) []int {
 	return nil
 }
 
-// resolveEntrypoints records the declared entrypoints on the program: each file they may
-// run is production code (entryModules), and each callable they name is a root
-// (entryRoots). A callable the module binds by a first-party import is followed to its
-// declaration.
+// resolveEntrypoints records the declared entrypoints on the program. Each file they may
+// run is production code (entryModules), and each is a launcher target in the seed
+// manifest launchers use (prog.launchers), so productionReached reaches it, escapeFrames
+// roots the callable it names and ingress discovery sees it, with no path of its own. A
+// callable the module binds by a first-party import is followed to its declaration, and
+// each module the chain passes through is production code.
 func (prog *program) resolveEntrypoints(eps []entrypoint) {
 	prog.entryModules = map[string]bool{}
 	seen := map[string]bool{}
@@ -1051,12 +1068,47 @@ func (prog *program) resolveEntrypoints(eps []entrypoint) {
 			if ep.script && importsTestFramework(prog.files[i].imports) {
 				continue
 			}
-			prog.entryModules[prog.files[i].module] = true
+			module := prog.files[i].module
+			prog.entryModules[module] = true
 			if ep.attr != "" {
-				prog.rootEntryAttr(i, strings.Split(ep.attr, "."), seen, map[string]bool{})
+				prog.rootEntryAttr(i, strings.Split(ep.attr, "."), map[string]bool{})
+			}
+			t := entryLauncher(module, ep.attr)
+			if key := strings.Join(t.segs, "/") + "\x00" + strconv.Itoa(t.mod); !seen[key] {
+				seen[key] = true
+				prog.launchers = append(prog.launchers, t)
 			}
 		}
 	}
+}
+
+// entryLauncher is the launcher target for a declared entrypoint that runs attr of the file
+// whose module path is module. It names code the lane may not see (a server's app argument
+// can name a dependency's), so its absence is expected, and it is a root only: the manifest
+// readers (launchers.go) make a console script an ingress.
+func entryLauncher(module, attr string) launchTarget {
+	mod := strings.Split(module, "/")
+	segs := append(slices.Clone(mod), dottedSegs(attr)...)
+	return launchTarget{segs: segs, mod: len(mod), optional: true, exact: true, loadOnly: true}
+}
+
+// settingTargets reads the application a Django settings module or gunicorn config names
+// (settingEntrypoints) as file-level launcher targets, so they seed only once the file is
+// reached, like the settings settingsLaunchers reads. A setting that one already reads is
+// left to it.
+func settingTargets(clean string, lits map[int]strLiteral) []launchTarget {
+	read := map[string]bool{}
+	for _, t := range settingsLaunchers(clean, lits) {
+		read[strings.Join(t.segs, "/")] = true
+	}
+	var out []launchTarget
+	for _, ep := range settingEntrypoints(clean, lits) {
+		t := entryLauncher(ep.module, ep.attr)
+		if !read[strings.Join(t.segs, "/")] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // rootEntryAttr roots the declaration attr names in file i: a function, or a method of a
@@ -1064,7 +1116,7 @@ func (prog *program) resolveEntrypoints(eps []entrypoint) {
 // to the module of that exact path when one exists, and each module the chain passes
 // through to the declaration is production code, since the launcher imports it. It
 // reports whether the declaration was found.
-func (prog *program) rootEntryAttr(i int, attr []string, seen, visited map[string]bool) bool {
+func (prog *program) rootEntryAttr(i int, attr []string, visited map[string]bool) bool {
 	f := &prog.files[i]
 	key := f.module + ":" + strings.Join(attr, ".")
 	if visited[key] {
@@ -1075,10 +1127,6 @@ func (prog *program) rootEntryAttr(i int, attr []string, seen, visited map[strin
 	for _, fd := range f.decls {
 		if fd.name == attr[len(attr)-1] && slices.Equal(fd.enclosing, attr[:len(attr)-1]) {
 			found = true
-			if s := fd.scip(); !seen[s] {
-				seen[s] = true
-				prog.entryRoots = append(prog.entryRoots, fd)
-			}
 		}
 	}
 	if !found {
@@ -1090,7 +1138,7 @@ func (prog *program) rootEntryAttr(i int, attr []string, seen, visited map[strin
 				files = exact
 			}
 			for _, j := range files {
-				found = prog.rootEntryAttr(j, next, seen, visited) || found
+				found = prog.rootEntryAttr(j, next, visited) || found
 			}
 		}
 	}

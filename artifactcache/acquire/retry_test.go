@@ -154,9 +154,23 @@ func TestAcquireTransientFailures(t *testing.T) {
 	}
 }
 
+// countingTransport counts the requests the client sends, whether or not they reach the server.
+type countingTransport struct {
+	next     http.RoundTripper
+	requests atomic.Int32
+}
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.requests.Add(1)
+	return c.next.RoundTrip(r)
+}
+
 // A registry that does not answer within the client's own timeout is unavailable and retried;
 // one still not answering when the caller's deadline passes is the caller's deadline, returned
 // as is for the caller to read as cancelled, and not retried.
+//
+// Attempts are counted as the client sends them: on a loaded machine the dial and TLS handshake
+// can outlast a 50ms timeout, so an attempt may never reach the handler.
 func TestAcquireSlowRegistry(t *testing.T) {
 	data := []byte("hermetic .nupkg fixture bytes")
 	tests := []struct {
@@ -173,9 +187,7 @@ func TestAcquireSlowRegistry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			release := make(chan struct{})
-			var requests atomic.Int32
 			h.serve(t, nugetHost, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
 				select {
 				case <-r.Context().Done():
 				case <-release:
@@ -184,6 +196,8 @@ func TestAcquireSlowRegistry(t *testing.T) {
 			t.Cleanup(func() { close(release) })
 			client := *h.client
 			client.Timeout = tt.clientTimeout
+			sent := &countingTransport{next: client.Transport}
+			client.Transport = sent
 			a := NewAcquirer(t.TempDir(), &client)
 			a.SetRetrySleep(func(context.Context, time.Duration) error { return nil })
 			ctx := context.Background()
@@ -199,7 +213,7 @@ func TestAcquireSlowRegistry(t *testing.T) {
 			if errors.Is(err, artifactcache.ErrDeclaredAbsent) {
 				t.Fatalf("a slow registry reads as absent: %v", err)
 			}
-			if n := int(requests.Load()); n != tt.wantReqs {
+			if n := int(sent.requests.Load()); n != tt.wantReqs {
 				t.Fatalf("requests = %d, want %d", n, tt.wantReqs)
 			}
 		})
@@ -314,19 +328,27 @@ func TestRegistryID(t *testing.T) {
 	}
 }
 
-// Only the registry's own 401/403 is a verdict on the credential. A host a redirect reached
-// was never sent it, and a storage host commonly refuses a key it does not hold, so its
-// refusal reads as not served whether or not the registry was sent a token.
+// A 401/403 is a verdict on a credential only from a host this run sent one to. A host a
+// redirect reached was never sent the registry's, and a storage host commonly refuses a key it
+// does not hold, so its refusal reads as not served whether or not the registry was sent a
+// token; a redirect target with its own bound token was sent that token, so its refusal is
+// credential-rejected.
 func TestAcquireRedirectTargetRefusal(t *testing.T) {
 	data := []byte("hermetic .nupkg fixture bytes")
 	tests := []struct {
-		name     string
-		token    bool
-		target   string // redirect target host
-		status   int
-		want     error
-		wantCode string
+		name        string
+		token       bool
+		targetToken bool   // the redirect target host has its own bound token
+		target      string // redirect target host
+		status      int
+		want        error
+		wantCode    string
+		wantHost    string
 	}{
+		{name: "redirect target with its own token answers 401", token: true, targetToken: true, target: hostB, status: http.StatusUnauthorized,
+			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyCredentialRejected, wantHost: hostB},
+		{name: "redirect target with its own token answers 403, registry sent none", targetToken: true, target: hostB, status: http.StatusForbidden,
+			want: artifactcache.ErrPolicyRefused, wantCode: artifactcache.PolicyCredentialRejected, wantHost: hostB},
 		{name: "token sent, storage host answers 403", token: true, target: hostB, status: http.StatusForbidden, want: artifactcache.ErrDeclaredAbsent},
 		{name: "no auth entry, storage host answers 403", target: hostB, status: http.StatusForbidden, want: artifactcache.ErrDeclaredAbsent},
 		{name: "no auth entry, storage host answers 401", target: hostB, status: http.StatusUnauthorized, want: artifactcache.ErrDeclaredAbsent},
@@ -354,13 +376,16 @@ func TestAcquireRedirectTargetRefusal(t *testing.T) {
 			if tt.target != hostA {
 				h.serve(t, tt.target, refuse)
 			}
-			creds := RegistryCredentials{}
+			bound := map[string]checkout.Credential{}
 			if tt.token {
-				creds = NewRegistryCredentials(map[string]checkout.Credential{hostA: checkout.NewCredential(tokenA)})
+				bound[hostA] = checkout.NewCredential(tokenA)
+			}
+			if tt.targetToken {
+				bound[hostB] = checkout.NewCredential(tokenB)
 			}
 			a := NewAcquirer(t.TempDir(), h.client)
 			a.SetRetrySleep(func(context.Context, time.Duration) error { return nil })
-			_, err := a.Acquire(context.Background(), nugetRef(data), twoHostPolicy(creds, "https://"+hostA))
+			_, err := a.Acquire(context.Background(), nugetRef(data), twoHostPolicy(NewRegistryCredentials(bound), "https://"+hostA))
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("Acquire err = %v, want %v", err, tt.want)
 			}
@@ -369,8 +394,14 @@ func TestAcquireRedirectTargetRefusal(t *testing.T) {
 				if !errors.As(err, &pr) || pr.Code != tt.wantCode {
 					t.Fatalf("Acquire err = %v, want policy code %q", err, tt.wantCode)
 				}
+				if tt.wantHost != "" && pr.Host != tt.wantHost {
+					t.Fatalf("refusal names host %q, want %q", pr.Host, tt.wantHost)
+				}
 			}
-			if tt.target != hostA && storageAuth != "" {
+			if tt.targetToken && storageAuth != "Bearer "+tokenB {
+				t.Fatalf("redirect target was sent Authorization %q, want its own token", storageAuth)
+			}
+			if tt.target != hostA && !tt.targetToken && storageAuth != "" {
 				t.Fatalf("storage host was sent Authorization %q", storageAuth)
 			}
 		})

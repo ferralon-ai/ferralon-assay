@@ -3,6 +3,7 @@ package goanalysis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -279,8 +281,9 @@ func TestSearchBuildModules_Timeout(t *testing.T) {
 	app := newApp(t, []string{"example.com/a", "example.com/fork/db"}, "", nil)
 	coldCache(t)
 	files := http.FileServer(http.Dir(proxy))
+	var serveZips atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".zip") {
+		if strings.HasSuffix(r.URL.Path, ".zip") && !serveZips.Load() {
 			<-r.Context().Done()
 			return
 		}
@@ -291,8 +294,9 @@ func TestSearchBuildModules_Timeout(t *testing.T) {
 	listAll(t, app)
 	defer func(d time.Duration) { moduleSearchTimeout = d }(moduleSearchTimeout)
 	moduleSearchTimeout = 3 * time.Second
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
 	start := time.Now()
-	got := search(t, app, gogsDB, gogsSymbols)
+	got := searchBuildModules(ctx, app, gogsDB, gogsSymbols)
 	if d := time.Since(start); d > time.Minute {
 		t.Errorf("search took %v, want it bounded by moduleSearchTimeout", d)
 	}
@@ -302,6 +306,209 @@ func TestSearchBuildModules_Timeout(t *testing.T) {
 	if slices.Contains(got.Searched, "example.com/a") || slices.Contains(got.Searched, "example.com/fork") {
 		t.Fatalf("Searched = %v, want neither downloaded module", got.Searched)
 	}
+	// The download cut short is not kept for the scan: the next search downloads again.
+	serveZips.Store(true)
+	wantSearch(t, searchBuildModules(ctx, app, gogsDB, gogsSymbols),
+		[]string{"example.com/a", "example.com/app", "example.com/fork"}, []string{"example.com/fork"})
+}
+
+func TestGoflagsBlockSearch_CutShortIsNotKept(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	scan := WithRunCacheDir(context.Background(), t.TempDir())
+	cancelled, cancel := context.WithCancel(scan)
+	cancel()
+	if !goflagsBlockSearch(cancelled, app) {
+		t.Fatal("GOFLAGS not read lets the search run")
+	}
+	if goflagsBlockSearch(scan, app) {
+		t.Fatal("a GOFLAGS read cut short was kept for the scan")
+	}
+}
+
+// TestGoflagsBlock: a GOFLAGS entry that may change the module list or the source the build
+// compiles blocks the module search, in every spelling the go command accepts or rejects; a flag
+// shown harmless does not.
+func TestGoflagsBlock(t *testing.T) {
+	tests := []struct {
+		goflags string
+		want    bool
+	}{
+		{"", false},
+		{"  \n", false},
+		{"-trimpath", false},
+		{"--trimpath", false},
+		{"-trimpath=true", false},
+		{"-mod=readonly", false},
+		{"--mod=readonly", false},
+		{"-tags=prod,netgo -race -count=1 -modcacherw", false},
+		{"-ldflags=-s -buildvcs=false", false},
+		{"'-gcflags=all=-N -l' -trimpath", false},
+		{"\"-ldflags=-X main.v=1\"\t-p=4\n", false},
+		{"-cover -coverpkg=./... -pgo=off -buildmode=pie -v", false},
+
+		{"-modfile=other.mod", true},
+		{"--modfile=other.mod", true},
+		{"-modfile other.mod", true},
+		{"--modfile other.mod", true},
+		{"-modfile", true},
+		{"'-modfile=other.mod'", true},
+		{"\"--modfile=a b.mod\"", true},
+		{"-overlay=overlay.json", true},
+		{"--overlay=overlay.json", true},
+		{"-overlay overlay.json", true},
+		{"--overlay overlay.json", true},
+		{"-mod=mod", true},
+		{"--mod=mod", true},
+		{"-mod mod", true},
+		{"--mod mod", true},
+		{"-mod=vendor", true},
+		{"--mod=vendor", true},
+		{"-mod vendor", true},
+		{"-mod readonly", true},
+		{"-mod", true},
+		{"-mod=", true},
+		{"-mod=Readonly", true},
+		{"-toolexec=wrap", true},
+		{"--toolexec=wrap", true},
+		{"-toolexec wrap", true},
+		{"'-toolexec=wrap -v'", true},
+		{"-linkshared", true},
+		{"--linkshared", true},
+		{"-pkgdir=/tmp/p", true},
+		{"-pkgdir /tmp/p", true},
+		{"-C=dir", true},
+		{"-trimpath -overlay=o.json", true},
+		{"-overlay=o.json -trimpath", true},
+		{"-trimpath --mod=mod -race", true},
+
+		{"-nosuchflag", true},
+		{"---trimpath", true},
+		{"-", true},
+		{"--", true},
+		{"-=x", true},
+		{"trimpath", true},
+		{"-tags prod", true},
+		{"-trimpath x", true},
+		{"'-trimpath", true},
+		{"\"-trimpath", true},
+	}
+	for _, tc := range tests {
+		if got := goflagsBlock(tc.goflags); got != tc.want {
+			t.Errorf("goflagsBlock(%q) = %v, want %v", tc.goflags, got, tc.want)
+		}
+	}
+}
+
+// TestGoflagsBlockSearch reads GOFLAGS the way the go command does, from the environment and the
+// go env file, and blocks on any GOFLAGS it cannot read.
+func TestGoflagsBlockSearch(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	tests := []struct {
+		name, env, file string
+		want            bool
+	}{
+		{"none", "", "", false},
+		{"harmless", "-trimpath -tags=prod", "", false},
+		{"readonly", "-mod=readonly", "", false},
+		{"-json", "-json", "", false},
+		{"-u before -overlay", "-u -overlay=o.json", "", true},
+		{"-u=false before -overlay", "-u=false -overlay=o.json", "", true},
+		{"-overlay", "-overlay=o.json", "", true},
+		{"--overlay", "--overlay=o.json", "", true},
+		{"-overlay value apart", "-overlay o.json", "", true},
+		{"-mod=mod", "-mod=mod", "", true},
+		{"--mod mod", "--mod mod", "", true},
+		{"-mod=vendor", "-mod=vendor", "", true},
+		{"-modfile", "-modfile=x.mod", "", true},
+		{"-toolexec", "-toolexec=wrap", "", true},
+		{"go env file -overlay", "", "-overlay=o.json", true},
+		{"go env file --mod=mod", "", "--mod=mod", true},
+		{"go env file harmless", "", "-trimpath", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			goenv := filepath.Join(t.TempDir(), "env")
+			if err := os.WriteFile(goenv, []byte("GOFLAGS="+tc.file+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GOENV", goenv)
+			t.Setenv("GOFLAGS", tc.env) // an empty GOFLAGS leaves the go env file's in force
+			if got := goflagsBlockSearch(context.Background(), app); got != tc.want {
+				t.Fatalf("goflagsBlockSearch = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	t.Run("unreadable", func(t *testing.T) {
+		t.Setenv("GOFLAGS", "")
+		orig := modsearchGo
+		modsearchGo = func(cmd *exec.Cmd) ([]byte, error) {
+			if cmd.Args[1] == "env" && cmd.Args[len(cmd.Args)-1] == "GOFLAGS" {
+				return nil, errors.New("go env failed")
+			}
+			return orig(cmd)
+		}
+		t.Cleanup(func() { modsearchGo = orig })
+		if !goflagsBlockSearch(context.Background(), app) {
+			t.Fatal("GOFLAGS that cannot be read lets the search run")
+		}
+		if got := search(t, app, gogsDB, gogsSymbols); got != nil {
+			t.Fatalf("searchBuildModules = %+v, want nil", got)
+		}
+	})
+}
+
+// TestSearchBuildModules_GoflagsBlock: a GOFLAGS flag that may change the module list or the source
+// the build compiles leaves the advisory with no module search, though the go command lists the
+// build under it, and so with no outside-build ground (trigger's "no module search" row).
+func TestSearchBuildModules_GoflagsBlock(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	overlay := filepath.Join(t.TempDir(), "overlay.json")
+	if err := os.WriteFile(overlay, []byte(`{"Replace":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		goflags string
+		block   bool
+	}{
+		{"-trimpath", false},
+		{"-overlay=" + overlay, true},
+		{"--overlay=" + overlay, true},
+		{"-mod=mod", true},
+		{"-toolexec=/nonexistent/wrap", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.goflags, func(t *testing.T) {
+			t.Setenv("GOFLAGS", tc.goflags)
+			if _, err := listModules(context.Background(), app); err != nil {
+				t.Fatalf("go list -m all under GOFLAGS=%s: %v", tc.goflags, err)
+			}
+			got := search(t, app, gogsDB, gogsSymbols)
+			if tc.block {
+				if got != nil {
+					t.Fatalf("searchBuildModules = %+v, want nil", got)
+				}
+				return
+			}
+			wantSearch(t, got, []string{"example.com/a", "example.com/app"}, nil)
+		})
+	}
+	t.Run("ResolveDependencySymbols", func(t *testing.T) {
+		for _, goflags := range []string{"", "-mod=mod"} {
+			t.Setenv("GOFLAGS", goflags)
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir: app, PURL: "pkg:golang/" + gogsDB, AdvisorySymbols: gogsSymbols,
+			})
+			if err != nil {
+				t.Fatalf("ResolveDependencySymbols under GOFLAGS=%q: %v", goflags, err)
+			}
+			if (res.ModuleSearch == nil) != (goflags != "") {
+				t.Fatalf("ModuleSearch under GOFLAGS=%q = %+v", goflags, res.ModuleSearch)
+			}
+		}
+	})
 }
 
 func TestResolveDependencySymbols_ModuleSearch(t *testing.T) {
@@ -452,6 +659,126 @@ func TestDependencyHolds_UnreadableBuildList(t *testing.T) {
 	}
 }
 
+// TestSameDir_Unresolvable: a main module whose directory cannot be resolved is not buildDir's own, so
+// a path it holds is measured as a dependency's rather than resolved name-wide as first-party.
+func TestSameDir_Unresolvable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	if sameDir(missing, missing) {
+		t.Fatal("sameDir counts a directory it cannot resolve as buildDir's own module")
+	}
+}
+
+// TestDependencyHolds_VendorMode reads vendor/modules.txt only when the go command reads the build
+// from vendor/. A vendor/ it does not read can be stale: it may name a nested module whose path has
+// since moved into the main module, and taking it would scope a first-party advisory to nothing.
+func TestDependencyHolds_VendorMode(t *testing.T) {
+	// stale names example.com/app/sub, a nested module the main module has since absorbed.
+	const stale = "# example.com/app/sub v1.0.0\n## explicit\nexample.com/app/sub\n"
+	// own is a main module whose example.com/app/sub/x is its own package.
+	own := map[string]string{"app/sub/x/x.go": "package x\n"}
+	// nested is a module of the main module's tree, example.com/app/sub, replaced by its directory.
+	nested := map[string]string{"app/sub/go.mod": "module example.com/app/sub\n\ngo 1.21\n", "app/sub/x/x.go": "package x\n"}
+	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"x/x.go": "package x\n"}}
+	tests := []struct {
+		name       string
+		proxied    []srcModule       // nil: modA
+		imports    []string          // nil: example.com/a
+		gomodTail  string            // appended to go.mod before go mod tidy
+		files      map[string]string // written beside go.mod's directory before go mod tidy
+		goLine     string            // the go.mod go version, set after vendoring
+		vendor     string            // "": no vendor/; "vendor": go mod vendor; else vendor/modules.txt verbatim
+		goflags    string
+		offline    bool // GOPROXY=off over a cold cache, so a listing outside vendor mode fails
+		holds      string
+		want       bool
+		wantVendor bool // listModules answers errVendorMode
+	}{
+		{name: "a vendored build reads vendor/modules.txt", goLine: "1.21", vendor: "vendor", offline: true,
+			holds: "example.com/a/ssh", want: true, wantVendor: true},
+		{name: "a vendored build still holds first-party paths itself", goLine: "1.21", vendor: "vendor", offline: true,
+			holds: "example.com/app/sub/x", wantVendor: true},
+		{name: "a stale vendor/ the go command rejects is not read", goLine: "1.21", vendor: stale,
+			holds: "example.com/app/sub/x"},
+		{name: "a listing failing outside vendor mode does not read a stale vendor/", goLine: "1.21", vendor: stale,
+			goflags: "-mod=mod", offline: true, holds: "example.com/app/sub/x"},
+		{name: "go 1.13 with vendor/ and no -mod=vendor is not vendor mode", goLine: "1.13", vendor: stale,
+			offline: true, holds: "example.com/app/sub/x"},
+		{name: "GOFLAGS=-mod=vendor is vendor mode", goLine: "1.13", vendor: "vendor", goflags: "-mod=vendor",
+			offline: true, holds: "example.com/a/ssh", want: true, wantVendor: true},
+		{name: "GOFLAGS=-mod=mod over a vendored build is not vendor mode", goLine: "1.21", vendor: "vendor",
+			goflags: "-mod=mod", offline: true, holds: "example.com/a/ssh"},
+		{name: "no vendor/", goLine: "1.21", offline: true, holds: "example.com/a/ssh"},
+		// The go command checks only "## explicit" entries against go.mod: up to go 1.16 it takes a
+		// stale package entry, and later a stale entry with no packages.
+		{name: "a stale non-explicit entry on go 1.16 does not hold the main module's own path",
+			imports: []string{"example.com/app/sub/x"}, files: own, goLine: "1.16",
+			vendor: "# example.com/app/sub v1.0.0\nexample.com/app/sub/x\n", holds: "example.com/app/sub/x", wantVendor: true},
+		{name: "a stale non-explicit entry on go 1.16 does not hold the main module's own module path",
+			imports: []string{"example.com/app/sub/x"}, files: own, goLine: "1.16",
+			vendor: "# example.com/app/sub v1.0.0\nexample.com/app/sub/x\n", holds: "example.com/app/sub", wantVendor: true},
+		{name: "a stale module-only entry on go 1.21 does not hold the main module's own path",
+			imports: []string{"example.com/app/sub/x"}, files: own, goLine: "1.21",
+			vendor: "# example.com/app/sub v1.0.0\n", holds: "example.com/app/sub", wantVendor: true},
+		{name: "a vendored module nested in the main module's tree under its own go.mod is a dependency",
+			imports: []string{"example.com/app/sub/x"}, gomodTail: "\nrequire example.com/app/sub v0.0.0\n\nreplace example.com/app/sub => ./sub\n",
+			files: nested, goLine: "1.21", vendor: "vendor", offline: true, holds: "example.com/app/sub/x", want: true, wantVendor: true},
+		{name: "a vendored module nested under the main module's path, outside its tree, is a dependency",
+			proxied: []srcModule{modSub}, imports: []string{"example.com/app/sub/x"}, goLine: "1.21", vendor: "vendor",
+			offline: true, holds: "example.com/app/sub/x", want: true, wantVendor: true},
+		{name: "a vendored module's own path nested under the main module's path, outside its tree, is a dependency",
+			proxied: []srcModule{modSub}, imports: []string{"example.com/app/sub/x"}, goLine: "1.21", vendor: "vendor",
+			offline: true, holds: "example.com/app/sub", want: true, wantVendor: true},
+		{name: "a main module directory without Go files does not shadow a vendored package",
+			proxied: []srcModule{modSub}, imports: []string{"example.com/app/sub/x"}, files: map[string]string{"app/sub/x/README": ""},
+			goLine: "1.21", vendor: "vendor", offline: true, holds: "example.com/app/sub/x", want: true, wantVendor: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxied := tt.proxied
+			if proxied == nil {
+				proxied = []srcModule{modA}
+			}
+			newSourceProxy(t, proxied)
+			imports := tt.imports
+			if imports == nil {
+				imports = []string{"example.com/a"}
+			}
+			app := newApp(t, imports, tt.gomodTail, tt.files)
+			switch tt.vendor {
+			case "":
+			case "vendor":
+				vendor(t, app)
+			default:
+				writeDir(t, app, map[string]string{"vendor/modules.txt": tt.vendor})
+			}
+			gomod := filepath.Join(app, "go.mod")
+			data, err := os.ReadFile(gomod)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gomod, []byte(strings.Replace(string(data), "\ngo 1.21\n", "\ngo "+tt.goLine+"\n", 1)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tt.offline {
+				t.Setenv("GOPROXY", "off")
+				coldCache(t)
+			}
+			t.Setenv("GOFLAGS", tt.goflags)
+			ctx := context.Background()
+			_, err = listModules(ctx, app)
+			if err == nil {
+				t.Fatal("listModules succeeded; the row does not exercise the fallback")
+			}
+			if got := errors.Is(err, errVendorMode); got != tt.wantVendor {
+				t.Fatalf("listModules: %v; vendor mode %v, want %v", err, got, tt.wantVendor)
+			}
+			if got := dependencyHolds(ctx, app, tt.holds); got != tt.want {
+				t.Fatalf("dependencyHolds(%s) = %v, want %v", tt.holds, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 	reader := map[string]string{"app/reader.go": "package main\n\ntype Reader struct{}\n\nfunc (*Reader) Verify() error { return nil }\n\nfunc Verify() bool { return true }\n"}
 	modSub := srcModule{"example.com/app/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nvar X = 1\n"}}
@@ -504,6 +831,9 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		newSourceProxy(t, []srcModule{modSub})
 		app := newApp(t, []string{"example.com/app/sub"}, "", reader)
 		wantNone(t, resolve(t, app, "pkg:golang/example.com/app/sub/x", []string{"Verify"}))
+		// Outside vendor mode the build list decides, whatever directories the main module's tree has.
+		writeDir(t, app, map[string]string{"sub/x/README": ""})
+		wantNone(t, resolve(t, app, "pkg:golang/example.com/app/sub/x", []string{"Verify"}))
 	})
 	t.Run("a dependency held under its replacement's path", func(t *testing.T) {
 		newSourceProxy(t, []srcModule{modA})
@@ -546,6 +876,191 @@ func TestResolveDependencySymbols_DependencyScope(t *testing.T) {
 		wantNone(t, resolve(t, app, "pkg:golang/example.com/a/ssh", []string{"example.com/a/ssh.Certificate.Verify"}))
 		wantFirstParty(t, resolve(t, app, "pkg:golang/example.com/app/missing", []string{"main.Verify"}))
 	})
+}
+
+// recordGo records each go command a module search runs, then runs it.
+func recordGo(t *testing.T) *[]*exec.Cmd {
+	t.Helper()
+	var cmds []*exec.Cmd
+	orig := modsearchGo
+	modsearchGo = func(cmd *exec.Cmd) ([]byte, error) {
+		cmds = append(cmds, cmd)
+		return orig(cmd)
+	}
+	t.Cleanup(func() { modsearchGo = orig })
+	return &cmds
+}
+
+// goRuns counts the recorded go commands whose arguments start with sub.
+func goRuns(cmds []*exec.Cmd, sub string) int {
+	n := 0
+	for _, c := range cmds {
+		if strings.HasPrefix(strings.Join(c.Args[1:], " "), sub) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestModuleSearchGoRunsOncePerBuild(t *testing.T) {
+	const list, flags, download = "list -m -json all", "env -json=false -u=false -w=false GOFLAGS", "mod download"
+	type step struct {
+		ctx       func(context.Context) context.Context // nil: the scan's context
+		holds     string                                // dependencyHolds this path, want held
+		search    string                                // or searchBuildModules this path
+		want      bool
+		wantFails bool // listModules fails
+	}
+	cancelled := func(ctx context.Context) context.Context {
+		ctx, cancel := context.WithCancel(ctx)
+		cancel()
+		return ctx
+	}
+	tests := []struct {
+		name     string
+		vendored bool
+		noModule bool
+		noCache  bool
+		steps    []step
+		envAfter int // set an extra environment variable after this many steps (0: never)
+		want     map[string]int
+	}{{
+		name: "many advisories against one build list it once",
+		steps: []step{
+			{holds: "example.com/a", want: true},
+			{holds: "example.com/a/sub", want: true},
+			{holds: "example.com/app/x"},
+			{holds: "gogs.io/gogs/internal/db"},
+			{search: gogsDB},
+			{search: "github.com/other/pkg"},
+			{holds: "example.com/a", want: true},
+		},
+		want: map[string]int{list: 1, flags: 1, download: 1},
+	}, {
+		name:    "without a run cache every advisory lists",
+		steps:   []step{{holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}, {search: gogsDB}},
+		noCache: true,
+		want:    map[string]int{list: 3, flags: 1, download: 1},
+	}, {
+		name:     "a changed environment is its own entry",
+		steps:    []step{{holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}},
+		envAfter: 1,
+		want:     map[string]int{list: 2},
+	}, {
+		name:     "a failed listing stays failed",
+		noModule: true,
+		steps:    []step{{wantFails: true}, {wantFails: true}, {holds: "example.com/a"}},
+		want:     map[string]int{list: 1},
+	}, {
+		name:     "a vendored build's failed listing still falls back to vendor/modules.txt",
+		vendored: true,
+		steps:    []step{{holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}, {wantFails: true}},
+		want:     map[string]int{list: 1},
+	}, {
+		name:  "a listing cut short is not kept",
+		steps: []step{{ctx: cancelled, wantFails: true}, {holds: "example.com/a", want: true}, {holds: "example.com/a", want: true}},
+		want:  map[string]int{list: 2},
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newSourceProxy(t, []srcModule{modA})
+			app := newApp(t, []string{"example.com/a"}, "", nil)
+			if tt.vendored {
+				vendor(t, app)
+			}
+			if tt.noModule {
+				app = t.TempDir()
+			}
+			coldCache(t) // the download searchBuildModules issues has modules to fetch
+			scan := context.Background()
+			if !tt.noCache {
+				scan = WithRunCacheDir(scan, t.TempDir())
+			}
+			cmds := recordGo(t)
+			for i, s := range tt.steps {
+				if tt.envAfter != 0 && i == tt.envAfter {
+					t.Setenv("ASSAY_MODLIST_KEY_PROBE", "1")
+				}
+				ctx := scan
+				if s.ctx != nil {
+					ctx = s.ctx(scan)
+				}
+				switch {
+				case s.wantFails:
+					if _, err := listModules(ctx, app); err == nil {
+						t.Fatalf("step %d: listModules succeeded, want the listing's failure", i)
+					}
+				case s.holds != "":
+					if got := dependencyHolds(ctx, app, s.holds); got != s.want {
+						t.Fatalf("step %d: dependencyHolds(%s) = %v, want %v", i, s.holds, got, s.want)
+					}
+				case s.search != "":
+					wantSearch(t, searchBuildModules(ctx, app, s.search, gogsSymbols), []string{"example.com/a", "example.com/app"}, nil)
+				}
+			}
+			for sub, want := range tt.want {
+				if got := goRuns(*cmds, sub); got != want {
+					t.Errorf("go %s ran %d times, want %d", sub, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestModuleSearchKeysOnTheBuild(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	withA := newApp(t, []string{"example.com/a"}, "", nil)
+	without := newApp(t, nil, "", nil)
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	cmds := recordGo(t)
+	for _, tt := range []struct {
+		app  string
+		want bool
+	}{{withA, true}, {without, false}, {withA, true}} {
+		if got := dependencyHolds(ctx, tt.app, "example.com/a"); got != tt.want {
+			t.Fatalf("dependencyHolds(%s, example.com/a) = %v, want %v", tt.app, got, tt.want)
+		}
+	}
+	if got := goRuns(*cmds, "list -m -json all"); got != 2 {
+		t.Errorf("go list -m ran %d times for two builds, want 2", got)
+	}
+}
+
+func TestModuleSearchRunsUnderTheLoadToolchain(t *testing.T) {
+	newSourceProxy(t, []srcModule{modA})
+	app := newApp(t, []string{"example.com/a"}, "", nil)
+	coldCache(t)
+	ctx := context.Background()
+	_, loaded, _ := programEnv(ctx, app)
+	r, ok := parseGoRelease(loaded)
+	if !ok {
+		t.Fatalf("the load pins no toolchain (go env GOVERSION %q)", loaded)
+	}
+	cmds := recordGo(t)
+	wantSearch(t, searchBuildModules(ctx, app, gogsDB, gogsSymbols), []string{"example.com/a", "example.com/app"}, nil)
+	for _, sub := range []string{"env -json=false -u=false -w=false GOFLAGS", "list -m -json all", "mod download"} {
+		t.Run(sub, func(t *testing.T) {
+			if goRuns(*cmds, sub) == 0 {
+				t.Fatalf("go %s did not run", sub)
+			}
+			for _, c := range *cmds {
+				if !strings.HasPrefix(strings.Join(c.Args[1:], " "), sub) {
+					continue
+				}
+				// The go command reads the last setting of a variable, which must be the load's pin
+				// rather than the process's GOTOOLCHAIN=local.
+				var toolchain string
+				for _, kv := range c.Env {
+					if v, ok := strings.CutPrefix(kv, "GOTOOLCHAIN="); ok {
+						toolchain = v
+					}
+				}
+				if toolchain != r.toolchain() || !slices.Contains(c.Env, "GOWORK=off") {
+					t.Fatalf("go %s ran with GOTOOLCHAIN=%q (GOWORK=off %v), want the load's %q", sub, toolchain, slices.Contains(c.Env, "GOWORK=off"), r.toolchain())
+				}
+			}
+		})
+	}
 }
 
 func TestPackageFromPURL(t *testing.T) {

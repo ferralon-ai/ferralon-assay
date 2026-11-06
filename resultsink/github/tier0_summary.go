@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/artifactcache"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -72,7 +73,7 @@ func NewTier0Summary(env Env) *Tier0Summary {
 // calls the GitHub API and returns an error only on a local write failure.
 func (s *Tier0Summary) Publish(_ context.Context, res Result) error {
 	if s.SummaryPath != "" {
-		if err := s.writeSummary(res.Report); err != nil {
+		if err := s.writeSummary(res); err != nil {
 			return err
 		}
 	}
@@ -90,14 +91,14 @@ type Result = resultsink.Result
 
 // writeSummary appends the rendered GFM headline to the step-summary file. GitHub
 // appends successive step summaries, so the sink appends (does not truncate).
-func (s *Tier0Summary) writeSummary(r report.Report) error {
+func (s *Tier0Summary) writeSummary(res Result) error {
 	f, err := os.OpenFile(s.SummaryPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("resultsink/github: open step summary: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	if _, err := io.WriteString(f, renderSummary(r)); err != nil {
+	if _, err := io.WriteString(f, renderSummary(res.Report, res.DependencyFetch)); err != nil {
 		return fmt.Errorf("resultsink/github: write step summary: %w", err)
 	}
 	return nil
@@ -220,8 +221,9 @@ func (c counts) groundedSafe() int { return c.notExploitable + c.disqualified }
 
 // renderSummary builds the GFM job-summary headline: a one-line verdict statement, a
 // counts table, and a per-candidate table when any candidate exists. It renders only
-// the five deterministic verdicts (inv. 5).
-func renderSummary(r report.Report) string {
+// the five deterministic verdicts (inv. 5). fetch is the run's dependency fetch outcomes,
+// which name registries: the job summary is the one surface that renders them.
+func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) string {
 	c := tally(r)
 	var b strings.Builder
 
@@ -245,7 +247,7 @@ func renderSummary(r report.Report) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headline(c, headlineTail(r)))
+	b.WriteString(reportHeadline(r, c))
 	b.WriteString("\n\n")
 
 	// Disclosed BEFORE the counts, because it qualifies them: the counts of a scan
@@ -253,6 +255,8 @@ func renderSummary(r report.Report) string {
 	// mean on a fully-resolved one. Renders nothing when there is nothing to disclose.
 	// Only the did-not-run arm sits here; inherent limits go to the footer below.
 	b.WriteString(partialityBlock(r))
+	b.WriteString(dependencyFetchBlock(fetch))
+	b.WriteString(assumptionsBlock(r))
 
 	b.WriteString(countsTable(c))
 
@@ -310,6 +314,43 @@ func headlineTail(r report.Report) string {
 		}
 	}
 	return partialHeadlineTail
+}
+
+// noAnalyzerHeadline replaces the headline when no analyzer ran at all, so a reader who stops at the
+// headline learns that nothing was assessed, not that coverage was partial.
+const noAnalyzerHeadline = "**Not analyzed — no analyzer ran for this codebase's language, so nothing was assessed.** This is not a clean result: no advisory was checked."
+
+// noAnalyzerRan reports whether the Report is a scan that never reached an analyzer: a did-not-run
+// no_language_plugin note, and no advisory row and no package to show for the run. A codebase where
+// one language had no analyzer but another was inventoried is partial coverage, not this.
+func noAnalyzerRan(r report.Report) bool {
+	if len(r.Advisories) != 0 || len(r.SBOM.Packages) != 0 {
+		return false
+	}
+	for _, n := range r.Partiality {
+		if n.Reason == plugin.PartialReasonNoPlugin && n.EffectiveClass() == report.PartialityDidNotRun {
+			return true
+		}
+	}
+	return false
+}
+
+// reportHeadline is the headline both surfaces print for r: noAnalyzerHeadline when no analyzer ran,
+// headline otherwise.
+func reportHeadline(r report.Report, c counts) string {
+	if noAnalyzerRan(r) {
+		return noAnalyzerHeadline
+	}
+	return headline(c, headlineTail(r))
+}
+
+// coverageLead opens the did-not-run disclosure on both surfaces. It says "partial coverage" only
+// when something was assessed.
+func coverageLead(r report.Report) string {
+	if noAnalyzerRan(r) {
+		return "**Not analyzed.** No analyzer ran for this codebase:"
+	}
+	return "**Partial coverage.** This scan could not fully resolve the codebase:"
 }
 
 // headline is the one-line verdict statement at the top of the summary. It is the one
@@ -426,7 +467,7 @@ func didNotRunLines(r report.Report) []string {
 func inherentLimitLines(r report.Report) []string {
 	out := make([]string, 0, len(r.Partiality))
 	for _, n := range r.Partiality {
-		if n.EffectiveClass() != report.PartialityInherentLimit {
+		if n.EffectiveClass() != report.PartialityInherentLimit || assumption(n) {
 			continue
 		}
 		if line := limitLine(n); line != "" {
@@ -437,6 +478,59 @@ func inherentLimitLines(r report.Report) []string {
 		return nil
 	}
 	return out
+}
+
+// assumption reports whether the note states an assumption the analysis made (plugin.Annotation).
+// It is inherent, but it is about this codebase, so it is shown beside the counts it qualifies
+// (assumptionLines) rather than in the footer, whose copy says it holds for every scan.
+func assumption(n report.PartialityNote) bool {
+	return strings.HasPrefix(n.Reason, plugin.AnnotationAssumptionPrefix)
+}
+
+// assumptionLines renders one sentence per assumption the scan made, in the Report's stable
+// order. Returns nil when it made none.
+func assumptionLines(r report.Report) []string {
+	var out []string
+	for _, n := range r.Partiality {
+		if assumption(n) {
+			out = append(out, assumptionLine(n))
+		}
+	}
+	return out
+}
+
+// assumptionLine phrases one assumption from its code and path, not its Detail, so nothing the
+// scanned repository names reaches the comment outside a code span.
+func assumptionLine(n report.PartialityNote) string {
+	var line string
+	switch {
+	case n.Reason == plugin.AnnotationInstallSurfaceInactive && n.Path != "":
+		line = fmt.Sprintf("Install commands were found at %s, which nothing in the build was found to run; the verdicts assume they are not active.", mdCode(n.Path))
+	case n.Path != "":
+		line = fmt.Sprintf("The verdicts rest on an assumption (%s at %s).", mdCode(n.Reason), mdCode(n.Path))
+	default:
+		line = fmt.Sprintf("The verdicts rest on an assumption (%s).", mdCode(n.Reason))
+	}
+	if n.Ecosystem != "" {
+		return n.Ecosystem + ": " + line
+	}
+	return line
+}
+
+// assumptionsBlock renders the scan's assumptions for the Tier-0 job-summary panel, or "" when it
+// made none.
+func assumptionsBlock(r report.Report) string {
+	lines := assumptionLines(r)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Assumptions.** These verdicts hold under assumptions this scan made:\n\n")
+	for _, l := range lines {
+		fmt.Fprintf(&b, "- %s\n", l)
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // partialityLine phrases one DID-NOT-RUN limit for a customer: what could not be
@@ -454,25 +548,117 @@ func partialityLine(n report.PartialityNote) string {
 	case plugin.PartialReasonNoManifest:
 		return fmt.Sprintf("Installed %s versions could not be pinned: no lockfile or pinned-version manifest was found. Advisories for those dependencies were kept in scope rather than ruled out on version, so this run is not a complete dependency assessment.", scope)
 	case plugin.PartialReasonNoPlugin:
+		// The detail names the language and the analyzer that was looked for.
+		if n.Detail != "" {
+			return fmt.Sprintf("No analyzer is available for this codebase's language (`%s`). No advisory for it was ruled out — none was assessed.", mdCell(n.Detail))
+		}
 		return fmt.Sprintf("No analyzer is available for this codebase's language, so its %s set was not analyzed. The advisories below were not ruled out — they were not assessed.", scope)
 	case report.ReasonScanCutShort:
 		if n.Detail != "" {
-			return fmt.Sprintf("The scan was cut short before it finished (`%s`). Every advisory it did not assess has no verdict and is counted as not assessed.", mdCell(n.Detail))
+			return fmt.Sprintf("The scan was cut short before it finished (%s). Every advisory it did not assess has no verdict and is counted as not assessed.", mdCode(n.Detail))
 		}
 		return "The scan was cut short before it finished, so one or more advisories have no verdict and are counted as not assessed."
+	case report.PartialReasonDependencyCodeUnavailable:
+		return dependencyCodeUnavailableLine(scope, n.Detail)
+	case report.ReasonDependencyNotFetched:
+		return fmt.Sprintf("Some advisories were last assessed on a run that did not read all the %s code the lockfile pins, so the verdicts that run reached are withheld and counted as not assessed. A later run that reads that code assesses them again.", scope)
 	case plugin.PartialReasonToolFailure:
 		// Names the step and the advisory. The advisory's row is undetermined, so it is
 		// counted as not assessed.
 		if n.Detail != "" {
-			return fmt.Sprintf("An analysis step did not complete (`%s`). That advisory has no verdict and is counted as not assessed.", mdCell(n.Detail))
+			return fmt.Sprintf("An analysis step did not complete (%s). That advisory has no verdict and is counted as not assessed.", mdCode(n.Detail))
 		}
 		return "An analysis step did not complete, so one or more advisories have no verdict and are counted as not assessed."
 	default:
 		if n.Detail != "" {
-			return fmt.Sprintf("Part of the %s analysis was incomplete (`%s`: `%s`), so this run covers less than the whole codebase.", scope, mdCell(n.Reason), mdCell(n.Detail))
+			return fmt.Sprintf("Part of the %s analysis was incomplete (%s: %s), so this run covers less than the whole codebase.", scope, mdCode(n.Reason), mdCode(n.Detail))
 		}
-		return fmt.Sprintf("Part of the %s analysis was incomplete (`%s`), so this run covers less than the whole codebase.", scope, mdCell(n.Reason))
+		return fmt.Sprintf("Part of the %s analysis was incomplete (%s), so this run covers less than the whole codebase.", scope, mdCode(n.Reason))
 	}
+}
+
+// dependencyCodeUnavailableLine phrases tool_failure:dependency_code_unavailable: the scan read none
+// of its dependencies' code, as with dependency code off. detail is "kind" or "kind: package...";
+// the kind picks the fix hint. The Report names no registry, so neither does this line: the job
+// summary's dependency code block names it where the run has one to name.
+func dependencyCodeUnavailableLine(scope, detail string) string {
+	line := fmt.Sprintf("The scan read none of its %s code, as with dependency code off, so every verdict below was reached without looking inside dependencies.", scope)
+	if detail != "" {
+		line = fmt.Sprintf("The scan read none of its %s code (`%s`), as with dependency code off, so every verdict below was reached without looking inside dependencies.", scope, mdCell(detail))
+	}
+	kind, _, _ := strings.Cut(detail, ":")
+	switch kind {
+	case "policy_refused":
+		switch {
+		case strings.HasSuffix(detail, artifactcache.PolicyMissingCredential):
+			return line + " A registry asked for a token the run did not have: give the scan step the registry's token variable, or point the npm configuration at a registry it can read."
+		case strings.HasSuffix(detail, artifactcache.PolicyCredentialRejected):
+			return line + " A registry refused the token the run sent: renew the token or give it read access to the package, and if a curation proxy fronts the registry, check whether it blocks the package."
+		}
+		return line + " The fetch policy refused a package for the reason named: check the npm configuration's registry for that package."
+	case "registry_unavailable", "registry_unreachable":
+		return line + " A registry could not be reached or did not answer: check that it is up and reachable from the runner."
+	case "not_served":
+		return line + " A registry does not serve a package the lockfile pins: check the npm configuration names the registry that serves it."
+	case "integrity_mismatch":
+		return line + " A fetched package did not match the lockfile's integrity hash: check the lockfile against the registry it resolves from."
+	case "npmrc_malformed":
+		return line + " The npm configuration could not be read: fix the file and line it names."
+	case "fetch_failed":
+		return line + " A package fetch failed outside any registry answer, such as a dropped transfer or a cache that could not be written: check the runner's network and that the dependency cache directory is writable."
+	case "cancelled":
+		return line + dependencyTimeoutHint
+	case "inventory_failed":
+		if strings.HasSuffix(detail, "cancelled") {
+			return line + dependencyTimeoutHint
+		}
+		// Otherwise the JS analyzer failed to list the locked packages, for a reason of its own
+		// that names no setting the operator could change, so the line names the cause and stops.
+	}
+	return line
+}
+
+// dependencyTimeoutHint is the fix for dependency fetching that ran out of time.
+var dependencyTimeoutHint = " Dependency fetching ran out of time or the run was cancelled: set " + brand.EnvPrefix +
+	"_DEPENDENCY_TIMEOUT for the scan step to allow it longer than the default 15 minutes, or give the job more time."
+
+// dependencyFetchBlock renders the run's dependency fetch outcomes for the job summary, one line
+// per registry with what to do about it, or "" when the fetch needs nothing from the operator. It
+// names registries, which no other surface does.
+func dependencyFetchBlock(fetch []resultsink.DependencyFetchNote) string {
+	if len(fetch) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Dependency code.**\n\n")
+	for _, n := range fetch {
+		fmt.Fprintf(&b, "- %s\n", dependencyFetchLine(n))
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// dependencyFetchLine phrases one registry's outcome. An outcome this build does not know is stated
+// verbatim rather than dropped.
+func dependencyFetchLine(n resultsink.DependencyFetchNote) string {
+	reg := mdCode(n.Registry)
+	var what string
+	switch n.Outcome {
+	case resultsink.DependencyFetchCredentialRejected:
+		what = fmt.Sprintf("%s refused the token this run sent (HTTP 401 or 403) for %s, so the run fails.", reg, mdCode(n.Package))
+	case resultsink.DependencyFetchStalled:
+		what = fmt.Sprintf("%s has served nothing on %d cve-watch runs since %s, holding the advisory cursor, so the run fails.", reg, n.HeldRuns, n.Since.UTC().Format("2006-01-02 15:04 UTC"))
+	case resultsink.DependencyFetchHeld:
+		what = fmt.Sprintf("%s served nothing on this run, so the advisory cursor holds (%d %s since %s).", reg, n.HeldRuns, plural(n.HeldRuns, "held run", "held runs"), n.Since.UTC().Format("2006-01-02 15:04 UTC"))
+	case resultsink.DependencyFetchMissingCredential:
+		what = fmt.Sprintf("%s asked for a token this run did not have.", reg)
+	default:
+		what = fmt.Sprintf("%s: %s.", reg, mdCode(n.Outcome))
+	}
+	if n.Hint == "" {
+		return what
+	}
+	return what + " " + strings.ToUpper(n.Hint[:1]) + n.Hint[1:]
 }
 
 // limitLine phrases one INHERENT limit of the analysis method for a customer. These
@@ -491,9 +677,9 @@ func limitLine(n report.PartialityNote) string {
 		// An inherent limit this build does not recognize: state the code verbatim rather
 		// than drop it. Reaching here needs a writer that classified the note explicitly,
 		// since ClassifyPartialityReason sends every unknown code to the loud arm.
-		body = fmt.Sprintf("a known limit of the analysis method applies (`%s`)", mdCell(n.Reason))
+		body = fmt.Sprintf("a known limit of the analysis method applies (%s)", mdCode(n.Reason))
 		if n.Detail != "" {
-			body = fmt.Sprintf("a known limit of the analysis method applies (`%s`: `%s`)", mdCell(n.Reason), mdCell(n.Detail))
+			body = fmt.Sprintf("a known limit of the analysis method applies (%s: %s)", mdCode(n.Reason), mdCode(n.Detail))
 		}
 	}
 	if n.Ecosystem != "" {
@@ -511,7 +697,7 @@ func partialityBlock(r report.Report) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("**Partial coverage.** This scan could not fully resolve the codebase:\n\n")
+	b.WriteString(coverageLead(r) + "\n\n")
 	for _, l := range lines {
 		fmt.Fprintf(&b, "- %s\n", l)
 	}

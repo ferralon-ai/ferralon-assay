@@ -22,6 +22,7 @@ type Builder struct {
 	subject       Subject
 	packages      []Package
 	relationships []Relationship
+	goBuildList   SBOM
 	advisories    []AdvisoryFinding
 	partiality    []PartialityNote
 	provenance    Provenance
@@ -58,6 +59,15 @@ func (b *Builder) AddPackages(pkgs ...Package) *Builder {
 // once from one inventory.
 func (b *Builder) SetRelationships(rels []Relationship) *Builder {
 	b.relationships = append([]Relationship(nil), rels...)
+	return b
+}
+
+// SetGoBuildList records the Go build-list fields of the SBOM the packages were taken from
+// (SBOM.GoBuildList, GoMainModule, GoWorkspaceModules), so a Report rebuilt from a stored SBOM
+// still says whether its Go packages are the build's whole module list. Replaces any previously
+// set values; the SBOM's packages and relationships are not read.
+func (b *Builder) SetGoBuildList(s SBOM) *Builder {
+	b.goBuildList = SBOM{GoBuildList: s.GoBuildList, GoMainModule: s.GoMainModule, GoWorkspaceModules: slices.Clone(s.GoWorkspaceModules)}
 	return b
 }
 
@@ -305,10 +315,17 @@ func (b *Builder) Build() Report {
 	entrypoints := slices.Clone(b.entrypoints)
 	slices.SortFunc(entrypoints, func(a, c plugin.ResolvedLibraryEntrypoints) int { return strings.Compare(a.Ecosystem, c.Ecosystem) })
 
+	sbom := SBOM{
+		Packages:           pkgs,
+		Relationships:      sortedUniqueRelationships(b.relationships),
+		GoBuildList:        b.goBuildList.GoBuildList,
+		GoMainModule:       b.goBuildList.GoMainModule,
+		GoWorkspaceModules: sortedUnique(b.goBuildList.GoWorkspaceModules),
+	}
 	return Report{
 		SchemaVersion:      SchemaVersion,
 		Subject:            b.subject,
-		SBOM:               SBOM{Packages: pkgs, Relationships: sortedUniqueRelationships(b.relationships)},
+		SBOM:               sbom,
 		Advisories:         adv,
 		Partiality:         dedupPartiality(b.partiality),
 		Provenance:         prov,
@@ -370,13 +387,21 @@ func dedupPartiality(notes []PartialityNote) []PartialityNote {
 			index[k] = len(out)
 			merged := n
 			merged.Advisories = append([]string(nil), n.Advisories...)
+			merged.Targets = append([]string(nil), n.Targets...)
 			out = append(out, merged)
 			continue
 		}
 		out[i].Advisories = append(out[i].Advisories, n.Advisories...)
+		// Either note unbounded leaves the merged note unbounded; otherwise it bounds the union.
+		if len(out[i].Targets) == 0 || len(n.Targets) == 0 {
+			out[i].Targets = nil
+		} else {
+			out[i].Targets = append(out[i].Targets, n.Targets...)
+		}
 	}
 	for i := range out {
 		out[i].Advisories = sortedUnique(out[i].Advisories)
+		out[i].Targets = sortedUnique(out[i].Targets)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Reason != out[j].Reason {

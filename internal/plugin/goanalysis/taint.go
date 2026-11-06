@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -21,8 +20,11 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // ingress input reaches a tainted argument of the sink via VARIABLE-LEVEL SSA
 // value flow (not call-graph path presence). Sources are the parameters of the
 // discovered ingress functions; taint propagates over SSA def-use edges
-// (assignment, phi, field/element access, extract, conversions, tainted-operand
-// binops) and inter-procedurally from actual arg to callee formal param. A
+// (assignment, phi, field/element access, map lookup, type assertion, extract,
+// conversions, tainted-operand binops, a store through a field or element
+// address to every base under it, the append and copy builtins),
+// inter-procedurally from actual arg to callee formal param, and from a tainted
+// argument to the result of a library call with no built body. A
 // modeled sanitizer (sanitizers.go) clears taint on its result, so a value that
 // reaches a sink only through a sanitizer is a true negative and is NOT reported.
 //
@@ -34,25 +36,55 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // (no_known_ingress). It NEVER renders an unknown as "safe" (inv.5). A load/SSA
 // failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	sp, res, err := loadSSA(ctx, req.BuildDir)
+	ctx, err := withGoWork(ctx, req.GoWork)
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}
-
-	ing, err := taintIngresses(ctx, req.BuildDir)
+	c, err := taintClosureOf(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}
-	ingresses := sp.resolveIngressFuncs(ing.Ingresses)
+	return c.result(req.Sinks), nil
+}
 
-	sinks := make(map[string]bool, len(req.Sinks))
-	for _, s := range req.Sinks {
-		if s != "" {
-			sinks[s] = true
+// taintClosure is one taint pass over a tree, from every ingress, with a hit recorded at every
+// static callee a tainted value reaches as an argument. The sinks a run asks about never change the
+// pass, only which of its hits that run reports, so every advisory's result is a filter of the one
+// closure and the run cache keeps it once per tree.
+type taintClosure struct {
+	// Hits maps each callee a tainted argument reaches to the ingress attributed to it.
+	Hits map[string]string `json:"hits,omitempty"`
+	// Reasons is the partiality no sink changes: the load's, with its scoped limits counted
+	// run-wide, and the triggers on the tainted flow.
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+// taintClosureOf returns buildDir's taint closure, computed once per tree per scan through the run
+// cache. A failed load is never cached, so it fails every run that asks (inv.4).
+func taintClosureOf(ctx context.Context, buildDir string) (taintClosure, error) {
+	b, err := runCached(ctx, "taint", loadCacheKey(ctx, buildDir), func() ([]byte, error) {
+		c, err := computeTaintClosure(ctx, buildDir)
+		if err != nil {
+			return nil, err
 		}
+		return json.Marshal(c)
+	})
+	if err != nil {
+		return taintClosure{}, err
 	}
+	var c taintClosure
+	if err := json.Unmarshal(b, &c); err != nil {
+		return taintClosure{}, fmt.Errorf("decode cached taint: %w", err)
+	}
+	return c, nil
+}
 
-	paths, pathReasons := runTaint(sp, ingresses, sinks)
+func computeTaintClosure(ctx context.Context, buildDir string) (taintClosure, error) {
+	sp, res, err := loadSSA(ctx, buildDir)
+	if err != nil {
+		return taintClosure{}, err
+	}
+	hits, pathReasons := runTaint(sp, sp.resolveIngressFuncs(ingressesOf(sp, res).Ingresses), nil)
 
 	reasons := map[string]bool{}
 	// Fold in load-level partiality (a degraded load is never hidden, inv.5).
@@ -67,63 +99,67 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	for r := range pathReasons {
 		reasons[r] = true
 	}
+	return taintClosure{Hits: hits, Reasons: sortedKeys(reasons)}, nil
+}
 
-	// A requested sink with no resolved tainted flow from any ingress is UNKNOWN,
-	// never "safe" (inv.5): declare no_known_ingress.
-	hit := make(map[string]bool, len(paths))
-	for _, p := range paths {
-		hit[p.Sink.SCIP] = true
+// result is the taint result for sinks: a path for each sink the closure reached, attributed to its
+// ingress, and the closure's partiality.
+func (c taintClosure) result(sinks []string) plugin.TaintResult {
+	reasons := make(map[string]bool, len(c.Reasons))
+	for _, r := range c.Reasons {
+		reasons[r] = true
 	}
-	for s := range sinks {
-		if !hit[s] {
-			reasons[plugin.PartialReasonNoIngress] = true
+	want := map[string]bool{}
+	for _, s := range sinks {
+		if s != "" {
+			want[s] = true
 		}
+	}
+	var paths []plugin.ReachPath
+	for _, s := range sortedKeys(want) {
+		ingress, ok := c.Hits[s]
+		if !ok {
+			// A requested sink with no resolved tainted flow from any ingress is UNKNOWN,
+			// never "safe" (inv.5): declare no_known_ingress.
+			reasons[plugin.PartialReasonNoIngress] = true
+			continue
+		}
+		paths = append(paths, plugin.ReachPath{
+			Sink:    sym(s),
+			Ingress: sym(ingress),
+			Trace:   []plugin.Symbol{sym(ingress), sym(s)},
+		})
 	}
 
 	part := plugin.Complete()
 	if len(reasons) > 0 {
 		part = plugin.Partial(sortedKeys(reasons)...)
 	}
-
 	return plugin.TaintResult{
 		Partiality:    part,
 		Paths:         paths,
 		PrecisionNote: taintPrecisionNote,
-	}, nil
-}
-
-// taintIngresses returns the ingresses ComputeTaint propagates from, found once per tree per scan
-// through the run cache: they depend only on the build, while every advisory's sinks differ. The
-// program load reads the process environment, so that is part of the key.
-func taintIngresses(ctx context.Context, buildDir string) (plugin.IngressResult, error) {
-	b, err := runCached(ctx, "ingresses", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
-		ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir})
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(ing)
-	})
-	if err != nil {
-		return plugin.IngressResult{}, err
 	}
-	var ing plugin.IngressResult
-	if err := json.Unmarshal(b, &ing); err != nil {
-		return plugin.IngressResult{}, fmt.Errorf("decode cached ingresses: %w", err)
-	}
-	return ing, nil
 }
 
 // resolveIngressFuncs maps each ingress symbol (by SCIP id) to its SSA function
 // by indexing every built function's SCIP id once. Ingresses whose function is
 // not in the SSA program (e.g. a handler value with no static body) are dropped:
 // absence of a source is honestly no source, never a fabricated one.
+//
+// A method's synthetic wrappers and a generic function's instantiations share its SCIP
+// id, and AllFunctions is a map, so the function a shared id resolves to is chosen by
+// preferIngressFunc, never by iteration order.
 func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]*ssa.Function {
 	bySymbol := map[string]*ssa.Function{}
 	for fn := range ssautil.AllFunctions(s.prog) {
 		if fn.Blocks == nil {
 			continue
 		}
-		bySymbol[s.scipFunc(fn)] = fn
+		id := s.scipFunc(fn)
+		if prev, ok := bySymbol[id]; !ok || s.preferIngressFunc(fn, prev) {
+			bySymbol[id] = fn
+		}
 	}
 
 	out := map[string]*ssa.Function{}
@@ -136,4 +172,22 @@ func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]
 		}
 	}
 	return out
+}
+
+// preferIngressFunc reports whether a is preferred over b as the function behind one
+// SCIP id: the declared function (neither a synthetic wrapper nor a generic
+// instantiation) over the others, then the first by compareFuncs, then by the SSA
+// function's own name, which tells apart instantiations and wrappers of one function.
+func (s *ssaProgram) preferIngressFunc(a, b *ssa.Function) bool {
+	if da, db := declaredFunc(a), declaredFunc(b); da != db {
+		return da
+	}
+	if c := s.compareFuncs(a, b); c != 0 {
+		return c < 0
+	}
+	return a.Synthetic+"\x00"+a.Name() < b.Synthetic+"\x00"+b.Name()
+}
+
+func declaredFunc(fn *ssa.Function) bool {
+	return fn.Synthetic == "" && fn.Origin() == nil
 }

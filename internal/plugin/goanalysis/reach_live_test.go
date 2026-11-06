@@ -19,8 +19,10 @@ package goanalysis
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -125,5 +127,125 @@ func TestReachability_Live_BrokenDirIsHardError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected a hard error for a nonexistent build dir (inv.4)")
+	}
+}
+
+// TestReachability_Live_SettledFailureReplays drives the real govulncheck over a tree whose load
+// fails on a type error: the failure settles, and a later advisory gets the same hard error from
+// the run cache even after the tree is fixed, which a fresh run would scan cleanly.
+func TestReachability_Live_SettledFailureReplays(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n",
+	})
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+	req := plugin.ReachabilityRequest{BuildDir: dir, VulnID: liveVulnID}
+	_, first := Reachability(ctx, req)
+	var failed *govulncheckError
+	if !errors.As(first, &failed) || !failed.settled || len(loadPackageErrors(failed.cause)) == 0 {
+		t.Fatalf("first run: %v, want a settled load failure carrying package errors", first)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Reachability(ctx, req); err == nil || err.Error() != first.Error() {
+		t.Fatalf("second advisory: %v, want the first run's error %q", err, first)
+	}
+	if _, err := Reachability(WithRunCacheDir(context.Background(), t.TempDir()), req); err != nil {
+		t.Fatalf("fresh run over the fixed tree: %v", err)
+	}
+}
+
+// TestReachability_Live_PartialRunPastUnloadableCgo drives the real govulncheck over a tree where one
+// root imports a cgo package whose header does not exist: the full load fails and settles, and the
+// partial run over the other root still finds the vulnerable call, while an advisory it says nothing
+// about stays unknown to the analyzer, beside a tool failure bounded to what the left-out root
+// imports. Modules resolve offline; the vulnerability database is still vuln.go.dev.
+func TestReachability_Live_PartialRunPastUnloadableCgo(t *testing.T) {
+	sum, err := os.ReadFile(filepath.Join(liveFixtureDir, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := writeTree(t, map[string]string{
+		"go.mod":           "module example.com/m\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.0\n",
+		"go.sum":           string(sum),
+		"cmd/ok/main.go":   "package main\n\nimport \"golang.org/x/text/language\"\n\nfunc main() { _, _ = language.Parse(\"en-US\") }\n",
+		"cmd/bad/main.go":  "package main\n\nimport \"example.com/m/cgobad\"\n\nfunc main() { cgobad.F() }\n",
+		"cgobad/cgobad.go": "package cgobad\n\n// #include \"nonexistent.h\"\nimport \"C\"\n\nfunc F() {}\n",
+	})
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
+	t.Setenv("CGO_ENABLED", "1")
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+
+	res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: liveVulnID})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if !slices.ContainsFunc(res.Paths, func(p plugin.ReachPath) bool { return strings.Contains(p.Sink.SCIP, "language/Parse") }) {
+		t.Errorf("no path to language.Parse from the root the partial run kept: %+v", res.Paths)
+	}
+	disclosed := slices.ContainsFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+		return s.Reason == plugin.PartialReasonToolFailure && strings.Contains(s.Path, "example.com/m/cgobad") && strings.Contains(s.Path, "example.com/m/cmd/bad")
+	})
+	if !disclosed {
+		t.Errorf("partiality %+v does not name what the partial run left out", res.Partiality)
+	}
+
+	res, err = Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-2099-0001"})
+	if err != nil {
+		t.Fatalf("Reachability, an advisory the run says nothing about: %v", err)
+	}
+	bounded := slices.ContainsFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+		return s.Reason == plugin.PartialReasonToolFailure && slices.Contains(s.Targets, "pkg:golang/example.com/m") &&
+			!slices.Contains(s.Targets, "pkg:golang/golang.org/x/text")
+	})
+	if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonAdvisoryUnknownToAnalyzer) || !bounded {
+		t.Errorf("silence of a partial run: refutation %+v, partiality %+v; want unknown to the analyzer, beside a tool failure bounded to the left-out root's imports", res.Refutation, res.Partiality)
+	}
+}
+
+// TestReachability_Live_PartialRunReleasesOutsideHidden pins ferralon-ai/tracker#612 end to end: a
+// root imports a dependency's cgo package whose header does not exist, so govulncheck runs over the
+// other root only. Nothing the left-out root imports is golang.org/x/text, so the refutation of
+// x/text stands, beside a tool failure whose Targets are what the left-out root imports.
+func TestReachability_Live_PartialRunReleasesOutsideHidden(t *testing.T) {
+	sum, err := os.ReadFile(filepath.Join(liveFixtureDir, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	depDir := writeTree(t, map[string]string{
+		"go.mod":     "module example.com/dep\n\ngo 1.22\n",
+		"olm/olm.go": "package olm\n\n// #include \"nonexistent.h\"\nimport \"C\"\n\nfunc F() {}\n",
+	})
+	dir := writeTree(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\tgolang.org/x/text v0.3.0\n\texample.com/dep v0.0.0\n)\n\nreplace example.com/dep => " + depDir + "\n",
+		"go.sum": string(sum),
+		// transform's own package has no left-out files, so excluded_files does not withhold.
+		"cmd/ok/main.go":  "package main\n\nimport \"golang.org/x/text/transform\"\n\nvar T transform.Transformer = transform.Nop\n\nfunc main() { println(T != nil) }\n",
+		"cmd/bad/main.go": "package main\n\nimport \"example.com/dep/olm\"\n\nfunc main() { olm.F() }\n",
+	})
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
+	t.Setenv("CGO_ENABLED", "1")
+	ctx := WithRunCacheDir(context.Background(), t.TempDir())
+
+	res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: liveVulnID})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if res.Refutation == nil || res.Refutation.Package != "pkg:golang/golang.org/x/text" || len(res.Paths) > 0 {
+		t.Errorf("refutation %+v, %d paths, partiality %+v; want the refutation of x/text to stand", res.Refutation, len(res.Paths), res.Partiality)
+	}
+	if len(res.Partiality.Reasons) > 0 {
+		t.Errorf("run-wide reasons %v; want none", res.Partiality.Reasons)
+	}
+	i := slices.IndexFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == plugin.PartialReasonToolFailure })
+	if i < 0 {
+		t.Fatalf("partiality %+v names no tool failure for the left-out root", res.Partiality)
+	}
+	want := []string{"", "pkg:golang/example.com/dep", "pkg:golang/example.com/m", "pkg:golang/stdlib"}
+	if got := res.Partiality.Scoped[i].Targets; !slices.Equal(got, want) {
+		t.Errorf("tool failure Targets = %q, want %q", got, want)
 	}
 }

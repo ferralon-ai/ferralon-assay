@@ -41,6 +41,17 @@ func readRegular(path string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
+// readPythonSource reads a .py source with readRegular and converts its line breaks to "\n",
+// as Python's tokenizer does, so every scanner sees the lines Python does whatever the file's
+// line endings.
+func readPythonSource(path string) (string, error) {
+	data, err := readRegular(path)
+	if err != nil {
+		return "", err
+	}
+	return universalNewlines(string(data)), nil
+}
+
 // absent reports whether err from a filesystem call means the path is not there: it does not
 // exist, or a component of it is not a directory. Every other error (a permission denial, a
 // symlink loop, a name too long, an I/O error, a refused non-regular file) means the path was

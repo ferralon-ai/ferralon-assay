@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -86,6 +87,7 @@ type toolchainInventoryFields struct {
 	Language  string        `json:"language"`
 	GoVersion string        `json:"go_version"`
 	Toolchain ToolchainFact `json:"toolchain"`
+	GoFloor   string        `json:"go_floor"`
 }
 
 // runRealInventory runs the REAL codebase_inventory stage over the on-disk tree and returns what it
@@ -144,13 +146,13 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			want:          ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved},
 		},
 		{
-			name:          "toolchain directive outranks the go directive it sits above",
+			name:          "a toolchain line raises the go line to go1.21.0; its own version is no floor",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			wantGoVersion: "1.20",
-			want:          ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want:          ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
-			name:          "the higher floor wins even when it is the go directive",
+			name:          "a toolchain line below the go line: the go line is the floor",
 			goMod:         "module example.com/target\n\ngo 1.22\n\ntoolchain go1.20.14\n",
 			wantGoVersion: "1.22",
 			want:          ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
@@ -159,7 +161,7 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			// The observation must be AT OR ABOVE the floor to outrank it. Below it, the repo's own
 			// directive refutes the claim and the contradiction guard takes over — covered by
 			// TestResolveToolchainFact's contradiction cases and by the case below.
-			name:          "a TRUSTED observed runner toolchain is exact and outranks both floors",
+			name:          "a TRUSTED observed runner toolchain is exact and outranks the floor",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			observed:      "go1.21.0",
 			trust:         true,
@@ -169,14 +171,14 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 		{
 			// THE SHIPPED NO-CONFIG DEFAULT, produced by the real stage off a real go.mod: an
 			// observation is present (the Action always samples it) and trust-observed-go is unset, so
-			// resolution ignores it and lands on the tighter go.mod floor. This is what a customer who
+			// resolution ignores it and lands on the go.mod floor. This is what a customer who
 			// merges the scaffolded workflow and configures nothing gets — floors only, so M3
 			// disqualifies solely when a floor is past the fix and M4 will not refute from absence.
 			name:          "the no-config default ignores the observation and resolves the floor",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			observed:      "go1.26.4",
 			wantGoVersion: "1.20",
-			want:          ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
+			want:          ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 		},
 		{
 			// Same input, no floors at all: the fact is UNRESOLVED rather than silently adopting the
@@ -199,7 +201,7 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 		},
 		{
 			// The contradiction guard through the REAL stage over a REAL go.mod: a declaration below
-			// the manifest's own toolchain directive is refuted by the repo, so the exact claim is
+			// go1.21.0 beside a toolchain line is refuted by the repo (no earlier go command parses it), so the exact claim is
 			// discarded for the floor and the discarded input is recorded. M3 still disqualifies off
 			// the floor; M4's gate is denied because the bound is no longer exact.
 			name:          "a declaration BELOW the manifest floor is refuted and demoted to the floor",
@@ -207,14 +209,23 @@ func TestCodebaseInventory_ToolchainFactFromRealGoMod(t *testing.T) {
 			declared:      "go1.19.13",
 			wantGoVersion: "1.20",
 			want: ToolchainFact{
-				Version: "go1.24.0",
+				Version: "go1.21.0",
 				Bound:   ToolchainBoundMinimum,
-				Source:  ToolchainSourceToolchainDirective,
+				Source:  ToolchainSourceGoDirective,
 				Contradiction: &ToolchainContradiction{
 					ClaimedVersion: "go1.19.13", ClaimedSource: ToolchainSourceSubjectDeclared,
-					FloorVersion: "go1.24.0", FloorSource: ToolchainSourceToolchainDirective,
+					FloorVersion: "go1.21.0", FloorSource: ToolchainSourceGoDirective,
 				},
 			},
+		},
+		{
+			// A declaration below the toolchain line but at or above the go line is a build under
+			// GOTOOLCHAIN=local, and the real stage keeps it exact.
+			name:          "a declaration between the go line and the toolchain line stays exact",
+			goMod:         "module example.com/target\n\ngo 1.21.0\n\ntoolchain go1.22.5\n",
+			declared:      "go1.21.13",
+			wantGoVersion: "1.21.0",
+			want:          ToolchainFact{Version: "go1.21.13", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
 		},
 		{
 			name:          "a go.mod with no version directive at all resolves nothing",
@@ -389,4 +400,102 @@ func keysOf(m map[string]json.RawMessage) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestCodebaseInventory_GoFloorReachesRequest: the real stage records the binding go line from a real
+// go.mod, and the reachability stage reads it back as the request's floor, whatever the flag.
+func TestCodebaseInventory_GoFloorReachesRequest(t *testing.T) {
+	cases := []struct {
+		name   string
+		goMod  string
+		marker string
+		want   string
+	}{
+		{"toolchain line over a two-part go line", "module example.com/target\n\ngo 1.21\n\ntoolchain go1.22.0\n", "", "go1.21.0"},
+		{"three-part go line", "module example.com/target\n\ngo 1.22.0\n", "", "go1.22.0"},
+		{"two-part go line alone", "module example.com/target\n\ngo 1.22\n", "", ""},
+		{"go line before 1.21", "module example.com/target\n\ngo 1.17\n", "", ""},
+		{"three-part go line in a Bazel workspace", "module example.com/target\n\ngo 1.22.0\n", "MODULE.bazel", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buildDir := writeGoModFixture(t, tc.goMod)
+			if tc.marker != "" {
+				gitInitRepo(t, buildDir)
+				if err := os.WriteFile(filepath.Join(buildDir, tc.marker), nil, 0o644); err != nil {
+					t.Fatalf("write %s: %v", tc.marker, err)
+				}
+			}
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "case-go-floor", Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "CVE-TEST-NO-SUCH-ADVISORY", Source: "corpus"},
+				Codebase: assessment.CodebaseRef{
+					Repo:        "example.com/target",
+					Revision:    "v1",
+					Acquisition: assessment.Acquisition{Mode: "git"},
+				},
+			}}
+			stage := codebaseInventory{checkout: dirCheckout{dir: buildDir, lang: "go"}, plugin: goManifestPlugin{}}
+			if err := stage.Run(context.Background(), c, store); err != nil {
+				t.Fatalf("codebase_inventory.Run: %v", err)
+			}
+			for _, flag := range []bool{false, true} {
+				if got := (reachabilityIngress{subjectToolchain: flag}).toolchainFloor(store, c.ID); got != tc.want {
+					t.Errorf("flag %v: toolchainFloor = %q, want %q", flag, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestBazelWorkspaceAbove: a marker file in the module root or any directory above it counts up to
+// the git top-level of the module root, inclusive; one above the top-level, a sibling's, a directory
+// of that name, and any marker with no repository to bound the search do not.
+func TestBazelWorkspaceAbove(t *testing.T) {
+	cases := []struct {
+		name   string
+		marker string // directory, relative to the temp root, holding the marker
+		file   string
+		noRepo bool // skip git init: the search has no top-level to stop at
+		want   bool
+	}{
+		{"none", "", "", false, false},
+		{"MODULE.bazel in the module root", "checkout/mid/svc", "MODULE.bazel", false, true},
+		{"marker between the module and the top-level", "checkout/mid", "MODULE.bazel", false, true},
+		{"WORKSPACE at the top-level", "checkout", "WORKSPACE", false, true},
+		{"WORKSPACE.bazel at the top-level", "checkout", "WORKSPACE.bazel", false, true},
+		{"marker above the top-level", ".", "MODULE.bazel", false, false},
+		{"directory named WORKSPACE", "checkout", "WORKSPACE/", false, false},
+		{"marker in a sibling", "checkout/other", "WORKSPACE", false, false},
+		{"no git repository", "checkout", "WORKSPACE", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			checkoutRoot := filepath.Join(root, "checkout")
+			moduleRoot := filepath.Join(checkoutRoot, "mid", "svc")
+			for _, d := range []string{moduleRoot, filepath.Join(checkoutRoot, "other")} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.noRepo {
+				gitInitRepo(t, checkoutRoot)
+			}
+			switch path := filepath.Join(root, tc.marker, tc.file); {
+			case tc.file == "":
+			case strings.HasSuffix(tc.file, "/"):
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.WriteFile(path, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := BazelWorkspaceAbove(moduleRoot); got != tc.want {
+				t.Errorf("BazelWorkspaceAbove = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

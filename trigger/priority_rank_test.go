@@ -36,7 +36,11 @@ func TestEveryPathRanksRowsByThisRunsSignals(t *testing.T) {
 	subject := Subject{Repo: "github.com/example/widget", ResolvedCommit: "head"}
 	paths := map[string]func(*testing.T, PRInheritRequest) *report.Report{
 		"inherit": func(t *testing.T, req PRInheritRequest) *report.Report {
-			return inheritBaseline(storedWithStalePriority(), req, &statestore.State{})
+			rep, err := inheritBaseline(storedWithStalePriority(), req, &statestore.State{}, nil, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return rep
 		},
 		"reanalyze": func(t *testing.T, req PRInheritRequest) *report.Report {
 			rep, err := reanalyzeSlice(ctx, storedWithStalePriority(), req, &statestore.State{}, []string{"Go\x00example.com/changed"})
@@ -46,8 +50,8 @@ func TestEveryPathRanksRowsByThisRunsSignals(t *testing.T) {
 			return rep
 		},
 		"cve-watch": func(t *testing.T, req PRInheritRequest) *report.Report {
-			rep, err := earnestRun(ctx, &statestore.State{Report: storedWithStalePriority()},
-				CVEWatchRequest{Subject: req.Subject, Signals: req.Signals}, OSVResult{}, nil, "osv:next")
+			rep, _, err := earnestRun(ctx, &statestore.State{Report: storedWithStalePriority()},
+				CVEWatchRequest{Subject: req.Subject, Signals: req.Signals}, OSVResult{}, nil, nil, "osv:next")
 			if err != nil {
 				t.Fatal(err)
 			}

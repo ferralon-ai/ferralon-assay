@@ -173,6 +173,13 @@ func (m *mockGitHub) createCommit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	for _, p := range in.Parents {
+		// GitHub refuses a commit whose parent does not exist.
+		if _, ok := m.commits[p]; !ok {
+			http.Error(w, "parent does not exist", http.StatusUnprocessableEntity)
+			return
+		}
+	}
 	canon, _ := json.Marshal(in)
 	sha := mockSHA("commit", canon)
 	m.commits[sha] = mockCommit{Tree: in.Tree, Parents: in.Parents}
@@ -232,7 +239,8 @@ func (m *mockGitHub) patchRef(w http.ResponseWriter, r *http.Request, ref string
 	}
 	cur, ok := m.refs[ref]
 	if !ok {
-		http.Error(w, "no ref", http.StatusNotFound)
+		// Live GitHub answers a PATCH on a missing ref with 422, not 404.
+		http.Error(w, "Reference does not exist", http.StatusUnprocessableEntity)
 		return
 	}
 	if !in.Force {

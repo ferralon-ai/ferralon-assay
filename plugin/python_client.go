@@ -3,10 +3,10 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // pythonPlugin is the out-of-process client for the Python language plugin. It is the
@@ -17,6 +17,7 @@ import (
 // Python analysis links only into the subprocess binary (inv.8).
 type pythonPlugin struct {
 	bin string // resolved path to the assay-plugin-python binary
+	env []string
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -33,18 +34,30 @@ func WithPythonBinaryPath(path string) PythonOption {
 	return func(p *pythonPlugin) { p.bin = path }
 }
 
+// WithPythonRunCacheDir hands the subprocess a directory, owned by the caller for one scan over one
+// checkout, where it keeps the per-tree results every advisory's analysis would otherwise recompute:
+// the call graph, the ingresses, the symbol index, and the reachability and symbol-resolution results
+// derived from them. The caller removes the directory after the scan. An empty dir turns the cache
+// off, including one the host process's own environment would otherwise pass down.
+func WithPythonRunCacheDir(dir string) PythonOption {
+	return func(p *pythonPlugin) { p.env = append(p.env, pythonRunCacheDirEnv+"="+dir) }
+}
+
+// pythonRunCacheDirEnv is read by cmd/assay-plugin-python, which hands it to the analyzer.
+const pythonRunCacheDirEnv = brand.EnvPrefix + "_PY_RUN_CACHE_DIR"
+
 // NewPythonPlugin constructs the subprocess-backed Python plugin client. Binary
 // discovery mirrors NewGoPlugin/NewJSPlugin: an explicit path via WithPythonBinaryPath
 // takes precedence; otherwise exec.LookPath resolves BinaryName("python") on PATH.
 func NewPythonPlugin(opts ...PythonOption) (LanguagePlugin, error) {
-	p := &pythonPlugin{}
+	p := &pythonPlugin{env: []string{pythonRunCacheDirEnv + "="}}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath(BinaryName("python"))
+		bin, err := discoverBinary("python")
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("python"), err)
+			return nil, err
 		}
 		p.bin = bin
 	}
@@ -59,7 +72,7 @@ func (*pythonPlugin) Language() string { return "python" }
 // identical in shape to goPlugin.run/javaPlugin.run/jsPlugin.run/dotnetPlugin.run.
 func (p *pythonPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
-	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req)
+	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 
 // ensureMetrics lazily creates the client's instruments on first use, mirroring

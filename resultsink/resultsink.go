@@ -23,6 +23,7 @@ package resultsink
 
 import (
 	"context"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -49,6 +50,41 @@ type Result struct {
 	Report report.Report
 	// Projections are the rendered output formats for Report.
 	Projections Projections
+	// DependencyFetch is what the run's dependency code fetch needs from the operator, one entry
+	// per registry: a refused token, a token the run did not have, a held or stalled cursor. It
+	// names registries, which Report never does, so only a surface the repository's operators read
+	// (the job summary) renders it. Nil when the fetch needs nothing.
+	DependencyFetch []DependencyFetchNote
+}
+
+// Dependency fetch outcomes, as DependencyFetchNote.Outcome.
+const (
+	// DependencyFetchCredentialRejected is a registry that refused a token the run sent. The run
+	// fails.
+	DependencyFetchCredentialRejected = "credential_rejected"
+	// DependencyFetchStalled is a registry whose cve-watch hold has lasted long enough to fail the
+	// run.
+	DependencyFetchStalled = "dependency_fetch_stalled"
+	// DependencyFetchHeld is a registry that served nothing on a cve-watch run and held its
+	// advisory cursor.
+	DependencyFetchHeld = "held"
+	// DependencyFetchMissingCredential is a registry that asked for a token the run did not have.
+	DependencyFetchMissingCredential = "missing_credential"
+)
+
+// DependencyFetchNote is one registry's dependency fetch outcome for the operator.
+type DependencyFetchNote struct {
+	// Registry is the registry's base URL.
+	Registry string
+	// Outcome is one of the DependencyFetch constants.
+	Outcome string
+	// Package is the package whose token was refused, for DependencyFetchCredentialRejected.
+	Package string
+	// HeldRuns and Since are the hold, for DependencyFetchHeld and DependencyFetchStalled.
+	HeldRuns int
+	Since    time.Time
+	// Hint is what the operator can do about it, in a sentence.
+	Hint string
 }
 
 // ResultSink publishes a completed scan Result to a CI surface. Implementations

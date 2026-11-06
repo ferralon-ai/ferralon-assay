@@ -36,12 +36,22 @@ import (
 	"os"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// envRunCacheDir carries the per-scan run cache directory the host sets for this subprocess (see
+// plugin.WithPythonRunCacheDir); empty or unset, nothing is cached.
+const envRunCacheDir = brand.EnvPrefix + "_PY_RUN_CACHE_DIR"
+
+// analyzerContext carries the run cache the host set on this process's environment.
+func analyzerContext(ctx context.Context) context.Context {
+	return pythonanalysis.WithRunCacheDir(ctx, os.Getenv(envRunCacheDir))
+}
+
 func main() {
-	if err := run(context.Background(), os.Stdin, os.Stdout); err != nil {
+	if err := run(analyzerContext(context.Background()), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

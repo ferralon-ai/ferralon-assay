@@ -44,25 +44,33 @@ type RootPackage struct {
 // returns false when the manifest declares no publishable identity: no manifest, a private npm
 // package, a Maven or Gradle project with no group.
 func ReadRootPackage(ctx context.Context, buildDir, language string) (RootPackage, bool) {
+	r, ok, _ := readRootPackage(ctx, buildDir, language)
+	return r, ok
+}
+
+// readRootPackage is ReadRootPackage, also reporting whether the answer is settled: false when a
+// git read it rests on failed, which the answer absorbs as an unknown version.
+func readRootPackage(ctx context.Context, buildDir, language string) (r RootPackage, ok, settled bool) {
 	if buildDir == "" {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	switch language {
 	case checkout.LangGo:
-		return goRootPackage(ctx, buildDir)
+		return goRootPackageSettled(ctx, buildDir)
 	case checkout.LangJS:
-		return npmRootPackage(buildDir)
+		r, ok = npmRootPackage(buildDir)
 	case checkout.LangPython:
-		return pypiRootPackage(buildDir)
+		r, ok = pypiRootPackage(buildDir)
 	case checkout.LangJava, checkout.LangKotlin:
-		if r, ok := mavenRootPackage(ctx, buildDir); ok {
-			return r, true
+		if r, ok, settled = mavenRootPackageSettled(ctx, buildDir); ok {
+			return r, true, settled
 		}
-		return gradleRootPackage(buildDir)
+		r, ok = gradleRootPackage(buildDir)
+		return r, ok, settled
 	case checkout.LangDotNet:
-		return nugetRootPackage(buildDir)
+		r, ok = nugetRootPackage(buildDir)
 	}
-	return RootPackage{}, false
+	return r, ok, true
 }
 
 // Matches reports whether an advisory package identity (as AffectedPackageKeys reads it) names the
@@ -71,12 +79,12 @@ func ReadRootPackage(ctx context.Context, buildDir, language string) (RootPackag
 // module the project requires or replaces under its own path makes it a different module, and a
 // path whose module the scan cannot tell apart from the root matches with no version. Every other
 // ecosystem matches by normalized name, and an advisory PURL of another type never matches.
-func (r RootPackage) Matches(buildDir, module, coordinate, purl string) (string, bool) {
+func (r RootPackage) Matches(buildDir string, ws GoWorkspace, module, coordinate, purl string) (string, bool) {
 	if typ := purlEcosystem(purl); typ != "" && typ != r.PURLType {
 		return "", false
 	}
 	if r.PURLType == "golang" {
-		switch goPathOwner(buildDir, r.Name, module) {
+		switch goPathOwner(buildDir, ws, r.Name, module) {
 		case goOwnedByRoot:
 			return r.Version, true
 		case goOwnerAmbiguous:
@@ -103,11 +111,14 @@ const (
 // goPathOwner reports which module owns the Go import path p, given that mod is the module the
 // go.mod in buildDir declares. p is the root's when it is mod itself, or a path under it whose
 // first element is not a major-version suffix (example.com/m/v2 is a different module from
-// example.com/m) and that no other module claims: none another go.mod in the tree declares, none a
-// go.work at or above buildDir uses, and none go.mod requires or replaces. A longer module path
-// go.sum records but go.mod does not name, or a go.mod or go.work that does not parse, leaves the
-// owner ambiguous.
-func goPathOwner(buildDir, mod, p string) goOwner {
+// example.com/m) and that no other module claims: none another go.mod below buildDir declares, none
+// the workspace ws uses, and none go.mod requires or replaces. A longer module path
+// go.sum records but go.mod does not name, or one a go.mod elsewhere in the repository declares,
+// leaves the owner ambiguous, as does a go.mod or go.work that does not parse: such a module is not
+// in the build, so the path may still be the root's, but it may also be the other module's at
+// another version. So does one a go.work member requires or replaces, or the go.work replaces: the
+// workspace build may serve the path from that module instead.
+func goPathOwner(buildDir string, ws GoWorkspace, mod, p string) goOwner {
 	if p == mod {
 		return goOwnedByRoot
 	}
@@ -125,11 +136,11 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 		}
 	}
 	claims := func(m string) bool { return len(m) > len(mod) && (p == m || strings.HasPrefix(p, m+"/")) }
-	others, ok := goTreeModules(buildDir)
+	others, outside, ok := goTreeModules(buildDir)
 	if !ok {
 		return goOwnerAmbiguous
 	}
-	members, ok := goWorkModules(buildDir)
+	members, ok := goWorkModules(ws)
 	if !ok {
 		return goOwnerAmbiguous
 	}
@@ -156,6 +167,15 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 			return goOwnedElsewhere
 		}
 	}
+	work, ok := goWorkRequires(ws)
+	if !ok {
+		return goOwnerAmbiguous
+	}
+	for _, m := range append(outside, work...) {
+		if claims(m) {
+			return goOwnerAmbiguous
+		}
+	}
 	if sum, err := os.ReadFile(filepath.Join(buildDir, "go.sum")); err == nil {
 		for _, line := range strings.Split(string(sum), "\n") {
 			if f := strings.Fields(line); len(f) > 0 && claims(f[0]) {
@@ -167,70 +187,94 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 }
 
 // goTreeModules returns the module path every go.mod below buildDir declares, whatever directory
-// it sits in; ok is false when the tree cannot be walked or a go.mod declares no module.
-func goTreeModules(buildDir string) ([]string, bool) {
-	var mods []string
-	err := filepath.WalkDir(buildDir, func(p string, d os.DirEntry, err error) error {
+// it sits in, and as outside the module path every other go.mod in the git work tree holding
+// buildDir declares; ok is false when the tree cannot be walked or a go.mod below buildDir declares
+// no module. Like the go command, it skips testdata directories and those whose name begins with
+// . or _, unless buildDir is inside one.
+func goTreeModules(buildDir string) (below, outside []string, ok bool) {
+	own, err := filepath.EvalSymlinks(buildDir)
+	if err != nil {
+		return nil, nil, false
+	}
+	root := own
+	if top, err := gitOutput(context.Background(), own, "rev-parse", "--show-toplevel"); err == nil && top != "" {
+		root = top
+	}
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if goIgnoredDir(d.Name()) && !strings.HasPrefix(own+string(filepath.Separator), p+string(filepath.Separator)) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if d.Name() != "go.mod" || filepath.Dir(p) == filepath.Clean(buildDir) {
+		if d.Name() != "go.mod" || filepath.Dir(p) == own {
 			return nil
 		}
 		m := goModFileModule(p)
+		if !strings.HasPrefix(p, own+string(filepath.Separator)) {
+			if m != "" {
+				outside = append(outside, m)
+			}
+			return nil
+		}
 		if m == "" {
 			return os.ErrInvalid
 		}
-		mods = append(mods, m)
+		below = append(below, m)
 		return nil
 	})
-	return mods, err == nil
+	return below, outside, err == nil
 }
 
-// goWorkModules returns the module path of every module the go.work the go command would find
-// from buildDir (the nearest at or above it) uses; ok is false when that go.work does not parse or
-// a module it uses declares no module path.
-func goWorkModules(buildDir string) ([]string, bool) {
-	dir, err := filepath.Abs(buildDir)
-	if err != nil {
+func goIgnoredDir(name string) bool {
+	return name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
+// goWorkModules returns the module path of every module the workspace uses; ok is false when its
+// go.work does not parse or a module it uses declares no module path.
+func goWorkModules(ws GoWorkspace) ([]string, bool) {
+	uses, _, ok := ws.uses()
+	if !ok {
 		return nil, false
 	}
-	for {
-		data, err := os.ReadFile(filepath.Join(dir, "go.work"))
-		if err == nil {
-			wf, err := modfile.ParseWork("go.work", data, nil)
-			if err != nil {
-				return nil, false
-			}
-			var mods []string
-			for _, u := range wf.Use {
-				use := filepath.FromSlash(u.Path)
-				if !filepath.IsAbs(use) {
-					use = filepath.Join(dir, use)
-				}
-				m := goModFileModule(filepath.Join(use, "go.mod"))
-				if m == "" {
-					return nil, false
-				}
-				mods = append(mods, m)
-			}
-			return mods, true
-		}
-		if !os.IsNotExist(err) {
+	var mods []string
+	for _, use := range uses {
+		m := goModFileModule(filepath.Join(use, "go.mod"))
+		if m == "" {
 			return nil, false
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return nil, true
-		}
-		dir = parent
+		mods = append(mods, m)
 	}
+	return mods, true
+}
+
+// goWorkRequires returns the module path every go.mod of a module the workspace uses requires or
+// replaces, and every one its go.work replaces; ok is false when one cannot be read.
+func goWorkRequires(ws GoWorkspace) ([]string, bool) {
+	uses, paths, ok := ws.uses()
+	if !ok {
+		return nil, false
+	}
+	for _, use := range uses {
+		data, err := os.ReadFile(filepath.Join(use, "go.mod"))
+		if err != nil {
+			return nil, false
+		}
+		mf, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return nil, false
+		}
+		for _, r := range mf.Require {
+			paths = append(paths, r.Mod.Path)
+		}
+		for _, r := range mf.Replace {
+			paths = append(paths, r.Old.Path)
+		}
+	}
+	return paths, true
 }
 
 func goModFileModule(gomod string) string {
@@ -263,42 +307,49 @@ func CanonicalName(purlType, name string) string {
 // vN with one). It is "" when HEAD carries no such tag, or more than one: the reader cannot tell
 // which of them the build publishes.
 func goRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
+	r, ok, _ := goRootPackageSettled(ctx, buildDir)
+	return r, ok
+}
+
+func goRootPackageSettled(ctx context.Context, buildDir string) (RootPackage, bool, bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil || mf.Module == nil || mf.Module.Mod.Path == "" {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
-	return RootPackage{PURLType: "golang", Name: mf.Module.Mod.Path, Version: goModuleTagAtHead(ctx, buildDir, mf.Module.Mod.Path)}, true
+	version, settled := goModuleTagAtHead(ctx, buildDir, mf.Module.Mod.Path)
+	return RootPackage{PURLType: "golang", Name: mf.Module.Mod.Path, Version: version}, true, settled
 }
 
-func goModuleTagAtHead(ctx context.Context, dir, mod string) string {
+// goModuleTagAtHead returns the module's version tag at HEAD; settled is false when a git read
+// failed and the version is "" for that reason.
+func goModuleTagAtHead(ctx context.Context, dir, mod string) (version string, settled bool) {
 	_, pathMajor, ok := module.SplitPathVersion(mod)
 	if !ok {
-		return ""
+		return "", true
 	}
 	prefix, err := gitOutput(ctx, dir, "rev-parse", "--show-prefix")
 	if err != nil {
-		return ""
+		return "", false
 	}
 	tags, err := gitOutput(ctx, dir, "tag", "--points-at", "HEAD")
 	if err != nil {
-		return ""
+		return "", false
 	}
-	version := ""
 	for _, t := range strings.Fields(tags) {
 		v, ok := strings.CutPrefix(t, prefix)
 		if !ok || !semver.IsValid(v) || semver.Canonical(v) != v || module.CheckPathMajor(v, pathMajor) != nil {
 			continue
 		}
 		if version != "" && version != v {
-			return ""
+			return "", true
 		}
 		version = v
 	}
-	return version
+	return version, true
 }
 
 // gitRepositoryEnv names the variables that point git at a repository, work tree or config other
@@ -465,24 +516,30 @@ func setupCfgRootPackage(buildDir string) (RootPackage, bool) {
 // version is left unknown where something this reader cannot see may set it (see
 // mavenVersionWritersVisible).
 func mavenRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
+	r, ok, _ := mavenRootPackageSettled(ctx, buildDir)
+	return r, ok
+}
+
+func mavenRootPackageSettled(ctx context.Context, buildDir string) (RootPackage, bool, bool) {
 	pomPath := filepath.Join(buildDir, "pom.xml")
 	data, err := os.ReadFile(pomPath)
 	if err != nil {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	var pom mavenPOM
 	if err := xml.Unmarshal(data, &pom); err != nil {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	group, version := pom.coordinates()
 	artifact := strings.TrimSpace(pom.ArtifactID)
 	if group == "" || artifact == "" || strings.Contains(group+artifact, "${") {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
-	if !mavenVersionWritersVisible(ctx, buildDir, pomPath, data, pom) {
+	visible, settled := mavenVersionWritersVisible(ctx, buildDir, pomPath, data, pom)
+	if !visible {
 		version = ""
 	}
-	return RootPackage{PURLType: "maven", Name: group + ":" + artifact, Version: establishedVersion("maven", version)}, true
+	return RootPackage{PURLType: "maven", Name: group + ":" + artifact, Version: establishedVersion("maven", version)}, true, settled
 }
 
 type mavenPOM struct {
@@ -518,32 +575,35 @@ func (p mavenPOM) coordinates() (group, version string) {
 //     repository, which can carry extensions of its own.
 //
 // Anything that cannot be read counts as a writer.
-func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, data []byte, pom mavenPOM) bool {
+func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, data []byte, pom mavenPOM) (visible, settled bool) {
 	if mavenCoreExtensions(buildDir) || !stockMavenWrappers(buildDir) {
-		return false
+		return false, true
 	}
 	root := buildDir
+	settled = true
 	if top, err := gitOutput(ctx, buildDir, "rev-parse", "--show-toplevel"); err == nil && top != "" {
 		root = top
+	} else if err != nil {
+		settled = false
 	}
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return false
+		return false, settled
 	}
 	seen := map[string]bool{}
 	for {
 		if bytes.Contains(data, []byte("<extensions")) {
-			return false
+			return false, settled
 		}
 		if pom.Parent == nil {
-			return true
+			return true, settled
 		}
 		rel := "../pom.xml"
 		if pom.Parent.RelativePath != nil {
 			rel = strings.TrimSpace(*pom.Parent.RelativePath)
 		}
 		if rel == "" {
-			return false
+			return false, settled
 		}
 		next := filepath.Join(filepath.Dir(pomPath), filepath.FromSlash(rel))
 		if info, err := os.Stat(next); err == nil && info.IsDir() {
@@ -551,23 +611,23 @@ func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, d
 		}
 		real, err := filepath.EvalSymlinks(next)
 		if err != nil || seen[real] {
-			return false
+			return false, settled
 		}
 		if r, err := filepath.Rel(root, real); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
-			return false
+			return false, settled
 		}
 		seen[real] = true
 		want := *pom.Parent
 		if data, err = os.ReadFile(real); err != nil {
-			return false
+			return false, settled
 		}
 		pom = mavenPOM{}
 		if xml.Unmarshal(data, &pom) != nil {
-			return false
+			return false, settled
 		}
 		group, version := pom.coordinates()
 		if group != strings.TrimSpace(want.GroupID) || strings.TrimSpace(pom.ArtifactID) != strings.TrimSpace(want.ArtifactID) || version != strings.TrimSpace(want.Version) || strings.Contains(version, "${") {
-			return false
+			return false, settled
 		}
 		pomPath = real
 	}

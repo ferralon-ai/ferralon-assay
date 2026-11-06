@@ -33,7 +33,8 @@ import (
 //     importlib.import_module, __import__ or sys.modules lookup, or read for an attribute
 //     the module does not define (handlers.__dict__). A dotted chain is matched to the
 //     module named by its longest prefix, so any of its functions can be reached by
-//     attribute name;
+//     attribute name, and so can what its first-party imports and star imports bind,
+//     followed on through each module so bound ("g = y" then "a.g.h" anywhere);
 //   - its file reaches names by computed access: getattr, globals(), vars(), locals(),
 //     __dict__, eval/exec, __import__, operator.attrgetter/methodcaller, inspect.getmembers,
 //     sys.modules, or an import whose module the scanner cannot name. Module lookups are
@@ -52,20 +53,29 @@ type valueRefs struct {
 	// chains are dotted runs used whole as values ("handlers", "pkg.handlers"): a module
 	// used this way hands every function in it over.
 	chains map[string]bool
+	// stores are dotted runs a statement assigns to ("pkg.a.g = h", "for me.g in hs"): a
+	// store into the namespace of the module the run's prefix names. exposed are the dotted
+	// runs whose namespace a __dict__ or __setattr__ hands over ("me.__dict__.update(d)").
+	stores  map[string]bool
+	exposed map[string]bool
 	// computed records computed-name access anywhere in the file.
 	computed bool
 	// evaluated records eval/exec: the evaluated code's call sites are never seen.
 	evaluated bool
-	// hidden records a call inside an f-string substitution, which the call scanner does not
-	// list as a site.
+	// hidden records an f-string substitution that spliceFStrings could not close: the rest
+	// of its literal, and any call there, goes unread, so no site there is listed.
 	hidden bool
+	// hiddenImport records a dynamic import named in an f-string substitution's unread text
+	// (hidden), which neither dynamicImports, moduleLookups nor stringLoaderImports reads.
+	hiddenImport bool
 }
 
 func newValueRefs() valueRefs {
-	return valueRefs{names: map[string]bool{}, chains: map[string]bool{}}
+	return valueRefs{names: map[string]bool{}, chains: map[string]bool{}, stores: map[string]bool{}, exposed: map[string]bool{}}
 }
 
-// computedNameCalls reach names by computed access when used unqualified.
+// computedNameCalls reach names by computed access when used unqualified or through
+// builtins.
 var computedNameCalls = map[string]bool{
 	"getattr": true, "globals": true, "vars": true, "locals": true,
 	"eval": true, "exec": true, "__import__": true,
@@ -84,7 +94,8 @@ func (vr *valueRefs) scan(text string, params bool) {
 }
 
 // scanRunes is scan over runes; allValues counts every name as a value use, call position
-// included, for text the call scanner never reads (an f-string substitution).
+// included, for text the call scanner never reads (an f-string substitution that could not
+// be spliced).
 func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 	n := len(r)
 	for i := 0; i < n; {
@@ -108,10 +119,13 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 		prev := prevSignificantRune(r, start)
 		attr := prev >= 0 && r[prev] == '.'
 		for k, seg := range segs {
+			if k > 0 && !attr && (seg == "__dict__" || seg == "__setattr__") {
+				vr.exposed[strings.Join(segs[:k], ".")] = true
+			}
 			switch {
 			case computedNameAttrs[seg]:
 				vr.computed = true
-			case k == 0 && !attr && computedNameCalls[seg]:
+			case !attr && (k == 0 || k == 1 && segs[0] == "builtins") && computedNameCalls[seg]:
 				vr.computed = true
 				if seg == "eval" || seg == "exec" {
 					vr.evaluated = true
@@ -123,6 +137,9 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 		assigned := p < n && r[p] == '=' && !(p+1 < n && r[p+1] == '=')
 		param := params && len(segs) == 1 && (prev < 0 || strings.ContainsRune("(,*", r[prev])) &&
 			(p >= n || strings.ContainsRune(",)=:", r[p]))
+		if len(segs) > 1 && !attr && !called && !(p < n && r[p] == '[') && assignTarget(r, start, pos) {
+			vr.stores[strings.Join(segs, ".")] = true
+		}
 		if allValues || !(called || assigned || param) {
 			vr.names[segs[len(segs)-1]] = true
 			if !attr {
@@ -133,39 +150,87 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 	}
 }
 
-// scanFStrings records the names used inside the substitutions of every f-string and
-// t-string literal in a file, given its cleaned source and the literals stripPythonLiterals
-// blanked. The call scanner reads only cleaned text, so a substitution's calls are not sites:
-// every name in one counts as a value use, and a call there marks the file's site list
-// incomplete.
-func (vr *valueRefs) scanFStrings(clean string, lits map[int]strLiteral) {
-	r := []rune(clean)
-	for start, lit := range lits {
-		if !fStringPrefix(r, start) {
-			continue
-		}
-		body := []rune(lit.body)
-		for i := 0; i < len(body); i++ {
-			if body[i] != '{' {
+// assignTarget reports whether the expression running from r[start] to r[end] may be a
+// target the statement assigns to: an assignment, augmented assignment or annotated
+// assignment follows it outside brackets, or it is in the target list of a for or an as.
+func assignTarget(r []rune, start, end int) bool {
+	depth := 0
+	for k := 0; k < len(r); k++ {
+		switch r[k] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '=':
+			if k < end || depth > 0 || k+1 < len(r) && r[k+1] == '=' {
 				continue
 			}
-			if i+1 < len(body) && body[i+1] == '{' {
-				i++
+			if k == 0 {
+				return true
+			}
+			switch r[k-1] {
+			case '=', '!':
 				continue
+			case '<', '>':
+				if k < 2 || r[k-2] != r[k-1] {
+					continue
+				}
 			}
-			end := matchingClose(body, i)
-			if end < 0 {
-				end = len(body)
-			}
-			expr := body[i+1 : end]
-			vr.scanRunes(expr, false, true)
-			if strings.ContainsRune(string(expr), '(') {
-				vr.hidden = true
-			}
-			i = end
+			return true
 		}
 	}
+	for j := start - 1; j >= 0; {
+		switch c := r[j]; {
+		case strings.ContainsRune(" \t,([*.", c):
+			j--
+		case isIdentPart(c):
+			k := j
+			for k >= 0 && isIdentPart(r[k]) {
+				k--
+			}
+			switch string(r[k+1 : j+1]) {
+			case "for", "as":
+				return true
+			case "in":
+				return false
+			}
+			j = k
+		default:
+			return false
+		}
+	}
+	return false
 }
+
+// namesDynamicImport reports whether expr names a dynamic import: import_module,
+// __import__, a loader dynamicImports reads, or the leaf of a string loader
+// stringLoaderImports reads.
+func namesDynamicImport(expr []rune) bool {
+	for i := 0; i < len(expr); {
+		if !isIdentStartRune(expr[i]) || (i > 0 && isIdentPart(expr[i-1])) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(expr, i)
+		if w == "import_module" || w == "__import__" || dynamicImportLiteralLeafs[w] || dynamicImportOpaqueLeafs[w] || stringLoaderLeafs[w] {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+// stringLoaderLeafs are the last names of stringLoaders and stringLoaderMethods.
+var stringLoaderLeafs = func() map[string]bool {
+	out := map[string]bool{}
+	for name := range stringLoaders {
+		out[name[strings.LastIndexByte(name, '.')+1:]] = true
+	}
+	for name := range stringLoaderMethods {
+		out[name[strings.LastIndexByte(name, '.')+1:]] = true
+	}
+	return out
+}()
 
 // fStringPrefix reports whether the literal opening at r[start] carries an f prefix or a
 // t prefix (PEP 750 template strings, whose substitutions are evaluated the same way): f,

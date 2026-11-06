@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -50,8 +52,12 @@ git+https://github.com/x/y.git#egg=z
 	}
 }
 
+// poetryProject is the pyproject.toml a poetry.lock sits beside, declaring only the main group.
+const poetryProject = "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
 func TestResolveVersions_PoetryLock(t *testing.T) {
 	dir := writeTree(t, map[string]string{
+		"pyproject.toml": poetryProject,
 		"poetry.lock": `
 [[package]]
 name = "deepdiff"
@@ -215,6 +221,7 @@ func TestResolveVersions_PipfileDefaultDevelopDisagreeUnresolved(t *testing.T) {
 func TestResolveVersions_SamePinAcrossManifestsResolves(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"requirements.txt": "Flask==2.3.0\n",
+		"pyproject.toml":   poetryProject,
 		"poetry.lock":      "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
 	})
 	if r := resolveVersion(t, dir, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
@@ -227,7 +234,7 @@ func TestResolveVersions_SamePinAcrossManifestsResolves(t *testing.T) {
 func TestResolveVersions_DeclaredRangeBesideLockPinResolves(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\n    \"flask>=2.0\",\n]\n",
-		"poetry.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+		"poetry.lock":    poetryLockHeader("2.1.3") + "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
 	})
 	if r := resolveVersion(t, dir, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
 		t.Fatalf("range declaration + lock pin want 2.3.0 resolved; got %+v", r.Match)
@@ -477,8 +484,8 @@ func mustResolvedCompletePy(t *testing.T, dir, coordinate, want string) {
 	}
 }
 
-// A -r or -c include is not followed, so it vetoes whatever the included file is called
-// and whatever it holds.
+// A -c include, or a -r include of a file the walk does not parse as a requirements file, is
+// not followed, so it vetoes whatever the included file holds.
 func TestResolveVersions_IncludeFollowedWhateverItsName(t *testing.T) {
 	for name, tc := range map[string]struct{ line, file, body string }{
 		"r-space":         {"-r deps/common.in\n", "deps/common.in", "flask>=2.0\n"},
@@ -545,6 +552,121 @@ func TestResolveVersions_UnreadableIncludeUnresolved(t *testing.T) {
 	}
 }
 
+// followedInclude follows a -r include only into a requirements file the walk itself parses:
+// relative, never climbing, through real directories by their exact names, never a symlink.
+func TestFollowedInclude(t *testing.T) {
+	outside := writeTree(t, map[string]string{"requirements.txt": "flask==2.3.0\n"})
+	root := writeTree(t, map[string]string{
+		"requirements-min.txt":       "flask==2.3.0\n",
+		"base.txt":                   "flask==2.3.0\n",
+		"sub/requirements-x.txt":     "flask==2.3.0\n",
+		"build/requirements-b.txt":   "flask==2.3.0\n",
+		".config/requirements-c.txt": "flask==2.3.0\n",
+	})
+	for link, target := range map[string]string{
+		"requirements-link.txt": "requirements-min.txt",
+		"requirements-out.txt":  filepath.Join(outside, "requirements.txt"),
+		"linked":                "sub",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"-r requirements-min.txt", true},
+		{"-rrequirements-min.txt", true},
+		{"--requirement requirements-min.txt", true},
+		{"--requirement=requirements-min.txt", true},
+		{"-r ./requirements-min.txt", true},
+		{"-r 'sub/requirements-x.txt'", true},
+
+		{"-r ../" + filepath.Base(outside) + "/requirements.txt", false},
+		{"-r sub/../requirements-min.txt", false},
+		{"-r " + filepath.Join(root, "requirements-min.txt"), false},
+		{"-r requirements-link.txt", false},
+		{"-r requirements-out.txt", false},
+		{"-r linked/requirements-x.txt", false},
+		{"-r SUB/requirements-x.txt", false},
+		{"-r build/requirements-b.txt", false},
+		{"-r .config/requirements-c.txt", false},
+		{"-r https://example.com/requirements.txt", false},
+		{"-r file:requirements-min.txt", false},
+		{"-r ${DIR}/requirements-min.txt", false},
+		{"-r base.txt", false},
+		{"-r requirements-missing.txt", false},
+		{"-r sub", false},
+		{"-r requirements-min.txt --pre", false},
+		{"-c requirements-min.txt", false},
+		{"-r", false},
+	} {
+		if got := followedInclude(tc.line, root); got != tc.want {
+			t.Errorf("followedInclude(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+// A -r chain and a -r cycle between requirements files the walk parses read completely: each
+// file is parsed on its own, so a pin in the last file of the chain resolves.
+func TestResolveVersions_RequirementsIncludeFollowed(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"two-level chain": {
+			"requirements-dev.txt": "-r requirements-min.txt\npytest==8.0.0\n",
+			"requirements-min.txt": "-r requirements.txt\nnumpy==1.26.0\n",
+			"requirements.txt":     "flask==2.3.0\n",
+		},
+		"cycle": {
+			"requirements.txt":     "-r requirements-dev.txt\nflask==2.3.0\n",
+			"requirements-dev.txt": "-r requirements.txt\n-r requirements-dev.txt\n",
+		},
+		"subdirectory": {
+			"requirements.txt":           "-r reqs/requirements-base.txt\n",
+			"reqs/requirements-base.txt": "flask==2.3.0\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, files), "flask")
+			if !res.Match.Resolved || res.Match.Version != "2.3.0" || !res.Partiality.Complete {
+				t.Fatalf("want 2.3.0 resolved and complete; got %+v %+v", res.Match, res.Partiality)
+			}
+		})
+	}
+}
+
+// A named URL or VCS requirement never gives its project a version, and is a direct reference,
+// so a lock pin of the same name cannot stand for what it installs: neither Match nor a complete
+// Matches set can place the package on version grounds. Each file is in hash-checking mode, so
+// coverage holds and only the direct reference keeps Matches incomplete.
+func TestResolveVersions_NamedDirectReferenceNeverAVersion(t *testing.T) {
+	const sha = "6fdee8f2727f4506cfbbe553e23b895e27956588"
+	for name, line := range map[string]string{
+		"pep508 vcs": "flask @ git+https://github.com/pallets/flask@" + sha,
+		"egg vcs":    "git+https://github.com/pallets/flask@" + sha + "#egg=flask",
+		"pep508 url": "flask @ https://example.com/flask-3.0.0.tar.gz --hash=sha256:abc",
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, map[string]string{
+				"pyproject.toml":   poetryProject,
+				"poetry.lock":      "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n",
+				"requirements.txt": "--require-hashes\n" + line + "\n",
+			}), "flask")
+			if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+				t.Fatalf("Match = %+v (found %v), want found with no version", res.Match, res.Found)
+			}
+			for _, d := range res.All {
+				if d.Source == "requirements.txt" && (d.Resolved || d.Version != "") {
+					t.Fatalf("the direct reference was given a version: %+v", d)
+				}
+			}
+			if !res.Exhaustive || res.MatchesComplete {
+				t.Fatalf("Exhaustive %v, MatchesComplete %v (Matches %+v), want covered and incomplete", res.Exhaustive, res.MatchesComplete, res.Matches)
+			}
+		})
+	}
+}
+
 // Matches lists the lock entries and installed copies of the package, and MatchesComplete holds
 // only when complete lockfiles govern every manifest and every surface was read: a declaration a
 // lock does not pin, or a manifest no lock governs, may install a version no reader saw.
@@ -563,15 +685,16 @@ func TestResolveVersions_MatchesComplete(t *testing.T) {
 		versions []string
 		complete bool
 	}{
-		{"one lock per service", map[string]string{"poetry.lock": lock300, "svc/poetry.lock": lock233}, []string{"3.0.0", "2.3.3"}, true},
+		{"one lock per service", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject,
+			"svc/poetry.lock": lock233, "svc/pyproject.toml": poetryProject}, []string{"3.0.0", "2.3.3"}, true},
 		{"a pyproject its lock pins", map[string]string{"poetry.lock": lock300, "pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask>=3\"]\n"}, []string{"3.0.0"}, true},
-		{"an installed copy joins the set", map[string]string{"poetry.lock": lock300, sitePackages + "flask-2.0.0.dist-info/METADATA": metadata200}, []string{"3.0.0", "2.0.0"}, true},
+		{"an installed copy joins the set", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, sitePackages + "flask-2.0.0.dist-info/METADATA": metadata200}, []string{"3.0.0", "2.0.0"}, true},
 		{"requirements pins with no lock", map[string]string{"requirements.txt": "flask==2.3.2\n"}, nil, false},
-		{"an unlocked service beside a locked one", map[string]string{"poetry.lock": lock300, "svc/requirements.txt": "requests==2.31.0\n"}, []string{"3.0.0"}, false},
+		{"an unlocked service beside a locked one", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, "svc/requirements.txt": "requests==2.31.0\n"}, []string{"3.0.0"}, false},
 		{"a pyproject pin its uv.lock omits", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask==2.3.1\"]\n", "uv.lock": uvNoFlask}, nil, false},
 		{"a pyproject pin its poetry.lock contradicts", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask==2.3.1\"]\n", "poetry.lock": lock232}, []string{"2.3.2"}, false},
-		{"setup.py declarations", map[string]string{"poetry.lock": lock300, "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"flask==2.0.1\"])\n"}, []string{"3.0.0"}, false},
-		{"a wheel named for the package", map[string]string{"poetry.lock": lock300, "dist/flask-2.0.0-py3-none-any.whl": "PK"}, []string{"3.0.0"}, false},
+		{"setup.py declarations", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"flask==2.0.1\"])\n"}, []string{"3.0.0"}, false},
+		{"a wheel named for the package", map[string]string{"poetry.lock": lock300, "pyproject.toml": poetryProject, "dist/flask-2.0.0-py3-none-any.whl": "PK"}, []string{"3.0.0"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -723,6 +846,7 @@ python_req = "python_version >= '3.9'"
 func TestResolveVersions_Exhaustive(t *testing.T) {
 	const (
 		uvLock = `version = 1
+requires-python = ">=3.8"
 [[package]]
 name = "app"
 version = "0.1.0"
@@ -779,7 +903,8 @@ version = "3.1.4"
 		{"poetry.lock", map[string]string{"poetry.lock": poetryLock}, true},
 		{"lock misses a declared name", map[string]string{"uv.lock": uvLock, "pyproject.toml": pyprojectUncovered}, false},
 		{"pinned requirement disagrees with lock", map[string]string{"uv.lock": uvLock, "requirements.txt": "flask==2.0.0\n"}, false},
-		{"requirements matching lock", map[string]string{"uv.lock": uvLock, "requirements.txt": "flask==3.0.0\njinja2==3.1.4\n"}, false},
+		{"requirements matching lock", map[string]string{"uv.lock": uvLock, "requirements.txt": "flask==3.0.0\njinja2==3.1.4\n"}, true},
+		{"requirements matching lock, a dependency unpinned", map[string]string{"uv.lock": uvLock, "requirements.txt": "flask==3.0.0\n"}, false},
 		{"requirements matching lock, hashed", map[string]string{"uv.lock": uvLock, "requirements.txt": "flask==3.0.0 --hash=sha256:aaa\njinja2==3.1.4 --hash=sha256:aaa\n"}, true},
 		{"editable requirement", map[string]string{"uv.lock": uvLock, "requirements.txt": "-e .\nflask==3.0.0\n"}, false},
 		{"manifest outside the lock's tree", map[string]string{"svc/uv.lock": uvLock, "requirements.txt": "flask==3.0.0\n"}, false},
@@ -965,26 +1090,63 @@ func TestResolveVersions_StandardRequirementsNamesRead(t *testing.T) {
 func TestResolveVersions_PyprojectUnreadTablesVeto(t *testing.T) {
 	const head = "[project]\nname = \"b\"\n\n"
 	for name, table := range map[string]string{
-		"dynamic-deps":              head[:len(head)-1] + "dynamic = [\"version\", \"dependencies\"]\n\n[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n",
-		"dynamic-optional":          head[:len(head)-1] + "dynamic = [\"optional-dependencies\"]\n",
-		"group-include-unknown":     head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"x\"}]\n",
-		"group-include-cycle":       head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"test\"}]\ntest = [{include-group = \"dev\"}]\n",
-		"group-include-self":        head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"dev\"}]\n",
-		"group-include-extra-key":   head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"test\", optional = true}]\ntest = []\n",
-		"group-include-not-string":  head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = 1}]\n\"\" = []\n",
-		"group-entry-not-string":    head + "[dependency-groups]\ndev = [\"flask>=2\", 1]\n",
-		"group-not-array":           head + "[dependency-groups]\ndev = \"flask>=2\"\n",
-		"group-names-collide":       head + "[dependency-groups]\nDev_Tools = [\"flask>=2\"]\ndev-tools = []\n",
-		"group-entry-unparseable":   head + "[dependency-groups]\ndev = [\"flask>=2\", \"=bad\"]\n",
-		"group-entry-local-file":    head + "[dependency-groups]\ndev = [\"flask>=2\", \"lib @ file:///opt/lib\"]\n",
-		"uv-dev-not-string":         head + "[tool.uv]\ndev-dependencies = [\"flask>=2\", {name = \"x\"}]\n",
-		"pdm-dev-editable":          head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\", \"-e ./lib\"]\n",
-		"pdm-dev-not-array":         head + "[tool.pdm.dev-dependencies]\ntest = \"flask>=2\"\n",
-		"poetry-path":               head + "[tool.poetry.dependencies]\nflask = \"^2\"\nlib = {path = \"../lib\"}\n",
-		"poetry-file":               head + "[tool.poetry.group.dev.dependencies]\nflask = \"^2\"\nlib = {file = \"dist/lib.whl\"}\n",
-		"poetry-path-in-array":      head + "[tool.poetry.dependencies]\nflask = [{version = \"^2\", python = \"<3.12\"}, {path = \"../flask\", python = \">=3.12\"}]\n",
-		"poetry-alternation":        head + "[tool.poetry.dependencies]\nflask = \"^1.0 || ^2.0\"\n",
-		"poetry-version-not-string": head + "[tool.poetry.dependencies]\nflask = {version = 2}\n",
+		"dynamic-deps":                head[:len(head)-1] + "dynamic = [\"version\", \"dependencies\"]\n\n[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n",
+		"dynamic-optional":            head[:len(head)-1] + "dynamic = [\"optional-dependencies\"]\n",
+		"group-include-unknown":       head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"x\"}]\n",
+		"group-include-cycle":         head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"test\"}]\ntest = [{include-group = \"dev\"}]\n",
+		"group-include-self":          head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"dev\"}]\n",
+		"group-include-extra-key":     head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"test\", optional = true}]\ntest = []\n",
+		"group-include-not-string":    head + "[dependency-groups]\ndev = [\"flask>=2\", {include-group = 1}]\n\"\" = []\n",
+		"group-entry-not-string":      head + "[dependency-groups]\ndev = [\"flask>=2\", 1]\n",
+		"group-not-array":             head + "[dependency-groups]\ndev = \"flask>=2\"\n",
+		"group-names-collide":         head + "[dependency-groups]\nDev_Tools = [\"flask>=2\"]\ndev-tools = []\n",
+		"group-entry-unparseable":     head + "[dependency-groups]\ndev = [\"flask>=2\", \"=bad\"]\n",
+		"group-entry-local-file":      head + "[dependency-groups]\ndev = [\"flask>=2\", \"lib @ file:///opt/lib\"]\n",
+		"uv-dev-not-string":           head + "[tool.uv]\ndev-dependencies = [\"flask>=2\", {name = \"x\"}]\n",
+		"pdm-dev-editable":            head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\", \"-e ./lib\"]\n",
+		"pdm-dev-not-array":           head + "[tool.pdm.dev-dependencies]\ntest = \"flask>=2\"\n",
+		"hatch-dep-not-string":        head + "[tool.hatch.envs.default]\ndependencies = [\"flask>=2\", 1]\n",
+		"hatch-extra-not-string":      head + "[tool.hatch.envs.test]\nextra-dependencies = [\"flask>=2\", {name = \"x\"}]\n",
+		"hatch-dep-not-array":         head + "[tool.hatch.envs.default]\ndependencies = \"flask>=2\"\n",
+		"hatch-dep-unparseable":       head + "[tool.hatch.envs.default]\ndependencies = [\"flask>=2\", \"=bad\"]\n",
+		"hatch-dep-local-file":        head + "[tool.hatch.envs.default]\ndependencies = [\"lib @ file:///opt/lib\"]\n",
+		"hatch-matrix-override":       head + "[tool.hatch.envs.test]\ndependencies = [\"pytest\"]\n\n[[tool.hatch.envs.test.matrix]]\nflask = [\"1\", \"2\"]\n\n[tool.hatch.envs.test.overrides]\nmatrix.flask.dependencies = [{value = \"flask<2\", if = [\"1\"]}]\n",
+		"hatch-env-override":          head + "[tool.hatch.envs.test.overrides]\nenv.CI.extra-dependencies = [\"flask<2\"]\n",
+		"hatch-post-install-pip":      head + "[tool.hatch.envs.default]\npost-install-commands = [\"pip install 'flask<2'\"]\n",
+		"hatch-pre-install-chained":   head + "[tool.hatch.envs.default]\npre-install-commands = [\"echo hi && python -m pip install flask<2\"]\n",
+		"hatch-script-string":         head + "[tool.hatch.envs.default.scripts]\nsetup = \"uv pip install 'flask<2'\"\n",
+		"hatch-script-array":          head + "[tool.hatch.envs.default.scripts]\nsetup = [\"ruff check\", \"sh -c \\\"pip install flask<2\\\"\"]\n",
+		"hatch-env-vars-pip":          head + "[tool.hatch.envs.default.env-vars]\nPIP_INDEX_URL = \"https://mirror.example/simple\"\n",
+		"hatch-plugin-type":           head + "[tool.hatch.envs.default]\ntype = \"conda\"\n",
+		"hatch-type-not-string":       head + "[tool.hatch.envs.default]\ntype = 1\n",
+		"hatch-overrides-not-table":   head + "[tool.hatch.envs.default]\noverrides = \"x\"\n",
+		"hatch-override-script":       head + "[tool.hatch.envs.test.overrides]\nplatform.linux.scripts = [{key = \"setup\", value = \"pip install flask<2\"}]\n",
+		"hatch-override-post-cmd":     head + "[tool.hatch.envs.test.overrides]\nenv.CI.post-install-commands = [\"pip install flask<2\"]\n",
+		"hatch-override-env-var":      head + "[tool.hatch.envs.test.overrides]\nmatrix.py.env-vars = [\"UV_INDEX_URL=https://mirror.example/simple\"]\n",
+		"hatch-override-set-deps":     head + "[tool.hatch.envs.test.overrides]\nplatform.linux.set-dependencies = [\"flask<2\"]\n",
+		"hatch-override-set-script":   head + "[tool.hatch.envs.test.overrides]\nenv.CI.set-post-install-commands = [\"pip install flask<2\"]\n",
+		"hatch-override-type":         head + "[tool.hatch.envs.test.overrides]\nplatform.linux.type = \"conda\"\n",
+		"hatch-override-sources":      head + "[tool.hatch.envs.test.overrides]\nenv.CI.sources = [{key = \"flask\", value = \"./vendor/flask\"}]\n",
+		"hatch-override-workspace":    head + "[tool.hatch.envs.test.overrides]\nenv.CI.workspace = [{key = \"members\", value = [\"packages/*\"]}]\n",
+		"hatch-override-array-deep":   head + "[[tool.hatch.envs.test.overrides.matrix.version.custom]]\ndependencies = [\"flask<2\"]\n",
+		"hatch-override-array-inline": head + "[tool.hatch.envs.test.overrides.matrix.version]\ncustom = [{ dependencies = [\"flask<2\"] }]\n",
+		"hatch-override-script-aot":   head + "[[tool.hatch.envs.test.overrides.matrix.version.scripts]]\nkey = \"setup\"\nvalue = \"pip install flask<2\"\n",
+		"hatch-override-envvar-aot":   head + "[[tool.hatch.envs.test.overrides.matrix.version.env-vars]]\nkey = \"PIP_INDEX_URL\"\nvalue = \"https://mirror.example/simple\"\n",
+		"hatch-sources":               head + "[tool.hatch.sources]\nflask = \"./vendor/flask\"\n",
+		"hatch-env-sources":           head + "[tool.hatch.envs.test.sources]\nflask = {git = \"https://github.com/example/flask\"}\n",
+		"hatch-workspace":             head + "[tool.hatch.envs.test.workspace]\nmembers = [\"packages/*\"]\n",
+		"hatch-extra-scripts":         head + "[tool.hatch.envs.test.extra-scripts]\nsetup = \"pip install flask<2\"\n",
+		"hatch-script-abs-pip":        head + "[tool.hatch.envs.test.scripts]\nsetup = \"/usr/bin/pip install flask<2\"\n",
+		"hatch-script-venv-pip":       head + "[tool.hatch.envs.test.scripts]\nsetup = \".venv/bin/pip install flask<2\"\n",
+		"hatch-script-env-default":    head + "[tool.hatch.envs.test.scripts]\nsetup = \"{env:INSTALLER:pip} install flask<2\"\n",
+		"hatch-custom-collector":      head + "[tool.hatch.env.collectors.custom]\npath = \"hatch_plugins.py\"\n",
+		"hatch-env-var-installer":     head + "[tool.hatch.envs.test]\nenv-vars = {INSTALLER = \"pip\"}\npost-install-commands = [\"$INSTALLER install flask<2\"]\n",
+		"hatch-override-script-kv":    head + "[tool.hatch.envs.test.overrides]\nmatrix.py.scripts = [\"setup=pip install flask<2\"]\n",
+		"poetry-path":                 head + "[tool.poetry.dependencies]\nflask = \"^2\"\nlib = {path = \"../lib\"}\n",
+		"poetry-file":                 head + "[tool.poetry.group.dev.dependencies]\nflask = \"^2\"\nlib = {file = \"dist/lib.whl\"}\n",
+		"poetry-path-in-array":        head + "[tool.poetry.dependencies]\nflask = [{version = \"^2\", python = \"<3.12\"}, {path = \"../flask\", python = \">=3.12\"}]\n",
+		"poetry-alternation":          head + "[tool.poetry.dependencies]\nflask = \"^1.0 || ^2.0\"\n",
+		"poetry-version-not-string":   head + "[tool.poetry.dependencies]\nflask = {version = 2}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeTree(t, map[string]string{
@@ -1014,11 +1176,21 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"pdm-dev-pdm-lock":     {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n", "pdm.lock": pdmLk},
 		"poetry-caret-covered": {"pyproject.toml": "[tool.poetry.group.web.dependencies]\nflask = \"^2.1\"\n", "poetry.lock": pdmLk},
 		// A parenthesized specifier with no space before it keys on the name alone.
-		"project-paren-uv-lock":  {"pyproject.toml": head[:len(head)-1] + "dependencies = [\"Flask(>=2)\"]\n", "uv.lock": uvLock},
-		"groups-paren-exact-pin": {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(==2.3.0)\"]\n"},
-		"groups-paren-uv-lock":   {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(>=2)\"]\n", "uv.lock": uvLock},
-		"uv-dev-paren-uv-lock":   {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask(>=2)\"]\n", "uv.lock": uvLock},
-		"pdm-dev-paren-pdm-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask(>=2)\"]\n", "pdm.lock": pdmLk},
+		"project-paren-uv-lock":     {"pyproject.toml": head[:len(head)-1] + "dependencies = [\"Flask(>=2)\"]\n", "uv.lock": uvLock},
+		"groups-paren-exact-pin":    {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(==2.3.0)\"]\n"},
+		"groups-paren-uv-lock":      {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(>=2)\"]\n", "uv.lock": uvLock},
+		"uv-dev-paren-uv-lock":      {"pyproject.toml": head + "[tool.uv]\ndev-dependencies = [\"flask(>=2)\"]\n", "uv.lock": uvLock},
+		"pdm-dev-paren-pdm-lock":    {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask(>=2)\"]\n", "pdm.lock": pdmLk},
+		"project-poetry-2-lock":     {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": poetryLockHeader("2.0.0") + pdmLk},
+		"project-poetry-crlf-lock":  {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": strings.ReplaceAll(poetryLockHeader("2.1.3")+pdmLk, "\n", "\r\n")},
+		"tool-poetry-poetry-1-lock": {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2.1\"\n", "poetry.lock": poetryLockHeader("1.8.5") + pdmLk},
+		"project-poetry-10-lock":    {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": poetryLockHeader("10.1.2") + pdmLk},
+		"hatch-exact-pin":           {"pyproject.toml": head + "[tool.hatch.envs.default]\ndependencies = [\"flask==2.3.0\"]\n\n[tool.hatch.envs.lint]\nextra-dependencies = [\"flask==2.3.0\"]\n"},
+		// Overrides that set no dependencies (here the matrix's interpreters) do not veto.
+		"hatch-override-no-deps": {"pyproject.toml": head + "[tool.hatch.envs.test]\ndependencies = [\"flask==2.3.0\"]\n\n[[tool.hatch.envs.test.matrix]]\npython = [\"3.11\", \"3.12\"]\n\n[tool.hatch.envs.test.overrides]\nmatrix.python.platforms = [\"linux\"]\n"},
+		// Commands, scripts and env-vars that name no installer, and the built-in type, do not
+		// veto.
+		"hatch-quiet-env": {"pyproject.toml": head + "[tool.hatch.envs.default]\ntype = \"virtual\"\ndependencies = [\"flask==2.3.0\"]\ninstaller = \"uv\"\npost-install-commands = [\"pre-commit install\"]\n\n[tool.hatch.envs.default.scripts]\ntest = \"pytest {args}\"\ncov = [\"coverage run -m pytest\", \"coverage report\"]\n\n[tool.hatch.envs.default.env-vars]\nPYTHONWARNINGS = \"error\"\n\n[tool.hatch.envs.default.overrides]\nenv.CI.scripts = [{key = \"test\", value = \"pytest -x\"}]\n"},
 	}
 	for name, files := range covered {
 		t.Run(name, func(t *testing.T) {
@@ -1032,8 +1204,11 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"pdm-dev-other-tool-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n", "uv.lock": uvLock},
 		"poetry-other-tool-lock":  {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2\"\n", "uv.lock": uvLock},
 		"poetry-caret-stale-lock": {"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"^2.4\"\n", "poetry.lock": pdmLk},
-		"poetry-git":              {"pyproject.toml": "[tool.poetry.dependencies]\nflask = {git = \"https://github.com/pallets/flask\"}\n", "poetry.lock": pdmLk},
-		"group-direct-reference":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask @ https://example.com/flask-2.3.0.tar.gz\"]\n", "uv.lock": uvLock},
+		// hatch has no lock, so no lock covers an environment's range.
+		"hatch-dep-uv-lock":      {"pyproject.toml": head + "[tool.hatch.envs.default]\ndependencies = [\"flask>=2\"]\n", "uv.lock": uvLock},
+		"hatch-extra-uv-lock":    {"pyproject.toml": head + "[tool.hatch.envs.test]\nextra-dependencies = [\"flask>=2\"]\n", "uv.lock": uvLock},
+		"poetry-git":             {"pyproject.toml": "[tool.poetry.dependencies]\nflask = {git = \"https://github.com/pallets/flask\"}\n", "poetry.lock": pdmLk},
+		"group-direct-reference": {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask @ https://example.com/flask-2.3.0.tar.gz\"]\n", "uv.lock": uvLock},
 		// A parenthesized range a pin elsewhere does not satisfy: the name must still match.
 		"project-paren-stale-lock": {"pyproject.toml": head[:len(head)-1] + "dependencies = [\"Flask(<2.3)\"]\n", "uv.lock": uvLock},
 		"groups-paren-stale-lock":  {"pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(<2.3)\"]\n", "uv.lock": uvLock},
@@ -1041,6 +1216,16 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 		"pdm-dev-paren-stale-lock": {"pyproject.toml": head + "[tool.pdm.dev-dependencies]\ntest = [\"flask(<2.3)\"]\n", "pdm.lock": pdmLk},
 		// Poetry reads PEP 735 groups only from 2.2.0, so its lock does not resolve them.
 		"groups-poetry-lock": {"pyproject.toml": head + "[dependency-groups]\ndev = [\"flask>=2\"]\n", "poetry.lock": pdmLk},
+		// Poetry reads [project] only from 2.0, so a lock is taken to resolve it only when its
+		// header names such a Poetry.
+		"project-poetry-1-lock":          {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": poetryLockHeader("1.8.5") + pdmLk},
+		"project-poetry-no-header":       {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": pdmLk},
+		"project-poetry-bare-header":     {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": "# This file is automatically @generated by Poetry and should not be changed by hand.\n" + pdmLk},
+		"project-poetry-dev-header":      {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": poetryLockHeader("2.0.0.dev0") + pdmLk},
+		"project-poetry-header-later":    {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": "\n" + poetryLockHeader("2.0.0") + pdmLk},
+		"project-poetry-other-comment":   {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n", "poetry.lock": "# This file is automatically @generated by Poetry 2.0.0 and should be changed by hand.\n" + pdmLk},
+		"project-and-tool-poetry-1-lock": {"pyproject.toml": head + "dependencies = [\"flask>=2\"]\n\n[tool.poetry.dependencies]\nflask = \"^2.1\"\n", "poetry.lock": poetryLockHeader("1.8.5") + pdmLk},
+		"project-optional-poetry-1-lock": {"pyproject.toml": head + "[project.optional-dependencies]\nweb = [\"flask>=2\"]\n", "poetry.lock": poetryLockHeader("1.8.5") + pdmLk},
 		"groups-paren-beside-another-pin": {"svc-a/requirements.txt": "flask==2.3.0\n",
 			"svc-b/pyproject.toml": head + "[dependency-groups]\ndev = [\"Flask(<2.3)\"]\n"},
 	}
@@ -1049,6 +1234,78 @@ func TestResolveVersions_PyprojectGroupsAndToolTablesRead(t *testing.T) {
 			mustUndecidedCompletePy(t, writeTree(t, files), "flask")
 		})
 	}
+}
+
+// tracker#543: a hatch environment's range beside a [project] pin makes the coordinate
+// multi-valued, so the pin no longer resolves.
+func TestResolveVersions_HatchEnvRangeBesideProjectPinUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==2.8.0\"]\n\n[tool.hatch.envs.default]\ndependencies = [\"pyjwt<2\"]\n",
+	})
+	mustUndecidedCompletePy(t, dir, "pyjwt")
+}
+
+// tracker#547: a "V"-prefixed version is well-formed, so it no longer leaves the whole
+// pyproject unread.
+func TestResolveVersions_PyprojectNormalizableSpellingsRead(t *testing.T) {
+	for name, spec := range map[string]string{
+		"upper": "pyjwt>=V2.0",
+		"lower": "pyjwt==v2.8.0",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"flask==2.3.0\", \"" + spec + "\"]\n",
+			})
+			mustResolvedCompletePy(t, dir, "flask", "2.3.0")
+		})
+	}
+	for name, files := range map[string]map[string]string{
+		"pyproject":          {"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==v2.8.0\"]\n"},
+		"requirements":       {"requirements.txt": "pyjwt==V2.8.0\n"},
+		"pyproject-and-reqs": {"pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\"pyjwt==v2.8.0\"]\n", "requirements.txt": "pyjwt==v2.8.0\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mustResolvedCompletePy(t, writeTree(t, files), "pyjwt", "2.8.0")
+		})
+	}
+}
+
+// hatch reads environments from hatch.toml too, under [envs.*] with no tool. prefix: a range
+// there leaves the project's pin unresolved, an environment there that installs past its lists
+// or a hatch.toml that does not decode leaves it unread, and a quiet one changes nothing.
+func TestResolveVersions_HatchTomlEnvs(t *testing.T) {
+	const pyproject = "[project]\nname = \"b\"\ndependencies = [\"pyjwt==2.8.0\"]\n"
+	tree := func(hatch string) string {
+		return writeTree(t, map[string]string{"pyproject.toml": pyproject, "hatch.toml": hatch})
+	}
+	t.Run("env range", func(t *testing.T) {
+		mustUndecidedCompletePy(t, tree("[envs.default]\ndependencies = [\"pyjwt<2\"]\n"), "pyjwt")
+	})
+	t.Run("env extra range", func(t *testing.T) {
+		mustUndecidedCompletePy(t, tree("[envs.test]\nextra-dependencies = [\"pyjwt<2\"]\n"), "pyjwt")
+	})
+	for name, hatch := range map[string]string{
+		"post-install pip":  "[envs.default]\npost-install-commands = [\"pip install 'pyjwt<2'\"]\n",
+		"top-level sources": "[sources]\npyjwt = { path = \"../pyjwt\" }\n",
+		"custom collector":  "[env.collectors.custom]\n",
+		"list not an array": "[envs.default]\ndependencies = \"pyjwt<2\"\n",
+		"does not decode":   "[envs.default\n",
+		"malformed entry":   "[envs.default]\ndependencies = [\"pyjwt <<2\"]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := tree(hatch)
+			for i := 0; i < resolveRuns; i++ {
+				res := resolveVersion(t, dir, "pyjwt")
+				mustUnresolvedPy(t, res)
+				if res.Partiality.Complete {
+					t.Fatalf("an unread hatch.toml must leave the result partial; got %+v", res.Partiality)
+				}
+			}
+		})
+	}
+	t.Run("quiet env", func(t *testing.T) {
+		mustResolvedCompletePy(t, tree("[envs.default]\ntype = \"virtual\"\ndependencies = [\"pytest\"]\n[envs.default.scripts]\ntest = \"pytest {args}\"\n"), "pyjwt", "2.8.0")
+	})
 }
 
 // [project].dependencies is read, and a dynamic field that is not a dependency list does
@@ -1066,7 +1323,7 @@ func TestResolveVersions_StaleLockDoesNotCoverRange(t *testing.T) {
 	for lock, body := range map[string]string{
 		"uv.lock":     "version = 1\n\n[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
 		"pdm.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
-		"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+		"poetry.lock": poetryLockHeader("2.1.3") + "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
 	} {
 		t.Run(lock, func(t *testing.T) {
 			stale := writeTree(t, map[string]string{
@@ -1115,7 +1372,7 @@ source = { registry = "https://pypi.org/simple" }
 		{"setup.py literal name, other package", map[string]string{"poetry.lock": poetryLock, "setup.py": "setup(name=\"svc\")\n"}, "aiohttp", true},
 		{"setup.py computed name fails open", map[string]string{"poetry.lock": poetryLock, "setup.py": "Extension(name=\"svc._c\")\nsetup(name=NAME)\n"}, "aiohttp", false},
 		{"setup.py shim with setup.cfg name", map[string]string{"poetry.lock": poetryLock, "setup.py": "setup()\n", "setup.cfg": "[metadata]\nname = svc\n"}, "aiohttp", true},
-		{"poetry lexical read disagrees with TOML", map[string]string{"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, "aiohttp", false},
+		{"poetry.lock keys without spaces", map[string]string{"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, "aiohttp", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1163,8 +1420,9 @@ func TestResolveVersions_PipfileAllOrderDeterministic(t *testing.T) {
 // for development still resolves as present.
 func TestResolveVersions_DevLockedPackagePresent(t *testing.T) {
 	tests := []struct {
-		name  string
-		files map[string]string
+		name    string
+		files   map[string]string
+		version string // "" when the lock pins pytest for no install that puts it in place
 	}{
 		{"uv dev-dependencies group", map[string]string{"uv.lock": `version = 1
 [[package]]
@@ -1179,15 +1437,17 @@ dev = [{ name = "pytest" }]
 name = "pytest"
 version = "8.0.0"
 source = { registry = "https://pypi.org/simple" }
-`}},
-		{"poetry dev category", map[string]string{"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ncategory = \"dev\"\noptional = false\n"}},
-		{"pdm dev group", map[string]string{"pdm.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ngroups = [\"dev\"]\n"}},
-		{"poetry optional extra", map[string]string{"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\noptional = true\n"}},
+`}, "8.0.0"},
+		{"poetry dev category", map[string]string{"pyproject.toml": poetryProject + "[tool.poetry.dev-dependencies]\npytest = \"8.0.0\"\n",
+			"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ncategory = \"dev\"\noptional = false\n"}, "8.0.0"},
+		{"pdm dev group", map[string]string{"pdm.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ngroups = [\"dev\"]\n"}, "8.0.0"},
+		{"poetry optional extra", map[string]string{"pyproject.toml": poetryProject,
+			"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\noptional = true\n"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := resolveVersion(t, writeTree(t, tt.files), "pytest")
-			if !r.Found || r.Match.Version != "8.0.0" {
+			if !r.Found || r.Match.Version != tt.version || r.Match.Resolved != (tt.version != "") {
 				t.Fatalf("dev-locked pytest not reported present: found=%v match=%+v", r.Found, r.Match)
 			}
 		})
@@ -1376,4 +1636,521 @@ func TestResolveVersions_ReadDeclarationsVetoUnpinned(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResolveVersions_UVSourcesRedirectUnresolved pins tracker#620: a [tool.uv.sources] entry
+// installs its package from a git ref, URL, local path, workspace member or named index whatever
+// the declared specifier or a lock's version says, so the coordinate is unresolved. A uv.lock
+// package with a git, URL, path or directory source reads as unresolved too, which catches a
+// workspace root's sources redirecting a member's dependency.
+func TestResolveVersions_UVSourcesRedirectUnresolved(t *testing.T) {
+	pp := func(spec, extra string) string {
+		return "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"" + spec + "\"]\n" + extra
+	}
+	lock := func(src string) string {
+		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = " + src + "\n"
+	}
+	wsRoot := func(extra string) string {
+		return "[project]\nname = \"root\"\nversion = \"0.1.0\"\n[tool.uv.workspace]\nmembers = [\"packages/*\"]\n" + extra
+	}
+	wsLock := func(src string) string {
+		return "version = 1\n[[package]]\nname = \"a\"\nversion = \"0.1.0\"\nsource = { editable = \"packages/a\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = " + src + "\n"
+	}
+	const (
+		gitSrc    = "[tool.uv.sources]\npyjwt = { git = \"https://github.com/example/pyjwt\", rev = \"abc\" }\n"
+		gitLocked = `{ git = "https://github.com/example/pyjwt?rev=abc#abcdef" }`
+		pypi      = `{ registry = "https://pypi.org/simple" }`
+	)
+	cases := []struct {
+		name         string
+		files        map[string]string
+		wantResolved bool
+	}{
+		{"lockless git pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", gitSrc)}, false},
+		{"lockless named index pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\npyjwt = { index = \"internal\" }\n")}, false},
+		{"lockless marker-split sources", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[[tool.uv.sources.pyjwt]]\npath = \"vendor/pyjwt\"\nmarker = \"sys_platform == 'linux'\"\n")}, false},
+		{"sources key normalizes", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\nPyJWT = { path = \"vendor/pyjwt\" }\n")}, false},
+		{"redirected dependency group pin", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+			"[dependency-groups]\ndev = [\"pyjwt==2.8.0\"]\n" + gitSrc}, false},
+		{"sources not a table", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", "[tool.uv]\nsources = \"pyjwt\"\n")}, false},
+		{"lock git pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", gitSrc), "uv.lock": lock(gitLocked)}, false},
+		{"lock git range", map[string]string{"pyproject.toml": pp("pyjwt>=2", gitSrc), "uv.lock": lock(gitLocked)}, false},
+		{"lock directory only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(`{ directory = "vendor/pyjwt" }`)}, false},
+		{"lock path only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(`{ path = "vendor/pyjwt-2.8.0.tar.gz" }`)}, false},
+		{"lock url only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(`{ url = "https://example.com/pyjwt-2.8.0.tar.gz" }`)}, false},
+		{"lock git only", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(gitLocked)}, false},
+		{"workspace root redirects member", map[string]string{
+			"pyproject.toml":            "[project]\nname = \"root\"\nversion = \"0.1.0\"\n[tool.uv.workspace]\nmembers = [\"packages/*\"]\n" + gitSrc,
+			"uv.lock":                   lock(gitLocked),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
+		{"stale registry lock under a git source", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", gitSrc), "uv.lock": lock(pypi)}, false},
+		{"named index source with a lock", map[string]string{"pyproject.toml": pp("pyjwt>=2",
+			"[tool.uv.sources]\npyjwt = { index = \"internal\" }\n"), "uv.lock": lock(`{ registry = "https://internal.example/simple" }`)}, false},
+		{"direct reference beside a registry lock", map[string]string{
+			"pyproject.toml": pp("pyjwt @ git+https://github.com/example/pyjwt@abc", ""), "uv.lock": lock(pypi)}, false},
+		{"lockless workspace root redirects member", map[string]string{
+			"pyproject.toml": wsRoot(gitSrc), "packages/a/pyproject.toml": pp("pyjwt==2.8.0", "")}, false},
+		{"workspace root named index, registry lock", map[string]string{
+			"pyproject.toml":            wsRoot("[tool.uv.sources]\npyjwt = { index = \"internal\" }\n"),
+			"uv.lock":                   wsLock(`{ registry = "https://internal.example/simple" }`),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
+		{"workspace root editable path, editable lock", map[string]string{
+			"pyproject.toml":            wsRoot("[tool.uv.sources]\npyjwt = { path = \"vendor/pyjwt\", editable = true }\n"),
+			"uv.lock":                   wsLock(`{ editable = "vendor/pyjwt" }`),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
+		{"workspace root virtual path, virtual lock", map[string]string{
+			"pyproject.toml":            wsRoot("[tool.uv.sources]\npyjwt = { path = \"vendor/pyjwt\", package = false }\n"),
+			"uv.lock":                   wsLock(`{ virtual = "vendor/pyjwt" }`),
+			"packages/a/pyproject.toml": pp("pyjwt==2.8.0", ""),
+		}, false},
+		// Guards: a source for another name, or a sibling workspace member, leaves pyjwt alone.
+		{"lockless sources for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\nrequests = { git = \"https://github.com/example/requests\" }\n")}, true},
+		{"workspace sibling source", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			"[tool.uv.sources]\napp-lib = { workspace = true }\n")}, true},
+		{"lock registry range", map[string]string{"pyproject.toml": pp("pyjwt>=2", ""), "uv.lock": lock(pypi)}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, tc.files), "PyJWT")
+			if !res.Found {
+				t.Fatalf("pyjwt not found: %+v", res)
+			}
+			if res.Match.Resolved != tc.wantResolved {
+				t.Fatalf("Match.Resolved = %v (version %q), want %v", res.Match.Resolved, res.Match.Version, tc.wantResolved)
+			}
+			if tc.wantResolved && res.Match.Version != "2.8.0" {
+				t.Fatalf("Match.Version = %q, want 2.8.0", res.Match.Version)
+			}
+			// The set axis is what refutes: a redirect must never leave a complete set of
+			// resolved lock pins, while a registry lock stays complete.
+			complete := res.MatchesComplete && !slices.ContainsFunc(res.Matches, func(d plugin.ResolvedDependency) bool { return !d.Resolved })
+			if wantComplete := tc.name == "lock registry range"; complete != wantComplete {
+				t.Fatalf("complete resolved set = %v (Matches %+v, MatchesComplete %v), want %v", complete, res.Matches, res.MatchesComplete, wantComplete)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_UVSourcesInventoryUnresolved guards All, which the work-set inventory reads
+// directly: a sourced declaration's own pin is not a resolved version there either.
+func TestResolveVersions_UVSourcesInventoryUnresolved(t *testing.T) {
+	root := writeTree(t, map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+		"dependencies = [\"pyjwt==2.8.0\"]\n[tool.uv.sources]\npyjwt = { git = \"https://github.com/jpadilla/pyjwt\", rev = \"abc123\" }\n"})
+	res := resolveVersion(t, root, "pyjwt")
+	for _, d := range res.All {
+		if normalizePyCoordinate(d.Coordinate) == "pyjwt" && d.Resolved {
+			t.Fatalf("All holds a resolved pyjwt %q from %s, want it unresolved", d.Version, d.Source)
+		}
+	}
+}
+
+// TestResolveVersions_UVOverrides covers [tool.uv] override-dependencies. uv installs an
+// overridden name at what the override admits whatever the declarations say, so a declaration
+// resolves only through a lock pin both it and the override admit, and a lock pin outside an
+// override is never part of a complete version set.
+func TestResolveVersions_UVOverrides(t *testing.T) {
+	pp := func(spec, extra string) string {
+		return "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"" + spec + "\"]\n" + extra
+	}
+	ov := func(specs string) string { return "[tool.uv]\noverride-dependencies = " + specs + "\n" }
+	cs := func(specs string) string { return "[tool.uv]\nconstraint-dependencies = " + specs + "\n" }
+	lock := func(version string) string {
+		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"" + version + "\"\n" +
+			"source = { registry = \"https://pypi.org/simple\" }\n"
+	}
+	wsRoot := func(extra string) string {
+		return "[project]\nname = \"root\"\nversion = \"0.1.0\"\n[tool.uv.workspace]\nmembers = [\"packages/*\"]\n" + extra
+	}
+	// A forked lock pins both versions, so a marked entry has one it admits and one it excludes.
+	forked := lock("2.8.0") + "\n[[package]]\nname = \"pyjwt\"\nversion = \"2.9.0\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+	const pdmLock = "[metadata]\nlock_version = \"4.4\"\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n"
+	cases := []struct {
+		name         string
+		files        map[string]string
+		wantVersion  string // "" wants pyjwt unresolved
+		wantComplete bool
+	}{
+		{"lockless override pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt==2.9.0"]`))}, "", false},
+		{"lockless override range", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt>=2.9"]`))}, "", false},
+		{"lockless override agreeing pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt==2.8.0"]`))}, "", false},
+		{"override name normalizes", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["PyJWT==2.9.0"]`))}, "", false},
+		{"lockless workspace root override", map[string]string{
+			"pyproject.toml": wsRoot(ov(`["pyjwt==2.9.0"]`)), "packages/a/pyproject.toml": pp("pyjwt==2.8.0", "")}, "", false},
+		{"lock predates override pin", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lock predates override range", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt>=2.9"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"override direct reference", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt @ git+https://github.com/example/pyjwt@abc"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"override beside a pdm.lock", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt==2.9.0"]`)), "pdm.lock": pdmLock}, "", false},
+		// uv installs the override, any other installer the declared pin: a lock that agrees with
+		// only one of them is no resolution of both.
+		{"lock agrees with the override, not the pin", map[string]string{
+			"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.9.0")}, "", false},
+		{"override not a list", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`"pyjwt==2.9.0"`))}, "", false},
+		{"override entry not a string", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`[3]`))}, "", false},
+		{"override entry not a requirement", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["not a requirement!!"]`))}, "", false},
+		{"lock resolves override and declared range", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.9.0")}, "2.9.0", true},
+		// Guard: an override for another name leaves pyjwt alone.
+		{"override for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["requests==2.0.0"]`))}, "2.8.0", false},
+		// A constraint narrows the declarations, so a lock written before it was added pins what
+		// they alone admitted, and a plain uv sync re-locks past it.
+		{"lock predates constraint range", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt>=2.9"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lock predates constraint pin", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt==2.9.0"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lock predates constraint on a locked-only name", map[string]string{
+			"pyproject.toml": pp("requests>=2", cs(`["pyjwt>=2.9"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"constraint direct reference", map[string]string{
+			"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt @ git+https://github.com/example/pyjwt@abc"]`))}, "", false},
+		{"constraint not a list", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`"pyjwt<3"`))}, "", false},
+		{"constraint entry not a string", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`[3]`))}, "", false},
+		// A file: URL installs that tree whatever the lock pins.
+		{"override file URL with a lock", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lockless override file URL", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`))}, "", false},
+		{"root override file URL over a member pin", map[string]string{
+			"pyproject.toml":        pp("requests>=2", ov(`["pyjwt @ file:///opt/forks/pyjwt"]`)),
+			"member/pyproject.toml": "[project]\nname = \"member\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt==2.8.0\"]\n",
+			"uv.lock":               lock("2.8.0")}, "", false},
+		{"constraint file URL with a lock", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt @ file:///opt/forks/pyjwt"]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"lockless constraint file URL", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt @ file:///opt/forks/pyjwt"]`))}, "", false},
+		// A scoped override replaces the pin wherever its package requests it, so each of its
+		// dependencies is read as an override.
+		{"lockless scoped override", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask", version = "3.0.0" }, dependencies = ["pyjwt==2.9.0"] }]`))}, "", false},
+		{"lock predates scoped override", map[string]string{"pyproject.toml": pp("pyjwt>=2",
+			ov(`[{ package = { name = "flask", version = "3.0.0" }, dependencies = ["pyjwt>=2.9"] }]`)), "uv.lock": lock("2.8.0")}, "", false},
+		{"scoped override package not a table", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = "flask", dependencies = ["requests==2.0.0"] }]`))}, "", false},
+		{"scoped override with another key", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask" }, dependencies = ["requests==2.0.0"], marker = "x" }]`))}, "", false},
+		{"scoped override dependency not a requirement", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask" }, dependencies = ["not a requirement!!"] }]`))}, "", false},
+		{"constraint in scoped form", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			cs(`[{ package = { name = "flask" }, dependencies = ["requests==2.0.0"] }]`))}, "", false},
+		// Guard: a scoped override of another name leaves pyjwt alone.
+		{"scoped override for another name", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0",
+			ov(`[{ package = { name = "flask", version = "3.0.0" }, dependencies = ["requests==2.0.0"] }]`))}, "2.8.0", false},
+		// Guards: a constraint is no override, so a pin it admits still stands, and a lock pin
+		// inside both the declaration and the constraint is a complete set.
+		{"lockless constraint admits the pin", map[string]string{"pyproject.toml": pp("pyjwt==2.8.0", cs(`["pyjwt<3"]`))}, "2.8.0", false},
+		{"lock inside declaration and constraint", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt>=2.8"]`)), "uv.lock": lock("2.8.0")}, "2.8.0", true},
+		{"forked lock predates a marked override", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", ov(`["pyjwt>=2.9; python_version < '3.10'"]`)), "uv.lock": forked}, "", false},
+		{"forked lock predates a marked constraint", map[string]string{
+			"pyproject.toml": pp("pyjwt>=2", cs(`["pyjwt>=2.9; python_version < '3.10'"]`)), "uv.lock": forked}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, tc.files), "pyjwt")
+			if !res.Found {
+				t.Fatalf("pyjwt not found: %+v", res)
+			}
+			if got := map[bool]string{true: res.Match.Version}[res.Match.Resolved]; got != tc.wantVersion {
+				t.Fatalf("Match = %+v, want resolved version %q", res.Match, tc.wantVersion)
+			}
+			complete := res.MatchesComplete && !slices.ContainsFunc(res.Matches, func(d plugin.ResolvedDependency) bool { return !d.Resolved })
+			if complete != tc.wantComplete {
+				t.Fatalf("complete resolved set = %v (Matches %+v, MatchesComplete %v), want %v", complete, res.Matches, res.MatchesComplete, tc.wantComplete)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_UVResolverStaleLockExhaustive: a uv.lock whose pin falls outside an
+// override or constraint predates it, and a plain uv sync re-locks to a version whose
+// dependencies (or the override's extras) the stale lock never recorded. It proves no name
+// absent. A lock that agrees with every entry, and a constraint on a name nothing installs,
+// keep Exhaustive.
+func TestResolveVersions_UVResolverStaleLockExhaustive(t *testing.T) {
+	lock := func(version string) string {
+		return "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"" + version + "\"\n" +
+			"source = { registry = \"https://pypi.org/simple\" }\n"
+	}
+	for _, tc := range []struct {
+		name, uv, version string
+		want              bool
+	}{
+		{"no override or constraint", "", "2.8.0", true},
+		{"lock predates override", "override-dependencies = [\"pyjwt>=2.9\"]", "2.8.0", false},
+		{"lock predates constraint", "constraint-dependencies = [\"pyjwt>=2.9\"]", "2.8.0", false},
+		{"override extra the lock lacks", "override-dependencies = [\"pyjwt[crypto]>=2.8\"]", "2.8.0", false},
+		{"lock satisfies override", "override-dependencies = [\"pyjwt>=2.8\"]", "2.8.0", true},
+		{"lock satisfies constraint", "constraint-dependencies = [\"pyjwt>=2.8\"]", "2.8.0", true},
+		{"constraint on a name nothing installs", "constraint-dependencies = [\"urllib3<2\"]", "2.8.0", true},
+		{"override not a list", "override-dependencies = \"pyjwt>=2.8\"", "2.8.0", false},
+		{"direct-reference override", "override-dependencies = [\"pyjwt @ git+https://github.com/example/pyjwt@abc\"]", "2.8.0", false},
+		{"direct-reference constraint", "constraint-dependencies = [\"pyjwt @ git+https://github.com/example/pyjwt@abc\"]", "2.8.0", false},
+		{"file URL constraint", "constraint-dependencies = [\"pyjwt @ file:///opt/forks/pyjwt\"]", "2.8.0", false},
+		{"lock predates scoped override", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.9\"] }]", "2.8.0", false},
+		{"lock satisfies scoped override", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.8\"] }]", "2.8.0", true},
+		{"constraint in scoped form", "constraint-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt>=2.8\"] }]", "2.8.0", false},
+		// A scoped override can add a dependency its package does not declare.
+		{"scoped override adds a name the lock lacks", "override-dependencies = [{ package = { name = \"pyjwt\" }, dependencies = [\"cryptography>=41\"] }]", "2.8.0", false},
+		{"versioned scoped override adds a name the lock lacks", "override-dependencies = [{ package = { name = \"pyjwt\", version = \"2.8.0\" }, dependencies = [\"cryptography>=41\"] }]", "2.8.0", false},
+		{"scoped override adds a direct reference", "override-dependencies = [{ package = { name = \"pyjwt\" }, dependencies = [\"cryptography @ git+https://github.com/example/cryptography@abc\"] }]", "2.8.0", false},
+		{"scoped override file URL over a locked name", "override-dependencies = [{ package = { name = \"flask\" }, dependencies = [\"pyjwt @ file:///opt/forks/pyjwt\"] }]", "2.8.0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{
+				"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n[tool.uv]\n" + tc.uv + "\n",
+				"uv.lock":        lock(tc.version),
+			})
+			if r := resolveVersion(t, root, "cryptography"); r.Found || r.Exhaustive != tc.want {
+				t.Fatalf("cryptography: Found=%v Exhaustive=%v, want absent with Exhaustive %v (partiality %+v)", r.Found, r.Exhaustive, tc.want, r.Partiality)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_UVOverrideInventoryUnresolved: the work-set inventory reads All directly, so
+// an overridden declaration must not be left there as a resolved pin.
+func TestResolveVersions_UVOverrideInventoryUnresolved(t *testing.T) {
+	root := writeTree(t, map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+		"dependencies = [\"pyjwt==2.8.0\"]\n[tool.uv]\noverride-dependencies = [\"pyjwt==2.9.0\"]\n"})
+	res := resolveVersion(t, root, "pyjwt")
+	for _, d := range res.All {
+		if normalizePyCoordinate(d.Coordinate) == "pyjwt" && d.Resolved {
+			t.Fatalf("All keeps the overridden pin resolved: %+v", d)
+		}
+	}
+}
+
+// TestResolveVersions_UVOverrideNotFound guards that an override alone never makes a name Found:
+// uv overrides a requirement only where something already requires it.
+func TestResolveVersions_UVOverrideNotFound(t *testing.T) {
+	root := writeTree(t, map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\n" +
+		"dependencies = [\"requests==2.31.0\"]\n[tool.uv]\noverride-dependencies = [\"pyjwt==2.9.0\"]\n"})
+	if res := resolveVersion(t, root, "pyjwt"); res.Found {
+		t.Fatalf("pyjwt Found from an override alone: %+v", res)
+	}
+}
+
+// TestResolveVersions_UVSourcesKeepExhaustive guards the other axis: a redirected source still
+// declares its name, so a uv.lock that records it keeps coverage, and Exhaustive is unchanged.
+func TestResolveVersions_UVSourcesKeepExhaustive(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n" +
+			"[tool.uv.sources]\npyjwt = { git = \"https://github.com/example/pyjwt\", rev = \"abc\" }\n",
+		"uv.lock": "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n" +
+			"dependencies = [{ name = \"pyjwt\" }]\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n" +
+			"source = { git = \"https://github.com/example/pyjwt?rev=abc#abcdef\" }\n",
+	})
+	if res := resolveVersion(t, root, "requests"); res.Found || !res.Exhaustive {
+		t.Fatalf("requests: Found=%v Exhaustive=%v, want absent and exhaustive", res.Found, res.Exhaustive)
+	}
+}
+
+// TestResolveVersions_LockSourceRedirect covers poetry.lock and pdm.lock entries installed from a
+// git ref, a URL, an archive or a local tree. Their locked version is whatever that source's
+// metadata says, so pyjwt must come out unresolved and its lock pins must not form a complete
+// set. A PyPI or other-index entry still resolves 2.8.0 with a complete set.
+func TestResolveVersions_LockSourceRedirect(t *testing.T) {
+	const pp = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n"
+	poetry := func(extra string) map[string]string {
+		return map[string]string{"pyproject.toml": pp,
+			"poetry.lock": poetryLockHeader("2.1.3") + "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\ndescription = \"\"\n" + extra +
+				"\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"*\"\n"}
+	}
+	pdm := func(extra string) map[string]string {
+		return map[string]string{"pyproject.toml": pp,
+			"pdm.lock": "[metadata]\nlock_version = \"4.4\"\n\n[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n" + extra}
+	}
+	tests := []struct {
+		name         string
+		files        map[string]string
+		wantResolved bool
+	}{
+		{"poetry git", poetry("\n[package.source]\ntype = \"git\"\nurl = \"https://github.com/jpadilla/pyjwt\"\nreference = \"main\"\nresolved_reference = \"abc123\"\n"), false},
+		{"poetry url", poetry("\n[package.source]\ntype = \"url\"\nurl = \"https://example.com/pyjwt-2.8.0.tar.gz\"\n"), false},
+		{"poetry file", poetry("\n[package.source]\ntype = \"file\"\nurl = \"vendor/pyjwt-2.8.0.tar.gz\"\n"), false},
+		{"poetry directory", poetry("\n[package.source]\ntype = \"directory\"\nurl = \"vendor/pyjwt\"\n"), false},
+		{"poetry unknown source type", poetry("\n[package.source]\ntype = \"hg\"\nurl = \"https://example.com/pyjwt\"\n"), false},
+		{"poetry source after dependencies", poetry("\n[package.dependencies]\ncryptography = \">=3.4\"\n\n[package.source]\ntype = \"git\"\nurl = \"https://github.com/jpadilla/pyjwt\"\n"), false},
+		{"poetry dotted source key", poetry("source.type = \"git\"\n"), false},
+		{"pdm git", pdm("git = \"https://github.com/jpadilla/pyjwt\"\nrevision = \"abc123\"\n"), false},
+		{"pdm path", pdm("path = \"./vendor/pyjwt\"\n"), false},
+		{"pdm editable path", pdm("path = \"./vendor/pyjwt\"\neditable = true\n"), false},
+		{"pdm editable alone", pdm("editable = true\n"), false},
+		{"pdm url", pdm("url = \"https://example.com/pyjwt-2.8.0.tar.gz\"\n"), false},
+		{"pdm hg", pdm("hg = \"https://example.com/pyjwt\"\nrevision = \"abc123\"\n"), false},
+		{"pdm svn", pdm("svn = \"https://example.com/pyjwt\"\n"), false},
+		{"pdm bzr", pdm("bzr = \"https://example.com/pyjwt\"\n"), false},
+		{"poetry source url without type", poetry("\n[package.source]\nurl = \"https://example.com/pyjwt-2.8.0.tar.gz\"\n"), false},
+		// Guards: an index entry is still the index release.
+		{"poetry pypi", poetry(""), true},
+		{"poetry legacy index", poetry("\n[package.source]\ntype = \"legacy\"\nurl = \"https://pypi.example.com/simple\"\nreference = \"internal\"\n"), true},
+		{"pdm index", pdm("files = [\n    {file = \"pyjwt-2.8.0-py3-none-any.whl\", hash = \"sha256:00\"},\n]\n"), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveVersion(t, writeTree(t, tc.files), "PyJWT")
+			if !res.Found {
+				t.Fatalf("pyjwt not found: %+v", res)
+			}
+			if res.Match.Resolved != tc.wantResolved {
+				t.Fatalf("Match.Resolved = %v (version %q), want %v", res.Match.Resolved, res.Match.Version, tc.wantResolved)
+			}
+			if tc.wantResolved && res.Match.Version != "2.8.0" {
+				t.Fatalf("Match.Version = %q, want 2.8.0", res.Match.Version)
+			}
+			complete := res.MatchesComplete && !slices.ContainsFunc(res.Matches, func(d plugin.ResolvedDependency) bool { return !d.Resolved })
+			if complete != tc.wantResolved {
+				t.Fatalf("complete resolved set = %v (Matches %+v, MatchesComplete %v), want %v", complete, res.Matches, res.MatchesComplete, tc.wantResolved)
+			}
+		})
+	}
+}
+
+// TestInventoryLockSourceRedirectKeepsVersion guards the other side: the dependency inventory
+// still records a redirected entry's locked version.
+func TestInventoryLockSourceRedirectKeepsVersion(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"poetry.lock": {"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n\n[package.source]\ntype = \"git\"\nurl = \"https://github.com/jpadilla/pyjwt\"\n"},
+		"pdm.lock":    {"pdm.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\ngit = \"https://github.com/jpadilla/pyjwt\"\nrevision = \"abc123\"\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: writeTree(t, files)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := nodeByPURL(inv, "pkg:pypi/pyjwt@2.8.0"); !ok {
+				t.Fatalf("no pkg:pypi/pyjwt@2.8.0 node in %+v", inv.Nodes)
+			}
+		})
+	}
+}
+
+// TestResolveVersions_PoetryLockDecodeFailsClosed: a poetry.lock is read only through its TOML
+// decode, so one that does not decode as a lock is unread. That holds both for a syntax error
+// and for a file that parses as TOML with the wrong shape. The version result is then partial,
+// a pinned declaration it would govern stays unresolved, and no name reads as absent.
+func TestResolveVersions_PoetryLockDecodeFailsClosed(t *testing.T) {
+	const pp = "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt==2.8.0\"]\n"
+	for _, tc := range []struct{ name, lock string }{
+		{"syntax error", "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n[package.dependencies\n"},
+		{"version not a string", "[[package]]\nname = \"pyjwt\"\nversion = 2\n"},
+		{"name not a string", "[[package]]\nname = 1\nversion = \"2.8.0\"\n"},
+		{"package not an array of tables", "package = \"pyjwt\"\n"},
+		{"source not a table", "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nsource = \"git\"\n"},
+		// Only the advisory decode reads files, so it alone must withhold Exhaustive here.
+		{"files not an array", "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\nfiles = \"x\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{"pyproject.toml": pp, "poetry.lock": tc.lock})
+			res := resolveVersion(t, root, "pyjwt")
+			if res.Partiality.Complete {
+				t.Error("Partiality complete, want partial")
+			}
+			if res.Match.Resolved {
+				t.Errorf("Match resolved %q, want unresolved", res.Match.Version)
+			}
+			// Alone, so no uncovered pyproject pin withholds Exhaustive in its place.
+			lone := writeTree(t, map[string]string{"poetry.lock": tc.lock})
+			for _, c := range []string{"absent-package", "pyjwt"} {
+				if r := resolveVersion(t, lone, c); r.Exhaustive {
+					t.Errorf("%s Exhaustive, want not", c)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveVersions_PoetryLockDuplicateDisagrees: two entries for one name at different
+// versions are two pins, never one resolved version or a complete set of one.
+func TestResolveVersions_PoetryLockDuplicateDisagrees(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"pyjwt>=2\"]\n",
+		"poetry.lock":    "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n\n[[package]]\nname = \"PyJWT\"\nversion = \"2.9.0\"\n",
+	})
+	res := resolveVersion(t, root, "pyjwt")
+	if res.Match.Resolved {
+		t.Errorf("Match resolved %q, want unresolved", res.Match.Version)
+	}
+	if len(res.Matches) != 2 {
+		t.Errorf("Matches = %+v, want both locked versions", res.Matches)
+	}
+}
+
+// TestResolveVersions_PoetryIndexSourceUnresolved: a [tool.poetry] dependency pinned to a named
+// index installs whatever that index serves under the name, so even with its legacy lock entry
+// it is no resolved version and its pins are no complete set.
+func TestResolveVersions_PoetryIndexSourceUnresolved(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\n" +
+			"python = \"^3.11\"\npyjwt = { version = \"2.8.0\", source = \"internal\" }\n",
+		"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.8.0\"\n\n[package.source]\ntype = \"legacy\"\n" +
+			"url = \"https://pypi.example.com/simple\"\nreference = \"internal\"\n",
+	})
+	res := resolveVersion(t, root, "pyjwt")
+	if res.Match.Resolved {
+		t.Errorf("Match resolved %q, want unresolved", res.Match.Version)
+	}
+	if res.MatchesComplete {
+		t.Errorf("MatchesComplete with %+v, want not", res.Matches)
+	}
+}
+
+// TestResolveVersions_PoetryIndexSourceKeepsCoverage: an index-pinned [tool.poetry] dependency
+// is still checked against its lock for coverage, so a pin the lock contradicts leaves the
+// lock unable to vouch for an absent name.
+func TestResolveVersions_PoetryIndexSourceKeepsCoverage(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"pyproject.toml": "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\n" +
+			"python = \"^3.11\"\npyjwt = { version = \"==2.8.0\", source = \"internal\" }\n",
+		"poetry.lock": "[[package]]\nname = \"pyjwt\"\nversion = \"2.9.0\"\n\n[package.source]\ntype = \"legacy\"\n" +
+			"url = \"https://pypi.example.com/simple\"\nreference = \"internal\"\n",
+	})
+	for _, c := range []string{"flask", "pyjwt"} {
+		if r := resolveVersion(t, root, c); r.Exhaustive {
+			t.Errorf("%s Exhaustive under a stale lock, want not", c)
+		}
+	}
+}
+
+// A manifest written in Python reads the same whatever its line endings: a comment ends at a
+// lone "\r" as at "\n", so what follows it is still read.
+func TestParseManifestData_LineEndings(t *testing.T) {
+	cases := []struct {
+		name, file, src string
+		deps            int
+		ok              bool
+	}{
+		{"setup.py splat after a comment", "setup.py", "from setuptools import setup\n# deps\nsetup(install_requires=['flask==3.0.0'], **extra)\n", 1, false},
+		{"hatch_build.py requirement after a comment", "hatch_build.py", "# build hook\nDEPS = ['pyjwt==2.10.0']\n", 1, true},
+		{"setup.py comment inside install_requires", "setup.py", "from setuptools import setup\nsetup(install_requires=[  # runtime\n    'flask==3.0.0',\n])\n", 1, true},
+		{"hatch_build.py requirement continued inside its literal", "hatch_build.py", "DEPS = ['pyjwt\\\n==2.10.0']\n", 1, true},
+	}
+	for _, c := range cases {
+		for _, eol := range []string{"\n", "\r\n", "\r"} {
+			t.Run(c.name+" "+strconv.Quote(eol), func(t *testing.T) {
+				deps, _, ok := parseManifestData(c.file, []byte(strings.ReplaceAll(c.src, "\n", eol)))
+				if len(deps) != c.deps || ok != c.ok {
+					t.Errorf("deps = %v, ok = %v; want %d deps, ok = %v", deps, ok, c.deps, c.ok)
+				}
+			})
+		}
+	}
+}
+
+// poetryLockHeader is the header line Poetry writes at the top of a poetry.lock, and the blank
+// line after it.
+func poetryLockHeader(version string) string {
+	return "# This file is automatically @generated by Poetry " + version + " and should not be changed by hand.\n\n"
 }

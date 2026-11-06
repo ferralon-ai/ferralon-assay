@@ -88,6 +88,9 @@ type AcquisitionRecord struct {
 	Digest     string    `json:"digest"`    // wire form (algorithm:base64|hex)
 	Canonical  string    `json:"canonical"` // "<algo>:<hex>"
 	AcquiredAt time.Time `json:"acquiredAt"`
+	// Fetched is set when this Acquire fetched the bytes from the registry; a cache hit
+	// leaves it false. It is not persisted.
+	Fetched bool `json:"-"`
 }
 
 // Acquirer is the write side of the cache. It fetches, verifies in-process, and publishes
@@ -264,15 +267,22 @@ func (a *Acquirer) fetch(ctx context.Context, ref artifactcache.Ref, policy Poli
 	if resp.StatusCode != http.StatusOK {
 		// A registry that refuses the request is not evidence the artifact is absent: either
 		// the run had no credential to present (no auth entry, or one whose token is unset),
-		// or the one it presented was refused. Only the registry's own refusal says that: a
-		// host a redirect reached was never sent the registry's credential, and a storage host
-		// commonly refuses a key it does not hold, so its 401/403 reads as not served.
-		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && answeredBy(resp, host) {
-			code := artifactcache.PolicyMissingCredential
-			if presented {
-				code = artifactcache.PolicyCredentialRejected
+		// or the one it presented was refused. A host a redirect reached was never sent the
+		// registry's credential, and a storage host commonly refuses a key it does not hold,
+		// so its 401/403 reads as not served, unless the redirect presented that host's own
+		// bound credential: then the refusal is of a token this run sent.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			switch {
+			case answeredBy(resp, host):
+				code := artifactcache.PolicyMissingCredential
+				if presented {
+					code = artifactcache.PolicyCredentialRejected
+				}
+				return AcquisitionRecord{}, &artifactcache.PolicyReason{PURL: ref.PURL, Host: host, Code: code}
+			case sentCredential(resp):
+				h, _ := canonicalHost(resp.Request.URL)
+				return AcquisitionRecord{}, &artifactcache.PolicyReason{PURL: ref.PURL, Host: h, Code: artifactcache.PolicyCredentialRejected}
 			}
-			return AcquisitionRecord{}, &artifactcache.PolicyReason{PURL: ref.PURL, Host: host, Code: code}
 		}
 		// A throttle, timeout or server error says nothing about whether the artifact exists.
 		if code := unavailableStatus(resp.StatusCode); code != "" {
@@ -305,6 +315,12 @@ func answeredBy(resp *http.Response, host string) bool {
 	}
 	h, err := canonicalHost(resp.Request.URL)
 	return err == nil && h == host
+}
+
+// sentCredential reports whether the request resp answers carried an Authorization header: the
+// redirect policy attaches one only from the credential bound to that request's own host.
+func sentCredential(resp *http.Response) bool {
+	return resp.Request != nil && resp.Request.URL != nil && resp.Request.Header.Get("Authorization") != ""
 }
 
 // unavailableStatus is the Fetch* code for a status that marks the registry, not the
@@ -497,6 +513,7 @@ func (a *Acquirer) verifyAndPublish(resp *http.Response, ref artifactcache.Ref, 
 		Digest:     ref.Digest,
 		Canonical:  canonical,
 		AcquiredAt: a.now().UTC(),
+		Fetched:    true,
 	}
 	a.writeRecord(path, rec)
 	return rec, nil

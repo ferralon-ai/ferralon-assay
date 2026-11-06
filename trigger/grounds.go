@@ -216,9 +216,9 @@ type goModules map[string]bool
 
 // goModulesOf returns the Go modules of a scan's SBOM, or nil unless they are the build's whole
 // module list. Only the module build list `go mod graph` resolves qualifies (a vendored module
-// resolves to the same list); go.mod's require block alone does not, and a go.work workspace is
-// declared unsupported by the inventory, so it carries no build list. The main module counts, and
-// each dependency counts under its own path and under the path of the module a replace directive
+// resolves to the same list); go.mod's require block alone does not, and neither does the graph of
+// one go.work member resolved without its workspace, which the inventory declares unsupported. The
+// main module and a workspace's other main modules count, and each dependency counts under its own path and under the path of the module a replace directive
 // substitutes for it.
 //
 // The module graph can list more than the build compiles (a module whose packages nothing imports),
@@ -235,6 +235,9 @@ func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
 		}
 	}
 	mods := goModules{sbom.GoMainModule: true}
+	for _, path := range sbom.GoWorkspaceModules {
+		mods[path] = true
+	}
 	for _, p := range sbom.Packages {
 		if p.Ecosystem != "Go" {
 			continue
@@ -402,6 +405,13 @@ var purlTypeFor = map[string]string{
 	"NuGet": "nuget",
 }
 
+// PackageName returns a package URL's type and its package name as advisory matching compares
+// them (purlKey), or false when it does not parse.
+func PackageName(purl string) (typ, name string, ok bool) {
+	key, ok := purlKey(purl)
+	return key.typ, key.name, ok
+}
+
 // purlKey parses a package URL into its pkgKey, ignoring version, qualifiers and subpath.
 func purlKey(purl string) (pkgKey, bool) {
 	rest, ok := strings.CutPrefix(purl, "pkg:")
@@ -468,15 +478,13 @@ func libraryEntrypoints(store artifact.Store, assessmentID string) []plugin.Reso
 
 // reachabilityResult reads the reachability stage's result off its artifact.
 func reachabilityResult(store artifact.Store, assessmentID string) (plugin.ReachabilityResult, bool) {
-	arts, err := store.Query(assessmentID, artifact.TypeReachability)
-	if err != nil || len(arts) == 0 {
+	rec, ok, err := pipeline.Reachability(store, assessmentID)
+	if err != nil || !ok {
 		return plugin.ReachabilityResult{}, false
 	}
-	var payload struct {
-		Reachability plugin.ReachabilityResult `json:"reachability"`
-	}
-	if err := json.Unmarshal(arts[0].Payload, &payload); err != nil {
+	reach, err := rec.Result()
+	if err != nil {
 		return plugin.ReachabilityResult{}, false
 	}
-	return payload.Reachability, true
+	return reach, true
 }

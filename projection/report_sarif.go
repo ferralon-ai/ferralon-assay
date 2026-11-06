@@ -31,6 +31,7 @@ package projection
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -71,6 +72,9 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 		}
 		if f.Evidence.ReachablePath != "" {
 			props["reachable_path"] = f.Evidence.ReachablePath
+		}
+		if len(f.Annotations) > 0 {
+			props["annotations"] = f.Annotations
 		}
 		if f.Package != nil {
 			props["package"] = f.Package.Ecosystem + ":" + f.Package.Label()
@@ -117,7 +121,7 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 			RuleID:     f.Advisory.ID,
 			Level:      level,
 			Kind:       kind,
-			Message:    SARIFMessage{Text: reportSARIFMessage(f)},
+			Message:    SARIFMessage{Text: strings.TrimSpace(reportSARIFMessage(f) + " " + annotationsStatement(f.Annotations))},
 			Locations:  reportSARIFLocations(f),
 			Rank:       rank,
 			Properties: &SARIFProperties{Scanner: props},

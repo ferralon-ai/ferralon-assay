@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/artifactcache/acquire"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -155,6 +157,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		wantRead int
 		want     string // Unread reason, "" when read
 		detail   string
+		tokenEnv acquire.TokenEnv
 		wantReqs int
 		fallback string // Fallback kind, "" when the result does not fall back
 	}{
@@ -163,14 +166,16 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		{name: "no lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "", want: UnreadNoIntegrity},
 		{name: "malformed lock integrity", mode: DependencyCodeFetch, served: tarball, digest: "sha512:short", want: UnreadMalformedIntegrity},
 		{name: "fetch verifies a sha1-only lock entry", mode: DependencyCodeFetch, served: tarball, digest: sri1(tarball), wantRead: 1, wantReqs: 1},
-		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "NPM_TOKEN"`, fallback: UnreadNPMRCMalformed},
+		{name: "unset allowlisted token reads a public registry anonymously", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
+		{name: "401 where an allowlisted token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NODE_AUTH_TOKEN}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", tokenEnv: acquire.TokenEnv{Name: "NODE_AUTH_TOKEN", State: acquire.TokenEnvUnset}, wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "malformed npmrc fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}${CORP_TOKEN}", served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, detail: `project .npmrc line 2: references unset environment variable "CORP_TOKEN"`, fallback: UnreadNPMRCMalformed},
 		{name: "repository reference to GITHUB_TOKEN fails closed", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${GITHUB_TOKEN}", env: map[string]string{"GITHUB_TOKEN": acqSecret}, served: tarball, digest: sri512(tarball), want: UnreadNPMRCMalformed, fallback: UnreadNPMRCMalformed},
 		{name: "registry does not serve the tarball", mode: DependencyCodeFetch, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
 		{name: "empty per-host token refuses before any request", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
 		{name: "top-level auth refuses before any request", mode: DependencyCodeFetch, npmrc: "_auth=Zm9vOmJhcg==", served: tarball, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", fallback: UnreadPolicyRefused},
 		{name: "public registry reads with an optional token unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", served: tarball, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
-		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
-		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "401 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", tokenEnv: acquire.TokenEnv{Name: "NPM_TOKEN", State: acquire.TokenEnvUnset}, wantReqs: 1, fallback: UnreadPolicyRefused},
+		{name: "403 where an optional token is unset", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN?}", status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "missing-credential", tokenEnv: acquire.TokenEnv{Name: "NPM_TOKEN", State: acquire.TokenEnvUnset}, wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "401 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusUnauthorized, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "403 refusing a presented token", mode: DependencyCodeFetch, npmrc: "//registry.test/:_authToken=${NPM_TOKEN}", env: map[string]string{"NPM_TOKEN": acqSecret}, status: http.StatusForbidden, digest: sri512(tarball), want: UnreadPolicyRefused, detail: "credential-rejected", wantReqs: 1, fallback: UnreadPolicyRefused},
 		{name: "throttled on every attempt", mode: DependencyCodeFetch, status: http.StatusTooManyRequests, digest: sri512(tarball), want: UnreadUnavailable, detail: "rate-limited", wantReqs: 3, fallback: UnreadUnavailable},
@@ -182,6 +187,7 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 		{name: "offline empty cache", mode: DependencyCodeOffline, served: tarball, digest: sri512(tarball), want: UnreadNotCached},
 		{name: "offline seeded cache", mode: DependencyCodeOffline, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "offline tampered cache", mode: DependencyCodeOffline, served: tarball, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch},
+		{name: "fetch reads a cached entry without a request", mode: DependencyCodeFetch, served: tarball, seed: tarball, digest: sri512(tarball), wantRead: 1},
 		{name: "fetch over tampered cache entry refetches it once", mode: DependencyCodeFetch, served: tarball, seed: other, digest: sri512(tarball), wantRead: 1, wantReqs: 1},
 		{name: "tampered cache entry and a registry serving bad bytes", mode: DependencyCodeFetch, served: other, seed: other, digest: sri512(tarball), want: UnreadIntegrityMismatch, wantReqs: 1, fallback: UnreadIntegrityMismatch},
 		{name: "tampered cache entry and a registry that does not serve it", mode: DependencyCodeFetch, seed: other, digest: sri512(tarball), want: UnreadNotServed, wantReqs: 1, fallback: UnreadNotServed},
@@ -238,6 +244,22 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 			if n := len(seen); n != tt.wantReqs {
 				t.Fatalf("registry requests = %d, want %d", n, tt.wantReqs)
 			}
+			// Every pin has an outcome; a read one says whether this run fetched it, which only a
+			// request to the registry can have done.
+			wantOutcome := tt.want
+			if wantOutcome == "" {
+				wantOutcome = OutcomeReadCache
+				if tt.wantReqs > 0 {
+					wantOutcome = OutcomeReadNetwork
+				}
+			}
+			wantRegistry := ""
+			if tt.mode == DependencyCodeFetch && tt.want != UnreadNoIntegrity && tt.want != UnreadNPMRCMalformed {
+				wantRegistry = "https://" + registry
+			}
+			if want := []DependencyOutcome{{PURL: qs, Registry: wantRegistry, Outcome: wantOutcome, Detail: detail, TokenEnv: tt.tokenEnv}}; !slices.Equal(res.Outcomes, want) {
+				t.Fatalf("outcomes = %+v, want %+v", res.Outcomes, want)
+			}
 			if len(tt.env) == 0 {
 				for _, a := range seen {
 					if a != "" {
@@ -246,6 +268,108 @@ func TestDependencyAcquisitionOutcomes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A failure on a registry that served this build other verified packages is partial: no
+// fallback, so the lane reads the cache and withholds each unread package. A registry that served
+// nothing, a rejected token on it, or a failure with no registry falls back.
+func TestFallbackCausePartial(t *testing.T) {
+	const a, b = "https://a.test", "https://b.test"
+	read := func(purl, reg string) DependencyOutcome {
+		return DependencyOutcome{PURL: purl, Registry: reg, Outcome: OutcomeReadNetwork}
+	}
+	cached := func(purl, reg string) DependencyOutcome {
+		return DependencyOutcome{PURL: purl, Registry: reg, Outcome: OutcomeReadCache}
+	}
+	unread := func(purl, reg, reason, detail string) (DependencyOutcome, UnreadDependency) {
+		return DependencyOutcome{PURL: purl, Registry: reg, Outcome: reason, Detail: detail},
+			UnreadDependency{PURL: purl, Registry: reg, Reason: reason, Detail: detail}
+	}
+	tests := []struct {
+		name   string
+		reads  []DependencyOutcome
+		unread [][2]string // registry, reason; detail from rejected
+		detail []string
+		want   string
+	}{
+		{name: "one registry read, one of its packages not served", reads: []DependencyOutcome{read("pkg:npm/a@1", a)}, unread: [][2]string{{a, UnreadNotServed}}, want: ""},
+		{name: "cache hit counts as served for the build", reads: []DependencyOutcome{cached("pkg:npm/a@1", a)}, unread: [][2]string{{a, UnreadUnavailable}}, want: ""},
+		{name: "partial cancellation", reads: []DependencyOutcome{read("pkg:npm/a@1", a)}, unread: [][2]string{{a, UnreadCancelled}}, want: ""},
+		{name: "another registry served nothing", reads: []DependencyOutcome{read("pkg:npm/a@1", a)}, unread: [][2]string{{b, UnreadNotServed}}, want: UnreadNotServed},
+		{name: "registry served nothing", unread: [][2]string{{a, UnreadUnavailable}}, want: UnreadUnavailable},
+		{name: "rejected token on a registry that served others", reads: []DependencyOutcome{read("pkg:npm/a@1", a)}, unread: [][2]string{{a, UnreadPolicyRefused}}, detail: []string{"credential-rejected"}, want: UnreadPolicyRefused},
+		{name: "rejected token beside a partial failure on the same registry", reads: []DependencyOutcome{read("pkg:npm/a@1", a)}, unread: [][2]string{{a, UnreadNotServed}, {a, UnreadPolicyRefused}}, detail: []string{"", "credential-rejected"}, want: UnreadNotServed},
+		{name: "missing credential on a registry that served others is partial", reads: []DependencyOutcome{read("pkg:npm/a@1", a)}, unread: [][2]string{{a, UnreadPolicyRefused}}, detail: []string{"missing-credential"}, want: ""},
+		{name: "failure with no registry", reads: []DependencyOutcome{read("pkg:npm/a@1", a)}, unread: [][2]string{{"", UnreadNPMRCMalformed}}, want: UnreadNPMRCMalformed},
+		{name: "no usable integrity is not a fetch failure", unread: [][2]string{{"", UnreadNoIntegrity}}, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := DependencyAcquisitionResult{Mode: string(DependencyCodeFetch), Outcomes: slices.Clone(tt.reads)}
+			for i, u := range tt.unread {
+				detail := ""
+				if i < len(tt.detail) {
+					detail = tt.detail[i]
+				}
+				o, ud := unread(fmt.Sprintf("pkg:npm/u%d@1", i), u[0], u[1], detail)
+				res.Outcomes = append(res.Outcomes, o)
+				res.Unread = append(res.Unread, ud)
+			}
+			got := ""
+			if c := fallbackCause(res); c != nil {
+				got = c.Kind
+			}
+			if got != tt.want {
+				t.Fatalf("fallback = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// End to end: a registry that serves one pinned package and not the other leaves the build a
+// partial read, with the cache handed to the lane holding only the verified package.
+func TestDependencyAcquisitionPartialRead(t *testing.T) {
+	good, missing := []byte("served tarball"), []byte("never served")
+	regs := newFakeRegistries()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.Contains(req.URL.Path, "/good-") {
+			_, _ = w.Write(good)
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regs.backends["registry.test"] = u.Host
+	build, cache := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte("registry=https://registry.test/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := &dependencyAcquirer{
+		cfg:        DependencyAcquisition{Mode: DependencyCodeFetch, CacheDir: cache, Client: regs.client},
+		byDir:      map[string]*acquiredBuild{},
+		retrySleep: noSleep,
+	}
+	res := d.result(context.Background(), build, build, inventoryPlugin{nodes: []plugin.DependencyNode{
+		npmNode("pkg:npm/good@1.0.0", sri512(good)),
+		npmNode("pkg:npm/gone@1.0.0", sri512(missing)),
+	}})
+	if res.Fallback != nil {
+		t.Fatalf("fallback = %+v, want a partial read", res.Fallback)
+	}
+	if res.Read != 1 || len(res.Unread) != 1 || res.Unread[0].PURL != "pkg:npm/gone@1.0.0" || res.Unread[0].Reason != UnreadNotServed {
+		t.Fatalf("read %d, unread %+v; want good read and gone not_served", res.Read, res.Unread)
+	}
+	disk := artifactcache.NewDiskStore(cache)
+	if _, err := verifiedEntry(context.Background(), disk, artifactcache.Ref{PURL: "pkg:npm/good@1.0.0", Digest: sri512(good)}); err != nil {
+		t.Fatalf("served package not in the cache: %v", err)
+	}
+	if _, err := verifiedEntry(context.Background(), disk, artifactcache.Ref{PURL: "pkg:npm/gone@1.0.0", Digest: sri512(missing)}); err == nil {
+		t.Fatal("an unread package is in the cache the lane reads")
 	}
 }
 
@@ -645,6 +769,7 @@ func TestDependencyAcquisitionSplitCache(t *testing.T) {
 		mode          DependencyCodeMode
 		split         bool
 		token         bool // NODE_AUTH_TOKEN is set; else the .npmrc reference is unset
+		malformed     bool // the .npmrc carries a line that fails the load
 		seeds         []seed
 		wantRead      int
 		wantUnread    map[string]string // purl -> reason
@@ -673,7 +798,10 @@ func TestDependencyAcquisitionSplitCache(t *testing.T) {
 			wantRead: 1, wantUnread: map[string]string{priv: UnreadNotCached}, wantPersisted: []string{pub}},
 		{name: "offline split with an empty cache reads nothing", mode: DependencyCodeOffline, split: true, token: true,
 			wantUnread: map[string]string{pub: UnreadNotCached, priv: UnreadNotCached}},
-		{name: "offline split with an unreadable npm configuration reads nothing", mode: DependencyCodeOffline, split: true,
+		{name: "offline split with the token unset keeps the credentialed registry out of the persisted directory", mode: DependencyCodeOffline, split: true,
+			seeds:    []seed{{true, pubDigest, pubBytes}, {true, privDigest, privBytes}},
+			wantRead: 1, wantUnread: map[string]string{priv: UnreadNotCached}, wantPersisted: []string{pub}},
+		{name: "offline split with an unreadable npm configuration reads nothing", mode: DependencyCodeOffline, split: true, malformed: true,
 			seeds:      []seed{{true, pubDigest, pubBytes}},
 			wantUnread: map[string]string{pub: UnreadNPMRCMalformed, priv: UnreadNPMRCMalformed}, wantPersisted: []string{pub}},
 		{name: "offline one directory reads a seeded credentialed tarball", mode: DependencyCodeOffline,
@@ -691,6 +819,9 @@ func TestDependencyAcquisitionSplitCache(t *testing.T) {
 				"@priv:registry=https://npm.priv.test/",
 				"//npm.priv.test/:_authToken=${NODE_AUTH_TOKEN}",
 			}, "\n")
+			if tt.malformed {
+				npmrc += "\nalways-auth=sometimes"
+			}
 			if err := os.WriteFile(filepath.Join(build, ".npmrc"), []byte(npmrc), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -733,6 +864,32 @@ func TestDependencyAcquisitionSplitCache(t *testing.T) {
 			}
 			if res.Fallback != nil {
 				t.Fatalf("fallback = %+v, want none", res.Fallback)
+			}
+			// Each registry serves one of the two packages, so a read package was fetched by this
+			// run exactly when its registry saw a request.
+			var wantOutcomes []DependencyOutcome
+			for _, p := range []struct {
+				purl, registry string
+				reqs           int
+			}{{priv, "https://npm.priv.test", tt.wantPrivReqs}, {pub, "https://registry.test", tt.wantPubReqs}} {
+				o := DependencyOutcome{PURL: p.purl, Outcome: tt.wantUnread[p.purl]}
+				if o.Outcome == "" {
+					o.Outcome = OutcomeReadCache
+					if p.reqs > 0 {
+						o.Outcome = OutcomeReadNetwork
+					}
+				}
+				if tt.mode == DependencyCodeFetch {
+					o.Registry = p.registry
+				}
+				wantOutcomes = append(wantOutcomes, o)
+			}
+			gotOutcomes := slices.Clone(res.Outcomes)
+			for i := range gotOutcomes {
+				gotOutcomes[i].Detail, gotOutcomes[i].TokenEnv = "", acquire.TokenEnv{}
+			}
+			if !slices.Equal(gotOutcomes, wantOutcomes) {
+				t.Fatalf("outcomes = %+v, want %+v", res.Outcomes, wantOutcomes)
 			}
 
 			// The persisted directory's physical contents: each wanted entry with its pinned

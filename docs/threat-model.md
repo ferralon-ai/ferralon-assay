@@ -14,6 +14,10 @@ A default `baseline` or `pr-inherit` run contacts two public hosts:
 
 These are the same fetches `go build` and `govulncheck` perform.
 
+A Java or Kotlin scan also runs the repository's own Maven or Gradle to resolve its dependency graph,
+and the build tool contacts whatever repositories the build configures; the last paragraph of this
+page covers what that executes.
+
 A run configured with `advisory-corpus-repo` (recommended — see the README's
 [Advisory corpus](../README.md#advisory-corpus)) additionally clones that public corpus repository
 from **`github.com`** before the scan: unauthenticated (it presents no token), shallow (`--depth 1`)
@@ -81,6 +85,9 @@ default the scan runs fully standalone. See the README's
 [self-cleanup / console-link disclosure](../README.md#self-cleanup--console-link-disclosure) for
 what that switch does when it is on, including the self-cleanup side effects.
 
-The `resolve-graph` command is the only part of the CLI that executes the scanned repository's code. It
-runs the repository's own Maven or Gradle, so the build's scripts and plugins run on the runner and the
-tool contacts whatever repositories the build configures. A scan does not run it.
+A Java or Kotlin scan runs the repository's own Maven or Gradle (`-build-graph auto`, the default), and
+so does the `resolve-graph` command. The build's scripts and plugins run on the runner, and the tool
+fetches from the repositories the build configures with the job's credentials, as `mvn` or `gradle`
+would; a branch that rewrites those repositories sends those credentials to the host it names. A scan
+with `-build-graph off`, or one that reads a graph resolved ahead of the scan, does not run the build
+tool.

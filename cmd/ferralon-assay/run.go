@@ -57,6 +57,8 @@ const (
 	envOSVWorkSet       = brand.EnvPrefix + "_OSV_WORK_SET"
 	envSubjectGoVersion = brand.EnvPrefix + "_SUBJECT_GO_VERSION"
 	envCIGoVersion      = brand.EnvPrefix + "_CI_GO_VERSION"
+	// envSubjectGoWork is the env channel for -subject-gowork.
+	envSubjectGoWork = brand.EnvPrefix + "_SUBJECT_GOWORK"
 	// envSubjectJavaVersion is the env channel for -subject-java-version.
 	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
 	// envSubjectMavenProfiles is the env channel for -subject-maven-profiles.
@@ -262,14 +264,16 @@ func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, tok
 // in this same binary, so nothing about the analyzed ref needs to travel through the environment.
 // It is the ONLY thing it is used for here: it selects the delivery channel and changes neither
 // what was analyzed nor what is published on any other sink.
-func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph, deps *depCodeRun) error {
+func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph, deps *depCodeRun, clock *runClock) error {
 	stampIntel(rep, intel)
+	rep.Provenance.Timings = clock.timings()
 	rep.BuildGraph = graph.record()
 	deps.stamp(rep)
 	res, err := buildResult(rep)
 	if err != nil {
 		return err
 	}
+	res.DependencyFetch = deps.fetchNotes()
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
 	refs := deliveryRefs{refName: os.Getenv(envRefName), defaultBranch: os.Getenv(envDefaultBranch), analyzeRef: analyzeRef}
 	env := github.DetectEnv(surfaceToggles())
@@ -285,6 +289,30 @@ func stampIntel(rep *report.Report, intel report.IntelProvenance) {
 		intel.SignalsDigest = ranked.SignalsDigest
 	}
 	rep.Provenance.Intel = &intel
+}
+
+// runClock times one run mode for the Report's provenance: end to end, and per pipeline stage
+// through the StageTimer it puts on the run's context.
+type runClock struct {
+	start  time.Time
+	stages *pipeline.StageTimer
+}
+
+// startRunClock starts timing a run mode and returns the context its pipeline runs must use.
+func startRunClock(ctx context.Context) (context.Context, *runClock) {
+	c := &runClock{start: time.Now(), stages: pipeline.NewStageTimer()}
+	return pipeline.WithStageTimer(ctx, c.stages), c
+}
+
+func (c *runClock) timings() *report.RunTimings {
+	if c == nil {
+		return nil
+	}
+	t := &report.RunTimings{WallSeconds: time.Since(c.start).Seconds()}
+	for _, st := range c.stages.Stages() {
+		t.Stages = append(t.Stages, report.StageTiming{Stage: st.Stage, Runs: st.Runs, Seconds: st.Total.Seconds()})
+	}
+	return t
 }
 
 // Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in
@@ -483,6 +511,7 @@ type runFlags struct {
 	houseCanaries    *bool
 	osvWorkSet       *bool
 	subjectGo        *string
+	subjectGoWork    *string
 	subjectJava      *string
 	subjectMvnProf   *string
 	libEntrypoints   *string
@@ -565,7 +594,9 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
-		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
+		// subjectGoWork is the GOWORK the build runs under; a caller statement, never the scanner's own.
+		subjectGoWork: fs.String("subject-gowork", "", "the GOWORK the SCANNED repository's Go build runs under: off, auto (find the go.work as when unset), or the path of its go.work relative to the scanned directory (-target). A go.work that does not exist, does not parse or does not use the scanned module withholds every verdict. Overrides "+envSubjectGoWork+" (default: the go.work the go command finds from the module, searched no higher than the repository; one that does not use the module is not the build's)"),
+		subjectGo:     fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
 
 		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JDK the SCANNED repository's program runs on, which must be the major version its build runs on (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target). Leave it unstated when the program runs on another JDK than the build. A toolchain the build graph records on another major version withholds the JDK's own method table from bytecode reachability. With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
@@ -580,7 +611,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
 
-		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A fetch that fails, even for one package, reads no dependency code and says so on the report. Overrides "+envDependencyCode+" (default: fetch)"),
+		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A package whose fetch fails is not read: when its registry served this build other packages the scan reads those and withholds each one it could not fetch, otherwise it reads no dependency code and says so on the report. A registry that refuses a token the scan sent (an expired or wrong token, or a curation proxy blocking a package) fails the run. On cve-watch, a registry answering a transient error, or one that has served this repository and now serves nothing, holds the advisory cursor, and the run fails once that hold has lasted "+fmt.Sprintf("%d runs and %d hours", stallRuns, int(stallAge.Hours()))+". A cve-watch run that read less than the lock pins reports each disqualified or not_exploitable verdict it reached on an advisory affecting a package it could not fetch, or one it cannot tie to the packages it fetched, as undetermined (dependency_not_fetched), and the next cve-watch run assesses those advisories again, along with any it left undetermined; a run with off stops that. Overrides "+envDependencyCode+" (default: fetch)"),
 		depCache:       fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
 		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
 		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
@@ -644,10 +675,14 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 //
 // It is a HARD error, not a warning, on the precedent this CLI already sets for a degraded advisory
 // input: advisoryCorpusOption hard-fails a wholly-unusable -advisory-corpus rather than silently
-// falling back to the built-in table (decisions.md #1), and a target whose language has no analyzer
-// hard-fails in selectPlugin. Both refuse to produce a Report the inputs cannot support. An empty
-// work set is the worst-consequence member of that family: the run succeeds, exits 0, and publishes
-// a findings-free Report a reader cannot distinguish from an assessed all-clear.
+// falling back to the built-in table (decisions.md #1), and a tree whose language is not recognized
+// is refused at checkout ("not a recognized source tree", checkout/vendored.go). Both refuse to
+// produce a Report the inputs cannot support. (A detected language whose analyzer is not installed
+// never gets here: acquireTarget stops first. Outside the release's languages the run publishes a
+// Report that says nothing was assessed — publishAnalyzerMissing; for a release language it fails as
+// an install fault.) An empty work set is the worst-consequence member of that family: the run
+// succeeds, exits 0, and publishes a findings-free Report a reader cannot distinguish from an
+// assessed all-clear.
 //
 // The condition is strictly THE SET IS EMPTY — never a language, never a source. An ecosystem that
 // resolves nothing today stops failing the moment anything populates its work set, with no code
@@ -657,6 +692,7 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 	if err != nil {
 		return workSet{}, err
 	}
+	acq.goToolchain = f.subjectGoToolchain()
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
 	if ctx.Err() != nil {
 		if len(ws.advisories) == 0 {
@@ -937,16 +973,36 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 // resolution, so a typo degrades to the go.mod floors rather than to a stronger claim than the
 // operator asserted.
 func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
+	tc := f.subjectGoToolchain()
+	if tc == (subjectGoToolchain{}) {
+		return nil
+	}
+	return pipeline.WithSubjectToolchain(tc.declared, tc.observed, tc.trustObserved)
+}
+
+// subjectGoToolchain is the caller's statement of the subject's Go toolchain, unvalidated.
+type subjectGoToolchain struct {
+	declared      string
+	observed      string
+	trustObserved bool
+}
+
+// subjectGoToolchain reads the declared value (-subject-go-version, then envSubjectGoVersion), the
+// observed value (envCIGoVersion) and the observation's trust (envTrustObservedGo).
+func (f *runFlags) subjectGoToolchain() subjectGoToolchain {
 	declared := *f.subjectGo
 	if declared == "" {
 		declared = os.Getenv(envSubjectGoVersion)
 	}
-	observed := os.Getenv(envCIGoVersion)
-	trust := trustObservedGo()
-	if declared == "" && observed == "" && !trust {
-		return nil
+	return subjectGoToolchain{declared: declared, observed: os.Getenv(envCIGoVersion), trustObserved: trustObservedGo()}
+}
+
+// declaredGoWork is -subject-gowork, then envSubjectGoWork. The scanner's own GOWORK is never read.
+func (f *runFlags) declaredGoWork() string {
+	if v := strings.TrimSpace(*f.subjectGoWork); v != "" {
+		return v
 	}
-	return pipeline.WithSubjectToolchain(declared, observed, trust)
+	return strings.TrimSpace(os.Getenv(envSubjectGoWork))
 }
 
 // subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.
@@ -987,7 +1043,7 @@ func (f *runFlags) libraryEntrypointsOption() (pipeline.AssessOption, error) {
 // corpus. The subject Go toolchain and its reachability gate
 // stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1016,7 +1072,7 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 // corpus, the subject Go toolchain, and the subject-toolchain
 // reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1102,6 +1158,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 	if err != nil {
 		return nil, err
 	}
+	acq.goWork = f.declaredGoWork()
 
 	store, err := f.sf.resolve()
 	if err != nil {
@@ -1185,9 +1242,14 @@ func runPRInherit(args []string) error {
 	budget := startScanBudget(timeout)
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
-	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+	stages, clock := startRunClock(budget.analysis)
+	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	cfg, err := f.resolve(analysis, true)
+	var missing *analyzerMissingError
+	if errors.As(err, &missing) {
+		return f.publishAnalyzerMissing(ctx, "pr-inherit", missing)
+	}
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}
@@ -1226,13 +1288,19 @@ func runPRInherit(args []string) error {
 	fmt.Fprintf(os.Stdout, "%s pr-inherit complete\n", brand.Name)
 	if res.Inherited {
 		fmt.Fprintf(os.Stdout, "  path:       inherited baseline (dependency set unchanged)\n")
+		if len(res.AssessedAdvisories) > 0 {
+			fmt.Fprintf(os.Stdout, "  assessed:   %s (no usable baseline row)\n", strings.Join(res.AssessedAdvisories, ", "))
+		}
+		if len(res.CutShortAdvisories) > 0 {
+			fmt.Fprintf(os.Stdout, "  cut short:  %s (no usable baseline row; the scan stopped before assessing them)\n", strings.Join(res.CutShortAdvisories, ", "))
+		}
 	} else {
 		fmt.Fprintf(os.Stdout, "  path:       re-analyzed affected slice\n")
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
 	}
 	rescan := rescanFromEnv()
 	publishStart := time.Now()
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps, clock); err != nil {
 		return err
 	}
 	logPhase(os.Stderr, "publish", time.Since(publishStart))
@@ -1270,12 +1338,17 @@ func runCVEWatch(args []string) error {
 	budget := startScanBudget(timeout)
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
-	ctx, analysis := budget.flush, trigger.WithTiming(budget.analysis, timer.observe)
+	stages, clock := startRunClock(budget.analysis)
+	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
 
 	// widen=false: cve-watch's work set is the OSV query it makes below, against the STORED SBOM and
 	// diffed against a cursor. That mechanism is the one the scan path now borrows; re-widening the
 	// acquisition here would query OSV twice and change a mode whose behaviour is deliberately fixed.
 	cfg, err := f.resolve(analysis, false)
+	var missing *analyzerMissingError
+	if errors.As(err, &missing) {
+		return f.publishAnalyzerMissing(ctx, "cve-watch", missing)
+	}
 	if err != nil {
 		return markIfStopped(analysis, err)
 	}
@@ -1304,16 +1377,22 @@ func runCVEWatch(args []string) error {
 			fmt.Fprintf(os.Stdout, "  no new advisories affect the stored SBOM; cursor bumped, nothing republished\n")
 		}
 		warnNoInventory(os.Stderr, res)
+		warnUnqueried(os.Stdout, os.Stderr, res)
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.
 		postScan(ctx, cfg.store, cfg.subject, rescan)
 	} else {
-		fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
-		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
+		fmt.Fprintf(os.Stdout, "%s cve-watch — earnest re-analysis\n", brand.Name)
+		if len(res.NewAdvisories) > 0 {
+			fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
+		}
+		if len(res.Reassessed) > 0 {
+			fmt.Fprintf(os.Stdout, "  reassessed: %s (last assessed without their dependency code)\n", strings.Join(res.Reassessed, ", "))
+		}
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		publishStart := time.Now()
-		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps); err != nil {
+		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps, clock); err != nil {
 			return err
 		}
 		logPhase(os.Stderr, "publish", time.Since(publishStart))
@@ -1327,14 +1406,19 @@ func runCVEWatch(args []string) error {
 
 // cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
 // claim their aliases when the report is ranked. A failed build graph holds the cursor, so the
-// advisories this run assessed without it are assessed again on the next.
+// advisories this run assessed without it are assessed again on the next; it failed before the
+// run, so HoldCursor carries it. The dependency-code policy's hold depends on fetches the
+// re-assessments make, so Hold consults it after them.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
-		Subject:       cfg.subject,
-		Codebase:      cfg.codebase,
-		AssessOptions: cfg.assessOptions,
-		Signals:       signals,
-		Advisories:    cfg.advisories,
-		HoldCursor:    runExit(cfg.graph, cfg.deps) != nil,
+		Subject:         cfg.subject,
+		Codebase:        cfg.codebase,
+		AssessOptions:   cfg.assessOptions,
+		Signals:         signals,
+		Advisories:      cfg.advisories,
+		HoldCursor:      cfg.graph.err() != nil,
+		Hold:            cfg.deps.holds,
+		DependencyFetch: cfg.deps.fetchUpdate(),
+		Disclose:        cfg.deps.disclose(),
 	}
 }

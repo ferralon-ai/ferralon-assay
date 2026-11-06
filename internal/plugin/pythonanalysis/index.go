@@ -21,7 +21,16 @@ import (
 //   - A file that cannot be read degrades Partiality to declared-partial
 //     (PartialReasonToolFailure). The result NEVER renders an unknown as a complete
 //     index.
-func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
+//
+// The result depends on the tree at req.BuildDir alone, so with a run cache (WithRunCacheDir)
+// it is computed once per scan.
+func IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
+	return cachedResult(ctx, "index", []string{req.BuildDir}, func() (plugin.SymbolIndexResult, error) {
+		return indexSymbols(req)
+	})
+}
+
+func indexSymbols(req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
 	files, readFailed, skipped, err := loadFiles(req.BuildDir)
 	if err != nil {
 		return plugin.SymbolIndexResult{}, err
@@ -58,12 +67,12 @@ func loadFiles(buildDir string) (files []parseResult, readFailed, skipped bool, 
 		return nil, false, false, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
 	}
 	for _, p := range paths {
-		data, readErr := readRegular(p)
+		src, readErr := readPythonSource(p)
 		if readErr != nil {
 			readFailed = true
 			continue
 		}
-		pr := parseFile(moduleOf(buildDir, p), string(data))
+		pr := parseFile(moduleOf(buildDir, p), src)
 		if pr.skipped {
 			skipped = true
 		}

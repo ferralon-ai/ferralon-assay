@@ -1377,12 +1377,34 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // The result depends on the tree at req.BuildDir alone, so with a run cache (WithRunCacheDir)
 // it is computed once per scan.
 func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
-	return cachedResult(ctx, "callgraph", []string{req.BuildDir}, func() (plugin.CallGraphResult, error) {
-		prog, err := loadProgram(req.BuildDir)
+	tg, err := treeGraphOf(ctx, req.BuildDir)
+	if err != nil {
+		return plugin.CallGraphResult{}, err
+	}
+	return tg.Graph, nil
+}
+
+// treeGraph is what one load of a tree yields that more than one op reads: its call graph and
+// the top-level import names its own sources provide. It is the run cache's "callgraph" entry,
+// so the graph ops and symbol resolution share one load per tree per scan.
+type treeGraph struct {
+	Graph      plugin.CallGraphResult `json:"graph"`
+	FirstParty []string               `json:"first_party"`
+}
+
+// treeGraphOf loads the tree at buildDir and builds its call graph, through the run cache.
+// A failed load is an error and is never stored; a graph that is partial carries its
+// partiality inside Graph, into every replay.
+func treeGraphOf(ctx context.Context, buildDir string) (treeGraph, error) {
+	return cachedResult(ctx, "callgraph", []string{buildDir}, func() (treeGraph, error) {
+		prog, err := loadProgram(buildDir)
 		if err != nil {
-			return plugin.CallGraphResult{}, err
+			return treeGraph{}, err
 		}
-		return callGraphOf(prog), nil
+		return treeGraph{
+			Graph:      callGraphOf(prog),
+			FirstParty: slices.Sorted(maps.Keys(prog.dists.firstParty)),
+		}, nil
 	})
 }
 

@@ -22,7 +22,7 @@ func WithRunCacheDir(ctx context.Context, dir string) context.Context {
 }
 
 // runCacheSalt versions every key, so a change to what a cached result holds starts a fresh set.
-const runCacheSalt = "python-v1"
+const runCacheSalt = "python-v2"
 
 // onRunCacheCompute, when set, is called each time a cached op computes instead of replaying an
 // entry. Tests count through it.

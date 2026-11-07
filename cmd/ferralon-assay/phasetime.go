@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
@@ -23,8 +24,9 @@ const slowestAdvisories = 5
 
 // advisoryTime is one advisory's assessment duration.
 type advisoryTime struct {
-	id string
-	d  time.Duration
+	id  string
+	d   time.Duration
+	src string // the advisory's source; shown only when the same id is named twice
 }
 
 // phaseTimer receives the trigger's phase timings (trigger.WithTiming, trigger.WithAdvisoryTiming). It
@@ -43,10 +45,10 @@ func (p *phaseTimer) observe(phase string, d time.Duration) {
 	}
 }
 
-func (p *phaseTimer) observeAdvisory(id string, d time.Duration) {
+func (p *phaseTimer) observeAdvisory(v assessment.VulnRef, d time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.advisories = append(p.advisories, advisoryTime{id, d})
+	p.advisories = append(p.advisories, advisoryTime{v.ID, d, v.Source})
 }
 
 // percentile is the nearest-rank q-quantile (0 < q <= 1) of the ascending durations s.
@@ -68,7 +70,10 @@ func (p *phaseTimer) logAdvisories() {
 		if c := cmp.Compare(b.d, a.d); c != 0 {
 			return c
 		}
-		return cmp.Compare(a.id, b.id)
+		if c := cmp.Compare(a.id, b.id); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.src, b.src)
 	})
 	s := make([]time.Duration, len(byTime))
 	for i, a := range byTime {
@@ -77,9 +82,17 @@ func (p *phaseTimer) logAdvisories() {
 	fmt.Fprintf(p.w, "%s: time: advisories %d assessed, p50 %s, p95 %s, max %s\n", brand.Name, len(s),
 		s[(len(s)-1)/2].Round(time.Millisecond), percentile(s, 0.95).Round(time.Millisecond), s[len(s)-1].Round(time.Millisecond))
 	top := byTime[:min(slowestAdvisories, len(byTime))]
+	named := map[string]int{}
+	for _, a := range top {
+		named[a.id]++
+	}
 	parts := make([]string, len(top))
 	for i, a := range top {
-		parts[i] = fmt.Sprintf("%s %s", a.id, a.d.Round(time.Millisecond))
+		label := a.id
+		if named[a.id] > 1 && a.src != "" { // one id from two sources is valid input: tell the copies apart
+			label = fmt.Sprintf("%s (%s)", a.id, a.src)
+		}
+		parts[i] = fmt.Sprintf("%s %s", label, a.d.Round(time.Millisecond))
 	}
 	fmt.Fprintf(p.w, "%s: time: slowest advisories: %s\n", brand.Name, strings.Join(parts, ", "))
 }

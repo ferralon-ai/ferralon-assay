@@ -36,7 +36,7 @@ func TestBaseline_Timing(t *testing.T) {
 				AssessOptions: opts,
 				Analysis: WithAdvisoryTiming(
 					WithTiming(analysis, func(phase string, _ time.Duration) { got[phase]++ }),
-					func(id string, _ time.Duration) { ids = append(ids, id) }),
+					func(v assessment.VulnRef, _ time.Duration) { ids = append(ids, v.ID) }),
 			})
 			if err != nil {
 				t.Fatalf("buildBaselineReport: %v", err)
@@ -52,4 +52,27 @@ func TestBaseline_Timing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestObserveAssessed_BothHooksSeeTheSameDuration: the "advisory" phase hook and the advisory hook are told
+// one duration, read once, and the advisory hook receives the whole VulnRef (id and source).
+func TestObserveAssessed_BothHooksSeeTheSameDuration(t *testing.T) {
+	var phase, adv time.Duration
+	var got assessment.VulnRef
+	ctx := WithAdvisoryTiming(
+		WithTiming(context.Background(), func(p string, d time.Duration) {
+			if p == "advisory" {
+				phase = d
+			}
+		}),
+		func(v assessment.VulnRef, d time.Duration) { got, adv = v, d })
+	observeAssessed(ctx, assessment.VulnRef{ID: "GO-1", Source: "osv"}, time.Now().Add(-1500*time.Millisecond))
+	if phase == 0 || phase != adv {
+		t.Fatalf("durations differ: phase %v, advisory %v", phase, adv)
+	}
+	if got != (assessment.VulnRef{ID: "GO-1", Source: "osv"}) {
+		t.Fatalf("advisory hook got %+v", got)
+	}
+	// neither hook installed: no panic
+	observeAssessed(context.Background(), got, time.Now())
 }
